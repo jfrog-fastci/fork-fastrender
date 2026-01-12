@@ -930,6 +930,7 @@ mod tests {
       "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
       "PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
       "PromiseRef rt_parallel_spawn_promise_rooted(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
+      "PromiseRef rt_parallel_spawn_promise_rooted_h(void (*task)(uint8_t*, PromiseRef), GcHandle data, PromiseLayout layout);",
       "LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
       "LegacyPromiseRef rt_spawn_blocking_rooted(void (*task)(uint8_t*, LegacyPromiseRef), uint8_t* data);",
       "void rt_promise_init(PromiseRef p);",
@@ -1090,6 +1091,11 @@ mod tests {
       *mut u8,
       PromiseLayout,
     ) -> abi::PromiseRef = rt_parallel_spawn_promise_rooted;
+    let _spawn_promise_rooted_h: unsafe extern "C" fn(
+      extern "C" fn(*mut u8, abi::PromiseRef),
+      crate::roots::GcHandle,
+      PromiseLayout,
+    ) -> abi::PromiseRef = rt_parallel_spawn_promise_rooted_h;
     let _spawn_blocking: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
       rt_spawn_blocking;
     let _spawn_blocking_rooted: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
