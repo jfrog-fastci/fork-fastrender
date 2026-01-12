@@ -10,7 +10,7 @@
 //! This module exposes small, spec-shaped helpers that are convenient to call from engine code
 //! without going through property lookups on the global `Promise` constructor.
 
-use crate::{PromiseCapability, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{PromiseCapability, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// `NewPromiseCapability(%Promise%)`.
 pub fn new_promise_capability_with_host_and_hooks(
@@ -60,55 +60,18 @@ pub fn promise_resolve_with_host_and_hooks(
     "PromiseResolve requires intrinsics (create a Realm first)",
   ))?;
 
-  // `PromiseResolve(%Promise%, value)` (ECMA-262).
+  // PromiseResolve(%Promise%, x) must observe `x.constructor` when `x` is a Promise object.
   //
-  // Note: `PromiseResolve` can allocate and can invoke user code:
-  // - `Get(value, "constructor")` can invoke accessors.
-  // - Creating the capability allocates a Promise + resolving functions.
-  // - Calling the resolve function can trigger thenable resolution.
-  //
-  // Root the input value (and `%Promise%`) up front so they cannot be collected during those
-  // operations.
-  let promise_ctor = Value::Object(intr.promise());
-  let mut scope = scope.reborrow();
-  scope.push_roots(&[value, promise_ctor])?;
-
-  // 1. If IsPromise(value) is true:
-  //    a. Let xConstructor be ? Get(value, "constructor").
-  //    b. If SameValue(xConstructor, %Promise%) is true, return value.
-  if let Value::Object(obj) = value {
-    if scope.heap().is_promise_object(obj) {
-      let ctor_key_s = scope.alloc_string("constructor")?;
-      scope.push_root(Value::String(ctor_key_s))?;
-      let ctor_key = PropertyKey::from_string(ctor_key_s);
-
-      let x_ctor = scope.ordinary_get_with_host_and_hooks(
-        vm,
-        host_ctx,
-        hooks,
-        obj,
-        ctor_key,
-        Value::Object(obj),
-      )?;
-      if x_ctor.same_value(promise_ctor, scope.heap()) {
-        return Ok(value);
-      }
-    }
-  }
-
-  let cap = new_promise_capability_with_host_and_hooks(vm, &mut scope, host_ctx, hooks)?;
-  // Root the newly-created promise and resolve function across the `Call(resolve, ...)`, which can
-  // allocate and run user code.
-  scope.push_roots(&[cap.promise, cap.resolve])?;
-  let _ = vm.call_with_host_and_hooks(
+  // Spec: https://tc39.es/ecma262/#sec-promise-resolve
+  let promise_obj = crate::builtins::promise_resolve_abstract(
+    vm,
+    scope,
     host_ctx,
-    &mut scope,
     hooks,
-    cap.resolve,
-    Value::Undefined,
-    &[value],
+    Value::Object(intr.promise()),
+    value,
   )?;
-  Ok(cap.promise)
+  Ok(Value::Object(promise_obj))
 }
 
 /// Convenience wrapper around [`promise_resolve_with_host_and_hooks`] that passes a dummy host

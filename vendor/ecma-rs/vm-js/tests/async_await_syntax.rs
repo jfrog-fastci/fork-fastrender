@@ -13,6 +13,13 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
+fn value_to_number(value: Value) -> f64 {
+  let Value::Number(n) = value else {
+    panic!("expected number, got {value:?}");
+  };
+  n
+}
+
 #[test]
 fn async_function_return_value_resolves_promise() -> Result<(), VmError> {
   let mut rt = new_runtime();
@@ -473,6 +480,57 @@ fn await_in_while_loop_preserves_microtask_order() -> Result<(), VmError> {
 
   let value = rt.exec_script("log.join(\"\")")?;
   assert_eq!(value_to_string(&rt, value), "startb0m0a0b1m1a1end");
+  Ok(())
+}
+
+#[test]
+fn await_observes_promise_resolve_constructor_getter_side_effects() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var count = 0;
+      Object.defineProperty(Promise.prototype, "constructor", {
+        configurable: true,
+        get: function () { count++; return Promise; }
+      });
+      async function f() { await Promise.resolve(0); }
+      f();
+      count
+    "#,
+  )?;
+  assert_eq!(value_to_number(value), 1.0);
+
+  // Drain the queued async resumption job so the runtime can be dropped without leaked roots.
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  Ok(())
+}
+
+#[test]
+fn await_rejects_when_promise_constructor_getter_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var p = Promise.resolve(0);
+      Object.defineProperty(p, "constructor", {
+        get: function () { throw "boom"; }
+      });
+      async function f() { await p; }
+      f().then(
+        function () { out = "fulfilled"; },
+        function (e) { out = e; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "boom");
   Ok(())
 }
 

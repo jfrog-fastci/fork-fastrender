@@ -2542,7 +2542,7 @@ fn species_constructor_with_host_and_hooks(
 }
 
 /// ECMA-262 `PromiseResolve(C, x)` abstract operation.
-fn promise_resolve_abstract(
+pub(crate) fn promise_resolve_abstract(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
