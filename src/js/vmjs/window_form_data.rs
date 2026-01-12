@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use vm_js::{
-  GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
+  GcObject, Heap, HostSlots, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey,
   PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
@@ -18,6 +18,9 @@ const REALM_ID_SLOT: usize = 0;
 const ITER_PROTO_SLOT: usize = 1;
 
 const MAX_FORM_DATA_BYTES: usize = 10 * 1024 * 1024;
+
+const FORM_DATA_HOST_TAG: u64 = 0x464F_524D_4441_5441; // "FORMDATA"
+const FORM_DATA_ITERATOR_HOST_TAG: u64 = 0x4644_4954_4552_4154; // "FDITERAT"
 
 #[derive(Clone, Debug)]
 pub(crate) enum FormDataValue {
@@ -162,6 +165,10 @@ fn require_form_data<'a>(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("FormData: illegal invocation"));
   };
+  match scope.heap().object_host_slots(obj)? {
+    Some(slots) if slots.a == FORM_DATA_HOST_TAG => {}
+    _ => return Err(VmError::TypeError("FormData: illegal invocation")),
+  };
 
   let entries = with_realm_state_mut(vm, scope, callee, |state| {
     state
@@ -291,6 +298,13 @@ fn form_data_ctor_construct(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FORM_DATA_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   with_realm_state_mut(vm, scope, callee, |state| {
     state.forms.insert(WeakGcObject::from(obj), Vec::new());
@@ -628,6 +642,13 @@ fn make_iterator(
   scope
     .heap_mut()
     .object_set_prototype(iter_obj, Some(iter_proto))?;
+  scope.heap_mut().object_set_host_slots(
+    iter_obj,
+    HostSlots {
+      a: FORM_DATA_ITERATOR_HOST_TAG,
+      b: kind as u64,
+    },
+  )?;
 
   with_realm_state_mut(vm, scope, callee, |state| {
     state.iterators.insert(
@@ -698,6 +719,10 @@ fn iterator_next_native(
 
   let Value::Object(iter_obj) = this else {
     return Err(VmError::TypeError("FormData iterator: illegal invocation"));
+  };
+  match scope.heap().object_host_slots(iter_obj)? {
+    Some(slots) if slots.a == FORM_DATA_ITERATOR_HOST_TAG => {}
+    _ => return Err(VmError::TypeError("FormData iterator: illegal invocation")),
   };
 
   let result_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
@@ -1136,6 +1161,13 @@ pub(crate) fn create_form_data_with_entries(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: FORM_DATA_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   with_realm_state_mut(vm, scope, callee, |state| {
     state.forms.insert(WeakGcObject::from(obj), entries);

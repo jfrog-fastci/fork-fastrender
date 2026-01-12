@@ -1951,4 +1951,22 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn structured_clone_rejects_form_data() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let v = realm.exec_script("try { structuredClone(new FormData()); 'no' } catch (e) { e.name }")?;
+    assert_eq!(get_string(&realm, v), "DataCloneError");
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_rejects_form_data_iterator() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let v = realm.exec_script(
+      "try { structuredClone(new FormData().entries()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, v), "DataCloneError");
+    Ok(())
+  }
 }
