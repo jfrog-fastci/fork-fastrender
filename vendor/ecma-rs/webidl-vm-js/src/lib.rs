@@ -162,7 +162,7 @@ impl WebIdlBindingsHostSlot {
   }
 }
 
-/// Sized payload exposed via [`VmHostHooks::as_any_mut`] by FastRender's `vm-js` hook adapters.
+/// Sized payload exposed via [`VmHostHooks::as_any_mut`] by an embedding's `vm-js` hook adapters.
 ///
 /// The embedding needs `as_any_mut()` to serve two independent consumers:
 /// - WebIDL bindings (`host_from_hooks`) need access to a [`WebIdlBindingsHostSlot`].
@@ -180,16 +180,17 @@ pub struct VmJsHostHooksPayload {
   /// Optional pointer to the embedder's "host environment" state.
   ///
   /// This is distinct from [`VmJsHostHooksPayload::vm_host`]:
-  /// - `vm_host` is the `vm-js` native-call context, typically a narrow per-document object
-  ///   (e.g. FastRender's `HostDocumentState`).
-  /// - `embedder_state` is the broader host environment object driving execution (e.g.
-  ///   FastRender's `WindowHostState`), which can own configuration (import maps, fetcher settings,
-  ///   etc.) that isn't stored on the `VmHost` itself.
+  /// - `vm_host` is the `vm-js` native-call context, typically a narrow per-document/per-realm
+  ///   object.
+  /// - `embedder_state` is the broader host environment object driving execution, which can own
+  ///   configuration (import maps, fetcher settings, etc.) that isn't stored on the `VmHost`
+  ///   itself.
   ///
   /// Storing this pointer enables small, test-only native hooks (like the offline WPT runner's
   /// import map registration shim) to reach host state without relying on global variables.
   embedder_state: Option<NonNull<dyn Any + 'static>>,
-  /// Erased pointer to per-call dynamic context owned by the embedding (FastRender's `EventLoop`).
+  /// Erased pointer to per-call dynamic context owned by the embedding (for example, an event
+  /// loop/task runner).
   ///
   /// This is intentionally stored as an erased pointer so `webidl-vm-js` does not need to depend on
   /// the embedder's event loop type.
@@ -272,8 +273,8 @@ impl VmJsHostHooksPayload {
   /// Install a mutable pointer to an embedder-owned event loop for the duration of a single JS
   /// call boundary.
   ///
-  /// This is used by FastRender to expose the currently active `EventLoop<Host>` to Web APIs like
-  /// `queueMicrotask`, `setTimeout`, and Promise-job enqueueing via `VmHostHooks`.
+  /// This is used by embeddings to expose the currently active event loop/task runner to Web APIs
+  /// like `queueMicrotask`, `setTimeout`, and Promise-job enqueueing via `VmHostHooks`.
   #[inline]
   pub fn set_event_loop<T: 'static>(&mut self, event_loop: &mut T) {
     self.event_loop_ptr = Some(NonNull::from(event_loop).cast());

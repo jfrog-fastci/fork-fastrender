@@ -115,6 +115,44 @@ fn record_conversion_uses_to_object_and_ignores_symbol_keys() -> Result<(), VmEr
     "boxed primitive should convert to an empty record"
   );
 
+  // ---- record conversion enforces max_record_entries ----
+  rt.set_limits(webidl::WebIdlLimits {
+    max_record_entries: 1,
+    ..Default::default()
+  });
+  let input3 = rt.alloc_object()?;
+  let a_key = rt.property_key("a")?;
+  rt.define_data_property(
+    input3,
+    a_key,
+    Value::Number(1.0),
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+  let b_key = rt.property_key("b")?;
+  rt.define_data_property(
+    input3,
+    b_key,
+    Value::Number(2.0),
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+  let err = conversions::to_record(
+    &mut rt,
+    &mut dummy_host,
+    &mut hooks,
+    Value::Object(input3),
+    "expected object for record",
+    |_rt, _host, _hooks, v| Ok(v),
+  )
+  .expect_err("expected record entry limit to fail");
+  let thrown = err.thrown_value().expect("expected thrown error value");
+  let Value::Object(thrown_obj) = thrown else {
+    return Err(VmError::TypeError("expected thrown error to be an object"));
+  };
+  assert_eq!(
+    rt.scope.object_get_prototype(thrown_obj)?,
+    Some(intr.range_error_prototype())
+  );
+
   drop(rt);
   drop(scope);
   realm.teardown(&mut heap);

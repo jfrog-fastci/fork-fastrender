@@ -57,8 +57,8 @@ pub fn object_has_iterator<'a>(
 
 /// Convert an ECMAScript value to an IDL `sequence<T>`/`FrozenArray<T>` value.
 ///
-/// The bindings layer representation used by FastRender's `vm-js` WebIDL backend is a JavaScript
-/// `Array` object containing the converted elements.
+/// The bindings layer representation used by the `vm-js` WebIDL backend is a JavaScript `Array`
+/// object containing the converted elements.
 pub fn to_iterable_list<'a, F>(
   rt: &mut BindingsRuntime<'a>,
   host: &mut dyn VmHost,
@@ -123,8 +123,8 @@ where
 /// - `ToObject` is applied (primitives are accepted; `null`/`undefined` throw).
 /// - Only own enumerable **string** keys are included (symbols are ignored).
 ///
-/// The bindings layer representation used by FastRender's `vm-js` WebIDL backend is a JavaScript
-/// plain object containing the converted values.
+/// The bindings layer representation used by the `vm-js` WebIDL backend is a JavaScript plain
+/// object containing the converted values.
 pub fn to_record<'a, F>(
   rt: &mut BindingsRuntime<'a>,
   host: &mut dyn VmHost,
