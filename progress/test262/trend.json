@@ -1,39 +1,267 @@
 {
   "schema_version": 1,
   "overall": {
-    "total": 2325,
-    "matched": 1890,
-    "mismatched": 435,
+    "total": 15209,
+    "matched": 11177,
+    "mismatched": 4032,
     "kinds": {
-      "pass": 873,
-      "xfail": 1452,
-      "skip": 0,
+      "pass": 1662,
+      "xfail": 13545,
+      "skip": 2,
       "flaky": 0
     },
-    "pass": 873,
+    "pass": 1662,
     "unexpected_fail": 0,
-    "xfail": 435,
-    "xpass": 1017,
-    "skip": 0,
+    "xfail": 4032,
+    "xpass": 9513,
+    "skip": 2,
     "flaky": 0,
     "flaky_pass": 0,
     "timed_out": 0
   },
   "by_bucket": {
-    "language/expressions": {
-      "total": 2325,
-      "matched": 1890,
-      "mismatched": 435,
+    "built-ins/Array": {
+      "total": 1120,
+      "matched": 777,
+      "mismatched": 343,
       "kinds": {
-        "pass": 873,
-        "xfail": 1452,
+        "pass": 0,
+        "xfail": 1118,
+        "skip": 2,
+        "flaky": 0
+      },
+      "pass": 0,
+      "unexpected_fail": 0,
+      "xfail": 343,
+      "xpass": 775,
+      "skip": 2,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "built-ins/Boolean": {
+      "total": 101,
+      "matched": 80,
+      "mismatched": 21,
+      "kinds": {
+        "pass": 0,
+        "xfail": 101,
         "skip": 0,
         "flaky": 0
       },
-      "pass": 873,
+      "pass": 0,
       "unexpected_fail": 0,
-      "xfail": 435,
-      "xpass": 1017,
+      "xfail": 21,
+      "xpass": 80,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "built-ins/JSON": {
+      "total": 330,
+      "matched": 224,
+      "mismatched": 106,
+      "kinds": {
+        "pass": 0,
+        "xfail": 330,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 0,
+      "unexpected_fail": 0,
+      "xfail": 106,
+      "xpass": 224,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "built-ins/Math": {
+      "total": 654,
+      "matched": 606,
+      "mismatched": 48,
+      "kinds": {
+        "pass": 0,
+        "xfail": 654,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 0,
+      "unexpected_fail": 0,
+      "xfail": 48,
+      "xpass": 606,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "built-ins/Number": {
+      "total": 302,
+      "matched": 220,
+      "mismatched": 82,
+      "kinds": {
+        "pass": 0,
+        "xfail": 302,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 0,
+      "unexpected_fail": 0,
+      "xfail": 82,
+      "xpass": 220,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "built-ins/Object": {
+      "total": 1664,
+      "matched": 1094,
+      "mismatched": 570,
+      "kinds": {
+        "pass": 538,
+        "xfail": 1126,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 538,
+      "unexpected_fail": 0,
+      "xfail": 570,
+      "xpass": 556,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "built-ins/String": {
+      "total": 768,
+      "matched": 514,
+      "mismatched": 254,
+      "kinds": {
+        "pass": 82,
+        "xfail": 686,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 82,
+      "unexpected_fail": 0,
+      "xfail": 254,
+      "xpass": 432,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "built-ins/Symbol": {
+      "total": 184,
+      "matched": 136,
+      "mismatched": 48,
+      "kinds": {
+        "pass": 42,
+        "xfail": 142,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 42,
+      "unexpected_fail": 0,
+      "xfail": 48,
+      "xpass": 94,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "language/block-scope": {
+      "total": 287,
+      "matched": 96,
+      "mismatched": 191,
+      "kinds": {
+        "pass": 0,
+        "xfail": 287,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 0,
+      "unexpected_fail": 0,
+      "xfail": 191,
+      "xpass": 96,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "language/directive-prologue": {
+      "total": 62,
+      "matched": 56,
+      "mismatched": 6,
+      "kinds": {
+        "pass": 0,
+        "xfail": 62,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 0,
+      "unexpected_fail": 0,
+      "xfail": 6,
+      "xpass": 56,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "language/expressions": {
+      "total": 2325,
+      "matched": 2060,
+      "mismatched": 265,
+      "kinds": {
+        "pass": 1000,
+        "xfail": 1325,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 1000,
+      "unexpected_fail": 0,
+      "xfail": 265,
+      "xpass": 1060,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "language/function-code": {
+      "total": 281,
+      "matched": 265,
+      "mismatched": 16,
+      "kinds": {
+        "pass": 0,
+        "xfail": 281,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 0,
+      "unexpected_fail": 0,
+      "xfail": 16,
+      "xpass": 265,
+      "skip": 0,
+      "flaky": 0,
+      "flaky_pass": 0,
+      "timed_out": 0
+    },
+    "language/statements": {
+      "total": 7131,
+      "matched": 5049,
+      "mismatched": 2082,
+      "kinds": {
+        "pass": 0,
+        "xfail": 7131,
+        "skip": 0,
+        "flaky": 0
+      },
+      "pass": 0,
+      "unexpected_fail": 0,
+      "xfail": 2082,
+      "xpass": 5049,
       "skip": 0,
       "flaky": 0,
       "flaky_pass": 0,
