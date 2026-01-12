@@ -250,7 +250,6 @@ pub struct SourceTextModuleRecord {
   pub(crate) environment: Option<EnvRootId>,
 
   /// `[[ImportMeta]]` – cached `import.meta` object (rooted in the heap).
-  #[allow(dead_code)]
   pub(crate) import_meta: Option<RootId>,
 
   // === Cyclic Module Record evaluation state (ECMA-262) ===

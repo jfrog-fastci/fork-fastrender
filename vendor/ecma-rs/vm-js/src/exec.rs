@@ -6545,9 +6545,16 @@ impl<'a> Evaluator<'a> {
     let Some(ScriptOrModule::Module(module)) = self.vm.get_active_script_or_module() else {
       return Err(VmError::Unimplemented("import.meta outside of modules"));
     };
-    let obj = self
-      .vm
-      .get_or_create_import_meta_object(scope, self.hooks, module)?;
+    let modules_ptr =
+      self
+        .vm
+        .module_graph_ptr()
+        .ok_or(VmError::Unimplemented("import.meta requires a module graph"))?;
+    // Safety: `Vm::module_graph_ptr` is only set by embeddings that ensure the graph outlives the
+    // VM (see `Vm::set_module_graph` docs). `ModuleGraph::{evaluate,evaluate_with_scope}` installs a
+    // temporary pointer via `ModuleGraphPtrGuard` so `import.meta` can consult per-graph caches.
+    let modules = unsafe { &mut *modules_ptr };
+    let obj = modules.get_or_create_import_meta_object(self.vm, scope, self.hooks, module)?;
     Ok(Value::Object(obj))
   }
 

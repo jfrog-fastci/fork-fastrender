@@ -1,5 +1,6 @@
 use crate::execution_context::ModuleId;
 use crate::exec::{instantiate_module_decls, run_module, run_module_until_await, ModuleTlaStepResult};
+use crate::import_meta::{create_import_meta_object, VmImportMetaHostHooks};
 use crate::module_loading::DynamicImportState;
 use crate::module_record::ModuleNamespaceCache;
 use crate::module_record::ModuleStatus;
@@ -416,7 +417,7 @@ impl ModuleGraph {
     }
 
     // Remove per-module persistent roots.
-    for (idx, module) in self.modules.iter_mut().enumerate() {
+    for module in &mut self.modules {
       if let Some(ns) = module.namespace.take() {
         heap.remove_root(ns.object);
       }
@@ -433,9 +434,6 @@ impl ModuleGraph {
       // Cyclic module record persistent roots (top-level await state / cached errors).
       module.teardown_top_level_capability(heap);
       module.teardown_evaluation_error(heap);
-
-      // `import.meta` is currently cached on the `Vm` (not on the module record).
-      vm.remove_import_meta_cache_entry(heap, ModuleId::from_raw(idx as u64));
     }
 
     // Ensure the VM does not retain a raw pointer to this graph after teardown.
@@ -818,6 +816,70 @@ impl ModuleGraph {
     self.torn_down = false;
 
     Ok(namespace_obj)
+  }
+
+  pub(crate) fn get_or_create_import_meta_object(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    module: ModuleId,
+  ) -> Result<GcObject, VmError> {
+    let idx = module.to_raw() as usize;
+    let Some(record) = self.modules.get(idx) else {
+      return Err(VmError::invalid_handle());
+    };
+
+    if let Some(root) = record.import_meta {
+      let Some(Value::Object(obj)) = scope.heap().get_root(root) else {
+        return Err(VmError::invalid_handle());
+      };
+      return Ok(obj);
+    }
+
+    // Bridge `VmHostHooks` into the `VmImportMetaHostHooks` interface used by
+    // `create_import_meta_object`.
+    struct Adapter<'a>(&'a mut dyn VmHostHooks);
+
+    impl VmImportMetaHostHooks for Adapter<'_> {
+      fn host_get_import_meta_properties(
+        &mut self,
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        module: ModuleId,
+      ) -> Result<Vec<crate::ImportMetaProperty>, VmError> {
+        self.0.host_get_import_meta_properties(vm, scope, module)
+      }
+
+      fn host_finalize_import_meta(
+        &mut self,
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        import_meta: GcObject,
+        module: ModuleId,
+      ) -> Result<(), VmError> {
+        self
+          .0
+          .host_finalize_import_meta(vm, scope, import_meta, module)
+      }
+    }
+
+    let mut adapter = Adapter(hooks);
+    let import_meta = create_import_meta_object(vm, scope, &mut adapter, module)?;
+
+    // Keep the object alive across GC by storing it as a persistent root.
+    scope.push_root(Value::Object(import_meta))?;
+    let root = scope.heap_mut().add_root(Value::Object(import_meta))?;
+
+    // `self.modules` is indexed by `ModuleId::to_raw` (see `ModuleGraph::add_module*`).
+    let record = self
+      .modules
+      .get_mut(idx)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    record.import_meta = Some(root);
+    self.torn_down = false;
+
+    Ok(import_meta)
   }
 
   /// Convenience accessor for the module namespace's cached `[[Exports]]` list.

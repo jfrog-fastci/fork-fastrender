@@ -3,13 +3,10 @@ use crate::error::TerminationReason;
 use crate::error::VmError;
 use crate::exec::{AsyncContinuation, GeneratorContinuation, RuntimeEnv};
 use crate::execution_context::ExecutionContext;
-use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptOrModule;
 use crate::function::{
   CallHandler, ConstructHandler, EcmaFunctionId, NativeConstructId, NativeFunctionId, ThisMode,
 };
-use crate::import_meta::create_import_meta_object;
-use crate::import_meta::VmImportMetaHostHooks;
 use crate::interrupt::InterruptHandle;
 use crate::interrupt::InterruptToken;
 use crate::jobs::VmHost;
@@ -298,7 +295,6 @@ pub struct Vm {
   host_hooks_override: Option<*mut (dyn VmHostHooks + 'static)>,
   ecma_functions: Vec<EcmaFunctionCode>,
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
-  import_meta_cache: HashMap<ModuleId, RootId>,
   template_registry: HashMap<TemplateRegistryKey, TemplateRegistryEntry>,
   async_resume_call: Option<NativeFunctionId>,
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
@@ -357,7 +353,6 @@ impl std::fmt::Debug for Vm {
     ds.field("host_hooks_override", &self.host_hooks_override.is_some());
     ds.field("ecma_functions", &self.ecma_functions.len());
     ds.field("ecma_function_cache", &self.ecma_function_cache.len());
-    ds.field("import_meta_cache", &self.import_meta_cache.len());
     ds.field("template_registry", &self.template_registry.len());
     ds.field("async_continuations", &self.async_continuations.len());
     ds.field(
@@ -547,7 +542,6 @@ impl Vm {
       host_hooks_override: None,
       ecma_functions: Vec::new(),
       ecma_function_cache: HashMap::new(),
-      import_meta_cache: HashMap::new(),
       template_registry: HashMap::new(),
       async_resume_call: None,
       module_tla_on_fulfilled_call: None,
@@ -1749,61 +1743,6 @@ impl Vm {
       .find_map(|ctx| ctx.script_or_module)
   }
 
-  pub(crate) fn get_or_create_import_meta_object(
-    &mut self,
-    scope: &mut Scope<'_>,
-    hooks: &mut dyn VmHostHooks,
-    module: ModuleId,
-  ) -> Result<GcObject, VmError> {
-    if let Some(root) = self.import_meta_cache.get(&module).copied() {
-      let Some(Value::Object(obj)) = scope.heap().get_root(root) else {
-        return Err(VmError::invalid_handle());
-      };
-      return Ok(obj);
-    }
-
-    // Bridge `VmHostHooks` into the `VmImportMetaHostHooks` interface used by
-    // `create_import_meta_object`.
-    struct Adapter<'a>(&'a mut dyn VmHostHooks);
-
-    impl VmImportMetaHostHooks for Adapter<'_> {
-      fn host_get_import_meta_properties(
-        &mut self,
-        vm: &mut Vm,
-        scope: &mut Scope<'_>,
-        module: ModuleId,
-      ) -> Result<Vec<crate::ImportMetaProperty>, VmError> {
-        self.0.host_get_import_meta_properties(vm, scope, module)
-      }
-
-      fn host_finalize_import_meta(
-        &mut self,
-        vm: &mut Vm,
-        scope: &mut Scope<'_>,
-        import_meta: GcObject,
-        module: ModuleId,
-      ) -> Result<(), VmError> {
-        self
-          .0
-          .host_finalize_import_meta(vm, scope, import_meta, module)
-      }
-    }
-
-    let mut adapter = Adapter(hooks);
-    let import_meta = create_import_meta_object(self, scope, &mut adapter, module)?;
-
-    // Keep the object alive across GC by storing it as a persistent root.
-    scope.push_root(Value::Object(import_meta))?;
-    let root = scope.heap_mut().add_root(Value::Object(import_meta))?;
-
-    if self.import_meta_cache.try_reserve(1).is_err() {
-      scope.heap_mut().remove_root(root);
-      return Err(VmError::OutOfMemory);
-    }
-    self.import_meta_cache.insert(module, root);
-    Ok(import_meta)
-  }
-
   pub(crate) fn get_or_create_template_object(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1981,19 +1920,6 @@ impl Vm {
     );
 
     Ok(cooked)
-  }
-
-  #[allow(dead_code)]
-  pub(crate) fn teardown_import_meta_cache(&mut self, heap: &mut Heap) {
-    for (_, root) in self.import_meta_cache.drain() {
-      heap.remove_root(root);
-    }
-  }
-
-  pub(crate) fn remove_import_meta_cache_entry(&mut self, heap: &mut Heap, module: ModuleId) {
-    if let Some(root) = self.import_meta_cache.remove(&module) {
-      heap.remove_root(root);
-    }
   }
 
   /// Returns the realm of the currently-running execution context, if any.
