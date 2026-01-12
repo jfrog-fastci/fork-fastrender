@@ -8,6 +8,7 @@
       "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
+      "noLib": true,
       "noUncheckedIndexedAccess": false,
       "pretty": false,
       "skipLibCheck": false,

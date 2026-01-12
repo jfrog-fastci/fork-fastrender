@@ -311,6 +311,8 @@ fn unresolved_module_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
   let mut diagnostics = Vec::new();
   let file_id = file.file_id(db);
   let source = file_text_for(db, file);
+  let options = compiler_options_for(db, db.compiler_options_input());
+  let skip_type_only_in_dts = options.skip_lib_check && matches!(file.kind(db), FileKind::Dts);
   struct UnresolvedModuleChecker<'a> {
     db: &'a dyn Db,
     file_id: FileId,
@@ -454,27 +456,37 @@ fn unresolved_module_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
       }
     }
 
-    for arenas in lowered.types.values() {
-      for ty in arenas.type_exprs.iter() {
-        match &ty.kind {
-          hir_js::TypeExprKind::TypeRef(type_ref) => {
-            if let hir_js::TypeName::Import(import) = &type_ref.name {
-              if let Some(module) = import.module.as_deref() {
-                checker.check_value(module, ty.span, &mut diagnostics);
+    // TypeScript's `--skipLibCheck` suppresses `.d.ts`-only failures, including
+    // missing modules referenced from `import("...")` types.
+    //
+    // Audited against TypeScript 5.9.3 via difftsc baselines:
+    // - `skip_lib_check_missing_module` reports TS2307 for unresolved import
+    //   statements in `.d.ts` files (kept above).
+    // - `skip_lib_check_missing_import_type_used` does *not* report TS2307 for
+    //   unresolved `import("...")` types in `.d.ts` files.
+    if !skip_type_only_in_dts {
+      for arenas in lowered.types.values() {
+        for ty in arenas.type_exprs.iter() {
+          match &ty.kind {
+            hir_js::TypeExprKind::TypeRef(type_ref) => {
+              if let hir_js::TypeName::Import(import) = &type_ref.name {
+                if let Some(module) = import.module.as_deref() {
+                  checker.check_value(module, ty.span, &mut diagnostics);
+                }
               }
             }
-          }
-          hir_js::TypeExprKind::TypeQuery(name) => {
-            if let hir_js::TypeName::Import(import) = name {
-              if let Some(module) = import.module.as_deref() {
-                checker.check_value(module, ty.span, &mut diagnostics);
+            hir_js::TypeExprKind::TypeQuery(name) => {
+              if let hir_js::TypeName::Import(import) = name {
+                if let Some(module) = import.module.as_deref() {
+                  checker.check_value(module, ty.span, &mut diagnostics);
+                }
               }
             }
+            hir_js::TypeExprKind::Import(import) => {
+              checker.check_value(import.module.as_str(), ty.span, &mut diagnostics);
+            }
+            _ => {}
           }
-          hir_js::TypeExprKind::Import(import) => {
-            checker.check_value(import.module.as_str(), ty.span, &mut diagnostics);
-          }
-          _ => {}
         }
       }
     }
