@@ -6,7 +6,9 @@ use core::slice;
 use runtime_native::stackmaps::STACKMAP_VERSION;
 
 // Define a tiny but valid StackMap v3 blob (0 functions / 1 constant / 0 records) inside
-// `.data.rel.ro.llvm_stackmaps` (the stackmaps section name used by PIE/DSO builds).
+// `.data.rel.ro.llvm_stackmaps` (the hardened *input section* name used by PIE/DSO builds after the
+// objcopy rename; the lld linker fragment may then append it into the `.data.rel.ro` output
+// section).
 //
 // Note: runtime-native's build script links tests with `link/stackmaps.ld`, which:
 // - keeps stackmaps under `--gc-sections`, and
