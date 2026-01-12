@@ -2936,53 +2936,11 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys do not
-    // consult the prototype chain.
-    if self.heap().is_typed_array_object(obj) {
-      if let PropertyKey::String(s) = key {
-        if self.heap_mut().canonical_numeric_index_string(s)?.is_some() {
-          if let Some(desc) = self
-            .heap()
-            .object_get_own_property_with_tick(obj, &key, || vm.tick())?
-          {
-            return match desc.kind {
-              PropertyKind::Data { value, .. } => Ok(value),
-              PropertyKind::Accessor { get, .. } => {
-                if matches!(get, Value::Undefined) {
-                  Ok(Value::Undefined)
-                } else {
-                  if !self.heap().is_callable(get)? {
-                    return Err(VmError::TypeError("accessor getter is not callable"));
-                  }
-                  vm.call_with_host(self, host, get, receiver, &[])
-                }
-              }
-            };
-          }
-          return Ok(Value::Undefined);
-        }
-      }
-    }
-
-    let Some(desc) = self
-      .heap()
-      .get_property_with_tick(obj, &key, || vm.tick())?
-    else {
-      return Ok(Value::Undefined);
-    };
-    match desc.kind {
-      PropertyKind::Data { value, .. } => Ok(value),
-      PropertyKind::Accessor { get, .. } => {
-        if matches!(get, Value::Undefined) {
-          Ok(Value::Undefined)
-        } else {
-          if !self.heap().is_callable(get)? {
-            return Err(VmError::TypeError("accessor getter is not callable"));
-          }
-          vm.call_with_host(self, host, get, receiver, &[])
-        }
-      }
-    }
+    // Delegate to the full `[[Get]]` implementation so:
+    // - Proxy objects (including those in the prototype chain) observe `get` traps, and
+    // - accessors are invoked via `Vm::call_with_host` semantics (Promise jobs routed via `host`).
+    let mut dummy_host = ();
+    self.ordinary_get_with_host_and_hooks(vm, &mut dummy_host, host, obj, key, receiver)
   }
 
   /// ECMAScript `[[Set]]` for ordinary objects.
