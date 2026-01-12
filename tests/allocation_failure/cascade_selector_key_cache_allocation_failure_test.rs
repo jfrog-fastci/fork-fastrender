@@ -19,6 +19,7 @@ fn build_dom_with_many_classes(class_count: usize) -> DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: selectors::context::QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {

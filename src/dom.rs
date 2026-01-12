@@ -281,6 +281,10 @@ pub enum DomNodeType {
     /// not execute scripts, but we still default to the parsing/rendering semantics of a typical
     /// browser where scripting is enabled.
     scripting_enabled: bool,
+    /// Whether this document is an HTML document (as opposed to an XML document).
+    ///
+    /// This is used by selector matching to decide case-sensitivity rules for tag/attribute names.
+    is_html_document: bool,
   },
   ShadowRoot {
     mode: ShadowRootMode,
@@ -4944,6 +4948,7 @@ fn convert_handle_to_node(
       NodeData::Document => Some(DomNodeType::Document {
         quirks_mode: document_quirks_mode,
         scripting_enabled: document_scripting_enabled,
+        is_html_document: true,
       }),
       NodeData::Element { name, attrs, .. } => {
         let namespace = if name.ns.as_ref() == HTML_NAMESPACE {
@@ -5961,11 +5966,29 @@ impl<'a> ElementRef<'a> {
   }
 
   fn is_html_element(&self) -> bool {
+    if !self.is_html_document() {
+      return false;
+    }
     matches!(
       self.node.node_type,
       DomNodeType::Element { ref namespace, .. } | DomNodeType::Slot { ref namespace, .. }
         if namespace.is_empty() || namespace == HTML_NAMESPACE
     )
+  }
+
+  fn is_html_document(&self) -> bool {
+    // Default to HTML semantics when the ancestor chain does not include a document node. This
+    // matches historical behavior for matching against disconnected subtrees; selector entry points
+    // that care about XML-vs-HTML semantics must ensure a `DomNodeType::Document` ancestor exists.
+    for ancestor in self.all_ancestors.iter().rev() {
+      if let DomNodeType::Document {
+        is_html_document, ..
+      } = ancestor.node_type
+      {
+        return is_html_document;
+      }
+    }
+    true
   }
 
   fn is_shadow_host(&self) -> bool {
@@ -7685,12 +7708,7 @@ impl<'a> Element for ElementRef<'a> {
   }
 
   fn is_html_element_in_html_document(&self) -> bool {
-    match &self.node.node_type {
-      DomNodeType::Element { namespace, .. } | DomNodeType::Slot { namespace, .. } => {
-        namespace.is_empty() || namespace == HTML_NAMESPACE
-      }
-      _ => false,
-    }
+    self.is_html_element()
   }
 
   fn has_local_name(&self, local_name: &str) -> bool {
@@ -7740,7 +7758,10 @@ impl<'a> Element for ElementRef<'a> {
           ..
         },
       ) if a_ns == b_ns => {
-        if a_ns == HTML_NAMESPACE || a_ns.is_empty() {
+        if self.is_html_document()
+          && other.is_html_document()
+          && (a_ns == HTML_NAMESPACE || a_ns.is_empty())
+        {
           a.eq_ignore_ascii_case(b)
         } else {
           a == b
@@ -9597,6 +9618,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children,
     }
@@ -10737,6 +10759,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![],
     };
@@ -13389,6 +13412,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![element("div", vec![element("span", vec![])])],
     };
@@ -13437,6 +13461,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![element(
         "div",
@@ -13662,6 +13687,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![
         element("div", vec![text("abc")]),
@@ -13939,6 +13965,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![element("html", vec![element("body", vec![])])],
     };
@@ -14017,6 +14044,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![html],
     };
@@ -14093,6 +14121,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![element("html", vec![element("body", vec![])])],
     };

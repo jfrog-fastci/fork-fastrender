@@ -1,7 +1,7 @@
 use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;
 
-use super::{Document, NodeId, NodeKind, SlotAssignmentMode};
+use super::{Document, DocumentKind, NodeId, NodeKind, SlotAssignmentMode};
 
 struct Frame {
   src: *const DomNode,
@@ -269,15 +269,24 @@ pub(super) fn import_dom2_nodes_into_parent(
 /// existing parsed DOM.
 impl Document {
   pub fn from_renderer_dom(root: &DomNode) -> Document {
-    let (quirks_mode, scripting_enabled) = match &root.node_type {
+    let (quirks_mode, scripting_enabled, is_html_document) = match &root.node_type {
       DomNodeType::Document {
         quirks_mode,
         scripting_enabled,
+        is_html_document,
         ..
-      } => (*quirks_mode, *scripting_enabled),
-      _ => (QuirksMode::NoQuirks, true),
+      } => (*quirks_mode, *scripting_enabled, *is_html_document),
+      _ => (QuirksMode::NoQuirks, true, true),
     };
     let mut doc = Document::new_with_scripting(quirks_mode, scripting_enabled);
+    doc.kind = if is_html_document {
+      DocumentKind::Html
+    } else {
+      DocumentKind::Xml
+    };
+    if !is_html_document {
+      doc.has_window_event_parent = false;
+    }
     let doc_root = doc.root();
 
     // The renderer DOM snapshot format (currently) does not preserve the document's doctype node;
@@ -504,6 +513,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![node],
     };

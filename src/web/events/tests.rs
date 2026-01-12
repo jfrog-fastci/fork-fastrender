@@ -31,6 +31,7 @@ fn make_dom_abc() -> (Document, NodeId, NodeId, NodeId) {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![element("a", vec![element("b", vec![element("c", vec![])])])],
   };

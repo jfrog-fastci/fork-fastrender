@@ -425,6 +425,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -480,6 +481,7 @@ mod tests {
       node_type: crate::dom::DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![],
     };

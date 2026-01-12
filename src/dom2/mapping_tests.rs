@@ -149,6 +149,7 @@ fn renderer_dom_mapping_handles_deep_trees_without_recursion_overflow() {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![node],
   };
@@ -195,6 +196,7 @@ fn renderer_dom_mapping_models_wbr_synthetic_zwsp_nodes() {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {

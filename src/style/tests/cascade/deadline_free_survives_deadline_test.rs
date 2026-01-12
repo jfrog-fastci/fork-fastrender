@@ -23,6 +23,7 @@ fn minimal_dom() -> DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: selectors::context::QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: Vec::new(),
   }

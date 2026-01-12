@@ -20492,6 +20492,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![root_el],
     }
@@ -26197,6 +26198,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![
         DomNode {
@@ -26875,6 +26877,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -26984,6 +26987,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -29686,6 +29690,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -30537,6 +30542,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {

@@ -24,6 +24,7 @@ fn build_large_dom(node_count: usize) -> DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: selectors::context::QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children,
   }

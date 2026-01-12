@@ -1123,11 +1123,17 @@ impl Document {
     }
 
     let scripting_enabled = self.scripting_enabled;
-    fn node_kind_to_dom_node_type(kind: &NodeKind, scripting_enabled: bool) -> Option<DomNodeType> {
+    let is_html_document = self.is_html_document();
+    fn node_kind_to_dom_node_type(
+      kind: &NodeKind,
+      scripting_enabled: bool,
+      is_html_document: bool,
+    ) -> Option<DomNodeType> {
       Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
           scripting_enabled,
+          is_html_document,
         },
         NodeKind::DocumentFragment => {
           // The renderer DOM snapshot format does not have a first-class DocumentFragment node
@@ -1137,6 +1143,7 @@ impl Document {
           DomNodeType::Document {
             quirks_mode: QuirksMode::NoQuirks,
             scripting_enabled,
+            is_html_document,
           }
         }
         NodeKind::ShadowRoot {
@@ -1179,7 +1186,8 @@ impl Document {
     let root_id = self.root;
     let root_src = self.node(root_id);
     let mut root = DomNode {
-      node_type: node_kind_to_dom_node_type(&root_src.kind, scripting_enabled).unwrap_or_else(
+      node_type: node_kind_to_dom_node_type(&root_src.kind, scripting_enabled, is_html_document)
+        .unwrap_or_else(
         || {
           debug_assert!(
             false,
@@ -1188,6 +1196,7 @@ impl Document {
           DomNodeType::Document {
             quirks_mode: QuirksMode::NoQuirks,
             scripting_enabled,
+            is_html_document,
           }
         },
       ),
@@ -1219,7 +1228,8 @@ impl Document {
           continue;
         }
 
-        let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind, scripting_enabled)
+        let Some(child_node_type) =
+          node_kind_to_dom_node_type(&child_src.kind, scripting_enabled, is_html_document)
         else {
           continue;
         };
@@ -1263,11 +1273,17 @@ impl Document {
     }
 
     let scripting_enabled = self.scripting_enabled;
-    fn node_kind_to_dom_node_type(kind: &NodeKind, scripting_enabled: bool) -> Option<DomNodeType> {
+    let is_html_document = self.is_html_document();
+    fn node_kind_to_dom_node_type(
+      kind: &NodeKind,
+      scripting_enabled: bool,
+      is_html_document: bool,
+    ) -> Option<DomNodeType> {
       Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
           scripting_enabled,
+          is_html_document,
         },
         NodeKind::DocumentFragment => DomNodeType::Element {
           // `DomNodeType` has no first-class DocumentFragment representation. For subtree selector
@@ -1316,7 +1332,7 @@ impl Document {
 
     let root_src = self.nodes.get(root_id.index())?;
     let fragment_root = matches!(root_src.kind, NodeKind::DocumentFragment);
-    let root_type = node_kind_to_dom_node_type(&root_src.kind, scripting_enabled)?;
+    let root_type = node_kind_to_dom_node_type(&root_src.kind, scripting_enabled, is_html_document)?;
     let mut root = DomNode {
       node_type: root_type,
       children: Vec::with_capacity(root_src.children.len()),
@@ -1346,7 +1362,8 @@ impl Document {
         if child_src.parent != Some(parent_id) {
           continue;
         }
-        let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind, scripting_enabled)
+        let Some(child_node_type) =
+          node_kind_to_dom_node_type(&child_src.kind, scripting_enabled, is_html_document)
         else {
           continue;
         };
@@ -1571,6 +1588,34 @@ impl Document {
       preorder_to_node_id,
       node_id_to_preorder,
     })
+  }
+
+  fn wrap_selector_subtree_snapshot_in_document(
+    &self,
+    dom: DomNode,
+    mut mapping: SelectorDomMapping,
+  ) -> (DomNode, SelectorDomMapping) {
+    // Selector matching needs document-level flags (notably `is_html_document`) even when the
+    // selector entry point is a disconnected subtree (DocumentFragment, detached element, etc).
+    // Wrap subtree snapshots in a synthetic Document node so `ElementRef` can always find the
+    // document ancestor during matching.
+    mapping.preorder_to_node_id.insert(1, None);
+    for v in mapping.node_id_to_preorder.iter_mut() {
+      if *v != 0 {
+        *v += 1;
+      }
+    }
+
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: self.scripting_enabled,
+        is_html_document: self.is_html_document(),
+      },
+      children: vec![dom],
+    };
+
+    (dom, mapping)
   }
 
   fn selector_snapshot(&mut self) -> (Arc<DomNode>, Arc<SelectorDomMapping>) {
@@ -1839,6 +1884,7 @@ impl Document {
         }
       }
 
+      let (dom, mapping) = self.wrap_selector_subtree_snapshot_in_document(dom, mapping);
       (Arc::new(dom), Arc::new(mapping))
     };
 
@@ -2070,6 +2116,7 @@ impl Document {
         }
       }
 
+      let (dom, mapping) = self.wrap_selector_subtree_snapshot_in_document(dom, mapping);
       (Arc::new(dom), Arc::new(mapping))
     };
 
@@ -2271,6 +2318,7 @@ impl Document {
       let Some(mapping) = self.build_selector_preorder_mapping_from(root) else {
         return false;
       };
+      let (dom, mapping) = self.wrap_selector_subtree_snapshot_in_document(dom, mapping);
       (Arc::new(dom), Arc::new(mapping))
     };
     let snapshot_dom = snapshot_dom.as_ref();
@@ -2476,6 +2524,8 @@ mod shadow_root_boundary_tests;
 #[cfg(test)]
 mod xml_parse_tests;
 mod range_tests;
+#[cfg(test)]
+mod xml_selector_disconnected_tests;
 #[cfg(test)]
 mod wbr_tests;
 #[cfg(test)]

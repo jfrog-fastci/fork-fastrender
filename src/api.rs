@@ -24394,12 +24394,14 @@ mod tests {
           DomNodeType::Document {
             quirks_mode: a,
             scripting_enabled: a_scripting,
+            is_html_document: a_is_html,
           },
           DomNodeType::Document {
             quirks_mode: b,
             scripting_enabled: b_scripting,
+            is_html_document: b_is_html,
           },
-        ) => a == b && a_scripting == b_scripting,
+        ) => a == b && a_scripting == b_scripting && a_is_html == b_is_html,
         (
           DomNodeType::ShadowRoot {
             mode: a_mode,
@@ -25085,6 +25087,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: selectors::context::QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -25153,6 +25156,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: selectors::context::QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -25196,6 +25200,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: selectors::context::QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -25233,6 +25238,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: selectors::context::QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -25291,6 +25297,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: selectors::context::QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {

@@ -206,6 +206,7 @@ fn query_selector_handles_wbr_synthetic_zwsp_nodes_and_scope() {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {
