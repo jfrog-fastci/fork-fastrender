@@ -305,6 +305,16 @@ impl Database {
     }
   }
 
+  /// Clear the cached `FileOrigin` metadata for all file IDs.
+  ///
+  /// File origins are stored outside of salsa's input storage. Callers that
+  /// need to recompute the active lib set (for example after changing compiler
+  /// options) can clear this map and then re-seed the reachable files via
+  /// `set_file`.
+  pub fn clear_file_origins(&mut self) {
+    self.file_origins.clear();
+  }
+
   pub fn set_file_kind(&mut self, file: FileId, kind: FileKind) {
     let text = self
       .files
@@ -560,7 +570,40 @@ impl Database {
   /// change, these cached results can become stale, so callers should clear
   /// them as part of their reset/invalidation flow.
   pub fn clear_body_results(&mut self) {
-    self.body_results.clear();
+    self.clear_body_results_where(|_| true);
+  }
+
+  /// Clear a subset of cached body results.
+  ///
+  /// This updates existing salsa inputs in-place (setting them to an empty
+  /// result) instead of removing them from the internal map, so salsa queries
+  /// depending on body results observe a revision change.
+  pub fn clear_body_results_where<F>(&mut self, mut predicate: F)
+  where
+    F: FnMut(BodyId) -> bool,
+  {
+    let bodies: Vec<BodyId> = self
+      .body_results
+      .keys()
+      .copied()
+      .filter(|body| predicate(*body))
+      .collect();
+    self.clear_body_results_for_bodies(bodies);
+  }
+
+  /// Clear cached results for specific bodies.
+  pub fn clear_body_results_for_bodies<I>(&mut self, bodies: I)
+  where
+    I: IntoIterator<Item = BodyId>,
+  {
+    for body in bodies.into_iter() {
+      let Some(existing) = self.body_results.get(&body).copied() else {
+        continue;
+      };
+      existing
+        .set_result(self)
+        .to(crate::BodyCheckResult::empty(body));
+    }
   }
 
   pub fn def_to_file(&self) -> Arc<BTreeMap<DefId, FileId>> {

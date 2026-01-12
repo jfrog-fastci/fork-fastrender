@@ -62,10 +62,13 @@ impl Program {
   pub fn set_compiler_options(&mut self, options: CompilerOptions) {
     {
       let mut state = self.lock_state();
-      state
-        .typecheck_db
-        .lock()
-        .set_compiler_options(options.clone());
+      state.invalidate_all_analysis();
+      {
+        let mut db = state.typecheck_db.lock();
+        db.clear_file_origins();
+        db.clear_body_results();
+        db.set_compiler_options(options.clone());
+      }
       state.compiler_options = options.clone();
       state.compiler_options_override = Some(options.clone());
       state.checker_caches = CheckerCaches::new(options.cache.clone());
@@ -77,7 +80,6 @@ impl Program {
         .lock()
         .set_type_store(crate::db::types::SharedTypeStore(store));
     }
-    self.reset_state();
   }
 
   /// Override the text for a specific file and invalidate cached results.
@@ -87,6 +89,7 @@ impl Program {
       let Some(key) = state.file_key_for_id(file) else {
         return;
       };
+
       state.file_overrides.insert(key.clone(), Arc::clone(&text));
       let mut db = state.typecheck_db.lock();
       if db::Db::file_input(&*db, file).is_some() {
@@ -95,7 +98,6 @@ impl Program {
       drop(db);
       state.invalidate_on_file_text_change(file);
     }
-    self.reset_state();
   }
 
   /// Resolve a file key to its internal [`FileId`], if loaded.

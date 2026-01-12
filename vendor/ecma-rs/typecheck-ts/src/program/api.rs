@@ -437,14 +437,6 @@ impl Program {
     }
   }
 
-  fn reset_state(&self) {
-    let mut state = self.lock_state();
-    state.reset_analysis_state();
-    for key in self.roots.iter().cloned() {
-      state.intern_file_key(key, FileOrigin::Source);
-    }
-  }
-
   fn fatal_to_diagnostics(&self, fatal: FatalError) -> Vec<Diagnostic> {
     let is_cancelled = matches!(fatal, FatalError::Cancelled);
     let diag = fatal_to_diagnostic(fatal);

@@ -1602,6 +1602,7 @@ pub mod body_check {
       if self.context.cancelled.load(Ordering::Relaxed) {
         panic_any(crate::FatalError::Cancelled);
       }
+      crate::body_check_metrics::record_body_check_call();
       let started = Instant::now();
       let ctx = &self.context;
       let Some(meta) = self.bc_body_info(body_id) else {

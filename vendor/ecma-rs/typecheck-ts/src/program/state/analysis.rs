@@ -85,10 +85,19 @@ impl ProgramState {
     host: &Arc<dyn Host>,
     roots: &[FileKey],
   ) -> Result<(), FatalError> {
-    if self.analyzed {
-      return Ok(());
+    if self.analyzed && self.dirty_files.is_empty() {
+      let revision = {
+        let db = self.typecheck_db.lock().clone();
+        db::db_revision(&db)
+      };
+      if self.analysis_revision == Some(revision) {
+        return Ok(());
+      }
     }
+    self.analyzed = false;
     self.check_cancelled()?;
+    self.diagnostics.clear();
+    self.implicit_any_reported.clear();
     self.module_namespace_types.clear();
     self.module_namespace_in_progress.clear();
     let libs = self.collect_libraries(host.as_ref(), roots)?;
@@ -170,6 +179,21 @@ impl ProgramState {
         self.current_file = prev_file;
         continue;
       };
+
+      let already_analyzed = !self.dirty_files.contains(&file)
+        && self.files.contains_key(&file)
+        && self.asts.contains_key(&file)
+        && self.hir_lowered.contains_key(&file)
+        && self.local_semantics.contains_key(&file);
+      if already_analyzed {
+        let deps = {
+          let db = self.typecheck_db.lock().clone();
+          db::module_deps(&db, file)
+        };
+        queue.extend(deps.iter().copied());
+        self.current_file = prev_file;
+        continue;
+      }
       self
         .file_kinds
         .entry(file)
@@ -331,8 +355,79 @@ impl ProgramState {
           let _ = err;
         }
       }
+      self.dirty_files.remove(&file);
       self.current_file = prev_file;
     }
+
+    let reachable_files = {
+      let db = self.typecheck_db.lock().clone();
+      db::all_files(&db)
+    };
+    let reachable: AHashSet<FileId> = reachable_files.iter().copied().collect();
+
+    self.asts.retain(|file, _| reachable.contains(file));
+    self.ast_indexes.retain(|file, _| reachable.contains(file));
+    self.hir_lowered.retain(|file, _| reachable.contains(file));
+    self.local_semantics.retain(|file, _| reachable.contains(file));
+    self.files.retain(|file, _| reachable.contains(file));
+    self.symbol_occurrences.retain(|file, _| reachable.contains(file));
+    self.file_kinds.retain(|file, _| reachable.contains(file));
+    self.lib_texts.retain(|file, _| reachable.contains(file));
+    self.lib_file_ids.retain(|file| reachable.contains(file));
+    self.root_ids.retain(|file| reachable.contains(file));
+    self
+      .local_symbol_info
+      .retain(|_, info| reachable.contains(&info.file));
+    self
+      .namespace_object_types
+      .retain(|(owner, _), _| reachable.contains(owner));
+    self
+      .callable_overloads
+      .retain(|(owner, _), _| reachable.contains(owner));
+    self
+      .import_assignment_requires
+      .retain(|rec| reachable.contains(&rec.file));
+
+    self.def_data.retain(|_, data| reachable.contains(&data.file));
+    self
+      .interned_def_types
+      .retain(|def, _| reachable.contains(&def.file()));
+    self
+      .interned_type_params
+      .retain(|def, _| reachable.contains(&def.file()));
+    self
+      .interned_type_param_decls
+      .retain(|def, _| reachable.contains(&def.file()));
+    self
+      .interned_intrinsics
+      .retain(|def, _| reachable.contains(&def.file()));
+    self
+      .interned_class_instances
+      .retain(|def, _| reachable.contains(&def.file()));
+    self
+      .interned_named_def_types
+      .retain(|_, def| reachable.contains(&def.file()));
+    self
+      .value_defs
+      .retain(|type_def, value_def| {
+        reachable.contains(&type_def.file()) && reachable.contains(&value_def.file())
+      });
+    self
+      .symbol_to_def
+      .retain(|_, def| reachable.contains(&def.file()));
+
+    self
+      .body_map
+      .retain(|_, meta| reachable.contains(&meta.file));
+    let body_ids: AHashSet<BodyId> = self.body_map.keys().copied().collect();
+    self
+      .body_parents
+      .retain(|child, parent| body_ids.contains(child) && body_ids.contains(parent));
+    self
+      .body_owners
+      .retain(|body, def| body_ids.contains(body) && reachable.contains(&def.file()));
+    self.body_results.retain(|body, _| body_ids.contains(body));
+
     if !self.hir_lowered.is_empty() {
       self.check_cancelled()?;
       let ts_semantics = db::ts_semantics(&*self.typecheck_db.lock());
@@ -352,6 +447,11 @@ impl ProgramState {
     self.rebuild_namespace_member_index()?;
     self.rebuild_body_owners();
     self.analyzed = true;
+    self.dirty_files.clear();
+    self.analysis_revision = Some({
+      let db = self.typecheck_db.lock().clone();
+      db::db_revision(&db)
+    });
     Ok(())
   }
 }

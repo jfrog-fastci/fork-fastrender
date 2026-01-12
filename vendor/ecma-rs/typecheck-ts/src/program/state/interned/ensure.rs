@@ -19,6 +19,15 @@ impl ProgramState {
     if self.decl_types_fingerprint == Some(fingerprint) {
       return Ok(());
     }
+    // Declared types influence how bodies are checked (e.g. exports/imports,
+    // contextual typing, `typeof` queries). When the declaration-type fingerprint
+    // changes, previously cached body results may be inconsistent with the new
+    // tables, so conservatively drop all cached body results.
+    self.body_results.clear();
+    if !self.snapshot_loaded {
+      self.typecheck_db.lock().clear_body_results();
+    }
+    self.cached_body_context = None;
     self.module_namespace_types.clear();
     self.module_namespace_in_progress.clear();
     // The interned type tables are rebuilt as a batch; invalidate any shared

@@ -131,6 +131,8 @@ struct ImportAssignmentRequireRecord {
 
 struct ProgramState {
   analyzed: bool,
+  analysis_revision: Option<salsa::Revision>,
+  dirty_files: AHashSet<FileId>,
   snapshot_loaded: bool,
   cancelled: Arc<AtomicBool>,
   host: Arc<dyn Host>,
@@ -249,6 +251,8 @@ impl ProgramState {
     typecheck_db.set_type_store(crate::db::types::SharedTypeStore(Arc::clone(&store)));
     ProgramState {
       analyzed: false,
+      analysis_revision: None,
+      dirty_files: AHashSet::new(),
       snapshot_loaded: false,
       cancelled,
       host,
@@ -310,110 +314,6 @@ impl ProgramState {
     }
   }
 
-  fn reset_analysis_state(&mut self) {
-    self.analyzed = false;
-    self.snapshot_loaded = false;
-    self.decl_types_fingerprint = None;
-    self.cached_body_context = None;
-
-    self.typecheck_db.lock().clear_body_results();
-    self.checker_caches.clear_shared();
-    *self.cache_stats.lock() = CheckerCacheStats::default();
-
-    self.asts.clear();
-    self.ast_indexes.clear();
-    self.files.clear();
-    self.def_data.clear();
-    self.body_map.clear();
-    self.body_owners.clear();
-    self.body_parents.clear();
-    self.hir_lowered.clear();
-    self.local_semantics.clear();
-    self.semantics = None;
-    self.qualified_def_members = Arc::new(HashMap::new());
-    self.body_results.clear();
-    self.symbol_to_def.clear();
-    self.symbol_occurrences.clear();
-    self.local_symbol_info.clear();
-    self.file_registry = FileRegistry::new();
-    self.file_kinds.clear();
-    self.lib_file_ids.clear();
-    self.lib_texts.clear();
-    self.lib_diagnostics.clear();
-    self.root_ids.clear();
-    self.global_bindings = Arc::new(BTreeMap::new());
-    self.namespace_object_types.clear();
-    self.module_namespace_defs.clear();
-    self.module_namespace_types.clear();
-    self.module_namespace_in_progress.clear();
-    self.namespace_member_index = None;
-    self.callable_overloads.clear();
-    self.import_assignment_requires.clear();
-    self.diagnostics.clear();
-    self.implicit_any_reported.clear();
-    self.interned_def_types.clear();
-    self.interned_named_def_types.clear();
-    self.interned_type_params.clear();
-    self.interned_type_param_decls.clear();
-    self.interned_intrinsics.clear();
-    self.interned_class_instances.clear();
-    self.value_defs.clear();
-    self.current_file = None;
-    self.next_def = 0;
-    self.next_body = 0;
-    self.next_symbol = 0;
-    self.type_stack.clear();
-  }
-
-  /// Invalidate caches that depend on executable bodies when a file's text
-  /// changes.
-  ///
-  /// This is intentionally *not* tied to `decl_types_fingerprint`: body-level
-  /// inference (return types, initializer types) and expression spans can change
-  /// even when the declaration surface and its fingerprint remain stable.
-  pub(super) fn invalidate_on_file_text_change(&mut self, file: FileId) {
-    self.file_text_revision = self.file_text_revision.wrapping_add(1);
-
-    // Body check contexts snapshot AST/lowering pointers; always drop them on
-    // text edits so subsequent checks use the updated syntax trees.
-    self.cached_body_context = None;
-
-    // Body results include per-expression spans and types; they become stale on
-    // any edit. We clear both the in-memory cache and the DB-backed cache used
-    // by `expr_at`/`type_at`.
-    self.body_results.clear();
-    self.typecheck_db.lock().clear_body_results();
-
-    // Internal body checker caches AST indexes per file; these depend on AST
-    // pointer identity/spans, so drop them for the edited file.
-    self.ast_indexes.remove(&file);
-
-    // Invalidate cached def types that can be inferred from bodies/initializers
-    // in this file. (Declared types are keyed by `decl_types_fingerprint` and
-    // are handled separately.)
-    let mut defs_to_invalidate: Vec<DefId> = Vec::new();
-    for (def, data) in self.def_data.iter() {
-      if data.file != file {
-        continue;
-      }
-      let depends_on_body = match &data.kind {
-        DefKind::Function(func) => func.return_ann.is_none() && func.body.is_some(),
-        // Vars can be inferred from their initializer; conservatively treat any
-        // var with an attached initializer body as body-inferred.
-        DefKind::Var(var) => var.body != MISSING_BODY,
-        _ => false,
-      };
-      if depends_on_body {
-        defs_to_invalidate.push(*def);
-      }
-    }
-    defs_to_invalidate.sort_by_key(|def| def.0);
-    defs_to_invalidate.dedup();
-    for def in defs_to_invalidate {
-      self.interned_def_types.remove(&def);
-    }
-  }
-
   fn check_cancelled(&self) -> Result<(), FatalError> {
     if self.cancelled.load(Ordering::Relaxed) {
       Err(FatalError::Cancelled)
@@ -454,6 +354,170 @@ impl ProgramState {
       self.lib_file_ids.insert(id);
     }
     id
+  }
+
+  fn mark_file_dirty(&mut self, file: FileId) {
+    self.dirty_files.insert(file);
+    self.analyzed = false;
+    // `BodyCheckContext` snapshots analysis outputs (`body_map`, bindings, ASTs,
+    // etc). Any edit that invalidates analysis must rebuild the shared context.
+    self.cached_body_context = None;
+  }
+
+  /// Invalidate caches that depend on executable bodies when a file's text
+  /// changes.
+  ///
+  /// This is intentionally *not* tied to `decl_types_fingerprint`: body-level
+  /// inference (return types, initializer types) and expression spans can change
+  /// even when the declaration surface and its fingerprint remain stable.
+  pub(super) fn invalidate_on_file_text_change(&mut self, file: FileId) {
+    self.file_text_revision = self.file_text_revision.wrapping_add(1);
+    self.mark_file_dirty(file);
+
+    // A body edit can affect downstream type checking through inferred return
+    // types, exports, and control-flow narrowing. Conservatively clear cached
+    // body results for the edited file and any transitive dependents.
+    let affected = self.transitive_dependents_including_self(file);
+    self.invalidate_body_results_for_files(&affected);
+
+    self.asts.remove(&file);
+    self.ast_indexes.remove(&file);
+    self.hir_lowered.remove(&file);
+    self.local_semantics.remove(&file);
+    self.files.remove(&file);
+    self.symbol_occurrences.remove(&file);
+
+    // Snapshot-only caches.
+    self
+      .local_symbol_info
+      .retain(|_, info| info.file != file);
+
+    self.namespace_object_types.retain(|(owner, _), _| *owner != file);
+    self.callable_overloads.retain(|(owner, _), _| *owner != file);
+    self.import_assignment_requires.retain(|rec| rec.file != file);
+
+    // Invalidate cached def types that can be inferred from bodies/initializers
+    // in this file. (Declared types are keyed by `decl_types_fingerprint` and
+    // are handled separately.)
+    let mut defs_to_invalidate: Vec<DefId> = Vec::new();
+    for (def, data) in self.def_data.iter() {
+      if data.file != file {
+        continue;
+      }
+      let depends_on_body = match &data.kind {
+        DefKind::Function(func) => func.return_ann.is_none() && func.body.is_some(),
+        // Vars can be inferred from their initializer; conservatively treat any
+        // var with an attached initializer body as body-inferred.
+        DefKind::Var(var) => var.body != MISSING_BODY,
+        _ => false,
+      };
+      if depends_on_body {
+        defs_to_invalidate.push(*def);
+      }
+    }
+    defs_to_invalidate.sort_by_key(|def| def.0);
+    defs_to_invalidate.dedup();
+    for def in defs_to_invalidate {
+      self.interned_def_types.remove(&def);
+    }
+  }
+
+  fn invalidate_all_analysis(&mut self) {
+    self.analyzed = false;
+    self.analysis_revision = None;
+    self.dirty_files.clear();
+    self.snapshot_loaded = false;
+    self.cached_body_context = None;
+    self.decl_types_fingerprint = None;
+
+    self.asts.clear();
+    self.ast_indexes.clear();
+    self.files.clear();
+    self.def_data.clear();
+    self.body_map.clear();
+    self.body_owners.clear();
+    self.body_parents.clear();
+    self.hir_lowered.clear();
+    self.local_semantics.clear();
+    self.semantics = None;
+    self.qualified_def_members = Arc::new(HashMap::new());
+    self.body_results.clear();
+    self.symbol_to_def.clear();
+    self.symbol_occurrences.clear();
+    self.local_symbol_info.clear();
+    self.file_kinds.clear();
+    self.lib_file_ids.clear();
+    self.lib_texts.clear();
+    self.lib_diagnostics.clear();
+    self.root_ids.clear();
+    self.global_bindings = Arc::new(BTreeMap::new());
+    self.namespace_object_types.clear();
+    self.module_namespace_defs.clear();
+    self.module_namespace_types.clear();
+    self.module_namespace_in_progress.clear();
+    self.namespace_member_index = None;
+    self.callable_overloads.clear();
+    self.import_assignment_requires.clear();
+    self.diagnostics.clear();
+    self.implicit_any_reported.clear();
+    self.interned_def_types.clear();
+    self.interned_named_def_types.clear();
+    self.interned_type_params.clear();
+    self.interned_type_param_decls.clear();
+    self.interned_intrinsics.clear();
+    self.interned_class_instances.clear();
+    self.value_defs.clear();
+    self.current_file = None;
+    self.type_stack.clear();
+    self.typecheck_db.lock().clear_body_results();
+  }
+
+  fn transitive_dependents_including_self(&self, file: FileId) -> AHashSet<FileId> {
+    let mut reverse: HashMap<FileId, Vec<FileId>> = HashMap::new();
+    let snapshot = self.typecheck_db.lock().module_resolutions_snapshot();
+    for (from, _specifier, resolved) in snapshot {
+      let Some(resolved) = resolved else {
+        continue;
+      };
+      reverse.entry(resolved).or_default().push(from);
+    }
+
+    let mut queue: VecDeque<FileId> = VecDeque::new();
+    let mut visited: AHashSet<FileId> = AHashSet::new();
+    queue.push_back(file);
+    visited.insert(file);
+
+    while let Some(next) = queue.pop_front() {
+      if let Some(deps) = reverse.get(&next) {
+        for dep in deps {
+          if visited.insert(*dep) {
+            queue.push_back(*dep);
+          }
+        }
+      }
+    }
+
+    visited
+  }
+
+  fn invalidate_body_results_for_files(&mut self, files: &AHashSet<FileId>) {
+    let mut bodies = Vec::new();
+    for (body, meta) in self.body_map.iter() {
+      if files.contains(&meta.file) {
+        bodies.push(*body);
+      }
+    }
+    bodies.sort_by_key(|body| body.0);
+
+    for body in bodies.iter().copied() {
+      self.body_results.remove(&body);
+    }
+    if !self.snapshot_loaded {
+      self
+        .typecheck_db
+        .lock()
+        .clear_body_results_for_bodies(bodies.into_iter());
+    }
   }
 
   fn def_namespaces(kind: &DefKind) -> sem_ts::Namespace {
@@ -935,7 +999,7 @@ export function add(a: number, b: number) {
     {
       let mut state = program.lock_state();
       state.body_results.clear();
-      state.typecheck_db.clear_body_results();
+      state.typecheck_db.lock().clear_body_results();
     }
 
     let _ = program.type_of_expr(add_body, ExprId(0));

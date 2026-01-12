@@ -162,7 +162,6 @@ impl ProgramState {
       body_ids.sort_by_key(|id| id.0);
       body_ids
     };
-
     let shared_context = self.body_check_context();
     let mut cached_seed_results: Vec<(BodyId, Arc<BodyCheckResult>)> = Vec::new();
     if can_reuse_cached_bodies {
@@ -180,7 +179,16 @@ impl ProgramState {
       }
     }
 
-    self.body_results.clear();
+    let body_ids: Vec<BodyId> = if can_reuse_cached_bodies {
+      body_ids
+        .iter()
+        .copied()
+        .filter(|body| !self.body_results.contains_key(body))
+        .collect()
+    } else {
+      body_ids
+    };
+
     Ok(ProgramDiagnosticsWork::Check(ProgramDiagnosticsPlan {
       body_ids,
       shared_context,
@@ -222,6 +230,10 @@ impl ProgramState {
     });
     codes::normalize_diagnostics(&mut diagnostics);
     self.filter_skip_lib_check_diagnostics(&mut diagnostics);
+    self.analysis_revision = Some({
+      let db = self.typecheck_db.lock().clone();
+      db::db_revision(&db)
+    });
     Ok(Arc::from(diagnostics))
   }
 }

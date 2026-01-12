@@ -175,6 +175,7 @@
 //! cache and share results without relying on implementation details.
 
 mod api;
+mod body_check_metrics;
 #[allow(dead_code)]
 mod class_typing;
 pub mod codes;
@@ -199,6 +200,7 @@ pub mod triple_slash;
 mod type_queries;
 
 pub use api::*;
+pub use body_check_metrics::{body_check_call_count, reset_body_check_call_count};
 pub use db::queries::VarInit;
 pub use decl_metrics::{decl_types_call_count, reset_decl_types_call_count};
 pub use error::*;
