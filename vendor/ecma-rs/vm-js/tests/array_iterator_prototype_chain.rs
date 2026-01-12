@@ -34,6 +34,25 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
     rt.exec_script(r#"Object.prototype.toString.call([][Symbol.iterator]()) === "[object Array Iterator]""#)?;
   assert_eq!(to_string_tag, Value::Bool(true));
 
+  // Per spec, `%ArrayIteratorPrototype%` should inherit `@@iterator` from `%IteratorPrototype%`
+  // (i.e. it should *not* define its own `Symbol.iterator` property).
+  let array_iter_proto_has_own_iterator = rt.exec_script(
+    r#"
+      const proto = Object.getPrototypeOf([][Symbol.iterator]());
+      Object.prototype.hasOwnProperty.call(proto, Symbol.iterator)
+    "#,
+  )?;
+  assert_eq!(array_iter_proto_has_own_iterator, Value::Bool(false));
+
+  // Array iterator instances must be iterable (calling `@@iterator` returns the iterator itself).
+  let array_iter_is_iterable = rt.exec_script(
+    r#"
+      const it = [][Symbol.iterator]();
+      it[Symbol.iterator]() === it
+    "#,
+  )?;
+  assert_eq!(array_iter_is_iterable, Value::Bool(true));
+
   let it = rt.exec_script("[][Symbol.iterator]()")?;
   let array_iter_proto_v = rt.exec_script("Object.getPrototypeOf([][Symbol.iterator]())")?;
   let iterator_proto_v =
