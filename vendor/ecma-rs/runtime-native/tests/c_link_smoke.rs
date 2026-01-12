@@ -215,20 +215,38 @@ static void native_async_heap_destroy(CoroutineRef coro) {
   free(c);
 }
 
-static const CoroutineVTable NATIVE_ASYNC_HEAP_VTABLE = {
-  .resume = native_async_smoke_resume,
-  .destroy = native_async_heap_destroy,
-  .promise_size = 64,
-  .promise_align = 16,
-  .promise_shape_id = 2,
-  .abi_version = RT_ASYNC_ABI_VERSION,
-  .reserved = {0, 0, 0, 0},
-};
+ static const CoroutineVTable NATIVE_ASYNC_HEAP_VTABLE = {
+   .resume = native_async_smoke_resume,
+   .destroy = native_async_heap_destroy,
+   .promise_size = 64,
+   .promise_align = 16,
+   .promise_shape_id = 2,
+   .abi_version = RT_ASYNC_ABI_VERSION,
+   .reserved = {0, 0, 0, 0},
+ };
+ 
+ int main(void) {
+  // Exercise the GC config/limits ABI before the process-global heap is initialized.
+  RtGcConfig gc_cfg = {
+    .nursery_size_bytes = 32u * 1024u * 1024u,
+    .los_threshold_bytes = 8u * 1024u,
+    .minor_gc_nursery_used_percent = 80u,
+    .major_gc_old_bytes_threshold = 64u * 1024u * 1024u,
+    .major_gc_old_blocks_threshold = 2048u,
+    .major_gc_external_bytes_threshold = 64u * 1024u * 1024u,
+    .promote_after_minor_survivals = 1u,
+  };
+  RtGcLimits gc_limits = {
+    .max_heap_bytes = 256u * 1024u * 1024u,
+    .max_total_bytes = 512u * 1024u * 1024u,
+  };
+  if (!rt_gc_set_config(&gc_cfg) || !rt_gc_set_limits(&gc_limits)) {
+    return 2;
+  }
 
-int main(void) {
-  rt_thread_init(0);
-  // Ensure strict-await configuration entrypoint is present/callable.
-  rt_async_set_strict_await_yields(false);
+   rt_thread_init(0);
+   // Ensure strict-await configuration entrypoint is present/callable.
+   rt_async_set_strict_await_yields(false);
   // Ensure limit/error reporting helpers are present/callable.
   rt_async_set_limits(100000, 100000);
   char* no_error = rt_async_take_last_error();
