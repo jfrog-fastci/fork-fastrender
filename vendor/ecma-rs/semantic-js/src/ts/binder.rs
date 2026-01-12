@@ -2590,6 +2590,7 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
     // are still being computed. It must not emit diagnostics or mutate
     // `export_spans`.
     let mut map = base;
+    let mut star_exported_names: HashSet<String> = HashSet::new();
     let specs = match &reference {
       ModuleRef::File(file) => self
         .modules
@@ -2628,7 +2629,17 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
             },
             &self.symbols,
           ) {
-            insert_export_silent(&mut map, name, group, &mut self.symbols);
+            if !type_only && star_exported_names.contains(name) {
+              if let Some(existing) = map.get_mut(name) {
+                let _ = promote_symbol_group_to_value(existing, &self.symbols);
+              }
+            }
+
+            if map.contains_key(name) {
+              continue;
+            }
+            map.insert(name.clone(), group);
+            star_exported_names.insert(name.clone());
           }
         }
       }
@@ -2711,7 +2722,19 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           continue;
         }
         if let Some(filtered) = filter_group(group.clone(), ns_mask, &self.symbols) {
-          insert_export_silent(&mut out, name, filtered, &mut self.symbols);
+          if let Some(existing) = out.get_mut(name) {
+            // When a name is reachable via both `export type *` and `export *`
+            // paths, TypeScript treats the export as non-type-only even though
+            // the earlier `export type *` "wins" for symbol selection. Mirror
+            // that behavior by promoting the existing star-exported symbol to
+            // include its value namespace whenever we reach it through a
+            // non-type-only (`All`) path.
+            if mask == StarExportMask::All {
+              let _ = promote_symbol_group_to_value(existing, &self.symbols);
+            }
+          } else {
+            out.insert(name.clone(), filtered);
+          }
         }
       }
 
@@ -2929,6 +2952,22 @@ impl<'a, HP: Fn(FileId) -> Arc<HirFile>> Binder<'a, HP> {
           },
           &self.symbols,
         ) {
+          // TypeScript clears `export type *` markings when a name is also
+          // re-exported via a non-type-only `export *` (even if the name is
+          // ambiguous and TS2308 is reported). Model that by re-introducing the
+          // value slot for star exports that were previously filtered to be
+          // type-only.
+          if !type_only && star_exported_names.contains(name) {
+            if let Some(existing) = map.get_mut(name) {
+              if promote_symbol_group_to_value(existing, &self.symbols) {
+                export_spans
+                  .entry(name.clone())
+                  .or_default()
+                  .set_if_empty(Namespace::VALUE, origin_span);
+              }
+            }
+          }
+
           if let Some(existing) = map.get(name) {
             // TypeScript's TS2308 (`Module_0_has_already_exported_a_member_named_1...`)
             // only reports ambiguities between `export *` declarations when the
@@ -3192,21 +3231,44 @@ fn export_spec_sort_key(spec: &ExportSpec) -> (FileId, u32, u32, u8, ModuleRef, 
   )
 }
 
-fn insert_export_silent(
-  map: &mut ExportMap,
-  name: &str,
-  group: SymbolGroup,
-  _symbols: &mut SymbolTable,
-) {
-  // When merging exports via `export *`, TypeScript keeps the first exported
-  // symbol and reports TS2308 for later `export *` declarations that contribute
-  // the same name from a different symbol. For cycle-breaking snapshots we
-  // don't emit diagnostics, but we must still keep the first symbol to avoid
-  // spuriously merging unrelated exports.
-  if map.contains_key(name) {
-    return;
+fn promote_symbol_group_to_value(group: &mut SymbolGroup, symbols: &SymbolTable) -> bool {
+  match &mut group.kind {
+    SymbolGroupKind::Merged(_) => false,
+    SymbolGroupKind::Separate {
+      value,
+      ty,
+      namespace,
+    } => {
+      if value.is_some() {
+        return false;
+      }
+
+      let candidate = namespace
+        .and_then(|sym| {
+          symbols
+            .symbol(sym)
+            .namespaces
+            .contains(Namespace::VALUE)
+            .then_some(sym)
+        })
+        .or_else(|| {
+          ty.and_then(|sym| {
+            symbols
+              .symbol(sym)
+              .namespaces
+              .contains(Namespace::VALUE)
+              .then_some(sym)
+          })
+        });
+
+      if let Some(sym) = candidate {
+        *value = Some(sym);
+        true
+      } else {
+        false
+      }
+    }
   }
-  map.insert(name.to_string(), group);
 }
 
 fn star_filter_special(map: &ExportMap) -> ExportMap {

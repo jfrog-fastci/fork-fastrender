@@ -2929,6 +2929,95 @@ fn export_star_collision_between_value_and_type_exports_reports_bind1001_and_kee
 }
 
 #[test]
+fn export_type_star_is_cleared_when_name_is_also_exported_via_value_export_star() {
+  // Mirrors TypeScript's `exportNamespace8` behavior:
+  // - `export type * from "./a";` marks exports as type-only
+  // - a later `export * from "./b";` that exports the same name clears the
+  //   type-onlyness for that name (even though TS2308 is still reported).
+  //
+  // This matters for class/namespace exports that have both value+type sides.
+  let file_a = FileId(311);
+  let file_b = FileId(312);
+  let file_c = FileId(313);
+
+  let source_a = "export class A {}\nexport class B {}\n";
+  let ast_a = parse(source_a).expect("parse a.ts");
+  let lowered_a = lower_file(file_a, HirFileKind::Ts, &ast_a);
+  let hir_a = lower_to_ts_hir(&ast_a, &lowered_a, source_a);
+
+  let source_b = "export class B {}\nexport class C {}\n";
+  let ast_b = parse(source_b).expect("parse b.ts");
+  let lowered_b = lower_file(file_b, HirFileKind::Ts, &ast_b);
+  let hir_b = lower_to_ts_hir(&ast_b, &lowered_b, source_b);
+
+  let source_c = "export type * from \"./a\";\nexport * from \"./b\";\n";
+  let ast_c = parse(source_c).expect("parse c.ts");
+  let lowered_c = lower_file(file_c, HirFileKind::Ts, &ast_c);
+  let hir_c = lower_to_ts_hir(&ast_c, &lowered_c, source_c);
+
+  let files: HashMap<FileId, Arc<HirFile>> = maplit::hashmap! {
+    file_a => Arc::new(hir_a),
+    file_b => Arc::new(hir_b),
+    file_c => Arc::new(hir_c),
+  };
+  let resolver = StaticResolver::new(maplit::hashmap! {
+    "./a".to_string() => file_a,
+    "./b".to_string() => file_b,
+  });
+
+  let (semantics, diags) = bind_ts_program(&[file_c], &resolver, |f| {
+    files.get(&f).unwrap().clone()
+  });
+
+  let bind_1001: Vec<_> = diags.iter().filter(|d| d.code == "BIND1001").collect();
+  assert_eq!(
+    bind_1001.len(),
+    1,
+    "expected one export-star ambiguity diagnostic, got {diags:?}"
+  );
+  let diag = bind_1001[0];
+  assert_eq!(diag.primary.file, file_c);
+
+  let needle = "export * from \"./b\";";
+  let start = source_c.find(needle).expect("needle in c.ts") as u32;
+  let end = start + needle.len() as u32;
+  assert_eq!(diag.primary.range, TextRange::new(start, end));
+
+  let symbols = semantics.symbols();
+  let exports_c = semantics.exports_of(file_c);
+
+  let a_export = exports_c.get("A").expect("A exported from c.ts");
+  assert!(a_export
+    .symbol_for(Namespace::TYPE, symbols)
+    .is_some());
+  assert!(
+    a_export.symbol_for(Namespace::VALUE, symbols).is_none(),
+    "A should remain type-only"
+  );
+
+  let b_export = exports_c.get("B").expect("B exported from c.ts");
+  assert!(
+    b_export.symbol_for(Namespace::VALUE, symbols).is_some(),
+    "B should be available as a value after the non-type-only export-star"
+  );
+  assert!(
+    b_export.symbol_for(Namespace::TYPE, symbols).is_some(),
+    "B should still be available as a type"
+  );
+
+  // First export-star wins for symbol selection.
+  let exports_a = semantics.exports_of(file_a);
+  let b_a = exports_a
+    .get("B")
+    .and_then(|group| group.symbol_for(Namespace::VALUE, symbols))
+    .expect("B value export in a.ts");
+  let b_c = b_export
+    .symbol_for(Namespace::VALUE, symbols)
+    .expect("B value export in c.ts");
+  assert_eq!(b_a, b_c);
+}
+
+#[test]
 fn duplicate_import_binding_reports_previous_span() {
   let file_main = FileId(62);
   let file_a = FileId(63);
