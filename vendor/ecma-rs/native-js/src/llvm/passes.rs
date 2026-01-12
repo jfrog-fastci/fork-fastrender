@@ -95,9 +95,12 @@ pub enum PassError {
 /// Note: `place-safepoints` only inserts polls when `gc.safepoint_poll` is an
 /// *external declaration*. If the module defines a body for the symbol, LLVM may
 /// treat it as a GC-leaf function and skip inserting entry/backedge polls
-/// entirely. Keep this as a declaration during poll insertion; we can optionally
-/// provide a weak stub body after the pass pipeline (for tests that link without
-/// `runtime-native`).
+/// entirely.
+///
+/// Keep this as a declaration during poll insertion; we can optionally provide a
+/// weak stub body after the pass pipeline (for tests that link without
+/// `runtime-native`). If the module already defines a stub body (e.g. from a
+/// previous debug run), this helper strips it back to an external declaration.
 pub fn ensure_gc_safepoint_poll_decl(module: &Module<'_>) -> Result<(), PassError> {
   // Hardcoded name used by LLVM's statepoint safepointing scheme.
   let name = CString::new("gc.safepoint_poll").expect("gc.safepoint_poll contains NUL");
