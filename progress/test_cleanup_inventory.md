@@ -44,7 +44,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/crates_directory_guard.rs` | delete | delete | Redundant `#[path]` shim removed; guard runs via `tests/integration.rs::guards::crates_directory_guard`. | DONE |
 | `tests/browser_tab_render_interleaving.rs` | integration | `tests/integration.rs::browser_integration::browser_tab_render_interleaving` | Moved into `tests/browser_integration/browser_tab_render_interleaving.rs`. | DONE |
 | `tests/` `image_integration` `_tests.rs` | delete | delete | Backwards-compat harness for `tests/` `image_integration/**`; redundant with `tests/integration.rs::image_integration`. | DONE |
-| `tests/session_autosave.rs` | integration | `tests/integration.rs::ui::session_autosave` | Moved into `tests/ui/session_autosave.rs` (feature-gated: `browser_ui`). | DONE |
+| `tests/session_autosave.rs` | unit (feature-gated) | `src/ui/session_autosave.rs` | Migrated into lib unit tests under `src/ui/session_autosave.rs` and gated behind `#[cfg(all(test, feature = "browser_ui"))]` to keep coverage without adding another `tests/*.rs` binary. | DONE |
 | `tests/svg_integration.rs` | delete | delete | No-op placeholder integration-test crate; removed to avoid an extra test binary. | DONE |
 | `tests/bundle_vary_manifest_key_test.rs` | unit | `src/resource/bundle.rs` | Moved into bundle module unit tests. | DONE |
 | `tests/bundled_tests.rs` | integration | `tests/integration.rs::bundled` | Top-level harness removed; suite now lives under `tests/bundled/**`. | DONE |
