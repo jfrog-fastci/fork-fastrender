@@ -17,7 +17,9 @@ mod rayon;
 mod stack;
 
 pub(crate) use golden::{compare_config_from_env, compare_pngs, ArtifactPaths, CompareEnvVars};
-pub(crate) use paths::{fixtures_dir, manifest_dir, ref_fixtures_dir, tests_dir};
+pub(crate) use paths::{
+  fixture_path, fixtures_dir, manifest_dir, ref_fixtures_dir, repo_root, tests_dir,
+};
 pub(crate) use pixmap::{
   assert_pixmap_eq, compare_pixmaps, pixmap_from_rgba_image, pixmap_to_rgba_image,
 };
@@ -126,3 +128,4 @@ mod tests {
     assert!(result.is_err());
   }
 }
+

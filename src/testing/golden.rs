@@ -41,33 +41,35 @@ impl CompareEnvVars<'_> {
   }
 }
 
-/// Build a comparison config honoring common fuzz/tolerance env vars.
-pub(crate) fn compare_config_from_env(env: CompareEnvVars<'_>) -> Result<CompareConfig, String> {
-  let mut config = if std::env::var(env.fuzzy).is_ok() {
+fn compare_config_from_vars(
+  env: CompareEnvVars<'_>,
+  get: impl Fn(&str) -> Option<String>,
+) -> Result<CompareConfig, String> {
+  let mut config = if get(env.fuzzy).is_some() {
     CompareConfig::fuzzy()
   } else {
     CompareConfig::strict()
   };
 
-  if let Ok(tolerance) = std::env::var(env.tolerance) {
+  if let Some(tolerance) = get(env.tolerance) {
     let parsed = tolerance
       .parse::<u8>()
       .map_err(|e| format!("Invalid {} '{}': {}", env.tolerance, tolerance, e))?;
     config = config.with_channel_tolerance(parsed);
   }
 
-  if let Ok(percent) = std::env::var(env.max_diff_percent) {
+  if let Some(percent) = get(env.max_diff_percent) {
     let parsed = percent
       .parse::<f64>()
       .map_err(|e| format!("Invalid {} '{}': {}", env.max_diff_percent, percent, e))?;
     config = config.with_max_different_percent(parsed);
   }
 
-  if std::env::var(env.ignore_alpha).is_ok() {
+  if get(env.ignore_alpha).is_some() {
     config = config.with_compare_alpha(false);
   }
 
-  if let Ok(distance) = std::env::var(env.max_perceptual_distance) {
+  if let Some(distance) = get(env.max_perceptual_distance) {
     let parsed = distance.parse::<f64>().map_err(|e| {
       format!(
         "Invalid {} '{}': {}",
@@ -81,6 +83,11 @@ pub(crate) fn compare_config_from_env(env: CompareEnvVars<'_>) -> Result<Compare
   config.generate_diff_image = true;
 
   Ok(config)
+}
+
+/// Build a comparison config honoring common fuzz/tolerance env vars.
+pub(crate) fn compare_config_from_env(env: CompareEnvVars<'_>) -> Result<CompareConfig, String> {
+  compare_config_from_vars(env, |name| std::env::var(name).ok())
 }
 
 /// Artifact paths saved when a comparison fails.
@@ -126,8 +133,11 @@ pub(crate) fn save_artifacts(
   })?;
 
   let diff_path = output_dir.join(format!("{}_diff.png", name));
-  let saved_diff_path = if diff.diff_image.is_some() {
-    diff.save_diff_image(&diff_path).map_err(|e| {
+  let diff_png = diff
+    .diff_png()
+    .map_err(|e| format!("Failed to encode diff image for {}: {}", name, e))?;
+  let saved_diff_path = if let Some(png) = diff_png {
+    fs::write(&diff_path, png).map_err(|e| {
       format!(
         "Failed to write diff image to {}: {}",
         diff_path.display(),
@@ -193,3 +203,102 @@ pub(crate) fn compare_pngs(
   Err(message)
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::collections::HashMap;
+
+  #[test]
+  fn compare_config_from_vars_uses_fuzzy_preset() {
+    let env = CompareEnvVars {
+      fuzzy: "FUZZY",
+      tolerance: "TOLERANCE",
+      max_diff_percent: "MAX_DIFF_PERCENT",
+      ignore_alpha: "IGNORE_ALPHA",
+      max_perceptual_distance: "MAX_PERCEPTUAL_DISTANCE",
+    };
+    let vars = HashMap::from([(env.fuzzy, "1")]);
+    let config = compare_config_from_vars(env, |name| {
+      vars.get(name).map(|value| (*value).to_string())
+    })
+    .unwrap();
+
+    assert_eq!(config.channel_tolerance, 10);
+    assert_eq!(config.max_different_percent, 1.0);
+    assert!(!config.compare_alpha);
+    assert_eq!(config.max_perceptual_distance, Some(0.05));
+    assert!(config.generate_diff_image);
+  }
+
+  #[test]
+  fn compare_config_from_vars_rejects_bad_tolerance() {
+    let env = CompareEnvVars {
+      fuzzy: "FUZZY",
+      tolerance: "TOLERANCE",
+      max_diff_percent: "MAX_DIFF_PERCENT",
+      ignore_alpha: "IGNORE_ALPHA",
+      max_perceptual_distance: "MAX_PERCEPTUAL_DISTANCE",
+    };
+    let vars = HashMap::from([(env.tolerance, "nope")]);
+    let err = compare_config_from_vars(env, |name| {
+      vars.get(name).map(|value| (*value).to_string())
+    })
+    .unwrap_err();
+
+    assert!(err.contains("Invalid TOLERANCE 'nope'"));
+  }
+
+  #[test]
+  fn compare_config_from_vars_rejects_bad_max_diff_percent() {
+    let env = CompareEnvVars {
+      fuzzy: "FUZZY",
+      tolerance: "TOLERANCE",
+      max_diff_percent: "MAX_DIFF_PERCENT",
+      ignore_alpha: "IGNORE_ALPHA",
+      max_perceptual_distance: "MAX_PERCEPTUAL_DISTANCE",
+    };
+    let vars = HashMap::from([(env.max_diff_percent, "wat")]);
+    let err = compare_config_from_vars(env, |name| {
+      vars.get(name).map(|value| (*value).to_string())
+    })
+    .unwrap_err();
+
+    assert!(err.contains("Invalid MAX_DIFF_PERCENT 'wat'"));
+  }
+
+  #[test]
+  fn compare_config_from_vars_can_ignore_alpha() {
+    let env = CompareEnvVars {
+      fuzzy: "FUZZY",
+      tolerance: "TOLERANCE",
+      max_diff_percent: "MAX_DIFF_PERCENT",
+      ignore_alpha: "IGNORE_ALPHA",
+      max_perceptual_distance: "MAX_PERCEPTUAL_DISTANCE",
+    };
+    let vars = HashMap::from([(env.ignore_alpha, "1")]);
+    let config = compare_config_from_vars(env, |name| {
+      vars.get(name).map(|value| (*value).to_string())
+    })
+    .unwrap();
+
+    assert!(!config.compare_alpha);
+  }
+
+  #[test]
+  fn compare_config_from_vars_parses_perceptual_distance() {
+    let env = CompareEnvVars {
+      fuzzy: "FUZZY",
+      tolerance: "TOLERANCE",
+      max_diff_percent: "MAX_DIFF_PERCENT",
+      ignore_alpha: "IGNORE_ALPHA",
+      max_perceptual_distance: "MAX_PERCEPTUAL_DISTANCE",
+    };
+    let vars = HashMap::from([(env.max_perceptual_distance, "0.123")]);
+    let config = compare_config_from_vars(env, |name| {
+      vars.get(name).map(|value| (*value).to_string())
+    })
+    .unwrap();
+
+    assert_eq!(config.max_perceptual_distance, Some(0.123));
+  }
+}
