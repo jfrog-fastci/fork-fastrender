@@ -1939,9 +1939,13 @@ const WINDOW_REALM_LOCATION_HOST_TAG: u64 = u64::from_be_bytes(*b"LOCATION");
 const WINDOW_REALM_HISTORY_HOST_TAG: u64 = u64::from_be_bytes(*b"HISTORY_");
 const WINDOW_REALM_CONSOLE_HOST_TAG: u64 = u64::from_be_bytes(*b"CONSOLE_");
 
-// Host-slot `b` tag for DOMTokenList wrappers (`Element.classList`).
-const DOM_TOKEN_LIST_HOST_TAG: u64 = 3;
-const DOM_STRING_MAP_HOST_KIND: u64 = 4;
+// Host-slot `b` tags for objects handled by `VmHostHooks::host_exotic_*`.
+//
+// These hooks are invoked for *all* objects, including objects that use host slots for unrelated
+// purposes (e.g. WebIDL dispatch, `TextDecoder` state). Use collision-resistant tags so our DOM
+// shims do not accidentally treat other objects as platform shims.
+const HOST_EXOTIC_DOM_TOKEN_LIST: u64 = u64::from_be_bytes(*b"FRDOMDTL");
+const HOST_EXOTIC_DOM_STRING_MAP: u64 = u64::from_be_bytes(*b"FRDOMDSM");
 const CSS_STYLE_DECL_HOST_TAG: u64 = 5;
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
@@ -2174,7 +2178,7 @@ pub(crate) fn dataset_exotic_get(
   let Some(slots) = slots else {
     return Ok(None);
   };
-  if slots.b != DOM_STRING_MAP_HOST_KIND {
+  if slots.b != HOST_EXOTIC_DOM_STRING_MAP {
     return Ok(None);
   }
 
@@ -2220,7 +2224,7 @@ pub(crate) fn dataset_exotic_set(
   let Some(slots) = slots else {
     return Ok(None);
   };
-  if slots.b != DOM_STRING_MAP_HOST_KIND {
+  if slots.b != HOST_EXOTIC_DOM_STRING_MAP {
     return Ok(None);
   }
 
@@ -2272,7 +2276,7 @@ pub(crate) fn dataset_exotic_delete(
   let Some(slots) = slots else {
     return Ok(None);
   };
-  if slots.b != DOM_STRING_MAP_HOST_KIND {
+  if slots.b != HOST_EXOTIC_DOM_STRING_MAP {
     return Ok(None);
   }
 
@@ -2362,7 +2366,7 @@ pub(crate) fn dom_token_list_exotic_get(
   let Some(slots) = slots else {
     return Ok(None);
   };
-  if slots.b != DOM_TOKEN_LIST_HOST_TAG {
+  if slots.b != HOST_EXOTIC_DOM_TOKEN_LIST {
     return Ok(None);
   }
 
@@ -2415,7 +2419,7 @@ pub(crate) fn dom_token_list_exotic_set(
   let Some(slots) = slots else {
     return Ok(None);
   };
-  if slots.b != DOM_TOKEN_LIST_HOST_TAG {
+  if slots.b != HOST_EXOTIC_DOM_TOKEN_LIST {
     return Ok(None);
   }
 
@@ -2466,7 +2470,7 @@ pub(crate) fn dom_token_list_exotic_delete(
   let Some(slots) = slots else {
     return Ok(None);
   };
-  if slots.b != DOM_TOKEN_LIST_HOST_TAG {
+  if slots.b != HOST_EXOTIC_DOM_TOKEN_LIST {
     return Ok(None);
   }
 
@@ -6621,7 +6625,7 @@ fn get_or_create_node_wrapper(
           class_list,
           HostSlots {
             a: node_id.index() as u64,
-            b: DOM_TOKEN_LIST_HOST_TAG,
+            b: HOST_EXOTIC_DOM_TOKEN_LIST,
           },
         )?;
 
@@ -6671,7 +6675,7 @@ fn get_or_create_node_wrapper(
         dataset,
         HostSlots {
           a: node_id.index() as u64,
-          b: DOM_STRING_MAP_HOST_KIND,
+          b: HOST_EXOTIC_DOM_STRING_MAP,
         },
       )?;
 

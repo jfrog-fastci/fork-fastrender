@@ -70,3 +70,24 @@ test(() => {
   assert_true(threw);
   assert_equals(name, "InvalidCharacterError");
 }, "DOMTokenList.add throws InvalidCharacterError for tokens containing ASCII whitespace");
+
+test(() => {
+  const el = document.createElement("div");
+
+  el.className = "a b";
+  assert_equals(el.classList[0], "a");
+  assert_equals(el.classList[1], "b");
+  assert_equals(el.classList[2], undefined);
+
+  el.classList.remove("a");
+  assert_equals(el.classList[0], "b");
+  assert_equals(el.classList[1], undefined);
+
+  el.classList.add("c");
+  assert_equals(el.classList[0], "b");
+  assert_equals(el.classList[1], "c");
+
+  el.className = "x y";
+  assert_equals(el.classList[0], "x");
+  assert_equals(el.classList[1], "y");
+}, "DOMTokenList supports indexed property access");
