@@ -928,6 +928,18 @@ fn stop_propagation_prevents_subsequent_targets() {
   .unwrap();
 
   assert_eq!(invoker.calls.as_slice(), &["b_bubble_stop", "b_bubble_2"]);
+  assert!(
+    !event.propagation_stopped,
+    "propagation_stopped must be cleared after dispatch returns"
+  );
+  assert!(
+    !event.immediate_propagation_stopped,
+    "immediate_propagation_stopped must be cleared after dispatch returns"
+  );
+  assert!(
+    event.path.is_empty(),
+    "event.path must be cleared after dispatch returns"
+  );
 }
 
 #[test]
@@ -1011,6 +1023,18 @@ fn stop_immediate_propagation_stops_other_listeners_on_same_target() {
   .unwrap();
 
   assert_eq!(invoker.calls.as_slice(), &["first"]);
+  assert!(
+    !event.propagation_stopped,
+    "propagation_stopped must be cleared after dispatch returns"
+  );
+  assert!(
+    !event.immediate_propagation_stopped,
+    "immediate_propagation_stopped must be cleared after dispatch returns"
+  );
+  assert!(
+    event.path.is_empty(),
+    "event.path must be cleared after dispatch returns"
+  );
 }
 
 #[test]

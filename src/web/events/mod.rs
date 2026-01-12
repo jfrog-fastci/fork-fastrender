@@ -922,6 +922,8 @@ pub fn dispatch_event(
   event.current_target = None;
   // The DOM dispatch algorithm clears the computed path at the end of dispatch.
   event.path.clear();
+  event.propagation_stopped = false;
+  event.immediate_propagation_stopped = false;
 
   dispatch_res?;
 
