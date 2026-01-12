@@ -94,6 +94,9 @@ fn promote_template_to_shadow_root(
 ) {
   // Detach the template from the host.
   doc.node_iterator_pre_remove_steps(template);
+  doc
+    .live_mutation
+    .pre_remove(template, host, template_idx);
   doc.nodes[host.index()].children.remove(template_idx);
   doc.nodes[template.index()].parent = None;
 
@@ -109,10 +112,18 @@ fn promote_template_to_shadow_root(
 
   // Move template children to shadow root.
   let template_children = doc.nodes[template.index()].children.clone();
-  for &child in &template_children {
+  for (idx, &child) in template_children.iter().enumerate() {
     if doc.nodes[child.index()].parent == Some(template) {
       doc.node_iterator_pre_remove_steps(child);
+      doc
+        .live_mutation
+        .pre_remove(child, template, idx);
     }
+  }
+  if !template_children.is_empty() {
+    doc
+      .live_mutation
+      .pre_insert(shadow_root, 0, template_children.len());
   }
   let moved_children = std::mem::take(&mut doc.nodes[template.index()].children);
   for &child in &moved_children {
@@ -122,6 +133,7 @@ fn promote_template_to_shadow_root(
 
   // Attach shadow root to host at index 0.
   doc.nodes[shadow_root.index()].parent = Some(host);
+  doc.live_mutation.pre_insert(host, 0, 1);
   doc.nodes[host.index()].children.insert(0, shadow_root);
 }
 
@@ -218,6 +230,7 @@ impl Document {
 mod tests {
   use super::*;
   use crate::debug::snapshot::snapshot_dom;
+  use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
   use selectors::context::QuirksMode;
 
   fn node_id_attribute(kind: &NodeKind) -> Option<&str> {
@@ -338,6 +351,78 @@ mod tests {
       snapshot_dom(&expected),
       snapshot_dom(&roundtrip),
       "dom2 shadow attachment should match crate::dom::parse_html snapshot"
+    );
+  }
+
+  #[test]
+  fn attach_shadow_roots_emits_live_mutation_hooks() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let recorder = LiveMutationTestRecorder::default();
+    doc.set_live_mutation_hook(Some(Box::new(recorder.clone())));
+
+    let root = doc.root();
+    let host = doc.push_node(
+      NodeKind::Element {
+        tag_name: "div".to_string(),
+        namespace: "".to_string(),
+        prefix: None,
+        attributes: vec![("id".to_string(), "host".to_string())],
+      },
+      Some(root),
+      /* inert_subtree */ false,
+    );
+    let template = doc.push_node(
+      NodeKind::Element {
+        tag_name: "template".to_string(),
+        namespace: "".to_string(),
+        prefix: None,
+        attributes: vec![("shadowroot".to_string(), "open".to_string())],
+      },
+      Some(host),
+      /* inert_subtree */ false,
+    );
+    let span = doc.push_node(
+      NodeKind::Element {
+        tag_name: "span".to_string(),
+        namespace: "".to_string(),
+        prefix: None,
+        attributes: vec![("id".to_string(), "shadow".to_string())],
+      },
+      Some(template),
+      /* inert_subtree */ false,
+    );
+
+    let _ = recorder.take();
+    doc.attach_shadow_roots();
+
+    let shadow_root = doc.node(host).children[0];
+    assert!(matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }));
+    assert_eq!(doc.node(span).parent, Some(shadow_root));
+
+    assert_eq!(
+      recorder.take(),
+      vec![
+        LiveMutationEvent::PreRemove {
+          node: template,
+          old_parent: host,
+          old_index: 0
+        },
+        LiveMutationEvent::PreRemove {
+          node: span,
+          old_parent: template,
+          old_index: 0
+        },
+        LiveMutationEvent::PreInsert {
+          parent: shadow_root,
+          index: 0,
+          count: 1
+        },
+        LiveMutationEvent::PreInsert {
+          parent: host,
+          index: 0,
+          count: 1
+        },
+      ]
     );
   }
 
