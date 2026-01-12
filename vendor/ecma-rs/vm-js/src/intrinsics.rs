@@ -964,6 +964,7 @@ impl Intrinsics {
     let string_prototype_char_code_at =
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
     let string_prototype_char_at = vm.register_native_call(builtins::string_prototype_char_at)?;
+    let string_prototype_concat = vm.register_native_call(builtins::string_prototype_concat)?;
     let string_from_char_code = vm.register_native_call(builtins::string_from_char_code)?;
     let string_from_code_point = vm.register_native_call(builtins::string_from_code_point)?;
     let string_raw = vm.register_native_call(builtins::string_raw)?;
@@ -2331,23 +2332,6 @@ impl Intrinsics {
         )?;
       }
 
-      // String.prototype.valueOf
-      {
-        let value_of_s = scope.alloc_string("valueOf")?;
-        scope.push_root(Value::String(value_of_s))?;
-        let key = PropertyKey::from_string(value_of_s);
-        let func = scope.alloc_native_function(string_prototype_value_of, None, value_of_s, 0)?;
-        scope.push_root(Value::Object(func))?;
-        scope
-          .heap_mut()
-          .object_set_prototype(func, Some(function_prototype))?;
-        scope.define_property(
-          string_prototype,
-          key,
-          data_desc(Value::Object(func), true, false, true),
-        )?;
-      }
-
       // String.prototype[Symbol.toPrimitive]
       {
         let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
@@ -2363,6 +2347,23 @@ impl Intrinsics {
           PropertyKey::Symbol(well_known_symbols.to_primitive),
           // Per ECMA-262, `String.prototype[@@toPrimitive]` is non-writable.
           data_desc(Value::Object(to_prim_fn), false, false, true),
+        )?;
+      }
+
+      // String.prototype.concat
+      {
+        let concat_s = scope.alloc_string("concat")?;
+        scope.push_root(Value::String(concat_s))?;
+        let key = PropertyKey::from_string(concat_s);
+        let func = scope.alloc_native_function(string_prototype_concat, None, concat_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
         )?;
       }
 

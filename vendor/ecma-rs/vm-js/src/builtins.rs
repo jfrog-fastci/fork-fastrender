@@ -13147,6 +13147,87 @@ fn this_string_value(
   }
 }
 
+/// `String.prototype.concat(...args)` (ECMA-262).
+pub fn string_prototype_concat(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.concat
+  //
+  // 1. Let O be ? RequireObjectCoercible(this value).
+  // 2. Let S be ? ToString(O).
+  // 3. Let R be S.
+  // 4. For each element next of args, let nextString be ? ToString(next), and set
+  //    R to the string-concatenation of R and nextString.
+  // 5. Return R.
+  let mut scope = scope.reborrow();
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError("Cannot convert undefined or null to object"));
+  }
+
+  // Convert `this` and all arguments to strings first so we can compute the final UTF-16 length and
+  // preflight heap limits before allocating the output buffer.
+  let base = {
+    let mut this_scope = scope.reborrow();
+    this_scope.push_root(this)?;
+    this_scope.to_string(vm, host, hooks, this)?
+  };
+  scope.push_root(Value::String(base))?;
+
+  let mut parts: Vec<GcString> = Vec::new();
+  parts
+    .try_reserve_exact(args.len().saturating_add(1))
+    .map_err(|_| VmError::OutOfMemory)?;
+  parts.push(base);
+
+  const ARG_TICK_EVERY: usize = 1024;
+  for (i, arg) in args.iter().copied().enumerate() {
+    if i != 0 && i % ARG_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let next = {
+      let mut arg_scope = scope.reborrow();
+      arg_scope.push_root(arg)?;
+      arg_scope.to_string(vm, host, hooks, arg)?
+    };
+    scope.push_root(Value::String(next))?;
+    parts.push(next);
+  }
+
+  let mut total_len = 0usize;
+  for (i, part) in parts.iter().copied().enumerate() {
+    if i != 0 && i % ARG_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let len = scope.heap().get_string(part)?.len_code_units();
+    total_len = total_len.checked_add(len).ok_or(VmError::OutOfMemory)?;
+  }
+
+  scope.ensure_can_alloc_string_units(total_len)?;
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(total_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for (i, part) in parts.iter().copied().enumerate() {
+    if i != 0 && i % ARG_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    let units = scope.heap().get_string(part)?.as_code_units();
+    vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, units)?;
+  }
+  debug_assert_eq!(out.len(), total_len);
+
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
+}
+
 /// `String.prototype.charCodeAt(pos)` (minimal).
 pub fn string_prototype_char_code_at(
   vm: &mut Vm,
