@@ -156,6 +156,23 @@ fn deregister_prevents_wake() {
 fn stale_event_does_not_wake_new_registration() {
   let reactor = super::Reactor::new().unwrap();
 
+  // This test relies on timing-sensitive coordination between two threads:
+  // - a poll thread blocking in `epoll_wait`, then blocking on the reactor state lock, and
+  // - the main thread swapping registrations while holding that lock.
+  //
+  // Debug builds can be substantially slower under parallel test execution (and on oversubscribed
+  // CI hosts), so give the thread handshakes some extra slack to avoid flakes.
+  const STEP_SLEEP: Duration = if cfg!(debug_assertions) {
+    Duration::from_millis(100)
+  } else {
+    Duration::from_millis(25)
+  };
+  const RECV_TIMEOUT: Duration = if cfg!(debug_assertions) {
+    Duration::from_secs(2)
+  } else {
+    Duration::from_secs(1)
+  };
+
   let (read1, write1) = pipe().unwrap();
   let old_fd_num = read1;
 
@@ -178,13 +195,15 @@ fn stale_event_does_not_wake_new_registration() {
     done_tx.send(res).unwrap();
   });
 
-  started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-  thread::sleep(Duration::from_millis(25));
+  started_rx
+    .recv_timeout(RECV_TIMEOUT)
+    .expect("poll thread did not start in time");
+  thread::sleep(STEP_SLEEP);
 
   // Make the old fd readable, causing `epoll_wait` to return with a token containing the old
   // generation.
   write_all(write1, b"x").unwrap();
-  thread::sleep(Duration::from_millis(25));
+  thread::sleep(STEP_SLEEP);
 
   // Swap registrations while the poll thread is blocked on the state lock.
   reactor
@@ -215,8 +234,8 @@ fn stale_event_does_not_wake_new_registration() {
   // The poll thread should observe the old event, but must not wake the new registration due to
   // generation mismatch.
   let outcome = done_rx
-    .recv_timeout(Duration::from_secs(1))
-    .unwrap()
+    .recv_timeout(RECV_TIMEOUT)
+    .expect("poll thread did not return in time")
     .unwrap();
   assert_eq!(outcome.io_events, 1);
 

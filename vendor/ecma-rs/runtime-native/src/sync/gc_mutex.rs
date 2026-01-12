@@ -97,7 +97,22 @@ impl<T> GcAwareMutex<T> {
         if let Some(g) = self.inner.try_lock() {
           return g;
         }
-        if threading::safepoint::current_epoch() & 1 == 1 {
+        let epoch = threading::safepoint::current_epoch();
+        if epoch & 1 == 1 {
+          // The stop-the-world coordinator must be able to acquire GC-aware locks while the world is
+          // stopped (e.g. root enumeration takes the global root registry lock). If the coordinator
+          // is unregistered, the usual "wait until the world resumes" behavior would deadlock.
+          //
+          // Keep this allocation-free by spinning on `try_lock` instead of calling into
+          // `parking_lot`'s contended path.
+          if threading::safepoint::in_stop_the_world()
+            || threading::safepoint::is_stop_the_world_coordinator(epoch)
+          {
+            std::hint::spin_loop();
+            std::thread::yield_now();
+            continue;
+          }
+
           threading::safepoint::wait_while_stop_the_world();
           continue;
         }

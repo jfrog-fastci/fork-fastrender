@@ -76,6 +76,7 @@ fn obj_header_round_trip_and_meta_tagging_invariants() {
 
 #[test]
 fn major_gc_reclaims_old_blocks_for_reuse() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
   let mut roots = RootStack::new();
   let mut remembered = EmptyRememberedSet;
@@ -102,6 +103,7 @@ fn major_gc_reclaims_old_blocks_for_reuse() {
 
 #[test]
 fn major_compaction_reuses_holes_without_growing_the_heap() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
   *heap.major_compaction_config_mut() = MajorCompactionConfig {
     enabled: true,
@@ -152,6 +154,7 @@ fn major_compaction_reuses_holes_without_growing_the_heap() {
 
 #[test]
 fn major_compaction_does_not_reclaim_blocks_with_pinned_immix_objects() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
   *heap.major_compaction_config_mut() = MajorCompactionConfig {
     enabled: true,
@@ -202,6 +205,7 @@ fn major_compaction_does_not_reclaim_blocks_with_pinned_immix_objects() {
 
 #[test]
 fn old_space_does_not_grow_unbounded_under_fragmentation() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
   let mut remembered = EmptyRememberedSet;
 
@@ -249,6 +253,7 @@ fn old_space_does_not_grow_unbounded_under_fragmentation() {
 
 #[test]
 fn minor_gc_promotes_young_reachable_from_remembered_old_object() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   const PTR_OFFSETS: [u32; 1] = [OBJ_HEADER_SIZE as u32];
@@ -331,6 +336,7 @@ fn set_remembered_idempotent_does_not_corrupt_forwarded_header() {
 
 #[test]
 fn gc_ignores_non_heap_pointer_in_traced_slot() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   const PTR_OFFSETS: [u32; 1] = [OBJ_HEADER_SIZE as u32];
   static DESC_ONE_PTR: TypeDescriptor =
     TypeDescriptor::new(OBJ_HEADER_SIZE + core::mem::size_of::<*mut u8>(), &PTR_OFFSETS);

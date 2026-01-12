@@ -193,19 +193,18 @@ fn readiness_and_wake_coalescing_via_async_rt_adapter() {
   // Fail-safe timer: if the ready event never arrives, `rt_async_poll_legacy` should still return.
   let timed_out: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let timer = runtime_native::async_rt::global().schedule_timer_in(
-    Duration::from_secs(2),
+    Duration::from_secs(5),
     Task::new(set_atomic_bool, timed_out as *const AtomicBool as *mut u8),
   );
 
-  let (tx, rx) = mpsc::channel::<Duration>();
+  let (tx, rx) = mpsc::channel::<()>();
   let poll_thread = std::thread::spawn(move || {
-    let start = Instant::now();
     let _pending = runtime_native::rt_async_poll_legacy();
-    tx.send(start.elapsed()).unwrap();
+    tx.send(()).unwrap();
   });
 
   // Wait until the polling thread is actually blocked inside the reactor syscall.
-  let deadline = Instant::now() + Duration::from_secs(1);
+  let deadline = Instant::now() + Duration::from_secs(2);
   loop {
     if runtime_native::async_rt::debug_in_epoll_wait() {
       std::thread::sleep(Duration::from_millis(10));
@@ -233,14 +232,19 @@ fn readiness_and_wake_coalescing_via_async_rt_adapter() {
   drop(stress_write);
   drop(stress_read);
 
+  let start = Instant::now();
   // Trigger readiness.
   let b = [0x1u8; 1];
   let rc = unsafe { libc::write(ready_write.as_raw_fd(), b.as_ptr().cast::<libc::c_void>(), 1) };
   assert_eq!(rc, 1);
 
-  let elapsed = rx
-    .recv_timeout(Duration::from_secs(2))
+  rx
+    // Give the fail-safe timer (`5s`) a chance to fire even under heavy CI load. This prevents the
+    // poll thread from being left detached (and still interacting with the global runtime) after a
+    // timeout panic.
+    .recv_timeout(Duration::from_secs(6))
     .expect("rt_async_poll_legacy did not return");
+  let elapsed = start.elapsed();
 
   poll_thread.join().unwrap();
 
