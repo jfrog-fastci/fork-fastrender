@@ -992,8 +992,8 @@ impl Heap {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::Promise(_)))
   }
 
-  pub(crate) fn is_generator_object(&self, _obj: GcObject) -> bool {
-    false
+  pub(crate) fn is_generator_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Generator(_)))
   }
 
   /// Returns `true` if `obj` currently points to a live ArrayBuffer object allocation.

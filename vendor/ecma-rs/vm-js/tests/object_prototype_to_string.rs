@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -45,6 +45,45 @@ fn object_prototype_to_string_tags_generator_objects() {
          var o = Object.create(proto);
          Object.prototype.toString.call(o) === "[object Generator]""#,
     )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_prototype_to_string_tags_generator_heap_object() {
+  let mut rt = new_runtime();
+
+  // Allocate a Generator heap object directly (generator execution is not yet implemented).
+  {
+    let (_vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let intr = *realm.intrinsics();
+    let global = realm.global_object();
+
+    let mut scope = heap.scope();
+    let gen = scope
+      .alloc_generator_with_prototype(Some(intr.object_prototype()), Value::Undefined, &[], None)
+      .unwrap();
+    scope.push_root(Value::Object(gen)).unwrap();
+
+    let key = PropertyKey::from_string(scope.alloc_string("g").unwrap());
+    scope
+      .define_property(
+        global,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(gen),
+            writable: true,
+          },
+        },
+      )
+      .unwrap();
+  }
+
+  let value = rt
+    .exec_script(r#"Object.prototype.toString.call(g) === "[object Generator]""#)
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
