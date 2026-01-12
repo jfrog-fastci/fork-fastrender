@@ -576,6 +576,26 @@ mod tests {
     assert_eq!(doc.element_class_name(script), "a b");
     assert_eq!(doc.get_attribute(script, "class").unwrap(), Some("a b"));
 
+    assert!(!doc.element_hidden(script));
+    doc.set_element_hidden(script, true).unwrap();
+    assert!(doc.element_hidden(script));
+    assert!(doc.has_attribute(script, "hidden").unwrap());
+    doc.set_element_hidden(script, false).unwrap();
+    assert!(!doc.element_hidden(script));
+    assert!(!doc.has_attribute(script, "hidden").unwrap());
+
+    doc.set_element_title(script, "hello").unwrap();
+    assert_eq!(doc.element_title(script), "hello");
+    assert_eq!(doc.get_attribute(script, "title").unwrap(), Some("hello"));
+
+    doc.set_element_lang(script, "en").unwrap();
+    assert_eq!(doc.element_lang(script), "en");
+    assert_eq!(doc.get_attribute(script, "lang").unwrap(), Some("en"));
+
+    doc.set_element_dir(script, "rtl").unwrap();
+    assert_eq!(doc.element_dir(script), "rtl");
+    assert_eq!(doc.get_attribute(script, "dir").unwrap(), Some("rtl"));
+
     doc
       .set_element_src(script, "https://example.com/app.js")
       .unwrap();
