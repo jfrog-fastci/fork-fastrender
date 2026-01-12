@@ -3448,19 +3448,19 @@ Build on existing:
 
 New components:
   - native-js/ - LLVM IR generation
-  - runtime-native/ - minimal allocator
+  - runtime-native/ - minimal GC-backed runtime (allocation + safepoints + stackmaps)
 
 Scope:
   - Wire parse-js → hir-js → typecheck-ts → native-js → LLVM
   - Basic type flow (use typecheck-ts)
   - Basic inlining
-  - LLVM codegen (no GC)
-  - Simple runtime (bump allocator only)
+  - LLVM codegen (statepoints + stackmaps)
+  - Minimal runtime with GC-backed allocation + safepoints + write barrier
 
 Deliverable:
   - Compile numeric benchmark (ray tracer, matrix mult)
   - Show competitive with V8 for cold code
-  - No GC (leak memory, that's fine for benchmark)
+  - GC present (not yet tuned for production)
 ```
 
 ### Milestone 2: Complete Language
