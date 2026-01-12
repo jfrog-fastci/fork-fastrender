@@ -35,7 +35,7 @@ pub fn discover_tests(test262_dir: &Path) -> Result<Vec<DiscoveredTest>> {
     if path
       .file_name()
       .and_then(|name| name.to_str())
-      .is_some_and(|name| name.contains("_FIXTURE"))
+      .is_some_and(|name| name.contains("FIXTURE"))
     {
       continue;
     }
@@ -81,6 +81,7 @@ mod tests {
     let test_dir = temp.path().join("test");
     fs::create_dir_all(test_dir.join("nested")).unwrap();
     fs::write(test_dir.join("b.js"), "").unwrap();
+    fs::write(test_dir.join("c_FIXTURE.js"), "").unwrap();
     fs::write(test_dir.join("nested/a.js"), "").unwrap();
 
     let tests = discover_tests(temp.path()).unwrap();
