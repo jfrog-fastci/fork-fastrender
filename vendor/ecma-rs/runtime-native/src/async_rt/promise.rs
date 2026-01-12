@@ -5,7 +5,9 @@ use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRe
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
 use crate::sync::GcAwareMutex;
 use once_cell::sync::Lazy;
-use std::collections::HashSet;
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::Weak;
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::promise_reactions::{
@@ -15,24 +17,64 @@ use crate::threading;
 
 use super::{gc as async_gc, global as async_global, Task};
 
+#[derive(Clone)]
+enum PendingPromiseKeepAlive {
+  /// Promise memory is assumed to remain valid while tracked (e.g. bump-allocated native promises,
+  /// legacy `RtPromise`s).
+  None,
+  /// Promise is backed by reference-counted Rust ownership (e.g. `promise_api::Promise<T>`).
+  ///
+  /// Store a `Weak` so tracking does **not** keep the promise alive: dropping the last `Arc` should
+  /// still free the promise and drop its reaction nodes normally.
+  ///
+  /// During `rt_async_cancel_all`, we attempt to upgrade the weak reference. If the promise is
+  /// already dropped, the upgrade fails and we skip dereferencing the raw pointer (avoids
+  /// use-after-free when cancellation races with `Drop` on another thread).
+  Weak(Weak<dyn Any + Send + Sync>),
+}
+
 /// Promises that currently have pending reactions stored in their header.
 ///
 /// This enables `rt_async_cancel_all` to abandon pending async work safely by dropping reaction
 /// nodes that would otherwise never be enqueued (because the promise never settles after the host
 /// shuts down timers/I/O).
-static PROMISES_WITH_PENDING_REACTIONS: Lazy<GcAwareMutex<HashSet<usize>>> =
-  Lazy::new(|| GcAwareMutex::new(HashSet::new()));
+static PROMISES_WITH_PENDING_REACTIONS: Lazy<GcAwareMutex<HashMap<usize, PendingPromiseKeepAlive>>> =
+  Lazy::new(|| GcAwareMutex::new(HashMap::new()));
 
 pub(crate) fn track_pending_reactions(promise: *mut PromiseHeader) {
+  track_pending_reactions_keepalive(promise, PendingPromiseKeepAlive::None);
+}
+
+pub(crate) fn track_pending_reactions_weak(
+  promise: *mut PromiseHeader,
+  keepalive: Weak<dyn Any + Send + Sync>,
+) {
+  track_pending_reactions_keepalive(promise, PendingPromiseKeepAlive::Weak(keepalive));
+}
+
+fn track_pending_reactions_keepalive(promise: *mut PromiseHeader, keepalive: PendingPromiseKeepAlive) {
   if promise.is_null() {
     return;
   }
-  PROMISES_WITH_PENDING_REACTIONS
-    .lock()
-    // Track by raw promise header pointer. Promises are currently allocated in the non-moving bump
-    // arena; if promises become GC-movable in the future, this tracking mechanism must be updated to
-    // use stable handles/roots.
-    .insert(promise as usize);
+  // Track by raw promise header pointer. Promises are currently allocated in non-moving memory; if
+  // promises become GC-movable in the future, this tracking mechanism must be updated to use stable
+  // handles/roots.
+  //
+  // The optional `keepalive` policy determines whether it is safe to dereference this pointer
+  // during teardown if cancellation races with the promise being dropped on another thread.
+  let addr = promise as usize;
+  let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+  match map.get_mut(&addr) {
+    None => {
+      map.insert(addr, keepalive);
+    }
+    Some(existing) => {
+      // Preserve any existing keepalive (it may have been upgraded to `Weak` by another caller).
+      if matches!(existing, PendingPromiseKeepAlive::None) && matches!(keepalive, PendingPromiseKeepAlive::Weak(_)) {
+        *existing = keepalive;
+      }
+    }
+  }
 }
 
 pub(crate) fn untrack_pending_reactions(promise: *mut PromiseHeader) {
@@ -681,17 +723,28 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
 /// This is used by `rt_async_cancel_all` to ensure awaiting coroutines (and other `then` callbacks)
 /// are properly torn down if the host stops driving the event loop before those promises settle.
 pub(crate) fn cancel_all_pending_reactions() {
-  let promises: Vec<*mut PromiseHeader> = {
-    let mut set = PROMISES_WITH_PENDING_REACTIONS.lock();
-    set.drain().map(|addr| addr as *mut PromiseHeader).collect()
+  let promises: Vec<(usize, PendingPromiseKeepAlive)> = {
+    let mut map = PROMISES_WITH_PENDING_REACTIONS.lock();
+    map.drain().collect()
   };
 
-  for promise in promises {
+  for (addr, keepalive) in promises {
+    let promise = addr as *mut PromiseHeader;
     if promise.is_null() {
       continue;
     }
     if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
       std::process::abort();
+    }
+
+    let (needs_keepalive, _keepalive) = match keepalive {
+      PendingPromiseKeepAlive::None => (false, None),
+      PendingPromiseKeepAlive::Weak(w) => (true, w.upgrade()),
+    };
+    if needs_keepalive && _keepalive.is_none() {
+      // Promise was dropped concurrently with cancellation; its `Drop` implementation is
+      // responsible for discarding any waiter list. Avoid dereferencing the raw pointer.
+      continue;
     }
 
     // If this promise was counted as "external pending" (e.g. a parallel task), clear the flag so

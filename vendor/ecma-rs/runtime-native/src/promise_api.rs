@@ -536,7 +536,9 @@ where
 
     // Track pending reactions so `rt_async_cancel_all` can drop them if this promise never settles.
     let promise_ptr: PromiseRef = Arc::as_ptr(self).cast::<PromiseHeader>() as *mut PromiseHeader;
-    crate::async_rt::promise::track_pending_reactions(promise_ptr);
+    let keepalive: Arc<dyn Any + Send + Sync> = self.clone();
+    let weak: std::sync::Weak<dyn Any + Send + Sync> = Arc::downgrade(&keepalive);
+    crate::async_rt::promise::track_pending_reactions_weak(promise_ptr, weak);
 
     // If already settled, schedule immediately.
     let state = self.header.state.load(Ordering::Acquire);
