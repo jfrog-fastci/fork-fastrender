@@ -811,7 +811,7 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     specifier: &str,
     base_url: &str,
   ) -> std::result::Result<String, VmError> {
-    if self.import_map_state.is_some() {
+    if let Some(import_map_state) = self.import_map_state.as_deref_mut() {
       let base_url_parsed = match Url::parse(base_url) {
         Ok(url) => url,
         Err(err) => {
@@ -823,13 +823,8 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
         }
       };
 
-      let resolved = {
-        let import_map_state = self
-          .import_map_state
-          .as_deref_mut()
-          .expect("checked is_some above");
-        resolve_module_specifier_with_import_maps(import_map_state, specifier, &base_url_parsed)
-      };
+      let resolved =
+        resolve_module_specifier_with_import_maps(import_map_state, specifier, &base_url_parsed);
       return match resolved {
         Ok(url) => Ok(url.to_string()),
         Err(err) => {

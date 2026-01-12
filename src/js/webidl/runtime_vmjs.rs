@@ -473,12 +473,11 @@ impl<Host> VmJsWebIdlBindingsState<Host> {
 
   fn alloc_dispatch_record(&self, call: usize, construct: usize) -> *const NativeDispatchRecord {
     let mut records = self.dispatch_records.borrow_mut();
-    records.push(Box::new(NativeDispatchRecord { call, construct }));
+    let record = Box::new(NativeDispatchRecord { call, construct });
+    let ptr: *const NativeDispatchRecord = record.as_ref();
     // SAFETY: boxed value has a stable address even if `records` reallocates.
-    records
-      .last()
-      .expect("push ensured an element exists")
-      .as_ref() as *const NativeDispatchRecord
+    records.push(record);
+    ptr
   }
 }
 

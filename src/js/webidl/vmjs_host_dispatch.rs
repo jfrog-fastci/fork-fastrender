@@ -23,6 +23,35 @@ const URLSP_ITER_INDEX_SLOT: &str = "__fastrender_urlsp_iter_index";
 const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UrlSearchParamsIteratorKind {
+  Entries,
+  Keys,
+  Values,
+}
+
+fn url_search_params_iterator_kind(operation: &str) -> Result<UrlSearchParamsIteratorKind, VmError> {
+  match operation {
+    "entries" => Ok(UrlSearchParamsIteratorKind::Entries),
+    "keys" => Ok(UrlSearchParamsIteratorKind::Keys),
+    "values" => Ok(UrlSearchParamsIteratorKind::Values),
+    _ => Err(VmError::TypeError(
+      "URLSearchParams iterator kind mismatch",
+    )),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn url_search_params_iterator_kind_returns_error_for_unknown_operation() {
+    let err = url_search_params_iterator_kind("bogus").unwrap_err();
+    assert!(matches!(err, VmError::TypeError(_)));
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RootedCallback {
   value: Value,
@@ -1446,8 +1475,8 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           .heap_mut()
           .object_set_prototype(values_arr, Some(intr.array_prototype()))?;
 
-        match operation {
-          "entries" => {
+        match url_search_params_iterator_kind(operation)? {
+          UrlSearchParamsIteratorKind::Entries => {
             for (idx, (name, value)) in pairs.iter().enumerate() {
               let entry = scope.alloc_array(2)?;
               scope.push_root(Value::Object(entry))?;
@@ -1481,7 +1510,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
               )?;
             }
           }
-          "keys" => {
+          UrlSearchParamsIteratorKind::Keys => {
             for (idx, (name, _value)) in pairs.iter().enumerate() {
               let s = scope.alloc_string(name)?;
               scope.push_root(Value::String(s))?;
@@ -1493,7 +1522,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
               )?;
             }
           }
-          "values" => {
+          UrlSearchParamsIteratorKind::Values => {
             for (idx, (_name, value)) in pairs.iter().enumerate() {
               let s = scope.alloc_string(value)?;
               scope.push_root(Value::String(s))?;
@@ -1505,7 +1534,6 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
               )?;
             }
           }
-          _ => unreachable!("URLSearchParams iterator kind mismatch"),
         }
 
         let iter_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;

@@ -374,6 +374,45 @@ pub struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
   _marker: std::marker::PhantomData<fn() -> Host>,
 }
 
+struct AutoDiscardJobCell {
+  job: Option<Job>,
+  heap_ptr: Option<NonNull<Heap>>,
+  heap_alive: Option<Arc<AtomicBool>>,
+}
+
+impl AutoDiscardJobCell {
+  fn take(&mut self) -> Option<Job> {
+    self.job.take()
+  }
+}
+
+impl Drop for AutoDiscardJobCell {
+  fn drop(&mut self) {
+    let Some(job) = self.job.take() else {
+      return;
+    };
+
+    let heap_ptr = self.heap_alive.as_ref().and_then(|flag| {
+      flag
+        .load(Ordering::Relaxed)
+        .then_some(self.heap_ptr)
+        .flatten()
+    });
+    if let Some(mut heap_ptr) = heap_ptr {
+      // SAFETY: the `heap_alive` flag is set to false before the owning `WindowRealm` drops its
+      // heap. When it is still true, `heap_ptr` must point at that live heap.
+      let heap = unsafe { heap_ptr.as_mut() };
+      let mut ctx = HeapRootContext { heap };
+      job.discard(&mut ctx);
+    } else {
+      // We have no way to safely clean up roots once the heap is gone (or if we do not have the
+      // heap pointer). Leak the job to avoid a debug-assert panic inside `vm-js`'s `Drop`
+      // implementation.
+      std::mem::forget(job);
+    }
+  }
+}
+
 impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
   /// Create host hooks for `vm-js` execution.
   ///
@@ -538,43 +577,6 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     if self.enqueue_error.is_some() {
       self.pending_discard.push(job);
       return;
-    }
-
-    struct AutoDiscardJobCell {
-      job: Option<Job>,
-      heap_ptr: Option<NonNull<Heap>>,
-      heap_alive: Option<Arc<AtomicBool>>,
-    }
-
-    impl AutoDiscardJobCell {
-      fn take(&mut self) -> Option<Job> {
-        self.job.take()
-      }
-    }
-
-    impl Drop for AutoDiscardJobCell {
-      fn drop(&mut self) {
-        let Some(job) = self.job.take() else {
-          return;
-        };
-
-        let can_discard = self
-          .heap_alive
-          .as_ref()
-          .map(|flag| flag.load(Ordering::Relaxed))
-          .unwrap_or(false);
-        if can_discard {
-          // SAFETY: the `heap_alive` flag is set to false before the owning `WindowRealm` drops its
-          // heap. When it is still true, `heap_ptr` must point at that live heap.
-          let heap = unsafe { self.heap_ptr.expect("heap_ptr missing").as_mut() };
-          let mut ctx = HeapRootContext { heap };
-          job.discard(&mut ctx);
-        } else {
-          // We have no way to safely clean up roots once the heap is gone. Leak the job to avoid a
-          // debug-assert panic inside `vm-js`'s `Drop` implementation.
-          std::mem::forget(job);
-        }
-      }
     }
 
     let job_cell: std::rc::Rc<std::cell::RefCell<AutoDiscardJobCell>> =
@@ -1816,6 +1818,39 @@ mod tests {
   use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
   const CALLBACK_GLOBAL_KEY: &str = "__test_global";
+
+  #[test]
+  fn auto_discard_job_cell_does_not_panic_when_heap_ptr_missing() {
+    let heap_alive = Arc::new(AtomicBool::new(true));
+    let job = Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Ok(()));
+    let cell = AutoDiscardJobCell {
+      job: Some(job),
+      heap_ptr: None,
+      heap_alive: Some(heap_alive),
+    };
+    drop(cell);
+  }
+
+  #[test]
+  fn dynamic_import_rejects_when_module_graph_is_not_installed() -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+
+    let _ = host.exec_script(
+      r#"
+      globalThis.ok = false;
+      import("https://example.com/mod.js").catch((e) => {
+        globalThis.ok = (e instanceof TypeError);
+      });
+      "#,
+    )?;
+
+    host.perform_microtask_checkpoint()?;
+
+    let ok = host.exec_script("globalThis.ok")?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
 
   fn assert_type_error_contains(heap: &mut Heap, err: VmError, expected: &str) {
     match err {

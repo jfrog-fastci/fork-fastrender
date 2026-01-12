@@ -90,14 +90,14 @@ impl SpecifierPrefixTrie {
 #[derive(Debug, Clone)]
 pub struct ResolvedModuleSetIndex {
   records: Vec<SpecifierResolutionRecord>,
-  /// Record indices for entries that have a `serialized_base_url`.
+  /// `(serialized_base_url, record_index)` for entries that have a `serialized_base_url`.
   ///
   /// This is kept sorted lexicographically by base URL **on demand**.
   ///
   /// This supports quickly finding records matching a scope prefix:
   /// - exact match, OR
   /// - if the scope prefix ends with `/`, prefix match.
-  base_url_index: Vec<usize>,
+  base_url_index: Vec<(String, usize)>,
   base_url_index_sorted: bool,
   /// Fast "does any resolved specifier prefix this key?" check for top-level import filtering.
   specifier_prefix_trie: SpecifierPrefixTrie,
@@ -128,24 +128,21 @@ impl ResolvedModuleSetIndex {
   }
 
   pub fn from_records(records: Vec<SpecifierResolutionRecord>) -> Self {
-    let mut base_url_index: Vec<usize> = Vec::new();
+    let mut base_url_index: Vec<(String, usize)> = Vec::new();
     let mut specifier_prefix_trie = SpecifierPrefixTrie::default();
 
     for (idx, record) in records.iter().enumerate() {
-      if record.serialized_base_url.is_some() {
-        base_url_index.push(idx);
+      if let Some(base_url) = record.serialized_base_url.as_ref() {
+        base_url_index.push((base_url.clone(), idx));
       }
       specifier_prefix_trie.insert(record.specifier.as_str());
     }
 
     {
-      let records = records.as_slice();
       base_url_index.sort_unstable_by(|a, b| {
-        records[*a]
-          .serialized_base_url
-          .as_deref()
-          .unwrap()
-          .cmp(records[*b].serialized_base_url.as_deref().unwrap())
+        let (a_base, _) = a;
+        let (b_base, _) = b;
+        a_base.cmp(b_base)
       });
     }
 
@@ -159,8 +156,8 @@ impl ResolvedModuleSetIndex {
 
   pub fn push_record(&mut self, record: SpecifierResolutionRecord) {
     let idx = self.records.len();
-    if record.serialized_base_url.is_some() {
-      self.base_url_index.push(idx);
+    if let Some(base_url) = record.serialized_base_url.as_ref() {
+      self.base_url_index.push((base_url.clone(), idx));
       self.base_url_index_sorted = false;
     }
     self.specifier_prefix_trie.insert(record.specifier.as_str());
@@ -171,13 +168,10 @@ impl ResolvedModuleSetIndex {
     if self.base_url_index_sorted {
       return;
     }
-    let records = self.records.as_slice();
     self.base_url_index.sort_unstable_by(|a, b| {
-      records[*a]
-        .serialized_base_url
-        .as_deref()
-        .unwrap()
-        .cmp(records[*b].serialized_base_url.as_deref().unwrap())
+      let (a_base, _) = a;
+      let (b_base, _) = b;
+      a_base.cmp(b_base)
     });
     self.base_url_index_sorted = true;
   }
@@ -191,24 +185,66 @@ impl ResolvedModuleSetIndex {
       "base_url_index must be sorted before calling iter_records_matching_scope_prefix; call ensure_base_url_index_sorted()"
     );
     let scope_prefix_ends_with_slash = scope_prefix.ends_with('/');
-    let start = self.base_url_index.partition_point(|idx| {
-      self.records[*idx].serialized_base_url.as_deref().unwrap() < scope_prefix
-    });
+    let start = self
+      .base_url_index
+      .partition_point(|(base_url, _idx)| base_url.as_str() < scope_prefix);
     self.base_url_index[start..]
       .iter()
       .take_while(move |idx| {
-        let base_url = self.records[**idx].serialized_base_url.as_deref().unwrap();
+        let (base_url, _record_idx) = idx;
         if scope_prefix_ends_with_slash {
           base_url.starts_with(scope_prefix)
         } else {
-          base_url == scope_prefix
+          base_url.as_str() == scope_prefix
         }
       })
-      .map(move |idx| &self.records[*idx])
+      .map(move |(_base_url, idx)| &self.records[*idx])
   }
 
   pub(crate) fn new_import_key_impacts_resolved_module(&self, specifier: &str) -> bool {
     self.specifier_prefix_trie.has_prefix_of(specifier)
+  }
+}
+
+#[cfg(test)]
+mod resolved_module_set_index_tests {
+  use super::*;
+
+  fn record(base_url: Option<&str>, specifier: &str) -> SpecifierResolutionRecord {
+    SpecifierResolutionRecord {
+      serialized_base_url: base_url.map(str::to_string),
+      specifier: specifier.to_string(),
+      as_url_kind: SpecifierAsUrlKind::NotUrl,
+    }
+  }
+
+  #[test]
+  fn iter_records_matching_scope_prefix_sorts_and_filters_by_base_url() {
+    let mut idx = ResolvedModuleSetIndex::new();
+    // Insert out of order to ensure `ensure_base_url_index_sorted` fixes it.
+    idx.push_record(record(Some("https://example.com/b/main.js"), "b"));
+    idx.push_record(record(Some("https://example.com/a/main.js"), "a"));
+    // Record without a base URL should not participate in scope-prefix queries.
+    idx.push_record(record(None, "no-base"));
+    idx.push_record(record(Some("https://example.com/a/sub.js"), "a/sub"));
+
+    idx.ensure_base_url_index_sorted();
+
+    let matches: Vec<&SpecifierResolutionRecord> =
+      idx.iter_records_matching_scope_prefix("https://example.com/a/").collect();
+    let base_urls: Vec<&str> = matches
+      .iter()
+      .map(|r| r.serialized_base_url.as_deref().unwrap())
+      .collect();
+    assert_eq!(
+      base_urls,
+      vec!["https://example.com/a/main.js", "https://example.com/a/sub.js"]
+    );
+
+    let exact: Vec<&SpecifierResolutionRecord> =
+      idx.iter_records_matching_scope_prefix("https://example.com/a/main.js").collect();
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].specifier, "a");
   }
 }
 

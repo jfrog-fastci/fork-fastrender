@@ -580,7 +580,10 @@ impl WindowRealm {
       if data.module_graph.is_none() {
         data.module_graph = Some(Box::new(ModuleGraph::new()));
       }
-      (&mut **data.module_graph.as_mut().expect("module_graph set above")) as *mut ModuleGraph
+      let Some(graph) = data.module_graph.as_deref_mut() else {
+        return Err(VmError::InvariantViolation("window realm missing module graph"));
+      };
+      graph as *mut ModuleGraph
     };
     // SAFETY: the `ModuleGraph` is stored in a `Box` owned by the VM's `WindowRealmUserData` and is
     // cleared in `WindowRealm::teardown` before the user data is dropped.
@@ -13875,7 +13878,11 @@ fn queue_dynamic_script_task_external(
         }
       }
       if integrity_attr_present {
-        let integrity = integrity.as_deref().expect("integrity should be present");
+        let Some(integrity) = integrity.as_deref() else {
+          return Err(crate::error::Error::Other(format!(
+            "SRI blocked script {url}: integrity metadata missing"
+          )));
+        };
         crate::js::sri::verify_integrity(&res.bytes, integrity).map_err(|message| {
           crate::error::Error::Other(format!("SRI blocked script {url}: {message}"))
         })?;

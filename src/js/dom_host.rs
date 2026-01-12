@@ -80,15 +80,20 @@ pub fn dom_host_vmjs(host: &mut dyn VmHost) -> Option<&mut dyn DomHostVmJs> {
   let any = host.as_any_mut();
   let ty = any.type_id();
   if ty == TypeId::of::<crate::js::host_document::DocumentHostState>() {
-    // `ty` check guarantees the downcast succeeds.
-    let host = any
-      .downcast_mut::<crate::js::host_document::DocumentHostState>()
-      .expect("checked type id");
+    debug_assert_eq!(
+      ty,
+      TypeId::of::<crate::js::host_document::DocumentHostState>(),
+      "type id mismatch for DocumentHostState downcast"
+    );
+    let host = any.downcast_mut::<crate::js::host_document::DocumentHostState>()?;
     Some(host as &mut dyn DomHostVmJs)
   } else if ty == TypeId::of::<crate::api::BrowserDocumentDom2>() {
-    let host = any
-      .downcast_mut::<crate::api::BrowserDocumentDom2>()
-      .expect("checked type id");
+    debug_assert_eq!(
+      ty,
+      TypeId::of::<crate::api::BrowserDocumentDom2>(),
+      "type id mismatch for BrowserDocumentDom2 downcast"
+    );
+    let host = any.downcast_mut::<crate::api::BrowserDocumentDom2>()?;
     Some(host as &mut dyn DomHostVmJs)
   } else {
     None
@@ -206,5 +211,25 @@ where
 
   fn take_mutation_observer_microtask_needed(&mut self) -> bool {
     self.mutate_dom(|dom| (dom.take_mutation_observer_microtask_needed(), false))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn dom_host_vmjs_returns_none_for_unknown_host_type() {
+    struct UnknownHost;
+
+    let mut host = UnknownHost;
+    assert!(dom_host_vmjs(&mut host).is_none());
+  }
+
+  #[test]
+  fn dom_host_vmjs_downcasts_document_host_state() {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::host_document::HostDocumentState::new(dom);
+    assert!(dom_host_vmjs(&mut host).is_some());
   }
 }
