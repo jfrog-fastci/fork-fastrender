@@ -4567,7 +4567,20 @@ impl<'a> Checker<'a> {
     ) {
       return;
     }
-    if !self.type_accepts_props(expected, &actual.props) {
+    let filtered;
+    let props_for_excess_check = if actual.props.iter().any(|p| p.contains('-')) {
+      filtered = actual
+        .props
+        .iter()
+        .filter(|p| !p.contains('-'))
+        .cloned()
+        .collect::<HashSet<String>>();
+      &filtered
+    } else {
+      &actual.props
+    };
+
+    if !self.type_accepts_props(expected, props_for_excess_check) {
       self.diagnostics.push(codes::EXCESS_PROPERTY.error(
         "excess property",
         Span::new(self.file, loc_to_range(self.file, loc)),

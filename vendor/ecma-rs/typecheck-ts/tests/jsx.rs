@@ -1150,6 +1150,46 @@ fn intrinsic_excess_props_are_reported() {
 }
 
 #[test]
+fn hyphenated_jsx_attributes_are_not_excess_props() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface IntrinsicElements {
+    div: {};
+  }
+  interface ElementChildrenAttribute {
+    children: {};
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), r#"const el = <div data-foo="x" />;"#);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    !diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::EXCESS_PROPERTY.as_str()),
+    "did not expect an excess property diagnostic for hyphenated JSX attrs, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn component_excess_props_with_spread_are_reported() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
