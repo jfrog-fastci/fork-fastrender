@@ -313,10 +313,10 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       }
     }
 
-      let mut base_effects = EffectSet::empty();
-      if let Some(raw) = api.properties.get("effects.base") {
-        if let Some(arr) = raw.as_array() {
-          for token in arr {
+    let mut base_effects = EffectSet::empty();
+    if let Some(raw) = api.properties.get("effects.base") {
+      if let Some(arr) = raw.as_array() {
+        for token in arr {
           let Some(token) = token.as_str() else {
             errors.push(ValidationError::UnknownEnumString {
               api: api.name.clone(),
@@ -326,30 +326,30 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
             continue;
           };
 
-             match normalize_ident(token).as_str() {
-               "alloc" | "allocates" => base_effects |= EffectSet::ALLOCATES,
-               "io" => base_effects |= EffectSet::IO,
-               "network" => base_effects |= EffectSet::NETWORK,
-               "nondeterministic" | "non_deterministic" => base_effects |= EffectSet::NONDETERMINISTIC,
-               "reads_global" | "read_global" | "readglobal" | "readsglobal" => {
-                 base_effects |= EffectSet::READS_GLOBAL
-               }
-               "writes_global" | "write_global" | "writeglobal" | "writesglobal" => {
-                 base_effects |= EffectSet::WRITES_GLOBAL
-               }
-               "may_throw" | "throws" | "maythrow" => base_effects |= EffectSet::MAY_THROW,
-               "unknown" => base_effects |= EffectSet::UNKNOWN,
-               // Informational-only tags (no effect flags).
-               "async"
-               | "depends_on_callback"
-               | "depends_on_args"
-               | "dependsoncallback"
-               | "dependsonargs" => {}
-               other => errors.push(ValidationError::UnknownEnumString {
-                 api: api.name.clone(),
-                 field: "effects.base".to_string(),
-                 value: other.to_string(),
-               }),
+          match normalize_ident(token).as_str() {
+            "alloc" | "allocates" => base_effects |= EffectSet::ALLOCATES,
+            "io" => base_effects |= EffectSet::IO,
+            "network" => base_effects |= EffectSet::NETWORK,
+            "nondeterministic" | "non_deterministic" => base_effects |= EffectSet::NONDETERMINISTIC,
+            "reads_global" | "read_global" | "readglobal" | "readsglobal" => {
+              base_effects |= EffectSet::READS_GLOBAL
+            }
+            "writes_global" | "write_global" | "writeglobal" | "writesglobal" => {
+              base_effects |= EffectSet::WRITES_GLOBAL
+            }
+            "may_throw" | "throws" | "maythrow" => base_effects |= EffectSet::MAY_THROW,
+            "unknown" => base_effects |= EffectSet::UNKNOWN,
+            // Informational-only tags (no effect flags).
+            "async"
+            | "depends_on_callback"
+            | "depends_on_args"
+            | "dependsoncallback"
+            | "dependsonargs" => {}
+            other => errors.push(ValidationError::UnknownEnumString {
+              api: api.name.clone(),
+              field: "effects.base".to_string(),
+              value: other.to_string(),
+            }),
           }
         }
       } else {
