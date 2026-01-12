@@ -3,8 +3,8 @@
 FastRender’s WebIDL stack has been consolidated into the vendored ecma-rs workspace
 (`vendor/ecma-rs/`).
 
-**Status: COMPLETE** (generic WebIDL infrastructure lives in `vendor/ecma-rs/`; some legacy
-compatibility crates still exist while migration is in progress.)
+**Status: COMPLETE** (generic WebIDL infrastructure lives in `vendor/ecma-rs/`; the legacy
+heap-only runtime remains available for migration/testing.)
 
 This document is a contributor-facing “where does this live?” reference so new work does not
 re-introduce a parallel WebIDL stack under `crates/`.
@@ -27,12 +27,11 @@ src/js/webidl/            ← FastRender-specific bindings integration (re-expor
                             realm installation/runtime glue)
 
 crates/
-├── webidl-js-runtime/    ← legacy heap-only runtime adapter (FastRender compatibility crate; transitional copy to be removed; Cargo package `webidl-js-runtime`)
 └── js-wpt-dom-runner/    ← FastRender-specific tooling (offline WPT runner)
 ```
 
-Note: other historical WebIDL crates (e.g. `crates/webidl-ir`, `crates/webidl-bindings-core`) have
-been migrated into `vendor/ecma-rs/webidl` and should not be re-introduced.
+Note: historical WebIDL infrastructure that previously lived under `crates/` has been migrated into
+`vendor/ecma-rs/webidl` and should not be re-introduced.
 
 Key point: **generic JS/WebIDL infrastructure belongs in `vendor/ecma-rs/`**. FastRender’s `src/`
 contains the embedding integration and concrete DOM/Web API behavior.
@@ -66,9 +65,6 @@ canonical implementation lives in `vendor/ecma-rs/webidl-runtime/`:
 
 - Cargo package name: `webidl-runtime` (Rust crate name: `webidl_runtime`).
 - FastRender exposes it via `fastrender::js::webidl::legacy` while migration is in progress.
-- FastRender currently still carries a transitional workspace-local copy at `crates/webidl-js-runtime/`
-  (Cargo package `webidl-js-runtime`, Rust crate `webidl_js_runtime`). New work should prefer the
-  vendored crate, and the workspace-local copy should be removed.
 
 ### FastRender-specific DOM bindings integration
 

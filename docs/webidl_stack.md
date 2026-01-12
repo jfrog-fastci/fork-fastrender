@@ -9,9 +9,6 @@ This document is the contributor-facing “where does this live?” reference fo
 stack (and the boundary between `vendor/ecma-rs/` vs `src/`; see also:
 [`instructions/ecma_rs_ownership.md`](../instructions/ecma_rs_ownership.md)).
 
-Note: consolidation is still in progress. A legacy workspace-local runtime crate may still exist at
-`crates/webidl-js-runtime`, but **new** WebIDL infrastructure should follow the rules below.
-
 ## Crate / code layout
 
 ### `vendor/ecma-rs/webidl` (crate: `webidl`)
@@ -50,10 +47,6 @@ execute author scripts and should not be used for new bindings work.
 
 - Cargo package name: `webidl-runtime`
 - Rust crate name: `webidl_runtime`
-
-Note: FastRender still carries a transitional workspace-local copy at `crates/webidl-js-runtime`
-(Cargo package `webidl-js-runtime`, Rust crate `webidl_js_runtime`). Prefer updating the vendored
-crate and migrating callers.
 
 This layer exists for migration/testing where older heap-only bindings/runtime code is still
 referenced. Prefer the realm-based `webidl-vm-js` path for new bindings work.
