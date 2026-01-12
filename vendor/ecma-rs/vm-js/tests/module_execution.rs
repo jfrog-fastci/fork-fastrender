@@ -6,7 +6,10 @@ use std::any::Any;
 
 fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Module evaluation/linking tests exercise fairly allocation-heavy paths (parsing, instantiation,
+  // namespace creation). Keep the heap small to catch leaks, but not so small that minor engine
+  // changes trip spurious OOM failures.
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let realm = Realm::new(&mut vm, &mut heap)?;
   Ok((vm, heap, realm))
 }

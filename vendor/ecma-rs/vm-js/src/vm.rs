@@ -3,6 +3,7 @@ use crate::error::TerminationReason;
 use crate::error::VmError;
 use crate::exec::{AsyncContinuation, GeneratorContinuation, RuntimeEnv};
 use crate::execution_context::ExecutionContext;
+use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptOrModule;
 use crate::function::{
   CallHandler, ConstructHandler, EcmaFunctionId, NativeConstructId, NativeFunctionId, ThisMode,
@@ -1799,6 +1800,22 @@ impl Vm {
       .iter()
       .rev()
       .find_map(|ctx| ctx.script_or_module)
+  }
+
+  pub(crate) fn get_or_create_import_meta_object(
+    &mut self,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    module: ModuleId,
+  ) -> Result<GcObject, VmError> {
+    let modules_ptr = self
+      .module_graph_ptr()
+      .ok_or(VmError::Unimplemented("import.meta requires a module graph"))?;
+    // Safety: `Vm::module_graph_ptr` is only set by embeddings that ensure the graph outlives the
+    // VM (see `Vm::set_module_graph` docs). `ModuleGraph::{evaluate,evaluate_with_scope}` installs
+    // a temporary pointer via `ModuleGraphPtrGuard` so `import.meta` can consult per-graph caches.
+    let modules = unsafe { &mut *modules_ptr };
+    modules.get_or_create_import_meta_object(self, scope, hooks, module)
   }
 
   pub(crate) fn get_or_create_template_object(
