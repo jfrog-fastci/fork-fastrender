@@ -4741,11 +4741,8 @@ impl<'a> Checker<'a> {
     }
     self.record_call_signature(call.loc, resolution.signature.or(resolution.contextual_signature));
 
-    if self.store.canon(self.current_this_ty) != prim.unknown {
-      self.current_this_ty
-    } else {
-      resolution.return_type
-    }
+    // Match `tsc`: `super(...)` is treated as `void` (the value is not usable).
+    prim.void
   }
   fn check_new_expr(
     &mut self,
