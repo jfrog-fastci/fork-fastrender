@@ -4424,6 +4424,7 @@ fn dispatch_hashchange_event<Host: WindowRealmHost + 'static>(
   let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
   let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
   hooks.set_event_loop(event_loop);
+
   window_realm.reset_interrupt();
 
   let global_obj = window_realm.global_object();
