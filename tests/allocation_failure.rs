@@ -4,5 +4,6 @@
 //! fail and validate that the renderer handles OOMs gracefully. Because a Rust crate can only
 //! define a single global allocator, these tests must live in their own harness.
 
-#[path = "allocation_failure/mod.rs"]
-mod allocation_failure;
+mod allocation_failure {
+  include!("allocation_failure/mod.rs");
+}
