@@ -92,15 +92,17 @@ impl HeapConfig {
   }
 
   pub fn to_rt(&self) -> crate::abi::RtGcConfig {
-    crate::abi::RtGcConfig {
-      nursery_size_bytes: self.nursery_size_bytes,
-      los_threshold_bytes: self.los_threshold_bytes,
-      minor_gc_nursery_used_percent: self.minor_gc_nursery_used_percent,
-      major_gc_old_bytes_threshold: self.major_gc_old_bytes_threshold,
-      major_gc_old_blocks_threshold: self.major_gc_old_blocks_threshold,
-      major_gc_external_bytes_threshold: self.major_gc_external_bytes_threshold,
-      promote_after_minor_survivals: self.promote_after_minor_survivals,
-    }
+    // `RtGcConfig` has padding on 64-bit targets; ensure we don't leak uninitialized bytes across the
+    // C ABI boundary when returning this value via `rt_gc_get_config`.
+    let mut cfg: crate::abi::RtGcConfig = unsafe { core::mem::zeroed() };
+    cfg.nursery_size_bytes = self.nursery_size_bytes;
+    cfg.los_threshold_bytes = self.los_threshold_bytes;
+    cfg.minor_gc_nursery_used_percent = self.minor_gc_nursery_used_percent;
+    cfg.major_gc_old_bytes_threshold = self.major_gc_old_bytes_threshold;
+    cfg.major_gc_old_blocks_threshold = self.major_gc_old_blocks_threshold;
+    cfg.major_gc_external_bytes_threshold = self.major_gc_external_bytes_threshold;
+    cfg.promote_after_minor_survivals = self.promote_after_minor_survivals;
+    cfg
   }
 }
 
