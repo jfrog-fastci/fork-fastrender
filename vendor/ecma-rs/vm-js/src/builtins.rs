@@ -12569,23 +12569,32 @@ pub fn regexp_prototype_symbol_match_all(
   // - Otherwise, use `RegExp(this, "g")`.
   let matcher: GcObject;
   let (global, unicode) = if let Ok(rx) = require_regexp_object(scope, this) {
-    let flags = scope.heap().regexp_flags(rx)?;
-    if !flags.global {
-      return Err(VmError::TypeError(
-        "String.prototype.matchAll called with a non-global RegExp argument",
-      ));
+    // Spec: `flags = ToString(? Get(R, "flags"))`.
+    // Note: `flags` is user-observable and can be overridden via `Object.defineProperty`.
+    let mut rx_scope = scope.reborrow();
+    rx_scope.push_root(Value::Object(rx))?;
+
+    let flags_key = string_key(&mut rx_scope, "flags")?;
+    let flags_val = rx_scope.get_with_host_and_hooks(vm, host, hooks, rx, flags_key, Value::Object(rx))?;
+    rx_scope.push_root(flags_val)?;
+    let flags_s = rx_scope.to_string(vm, host, hooks, flags_val)?;
+    rx_scope.push_root(Value::String(flags_s))?;
+
+    let (mut global, mut unicode) = (false, false);
+    for &u in rx_scope.heap().get_string(flags_s)?.as_code_units() {
+      if u == b'g' as u16 {
+        global = true;
+      } else if u == b'u' as u16 || u == b'v' as u16 {
+        // `v` (Unicode sets) implies Unicode semantics for `AdvanceStringIndex`.
+        unicode = true;
+      }
     }
+
     // Clone.
-    let flags_s = scope.alloc_string(&flags.to_canonical_string())?;
-    scope.push_root(Value::String(flags_s))?;
     let ctor = Value::Object(intr.regexp_constructor());
-    let mut ctor_scope = scope.reborrow();
-    ctor_scope.push_root(Value::Object(rx))?;
-    ctor_scope.push_root(ctor)?;
-    ctor_scope.push_root(Value::String(flags_s))?;
     let created = vm.construct_with_host_and_hooks(
       host,
-      &mut ctor_scope,
+      &mut rx_scope,
       hooks,
       ctor,
       &[Value::Object(rx), Value::String(flags_s)],
@@ -12597,17 +12606,17 @@ pub fn regexp_prototype_symbol_match_all(
     matcher = obj;
 
     // Preserve lastIndex.
-    let last_index = regexp_get_last_index(vm, &mut ctor_scope, host, hooks, rx)?;
+    let last_index = regexp_get_last_index(vm, &mut rx_scope, host, hooks, rx)?;
     regexp_set_last_index(
       vm,
-      &mut ctor_scope,
+      &mut rx_scope,
       host,
       hooks,
       matcher,
       Value::Number(last_index as f64),
     )?;
 
-    (flags.global, flags.unicode)
+    (global, unicode)
   } else {
     let ctor = Value::Object(intr.regexp_constructor());
     let g = scope.alloc_string("g")?;
@@ -12718,18 +12727,36 @@ pub fn regexp_string_iterator_next(
     ));
   };
 
+  let missing_slots_err =
+    || VmError::TypeError("RegExp string iterator next called on an object missing internal slots");
+
   let done_key = PropertyKey::from_symbol(done_sym);
   let done_val = scope
     .heap()
     .object_get_own_data_property_value(iter, &done_key)?
-    .unwrap_or(Value::Bool(false));
-  let done = matches!(done_val, Value::Bool(true));
+    .ok_or_else(missing_slots_err)?;
+  let done = match done_val {
+    Value::Bool(b) => b,
+    _ => return Err(missing_slots_err()),
+  };
 
   let iterated_key = PropertyKey::from_symbol(iterated_sym);
-  let iterated_val = scope.heap().object_get_own_data_property_value(iter, &iterated_key)?;
-  let Some(Value::String(iterated)) = iterated_val else {
-    // No iterated string => done.
-    return Ok(Value::Object(iterator_result_object(scope, intr.object_prototype(), Value::Undefined, true)?));
+  let iterated_val = scope
+    .heap()
+    .object_get_own_data_property_value(iter, &iterated_key)?
+    .ok_or_else(missing_slots_err)?;
+  let iterated = match iterated_val {
+    // `[[IteratedString]]` is set to `undefined` once iteration is complete.
+    Value::Undefined => {
+      return Ok(Value::Object(iterator_result_object(
+        scope,
+        intr.object_prototype(),
+        Value::Undefined,
+        true,
+      )?));
+    }
+    Value::String(s) => s,
+    _ => return Err(missing_slots_err()),
   };
 
   if done {
@@ -12737,28 +12764,34 @@ pub fn regexp_string_iterator_next(
   }
 
   let iterating_key = PropertyKey::from_symbol(iterating_sym);
-  let Some(Value::Object(matcher)) = scope
+  let matcher_val = scope
     .heap()
     .object_get_own_data_property_value(iter, &iterating_key)?
-  else {
-    return Err(VmError::InvariantViolation(
-      "RegExp string iterator missing iteratingRegExp",
-    ));
+    .ok_or_else(missing_slots_err)?;
+  let matcher = match matcher_val {
+    Value::Object(o) => o,
+    _ => return Err(missing_slots_err()),
   };
 
   let global_key = PropertyKey::from_symbol(global_sym);
-  let global = scope
+  let global_val = scope
     .heap()
     .object_get_own_data_property_value(iter, &global_key)?
-    .unwrap_or(Value::Bool(false))
-    .same_value(Value::Bool(true), scope.heap());
+    .ok_or_else(missing_slots_err)?;
+  let global = match global_val {
+    Value::Bool(b) => b,
+    _ => return Err(missing_slots_err()),
+  };
 
   let unicode_key = PropertyKey::from_symbol(unicode_sym);
-  let unicode = scope
+  let unicode_val = scope
     .heap()
     .object_get_own_data_property_value(iter, &unicode_key)?
-    .unwrap_or(Value::Bool(false))
-    .same_value(Value::Bool(true), scope.heap());
+    .ok_or_else(missing_slots_err)?;
+  let unicode = match unicode_val {
+    Value::Bool(b) => b,
+    _ => return Err(missing_slots_err()),
+  };
 
   let res = regexp_exec_array(vm, scope, host, hooks, matcher, iterated)?;
   let Some(res) = res else {
@@ -14025,21 +14058,69 @@ pub fn string_prototype_match_all(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
+  // Spec: `RequireObjectCoercible(this value)`.
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "String.prototype.matchAll called on null or undefined",
+    ));
+  }
   let s = scope.to_string(vm, host, hooks, this)?;
   scope.push_root(Value::String(s))?;
 
   let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
   if !matches!(regexp, Value::Undefined | Value::Null) {
-    let method = crate::spec_ops::get_method_with_host_and_hooks(
-      vm,
-      &mut scope,
-      host,
-      hooks,
-      regexp,
-      PropertyKey::from_symbol(intr.well_known_symbols().match_all),
-    )?;
-    if let Some(method) = method {
-      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[Value::String(s)]);
+    // Spec: if `regexp` is a RegExp, validate `flags` is object-coercible and contains `"g"`.
+    //
+    // Important: only do this for actual objects; per spec, primitives skip this step and are
+    // handled by the `RegExpCreate(regexp, "g")` fallback without boxing.
+    if let Value::Object(regexp_obj) = regexp {
+      scope.push_root(Value::Object(regexp_obj))?;
+      if scope.heap().is_regexp_object(regexp_obj) {
+        let flags_key = string_key(&mut scope, "flags")?;
+        let flags_val = scope.get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          regexp_obj,
+          flags_key,
+          Value::Object(regexp_obj),
+        )?;
+        scope.push_root(flags_val)?;
+
+        // `RequireObjectCoercible(flags)`.
+        if matches!(flags_val, Value::Undefined | Value::Null) {
+          return Err(VmError::TypeError(
+            "String.prototype.matchAll called with a RegExp with a null/undefined flags value",
+          ));
+        }
+
+        let flags_s = scope.to_string(vm, host, hooks, flags_val)?;
+        scope.push_root(Value::String(flags_s))?;
+        let mut has_g = false;
+        for &u in scope.heap().get_string(flags_s)?.as_code_units() {
+          if u == b'g' as u16 {
+            has_g = true;
+            break;
+          }
+        }
+        if !has_g {
+          return Err(VmError::TypeError(
+            "String.prototype.matchAll called with a non-global RegExp argument",
+          ));
+        }
+      }
+
+      let method = crate::spec_ops::get_method_with_host_and_hooks(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        regexp,
+        PropertyKey::from_symbol(intr.well_known_symbols().match_all),
+      )?;
+      if let Some(method) = method {
+        return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[Value::String(s)]);
+      }
     }
   }
 
@@ -14067,8 +14148,10 @@ pub fn string_prototype_match_all(
     hooks,
     Value::Object(rx),
     PropertyKey::from_symbol(intr.well_known_symbols().match_all),
-  )?
-  .ok_or(VmError::InvariantViolation("RegExp @@matchAll missing"))?;
+  )?;
+  let Some(method) = method else {
+    return Err(VmError::TypeError("RegExp @@matchAll is not callable"));
+  };
   vm.call_with_host_and_hooks(host, &mut scope, hooks, method, Value::Object(rx), &[Value::String(s)])
 }
 
