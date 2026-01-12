@@ -318,9 +318,9 @@ pub fn menu_bar_ui(
         // -------------------------------------------------------------------
         ui.menu_button("Bookmarks", |ui| {
           let bookmark_label = if state.page_bookmarked {
-            "★ Bookmark This Page"
+            "Remove Bookmark"
           } else {
-            "☆ Bookmark This Page"
+            "Bookmark This Page"
           };
           if ui
             .add_enabled(
