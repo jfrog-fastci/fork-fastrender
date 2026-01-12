@@ -2232,6 +2232,14 @@ impl TypeStore {
         json!({ "kind": "indexed", "obj": obj.0.to_string(), "index": index.0.to_string() })
       }
       TypeKind::KeyOf(inner) => json!({ "kind": "keyof", "ty": inner.0.to_string() }),
+      TypeKind::OmitConstructSignatures(inner) => {
+        json!({ "kind": "omit_construct_signatures", "ty": inner.0.to_string() })
+      }
+      TypeKind::InheritConstructSignatures { base, ret } => json!({
+        "kind": "inherit_construct_signatures",
+        "base": base.0.to_string(),
+        "ret": ret.0.to_string()
+      }),
       TypeKind::Intrinsic { kind, ty } => json!({
         "kind": "intrinsic",
         "name": kind.as_str(),
