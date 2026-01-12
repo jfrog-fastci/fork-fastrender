@@ -209,6 +209,10 @@ The API is intentionally small and currently consists of:
 - `NativeJsError`: error type (includes parse errors, codegen errors, and user-facing diagnostics)
 - `compiler::compile_typescript_to_artifact(...)`: convenience helper that turns the textual LLVM IR
   emitted by `compile_typescript_to_llvm_ir` into an on-disk artifact (including a Linux executable)
+- (opt-in, deprecated) legacy expression-only HIR→LLVM backend helpers, behind the
+  `legacy-expr-backend` Cargo feature:
+  - `native_js::llvm::legacy_expr` (and the deprecated alias `native_js::llvm::expr`)
+  - `native_js::compiler::compile_entry_to_llvm_ir` (deprecated; prefer `strict::entrypoint + codegen::codegen`)
 
 Example (typechecked entry point):
 
