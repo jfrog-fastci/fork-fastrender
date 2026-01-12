@@ -2,11 +2,11 @@ use diagnostics::FileId;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
-  AsDIScope, DIExpression, DIFile, DILocation, DILocalVariable, DISubprogram, DIType,
+  AsDIScope, DICompileUnit, DIExpression, DIFile, DILocation, DILocalVariable, DISubprogram, DIType,
   DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
 };
 use inkwell::module::Module;
-use inkwell::values::PointerValue;
+use inkwell::values::{GlobalValue, PointerValue};
 use std::collections::HashMap;
 use typecheck_ts::Program;
 
@@ -18,6 +18,7 @@ use super::TsAbiKind;
 /// subprograms) to hang parameter/local variable info off `llvm.dbg.declare`.
 pub(crate) struct CodegenDebug<'ctx> {
   builder: DebugInfoBuilder<'ctx>,
+  compile_unit: DICompileUnit<'ctx>,
   files: HashMap<FileId, DIFile<'ctx>>,
   types: DebugTypes<'ctx>,
 }
@@ -39,7 +40,7 @@ impl<'ctx> CodegenDebug<'ctx> {
       .file_key(entry_file)
       .map(|k| k.to_string())
       .unwrap_or_else(|| "entry.ts".to_string());
-    let (builder, _compile_unit) = module.create_debug_info_builder(
+    let (builder, compile_unit) = module.create_debug_info_builder(
       true,
       DWARFSourceLanguage::C,
       &entry_name,
@@ -80,6 +81,7 @@ impl<'ctx> CodegenDebug<'ctx> {
 
     Self {
       builder,
+      compile_unit,
       files: HashMap::new(),
       types,
     }
@@ -216,6 +218,39 @@ impl<'ctx> CodegenDebug<'ctx> {
     );
 
     self.insert_declare(context, builder, slot, var, scope, line, col);
+  }
+
+  pub(crate) fn declare_global_var(
+    &mut self,
+    context: &'ctx Context,
+    program: &Program,
+    file: FileId,
+    offset: u32,
+    name: &str,
+    linkage_name: &str,
+    kind: TsAbiKind,
+    global: GlobalValue<'ctx>,
+    is_local_to_unit: bool,
+  ) {
+    let di_file = self.file(program, file);
+    let (line, _col) = line_col(program, file, offset);
+    let ty = self.basic_type(kind);
+
+    let gv_expr = self.builder.create_global_variable_expression(
+      self.compile_unit.as_debug_info_scope(),
+      name,
+      linkage_name,
+      di_file,
+      line,
+      ty,
+      is_local_to_unit,
+      None,
+      None,
+      0,
+    );
+
+    let dbg_kind_id = context.get_kind_id("dbg");
+    global.set_metadata(gv_expr.as_metadata_value(context), dbg_kind_id);
   }
 
   fn insert_declare(

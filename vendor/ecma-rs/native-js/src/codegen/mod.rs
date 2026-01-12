@@ -887,8 +887,28 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           TsAbiKind::Boolean => global.set_initializer(&self.i1_ty.const_int(0, false)),
           TsAbiKind::Void => unreachable!(),
         };
-        if !self.exported_defs.contains(&def) {
+        let is_local_to_unit = !self.exported_defs.contains(&def);
+        if is_local_to_unit {
           global.set_linkage(Linkage::Internal);
+        }
+
+        if let Some(debug) = self.debug.as_mut() {
+          let debug_name = self
+            .program
+            .def_name(def)
+            .unwrap_or_else(|| format!("def{}", def.0));
+          let def_span = self.program.span_of_def(def).unwrap_or(span);
+          debug.declare_global_var(
+            self.context,
+            self.program,
+            def_span.file,
+            def_span.range.start,
+            &debug_name,
+            &name,
+            abi_kind,
+            global,
+            is_local_to_unit,
+          );
         }
 
         let slot = GlobalSlot {
