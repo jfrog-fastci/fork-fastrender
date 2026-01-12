@@ -166,6 +166,12 @@
     may_throw: false
   purity: Pure
 
+- name: URLSearchParams.prototype.size
+  kind: getter
+  since: "v0.1.0"
+  effects: Pure
+  purity: Pure
+
 - name: URLSearchParams.prototype.getAll
   since: "v0.1.0"
   effects:

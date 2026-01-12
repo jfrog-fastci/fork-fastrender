@@ -73,6 +73,7 @@ declare const URL: {
 };
 
 interface URLSearchParams {
+  readonly size: number;
   get(name: string): string | null;
 }
 
@@ -120,6 +121,7 @@ new URL("https://x").pathname;
 new URL("https://x").searchParams;
 new URL("https://x").toString();
 new URLSearchParams("a=1").get("a");
+new URLSearchParams("a=1").size;
 fetch("x").then(r => r.status);
 fetch("x").then(r => r.ok);
 fetch("x").then(r => r.json());
@@ -205,6 +207,16 @@ re.test("a");
   assert_eq!(
     resolved_params_get.api_id,
     ApiId::from_name("URLSearchParams.prototype.get")
+  );
+
+  let params_size_span = range_of(source, r#"new URLSearchParams("a=1").size"#);
+  let (params_size_body, params_size_expr) = find_member_expr(lower, params_size_span);
+  let resolved_params_size = resolve_member(&kb, lower, params_size_body, params_size_expr, &types)
+    .expect("resolve URLSearchParams.size");
+  assert_eq!(resolved_params_size.api, "URLSearchParams.prototype.size");
+  assert_eq!(
+    resolved_params_size.api_id,
+    ApiId::from_name("URLSearchParams.prototype.size")
   );
 
   let status_span = range_of(source, "r.status");

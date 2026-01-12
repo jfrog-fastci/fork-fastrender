@@ -230,6 +230,14 @@
     may_throw: false
   purity: Pure
 
+- name: URLSearchParams.prototype.size
+  kind: getter
+  aliases:
+    - URLSearchParams.prototype.size
+  since: "baseline"
+  effects: Pure
+  purity: Pure
+
 - name: URLSearchParams.prototype.getAll
   aliases:
     - URLSearchParams.prototype.getAll
