@@ -25,6 +25,24 @@ fn spread_copies_enumerable_own_properties() {
 }
 
 #[test]
+fn spread_accepts_primitive_sources_via_to_object() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"var o={...1}; o !== null && typeof o === 'object'"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn spread_skips_null_and_undefined() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a={...null}; var b={...undefined}; a !== null && typeof a === 'object' && b !== null && typeof b === 'object'"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn getter_and_setter_definition() {
   let mut rt = new_runtime();
   let value = rt

@@ -5430,9 +5430,14 @@ impl<'a> Evaluator<'a> {
 
           let src_obj = match src_value {
             Value::Undefined | Value::Null => continue,
-            Value::Object(o) => o,
-            _ => return Err(VmError::Unimplemented("object spread source type")),
+            other => member_scope.to_object(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              other,
+            )?,
           };
+          member_scope.push_root(Value::Object(src_obj))?;
 
           let keys = member_scope.ordinary_own_property_keys_with_tick(src_obj, || self.tick())?;
           for key in keys {
@@ -5463,10 +5468,7 @@ impl<'a> Evaluator<'a> {
               Value::Object(src_obj),
             )?;
             key_scope.push_root(value)?;
-            let ok = key_scope.create_data_property(obj, key, value)?;
-            if !ok {
-              return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-            }
+            key_scope.create_data_property_or_throw(obj, key, value)?;
           }
         }
       }
