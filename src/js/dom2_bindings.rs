@@ -575,6 +575,32 @@ pub fn class_list_replace<Host: DomHost + ?Sized>(
   })
 }
 
+/// `Element.getAttribute(name)` for a `dom2` element.
+pub fn get_attribute<Host: DomHost + ?Sized>(
+  host: &Host,
+  element: NodeId,
+  name: &str,
+) -> std::result::Result<Option<String>, DomError> {
+  host.with_dom(|dom| dom.get_attribute(element, name).map(|v| v.map(str::to_string)))
+}
+
+/// `Element.hasAttribute(name)` for a `dom2` element.
+pub fn has_attribute<Host: DomHost + ?Sized>(
+  host: &Host,
+  element: NodeId,
+  name: &str,
+) -> std::result::Result<bool, DomError> {
+  host.with_dom(|dom| dom.has_attribute(element, name))
+}
+
+/// `Element.getAttributeNames()` for a `dom2` element.
+pub fn get_attribute_names<Host: DomHost + ?Sized>(
+  host: &Host,
+  element: NodeId,
+) -> std::result::Result<Vec<String>, DomError> {
+  host.with_dom(|dom| dom.attribute_names(element))
+}
+
 /// `Element.setAttribute(name, value)` for a `dom2` element.
 ///
 /// Returns `Ok(true)` only when the underlying attribute list changes.
@@ -770,5 +796,26 @@ mod tests {
     assert_eq!(previous_element_sibling(&host, b), Some(a));
     assert_eq!(child_element_count(&host, host_el), 2);
     assert_eq!(children_elements(&host, host_el), vec![a, b]);
+  }
+
+  #[test]
+  fn get_attribute_helpers_work_for_html_elements() {
+    let root =
+      crate::dom::parse_html("<!doctype html><div id=host class='a b' data-x='y'></div>").unwrap();
+    let host = HostDocumentState::from_renderer_dom(&root);
+
+    let host_el = host.dom().get_element_by_id("host").expect("host element");
+    assert_eq!(
+      get_attribute(&host, host_el, "ID").unwrap(),
+      Some("host".to_string())
+    );
+    assert_eq!(get_attribute(&host, host_el, "missing").unwrap(), None);
+    assert!(has_attribute(&host, host_el, "class").unwrap());
+    assert!(!has_attribute(&host, host_el, "missing").unwrap());
+
+    let names = get_attribute_names(&host, host_el).unwrap();
+    assert!(names.contains(&"id".to_string()));
+    assert!(names.contains(&"class".to_string()));
+    assert!(names.contains(&"data-x".to_string()));
   }
 }
