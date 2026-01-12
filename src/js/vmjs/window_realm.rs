@@ -24599,7 +24599,10 @@ fn init_window_globals(
   let add_event_listener_name = scope.alloc_string("addEventListener")?;
   scope.push_root(Value::String(add_event_listener_name))?;
   // EventTarget method native slots:
-  // - slot 0: default `this` for global functions (see `event_target_resolve_this`)
+  // - slot 0: default `this` used by legacy-style global functions (see `event_target_resolve_this`).
+  //           `vm-js` identifier calls always pass `undefined` as the call `this` value, so we
+  //           provide a Window-specific global-style wrapper (on `Window.prototype`) that defaults
+  //           `this` to the realm's global object.
   // - slot 1: the realm's global object (used to find `document` for non-DOM EventTargets like
   //   `AbortSignal` / `new EventTarget()`).
   // - slot 2: native call id for the internal AbortSignal cleanup callback used by
@@ -24697,30 +24700,26 @@ fn init_window_globals(
   scope.push_root(Value::Object(dispatch_event_func))?;
 
   let add_event_listener_key = alloc_key(&mut scope, "addEventListener")?;
-  // Minimal `EventTarget` constructor + prototype.
-  let event_target_proto = match dom_platform.as_ref() {
-    Some(platform) => platform.prototype_for(DomInterface::EventTarget),
-    None => {
-      let obj = scope.alloc_object()?;
-      scope.heap_mut().object_set_prototype(obj, Some(realm.intrinsics().object_prototype()))?;
-      obj
-    }
+  // Canonical per-realm `EventTarget.prototype`.
+  //
+  // When a `DomPlatform` exists, reuse its `EventTarget` prototype so DOM wrappers (Node/Document)
+  // and the global `EventTarget` constructor share the same prototype identity. This is important
+  // for correct `instanceof EventTarget` behavior.
+  let event_target_proto = if let Some(platform) = dom_platform.as_ref() {
+    platform.prototype_for(DomInterface::EventTarget)
+  } else {
+    let proto = scope.alloc_object()?;
+    scope.heap_mut().object_set_prototype(
+      proto,
+      Some(realm.intrinsics().object_prototype()),
+    )?;
+    proto
   };
-  // Make the realm global object (`window`) a real `EventTarget` by placing it on the same
-  // prototype chain as DOM wrappers (`Node`/`Document`).
-  scope
-    .heap_mut()
-    .object_set_prototype(global, Some(event_target_proto))?;
   scope.push_root(Value::Object(event_target_proto))?;
   scope.define_property(
     event_target_proto,
     add_event_listener_key,
     data_desc(Value::Object(add_event_listener_func)),
-  )?;
-  scope.define_property(
-    global,
-    add_event_listener_key,
-    data_desc(Value::Object(add_event_listener_global_func)),
   )?;
   if !proto_chain_has_own_property(scope.heap(), document_obj, &add_event_listener_key)? {
     scope.define_property(
@@ -24735,11 +24734,6 @@ fn init_window_globals(
     remove_event_listener_key,
     data_desc(Value::Object(remove_event_listener_func)),
   )?;
-  scope.define_property(
-    global,
-    remove_event_listener_key,
-    data_desc(Value::Object(remove_event_listener_global_func)),
-  )?;
   if !proto_chain_has_own_property(scope.heap(), document_obj, &remove_event_listener_key)? {
     scope.define_property(
       document_obj,
@@ -24753,11 +24747,6 @@ fn init_window_globals(
     dispatch_event_key,
     data_desc(Value::Object(dispatch_event_func)),
   )?;
-  scope.define_property(
-    global,
-    dispatch_event_key,
-    data_desc(Value::Object(dispatch_event_global_func)),
-  )?;
   if !proto_chain_has_own_property(scope.heap(), document_obj, &dispatch_event_key)? {
     scope.define_property(
       document_obj,
@@ -24765,6 +24754,39 @@ fn init_window_globals(
       data_desc(Value::Object(dispatch_event_func)),
     )?;
   }
+
+  // Window inherits EventTarget. Create a dedicated `Window.prototype` object so the global object
+  // follows the spec prototype chain:
+  //   Window -> EventTarget -> Object
+  //
+  // This also ensures EventTarget methods are resolved via the prototype chain (not as own
+  // properties on the global object).
+  let window_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(window_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(window_proto, Some(event_target_proto))?;
+  scope.heap_mut().object_set_prototype(global, Some(window_proto))?;
+
+  // Window-specific global-style shims (see `event_target_global_slots` above).
+  //
+  // These exist so `addEventListener(...)` / `dispatchEvent(...)` identifier calls work in vm-js
+  // while still keeping the methods off the global object itself.
+  scope.define_property(
+    window_proto,
+    add_event_listener_key,
+    data_desc(Value::Object(add_event_listener_global_func)),
+  )?;
+  scope.define_property(
+    window_proto,
+    remove_event_listener_key,
+    data_desc(Value::Object(remove_event_listener_global_func)),
+  )?;
+  scope.define_property(
+    window_proto,
+    dispatch_event_key,
+    data_desc(Value::Object(dispatch_event_global_func)),
+  )?;
 
   let event_target_ctor_call_id = vm.register_native_call(event_target_constructor_native)?;
   let event_target_ctor_construct_id =
@@ -29723,6 +29745,42 @@ mod tests {
       get_string(realm.heap(), order),
       "w-c,d-c,d-b|w-c,d-c,d-b,w-b"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn window_inherits_event_target_and_dispatches_via_prototype_chain() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(realm.exec_script("window instanceof EventTarget")?, Value::Bool(true));
+
+    // EventTarget methods should be inherited (not installed as own properties on the global).
+    assert_eq!(
+      realm.exec_script("Object.prototype.hasOwnProperty.call(window, 'addEventListener')")?,
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm.exec_script("Object.prototype.hasOwnProperty.call(window, 'dispatchEvent')")?,
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm.exec_script("EventTarget.prototype.isPrototypeOf(window)")?,
+      Value::Bool(true)
+    );
+
+    let typeof_add = realm.exec_script("typeof window.addEventListener")?;
+    assert_eq!(get_string(realm.heap(), typeof_add), "function");
+
+    let fired = realm.exec_script(
+      "(() => {\n\
+        let count = 0;\n\
+        window.addEventListener('x', () => { count++; });\n\
+        window.dispatchEvent(new Event('x'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(fired, Value::Number(1.0));
+
     Ok(())
   }
 
