@@ -1,8 +1,13 @@
 use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
 
+const HEAP_MAX_BYTES: usize = 4 * 1024 * 1024;
+const HEAP_GC_THRESHOLD_BYTES: usize = 2 * 1024 * 1024;
+
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // This test focuses on iterator-closing semantics, not OOM behavior. Use a moderate heap size so
+  // baseline builtins + `Object.defineProperty` don't trip spurious `OutOfMemory` failures.
+  let heap = Heap::new(HeapLimits::new(HEAP_MAX_BYTES, HEAP_GC_THRESHOLD_BYTES));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -122,4 +127,3 @@ fn promise_any_iter_step_err_does_not_close_iterator() {
 fn promise_any_iter_next_val_err_does_not_close_iterator() {
   assert_promise_iterator_error_does_not_close_iterator("any", ITER_NEXT_VAL_ERR_TEMPLATE);
 }
-
