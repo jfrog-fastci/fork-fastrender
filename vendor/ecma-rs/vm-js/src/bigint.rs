@@ -733,7 +733,10 @@ impl JsBigInt {
     debug_assert!((2..=36).contains(&radix));
 
     if self.is_zero() {
-      return Ok("0".to_string());
+      let mut out = String::new();
+      out.try_reserve_exact(1).map_err(|_| VmError::OutOfMemory)?;
+      out.push('0');
+      return Ok(out);
     }
 
     // Copy magnitude.

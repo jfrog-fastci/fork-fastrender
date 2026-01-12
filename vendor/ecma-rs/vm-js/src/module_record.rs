@@ -2810,7 +2810,7 @@ mod tests {
     assert_eq!(
       record.indirect_export_entries,
       vec![IndirectExportEntry {
-        export_name: "foo".to_string(),
+        export_name: String::from("foo"),
         module_request: crate::ModuleRequest::new("m", vec![]),
         import_name: ImportName::All,
       }]
@@ -2825,9 +2825,9 @@ mod tests {
     assert_eq!(
       record.indirect_export_entries,
       vec![IndirectExportEntry {
-        export_name: "baz".to_string(),
+        export_name: String::from("baz"),
         module_request: crate::ModuleRequest::new("m", vec![]),
-        import_name: ImportName::Name("foo".to_string()),
+        import_name: ImportName::Name(String::from("foo")),
       }]
     );
   }

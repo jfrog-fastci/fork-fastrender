@@ -4668,7 +4668,7 @@ impl Heap {
     }
 
     let n = crate::ops::string_to_number(self, s)?;
-    let s2 = crate::property::number_to_string(n);
+    let s2 = crate::property::number_to_string(n)?;
     if self.get_string(s)?.to_utf8_lossy() == s2 {
       Ok(Some(n))
     } else {

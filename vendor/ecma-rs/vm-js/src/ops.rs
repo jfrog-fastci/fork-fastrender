@@ -303,7 +303,9 @@ pub(crate) fn parse_ascii_decimal_to_f64_units(
   debug_assert!(!sig_digits.is_empty());
 
   // Build a bounded scientific-notation string: "-d.dddde<exp10>".
-  let mut s = String::with_capacity(1 + sig_digits.len() + 2 + 24);
+  let mut s = String::new();
+  s.try_reserve_exact(1 + sig_digits.len() + 2 + 24)
+    .map_err(|_| VmError::OutOfMemory)?;
   if sign.is_sign_negative() {
     s.push('-');
   }
@@ -454,7 +456,9 @@ pub(crate) fn parse_ascii_decimal_to_f64_str(
 
   debug_assert!(!sig_digits.is_empty());
 
-  let mut s = String::with_capacity(1 + sig_digits.len() + 2 + 24);
+  let mut s = String::new();
+  s.try_reserve_exact(1 + sig_digits.len() + 2 + 24)
+    .map_err(|_| VmError::OutOfMemory)?;
   if sign.is_sign_negative() {
     s.push('-');
   }

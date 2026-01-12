@@ -242,7 +242,10 @@ impl Heap {
       Value::Null => scope.alloc_string("null"),
       Value::Bool(true) => scope.alloc_string("true"),
       Value::Bool(false) => scope.alloc_string("false"),
-      Value::Number(n) => scope.alloc_string(&number_to_string(n)),
+      Value::Number(n) => {
+        let s = number_to_string(n)?;
+        scope.alloc_string(&s)
+      }
       Value::BigInt(b) => {
         let s = {
           let bi = scope.heap().get_bigint(b)?;
@@ -297,19 +300,28 @@ impl Heap {
 }
 
 // https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-numeric-types-number-tostring
-pub(crate) fn number_to_string(n: f64) -> String {
+pub(crate) fn number_to_string(n: f64) -> Result<String, VmError> {
+  fn static_str(s: &'static str) -> Result<String, VmError> {
+    let mut out = String::new();
+    out
+      .try_reserve_exact(s.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    out.push_str(s);
+    Ok(out)
+  }
+
   if n.is_nan() {
-    return String::from("NaN");
+    return static_str("NaN");
   }
   if n == 0.0 {
     // Covers both +0 and -0.
-    return String::from("0");
+    return static_str("0");
   }
   if n.is_infinite() {
     if n.is_sign_negative() {
-      return String::from("-Infinity");
+      return static_str("-Infinity");
     } else {
-      return String::from("Infinity");
+      return static_str("Infinity");
     }
   }
 
@@ -322,14 +334,22 @@ pub(crate) fn number_to_string(n: f64) -> String {
   let raw = buffer.format_finite(abs);
   // `ryu` formats `1.0` as `"1.0"`, but ECMAScript `ToString(1)` is `"1"`.
   let raw = raw.strip_suffix(".0").unwrap_or(raw);
-  let (digits, exp) = parse_ryu_to_decimal(raw);
+  let (digits, exp) = parse_ryu_to_decimal(raw)?;
   let k = exp + digits.len() as i32;
 
-  let mut out = String::new();
-  out.push_str(sign);
+  let sign_len = sign.len();
+  let digits_len = digits.len();
 
   if k > 0 && k <= 21 {
     let k = k as usize;
+    let total_len = sign_len
+      .checked_add(if k >= digits_len { k } else { digits_len + 1 })
+      .ok_or(VmError::OutOfMemory)?;
+    let mut out = String::new();
+    out
+      .try_reserve_exact(total_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    out.push_str(sign);
     if k >= digits.len() {
       out.push_str(&digits);
       out.extend(std::iter::repeat('0').take(k - digits.len()));
@@ -338,17 +358,55 @@ pub(crate) fn number_to_string(n: f64) -> String {
       out.push('.');
       out.push_str(&digits[k..]);
     }
-    return out;
+    return Ok(out);
   }
 
   if k <= 0 && k > -6 {
+    let total_len = sign_len
+      .checked_add(2)
+      .and_then(|v| v.checked_add((-k) as usize))
+      .and_then(|v| v.checked_add(digits_len))
+      .ok_or(VmError::OutOfMemory)?;
+    let mut out = String::new();
+    out
+      .try_reserve_exact(total_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    out.push_str(sign);
     out.push_str("0.");
     out.extend(std::iter::repeat('0').take((-k) as usize));
     out.push_str(&digits);
-    return out;
+    return Ok(out);
   }
 
   // Exponential form.
+  fn decimal_len_u32(mut n: u32) -> usize {
+    let mut len = 1usize;
+    while n >= 10 {
+      n /= 10;
+      len += 1;
+    }
+    len
+  }
+
+  let exp_part = k - 1;
+  let exp_mag = if exp_part >= 0 {
+    exp_part as u32
+  } else {
+    // `exp_part` is `i32`, so its magnitude always fits in `u32`.
+    (-i64::from(exp_part)) as u32
+  };
+  let exp_len = decimal_len_u32(exp_mag);
+  let digits_part_len = digits_len + if digits_len > 1 { 1 } else { 0 };
+  let total_len = sign_len
+    .checked_add(digits_part_len)
+    .and_then(|v| v.checked_add(1 /* e */ + 1 /* exp sign */ + exp_len))
+    .ok_or(VmError::OutOfMemory)?;
+  let mut out = String::new();
+  out
+    .try_reserve_exact(total_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+  out.push_str(sign);
+
   let first = digits.as_bytes()[0] as char;
   out.push(first);
   if digits.len() > 1 {
@@ -356,7 +414,6 @@ pub(crate) fn number_to_string(n: f64) -> String {
     out.push_str(&digits[1..]);
   }
   out.push('e');
-  let exp = k - 1;
   fn push_u32_decimal(out: &mut String, mut value: u32) {
     // `u32::MAX` has 10 decimal digits.
     let mut buf = [0u8; 10];
@@ -375,19 +432,17 @@ pub(crate) fn number_to_string(n: f64) -> String {
     let s = std::str::from_utf8(&buf[pos..]).unwrap_or("0");
     out.push_str(s);
   }
-  if exp >= 0 {
+  if exp_part >= 0 {
     out.push('+');
-    push_u32_decimal(&mut out, exp as u32);
+    push_u32_decimal(&mut out, exp_part as u32);
   } else {
     out.push('-');
-    // `exp` is `i32`, so its magnitude always fits in `u32`.
-    let mag = (-i64::from(exp)) as u32;
-    push_u32_decimal(&mut out, mag);
+    push_u32_decimal(&mut out, exp_mag);
   }
-  out
+  Ok(out)
 }
 
-fn parse_ryu_to_decimal(raw: &str) -> (String, i32) {
+fn parse_ryu_to_decimal(raw: &str) -> Result<(String, i32), VmError> {
   // `raw` is expected to be ASCII and contain either:
   // - digits with optional decimal point
   // - digits with optional decimal point and a trailing `e[+-]?\d+`
@@ -401,7 +456,10 @@ fn parse_ryu_to_decimal(raw: &str) -> (String, i32) {
 
   let mut exp: i32 = exp_part.map_or(0, |e| e.parse().unwrap_or(0));
 
-  let mut digits = String::with_capacity(mantissa.len());
+  let mut digits = String::new();
+  digits
+    .try_reserve_exact(mantissa.len())
+    .map_err(|_| VmError::OutOfMemory)?;
   let mut in_frac = false;
   let mut frac_len = 0usize;
   let mut started = false;
@@ -431,5 +489,5 @@ fn parse_ryu_to_decimal(raw: &str) -> (String, i32) {
     digits.push('0');
   }
 
-  (digits, exp)
+  Ok((digits, exp))
 }
