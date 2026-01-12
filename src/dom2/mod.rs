@@ -67,7 +67,6 @@ pub use resize_observer::{
 };
 pub use scripting_parser::parse_html_with_scripting_dom2;
 pub use live_mutation::NodeIteratorId;
-pub(crate) use live_mutation::LiveRangeId;
 #[cfg(test)]
 pub(crate) use live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
 pub use slotting::SlotAssignmentMode;
@@ -2432,6 +2431,7 @@ mod contextual_fragment_tests;
 mod cross_document_tests;
 #[cfg(test)]
 mod html5ever_sink_tests;
+#[cfg(test)]
 #[cfg(test)]
 mod html_tests;
 #[cfg(test)]
