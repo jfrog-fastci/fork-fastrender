@@ -479,45 +479,6 @@ thread_local! {
   static FLOAT_PROFILE_OVERRIDE: Cell<Option<bool>> = Cell::new(None);
 }
 
-#[cfg(test)]
-static FLOAT_PROFILE_OVERRIDE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Test-only guard to enable float profiling counters on the current thread without relying on
-/// process-wide runtime toggles.
-///
-/// This is particularly important for integration tests, where enabling profiling via
-/// `FASTR_LAYOUT_PROFILE` would affect unrelated tests running in parallel on other threads.
-#[cfg(test)]
-pub struct FloatProfileOverrideGuard {
-  _lock: std::sync::MutexGuard<'static, ()>,
-  previous_override: Option<bool>,
-}
-
-#[cfg(test)]
-impl FloatProfileOverrideGuard {
-  pub fn new(enabled: bool) -> Self {
-    let lock = FLOAT_PROFILE_OVERRIDE_LOCK
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let previous_override = FLOAT_PROFILE_OVERRIDE.with(|cell| {
-      let previous = cell.get();
-      cell.set(Some(enabled));
-      previous
-    });
-    Self {
-      _lock: lock,
-      previous_override,
-    }
-  }
-}
-
-#[cfg(test)]
-impl Drop for FloatProfileOverrideGuard {
-  fn drop(&mut self) {
-    FLOAT_PROFILE_OVERRIDE.with(|cell| cell.set(self.previous_override));
-  }
-}
-
 fn profile_enabled() -> bool {
   #[cfg(test)]
   if let Some(enabled) = FLOAT_PROFILE_OVERRIDE.with(|cell| cell.get()) {
