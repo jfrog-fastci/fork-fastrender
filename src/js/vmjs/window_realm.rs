@@ -1682,6 +1682,7 @@ fn install_storage_object(
   realm: &Realm,
   global: GcObject,
   global_key: PropertyKey,
+  storage_proto: GcObject,
   label: &str,
   kind: web_storage::StorageKind,
   length_get_call_id: vm_js::NativeFunctionId,
@@ -1699,6 +1700,9 @@ fn install_storage_object(
 ) -> Result<(), VmError> {
   let storage_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(storage_obj, Some(storage_proto))?;
 
   let kind_slot = match kind {
     web_storage::StorageKind::Local => 0.0,
@@ -22381,12 +22385,50 @@ fn init_window_globals(
   let storage_clear_key = alloc_key(&mut scope, "clear")?;
   let storage_key_key = alloc_key(&mut scope, "key")?;
 
+  let storage_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(storage_proto))?;
+
+  // `Storage` constructor is an illegal DOM constructor in browsers.
+  let storage_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
+  let storage_ctor_construct_id =
+    vm.register_native_construct(illegal_dom_constructor_construct_native)?;
+  let storage_ctor_name = scope.alloc_string("Storage")?;
+  scope.push_root(Value::String(storage_ctor_name))?;
+  let storage_ctor_func = scope.alloc_native_function(
+    storage_ctor_call_id,
+    Some(storage_ctor_construct_id),
+    storage_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    storage_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(storage_ctor_func))?;
+  scope.define_property(
+    storage_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(storage_proto)),
+  )?;
+  scope.define_property(
+    storage_proto,
+    constructor_key,
+    data_desc(Value::Object(storage_ctor_func)),
+  )?;
+  let storage_ctor_key = alloc_key(&mut scope, "Storage")?;
+  scope.define_property(
+    global,
+    storage_ctor_key,
+    data_desc(Value::Object(storage_ctor_func)),
+  )?;
+
   install_storage_object(
     vm,
     &mut scope,
     realm,
     global,
     local_storage_key,
+    storage_proto,
     "localStorage",
     web_storage::StorageKind::Local,
     storage_length_get_call_id,
@@ -22408,6 +22450,7 @@ fn init_window_globals(
     realm,
     global,
     session_storage_key,
+    storage_proto,
     "sessionStorage",
     web_storage::StorageKind::Session,
     storage_length_get_call_id,
@@ -23051,6 +23094,28 @@ mod tests {
   fn window_storage_exists_and_round_trips() -> Result<(), VmError> {
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(realm.exec_script("typeof Storage === 'function'")?, Value::Bool(true));
+    assert_eq!(
+      realm.exec_script("localStorage instanceof Storage && sessionStorage instanceof Storage")?,
+      Value::Bool(true)
+    );
+
+    let ctor_error = realm.exec_script(
+      "(() => {\n\
+        try { Storage(); return 'no error'; }\n\
+        catch (e) { return e && e.name; }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), ctor_error), "TypeError");
+
+    let new_error = realm.exec_script(
+      "(() => {\n\
+        try { new Storage(); return 'no error'; }\n\
+        catch (e) { return e && e.name; }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), new_error), "TypeError");
 
     assert_eq!(
       realm.exec_script("localStorage.getItem('missing')")?,
