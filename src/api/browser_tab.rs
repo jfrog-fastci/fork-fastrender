@@ -617,7 +617,16 @@ impl BrowserTabHost {
       return invoker.with_event_loop(event_loop, |invoker| {
         crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
           .map_err(|err| Error::Other(err.to_string()))?;
-        if matches!(target, EventTargetId::Node(_)) {
+        // Mirror the dispatchEvent() behavior for host-driven dispatch: after listener dispatch,
+        // invoke `target["on" + type]` (if callable) so Window/Document handler properties like
+        // `document.onvisibilitychange` are observable for platform-triggered events.
+        //
+        // Note: this intentionally only invokes the EventHandler property on the *dispatch target*,
+        // not on ancestors in the propagation path.
+        if matches!(
+          target,
+          EventTargetId::Window | EventTargetId::Document | EventTargetId::Node(_)
+        ) {
           invoker
             .invoke_event_handler_property(target, &mut event)
             .map_err(|err| Error::Other(err.to_string()))?;
@@ -7900,8 +7909,20 @@ mod tests {
             globalThis.__initialVisibility = document.visibilityState;
             globalThis.__initialHidden = document.hidden;
             globalThis.__visibilityChangeCount = 0;
+            globalThis.__onVisibilityChangeCount = 0;
+            globalThis.__onVisibilityChangeOk = true;
             globalThis.__lastVisibility = null;
             globalThis.__lastHidden = null;
+            document.onvisibilitychange = function (e) {
+              globalThis.__onVisibilityChangeCount++;
+              globalThis.__onVisibilityChangeOk = globalThis.__onVisibilityChangeOk && (
+                this === document &&
+                e && e.type === 'visibilitychange' &&
+                e.target === document &&
+                e.currentTarget === document &&
+                e.eventPhase === 2
+              );
+            };
             document.addEventListener('visibilitychange', () => {
               globalThis.__visibilityChangeCount++;
               globalThis.__lastVisibility = document.visibilityState;
@@ -7941,6 +7962,10 @@ mod tests {
         .exec_script("globalThis.__visibilityChangeCount")
         .map_err(|err| Error::Other(err.to_string()))?;
       assert_eq!(count, Value::Number(0.0));
+      let on_count = realm
+        .exec_script("globalThis.__onVisibilityChangeCount")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(on_count, Value::Number(0.0));
     }
 
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
@@ -7954,6 +7979,15 @@ mod tests {
         .exec_script("globalThis.__visibilityChangeCount")
         .map_err(|err| Error::Other(err.to_string()))?;
       assert_eq!(count, Value::Number(1.0));
+
+      let on_count = realm
+        .exec_script("globalThis.__onVisibilityChangeCount")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(on_count, Value::Number(1.0));
+      let on_ok = realm
+        .exec_script("globalThis.__onVisibilityChangeOk")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(on_ok, Value::Bool(true));
 
       let last_visibility = realm
         .exec_script("globalThis.__lastVisibility")
@@ -7977,6 +8011,10 @@ mod tests {
         .exec_script("globalThis.__visibilityChangeCount")
         .map_err(|err| Error::Other(err.to_string()))?;
       assert_eq!(count, Value::Number(1.0));
+      let on_count = realm
+        .exec_script("globalThis.__onVisibilityChangeCount")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(on_count, Value::Number(1.0));
     }
 
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
@@ -7990,6 +8028,15 @@ mod tests {
         .exec_script("globalThis.__visibilityChangeCount")
         .map_err(|err| Error::Other(err.to_string()))?;
       assert_eq!(count, Value::Number(2.0));
+
+      let on_count = realm
+        .exec_script("globalThis.__onVisibilityChangeCount")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(on_count, Value::Number(2.0));
+      let on_ok = realm
+        .exec_script("globalThis.__onVisibilityChangeOk")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(on_ok, Value::Bool(true));
 
       let last_visibility = realm
         .exec_script("globalThis.__lastVisibility")
