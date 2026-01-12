@@ -42,6 +42,10 @@ fn boolean_prototype_to_string_and_value_of_work() -> Result<(), VmError> {
 
   let s = rt.exec_script(r#"try { Boolean.prototype.toString.call("x"); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { Boolean.prototype.valueOf.call(new Proxy(new Boolean(true), {})); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { Boolean.prototype.toString.call(new Proxy(new Boolean(true), {})); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
   Ok(())
 }
@@ -79,6 +83,10 @@ fn boolean_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Re
   let s = rt.exec_script(r#"try { Boolean.prototype[Symbol.toPrimitive].call(true, 1); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
   let s = rt.exec_script(r#"try { Boolean.prototype[Symbol.toPrimitive].call("x", "default"); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(
+    r#"try { Boolean.prototype[Symbol.toPrimitive].call(new Proxy(new Boolean(true), {}), "default"); } catch (e) { e.name }"#,
+  )?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
   Ok(())

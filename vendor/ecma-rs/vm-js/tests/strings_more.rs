@@ -59,14 +59,32 @@ fn string_at() {
   let value = rt
     .exec_script(
       r#"
-      var s = "A\uD83D\uDCA9B";
-      var poop = "\uD83D\uDCA9";
-      s.at(1) === poop &&
-      s.at(-1) === "B" &&
-      s.at(99) === undefined &&
-      s.at(-99) === undefined &&
-      poop.at(1).charCodeAt(0) === 0xDCA9
+       var s = "A\uD83D\uDCA9B";
+       var poop = "\uD83D\uDCA9";
+       s.at(1) === poop &&
+       s.at(-1) === "B" &&
+       s.at(99) === undefined &&
+       s.at(-99) === undefined &&
+       poop.at(1).charCodeAt(0) === 0xDCA9
     "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_char_code_at_uses_to_string() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        String.prototype.charCodeAt.call(1, 0) === 49 &&
+        String.prototype.charCodeAt.call({ toString: function () { return "A"; } }, 0) === 65 &&
+        (function () {
+          try { String.prototype.charCodeAt.call(new Proxy(Object("x"), {}), 0); return false; }
+          catch (e) { return e.name === "TypeError"; }
+        })()
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));

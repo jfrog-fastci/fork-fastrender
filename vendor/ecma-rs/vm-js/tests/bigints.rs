@@ -73,7 +73,10 @@ fn bigint_prototype_methods_work() -> Result<(), VmError> {
 
   let s = rt.exec_script(r#"try { BigInt.prototype.toString.call("x"); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { BigInt.prototype.valueOf.call(new Proxy(Object(1n), {})); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { BigInt.prototype.toString.call(new Proxy(Object(1n), {})); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
   Ok(())
 }
-

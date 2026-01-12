@@ -10134,10 +10134,8 @@ pub fn array_prototype_concat(
             Value::Object(source_obj),
           )?;
 
-          let to_s = alloc_string_from_usize(
-            &mut iter_scope,
-            usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?,
-          )?;
+          let to_idx = usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?;
+          let to_s = alloc_string_from_usize(&mut iter_scope, to_idx)?;
           iter_scope.push_root(Value::String(to_s))?;
           let to_key = PropertyKey::from_string(to_s);
           iter_scope.create_data_property_or_throw(out, to_key, value)?;
@@ -10154,10 +10152,8 @@ pub fn array_prototype_concat(
       ));
     }
     let mut iter_scope = scope.reborrow();
-    let to_s = alloc_string_from_usize(
-      &mut iter_scope,
-      usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?,
-    )?;
+    let to_idx = usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?;
+    let to_s = alloc_string_from_usize(&mut iter_scope, to_idx)?;
     iter_scope.push_root(Value::String(to_s))?;
     let to_key = PropertyKey::from_string(to_s);
     iter_scope.create_data_property_or_throw(out, to_key, item)?;
@@ -13279,6 +13275,11 @@ fn this_string_value(
   match this {
     Value::String(s) => Ok(s),
     Value::Object(obj) => {
+      // String wrapper internal slots are not present on Proxy objects, even when the Proxy target
+      // is a String wrapper object.
+      if scope.heap().is_proxy_object(obj) {
+        return Err(VmError::TypeError(method));
+      }
       // Root the receiver while interning marker symbols, which can trigger GC.
       scope.push_root(Value::Object(obj))?;
       let marker_sym = match scope.heap().internal_string_data_symbol() {
@@ -13386,45 +13387,28 @@ pub fn string_prototype_char_code_at(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Extract the underlying primitive string from either:
-  // - a string primitive (`"x"`), or
-  // - a boxed String object (`Object("x")` / `new String("x")`).
-  let prim = match this {
-    Value::String(s) => s,
-    Value::Object(obj) => {
-      let marker_sym = match scope.heap().internal_string_data_symbol() {
-        Some(sym) => sym,
-        None => scope.heap_mut().ensure_internal_string_data_symbol()?,
-      };
-      let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
-        Some(Value::String(s)) => s,
-        _ => return Err(VmError::TypeError("String.prototype.charCodeAt on non-String object")),
-      }
-    }
-    _ => return Err(VmError::TypeError("String.prototype.charCodeAt on non-string")),
-  };
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.charcodeat
+  let mut scope = scope.reborrow();
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
 
   let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let mut n = match pos_value {
-    Value::Undefined => 0.0,
-    other => scope.to_number(vm, host, hooks, other)?,
-  };
-
-  // `ToIntegerOrInfinity` rounds toward zero.
-  if n.is_nan() {
-    n = 0.0;
-  }
-  if !n.is_finite() {
+  let pos = scope.to_integer_or_infinity(vm, host, hooks, pos_value)?;
+  if !pos.is_finite() {
     return Ok(Value::Number(f64::NAN));
   }
-  n = n.trunc();
-  if n < 0.0 {
+  if pos < 0.0 || pos > (usize::MAX as f64) {
     return Ok(Value::Number(f64::NAN));
   }
+  let idx = pos as usize;
 
-  let idx = n as usize;
-  let js = scope.heap().get_string(prim)?;
+  let js = scope.heap().get_string(s)?;
   let units = js.as_code_units();
   if idx >= units.len() {
     return Ok(Value::Number(f64::NAN));
@@ -15461,6 +15445,11 @@ fn this_number_value(scope: &mut Scope<'_>, this: Value, method: &'static str) -
   match this {
     Value::Number(n) => Ok(n),
     Value::Object(obj) => {
+      // Number wrapper internal slots are not present on Proxy objects, even when the Proxy target
+      // is a Number wrapper object.
+      if scope.heap().is_proxy_object(obj) {
+        return Err(VmError::TypeError(method));
+      }
       let marker_sym = match scope.heap().internal_number_data_symbol() {
         Some(sym) => sym,
         None => scope.heap_mut().ensure_internal_number_data_symbol()?,
@@ -15482,6 +15471,11 @@ fn this_boolean_value(scope: &mut Scope<'_>, this: Value, method: &'static str) 
   match this {
     Value::Bool(b) => Ok(b),
     Value::Object(obj) => {
+      // Boolean wrapper internal slots are not present on Proxy objects, even when the Proxy target
+      // is a Boolean wrapper object.
+      if scope.heap().is_proxy_object(obj) {
+        return Err(VmError::TypeError(method));
+      }
       let marker_sym = match scope.heap().internal_boolean_data_symbol() {
         Some(sym) => sym,
         None => scope.heap_mut().ensure_internal_boolean_data_symbol()?,
@@ -16392,6 +16386,11 @@ fn this_bigint_value(
   match this {
     Value::BigInt(b) => Ok(b),
     Value::Object(obj) => {
+      // BigInt wrapper internal slots are not present on Proxy objects, even when the Proxy target
+      // is a BigInt wrapper object.
+      if scope.heap().is_proxy_object(obj) {
+        return Err(VmError::TypeError(method));
+      }
       let marker_sym = match scope.heap().internal_bigint_data_symbol() {
         Some(sym) => sym,
         None => scope.heap_mut().ensure_internal_bigint_data_symbol()?,

@@ -65,6 +65,16 @@ fn string_prototype_value_of_and_symbol_to_primitive_work() -> Result<(), VmErro
   let s = rt.exec_script(r#"try { String.prototype.toString.call(1); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
+  // Proxy wrapper objects must not be treated as String wrapper objects (internal slots do not
+  // exist on the Proxy itself).
+  let s = rt.exec_script(r#"try { String.prototype.valueOf.call(new Proxy(Object("x"), {})); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { String.prototype.toString.call(new Proxy(Object("x"), {})); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(
+    r#"try { String.prototype[Symbol.toPrimitive].call(new Proxy(Object("x"), {}), "string"); } catch (e) { e.name }"#,
+  )?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+
   Ok(())
 }
-

@@ -104,6 +104,10 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
   assert_eq!(as_utf8_lossy(&rt, s), "RangeError");
   let s = rt.exec_script(r#"try { Number.prototype.toString.call("x"); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { Number.prototype.valueOf.call(new Proxy(new Number(1), {})); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(r#"try { Number.prototype.toString.call(new Proxy(new Number(1), {})); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
   Ok(())
 }
@@ -141,6 +145,10 @@ fn number_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Res
   let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call(1, 1); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
   let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call("x", "number"); } catch (e) { e.name }"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  let s = rt.exec_script(
+    r#"try { Number.prototype[Symbol.toPrimitive].call(new Proxy(new Number(1), {}), "number"); } catch (e) { e.name }"#,
+  )?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
   Ok(())
