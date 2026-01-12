@@ -171,10 +171,17 @@ impl SubpixelAAScratch {
         "text subpixel AA mask",
       )?);
     }
-    let pixmap = self
-      .pixmap
-      .as_mut()
-      .expect("pixmap should exist after allocation");
+    if self.pixmap.is_none() {
+      // We should only hit this when something unexpected cleared the cached pixmap. Retry the
+      // allocation once and surface a deterministic error if the scratch is still missing.
+      self.pixmap = Some(new_pixmap_with_context(width, height, "text subpixel AA mask")?);
+    }
+
+    let Some(pixmap) = self.pixmap.as_mut() else {
+      return Err(Error::Render(RenderError::RasterizationFailed {
+        reason: "text subpixel AA scratch pixmap missing after allocation".to_string(),
+      }));
+    };
     pixmap.data_mut().fill(0);
     Ok(pixmap)
   }

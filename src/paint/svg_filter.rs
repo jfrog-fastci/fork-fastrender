@@ -2189,11 +2189,9 @@ impl<'a> SvgFilterResolver<'a> {
 
     let resolved = self.resolve_uncached(&normalized);
     if let Some(filter) = resolved.as_ref() {
-      self
-        .cache
-        .as_mut()
-        .expect("cache should be initialized when cache_max_items > 0")
-        .put(normalized, filter.clone());
+      if let Some(cache) = self.cache.as_mut() {
+        cache.put(normalized, filter.clone());
+      }
     }
     resolved
   }

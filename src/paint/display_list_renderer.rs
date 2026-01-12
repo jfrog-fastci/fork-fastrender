@@ -9704,8 +9704,7 @@ impl DisplayListRenderer {
           });
           return Ok(None);
         };
-        converted_source = Some(tile);
-        converted_source.as_ref().unwrap()
+        converted_source.insert(tile)
       }
     };
 
@@ -17365,7 +17364,9 @@ impl DisplayListRenderer {
 
     let mut dest_device = Rect::from_xywh(min_x, min_y, dest_w, dest_h);
     if src_rect_is_fractional {
-      let src = src_rect.expect("fractional src_rect implies Some");
+      let Some(src) = src_rect else {
+        return Ok(None);
+      };
       let scale_x = dest_w / src.width();
       let scale_y = dest_h / src.height();
       if !scale_x.is_finite() || !scale_y.is_finite() {

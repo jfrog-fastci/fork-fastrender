@@ -13288,68 +13288,70 @@ impl Painter {
       });
 
       if should_wrap {
-        let brk = break_opportunity.expect("should_wrap implies break");
-        if let Some((mut before, after)) = remaining.split_at(
-          brk.byte_offset,
-          brk.adds_hyphen,
-          &self.shaper,
-          &self.font_ctx,
-          &mut reshape_cache,
-        ) {
-          // CSS trims collapsible trailing spaces at soft wrap opportunities. Mirror the inline
-          // formatting context so width calculations don't include those spaces.
-          let mut drop_before = false;
-          if matches!(brk.break_type, crate::text::line_break::BreakType::Allowed)
-            && matches!(
-              before.style.white_space,
-              crate::style::types::WhiteSpace::Normal
-                | crate::style::types::WhiteSpace::Nowrap
-                | crate::style::types::WhiteSpace::PreLine
-            )
-          {
-            let trimmed_len = before.text.trim_end_matches(' ').len();
-            if trimmed_len < before.text.len() {
-              if trimmed_len == 0 {
-                drop_before = true;
-              } else if let Some((trimmed, _)) = before.split_at(
-                trimmed_len,
-                false,
-                &self.shaper,
-                &self.font_ctx,
-                &mut reshape_cache,
-              ) {
-                before = trimmed;
+        if let Some(brk) = break_opportunity {
+          if let Some((mut before, after)) = remaining.split_at(
+            brk.byte_offset,
+            brk.adds_hyphen,
+            &self.shaper,
+            &self.font_ctx,
+            &mut reshape_cache,
+          ) {
+            // CSS trims collapsible trailing spaces at soft wrap opportunities. Mirror the inline
+            // formatting context so width calculations don't include those spaces.
+            let mut drop_before = false;
+            if matches!(brk.break_type, crate::text::line_break::BreakType::Allowed)
+              && matches!(
+                before.style.white_space,
+                crate::style::types::WhiteSpace::Normal
+                  | crate::style::types::WhiteSpace::Nowrap
+                  | crate::style::types::WhiteSpace::PreLine
+              )
+            {
+              let trimmed_len = before.text.trim_end_matches(' ').len();
+              if trimmed_len < before.text.len() {
+                if trimmed_len == 0 {
+                  drop_before = true;
+                } else if let Some((trimmed, _)) = before.split_at(
+                  trimmed_len,
+                  false,
+                  &self.shaper,
+                  &self.font_ctx,
+                  &mut reshape_cache,
+                ) {
+                  before = trimmed;
+                }
               }
             }
-          }
 
-          if !drop_before && before.advance > 0.0 {
-            let start_x = Self::aligned_text_start_x(style, line_rect, before.advance);
-            let half_leading =
-              (before.metrics.line_height - (before.metrics.ascent + before.metrics.descent)) / 2.0;
-            let baseline_y = y + half_leading + before.metrics.baseline_offset;
-            self.paint_shaped_runs(
-              &before.runs,
-              start_x,
-              baseline_y,
-              style.color,
-              Some(style),
-              clip_mask,
-            );
-            painted_any = true;
-          }
+            if !drop_before && before.advance > 0.0 {
+              let start_x = Self::aligned_text_start_x(style, line_rect, before.advance);
+              let half_leading = (before.metrics.line_height
+                - (before.metrics.ascent + before.metrics.descent))
+                / 2.0;
+              let baseline_y = y + half_leading + before.metrics.baseline_offset;
+              self.paint_shaped_runs(
+                &before.runs,
+                start_x,
+                baseline_y,
+                style.color,
+                Some(style),
+                clip_mask,
+              );
+              painted_any = true;
+            }
 
-          // If the wrapped segment contained only collapsible whitespace, keep consuming from the
-          // remainder without advancing the line so we don't output empty lines for leading spaces.
-          if drop_before && matches!(brk.break_type, crate::text::line_break::BreakType::Allowed) {
+            // If the wrapped segment contained only collapsible whitespace, keep consuming from the
+            // remainder without advancing the line so we don't output empty lines for leading spaces.
+            if drop_before && matches!(brk.break_type, crate::text::line_break::BreakType::Allowed) {
+              remaining = after;
+              continue;
+            }
+
             remaining = after;
+            y += line_height;
+            line_idx += 1;
             continue;
           }
-
-          remaining = after;
-          y += line_height;
-          line_idx += 1;
-          continue;
         }
       }
 
