@@ -1033,19 +1033,26 @@ pub(crate) fn current_git_sha() -> Option<String> {
   static GIT_SHA: OnceLock<Option<String>> = OnceLock::new();
   GIT_SHA
     .get_or_init(|| {
+      // Prefer CI-provided SHAs over `git rev-parse` so pageset artifacts are deterministic and we
+      // don't spawn subprocesses unnecessarily.
+      //
+      // Precedence is:
+      // 1. `FASTR_GIT_SHA` - explicit override (useful for tests and custom CI).
+      // 2. `GITHUB_SHA` - GitHub Actions' commit SHA.
+      for key in ["FASTR_GIT_SHA", "GITHUB_SHA"] {
+        if let Ok(val) = std::env::var(key) {
+          let trimmed = val.trim();
+          if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+          }
+        }
+      }
+
       if let Ok(output) = Command::new("git").arg("rev-parse").arg("HEAD").output() {
         if output.status.success() {
           let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
           if !sha.is_empty() {
             return Some(sha);
-          }
-        }
-      }
-      for key in ["GITHUB_SHA", "FASTR_GIT_SHA"] {
-        if let Ok(val) = std::env::var(key) {
-          let trimmed = val.trim();
-          if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
           }
         }
       }

@@ -85,28 +85,13 @@ fn timeout_to_timeout_keeps_commits_stable() {
 #[test]
 fn current_git_sha_uses_env_fallback() {
   let expected = "env-fallback-sha";
-  let original_path = std::env::var("PATH").ok();
-  let original_fastr = std::env::var("FASTR_GIT_SHA").ok();
-  let original_github = std::env::var("GITHUB_SHA").ok();
+  let _lock = crate::common::global_test_lock();
+  let _fastr_sha = crate::common::EnvVarGuard::set("FASTR_GIT_SHA", expected);
+  let _github_sha = crate::common::EnvVarGuard::set("GITHUB_SHA", "wrong-sha");
 
-  std::env::set_var("PATH", "");
-  std::env::set_var("FASTR_GIT_SHA", expected);
-  std::env::set_var("GITHUB_SHA", expected);
-
+  // `current_git_sha()` should prefer env vars over spawning `git`, so this remains stable even
+  // when `git` is available on PATH.
   let detected = current_git_sha();
-
-  match original_path {
-    Some(val) => std::env::set_var("PATH", val),
-    None => std::env::remove_var("PATH"),
-  }
-  match original_fastr {
-    Some(val) => std::env::set_var("FASTR_GIT_SHA", val),
-    None => std::env::remove_var("FASTR_GIT_SHA"),
-  }
-  match original_github {
-    Some(val) => std::env::set_var("GITHUB_SHA", val),
-    None => std::env::remove_var("GITHUB_SHA"),
-  }
 
   assert_eq!(detected.as_deref(), Some(expected));
 }
