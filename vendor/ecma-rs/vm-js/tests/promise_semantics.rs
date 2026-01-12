@@ -65,10 +65,26 @@ impl TestContext {
   }
 
   fn run_jobs(&mut self, host: &mut TestHost) -> Result<(), VmError> {
+    // Keep draining even if a job fails so we don't drop queued jobs with leaked persistent roots.
+    let mut first_err: Option<VmError> = None;
     while let Some(job) = host.queue.pop_front() {
-      job.run(self, host)?;
+      let result = job.run(self, host);
+      if first_err.is_none() {
+        if let Err(e) = result {
+          first_err = Some(e);
+        }
+      }
     }
-    Ok(())
+    match first_err {
+      None => Ok(()),
+      Some(e) => Err(e),
+    }
+  }
+
+  fn discard_all_jobs(&mut self, host: &mut TestHost) {
+    while let Some(job) = host.queue.pop_front() {
+      job.discard(self);
+    }
   }
 }
 
@@ -389,20 +405,17 @@ fn basic_fulfillment_then_schedules_microtask_and_fulfills_derived() -> Result<(
   let mut host = TestHost::default();
   let mut realm = Realm::new(&mut ctx.vm, &mut ctx.heap)?;
 
-  let promise_ctor = realm.intrinsics().promise();
-  let promise_proto = realm.intrinsics().promise_prototype();
-  let promise_then = get_own_data_function(&mut ctx.heap, promise_proto, "then")?;
-
-  // Ensure the realm is always torn down even if the test returns early with an error. Otherwise,
-  // the Realm's `Drop` debug-assert will mask the real failure (and can leak persistent roots if the
-  // heap is reused).
+  // Run the test body in an inner closure so we can always tear down the realm and discard any
+  // queued Promise jobs (which can own persistent roots) even if the test returns early with an
+  // error.
   let result: Result<(), VmError> = (|| {
+    let promise_ctor = realm.intrinsics().promise();
+    let promise_proto = realm.intrinsics().promise_prototype();
+    let promise_then = get_own_data_function(&mut ctx.heap, promise_proto, "then")?;
+
     let (promise_obj, derived_obj) = {
       let mut scope = ctx.heap.scope();
-      scope.push_roots(&[
-        Value::Object(promise_ctor),
-        Value::Object(promise_then),
-      ])?;
+      scope.push_roots(&[Value::Object(promise_ctor), Value::Object(promise_then)])?;
 
       let exec_id = ctx.vm.register_native_call(executor_resolve_one)?;
       let exec_name = scope.alloc_string("executor")?;
@@ -418,8 +431,8 @@ fn basic_fulfillment_then_schedules_microtask_and_fulfills_derived() -> Result<(
       else {
         return Err(VmError::Unimplemented("Promise constructor returned non-object"));
       };
-      // Root the created promises across subsequent allocations (e.g. creating the handlers)
-      // because holding a `GcObject` handle in a Rust local does not keep it alive across GC.
+      // Root the created promises across subsequent allocations (e.g. creating handlers), because
+      // holding a `GcObject` handle in a Rust local does not keep it alive across GC.
       scope.push_root(Value::Object(promise_obj))?;
 
       let add_one_id = ctx.vm.register_native_call(add_one)?;
@@ -452,8 +465,8 @@ fn basic_fulfillment_then_schedules_microtask_and_fulfills_derived() -> Result<(
 
       (promise_obj, derived_obj)
     };
-    // Keep promises alive across the job run: jobs and microtask execution can allocate and trigger
-    // GC.
+
+    // Keep promises alive across job execution (jobs/microtasks can allocate and trigger GC).
     let promise_root = ctx.heap.add_root(Value::Object(promise_obj))?;
     let derived_root = ctx.heap.add_root(Value::Object(derived_obj))?;
 
@@ -464,27 +477,19 @@ fn basic_fulfillment_then_schedules_microtask_and_fulfills_derived() -> Result<(
       assert_eq!(ctx.vm.microtask_queue().len(), 0, "custom host should be used");
 
       ctx.run_jobs(&mut host)?;
-      ctx.run_jobs(&mut host)?;
 
       assert_eq!(ctx.heap.promise_state(derived_obj)?, PromiseState::Fulfilled);
       assert_eq!(ctx.heap.promise_result(derived_obj)?, Some(Value::Number(2.0)));
       assert_eq!(THEN2_ARG.with(|c| c.get()), Some(2.0));
-
       Ok(())
     })();
 
     ctx.heap.remove_root(promise_root);
     ctx.heap.remove_root(derived_root);
-
     result
   })();
 
-  // If the test failed part-way through, there may be queued jobs that still own persistent roots.
-  // Discard them explicitly so `Job`'s `Drop` assertion doesn't mask the real error.
-  while let Some(job) = host.queue.pop_front() {
-    job.discard(&mut ctx);
-  }
-
+  ctx.discard_all_jobs(&mut host);
   realm.teardown(&mut ctx.heap);
   result
 }

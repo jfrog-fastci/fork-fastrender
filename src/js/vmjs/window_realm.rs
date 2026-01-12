@@ -659,6 +659,11 @@ impl WindowRealm {
   }
 
   pub fn teardown(&mut self) {
+    // Discard any queued Promise jobs so their persistent roots are unregistered before we tear down
+    // the realm/module graph. This is especially important on early-abort paths where the embedding
+    // drops the realm without running a microtask checkpoint.
+    self.runtime.teardown_microtasks();
+
     // If module support was enabled for this realm, `Vm::module_graph_ptr` points into the
     // realm-owned module graph allocation.
     //

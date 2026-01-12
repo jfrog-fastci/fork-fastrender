@@ -668,6 +668,49 @@ impl Vm {
     &mut self.microtasks
   }
 
+  /// Discard all queued Promise jobs in the VM-owned microtask queue without running them.
+  ///
+  /// This unregisters any persistent roots held by queued jobs. Use this when an embedding needs
+  /// to abandon the queue (for example when aborting execution) while still intending to reuse the
+  /// heap.
+  pub fn teardown_microtasks(&mut self, heap: &mut Heap) {
+    struct TeardownCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for TeardownCtx<'_> {
+      fn call(
+        &mut self,
+        _hooks: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("TeardownCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _hooks: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("TeardownCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id)
+      }
+    }
+
+    let mut ctx = TeardownCtx { heap };
+    self.microtasks.teardown(&mut ctx);
+  }
+
   /// Returns the number of in-progress async continuations currently stored in the VM.
   ///
   /// Async continuations are used to resume `async` function bodies and async module evaluation

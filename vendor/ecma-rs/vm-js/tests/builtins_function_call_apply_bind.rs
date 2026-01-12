@@ -15,6 +15,8 @@ fn data_desc(value: Value) -> PropertyDescriptor {
 }
 
 fn string_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
+  // Property keys are heap-allocated strings; keep them rooted across any allocations performed by
+  // `define_property` so GC cannot collect them between creation and use.
   let key_s = scope.alloc_string(name)?;
   scope.push_root(Value::String(key_s))?;
   Ok(PropertyKey::from_string(key_s))
@@ -22,6 +24,7 @@ fn string_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError>
 
 fn get_builtin(scope: &mut Scope<'_>, realm: &Realm, name: &str) -> Result<Value, VmError> {
   let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
   let proto = realm.intrinsics().function_prototype();
   let desc = scope

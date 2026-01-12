@@ -288,3 +288,19 @@ fn cancel_all_discards_jobs_and_unregisters_roots() -> Result<(), VmError> {
   assert_eq!(weak.upgrade(&ctx.heap), None);
   Ok(())
 }
+
+#[test]
+fn teardown_resets_microtask_checkpoint_reentrancy_guard() -> Result<(), VmError> {
+  let mut ctx = TestContext::new();
+  let mut queue = MicrotaskQueue::new();
+
+  assert!(queue.begin_checkpoint(), "expected fresh queue to begin checkpoint");
+  queue.teardown(&mut ctx);
+
+  assert!(
+    queue.begin_checkpoint(),
+    "expected teardown() to reset the checkpoint reentrancy guard"
+  );
+  queue.end_checkpoint();
+  Ok(())
+}

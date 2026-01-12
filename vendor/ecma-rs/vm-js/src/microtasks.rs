@@ -122,6 +122,9 @@ impl MicrotaskQueue {
     while let Some((_realm, job)) = self.queue.pop_front() {
       job.discard(ctx);
     }
+    // Teardown implies abandoning any in-progress checkpoint; reset the reentrancy guard so the
+    // queue can be reused even if the embedding aborts mid-checkpoint.
+    self.performing_microtask_checkpoint = false;
   }
 
   /// Alias for [`MicrotaskQueue::teardown`].
