@@ -2446,6 +2446,7 @@ const POP_STATE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_pop_state_event_protot
 const HASH_CHANGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_hash_change_event_prototype";
 const STORAGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_storage_event_prototype";
 const EVENT_ID_KEY: &str = "__fastrender_event_id";
+const EVENT_DISPATCHING_KEY: &str = "__fastrender_event_dispatching";
 const EVENT_IMMEDIATE_STOP_KEY: &str = "__fastrender_event_stop_immediate";
 const EVENT_COMPOSED_PATH_KEY: &str = "__fastrender_event_composed_path";
 const EVENT_LISTENER_ROOTS_KEY: &str = "__fastrender_event_listener_roots";
@@ -11499,26 +11500,30 @@ fn define_event_default_properties(scope: &mut Scope<'_>, obj: GcObject) -> Resu
   // WHATWG DOM: core Event attributes must exist from construction time (or `createEvent`), with
   // default values until dispatch populates them.
   let target_key = alloc_key(scope, "target")?;
-  scope.define_property(obj, target_key, data_desc(Value::Null))?;
+  scope.define_property(obj, target_key, read_only_data_desc(Value::Null))?;
   // Legacy alias for `target` (still present on most browsers).
   let src_element_key = alloc_key(scope, "srcElement")?;
-  scope.define_property(obj, src_element_key, data_desc(Value::Null))?;
+  scope.define_property(obj, src_element_key, read_only_data_desc(Value::Null))?;
 
   let current_target_key = alloc_key(scope, "currentTarget")?;
-  scope.define_property(obj, current_target_key, data_desc(Value::Null))?;
+  scope.define_property(obj, current_target_key, read_only_data_desc(Value::Null))?;
 
   let event_phase_key = alloc_key(scope, "eventPhase")?;
-  scope.define_property(obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+  scope.define_property(obj, event_phase_key, read_only_data_desc(Value::Number(0.0)))?;
 
   // `timeStamp` is defined at construction time. For MVP we use `0`.
   let time_stamp_key = alloc_key(scope, "timeStamp")?;
-  scope.define_property(obj, time_stamp_key, data_desc(Value::Number(0.0)))?;
+  scope.define_property(obj, time_stamp_key, read_only_data_desc(Value::Number(0.0)))?;
 
   define_event_is_trusted_legacy_unforgeable(scope, obj, false)?;
 
   // Base dispatch-control flags, mutable via `preventDefault()` / propagation control.
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(
+    obj,
+    default_prevented_key,
+    read_only_data_desc(Value::Bool(false)),
+  )?;
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
@@ -11633,12 +11638,16 @@ fn event_constructor_native(
 }
 
 fn event_constructor_impl(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
-  let type_string = scope.heap_mut().to_string(type_arg)?;
+  let type_string = scope.to_string(vm, host, hooks, type_arg)?;
+  scope.push_root(Value::String(type_string))?;
 
   let mut bubbles = false;
   let mut cancelable = false;
@@ -11687,18 +11696,27 @@ fn event_constructor_impl(
   }
 
   let type_key = alloc_key(scope, "type")?;
-  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+  scope.define_property(obj, type_key, read_only_data_desc(Value::String(type_string)))?;
 
   let bubbles_key = alloc_key(scope, "bubbles")?;
-  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  scope.define_property(obj, bubbles_key, read_only_data_desc(Value::Bool(bubbles)))?;
 
   let cancelable_key = alloc_key(scope, "cancelable")?;
-  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+  scope.define_property(
+    obj,
+    cancelable_key,
+    read_only_data_desc(Value::Bool(cancelable)),
+  )?;
 
   let composed_key = alloc_key(scope, "composed")?;
-  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+  scope.define_property(obj, composed_key, read_only_data_desc(Value::Bool(composed)))?;
 
   define_event_default_properties(scope, obj)?;
+
+  // Mark `new Event()` events as initialized so legacy `document.createEvent` instances can be
+  // detected by `dispatchEvent` (which must throw `InvalidStateError` until initialization).
+  let initialized_key = alloc_key(scope, EVENT_INITIALIZED_KEY)?;
+  scope.define_property(obj, initialized_key, data_desc(Value::Bool(true)))?;
 
   brand_event_object(scope, obj, BrandedEventKind::Event)?;
 
@@ -12389,12 +12407,16 @@ fn custom_event_constructor_native(
 }
 
 fn custom_event_constructor_impl(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
-  let type_string = scope.heap_mut().to_string(type_arg)?;
+  let type_string = scope.to_string(vm, host, hooks, type_arg)?;
+  scope.push_root(Value::String(type_string))?;
 
   let mut bubbles = false;
   let mut cancelable = false;
@@ -12454,21 +12476,28 @@ fn custom_event_constructor_impl(
   }
 
   let type_key = alloc_key(scope, "type")?;
-  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+  scope.define_property(obj, type_key, read_only_data_desc(Value::String(type_string)))?;
 
   let bubbles_key = alloc_key(scope, "bubbles")?;
-  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  scope.define_property(obj, bubbles_key, read_only_data_desc(Value::Bool(bubbles)))?;
 
   let cancelable_key = alloc_key(scope, "cancelable")?;
-  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+  scope.define_property(
+    obj,
+    cancelable_key,
+    read_only_data_desc(Value::Bool(cancelable)),
+  )?;
 
   let composed_key = alloc_key(scope, "composed")?;
-  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+  scope.define_property(obj, composed_key, read_only_data_desc(Value::Bool(composed)))?;
 
   define_event_default_properties(scope, obj)?;
 
   let detail_key = alloc_key(scope, "detail")?;
-  scope.define_property(obj, detail_key, data_desc(detail))?;
+  scope.define_property(obj, detail_key, read_only_data_desc(detail))?;
+
+  let initialized_key = alloc_key(scope, EVENT_INITIALIZED_KEY)?;
+  scope.define_property(obj, initialized_key, data_desc(Value::Bool(true)))?;
 
   brand_event_object(scope, obj, BrandedEventKind::CustomEvent)?;
 
@@ -13597,10 +13626,10 @@ fn page_transition_event_constructor_impl(
 }
 
 fn event_constructor_construct_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -13609,14 +13638,14 @@ fn event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  event_constructor_impl(scope, ctor, args)
+  event_constructor_impl(vm, scope, host, hooks, ctor, args)
 }
 
 fn custom_event_constructor_construct_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -13625,7 +13654,7 @@ fn custom_event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  custom_event_constructor_impl(scope, ctor, args)
+  custom_event_constructor_impl(vm, scope, host, hooks, ctor, args)
 }
 
 fn storage_event_constructor_construct_native(
@@ -13757,10 +13786,10 @@ fn page_transition_event_constructor_construct_native(
 }
 
 fn event_init_event_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -13776,8 +13805,15 @@ fn event_init_event_native(
     ));
   }
 
+  // Per DOM, legacy `initEvent` is only supported for events created via `document.createEvent`
+  // (uninitialized events). For already-initialized events, treat as a no-op.
+  if is_event_initialized(scope, event_obj)? {
+    return Ok(Value::Undefined);
+  }
+
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
-  let type_string = scope.heap_mut().to_string(type_arg)?;
+  let type_string = scope.to_string(vm, host, hooks, type_arg)?;
+  scope.push_root(Value::String(type_string))?;
 
   let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   let bubbles = scope.heap().to_boolean(bubbles_arg)?;
@@ -13786,27 +13822,31 @@ fn event_init_event_native(
   let cancelable = scope.heap().to_boolean(cancelable_arg)?;
 
   let type_key = alloc_key(scope, "type")?;
-  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+  scope.define_property(
+    event_obj,
+    type_key,
+    read_only_data_desc(Value::String(type_string)),
+  )?;
 
   let bubbles_key = alloc_key(scope, "bubbles")?;
-  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  scope.define_property(event_obj, bubbles_key, read_only_data_desc(Value::Bool(bubbles)))?;
 
   let cancelable_key = alloc_key(scope, "cancelable")?;
   scope.define_property(
     event_obj,
     cancelable_key,
-    data_desc(Value::Bool(cancelable)),
+    read_only_data_desc(Value::Bool(cancelable)),
   )?;
 
   // `initEvent` does not expose `composed`; reset to false per DOM.
   let composed_key = alloc_key(scope, "composed")?;
-  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(event_obj, composed_key, read_only_data_desc(Value::Bool(false)))?;
 
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
   scope.define_property(
     event_obj,
     default_prevented_key,
-    data_desc(Value::Bool(false)),
+    read_only_data_desc(Value::Bool(false)),
   )?;
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
@@ -14332,10 +14372,10 @@ fn focus_event_init_focus_event_native(
 }
 
 fn custom_event_init_custom_event_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -14345,17 +14385,21 @@ fn custom_event_init_custom_event_native(
       "CustomEvent.initCustomEvent must be called on a CustomEvent object",
     ));
   };
-  if !matches!(
-    branded_event_kind(scope, event_obj)?,
-    Some(BrandedEventKind::CustomEvent)
-  ) {
+  if !matches!(branded_event_kind(scope, event_obj)?, Some(BrandedEventKind::CustomEvent)) {
     return Err(VmError::TypeError(
       "CustomEvent.initCustomEvent must be called on a CustomEvent object",
     ));
   }
 
+  // Per DOM, legacy `initCustomEvent` is only supported for events created via `document.createEvent`
+  // (uninitialized events). For already-initialized events, treat as a no-op.
+  if is_event_initialized(scope, event_obj)? {
+    return Ok(Value::Undefined);
+  }
+
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
-  let type_string = scope.heap_mut().to_string(type_arg)?;
+  let type_string = scope.to_string(vm, host, hooks, type_arg)?;
+  scope.push_root(Value::String(type_string))?;
 
   let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   let bubbles = scope.heap().to_boolean(bubbles_arg)?;
@@ -14371,27 +14415,31 @@ fn custom_event_init_custom_event_native(
   };
 
   let type_key = alloc_key(scope, "type")?;
-  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+  scope.define_property(
+    event_obj,
+    type_key,
+    read_only_data_desc(Value::String(type_string)),
+  )?;
 
   let bubbles_key = alloc_key(scope, "bubbles")?;
-  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  scope.define_property(event_obj, bubbles_key, read_only_data_desc(Value::Bool(bubbles)))?;
 
   let cancelable_key = alloc_key(scope, "cancelable")?;
   scope.define_property(
     event_obj,
     cancelable_key,
-    data_desc(Value::Bool(cancelable)),
+    read_only_data_desc(Value::Bool(cancelable)),
   )?;
 
   // `initCustomEvent` does not expose `composed`; reset to false per DOM.
   let composed_key = alloc_key(scope, "composed")?;
-  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(event_obj, composed_key, read_only_data_desc(Value::Bool(false)))?;
 
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
   scope.define_property(
     event_obj,
     default_prevented_key,
-    data_desc(Value::Bool(false)),
+    read_only_data_desc(Value::Bool(false)),
   )?;
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
@@ -14401,7 +14449,7 @@ fn custom_event_init_custom_event_native(
   scope.define_property(event_obj, immediate_stop_key, data_desc(Value::Bool(false)))?;
 
   let detail_key = alloc_key(scope, "detail")?;
-  scope.define_property(event_obj, detail_key, data_desc(detail))?;
+  scope.define_property(event_obj, detail_key, read_only_data_desc(detail))?;
 
   set_event_initialized(scope, event_obj, true)?;
 
@@ -14409,10 +14457,10 @@ fn custom_event_init_custom_event_native(
 }
 
 fn storage_event_init_storage_event_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -14422,17 +14470,21 @@ fn storage_event_init_storage_event_native(
       "StorageEvent.initStorageEvent must be called on a StorageEvent object",
     ));
   };
-  if !matches!(
-    branded_event_kind(scope, event_obj)?,
-    Some(BrandedEventKind::StorageEvent)
-  ) {
+  if !matches!(branded_event_kind(scope, event_obj)?, Some(BrandedEventKind::StorageEvent)) {
     return Err(VmError::TypeError(
       "StorageEvent.initStorageEvent must be called on a StorageEvent object",
     ));
   }
 
+  // Per DOM, legacy `initStorageEvent` is only supported for events created via `document.createEvent`
+  // (uninitialized events). For already-initialized events, treat as a no-op.
+  if is_event_initialized(scope, event_obj)? {
+    return Ok(Value::Undefined);
+  }
+
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
-  let type_string = scope.heap_mut().to_string(type_arg)?;
+  let type_string = scope.to_string(vm, host, hooks, type_arg)?;
+  scope.push_root(Value::String(type_string))?;
 
   let bubbles_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   let bubbles = scope.heap().to_boolean(bubbles_arg)?;
@@ -14444,28 +14496,44 @@ fn storage_event_init_storage_event_native(
   let key = match key_arg {
     Value::Undefined => Value::Null,
     Value::Null => Value::Null,
-    other => Value::String(scope.heap_mut().to_string(other)?),
+    other => {
+      let s = scope.to_string(vm, host, hooks, other)?;
+      scope.push_root(Value::String(s))?;
+      Value::String(s)
+    }
   };
 
   let old_value_arg = args.get(4).copied().unwrap_or(Value::Undefined);
   let old_value = match old_value_arg {
     Value::Undefined => Value::Null,
     Value::Null => Value::Null,
-    other => Value::String(scope.heap_mut().to_string(other)?),
+    other => {
+      let s = scope.to_string(vm, host, hooks, other)?;
+      scope.push_root(Value::String(s))?;
+      Value::String(s)
+    }
   };
 
   let new_value_arg = args.get(5).copied().unwrap_or(Value::Undefined);
   let new_value = match new_value_arg {
     Value::Undefined => Value::Null,
     Value::Null => Value::Null,
-    other => Value::String(scope.heap_mut().to_string(other)?),
+    other => {
+      let s = scope.to_string(vm, host, hooks, other)?;
+      scope.push_root(Value::String(s))?;
+      Value::String(s)
+    }
   };
 
   let url_arg = args.get(6).copied().unwrap_or(Value::Undefined);
   let url = if matches!(url_arg, Value::Undefined) {
-    Value::String(scope.alloc_string("")?)
+    let s = scope.alloc_string("")?;
+    scope.push_root(Value::String(s))?;
+    Value::String(s)
   } else {
-    Value::String(scope.heap_mut().to_string(url_arg)?)
+    let s = scope.to_string(vm, host, hooks, url_arg)?;
+    scope.push_root(Value::String(s))?;
+    Value::String(s)
   };
 
   let storage_area_arg = args.get(7).copied().unwrap_or(Value::Undefined);
@@ -14476,27 +14544,31 @@ fn storage_event_init_storage_event_native(
   };
 
   let type_key = alloc_key(scope, "type")?;
-  scope.define_property(event_obj, type_key, data_desc(Value::String(type_string)))?;
+  scope.define_property(
+    event_obj,
+    type_key,
+    read_only_data_desc(Value::String(type_string)),
+  )?;
 
   let bubbles_key = alloc_key(scope, "bubbles")?;
-  scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  scope.define_property(event_obj, bubbles_key, read_only_data_desc(Value::Bool(bubbles)))?;
 
   let cancelable_key = alloc_key(scope, "cancelable")?;
   scope.define_property(
     event_obj,
     cancelable_key,
-    data_desc(Value::Bool(cancelable)),
+    read_only_data_desc(Value::Bool(cancelable)),
   )?;
 
   // `initStorageEvent` does not expose `composed`; reset to false per DOM.
   let composed_key = alloc_key(scope, "composed")?;
-  scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(event_obj, composed_key, read_only_data_desc(Value::Bool(false)))?;
 
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
   scope.define_property(
     event_obj,
     default_prevented_key,
-    data_desc(Value::Bool(false)),
+    read_only_data_desc(Value::Bool(false)),
   )?;
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
@@ -14543,6 +14615,11 @@ fn event_prototype_prevent_default_native(
       "Event.preventDefault must be called on an Event object",
     ));
   };
+  if !is_branded_event(scope, event_obj)? {
+    return Err(VmError::TypeError(
+      "Event.preventDefault must be called on an Event object",
+    ));
+  }
 
   if let Some(event_id) = event_active_event_id(scope, event_obj)? {
     if let Some(default_prevented) = with_active_event_for_host(host, event_id, |event| {
@@ -14553,7 +14630,7 @@ fn event_prototype_prevent_default_native(
       scope.define_property(
         event_obj,
         default_prevented_key,
-        data_desc(Value::Bool(default_prevented)),
+        read_only_data_desc(Value::Bool(default_prevented)),
       )?;
       return Ok(Value::Undefined);
     }
@@ -14573,7 +14650,7 @@ fn event_prototype_prevent_default_native(
   scope.define_property(
     event_obj,
     default_prevented_key,
-    data_desc(Value::Bool(true)),
+    read_only_data_desc(Value::Bool(true)),
   )?;
   Ok(Value::Undefined)
 }
@@ -14592,6 +14669,11 @@ fn event_prototype_stop_propagation_native(
       "Event.stopPropagation must be called on an Event object",
     ));
   };
+  if !is_branded_event(scope, event_obj)? {
+    return Err(VmError::TypeError(
+      "Event.stopPropagation must be called on an Event object",
+    ));
+  }
 
   if let Some(event_id) = event_active_event_id(scope, event_obj)? {
     if with_active_event_for_host(host, event_id, |event| event.stop_propagation()).is_some() {
@@ -14620,6 +14702,11 @@ fn event_prototype_stop_immediate_propagation_native(
       "Event.stopImmediatePropagation must be called on an Event object",
     ));
   };
+  if !is_branded_event(scope, event_obj)? {
+    return Err(VmError::TypeError(
+      "Event.stopImmediatePropagation must be called on an Event object",
+    ));
+  }
 
   if let Some(event_id) = event_active_event_id(scope, event_obj)? {
     if with_active_event_for_host(host, event_id, |event| event.stop_immediate_propagation())
@@ -20204,38 +20291,38 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
 
     let target_key = alloc_key(scope, "target")?;
     let target_v = self.js_value_for_target(event.target)?;
-    scope.define_property(self.event_obj, target_key, data_desc(target_v))?;
+    scope.define_property(self.event_obj, target_key, read_only_data_desc(target_v))?;
 
     let src_element_key = alloc_key(scope, "srcElement")?;
-    scope.define_property(self.event_obj, src_element_key, data_desc(target_v))?;
+    scope.define_property(self.event_obj, src_element_key, read_only_data_desc(target_v))?;
 
     let current_target_key = alloc_key(scope, "currentTarget")?;
     let current_target_v = self.js_value_for_target(event.current_target)?;
     scope.define_property(
       self.event_obj,
       current_target_key,
-      data_desc(current_target_v),
+      read_only_data_desc(current_target_v),
     )?;
 
     let event_phase_key = alloc_key(scope, "eventPhase")?;
     scope.define_property(
       self.event_obj,
       event_phase_key,
-      data_desc(Value::Number(event.event_phase_numeric() as f64)),
+      read_only_data_desc(Value::Number(event.event_phase_numeric() as f64)),
     )?;
 
     let time_stamp_key = alloc_key(scope, "timeStamp")?;
     scope.define_property(
       self.event_obj,
       time_stamp_key,
-      data_desc(Value::Number(event.time_stamp)),
+      read_only_data_desc(Value::Number(event.time_stamp)),
     )?;
 
     let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
     scope.define_property(
       self.event_obj,
       default_prevented_key,
-      data_desc(Value::Bool(event.default_prevented)),
+      read_only_data_desc(Value::Bool(event.default_prevented)),
     )?;
 
     let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
@@ -20298,7 +20385,7 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
 
     if let Some(detail) = event.detail {
       let detail_key = alloc_key(scope, "detail")?;
-      scope.define_property(self.event_obj, detail_key, data_desc(detail))?;
+      scope.define_property(self.event_obj, detail_key, read_only_data_desc(detail))?;
     }
 
     Ok(())
@@ -20642,7 +20729,7 @@ fn rust_event_from_js_event(
 ) -> Result<web_events::Event, VmError> {
   let type_key = alloc_key(scope, "type")?;
   let type_value = vm.get_with_host_and_hooks(vm_host, scope, hooks, event_obj, type_key)?;
-  let type_string = scope.heap_mut().to_string(type_value)?;
+  let type_string = scope.to_string(vm, vm_host, hooks, type_value)?;
   let type_name = scope
     .heap()
     .get_string(type_string)
@@ -21412,6 +21499,24 @@ pub(crate) fn event_target_dispatch_event_dom2(
   target_obj: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  struct DispatchingFlagGuard<'a> {
+    scope: *mut Scope<'a>,
+    event_obj: GcObject,
+    dispatching_key: PropertyKey,
+  }
+  impl Drop for DispatchingFlagGuard<'_> {
+    fn drop(&mut self) {
+      // Best-effort: if the call is already unwinding due to OOM/termination, clearing the flag can
+      // fail; in that case the whole realm is likely tearing down anyway.
+      let scope = unsafe { &mut *self.scope };
+      let _ = scope.define_property(
+        self.event_obj,
+        self.dispatching_key,
+        data_desc(Value::Bool(false)),
+      );
+    }
+  }
+
   let resolved = resolve_event_target(vm, scope, vm_host, target_obj)?;
   let ResolvedEventTarget {
     resolved,
@@ -21441,6 +21546,41 @@ pub(crate) fn event_target_dispatch_event_dom2(
     )?));
   }
 
+  // DOM: `dispatchEvent` must throw InvalidStateError if the event is uninitialized (legacy
+  // `document.createEvent`) or is already being dispatched.
+  let initialized_key = alloc_key(scope, EVENT_INITIALIZED_KEY)?;
+  if matches!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(event_obj, &initialized_key)?,
+    Some(Value::Bool(false))
+  ) {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidStateError",
+      "",
+    )?));
+  }
+  let dispatching_key = alloc_key(scope, EVENT_DISPATCHING_KEY)?;
+  if matches!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(event_obj, &dispatching_key)?,
+    Some(Value::Bool(true))
+  ) {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidStateError",
+      "",
+    )?));
+  }
+  scope.define_property(event_obj, dispatching_key, data_desc(Value::Bool(true)))?;
+  let _dispatching_guard = DispatchingFlagGuard {
+    scope,
+    event_obj,
+    dispatching_key,
+  };
+
   let mut rust_event = rust_event_from_js_event(vm, scope, vm_host, hooks, event_obj)?;
 
   // Ensure base Event fields are observable even if there are no listeners.
@@ -21461,22 +21601,26 @@ pub(crate) fn event_target_dispatch_event_dom2(
         })?)
       }
     };
-    scope.define_property(event_obj, target_key, data_desc(target_v))?;
+    scope.define_property(event_obj, target_key, read_only_data_desc(target_v))?;
 
     let src_element_key = alloc_key(scope, "srcElement")?;
-    scope.define_property(event_obj, src_element_key, data_desc(target_v))?;
+    scope.define_property(event_obj, src_element_key, read_only_data_desc(target_v))?;
 
     let current_target_key = alloc_key(scope, "currentTarget")?;
-    scope.define_property(event_obj, current_target_key, data_desc(Value::Null))?;
+    scope.define_property(event_obj, current_target_key, read_only_data_desc(Value::Null))?;
 
     let event_phase_key = alloc_key(scope, "eventPhase")?;
-    scope.define_property(event_obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+    scope.define_property(
+      event_obj,
+      event_phase_key,
+      read_only_data_desc(Value::Number(0.0)),
+    )?;
 
     let time_stamp_key = alloc_key(scope, "timeStamp")?;
     scope.define_property(
       event_obj,
       time_stamp_key,
-      data_desc(Value::Number(rust_event.time_stamp)),
+      read_only_data_desc(Value::Number(rust_event.time_stamp)),
     )?;
   }
 
@@ -21911,22 +22055,22 @@ fn document_create_event_native(
   let empty = scope.alloc_string("")?;
 
   let type_key = alloc_key(scope, "type")?;
-  scope.define_property(obj, type_key, data_desc(Value::String(empty)))?;
+  scope.define_property(obj, type_key, read_only_data_desc(Value::String(empty)))?;
 
   let bubbles_key = alloc_key(scope, "bubbles")?;
-  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(obj, bubbles_key, read_only_data_desc(Value::Bool(false)))?;
 
   let cancelable_key = alloc_key(scope, "cancelable")?;
-  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(obj, cancelable_key, read_only_data_desc(Value::Bool(false)))?;
 
   let composed_key = alloc_key(scope, "composed")?;
-  scope.define_property(obj, composed_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(obj, composed_key, read_only_data_desc(Value::Bool(false)))?;
 
   define_event_default_properties(scope, obj)?;
 
   if matches!(kind, Kind::CustomEvent) {
     let detail_key = alloc_key(scope, "detail")?;
-    scope.define_property(obj, detail_key, data_desc(Value::Null))?;
+    scope.define_property(obj, detail_key, read_only_data_desc(Value::Null))?;
   }
   if matches!(
     kind,
@@ -21987,6 +22131,11 @@ fn document_create_event_native(
   };
   brand_event_object(scope, obj, branded_kind)?;
   set_event_initialized(scope, obj, false)?;
+
+  // `document.createEvent` returns an uninitialized legacy Event. Per DOM, `dispatchEvent` must
+  // throw InvalidStateError until the event is initialized by `initEvent`/`initCustomEvent`/etc.
+  let initialized_key = alloc_key(scope, EVENT_INITIALIZED_KEY)?;
+  scope.define_property(obj, initialized_key, data_desc(Value::Bool(false)))?;
 
   if matches!(kind, Kind::MouseEvent) {
     let screen_x_key = alloc_key(scope, "screenX")?;
