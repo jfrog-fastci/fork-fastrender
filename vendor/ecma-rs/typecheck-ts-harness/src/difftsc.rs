@@ -31,7 +31,7 @@ use std::fs;
 use std::io::{BufReader, BufWriter, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use typecheck_ts::Program;
 use walkdir::WalkDir;
@@ -49,6 +49,28 @@ fn default_jobs() -> usize {
 }
 
 const DEFAULT_TIMEOUT_SECS: u64 = 20;
+
+fn warm_bundled_lib_cache() {
+  // The first `Program` constructed in a fresh process pays the full cost of
+  // parsing/lowering the bundled `lib.*.d.ts` files. That work is stored in a
+  // global cache (`typecheck_ts::lib_support::lib_env::prepared`), so subsequent
+  // programs are much faster.
+  //
+  // difftsc enforces a per-case timeout; on slower/contended machines the cold
+  // start can exceed that timeout and cause the *first* case in a run to flake.
+  // Pre-warm the global cache once per process before launching per-case jobs so
+  // timeouts reflect the steady-state cost of checking a fixture.
+  static WARMED: OnceLock<()> = OnceLock::new();
+  WARMED.get_or_init(|| {
+    let mut host = typecheck_ts::MemoryHost::new();
+    let entry = typecheck_ts::FileKey::new("file0.ts");
+    host.insert(entry.clone(), "export {};\n");
+    let program = Program::new(host, vec![entry]);
+    // Trigger analysis (which loads the bundled libs and stores parsed/lowered
+    // artifacts in the global cache).
+    let _ = program.compiler_options();
+  });
+}
 
 #[derive(Debug, Clone, Args)]
 pub struct DifftscArgs {
@@ -455,6 +477,11 @@ fn run_impl(args: DifftscArgs) -> Result<CommandStatus> {
 
   let normalization = NormalizationOptions::with_span_tolerance(args.span_tolerance);
   let tsc_pool = tsc_pool.as_ref();
+
+  if args.compare_rust {
+    warm_bundled_lib_cache();
+  }
+
   let results: Vec<CaseReport> = pool.install(|| {
     tests
       .par_iter()

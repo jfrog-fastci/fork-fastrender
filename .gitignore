@@ -3,6 +3,7 @@ target/
 target_pages/
 /tmp/
 /tests/ref/fixtures/**/failures/
+.cargo_home_local/
 .venv/
 __pycache__/
 *.py[cod]
