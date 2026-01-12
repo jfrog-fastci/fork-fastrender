@@ -8,6 +8,7 @@ usage: ./scripts/bump_typescript_version.sh <version>
 Automates the mechanical parts of bumping the pinned TypeScript version:
 
   - Updates `typecheck-ts/build.rs` (TYPESCRIPT_VERSION)
+  - Updates `typecheck-ts/src/resolve/ts_node.rs` (TypeScriptVersion::default)
   - Vendors `lib*.d.ts` into `typecheck-ts/fixtures/typescript-libs/<version>/`
   - Updates `typecheck-ts-harness/package.json`
   - Refreshes `typecheck-ts-harness/package-lock.json` via npm
@@ -19,6 +20,9 @@ Requirements:
   - npm (network access to the npm registry)
   - tar
   - python3
+
+Notes:
+  - This script currently expects a stable `x.y.z` TypeScript version string.
 EOF
 }
 
@@ -29,7 +33,7 @@ fi
 
 new_version="$1"
 
-if ! [[ "$new_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.+-]+)?$ ]]; then
+if ! [[ "$new_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "error: invalid TypeScript version string: '$new_version'" >&2
   echo "help: expected something like '5.10.0' (semver)" >&2
   exit 1
@@ -53,6 +57,7 @@ import re
 from pathlib import Path
 
 new_version = os.environ["NEW_TYPESCRIPT_VERSION"]
+major, minor, patch = new_version.split(".")
 
 build_rs = Path("typecheck-ts/build.rs")
 text = build_rs.read_text(encoding="utf-8")
@@ -75,6 +80,19 @@ updated, count = re.subn(
 if count != 1:
   raise SystemExit(f"error: expected exactly 1 typescript dependency entry in {package_json}, found {count}")
 package_json.write_text(updated, encoding="utf-8")
+
+resolver_rs = Path("typecheck-ts/src/resolve/ts_node.rs")
+text = resolver_rs.read_text(encoding="utf-8")
+updated, count = re.subn(
+    r"TypeScriptVersion::new\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)",
+    f"TypeScriptVersion::new({major}, {minor}, {patch})",
+    text,
+)
+if count != 1:
+  raise SystemExit(
+      f"error: expected exactly 1 TypeScriptVersion::new(M,m,p) in {resolver_rs}, found {count}"
+  )
+resolver_rs.write_text(updated, encoding="utf-8")
 PY
 
 tmp="$(mktemp -d)"

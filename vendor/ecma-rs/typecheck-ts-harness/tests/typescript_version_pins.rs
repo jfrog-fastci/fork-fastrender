@@ -7,19 +7,16 @@ fn bundled_version_or_skip() -> Option<&'static str> {
   match typecheck_ts::lib_support::bundled_typescript_version() {
     Some(version) => Some(version),
     None => {
-      eprintln!(
-        "skipping TypeScript version pin checks: typecheck-ts built without bundled-libs"
-      );
+      eprintln!("skipping TypeScript version pin checks: typecheck-ts built without bundled-libs");
       None
     }
   }
 }
 
 fn read_json(path: &Path) -> Value {
-  let text = fs::read_to_string(path)
-    .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-  serde_json::from_str(&text)
-    .unwrap_or_else(|err| panic!("parse JSON {}: {err}", path.display()))
+  let text =
+    fs::read_to_string(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+  serde_json::from_str(&text).unwrap_or_else(|err| panic!("parse JSON {}: {err}", path.display()))
 }
 
 #[test]
@@ -139,4 +136,3 @@ fn harness_node_packages_pin_typescript_version() {
     "typecheck-ts-harness/package-lock.json installs typescript@{node_module}, but bundled libs are {pinned}"
   );
 }
-

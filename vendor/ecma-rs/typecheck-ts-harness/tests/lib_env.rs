@@ -231,9 +231,7 @@ fn tsc_accepts_promise_with_libs_when_available() {
 fn default_libs_match_tsc_for_scripthost_globals() {
   let fixture = scripthost_fixture();
   let source = fixture.content.as_ref();
-  let offset = source
-    .find("ctor")
-    .expect("expected ctor binding") as u32;
+  let offset = source.find("ctor").expect("expected ctor binding") as u32;
 
   let host = SimpleHost::new(vec![fixture.clone()], CompilerOptions::default());
   let roots = host.roots();

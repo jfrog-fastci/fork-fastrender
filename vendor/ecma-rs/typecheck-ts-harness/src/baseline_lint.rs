@@ -236,8 +236,7 @@ mod tests {
   fn lint_baselines_errors_on_typescript_version_mismatch() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let baselines_root = manifest_dir.join("baselines");
-    let pinned =
-      pinned_typescript_version(manifest_dir).expect("read pinned TypeScript version");
+    let pinned = pinned_typescript_version(manifest_dir).expect("read pinned TypeScript version");
 
     let temp_dir = Builder::new()
       .prefix("lint-baselines-ts-version-mismatch-")
@@ -266,6 +265,78 @@ mod tests {
         "metadata.typescript_version mismatch (expected {pinned}, got 0.0.0)"
       )),
       "expected mismatch message mentioning pinned version {pinned}; got:\n{msg}"
+    );
+  }
+
+  #[test]
+  fn pinned_typescript_version_reads_npm_lockfile_v3_root_packages_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      dir.path().join("package-lock.json"),
+      r#"{
+        "lockfileVersion": 3,
+        "packages": {
+          "": { "dependencies": { "typescript": "5.9.3" } },
+          "node_modules/typescript": { "version": "5.9.3" }
+        }
+      }"#,
+    )
+    .expect("write package-lock.json");
+
+    let version = pinned_typescript_version(dir.path()).expect("read pinned typescript version");
+    assert_eq!(version, "5.9.3");
+  }
+
+  #[test]
+  fn pinned_typescript_version_reads_npm_lockfile_v1_dependencies_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      dir.path().join("package-lock.json"),
+      r#"{
+        "lockfileVersion": 1,
+        "dependencies": {
+          "typescript": { "version": "5.9.3" }
+        }
+      }"#,
+    )
+    .expect("write package-lock.json");
+
+    let version = pinned_typescript_version(dir.path()).expect("read pinned typescript version");
+    assert_eq!(version, "5.9.3");
+  }
+
+  #[test]
+  fn pinned_typescript_version_falls_back_to_node_modules_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      dir.path().join("package-lock.json"),
+      r#"{
+        "lockfileVersion": 3,
+        "packages": {
+          "node_modules/typescript": { "version": "5.9.3" }
+        }
+      }"#,
+    )
+    .expect("write package-lock.json");
+
+    let version = pinned_typescript_version(dir.path()).expect("read pinned typescript version");
+    assert_eq!(version, "5.9.3");
+  }
+
+  #[test]
+  fn lint_tsc_baseline_requires_pinned_typescript_version() {
+    let baseline = r#"{
+      "schema_version": 2,
+      "metadata": { "typescript_version": "5.8.0", "options": {} },
+      "diagnostics": []
+    }"#;
+
+    let errors = lint_tsc_diagnostics_baseline(baseline, "5.9.3");
+    assert!(
+      errors
+        .iter()
+        .any(|err| err.contains("metadata.typescript_version mismatch")),
+      "expected version mismatch error, got: {errors:?}"
     );
   }
 }

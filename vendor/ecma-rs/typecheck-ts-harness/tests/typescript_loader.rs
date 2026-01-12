@@ -90,8 +90,11 @@ fn probe_errors_without_local_typescript_even_if_other_fallbacks_exist() {
   // Fake the legacy parse-js/tests/TypeScript fallback. The loader must ignore it.
   let ts_submodule_root = tmp.path().join("parse-js").join("tests").join("TypeScript");
   fs::create_dir_all(&ts_submodule_root).expect("create fake ts submodule");
-  fs::write(ts_submodule_root.join("package.json"), "{\"private\":true}\n")
-    .expect("write fake ts submodule package.json");
+  fs::write(
+    ts_submodule_root.join("package.json"),
+    "{\"private\":true}\n",
+  )
+  .expect("write fake ts submodule package.json");
   write_stub_typescript(
     &ts_submodule_root.join("node_modules").join("typescript"),
     "0.0.0-submodule",
@@ -116,7 +119,10 @@ fn probe_errors_without_local_typescript_even_if_other_fallbacks_exist() {
     stderr.contains("Cannot load the TypeScript compiler (`typescript` npm package)."),
     "stderr was: {stderr}"
   );
-  assert!(stderr.contains("cd typecheck-ts-harness && npm ci"), "stderr was: {stderr}");
+  assert!(
+    stderr.contains("cd typecheck-ts-harness && npm ci"),
+    "stderr was: {stderr}"
+  );
   assert!(
     stderr.contains("TYPECHECK_TS_HARNESS_TYPESCRIPT_DIR"),
     "stderr was: {stderr}"

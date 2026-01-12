@@ -449,19 +449,19 @@ fn run_impl(args: DifftscArgs) -> Result<CommandStatus> {
       .map(|test| {
         let expectation = expectations.lookup(&test.id);
         let report = if expectation.expectation.kind == ExpectationKind::Skip {
-           CaseReport {
-             name: test.case.name.clone(),
-             status: CaseStatus::Skipped,
-             expectation: None,
-             harness_options: None,
-             tsc_options: None,
-             rust_resolution_trace: None,
-             tsc_resolution_trace: None,
-             expected: None,
-             actual: None,
-             diff: None,
-             expected_types: None,
-             actual_types: None,
+          CaseReport {
+            name: test.case.name.clone(),
+            status: CaseStatus::Skipped,
+            expectation: None,
+            harness_options: None,
+            tsc_options: None,
+            rust_resolution_trace: None,
+            tsc_resolution_trace: None,
+            expected: None,
+            actual: None,
+            diff: None,
+            expected_types: None,
+            actual_types: None,
             type_diff: None,
             report: None,
             notes: vec!["skipped by manifest".to_string()],
@@ -1008,12 +1008,9 @@ fn run_single_test(
     &tsc_options,
     &tsc_diags.metadata.options,
   ));
-  let tsc_resolution_trace = args.trace_resolution.then(|| {
-    tsc_diags
-      .resolution_trace
-      .clone()
-      .unwrap_or_default()
-  });
+  let tsc_resolution_trace = args
+    .trace_resolution
+    .then(|| tsc_diags.resolution_trace.clone().unwrap_or_default());
 
   let mut expected = normalize_tsc_diagnostics_with_options(&tsc_diags.diagnostics, normalization);
   sort_diagnostics(&mut expected);

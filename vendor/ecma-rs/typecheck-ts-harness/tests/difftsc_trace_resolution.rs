@@ -87,14 +87,8 @@ fn difftsc_trace_resolution_includes_traces_and_is_deterministic() {
     let b_from = b.get("from").and_then(|v| v.as_str()).unwrap_or("");
     let a_spec = a.get("specifier").and_then(|v| v.as_str()).unwrap_or("");
     let b_spec = b.get("specifier").and_then(|v| v.as_str()).unwrap_or("");
-    let a_res = a
-      .get("resolved")
-      .and_then(|v| v.as_str())
-      .unwrap_or("");
-    let b_res = b
-      .get("resolved")
-      .and_then(|v| v.as_str())
-      .unwrap_or("");
+    let a_res = a.get("resolved").and_then(|v| v.as_str()).unwrap_or("");
+    let b_res = b.get("resolved").and_then(|v| v.as_str()).unwrap_or("");
     assert!(
       (a_from, a_spec, a_res) <= (b_from, b_spec, b_res),
       "expected rust_resolution_trace to be sorted; got {:?} then {:?}",
@@ -103,4 +97,3 @@ fn difftsc_trace_resolution_includes_traces_and_is_deterministic() {
     );
   }
 }
-

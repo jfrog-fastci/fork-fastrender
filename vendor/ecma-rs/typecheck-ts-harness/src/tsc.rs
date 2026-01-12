@@ -77,7 +77,11 @@ pub struct TscDiagnostics {
   #[serde(default)]
   pub metadata: TscMetadata,
   pub diagnostics: Vec<TscDiagnostic>,
-  #[serde(default, alias = "resolutionTrace", skip_serializing_if = "Option::is_none")]
+  #[serde(
+    default,
+    alias = "resolutionTrace",
+    skip_serializing_if = "Option::is_none"
+  )]
   pub resolution_trace: Option<Vec<String>>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub crash: Option<TscCrash>,
@@ -299,7 +303,9 @@ fn escape_json_for_node(mut json: String) -> String {
   // See: parse failures in upstream test
   // `es2019/allowUnescapedParagraphAndLineSeparatorsInStringLiteral.ts`.
   if json.contains('\u{2028}') || json.contains('\u{2029}') {
-    json = json.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
+    json = json
+      .replace('\u{2028}', "\\u2028")
+      .replace('\u{2029}', "\\u2029");
   }
   json
 }

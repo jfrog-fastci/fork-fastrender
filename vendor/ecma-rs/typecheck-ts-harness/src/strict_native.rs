@@ -177,8 +177,8 @@ pub fn run(args: StrictNativeArgs) -> Result<()> {
 
   let filter = build_filter(args.filter.as_deref()).map_err(|err| anyhow!(err.to_string()))?;
   let extensions = vec!["ts".to_string()];
-  let mut tests =
-    discover_conformance_tests(&root, &filter, &extensions).map_err(|err| anyhow!(err.to_string()))?;
+  let mut tests = discover_conformance_tests(&root, &filter, &extensions)
+    .map_err(|err| anyhow!(err.to_string()))?;
   if tests.is_empty() {
     return Err(anyhow!(
       "strict-native suite `{}` contains no tests under {}",
@@ -261,7 +261,9 @@ fn summarize(results: &[CaseReport]) -> Summary {
       CaseStatus::Matched => summary.matched += 1,
       CaseStatus::Mismatch => summary.mismatched += 1,
       CaseStatus::BaselineUpdated => summary.updated += 1,
-      CaseStatus::BaselineMissing | CaseStatus::RustFailed | CaseStatus::Timeout => summary.errors += 1,
+      CaseStatus::BaselineMissing | CaseStatus::RustFailed | CaseStatus::Timeout => {
+        summary.errors += 1
+      }
     }
   }
   summary
@@ -321,7 +323,8 @@ fn write_baseline(path: &Path, diagnostics: Vec<NormalizedDiagnostic>) -> Result
   };
   baseline.canonicalize_for_baseline();
 
-  let file = fs::File::create(path).with_context(|| format!("write baseline {}", path.display()))?;
+  let file =
+    fs::File::create(path).with_context(|| format!("write baseline {}", path.display()))?;
   let mut writer = BufWriter::new(file);
   serde_json::to_writer_pretty(&mut writer, &baseline)
     .with_context(|| format!("serialize baseline {}", path.display()))?;
@@ -439,10 +442,9 @@ enum RustOutcome {
 fn run_rust_check(program: &Program, file_set: &HarnessFileSet, timeout: Duration) -> RustOutcome {
   match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| program.check_fallible())) {
     Err(_) => RustOutcome::Failed("typechecker panicked".to_string()),
-    Ok(Err(typecheck_ts::FatalError::Cancelled)) => RustOutcome::Timeout(format!(
-      "timed out after {}ms",
-      timeout.as_millis()
-    )),
+    Ok(Err(typecheck_ts::FatalError::Cancelled)) => {
+      RustOutcome::Timeout(format!("timed out after {}ms", timeout.as_millis()))
+    }
     Ok(Err(fatal)) => RustOutcome::Failed(fatal.to_string()),
     Ok(Ok(diags)) => {
       let mut normalized = normalize_rust_diagnostics(&diags, |id| {

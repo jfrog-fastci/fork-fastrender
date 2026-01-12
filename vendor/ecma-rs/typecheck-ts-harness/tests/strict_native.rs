@@ -28,7 +28,12 @@ fn ids(report: &Value) -> Vec<String> {
   };
   results
     .iter()
-    .filter_map(|result| result.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+    .filter_map(|result| {
+      result
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+    })
     .collect()
 }
 
@@ -127,7 +132,11 @@ fn strict_native_cli_shard_matches_sorted_index_strategy() {
   let filter = build_filter(Some("{proxy.ts,proxy_revocable.ts}")).expect("build proxy filter");
   let cases = discover_conformance_tests(&root, &filter, &vec!["ts".to_string()])
     .expect("discover proxy strict-native fixtures");
-  assert_eq!(cases.len(), 2, "expected exactly two proxy fixtures for sharding test");
+  assert_eq!(
+    cases.len(),
+    2,
+    "expected exactly two proxy fixtures for sharding test"
+  );
 
   let shard = Shard::parse("0/2").expect("parse shard spec");
   let expected_ids: Vec<_> = cases

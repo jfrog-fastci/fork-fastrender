@@ -1,7 +1,7 @@
+use anyhow as _;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
-use anyhow as _;
 use diagnostics as _;
 use globset as _;
 use rayon as _;
@@ -22,6 +22,7 @@ use typecheck_ts_harness::difftsc::CommandStatus;
 use typecheck_ts_harness::difftsc::DifftscArgs;
 use typecheck_ts_harness::difftsc::{self};
 use typecheck_ts_harness::run_conformance;
+use typecheck_ts_harness::strict_native::StrictNativeArgs;
 use typecheck_ts_harness::triage;
 use typecheck_ts_harness::verify_snapshots;
 use typecheck_ts_harness::CompareMode;
@@ -29,7 +30,6 @@ use typecheck_ts_harness::ConformanceOptions;
 use typecheck_ts_harness::FailOn;
 use typecheck_ts_harness::Shard;
 use typecheck_ts_harness::ShardStrategy;
-use typecheck_ts_harness::strict_native::StrictNativeArgs;
 use typecheck_ts_harness::VerifySnapshotsOptions;
 use walkdir as _;
 

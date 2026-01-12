@@ -133,10 +133,7 @@ pub(crate) fn resolve_module_specifier(
   let fs = HarnessResolveFs {
     files: files.clone(),
   };
-  let resolver = Resolver::with_fs(
-    fs,
-    resolve_options_for_module_resolution(module_resolution),
-  );
+  let resolver = Resolver::with_fs(fs, resolve_options_for_module_resolution(module_resolution));
   let from_path = Path::new(from.as_str());
   let mut resolved = resolver.resolve(from_path, specifier);
   if resolved.is_none()

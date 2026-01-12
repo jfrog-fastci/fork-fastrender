@@ -312,7 +312,9 @@ impl ResolutionTraceHandle {
 
   pub(crate) fn sorted(&self) -> Vec<ResolutionTraceEntry> {
     let mut entries = self.inner.lock().unwrap().clone();
-    entries.sort_by(|a, b| (&a.from, &a.specifier, &a.resolved).cmp(&(&b.from, &b.specifier, &b.resolved)));
+    entries.sort_by(|a, b| {
+      (&a.from, &a.specifier, &a.resolved).cmp(&(&b.from, &b.specifier, &b.resolved))
+    });
     entries
   }
 }
@@ -1153,7 +1155,10 @@ fn execute_case(
       HarnessHost::new_with_resolution_trace(file_set.clone(), compiler_options.clone());
     (host, Some(trace))
   } else {
-    (HarnessHost::new(file_set.clone(), compiler_options.clone()), None)
+    (
+      HarnessHost::new(file_set.clone(), compiler_options.clone()),
+      None,
+    )
   };
   let roots = file_set.root_keys();
   let program = Arc::new(Program::new(host, roots));
@@ -2755,7 +2760,10 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
 
     let from = file_set.resolve("/a.ts").unwrap();
     let resolved = host.resolve(&from, "foo").expect("foo should resolve");
@@ -2776,7 +2784,10 @@ mod tests {
       },
     ];
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
     let from = file_set.resolve("/main.ts").unwrap();
     let resolved = host.resolve(&from, "dep").expect("dep should resolve");
     let expected = file_set.resolve("/node_modules/dep/index.ts").unwrap();
@@ -2801,7 +2812,10 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
 
     let from = file_set.resolve("/src/b.ts").unwrap();
     let resolved = host.resolve(&from, "foo").expect("foo should resolve");
@@ -2825,7 +2839,10 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
 
     let from = file_set.resolve("/src/b.ts").unwrap();
     let resolved = host.resolve(&from, "foo").expect("foo should resolve");
@@ -2847,7 +2864,10 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
 
     let from = file_set.resolve("/a.ts").unwrap();
     let resolved = host.resolve(&from, "foo").expect("foo should resolve");
@@ -2875,7 +2895,10 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
 
     let from = file_set.resolve("/a.ts").unwrap();
     let resolved = host.resolve(&from, "foo").expect("foo should resolve");
@@ -2901,7 +2924,10 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
 
     let from = file_set.resolve("c:/a.ts").unwrap();
     let resolved = host.resolve(&from, "foo").expect("foo should resolve");
@@ -3213,7 +3239,10 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
 
     let from = file_set.resolve("/a.ts").unwrap();
     let resolved = host
@@ -3239,7 +3268,10 @@ mod tests {
     ];
 
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), compiler_options_with_module_resolution("node"));
+    let host = HarnessHost::new(
+      file_set.clone(),
+      compiler_options_with_module_resolution("node"),
+    );
 
     let from = file_set.resolve("/a.ts").unwrap();
     let resolved = host.resolve(&from, "foo").expect("foo should resolve");

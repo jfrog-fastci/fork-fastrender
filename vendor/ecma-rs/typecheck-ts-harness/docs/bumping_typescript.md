@@ -36,7 +36,9 @@ For the mechanical edits + vendoring, you can run (from `vendor/ecma-rs/`):
 ```
 
 That script updates `build.rs`, the harness npm manifests, and vendors the
-`lib*.d.ts` files into `typecheck-ts/fixtures/typescript-libs/<newver>/`.
+`lib*.d.ts` files into `typecheck-ts/fixtures/typescript-libs/<newver>/`. It also
+updates the resolver’s default `TypeScriptVersion` used for `typesVersions`
+selection (`typecheck-ts/src/resolve/ts_node.rs`).
 You still need to regenerate baselines/snapshots (steps 5–6 below).
 
 ### 1) Update the Rust bundled version
@@ -44,6 +46,7 @@ You still need to regenerate baselines/snapshots (steps 5–6 below).
 Edit `typecheck-ts/build.rs`:
 
 - Update `const TYPESCRIPT_VERSION: &str = "<newver>";`
+- Update `typecheck-ts/src/resolve/ts_node.rs` (`TypeScriptVersion::default()`) to match `<newver>`
 
 ### 2) Vendor the upstream TypeScript lib `.d.ts` files
 

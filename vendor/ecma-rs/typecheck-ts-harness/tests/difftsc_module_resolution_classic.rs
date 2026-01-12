@@ -49,4 +49,3 @@ fn difftsc_module_resolution_classic_vs_node_matches_baselines() {
     );
   }
 }
-
