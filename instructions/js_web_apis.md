@@ -100,6 +100,9 @@ A change counts if it lands at least one of:
 - JavaScript language features → `js_engine.md`
 - Script loading (<script>, modules) → `js_html_integration.md`
 
+For the consolidated WebIDL crate layout and ownership boundaries (what belongs in `vendor/ecma-rs/`
+vs `src/js/`), see [`docs/webidl_stack.md`](../docs/webidl_stack.md).
+
 ## Priority order (P0 → P1 → P2)
 
 ### P0: Critical APIs (pages completely break without these)
