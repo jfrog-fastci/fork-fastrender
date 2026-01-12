@@ -19900,6 +19900,36 @@ fn document_hidden_get_native(
   Ok(Value::Bool(state.hidden()))
 }
 
+fn window_scroll_x_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    return Ok(Value::Number(document.options().scroll_x as f64));
+  }
+  Ok(Value::Number(0.0))
+}
+
+fn window_scroll_y_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    return Ok(Value::Number(document.options().scroll_y as f64));
+  }
+  Ok(Value::Number(0.0))
+}
+
 fn document_base_uri_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -25749,6 +25779,55 @@ fn init_window_globals(
     match_media_guard.id(),
   )?;
 
+  // window.scrollX / window.scrollY (+ aliases pageXOffset/pageYOffset).
+  let scroll_x_key = alloc_key(&mut scope, "scrollX")?;
+  let scroll_y_key = alloc_key(&mut scope, "scrollY")?;
+  let page_x_offset_key = alloc_key(&mut scope, "pageXOffset")?;
+  let page_y_offset_key = alloc_key(&mut scope, "pageYOffset")?;
+
+  let scroll_x_get_call_id = vm.register_native_call(window_scroll_x_get_native)?;
+  let scroll_x_get_name = scope.alloc_string("get scrollX")?;
+  scope.push_root(Value::String(scroll_x_get_name))?;
+  let scroll_x_get_func =
+    scope.alloc_native_function(scroll_x_get_call_id, None, scroll_x_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    scroll_x_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(scroll_x_get_func))?;
+
+  let scroll_y_get_call_id = vm.register_native_call(window_scroll_y_get_native)?;
+  let scroll_y_get_name = scope.alloc_string("get scrollY")?;
+  scope.push_root(Value::String(scroll_y_get_name))?;
+  let scroll_y_get_func =
+    scope.alloc_native_function(scroll_y_get_call_id, None, scroll_y_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    scroll_y_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(scroll_y_get_func))?;
+
+  let scroll_x_desc = PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Accessor {
+      get: Value::Object(scroll_x_get_func),
+      set: Value::Undefined,
+    },
+  };
+  let scroll_y_desc = PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Accessor {
+      get: Value::Object(scroll_y_get_func),
+      set: Value::Undefined,
+    },
+  };
+  scope.define_property(global, scroll_x_key, scroll_x_desc)?;
+  scope.define_property(global, page_x_offset_key, scroll_x_desc)?;
+  scope.define_property(global, scroll_y_key, scroll_y_desc)?;
+  scope.define_property(global, page_y_offset_key, scroll_y_desc)?;
+
   if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
     // `window.document` is writable/configurable, so store canonical handles in host-owned state for
     // receiver branding and event dispatch.
@@ -26284,6 +26363,37 @@ mod tests {
     assert_eq!(
       realm.exec_script("new DOMRectReadOnly(1, 2, 3, 4).right === 4")?,
       Value::Bool(true)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn window_scroll_offset_properties_reflect_browser_document_dom2_scroll_state() -> Result<(), VmError>
+  {
+    let mut host = BrowserDocumentDom2::from_html(
+      "<!doctype html><html><body></body></html>",
+      crate::api::RenderOptions::default(),
+    )
+    .expect("document");
+    host.set_scroll(5.0, 7.0);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      exec_script_with_dom_host(&mut realm, &mut host, "window.scrollX")?,
+      Value::Number(5.0)
+    );
+    assert_eq!(
+      exec_script_with_dom_host(&mut realm, &mut host, "window.pageXOffset")?,
+      Value::Number(5.0)
+    );
+    assert_eq!(
+      exec_script_with_dom_host(&mut realm, &mut host, "window.scrollY")?,
+      Value::Number(7.0)
+    );
+    assert_eq!(
+      exec_script_with_dom_host(&mut realm, &mut host, "window.pageYOffset")?,
+      Value::Number(7.0)
     );
     Ok(())
   }
