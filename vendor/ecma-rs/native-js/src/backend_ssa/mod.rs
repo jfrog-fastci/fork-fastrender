@@ -935,6 +935,15 @@ impl<'ctx, 'a, 'p> FnCodegen<'ctx, 'a, 'p> {
               Span::new(self.cg.fn_defs[self.fnid].file(), TextRange::new(0, 0)),
             )]);
           }
+          Terminator::Invoke { .. } => {
+            // `Invoke` is always represented explicitly as an instruction; if we get here we
+            // forgot to lower it above.
+            return Err(vec![Diagnostic::error(
+              "NJS0150",
+              "unexpected implicit invoke terminator",
+              Span::new(self.cg.fn_defs[self.fnid].file(), TextRange::new(0, 0)),
+            )]);
+          }
           Terminator::Multi { targets } => {
             return Err(vec![Diagnostic::error(
               "NJS0151",

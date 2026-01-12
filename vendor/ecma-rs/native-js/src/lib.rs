@@ -142,7 +142,8 @@ pub struct CompilerOptions {
   ///
   /// When enabled, native-js:
   /// - emits DWARF line tables / debug sections for object + executable emission;
-  /// - marks TS-generated functions as `optnone` + `noinline` so stepping is more predictable;
+  /// - when `opt_level` is `OptLevel::O0`, marks TS-generated functions as `optnone` + `noinline`
+  ///   so stepping is more predictable;
   /// - disables linker `--gc-sections` for executables (debug builds are size-insensitive and we
   ///   want predictable section retention);
   /// - keeps temporary output directories in some helper APIs when no explicit `output` is set.
@@ -545,8 +546,8 @@ export function main() {
   }
 
   #[test]
-  fn debug_build_applies_debuggable_function_attributes() {
-    use crate::{compile, llvm_symbol_for_def, llvm_symbol_for_file_init, CompilerOptions, EmitKind};
+  fn debug_build_applies_debuggable_function_attributes_at_o0() {
+    use crate::{compile, llvm_symbol_for_def, llvm_symbol_for_file_init, CompilerOptions, EmitKind, OptLevel};
     use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use typecheck_ts::{FileKey, MemoryHost, Program};
 
@@ -585,6 +586,7 @@ export function main() {
 
     let mut opts = CompilerOptions::default();
     opts.debug = true;
+    opts.opt_level = OptLevel::O0;
     opts.emit = EmitKind::LlvmIr;
     opts.output = Some(out_path);
 
@@ -602,6 +604,28 @@ export function main() {
     let c_main_def = find_define_line(&ir, "@main(");
     assert_stack_walking_attrs(&ir, c_main_def);
     assert_debug_function_attrs(&ir, c_main_def);
+
+    let out_path = tmp.path().join("debug_optimized.ll");
+    let mut opts = CompilerOptions::default();
+    opts.debug = true;
+    opts.opt_level = OptLevel::O2;
+    opts.emit = EmitKind::LlvmIr;
+    opts.output = Some(out_path);
+
+    let out = compile(&program, &opts).expect("compile (debug optimized)");
+    let ir = out.llvm_ir.expect("llvm_ir");
+
+    let ts_main_def = find_define_line(&ir, &format!("@{expected_ts_main}("));
+    assert_stack_walking_attrs(&ir, ts_main_def);
+    assert_no_debug_function_attrs(&ir, ts_main_def);
+
+    let file_init_def = find_define_line(&ir, &format!("@{expected_file_init}("));
+    assert_stack_walking_attrs(&ir, file_init_def);
+    assert_no_debug_function_attrs(&ir, file_init_def);
+
+    let c_main_def = find_define_line(&ir, "@main(");
+    assert_stack_walking_attrs(&ir, c_main_def);
+    assert_no_debug_function_attrs(&ir, c_main_def);
 
     let out_path = tmp.path().join("release.ll");
     let mut opts = CompilerOptions::default();

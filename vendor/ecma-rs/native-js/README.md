@@ -208,14 +208,16 @@ See `native-js-cli` for the CLI front-ends:
 When enabled, native-js:
 
 - emits DWARF debug info (e.g. `.debug_info`, `.debug_line`) for object/executable outputs
-- marks TS-generated functions as `optnone` + `noinline` so stepping is more predictable
+- when `opts.opt_level` is `OptLevel::O0`, marks TS-generated functions as `optnone` + `noinline`
+  so stepping is more predictable
 - disables linker `--gc-sections` for executables (debug builds are size-insensitive and we want
   predictable section retention)
 - keeps temporary output directories in some helper APIs when no explicit `output` is set (useful
   when debugging compiler output)
 
 If you are embedding the compiler and want minimal optimization, also set
-`opts.opt_level = OptLevel::O0`. The CLI does this automatically for `--debug`.
+`opts.opt_level = OptLevel::O0`. The CLI does this automatically for `--debug`, but you can
+override `opt_level` to keep debug builds optimizable.
 
 ### LLVM 18 note: `llvm.dbg.*` intrinsics and GC/statepoints
 

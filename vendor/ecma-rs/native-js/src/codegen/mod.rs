@@ -354,7 +354,7 @@ struct ProgramCodegen<'ctx, 'p> {
   i64_ty: IntType<'ctx>,
   i1_ty: IntType<'ctx>,
   gc_ptr_ty: PointerType<'ctx>,
-  debug_build: bool,
+  debug_function_attrs: bool,
   program: &'p Program,
   resolver: Resolver<'p>,
   exported_defs: HashSet<DefId>,
@@ -393,7 +393,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       i64_ty: context.i64_type(),
       i1_ty: context.bool_type(),
       gc_ptr_ty: gc::gc_ptr_type(context),
-      debug_build: options.debug,
+      debug_function_attrs: options.debug && options.opt_level == crate::OptLevel::O0,
       program,
       resolver: Resolver::new(program),
       exported_defs: HashSet::new(),
@@ -633,7 +633,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let fn_ty = self.context.void_type().fn_type(&[], false);
     let func = self.module.add_function(&name, fn_ty, Some(Linkage::Internal));
     crate::stack_walking::apply_stack_walking_attrs(self.context, func);
-    if self.debug_build {
+    if self.debug_function_attrs {
       crate::stack_walking::apply_debug_function_attrs(self.context, func);
     }
     self.file_inits.insert(file, func);
@@ -676,7 +676,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     };
     let func = self.module.add_function(&name, fn_ty, linkage);
     crate::stack_walking::apply_stack_walking_attrs(self.context, func);
-    if self.debug_build {
+    if self.debug_function_attrs {
       crate::stack_walking::apply_debug_function_attrs(self.context, func);
     }
     self.functions.insert(def, func);
@@ -1088,7 +1088,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     // `ptr addrspace(1)`).
     let c_main = self.module.add_function("main", self.i32_ty.fn_type(&[], false), None);
     crate::stack_walking::apply_stack_walking_attrs(self.context, c_main);
-    if self.debug_build {
+    if self.debug_function_attrs {
       crate::stack_walking::apply_debug_function_attrs(self.context, c_main);
     }
 
