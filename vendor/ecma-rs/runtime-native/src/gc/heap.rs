@@ -696,12 +696,10 @@ impl GcHeap {
       // Ensure all pointer slots start out as null so tracing never sees uninitialized garbage.
       ptr::write_bytes(obj, 0, size);
 
-      let header = &mut *super::header_from_obj(obj);
-      header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
-      header.meta.store(0, Ordering::Relaxed);
-      header.set_mark_epoch(self.mark_epoch);
-
       let arr = &mut *(obj as *mut RtArrayHeader);
+      arr.header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
+      arr.header.meta.store(0, Ordering::Relaxed);
+      arr.header.set_mark_epoch(self.mark_epoch);
       arr.len = len;
       arr.elem_size = spec.elem_size as u32;
       arr.elem_flags = spec.elem_flags;
@@ -742,18 +740,16 @@ impl GcHeap {
       // Ensure all pointer slots start out as null so tracing never sees uninitialized garbage.
       ptr::write_bytes(obj, 0, size);
 
-      let header = &mut *super::header_from_obj(obj);
-      header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
-      header.meta.store(0, Ordering::Relaxed);
-      header.set_mark_epoch(self.mark_epoch);
-
       let arr = &mut *(obj as *mut RtArrayHeader);
+      arr.header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
+      arr.header.meta.store(0, Ordering::Relaxed);
+      arr.header.set_mark_epoch(self.mark_epoch);
       arr.len = len;
       arr.elem_size = spec.elem_size as u32;
       arr.elem_flags = spec.elem_flags;
 
       if should_install_card_table {
-        self.install_card_table_for_obj(header, size);
+        self.install_card_table_for_obj(&mut arr.header, size);
       }
     }
 
@@ -888,23 +884,23 @@ impl GcHeap {
   /// `obj_size` must be the total object size in bytes (including the header).
   pub(crate) unsafe fn maybe_install_card_table_for_array(&mut self, obj: *mut u8, obj_size: usize) {
     debug_assert!(!obj.is_null());
-    let header = &mut *super::header_from_obj(obj);
-    if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
+    let hdr_ptr = super::header_from_obj(obj);
+    if (*hdr_ptr).type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
       return;
     }
 
-    let arr = &*(obj as *const RtArrayHeader);
-    if (arr.elem_flags & array::RT_ARRAY_FLAG_PTR_ELEMS) == 0 {
+    let arr_ptr = obj as *const RtArrayHeader;
+    if ((*arr_ptr).elem_flags & array::RT_ARRAY_FLAG_PTR_ELEMS) == 0 {
       return;
     }
 
-    let payload_bytes = array::checked_payload_bytes(arr.len, arr.elem_size as usize)
+    let payload_bytes = array::checked_payload_bytes((*arr_ptr).len, (*arr_ptr).elem_size as usize)
       .unwrap_or_else(|| trap::rt_trap_invalid_arg("array size overflow"));
     if payload_bytes < super::CARD_TABLE_MIN_BYTES {
       return;
     }
 
-    self.install_card_table_for_obj(header, obj_size);
+    self.install_card_table_for_obj(&mut *hdr_ptr, obj_size);
   }
 
   pub fn alloc_old(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
