@@ -1,4 +1,6 @@
 use crate::symbol::semantics::SymbolId;
+#[cfg(feature = "semantic-ops")]
+use hir_js::ApiId;
 use num_bigint::BigInt;
 use parse_js::num::JsNumber;
 use std::fmt::Debug;
@@ -198,7 +200,7 @@ pub enum ArrayChainOpData {
   Some { callback: Arg },
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum InstTyp {
   Bin,        // tgts[0] = args[0] bin_op args[1]
@@ -237,7 +239,7 @@ pub enum InstTyp {
   /// - the callee is encoded in the instruction type (`api`)
   /// - `this` is implicitly `undefined` for now (see `hir_js::ExprKind::KnownApiCall`)
   /// - `args` contains only call arguments (no callee/this prefix)
-  KnownApiCall { api: hir_js::ApiId },
+  KnownApiCall { api: ApiId },
   /// Await a promise-like value.
   ///
   /// When `tgts` is non-empty, `tgts[0] = await(args[0])`.
@@ -381,8 +383,8 @@ impl Debug for Inst {
     s.field("bin_op", &self.bin_op)
       .field("un_op", &self.un_op)
       .field("foreign", &self.foreign)
-      .field("unknown", &self.unknown)
-      .finish()
+      .field("unknown", &self.unknown);
+    s.finish()
   }
 }
 
@@ -562,7 +564,7 @@ impl Inst {
   }
 
   #[cfg(feature = "semantic-ops")]
-  pub fn known_api_call(tgt: impl Into<Option<u32>>, api: hir_js::ApiId, args: Vec<Arg>) -> Self {
+  pub fn known_api_call(tgt: impl Into<Option<u32>>, api: ApiId, args: Vec<Arg>) -> Self {
     Self {
       t: InstTyp::KnownApiCall { api },
       tgts: tgt.into().into_iter().collect(),
@@ -777,7 +779,7 @@ impl Inst {
   }
 
   #[cfg(feature = "semantic-ops")]
-  pub fn as_known_api_call(&self) -> (Option<u32>, hir_js::ApiId, &[Arg]) {
+  pub fn as_known_api_call(&self) -> (Option<u32>, ApiId, &[Arg]) {
     let InstTyp::KnownApiCall { api } = &self.t else {
       panic!("not a known api call");
     };

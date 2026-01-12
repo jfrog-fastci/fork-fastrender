@@ -16,12 +16,6 @@ fn is_call_like(inst: &crate::il::inst::Inst) -> bool {
       return true;
     }
   }
-  #[cfg(feature = "semantic-ops")]
-  {
-    if matches!(&inst.t, InstTyp::KnownApiCall { .. }) {
-      return true;
-    }
-  }
   false
 }
 
@@ -52,10 +46,18 @@ pub fn optpass_trivial_dce(cfg: &mut Cfg) -> PassResult {
         #[cfg(not(feature = "native-async-ops"))]
         let is_async_semantic_op = false;
 
-        if is_async_semantic_op {
-          // Async semantic ops are always treated as potentially effectful, even when their
-          // result is unused (e.g. `await p;` must still suspend, and `Promise.all([...])` can
-          // observe unhandled rejections). Drop the SSA target but keep the instruction.
+        #[cfg(feature = "semantic-ops")]
+        let is_known_api_call = matches!(&bblock[i].t, InstTyp::KnownApiCall { .. });
+        #[cfg(not(feature = "semantic-ops"))]
+        let is_known_api_call = false;
+
+        if is_async_semantic_op || is_known_api_call {
+          // Semantic ops are conservatively treated as potentially effectful even when their
+          // result is unused (e.g. `await p;` must still suspend). Drop the SSA target but keep the
+          // instruction.
+          //
+          // Known API calls are also kept even when purity metadata is present, since (until a
+          // knowledge-base integration exists) we cannot assume they are safe to remove.
           bblock[i].tgts.clear();
           bblock[i].meta.clear_result_var_metadata();
         } else if is_call_like(&bblock[i]) {

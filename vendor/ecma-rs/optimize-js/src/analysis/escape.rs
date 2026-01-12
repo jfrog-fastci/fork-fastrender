@@ -363,11 +363,13 @@ fn collect_local_alloc_flow_facts(
         }
         #[cfg(feature = "semantic-ops")]
         InstTyp::KnownApiCall { .. } => {
-          let (tgt, _api, _args) = inst.as_known_api_call();
-          if let Some(tgt) = tgt {
-            // Treat known-api calls as returning an external value (not a local allocation) for now.
-            facts.external_defs.insert(tgt);
-          }
+          // Known API calls are modeled conservatively as returning external values (they may
+          // allocate or alias global objects). We cannot assume they return a fresh local
+          // allocation without a knowledge-base summary.
+          let Some(&tgt) = inst.tgts.get(0) else {
+            continue;
+          };
+          facts.external_defs.insert(tgt);
         }
         InstTyp::StringConcat => {
           // String concatenation produces a fresh string value. Treat it as a

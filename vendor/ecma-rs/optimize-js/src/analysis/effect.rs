@@ -737,12 +737,6 @@ fn inst_local_effect_with_value_types(
         .insert(EffectLocation::Unknown(inst.unknown.clone()));
       effects.summary.throws = ThrowBehavior::Maybe;
     }
-    #[cfg(feature = "semantic-ops")]
-    InstTyp::KnownApiCall { .. } => {
-      // Until we integrate `knowledge-base`-aware effect modeling for known APIs,
-      // treat these as unknown calls.
-      effects.mark_unknown();
-    }
     InstTyp::Call => {
       let (_, callee, _, args, _) = inst.as_call();
       match callee {
@@ -788,6 +782,14 @@ fn inst_local_effect_with_value_types(
           effects.mark_unknown();
         }
       }
+    }
+    #[cfg(feature = "semantic-ops")]
+    InstTyp::KnownApiCall { .. } => {
+      // Until a knowledge-base integration can provide precise summaries for known API IDs,
+      // treat these calls as fully unknown and heap-affecting.
+      effects.reads.insert(EffectLocation::Heap);
+      effects.writes.insert(EffectLocation::Heap);
+      effects.mark_unknown();
     }
     #[cfg(feature = "native-async-ops")]
     InstTyp::Await | InstTyp::PromiseAll | InstTyp::PromiseRace => {

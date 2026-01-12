@@ -15,6 +15,8 @@ use crate::hir::{
 };
 #[cfg(feature = "semantic-ops")]
 use crate::hir::ArrayChainOp;
+#[cfg(feature = "semantic-ops")]
+use crate::hir::ApiId;
 use crate::ids::{
   checked_u32_index, BodyId, BodyPath, DefId, DefKind, DefPath, ExportId, ExportSpecifierId, ExprId,
   ImportId, ImportSpecifierId, NameId, PatId, StmtId, MISSING_BODY, MISSING_DEF,
@@ -2370,6 +2372,30 @@ fn lower_call_expr(
           }
         }
       };
+
+      // Internal hook for producing `ExprKind::KnownApiCall` nodes while the
+      // knowledge-base integration is still evolving.
+      //
+      // This is intentionally narrow: it only fires on `__known_api_call("Name", ...args)`
+      // with non-spread arguments so it cannot be triggered accidentally by ordinary JS code.
+      if let ExprKind::Ident(name) = &builder.exprs[semantic_callee.0 as usize].kind {
+        if builder.names.resolve(*name) == Some("__known_api_call")
+          && args.len() >= 1
+          && args.iter().all(|arg| !arg.spread)
+        {
+          let name_expr = args[0].expr;
+          let api_name = match &builder.exprs[name_expr.0 as usize].kind {
+            ExprKind::Literal(Literal::String(value)) => Some(value.lossy.as_str()),
+            ExprKind::Template(tpl) if tpl.spans.is_empty() => Some(tpl.head.as_str()),
+            _ => None,
+          };
+          if let Some(api_name) = api_name {
+            let api = ApiId::from_name(api_name);
+            let rest_args = args.iter().skip(1).map(|arg| arg.expr).collect();
+            return ExprKind::KnownApiCall { api, args: rest_args };
+          }
+        }
+      }
 
       if !builder.semantic_ops_promise_shadowed {
         // Lower Promise.{all,race}([..]) calls into semantic nodes when the input is an array

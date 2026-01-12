@@ -830,24 +830,30 @@ pub fn lower_known_api_call_inst<V: VarNamer, F: FnEmitter>(
   inst: &Inst,
   target_init: VarInit,
 ) -> Option<Node<Stmt>> {
-  let InstTyp::KnownApiCall { api } = &inst.t else {
+  let InstTyp::KnownApiCall { api } = inst.t else {
     return None;
   };
-  let (tgt, _api, args) = inst.as_known_api_call();
 
-  // The decompiler does not have access to an API database, so emit a stable placeholder callee.
-  let callee = identifier(format!("__known_api_{:x}", api.0));
-  let arg_exprs: Vec<_> = args
-    .iter()
-    .map(|a| lower_arg(var_namer, fn_emitter, a))
-    .collect();
+  // The decompiler does not have access to an API database, so emit a stable placeholder call that
+  // includes the raw API id.
+  let mut arg_exprs = Vec::with_capacity(inst.args.len() + 1);
+  arg_exprs.push(node(Expr::LitStr(node(LitStrExpr {
+    value: format!("0x{:016x}", api.raw()),
+  }))));
+  arg_exprs.extend(
+    inst
+      .args
+      .iter()
+      .map(|a| lower_arg(var_namer, fn_emitter, a)),
+  );
+
   let call_expr = node(Expr::Call(node(CallExpr {
     optional_chaining: false,
-    callee,
+    callee: identifier("known_api".to_string()),
     arguments: call_args(arg_exprs, &[]),
   })));
 
-  match tgt {
+  match inst.tgts.get(0).copied() {
     Some(tgt) => Some(var_binding(var_namer, tgt, call_expr, target_init)),
     None => Some(node(Stmt::Expr(node(ExprStmt { expr: call_expr })))),
   }
@@ -1290,17 +1296,18 @@ fn handle_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<
 #[cfg(feature = "semantic-ops")]
 fn handle_known_api_call(inst: &Inst, env: &BTreeMap<u32, VarValue>) -> (FlatExpr, Option<u32>) {
   let (tgt, api, args) = inst.as_known_api_call();
-  let callee_expr = FlatExpr::Identifier(format!("__known_api_{:x}", api.0));
-  let args_exprs = args
-    .iter()
-    .map(|arg| FlatCallArg {
-      expr: expr_from_arg(arg, env),
-      spread: false,
-    })
-    .collect();
+  let mut args_exprs = Vec::with_capacity(args.len() + 1);
+  args_exprs.push(FlatCallArg {
+    expr: FlatExpr::Str(format!("0x{:016x}", api.raw())),
+    spread: false,
+  });
+  args_exprs.extend(args.iter().map(|arg| FlatCallArg {
+    expr: expr_from_arg(arg, env),
+    spread: false,
+  }));
   (
     FlatExpr::Call {
-      callee: Box::new(callee_expr),
+      callee: Box::new(FlatExpr::Identifier("known_api".to_string())),
       args: args_exprs,
     },
     tgt,
@@ -1707,6 +1714,13 @@ pub enum LoweredInst {
     args: Vec<LoweredArg>,
     spreads: Vec<usize>,
   },
+  #[cfg(feature = "semantic-ops")]
+  KnownApiCall {
+    tgt: Option<u32>,
+    /// Stable hexadecimal representation of the raw API id (e.g. `"0x0123abcd..."`).
+    api: String,
+    args: Vec<LoweredArg>,
+  },
   #[cfg(feature = "native-async-ops")]
   PromiseAll {
     tgt: Option<u32>,
@@ -1850,13 +1864,14 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       spreads: inst.spreads.clone(),
     },
     #[cfg(feature = "semantic-ops")]
-    InstTyp::KnownApiCall { api } => LoweredInst::Call {
-      tgt: inst.tgts.get(0).copied(),
-      callee: LoweredArg::Ident(format!("__known_api_{:x}", api.0)),
-      this_: LoweredArg::Const(Const::Undefined),
-      args: inst.args.iter().map(lowered_arg).collect(),
-      spreads: Vec::new(),
-    },
+    InstTyp::KnownApiCall { .. } => {
+      let (tgt, api, args) = inst.as_known_api_call();
+      LoweredInst::KnownApiCall {
+        tgt,
+        api: format!("0x{:016x}", api.raw()),
+        args: args.iter().map(lowered_arg).collect(),
+      }
+    }
     #[cfg(feature = "native-async-ops")]
     InstTyp::PromiseAll => LoweredInst::PromiseAll {
       tgt: inst.tgts.get(0).copied(),
