@@ -1,7 +1,6 @@
 mod host;
 mod output;
 mod project_load;
-mod tsconfig;
 mod type_libs;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};

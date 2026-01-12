@@ -2,7 +2,7 @@ use crate::host;
 use crate::type_libs;
 use std::path::{Path, PathBuf};
 use typecheck_ts::lib_support::{CompilerOptions, LibName, ScriptTarget};
-use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
+use typecheck_ts::resolve::{canonicalize_path, ModuleResolutionMode, NodeResolver, ResolveOptions};
 use typecheck_ts::tsconfig;
 use typecheck_ts::{FileId, Program};
 
@@ -64,9 +64,23 @@ pub fn load_program(
     LoadMode::Checked => native_js::builtins::checked_builtins_lib(),
   });
 
+  let module_resolution_mode = match compiler_options.module_resolution.as_deref() {
+    Some("node16") => ModuleResolutionMode::Node16,
+    Some("nodenext") => ModuleResolutionMode::NodeNext,
+    Some("bundler") => ModuleResolutionMode::Bundler,
+    Some("node" | "node10") => ModuleResolutionMode::Node10,
+    _ => match compiler_options.module {
+      Some(typecheck_ts::lib_support::ModuleKind::Node16) => ModuleResolutionMode::Node16,
+      Some(typecheck_ts::lib_support::ModuleKind::NodeNext) => ModuleResolutionMode::NodeNext,
+      _ => ModuleResolutionMode::Node10,
+    },
+  };
   let resolve_options = ResolveOptions {
     node_modules: true,
     package_imports: true,
+    module_resolution: module_resolution_mode,
+    module_kind: compiler_options.module,
+    ..ResolveOptions::default()
   };
   let resolver = host::ModuleResolver {
     resolver: NodeResolver::new(resolve_options),
