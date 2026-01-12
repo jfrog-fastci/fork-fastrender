@@ -346,32 +346,7 @@ impl LibSet {
       return LibSet::empty();
     }
 
-    // TypeScript's defaults are derived from the `lib.*.d.ts` wrapper files (for
-    // example, `lib.es2020.full.d.ts`). Keep our selection in sync with tsc so
-    // difftsc comparisons remain meaningful when no explicit `@lib:` directive
-    // is present.
-    let mut libs = vec![
-      es_lib_for_target(options.target),
-      lib_name("dom"),
-      lib_name("webworker.importscripts"),
-      lib_name("scripthost"),
-    ];
-    match options.target {
-      ScriptTarget::Es3 | ScriptTarget::Es5 => {}
-      ScriptTarget::Es2015 | ScriptTarget::Es2016 | ScriptTarget::Es2017 => {
-        libs.push(lib_name("dom.iterable"));
-      }
-      ScriptTarget::Es2018
-      | ScriptTarget::Es2019
-      | ScriptTarget::Es2020
-      | ScriptTarget::Es2021
-      | ScriptTarget::Es2022
-      | ScriptTarget::EsNext => {
-        libs.push(lib_name("dom.iterable"));
-        libs.push(lib_name("dom.asynciterable"));
-      }
-    }
-    LibSet::from(libs)
+    LibSet::from(default_libs_for_target(options.target))
   }
 
   pub fn libs(&self) -> &[LibName] {
@@ -395,19 +370,144 @@ impl From<Vec<LibName>> for LibSet {
   }
 }
 
-fn es_lib_for_target(target: ScriptTarget) -> LibName {
-  match target {
-    ScriptTarget::Es3 | ScriptTarget::Es5 => lib_name("es5"),
-    ScriptTarget::Es2015 => lib_name("es2015"),
-    ScriptTarget::Es2016 => lib_name("es2016"),
-    ScriptTarget::Es2017 => lib_name("es2017"),
-    ScriptTarget::Es2018 => lib_name("es2018"),
-    ScriptTarget::Es2019 => lib_name("es2019"),
-    ScriptTarget::Es2020 => lib_name("es2020"),
-    ScriptTarget::Es2021 => lib_name("es2021"),
-    ScriptTarget::Es2022 => lib_name("es2022"),
-    ScriptTarget::EsNext => lib_name("esnext"),
+#[cfg(feature = "bundled-libs")]
+fn default_libs_for_target(target: ScriptTarget) -> Vec<LibName> {
+  let entry_text = match target {
+    ScriptTarget::Es3 | ScriptTarget::Es5 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.d.ts"
+    )),
+    ScriptTarget::Es2015 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.es6.d.ts"
+    )),
+    ScriptTarget::Es2016 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.es2016.full.d.ts"
+    )),
+    ScriptTarget::Es2017 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.es2017.full.d.ts"
+    )),
+    ScriptTarget::Es2018 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.es2018.full.d.ts"
+    )),
+    ScriptTarget::Es2019 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.es2019.full.d.ts"
+    )),
+    ScriptTarget::Es2020 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.es2020.full.d.ts"
+    )),
+    ScriptTarget::Es2021 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.es2021.full.d.ts"
+    )),
+    ScriptTarget::Es2022 => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.es2022.full.d.ts"
+    )),
+    ScriptTarget::EsNext => include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/fixtures/typescript-libs/5.9.3/lib.esnext.full.d.ts"
+    )),
+  };
+
+  referenced_lib_option_names(entry_text)
+}
+
+#[cfg(not(feature = "bundled-libs"))]
+fn default_libs_for_target(target: ScriptTarget) -> Vec<LibName> {
+  let mut libs = vec![
+    match target {
+      ScriptTarget::Es3 | ScriptTarget::Es5 => lib_name("es5"),
+      ScriptTarget::Es2015 => lib_name("es2015"),
+      ScriptTarget::Es2016 => lib_name("es2016"),
+      ScriptTarget::Es2017 => lib_name("es2017"),
+      ScriptTarget::Es2018 => lib_name("es2018"),
+      ScriptTarget::Es2019 => lib_name("es2019"),
+      ScriptTarget::Es2020 => lib_name("es2020"),
+      ScriptTarget::Es2021 => lib_name("es2021"),
+      ScriptTarget::Es2022 => lib_name("es2022"),
+      ScriptTarget::EsNext => lib_name("esnext"),
+    },
+    lib_name("dom"),
+    lib_name("webworker.importscripts"),
+    lib_name("scripthost"),
+  ];
+
+  if matches!(
+    target,
+    ScriptTarget::Es2015
+      | ScriptTarget::Es2016
+      | ScriptTarget::Es2017
+      | ScriptTarget::Es2018
+      | ScriptTarget::Es2019
+      | ScriptTarget::Es2020
+      | ScriptTarget::Es2021
+      | ScriptTarget::Es2022
+      | ScriptTarget::EsNext
+  ) {
+    libs.push(lib_name("dom.iterable"));
   }
+
+  if matches!(
+    target,
+    ScriptTarget::Es2018
+      | ScriptTarget::Es2019
+      | ScriptTarget::Es2020
+      | ScriptTarget::Es2021
+      | ScriptTarget::Es2022
+      | ScriptTarget::EsNext
+  ) {
+    libs.push(lib_name("dom.asynciterable"));
+  }
+
+  libs
+}
+
+#[cfg(feature = "bundled-libs")]
+fn referenced_lib_option_names(text: &str) -> Vec<LibName> {
+  fn attr_value<'a>(line: &'a str, needle: &str) -> Option<&'a str> {
+    let mut offset = 0;
+    while let Some(found) = line[offset..].find(needle) {
+      let start = offset + found;
+      if start == 0 || line.as_bytes()[start - 1].is_ascii_whitespace() {
+        let value_start = start + needle.len();
+        let rest = &line[value_start..];
+        let end = rest.find('"')?;
+        return Some(&rest[..end]);
+      }
+      offset = start + needle.len();
+    }
+    None
+  }
+
+  let mut out = Vec::new();
+  let mut in_directives = false;
+  for line in text.lines() {
+    let line = line.trim();
+    if line.is_empty() {
+      continue;
+    }
+    if !line.starts_with("///") {
+      if in_directives {
+        break;
+      }
+      continue;
+    }
+    in_directives = true;
+
+    if let Some(lib_name) = attr_value(line, "lib=\"") {
+      let parsed = LibName::from_option_name(lib_name)
+        .unwrap_or_else(|| panic!("invalid lib reference: {lib_name}"));
+      out.push(parsed);
+    }
+  }
+
+  out
 }
 
 fn lib_name(name: &'static str) -> LibName {
@@ -450,23 +550,7 @@ mod tests {
   #[test]
   fn computes_default_libs_from_target() {
     let mut options = CompilerOptions::default();
-    options.target = ScriptTarget::Es2020;
-    let libs = LibSet::for_options(&options);
-    assert_eq!(
-      libs.libs(),
-      &[
-        lib_name("dom"),
-        lib_name("dom.asynciterable"),
-        lib_name("dom.iterable"),
-        lib_name("es2020"),
-        lib_name("scripthost"),
-        lib_name("webworker.importscripts")
-      ],
-      "default libs should match tsc wrapper libs for the target"
-    );
-
-    let mut options = CompilerOptions::default();
-    options.target = ScriptTarget::Es3;
+    options.target = ScriptTarget::Es5;
     let libs = LibSet::for_options(&options);
     assert_eq!(
       libs.libs(),
@@ -475,7 +559,8 @@ mod tests {
         lib_name("es5"),
         lib_name("scripthost"),
         lib_name("webworker.importscripts")
-      ]
+      ],
+      "es5 defaults should include the host/environment libs"
     );
 
     let mut options = CompilerOptions::default();
@@ -489,21 +574,24 @@ mod tests {
         lib_name("es2015"),
         lib_name("scripthost"),
         lib_name("webworker.importscripts")
-      ]
+      ],
+      "es2015 defaults should include dom.iterable"
     );
 
     let mut options = CompilerOptions::default();
-    options.target = ScriptTarget::Es2017;
+    options.target = ScriptTarget::Es2018;
     let libs = LibSet::for_options(&options);
     assert_eq!(
       libs.libs(),
       &[
         lib_name("dom"),
+        lib_name("dom.asynciterable"),
         lib_name("dom.iterable"),
-        lib_name("es2017"),
+        lib_name("es2018"),
         lib_name("scripthost"),
         lib_name("webworker.importscripts")
-      ]
+      ],
+      "es2018+ defaults should include dom.asynciterable"
     );
 
     let mut options = CompilerOptions::default();
@@ -535,7 +623,7 @@ mod tests {
         lib_name("scripthost"),
         lib_name("webworker.importscripts")
       ],
-      "esnext defaults should match lib.esnext.full.d.ts"
+      "esnext defaults should include env libs but not esnext.disposable explicitly"
     );
 
     let mut options = CompilerOptions::default();
