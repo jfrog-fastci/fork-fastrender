@@ -483,6 +483,13 @@ subtract the load base:
 native-js addr2line /tmp/out --base 0x555555554000 0x555555556234
 ```
 
+In CI, you can add `--strict` to make the command fail if any address does not resolve to a source
+line:
+
+```bash
+native-js addr2line --strict /tmp/out 0x401234
+```
+
 ### Diagnostics
 
 Unlike the minimal `native-js-cli` binary, the typechecked `native-js` pipeline

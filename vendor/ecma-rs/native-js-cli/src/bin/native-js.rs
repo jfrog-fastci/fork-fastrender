@@ -226,6 +226,12 @@ struct Addr2LineArgs {
   /// Demangle function names when possible (Rust symbols).
   #[arg(long, action = ArgAction::SetTrue)]
   demangle: bool,
+
+  /// Exit with code 1 if any address cannot be resolved to a source line.
+  ///
+  /// This is useful in CI to validate that emitted debug info contains expected line tables.
+  #[arg(long, action = ArgAction::SetTrue)]
+  strict: bool,
 }
 
 const ADDR2LINE_JSON_SCHEMA_VERSION: u32 = 1;
@@ -237,6 +243,7 @@ struct Addr2LineJsonOutput {
   exe: String,
   base: Option<String>,
   demangle: bool,
+  strict: bool,
   results: Vec<Addr2LineJsonResult>,
   error: Option<String>,
   exit_code: u8,
@@ -919,6 +926,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
             exe: args.exe.display().to_string(),
             base: None,
             demangle: args.demangle,
+            strict: args.strict,
             results: Vec::new(),
             error: Some(err),
             exit_code: 2,
@@ -947,6 +955,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
           exe: args.exe.display().to_string(),
           base: base.map(|b| format!("0x{b:x}")),
           demangle: args.demangle,
+          strict: args.strict,
           results: Vec::new(),
           error: Some(msg),
           exit_code: 2,
@@ -960,6 +969,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
   };
 
   let mut results = Vec::with_capacity(args.addrs.len());
+  let mut had_unresolved = false;
 
   for raw_addr in &args.addrs {
     let addr_raw = match parse_hex_u64(raw_addr) {
@@ -972,6 +982,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
             exe: args.exe.display().to_string(),
             base: base.map(|b| format!("0x{b:x}")),
             demangle: args.demangle,
+            strict: args.strict,
             results,
             error: Some(err),
             exit_code: 2,
@@ -999,6 +1010,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
               exe: args.exe.display().to_string(),
               base: Some(format!("0x{base:x}")),
               demangle: args.demangle,
+              strict: args.strict,
               results,
               error: Some(msg),
               exit_code: 2,
@@ -1037,6 +1049,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
             exe: args.exe.display().to_string(),
             base: base.map(|b| format!("0x{b:x}")),
             demangle: args.demangle,
+            strict: args.strict,
             results,
             error: Some(msg),
             exit_code: 2,
@@ -1062,6 +1075,7 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
               exe: args.exe.display().to_string(),
               base: base.map(|b| format!("0x{b:x}")),
               demangle: args.demangle,
+              strict: args.strict,
               results,
               error: Some(msg),
               exit_code: 2,
@@ -1106,6 +1120,10 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
       }
     }
 
+    if args.strict && (file.is_none() || line.is_none()) {
+      had_unresolved = true;
+    }
+
     if cli.json {
       results.push(Addr2LineJsonResult {
         input: raw_addr.clone(),
@@ -1137,20 +1155,26 @@ fn cmd_addr2line(cli: &Cli, args: &Addr2LineArgs) -> ExitCode {
   }
 
   if cli.json {
+    let exit_code = if args.strict && had_unresolved { 1 } else { 0 };
     let payload = Addr2LineJsonOutput {
       schema_version: ADDR2LINE_JSON_SCHEMA_VERSION,
       command: "addr2line",
       exe: args.exe.display().to_string(),
       base: base.map(|b| format!("0x{b:x}")),
       demangle: args.demangle,
+      strict: args.strict,
       results,
       error: None,
-      exit_code: 0,
+      exit_code,
     };
     emit_json(&payload);
   }
 
-  ExitCode::SUCCESS
+  if args.strict && had_unresolved {
+    ExitCode::from(1)
+  } else {
+    ExitCode::SUCCESS
+  }
 }
 
 fn parse_hex_u64(raw: &str) -> Result<u64, String> {

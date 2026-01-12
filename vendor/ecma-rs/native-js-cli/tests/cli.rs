@@ -539,6 +539,17 @@ fn addr2line_resolves_main_symbol_to_typescript_location() {
     .stdout(predicate::str::contains("entry.ts:1"))
     .stdout(predicate::str::contains("main"));
 
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("addr2line")
+    .arg("--strict")
+    .arg(&out)
+    .arg("0")
+    .assert()
+    .failure()
+    .code(1)
+    .stdout(predicate::str::contains("??:0"));
+
   let assert = native_js()
     .timeout(CLI_TIMEOUT)
     .arg("--json")
@@ -575,6 +586,30 @@ fn addr2line_resolves_main_symbol_to_typescript_location() {
     function.contains("main") || symbol.contains("main"),
     "expected function/symbol to contain main, got function={function:?} symbol={symbol:?}"
   );
+
+  let assert = native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("--json")
+    .arg("addr2line")
+    .arg("--strict")
+    .arg(&out)
+    .arg("0")
+    .assert()
+    .failure()
+    .code(1);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["command"], "addr2line");
+  assert_eq!(value["exit_code"], 1);
+  let results = value["results"].as_array().expect("expected results array");
+  assert_eq!(results.len(), 1);
 }
 
 #[test]
