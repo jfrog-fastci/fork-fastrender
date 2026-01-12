@@ -63,6 +63,35 @@ fn browser_tab_records_console_messages_with_levels() -> fastrender::Result<()> 
 }
 
 #[test]
+fn browser_tab_console_assert_preserves_substitution_string_formatting() -> fastrender::Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script>console.assert(false, 'x=%d', 1)</script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let executor = VmJsBrowserTabExecutor::default();
+  let mut tab = BrowserTab::from_html(html, options, executor)?;
+  let _ = tab.render_frame()?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert!(
+    diagnostics.console_messages.iter().any(|m| {
+      m.level == ConsoleMessageLevel::Error && m.message == "Assertion failed: x=1"
+    }),
+    "expected console.assert(false, 'x=%d', 1) to be recorded; got {:?}",
+    diagnostics.console_messages
+  );
+  Ok(())
+}
+
+#[test]
 fn browser_tab_exceptions_do_not_abort_subsequent_scripts() -> fastrender::Result<()> {
   let html = r#"<!doctype html>
     <html>

@@ -2385,7 +2385,8 @@ fn console_assert_native(
     return Ok(Value::Undefined);
   };
 
-  if args.len() <= 1 {
+  let data = args.get(1..).unwrap_or_default();
+  if data.is_empty() {
     let msg_s = scope.alloc_string("Assertion failed")?;
     scope.push_root(Value::String(msg_s))?;
     let msg = [Value::String(msg_s)];
@@ -2393,16 +2394,36 @@ fn console_assert_native(
     return Ok(Value::Undefined);
   }
 
-  let prefix_s = scope.alloc_string("Assertion failed:")?;
-  scope.push_root(Value::String(prefix_s))?;
+  match data[0] {
+    Value::String(fmt_s) => {
+      let fmt = scope.heap().get_string(fmt_s)?.to_utf8_lossy();
+      let mut prefixed = String::from("Assertion failed: ");
+      prefixed.push_str(&fmt);
+      let prefixed_s = scope.alloc_string(&prefixed)?;
+      // GC safety: the newly allocated string must be rooted before calling the sink.
+      scope.push_root(Value::String(prefixed_s))?;
 
-  let mut out: Vec<Value> = Vec::new();
-  out
-    .try_reserve_exact(args.len())
-    .map_err(|_| VmError::OutOfMemory)?;
-  out.push(Value::String(prefix_s));
-  out.extend_from_slice(&args[1..]);
-  sink(ConsoleMessageLevel::Error, scope.heap_mut(), &out);
+      let mut out: Vec<Value> = Vec::new();
+      out
+        .try_reserve_exact(data.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      out.push(Value::String(prefixed_s));
+      out.extend_from_slice(&data[1..]);
+      sink(ConsoleMessageLevel::Error, scope.heap_mut(), &out);
+    }
+    _ => {
+      let prefix_s = scope.alloc_string("Assertion failed:")?;
+      scope.push_root(Value::String(prefix_s))?;
+
+      let mut out: Vec<Value> = Vec::new();
+      out
+        .try_reserve_exact(1 + data.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      out.push(Value::String(prefix_s));
+      out.extend_from_slice(data);
+      sink(ConsoleMessageLevel::Error, scope.heap_mut(), &out);
+    }
+  }
 
   Ok(Value::Undefined)
 }
@@ -21853,6 +21874,7 @@ fn init_window_globals(
 mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
+  use crate::js::vm_error_format;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
   use std::time::Duration;
@@ -24912,6 +24934,13 @@ mod tests {
     );
 
     captured.lock().clear();
+    realm.exec_script("console.assert(false, 'x=%d', 1)")?;
+    assert_eq!(
+      &*captured.lock(),
+      &[(ConsoleMessageLevel::Error, "Assertion failed: x=1".to_string())]
+    );
+
+    captured.lock().clear();
     realm.exec_script(
       "console.count(); console.count(); console.count('x'); console.count('x'); console.count();"
     )?;
@@ -25051,7 +25080,6 @@ mod tests {
       initial_len,
       "expected realm drop to not leak console sinks"
     );
-
     Ok(())
   }
 

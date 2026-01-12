@@ -740,6 +740,7 @@ pub(crate) fn format_console_arguments_limited(heap: &mut Heap, args: &[Value]) 
       }
     }
   }
+
   out
 }
 
