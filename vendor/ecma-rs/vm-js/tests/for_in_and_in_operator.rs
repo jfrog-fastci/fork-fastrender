@@ -203,3 +203,26 @@ fn for_in_over_detached_typed_array_skips_indices_but_keeps_non_numeric_prototyp
     .unwrap();
   assert_value_is_utf8(&rt, value, "foo");
 }
+
+#[test]
+fn in_operator_on_typed_array_skips_prototype_numeric_keys() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      Uint8Array.prototype['0']=7;
+      Uint8Array.prototype['1.5']=7;
+      Uint8Array.prototype.foo=1;
+
+      var u = new Uint8Array(0);
+      var ok = !('0' in u) && !('1.5' in u) && ('foo' in u);
+
+      delete Uint8Array.prototype['0'];
+      delete Uint8Array.prototype['1.5'];
+      delete Uint8Array.prototype.foo;
+      ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

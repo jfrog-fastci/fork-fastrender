@@ -147,7 +147,8 @@ impl ForInEnumerator {
         // Avoid a general `HasProperty` call here so `for..in` over Proxy objects (and objects with
         // Proxy objects in their prototype chain) remains trap-driven; we only need this filtering
         // for typed array numeric indices.
-        if scope.heap().is_typed_array_object(self.original_object)
+        if obj != self.original_object
+          && scope.heap().is_typed_array_object(self.original_object)
           && scope.heap().canonical_numeric_index_string(key_s)?.is_some()
           && !scope.ordinary_has_property_with_tick(self.original_object, key, || vm.tick())?
         {
