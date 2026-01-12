@@ -123,7 +123,7 @@ fn float_context_many_range_queries_complete_before_deadline() {
     }
   }
 
-  let result = with_deadline(Some(&deadline), || {
+  let (acc, timeout) = with_deadline(Some(&deadline), || {
     let mut acc = 0.0f32;
     for i in 0..FLOAT_COUNT {
       let y = i as f32;
@@ -134,15 +134,13 @@ fn float_context_many_range_queries_complete_before_deadline() {
     (acc, timeout)
   });
 
-  match result {
-    Ok((acc, None)) => {
-      std::hint::black_box(acc);
-    }
-    Ok((_acc, Some(LayoutError::Timeout { elapsed }))) => panic!(
+  std::hint::black_box(acc);
+  match timeout {
+    None => {}
+    Some(LayoutError::Timeout { elapsed }) => panic!(
       "expected float range queries to finish under deadline, timed out after {elapsed:?}"
     ),
-    Ok((_acc, Some(other))) => panic!("unexpected layout error: {other:?}"),
-    Err(err) => panic!("unexpected deadline error: {err:?}"),
+    Some(other) => panic!("unexpected layout error: {other:?}"),
   }
 }
 
@@ -160,7 +158,7 @@ fn float_context_incremental_float_placement_complete_before_deadline() {
   const FLOAT_HEIGHT: f32 = 1.0;
   const FLOAT_COUNT: usize = 10_000;
 
-  let result = with_deadline(Some(&deadline), || {
+  let timeout = with_deadline(Some(&deadline), || {
     let mut ctx = FloatContext::new(CONTAINING_WIDTH);
     for i in 0..FLOAT_COUNT {
       let side = if i % 2 == 0 {
@@ -174,12 +172,11 @@ fn float_context_incremental_float_placement_complete_before_deadline() {
     ctx.take_timeout_error()
   });
 
-  match result {
-    Ok(None) => {}
-    Ok(Some(LayoutError::Timeout { elapsed })) => panic!(
+  match timeout {
+    None => {}
+    Some(LayoutError::Timeout { elapsed }) => panic!(
       "expected incremental float placement to finish under deadline, timed out after {elapsed:?}"
     ),
-    Ok(Some(other)) => panic!("unexpected layout error: {other:?}"),
-    Err(err) => panic!("unexpected deadline error: {err:?}"),
+    Some(other) => panic!("unexpected layout error: {other:?}"),
   }
 }
