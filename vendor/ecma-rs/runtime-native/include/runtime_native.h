@@ -484,7 +484,7 @@ void rt_gc_unpin(uint32_t handle);
 // (instead of a raw `GcPtr`, which may be relocated by the GC).
 GcPtr rt_gc_root_get(uint32_t handle);
 bool rt_gc_root_set(uint32_t handle, GcPtr ptr);
-// Like `rt_gc_root_set`, but takes the pointer as a `GcHandle` (pointer-to-slot).
+// Like `rt_gc_root_set`, but takes the new pointer value as a `GcHandle` (pointer-to-slot).
 bool rt_gc_root_set_h(uint32_t handle, GcHandle ptr);
 
 // -----------------------------------------------------------------------------

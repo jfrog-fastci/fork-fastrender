@@ -78,12 +78,13 @@ impl RootRegistry {
     inner.alloc(Entry::Pinned(Box::new(ptr)))
   }
 
-  /// Like [`RootRegistry::pin`], but reads the pointer value from an addressable slot *after*
-  /// acquiring the root registry lock.
+  /// Like [`Self::pin`], but reads the pointer value from an addressable slot *after* acquiring the
+  /// root registry lock.
   ///
   /// This is intended for moving-GC-safe exported entrypoints that accept GC-managed pointers as
   /// [`crate::roots::GcHandle`] (pointer-to-slot) handles: if lock acquisition blocks and the thread
   /// enters a GC-safe region, a moving GC may update the caller's slot before the lock is acquired.
+  /// Reading the pointer only after holding the lock ensures we store the most up-to-date value.
   ///
   /// # Safety
   /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot.
@@ -99,7 +100,7 @@ impl RootRegistry {
     // a GC-safe region and a moving GC may update the slot.
     let mut inner = self.inner.lock();
 
-    // Safety: caller guarantees `slot` is valid for reads of `*mut u8`.
+    // SAFETY: caller contract.
     let ptr = unsafe { slot.read() };
     inner.alloc(Entry::Pinned(Box::new(ptr)))
   }
@@ -169,8 +170,12 @@ impl RootRegistry {
     true
   }
 
-  /// Like [`RootRegistry::set`], but reads the pointer value from an addressable slot *after*
-  /// acquiring the root registry lock.
+  /// Like [`Self::set`], but reads the pointer value from an addressable slot *after* acquiring the
+  /// root registry lock.
+  ///
+  /// This is intended for moving-GC-safe exported entrypoints that accept GC-managed pointers as
+  /// [`crate::roots::GcHandle`] (pointer-to-slot) handles: if lock acquisition blocks and the thread
+  /// enters a GC-safe region, a moving GC may update the caller's slot before the lock is acquired.
   ///
   /// # Safety
   /// `slot` must be a valid, aligned pointer to a writable `*mut u8` slot.
@@ -182,15 +187,18 @@ impl RootRegistry {
       std::process::abort();
     }
 
+    // Acquire the lock before reading from `slot`: if lock acquisition blocks, the thread may enter
+    // a GC-safe region and a moving GC may update the slot.
     let mut inner = self.inner.lock();
+
     let Some(dst_slot_ptr) = inner.get_slot_ptr(handle) else {
       return false;
     };
 
-    // Safety: caller guarantees `slot` is valid for reads of `*mut u8`.
+    // SAFETY: caller contract.
     let ptr = unsafe { slot.read() };
-    // Safety: `dst_slot_ptr` is returned only for live entries, and the caller guarantees borrowed
-    // slots remain valid until unregistered.
+
+    // Safety: see [`RootRegistry::get`].
     unsafe {
       dst_slot_ptr.write(ptr);
     }
@@ -521,7 +529,14 @@ mod tests {
   fn pin_from_slot_reads_pointer_after_lock_acquired() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
-    const TIMEOUT: Duration = Duration::from_secs(2);
+    // Stop-the-world handshakes can take much longer in debug builds (especially
+    // under parallel test execution on multi-agent hosts). Keep release builds
+    // strict, but give debug builds enough slack to avoid flaky timeouts.
+    const TIMEOUT: Duration = if cfg!(debug_assertions) {
+      Duration::from_secs(30)
+    } else {
+      Duration::from_secs(2)
+    };
     let registry = RootRegistry::new();
 
     // Treat pointers as opaque addresses; they do not need to be dereferenceable in this test.
@@ -618,7 +633,14 @@ mod tests {
   fn set_from_slot_reads_pointer_after_lock_acquired() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
-    const TIMEOUT: Duration = Duration::from_secs(2);
+    // Stop-the-world handshakes can take much longer in debug builds (especially
+    // under parallel test execution on multi-agent hosts). Keep release builds
+    // strict, but give debug builds enough slack to avoid flaky timeouts.
+    const TIMEOUT: Duration = if cfg!(debug_assertions) {
+      Duration::from_secs(30)
+    } else {
+      Duration::from_secs(2)
+    };
     let registry = RootRegistry::new();
 
     let handle = registry.pin(0x1111usize as *mut u8);
@@ -626,7 +648,8 @@ mod tests {
 
     let mut slot_value: *mut u8 = 0x2222usize as *mut u8;
     let new_value: *mut u8 = 0x3333usize as *mut u8;
-      let slot_ptr: usize = (&mut slot_value as *mut *mut u8) as usize;
+    // Raw pointers are `!Send` on newer Rust versions; pass as an integer across threads.
+    let slot_ptr: usize = (&mut slot_value as *mut *mut u8) as usize;
 
     std::thread::scope(|scope| {
       let registry = &registry;
