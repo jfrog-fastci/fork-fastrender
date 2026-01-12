@@ -33,6 +33,36 @@ fn for_of_over_string() {
 }
 
 #[test]
+fn for_of_over_array_grows_during_iteration() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var a=[1,2]; var out=[];
+      for (var x of a) { out.push(x); if (x===1) a.push(3); }
+      out.join(',')
+    "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "1,2,3");
+}
+
+#[test]
+fn for_of_over_array_shrinks_during_iteration() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var a=[1,2,3]; var out=[];
+      for (var x of a) { out.push(x); a.length = 1; }
+      out.join(',')
+    "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "1");
+}
+
+#[test]
 fn array_spread() {
   let mut rt = new_runtime();
   let value = rt
