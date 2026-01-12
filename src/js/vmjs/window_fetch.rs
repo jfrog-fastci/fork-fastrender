@@ -13587,6 +13587,124 @@ mod tests {
   }
 
   #[test]
+  fn response_clone_works_for_stream_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_value = host.window.exec_script(
+      "(function(){\
+         const upstream = new Response('hi');\
+         const stream = upstream.body;\
+         const resp = new Response(stream);\
+         const clone = resp.clone();\
+         const usedBefore = [resp.bodyUsed, clone.bodyUsed];\
+         const promise = Promise.all([resp.text(), clone.text()]);\
+         return { usedBefore, promise, resp, clone };\
+       })()",
+    )?;
+    let result_root = host.window.heap_mut().add_root(result_value)?;
+
+    // Stream-backed body consumers resolve asynchronously via Promise jobs.
+    host.window.perform_microtask_checkpoint()?;
+
+    let result_value = host
+      .window
+      .heap()
+      .get_root(result_root)
+      .unwrap_or(Value::Undefined);
+    let Value::Object(result_obj) = result_value else {
+      return Err(VmError::InvariantViolation(
+        "expected response clone stream body test script to return an object",
+      ));
+    };
+
+    {
+      let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(result_obj))?;
+
+      let used_before_key = alloc_key(&mut scope, "usedBefore")?;
+      let used_before_val = vm.get(&mut scope, result_obj, used_before_key)?;
+      let Value::Object(used_before_arr) = used_before_val else {
+        return Err(VmError::InvariantViolation(
+          "expected usedBefore to be an array-like object",
+        ));
+      };
+      scope.push_root(Value::Object(used_before_arr))?;
+      let idx0_key = alloc_key(&mut scope, "0")?;
+      let idx1_key = alloc_key(&mut scope, "1")?;
+      assert_eq!(
+        vm.get(&mut scope, used_before_arr, idx0_key)?,
+        Value::Bool(false)
+      );
+      assert_eq!(
+        vm.get(&mut scope, used_before_arr, idx1_key)?,
+        Value::Bool(false)
+      );
+
+      let promise_key = alloc_key(&mut scope, "promise")?;
+      let promise_val = vm.get(&mut scope, result_obj, promise_key)?;
+      let Value::Object(promise_obj) = promise_val else {
+        return Err(VmError::InvariantViolation(
+          "expected response clone stream body test script to return a promise object",
+        ));
+      };
+      assert_eq!(
+        scope.heap().promise_state(promise_obj)?,
+        PromiseState::Fulfilled
+      );
+      let Some(result) = scope.heap().promise_result(promise_obj)? else {
+        return Err(VmError::InvariantViolation(
+          "Response.text Promise.all promise missing result",
+        ));
+      };
+      let Value::Object(results_arr) = result else {
+        return Err(VmError::InvariantViolation(
+          "Response.text Promise.all must resolve to an array-like object",
+        ));
+      };
+      scope.push_root(Value::Object(results_arr))?;
+      let idx0_key = alloc_key(&mut scope, "0")?;
+      let idx1_key = alloc_key(&mut scope, "1")?;
+      let Value::String(t0_s) = vm.get(&mut scope, results_arr, idx0_key)? else {
+        return Err(VmError::InvariantViolation(
+          "Response.text Promise.all result[0] must be a string",
+        ));
+      };
+      let Value::String(t1_s) = vm.get(&mut scope, results_arr, idx1_key)? else {
+        return Err(VmError::InvariantViolation(
+          "Response.text Promise.all result[1] must be a string",
+        ));
+      };
+      let t0 = scope.heap().get_string(t0_s)?.to_utf8_lossy();
+      let t1 = scope.heap().get_string(t1_s)?.to_utf8_lossy();
+      assert_eq!(t0, t1);
+      assert_eq!(t0, "hi");
+
+      let resp_key = alloc_key(&mut scope, "resp")?;
+      let clone_key = alloc_key(&mut scope, "clone")?;
+      let Value::Object(resp_obj) = vm.get(&mut scope, result_obj, resp_key)? else {
+        return Err(VmError::InvariantViolation("expected resp to be an object"));
+      };
+      let Value::Object(clone_obj) = vm.get(&mut scope, result_obj, clone_key)? else {
+        return Err(VmError::InvariantViolation("expected clone to be an object"));
+      };
+      let body_used_key = alloc_key(&mut scope, "bodyUsed")?;
+      assert_eq!(vm.get(&mut scope, resp_obj, body_used_key)?, Value::Bool(true));
+      assert_eq!(vm.get(&mut scope, clone_obj, body_used_key)?, Value::Bool(true));
+    }
+
+    host.window.heap_mut().remove_root(result_root);
+    Ok(())
+  }
+
+  #[test]
   fn response_ctor_does_not_call_to_string_on_readable_stream_bodyinit() -> Result<(), VmError> {
     let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
 
