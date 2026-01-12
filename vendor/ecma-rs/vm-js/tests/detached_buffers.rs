@@ -70,8 +70,10 @@ fn heap_byte_access_helpers_throw_type_error_on_detached_and_writes_are_noop() -
     other => panic!("expected TypeError, got {other:?}"),
   }
 
-  // Writes into detached buffers are no-ops.
-  assert_eq!(scope.heap_mut().uint8_array_write(view, 0, &[1])?, 0);
+  match scope.heap_mut().uint8_array_write(view, 0, &[1]) {
+    Err(VmError::TypeError(msg)) => assert_eq!(msg, "ArrayBuffer is detached"),
+    other => panic!("expected TypeError, got {other:?}"),
+  }
 
   // Preserve out-of-bounds behaviour (no-op write).
   assert_eq!(scope.heap_mut().uint8_array_write(view, 4, &[1, 2])?, 0);
