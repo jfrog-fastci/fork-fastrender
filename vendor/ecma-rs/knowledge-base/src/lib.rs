@@ -2907,6 +2907,33 @@ properties:
       Some("node/web_navigator.yaml")
     );
 
+    let language = kb
+      .api_for_target("navigator.language", &node_25)
+      .expect("navigator.language should resolve for Node 21+");
+    assert_eq!(language.name, "navigator.language");
+    assert_eq!(
+      kb.source_for_target("navigator.language", &node_25),
+      Some("node/web_navigator.yaml")
+    );
+
+    let platform = kb
+      .api_for_target("navigator.platform", &node_25)
+      .expect("navigator.platform should resolve for Node 21+");
+    assert_eq!(platform.name, "navigator.platform");
+    assert_eq!(
+      kb.source_for_target("navigator.platform", &node_25),
+      Some("node/web_navigator.yaml")
+    );
+
+    let cores = kb
+      .api_for_target("navigator.hardwareConcurrency", &node_25)
+      .expect("navigator.hardwareConcurrency should resolve for Node 21+");
+    assert_eq!(cores.name, "navigator.hardwareConcurrency");
+    assert_eq!(
+      kb.source_for_target("navigator.hardwareConcurrency", &node_25),
+      Some("node/web_navigator.yaml")
+    );
+
     let pattern = kb
       .api_for_target("URLPattern", &node_25)
       .expect("URLPattern should resolve for Node 21+");
@@ -2935,6 +2962,18 @@ properties:
     assert!(
       kb.api_for_target("navigator.userAgent", &node_20).is_none(),
       "navigator.userAgent should not resolve for Node < 21"
+    );
+    assert!(
+      kb.api_for_target("navigator.language", &node_20).is_none(),
+      "navigator.language should not resolve for Node < 21"
+    );
+    assert!(
+      kb.api_for_target("navigator.platform", &node_20).is_none(),
+      "navigator.platform should not resolve for Node < 21"
+    );
+    assert!(
+      kb.api_for_target("navigator.hardwareConcurrency", &node_20).is_none(),
+      "navigator.hardwareConcurrency should not resolve for Node < 21"
     );
     assert!(
       kb.api_for_target("URLPattern", &node_20).is_none(),

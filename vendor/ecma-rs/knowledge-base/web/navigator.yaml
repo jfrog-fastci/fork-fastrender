@@ -12,6 +12,64 @@
       flags: READS_GLOBAL | ALLOCATES
       throws: Never
   purity: ReadOnly
+  properties:
+    encoding.output: ascii
+
+- name: navigator.language
+  kind: getter
+  aliases:
+    - navigator.language
+    - window.navigator.language
+    - globalThis.navigator.language
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+  properties:
+    encoding.output: ascii
+
+- name: navigator.languages
+  kind: getter
+  aliases:
+    - navigator.languages
+    - window.navigator.languages
+    - globalThis.navigator.languages
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+
+- name: navigator.platform
+  kind: getter
+  aliases:
+    - navigator.platform
+    - window.navigator.platform
+    - globalThis.navigator.platform
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+  properties:
+    encoding.output: ascii
+
+- name: navigator.hardwareConcurrency
+  kind: getter
+  aliases:
+    - navigator.hardwareConcurrency
+    - window.navigator.hardwareConcurrency
+    - globalThis.navigator.hardwareConcurrency
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
 
 - name: navigator.sendBeacon
   kind: function

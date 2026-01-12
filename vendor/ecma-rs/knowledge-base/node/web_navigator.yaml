@@ -16,3 +16,39 @@
       flags: READS_GLOBAL | ALLOCATES
       throws: Never
   purity: ReadOnly
+
+- name: navigator.language
+  kind: getter
+  since: "v21.0.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+
+- name: navigator.languages
+  kind: getter
+  since: "v21.0.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+
+- name: navigator.platform
+  kind: getter
+  since: "v21.0.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+
+- name: navigator.hardwareConcurrency
+  kind: getter
+  since: "v21.0.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
