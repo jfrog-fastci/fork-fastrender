@@ -311,7 +311,7 @@ What exists today:
   builds on `vm-js`, which supports `HeapLimits`.
 - The runtime constructs a `Heap` with conservative fixed limits by default (see
   `webidl_js_runtime::VmJsRuntime::new` / `VmJsRuntime::with_limits`, implemented in
-  `vendor/ecma-rs/webidl-runtime/src/ecma_runtime.rs`).
+  `crates/webidl-js-runtime/src/ecma_runtime.rs`).
 
 As JS execution is wired into page rendering, these heap limits should become part of the tab-level
 budgeting story (alongside renderer stage budgets and OS caps).

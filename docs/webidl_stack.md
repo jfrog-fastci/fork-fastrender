@@ -39,12 +39,14 @@ belongs here.
 If you need a new feature in the `webidl` ↔ `vm-js` adapter (rooting, iterator helpers, host dispatch
 plumbing), it belongs here.
 
-### `vendor/ecma-rs/webidl-runtime` (compat)
+### `vendor/ecma-rs/webidl-runtime` (legacy heap-only runtime; compat)
 
-If the legacy heap-only runtime adapter is still present, it lives here.
+The legacy heap-only runtime adapter is used by early scaffolding and some unit tests. It cannot
+execute author scripts and should not be used for new bindings work.
 
 - Cargo package name: `webidl-js-runtime`
 - Rust crate name: `webidl_js_runtime`
+- Current location: `crates/webidl-js-runtime/`
 
 This layer exists for migration/testing where older heap-only bindings/runtime code is still
 referenced. Prefer the realm-based `webidl-vm-js` path for new bindings work.
