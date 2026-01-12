@@ -623,6 +623,34 @@ impl DeclarePass {
         self.push_scope(ScopeKind::Class, range_of(class));
         for member in class.stx.members.iter_mut() {
           self.mark_scope(&mut member.assoc);
+          for decorator in member.stx.decorators.iter_mut() {
+            self.walk_expr(&mut decorator.stx.expression);
+          }
+          if let ClassOrObjKey::Computed(expr) = &mut member.stx.key {
+            self.walk_expr(expr);
+          }
+          if let Some(ty) = &mut member.stx.type_annotation {
+            self.walk_type_expr(ty);
+          }
+          match &mut member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) => self.walk_expr(expr),
+            ClassOrObjVal::Getter(getter) => self.walk_func(&mut getter.stx.func),
+            ClassOrObjVal::Setter(setter) => self.walk_func(&mut setter.stx.func),
+            ClassOrObjVal::Method(method) => self.walk_func(&mut method.stx.func),
+            ClassOrObjVal::IndexSignature(sig) => {
+              self.walk_type_expr(&mut sig.stx.parameter_type);
+              self.walk_type_expr(&mut sig.stx.type_annotation);
+            }
+            ClassOrObjVal::StaticBlock(block) => {
+              self.push_scope(ScopeKind::Block, range_of(block));
+              self.mark_scope(&mut block.assoc);
+              for stmt in block.stx.body.iter_mut() {
+                self.walk_stmt(stmt);
+              }
+              self.pop_scope();
+            }
+            ClassOrObjVal::Prop(None) => {}
+          }
         }
         self.pop_scope();
       }
@@ -946,6 +974,12 @@ impl DeclarePass {
       AstExpr::Func(func) => self.walk_func(&mut func.stx.func),
       AstExpr::ArrowFunc(arrow) => self.walk_func(&mut arrow.stx.func),
       AstExpr::Class(class) => {
+        for decorator in class.stx.decorators.iter_mut() {
+          self.walk_expr(&mut decorator.stx.expression);
+        }
+        if let Some(extends) = &mut class.stx.extends {
+          self.walk_expr(extends);
+        }
         self.push_scope(ScopeKind::Class, range_of(class));
         if let Some(name) = &mut class.stx.name {
           self.declare(
@@ -954,6 +988,45 @@ impl DeclarePass {
             Namespace::VALUE | Namespace::TYPE,
             Some(to_range(name.loc)),
           );
+        }
+        if let Some(params) = &mut class.stx.type_parameters {
+          for param in params.iter_mut() {
+            self.walk_type_param(param);
+          }
+        }
+        for imp in class.stx.implements.iter_mut() {
+          self.walk_type_expr(imp);
+        }
+        for member in class.stx.members.iter_mut() {
+          self.mark_scope(&mut member.assoc);
+          for decorator in member.stx.decorators.iter_mut() {
+            self.walk_expr(&mut decorator.stx.expression);
+          }
+          if let ClassOrObjKey::Computed(expr) = &mut member.stx.key {
+            self.walk_expr(expr);
+          }
+          if let Some(ty) = &mut member.stx.type_annotation {
+            self.walk_type_expr(ty);
+          }
+          match &mut member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) => self.walk_expr(expr),
+            ClassOrObjVal::Getter(getter) => self.walk_func(&mut getter.stx.func),
+            ClassOrObjVal::Setter(setter) => self.walk_func(&mut setter.stx.func),
+            ClassOrObjVal::Method(method) => self.walk_func(&mut method.stx.func),
+            ClassOrObjVal::IndexSignature(sig) => {
+              self.walk_type_expr(&mut sig.stx.parameter_type);
+              self.walk_type_expr(&mut sig.stx.type_annotation);
+            }
+            ClassOrObjVal::StaticBlock(block) => {
+              self.push_scope(ScopeKind::Block, range_of(block));
+              self.mark_scope(&mut block.assoc);
+              for stmt in block.stx.body.iter_mut() {
+                self.walk_stmt(stmt);
+              }
+              self.pop_scope();
+            }
+            ClassOrObjVal::Prop(None) => {}
+          }
         }
         self.pop_scope();
       }
@@ -1419,8 +1492,44 @@ impl<'a> ResolvePass<'a> {
               .insert(span_for_name(name.loc, &name.stx.name), sym);
           }
         }
+        for decorator in class.stx.decorators.iter_mut() {
+          self.walk_expr(&mut decorator.stx.expression);
+        }
+        if let Some(extends) = &mut class.stx.extends {
+          self.walk_expr(extends);
+        }
+        for imp in class.stx.implements.iter_mut() {
+          self.walk_expr(imp);
+        }
         for member in class.stx.members.iter_mut() {
           self.push_scope_from_assoc(&member.assoc);
+          for decorator in member.stx.decorators.iter_mut() {
+            self.walk_expr(&mut decorator.stx.expression);
+          }
+          if let ClassOrObjKey::Computed(expr) = &mut member.stx.key {
+            self.walk_expr(expr);
+          }
+          if let Some(ty) = &mut member.stx.type_annotation {
+            self.walk_type_expr(ty);
+          }
+          match &mut member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) => self.walk_expr(expr),
+            ClassOrObjVal::Getter(getter) => self.walk_func(&mut getter.stx.func),
+            ClassOrObjVal::Setter(setter) => self.walk_func(&mut setter.stx.func),
+            ClassOrObjVal::Method(method) => self.walk_func(&mut method.stx.func),
+            ClassOrObjVal::IndexSignature(sig) => {
+              self.walk_type_expr(&mut sig.stx.parameter_type);
+              self.walk_type_expr(&mut sig.stx.type_annotation);
+            }
+            ClassOrObjVal::StaticBlock(block) => {
+              self.push_scope_from_assoc(&block.assoc);
+              for stmt in block.stx.body.iter_mut() {
+                self.walk_stmt(stmt);
+              }
+              self.pop_scope_from_assoc(&block.assoc);
+            }
+            ClassOrObjVal::Prop(None) => {}
+          }
           self.pop_scope_from_assoc(&member.assoc);
         }
       }
@@ -1728,15 +1837,50 @@ impl<'a> ResolvePass<'a> {
       AstExpr::Func(func) => self.walk_func(&mut func.stx.func),
       AstExpr::ArrowFunc(arrow) => self.walk_func(&mut arrow.stx.func),
       AstExpr::Class(class) => {
-        if let Some(name) = &class.stx.name {
-          let span = to_range(name.loc);
-          let sym = self
-            .builder
-            .resolve(self.current_scope(), &name.stx.name, Namespace::VALUE);
-          class.assoc.set(ResolvedSymbol(sym));
-          if let Some(sym) = sym {
-            self.expr_resolutions.insert(span, sym);
+        if let Some(name) = &mut class.stx.name {
+          if let Some(sym) = declared_symbol(&name.assoc) {
+            self.expr_resolutions.insert(to_range(name.loc), sym);
           }
+        }
+        for decorator in class.stx.decorators.iter_mut() {
+          self.walk_expr(&mut decorator.stx.expression);
+        }
+        if let Some(extends) = &mut class.stx.extends {
+          self.walk_expr(extends);
+        }
+        for imp in class.stx.implements.iter_mut() {
+          self.walk_type_expr(imp);
+        }
+        for member in class.stx.members.iter_mut() {
+          self.push_scope_from_assoc(&member.assoc);
+          for decorator in member.stx.decorators.iter_mut() {
+            self.walk_expr(&mut decorator.stx.expression);
+          }
+          if let ClassOrObjKey::Computed(expr) = &mut member.stx.key {
+            self.walk_expr(expr);
+          }
+          if let Some(ty) = &mut member.stx.type_annotation {
+            self.walk_type_expr(ty);
+          }
+          match &mut member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) => self.walk_expr(expr),
+            ClassOrObjVal::Getter(getter) => self.walk_func(&mut getter.stx.func),
+            ClassOrObjVal::Setter(setter) => self.walk_func(&mut setter.stx.func),
+            ClassOrObjVal::Method(method) => self.walk_func(&mut method.stx.func),
+            ClassOrObjVal::IndexSignature(sig) => {
+              self.walk_type_expr(&mut sig.stx.parameter_type);
+              self.walk_type_expr(&mut sig.stx.type_annotation);
+            }
+            ClassOrObjVal::StaticBlock(block) => {
+              self.push_scope_from_assoc(&block.assoc);
+              for stmt in block.stx.body.iter_mut() {
+                self.walk_stmt(stmt);
+              }
+              self.pop_scope_from_assoc(&block.assoc);
+            }
+            ClassOrObjVal::Prop(None) => {}
+          }
+          self.pop_scope_from_assoc(&member.assoc);
         }
       }
       AstExpr::ArrPat(arr) => self.walk_arr_pat_expr(arr),
@@ -2188,6 +2332,34 @@ impl DeclareTablesPass {
         self.push_scope(ScopeKind::Class, range_of(class));
         for member in class.stx.members.iter() {
           self.mark_scope(member);
+          for decorator in member.stx.decorators.iter() {
+            self.walk_expr(&decorator.stx.expression);
+          }
+          if let ClassOrObjKey::Computed(expr) = &member.stx.key {
+            self.walk_expr(expr);
+          }
+          if let Some(ty) = &member.stx.type_annotation {
+            self.walk_type_expr(ty);
+          }
+          match &member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) => self.walk_expr(expr),
+            ClassOrObjVal::Getter(getter) => self.walk_func(&getter.stx.func),
+            ClassOrObjVal::Setter(setter) => self.walk_func(&setter.stx.func),
+            ClassOrObjVal::Method(method) => self.walk_func(&method.stx.func),
+            ClassOrObjVal::IndexSignature(sig) => {
+              self.walk_type_expr(&sig.stx.parameter_type);
+              self.walk_type_expr(&sig.stx.type_annotation);
+            }
+            ClassOrObjVal::StaticBlock(block) => {
+              self.push_scope(ScopeKind::Block, range_of(block));
+              self.mark_scope(block);
+              for stmt in block.stx.body.iter() {
+                self.walk_stmt(stmt);
+              }
+              self.pop_scope();
+            }
+            ClassOrObjVal::Prop(None) => {}
+          }
         }
         self.pop_scope();
       }
@@ -2498,6 +2670,12 @@ impl DeclareTablesPass {
       AstExpr::Func(func) => self.walk_func(&func.stx.func),
       AstExpr::ArrowFunc(arrow) => self.walk_func(&arrow.stx.func),
       AstExpr::Class(class) => {
+        for decorator in class.stx.decorators.iter() {
+          self.walk_expr(&decorator.stx.expression);
+        }
+        if let Some(extends) = &class.stx.extends {
+          self.walk_expr(extends);
+        }
         self.push_scope(ScopeKind::Class, range_of(class));
         if let Some(name) = &class.stx.name {
           self.declare(
@@ -2505,6 +2683,45 @@ impl DeclareTablesPass {
             Namespace::VALUE | Namespace::TYPE,
             to_range(name.loc),
           );
+        }
+        if let Some(params) = &class.stx.type_parameters {
+          for param in params.iter() {
+            self.walk_type_param(param);
+          }
+        }
+        for imp in class.stx.implements.iter() {
+          self.walk_type_expr(imp);
+        }
+        for member in class.stx.members.iter() {
+          self.mark_scope(member);
+          for decorator in member.stx.decorators.iter() {
+            self.walk_expr(&decorator.stx.expression);
+          }
+          if let ClassOrObjKey::Computed(expr) = &member.stx.key {
+            self.walk_expr(expr);
+          }
+          if let Some(ty) = &member.stx.type_annotation {
+            self.walk_type_expr(ty);
+          }
+          match &member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) => self.walk_expr(expr),
+            ClassOrObjVal::Getter(getter) => self.walk_func(&getter.stx.func),
+            ClassOrObjVal::Setter(setter) => self.walk_func(&setter.stx.func),
+            ClassOrObjVal::Method(method) => self.walk_func(&method.stx.func),
+            ClassOrObjVal::IndexSignature(sig) => {
+              self.walk_type_expr(&sig.stx.parameter_type);
+              self.walk_type_expr(&sig.stx.type_annotation);
+            }
+            ClassOrObjVal::StaticBlock(block) => {
+              self.push_scope(ScopeKind::Block, range_of(block));
+              self.mark_scope(block);
+              for stmt in block.stx.body.iter() {
+                self.walk_stmt(stmt);
+              }
+              self.pop_scope();
+            }
+            ClassOrObjVal::Prop(None) => {}
+          }
         }
         self.pop_scope();
       }
@@ -2956,8 +3173,44 @@ impl<'a> ResolveTablesPass<'a> {
             self.tables.record_expr_resolution(span, sym);
           }
         }
+        for decorator in class.stx.decorators.iter() {
+          self.walk_expr(&decorator.stx.expression);
+        }
+        if let Some(extends) = &class.stx.extends {
+          self.walk_expr(extends);
+        }
+        for imp in class.stx.implements.iter() {
+          self.walk_expr(imp);
+        }
         for member in class.stx.members.iter() {
           self.push_scope_for_node(member);
+          for decorator in member.stx.decorators.iter() {
+            self.walk_expr(&decorator.stx.expression);
+          }
+          if let ClassOrObjKey::Computed(expr) = &member.stx.key {
+            self.walk_expr(expr);
+          }
+          if let Some(ty) = &member.stx.type_annotation {
+            self.walk_type_expr(ty);
+          }
+          match &member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) => self.walk_expr(expr),
+            ClassOrObjVal::Getter(getter) => self.walk_func(&getter.stx.func),
+            ClassOrObjVal::Setter(setter) => self.walk_func(&setter.stx.func),
+            ClassOrObjVal::Method(method) => self.walk_func(&method.stx.func),
+            ClassOrObjVal::IndexSignature(sig) => {
+              self.walk_type_expr(&sig.stx.parameter_type);
+              self.walk_type_expr(&sig.stx.type_annotation);
+            }
+            ClassOrObjVal::StaticBlock(block) => {
+              self.push_scope_for_node(block);
+              for stmt in block.stx.body.iter() {
+                self.walk_stmt(stmt);
+              }
+              self.pop_scope_for_node(block);
+            }
+            ClassOrObjVal::Prop(None) => {}
+          }
           self.pop_scope_for_node(member);
         }
       }
@@ -3259,13 +3512,47 @@ impl<'a> ResolveTablesPass<'a> {
       AstExpr::Class(class) => {
         if let Some(name) = &class.stx.name {
           let span = to_range(name.loc);
-          let sym = self
-            .builder
-            .resolve(self.current_scope(), &name.stx.name, Namespace::VALUE);
-          if let Some(sym) = sym {
+          if let Some(sym) = ts::declared_symbol_in_tables(&self.tables, span) {
             self.expr_resolutions.insert(span, sym);
             self.tables.record_expr_resolution(span, sym);
           }
+        }
+        for decorator in class.stx.decorators.iter() {
+          self.walk_expr(&decorator.stx.expression);
+        }
+        if let Some(extends) = &class.stx.extends {
+          self.walk_expr(extends);
+        }
+        for member in class.stx.members.iter() {
+          self.push_scope_for_node(member);
+          for decorator in member.stx.decorators.iter() {
+            self.walk_expr(&decorator.stx.expression);
+          }
+          if let ClassOrObjKey::Computed(expr) = &member.stx.key {
+            self.walk_expr(expr);
+          }
+          if let Some(ty) = &member.stx.type_annotation {
+            self.walk_type_expr(ty);
+          }
+          match &member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) => self.walk_expr(expr),
+            ClassOrObjVal::Getter(getter) => self.walk_func(&getter.stx.func),
+            ClassOrObjVal::Setter(setter) => self.walk_func(&setter.stx.func),
+            ClassOrObjVal::Method(method) => self.walk_func(&method.stx.func),
+            ClassOrObjVal::IndexSignature(sig) => {
+              self.walk_type_expr(&sig.stx.parameter_type);
+              self.walk_type_expr(&sig.stx.type_annotation);
+            }
+            ClassOrObjVal::StaticBlock(block) => {
+              self.push_scope_for_node(block);
+              for stmt in block.stx.body.iter() {
+                self.walk_stmt(stmt);
+              }
+              self.pop_scope_for_node(block);
+            }
+            ClassOrObjVal::Prop(None) => {}
+          }
+          self.pop_scope_for_node(member);
         }
       }
       AstExpr::ArrPat(arr) => self.walk_arr_pat_expr(arr),
