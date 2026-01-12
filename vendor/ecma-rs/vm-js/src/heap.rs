@@ -2439,6 +2439,18 @@ impl Heap {
   /// The registry is scanned by the GC, so registered symbols remain live even if they are not
   /// referenced from the stack or persistent roots.
   pub fn symbol_for(&mut self, key: GcString) -> Result<GcSymbol, VmError> {
+    self.symbol_for_with_tick(key, || Ok::<(), VmError>(()))
+  }
+
+  /// Like [`Heap::symbol_for`], but budgets linear-time registry insertion work via `tick`.
+  ///
+  /// This is intended for the ECMAScript `Symbol.for` builtin, where hostile scripts can grow the
+  /// registry arbitrarily until heap limits are reached.
+  pub fn symbol_for_with_tick(
+    &mut self,
+    key: GcString,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<GcSymbol, VmError> {
     let key_contents = self.get_string(key)?;
     if let Some(sym) = self.symbol_registry_get(key_contents)? {
       return Ok(sym);
@@ -2464,8 +2476,36 @@ impl Heap {
     let sym = scope.new_symbol(Some(key))?;
     scope.push_root(Value::Symbol(sym))?;
 
-    scope.heap_mut().symbol_registry_insert(key, sym)?;
+    scope
+      .heap_mut()
+      .symbol_registry_insert_with_tick(key, sym, &mut tick)?;
     Ok(sym)
+  }
+
+  /// Implements `Symbol.keyFor` lookup using the global symbol registry.
+  ///
+  /// Returns the registry key for `sym` if it is present; otherwise returns `None`.
+  pub fn symbol_key_for(&self, sym: GcSymbol) -> Result<Option<GcString>, VmError> {
+    // Per spec, global registry symbols always have descriptions equal to their registry keys, so
+    // we can avoid scanning the registry by:
+    // 1. reading `sym.[[Description]]`
+    // 2. looking up that key in the registry
+    // 3. ensuring the registry entry points back to `sym`.
+    let Some(desc) = self.get_symbol_description(sym)? else {
+      return Ok(None);
+    };
+    let desc_contents = self.get_string(desc)?;
+    match self.symbol_registry_binary_search(desc_contents)? {
+      Ok(idx) => {
+        let entry = self.symbol_registry[idx];
+        if entry.sym == sym {
+          Ok(Some(entry.key))
+        } else {
+          Ok(None)
+        }
+      }
+      Err(_) => Ok(None),
+    }
   }
 
   pub(crate) fn internal_string_data_symbol(&self) -> Option<GcSymbol> {
@@ -3302,7 +3342,12 @@ impl Heap {
     }
   }
 
-  fn symbol_registry_insert(&mut self, key: GcString, sym: GcSymbol) -> Result<(), VmError> {
+  fn symbol_registry_insert_with_tick(
+    &mut self,
+    key: GcString,
+    sym: GcSymbol,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
     self.reserve_for_symbol_registry_insert(1)?;
 
     let key_contents = self.get_string(key)?;
@@ -3310,9 +3355,28 @@ impl Heap {
       Ok(_) => return Ok(()), // Idempotent if called twice.
       Err(idx) => idx,
     };
-    self
-      .symbol_registry
-      .insert(insert_at, SymbolRegistryEntry { key, sym });
+
+    let entry = SymbolRegistryEntry { key, sym };
+
+    // Fast path: insert at the end.
+    let len = self.symbol_registry.len();
+    if insert_at == len {
+      self.symbol_registry.push(entry);
+      return Ok(());
+    }
+
+    // Manual insertion to allow budgeting the O(n) shift.
+    self.symbol_registry.push(entry);
+
+    const TICK_EVERY: usize = 1024;
+    for (step, i) in (insert_at..len).rev().enumerate() {
+      if step % TICK_EVERY == 0 {
+        tick()?;
+      }
+      self.symbol_registry[i + 1] = self.symbol_registry[i];
+    }
+    self.symbol_registry[insert_at] = entry;
+
     Ok(())
   }
 

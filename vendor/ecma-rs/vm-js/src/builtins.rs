@@ -8397,6 +8397,28 @@ pub fn symbol_prototype_to_primitive(
   symbol_prototype_value_of(vm, scope, host, hooks, callee, this, &[])
 }
 
+/// `get Symbol.prototype.description`.
+pub fn symbol_prototype_description_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Symbol(sym) = symbol_prototype_value_of(vm, scope, host, hooks, callee, this, &[])? else {
+    return Err(VmError::InvariantViolation(
+      "Symbol.prototype.valueOf returned non-symbol",
+    ));
+  };
+  let desc = scope.heap().get_symbol_description(sym)?;
+  Ok(match desc {
+    Some(s) => Value::String(s),
+    None => Value::Undefined,
+  })
+}
+
 /// Global `isNaN(x)` (minimal).
 pub fn global_is_nan(
   vm: &mut Vm,
@@ -9608,6 +9630,43 @@ pub fn symbol_constructor_call(
   };
   let sym = scope.new_symbol(desc)?;
   Ok(Value::Symbol(sym))
+}
+
+/// `Symbol.for(key)`.
+pub fn symbol_for(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let key_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_string(vm, host, hooks, key_val)?;
+  let sym = scope.heap_mut().symbol_for_with_tick(key, || vm.tick())?;
+  Ok(Value::Symbol(sym))
+}
+
+/// `Symbol.keyFor(sym)`.
+pub fn symbol_key_for(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let sym_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Symbol(sym) = sym_val else {
+    return Err(VmError::TypeError("Symbol.keyFor argument is not a symbol"));
+  };
+  let key = scope.heap().symbol_key_for(sym)?;
+  Ok(match key {
+    Some(k) => Value::String(k),
+    None => Value::Undefined,
+  })
 }
 
 fn concat_with_colon_space(name: &[u16], message: &[u16]) -> Result<Vec<u16>, VmError> {

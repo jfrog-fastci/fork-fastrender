@@ -501,6 +501,10 @@ impl Intrinsics {
     let symbol_prototype_to_string = vm.register_native_call(builtins::symbol_prototype_to_string)?;
     let symbol_prototype_to_primitive =
       vm.register_native_call(builtins::symbol_prototype_to_primitive)?;
+    let symbol_prototype_description_get =
+      vm.register_native_call(builtins::symbol_prototype_description_get)?;
+    let symbol_for = vm.register_native_call(builtins::symbol_for)?;
+    let symbol_key_for = vm.register_native_call(builtins::symbol_key_for)?;
     let error_prototype_to_string = vm.register_native_call(builtins::error_prototype_to_string)?;
     let json_parse = vm.register_native_call(builtins::json_parse)?;
     let json_stringify = vm.register_native_call(builtins::json_stringify)?;
@@ -1905,6 +1909,74 @@ impl Intrinsics {
         symbol_prototype,
         PropertyKey::Symbol(well_known_symbols.to_primitive),
         data_desc(Value::Object(to_prim_fn), true, false, true),
+      )?;
+    }
+
+    // Symbol.prototype.description
+    {
+      let key_s = scope.alloc_string("description")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get description")?;
+      let get = scope.alloc_native_function(symbol_prototype_description_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        symbol_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // Symbol.prototype[Symbol.toStringTag]
+    {
+      let to_string_tag_value = scope.alloc_string("Symbol")?;
+      scope.define_property(
+        symbol_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        data_desc(Value::String(to_string_tag_value), false, false, true),
+      )?;
+    }
+
+    // Symbol.for / Symbol.keyFor
+    {
+      let for_s = scope.alloc_string("for")?;
+      scope.push_root(Value::String(for_s))?;
+      let key = PropertyKey::from_string(for_s);
+      let func = scope.alloc_native_function(symbol_for, None, for_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        symbol_constructor,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let key_for_s = scope.alloc_string("keyFor")?;
+      scope.push_root(Value::String(key_for_s))?;
+      let key = PropertyKey::from_string(key_for_s);
+      let func = scope.alloc_native_function(symbol_key_for, None, key_for_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        symbol_constructor,
+        key,
+        data_desc(Value::Object(func), true, false, true),
       )?;
     }
 
