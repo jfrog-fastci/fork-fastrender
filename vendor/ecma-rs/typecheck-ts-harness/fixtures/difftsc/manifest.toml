@@ -18,16 +18,6 @@ status = "xfail"
 reason = "namespace/function merge diagnostic parity gap"
 
 [[expectations]]
-id = "difftsc/jsx_tuple_children"
-status = "xfail"
-reason = "JSX tuple children typing parity gap"
-
-[[expectations]]
-id = "difftsc/module_resolution_classic"
-status = "xfail"
-reason = "Classic moduleResolution + type facts parity gap"
-
-[[expectations]]
 id = "difftsc/narrowing"
 status = "xfail"
 reason = "type narrowing parity gap"
@@ -43,19 +33,9 @@ status = "xfail"
 reason = "JSX element type constraint diagnostic parity gap"
 
 [[expectations]]
-id = "difftsc/jsx_runtime_missing"
-status = "xfail"
-reason = "JSX runtime import diagnostic parity gap"
-
-[[expectations]]
 id = "difftsc/narrowing_types"
 status = "xfail"
 reason = "type narrowing + marker type-facts parity gap"
-
-[[expectations]]
-id = "difftsc/jsx_children_attribute_ignored_react_jsx"
-status = "xfail"
-reason = "JSX children attribute diagnostic parity gap"
 
 [[expectations]]
 id = "difftsc/jsx_element_attributes_property_missing_member"
@@ -78,6 +58,6 @@ status = "xfail"
 reason = "JSX fragment factory diagnostic parity gap"
 
 [[expectations]]
-id = "difftsc/skip_lib_check_missing_import_type_used"
+id = "difftsc/jsx_tuple_children"
 status = "xfail"
-reason = "skipLibCheck behavior parity gap for import() types"
+reason = "JSX tuple children typing parity gap"
