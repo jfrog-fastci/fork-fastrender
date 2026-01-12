@@ -124,6 +124,9 @@ include = [
   "built-ins/Array/prototype/join/**/*.js",
   "built-ins/Array/prototype/indexOf/**/*.js",
   "built-ins/Array/prototype/includes/**/*.js",
+  # Array length coercion / ToLength / LengthOfArrayLike
+  "built-ins/Array/prototype/map/15.4.4.19-3-11.js",
+  "built-ins/Array/prototype/map/15.4.4.19-3-28.js",
   "built-ins/String/fromCharCode/**/*.js",
   "built-ins/String/fromCodePoint/**/*.js",
   "built-ins/String/raw/**/*.js",

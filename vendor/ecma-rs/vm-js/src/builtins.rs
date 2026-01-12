@@ -7460,17 +7460,24 @@ fn get_data_property_value(
   }
 }
 
-fn to_length(value: Value) -> usize {
-  let Value::Number(n) = value else {
-    return 0;
-  };
-  if !n.is_finite() || n <= 0.0 {
-    return 0;
-  }
-  if n >= usize::MAX as f64 {
-    return usize::MAX;
-  }
-  n.floor() as usize
+fn to_length_usize(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<usize, VmError> {
+  scope.to_length(vm, host, hooks, value)
+}
+
+fn length_of_array_like_usize(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+) -> Result<usize, VmError> {
+  crate::spec_ops::length_of_array_like_with_host_and_hooks(vm, scope, host, hooks, obj)
 }
 
 fn to_length_with_host_and_hooks(
@@ -7935,7 +7942,7 @@ pub fn function_prototype_bind(
   // Read metadata via `Get` so Proxy traps / host exotic hooks are respected.
   let length_key = string_key(scope, "length")?;
   let target_len_value = vm.get_with_host_and_hooks(host, scope, hooks, target, length_key)?;
-  let target_len = u32::try_from(to_length(target_len_value)).unwrap_or(u32::MAX);
+  let target_len = u32::try_from(to_length_usize(vm, scope, host, hooks, target_len_value)?).unwrap_or(u32::MAX);
 
   let name_key = string_key(scope, "name")?;
   let target_name_value = vm.get_with_host_and_hooks(host, scope, hooks, target, name_key)?;
@@ -8605,10 +8612,7 @@ fn get_array_length(
   hooks: &mut dyn VmHostHooks,
   obj: GcObject,
 ) -> Result<usize, VmError> {
-  let length_key = string_key(scope, "length")?;
-  let length_value =
-    scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  Ok(to_length(length_value))
+  length_of_array_like_usize(vm, scope, host, hooks, obj)
 }
 
 fn internal_symbol_key(scope: &mut Scope<'_>, s: &str) -> Result<PropertyKey, VmError> {
@@ -8648,10 +8652,7 @@ pub fn array_prototype_map(
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   let intr = require_intrinsics(vm)?;
   let out = scope.alloc_array(len)?;
@@ -8710,10 +8711,7 @@ pub fn array_prototype_for_each(
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   for k in 0..len {
     if k % 1024 == 0 {
@@ -8754,10 +8752,7 @@ pub fn array_prototype_index_of(
 
   let search = args.get(0).copied().unwrap_or(Value::Undefined);
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
   if len == 0 {
     return Ok(Value::Number(-1.0));
   }
@@ -8823,10 +8818,7 @@ pub fn array_prototype_includes(
 
   let search = args.get(0).copied().unwrap_or(Value::Undefined);
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
   if len == 0 {
     return Ok(Value::Bool(false));
   }
@@ -8896,10 +8888,7 @@ pub fn array_prototype_filter(
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   let intr = require_intrinsics(vm)?;
   let out = scope.alloc_array(0)?;
@@ -8962,10 +8951,7 @@ pub fn array_prototype_reduce(
   }
   scope.push_root(callback)?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   let intr = require_intrinsics(vm)?;
   let acc_holder = scope.alloc_object()?;
@@ -9081,10 +9067,7 @@ pub fn array_prototype_some(
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   for k in 0..len {
     if k % 1024 == 0 {
@@ -9135,10 +9118,7 @@ pub fn array_prototype_every(
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   for k in 0..len {
     if k % 1024 == 0 {
@@ -9189,10 +9169,7 @@ pub fn array_prototype_find(
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   for k in 0..len {
     if k % 1024 == 0 {
@@ -9243,10 +9220,7 @@ pub fn array_prototype_find_index(
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   for k in 0..len {
     if k % 1024 == 0 {
@@ -9317,7 +9291,7 @@ pub fn array_prototype_concat(
         length_key,
         Value::Object(source_obj),
       )?;
-      let source_len = to_length(source_len_value);
+      let source_len = to_length_usize(vm, &mut scope, host, hooks, source_len_value)?;
 
       for k in 0..source_len {
         if k % 1024 == 0 {
@@ -9326,6 +9300,7 @@ pub fn array_prototype_concat(
         let mut iter_scope = scope.reborrow();
 
         let key_s = iter_scope.alloc_string(&k.to_string())?;
+        iter_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
         if crate::spec_ops::internal_has_property_with_host_and_hooks(
           vm,
@@ -9402,10 +9377,7 @@ pub fn array_prototype_reverse(
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   let middle = len / 2;
   for lower in 0..middle {
@@ -9552,7 +9524,7 @@ pub fn array_prototype_sort(
   let length_key = string_key(&mut scope, "length")?;
   let len_value =
     scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   #[derive(Clone, Copy)]
   struct SortItem {
@@ -9738,12 +9710,11 @@ pub fn array_prototype_join(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let this_obj = match this {
-    Value::Object(o) => o,
-    _ => return Err(VmError::Unimplemented("Array.prototype.join on non-object")),
-  };
+  let mut scope = scope.reborrow();
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
 
-  let len = get_array_length(vm, scope, host, hooks, this_obj)?;
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   let sep = match args.first().copied() {
     None | Some(Value::Undefined) => scope.alloc_string(",")?,
@@ -9775,14 +9746,20 @@ pub fn array_prototype_join(
       vec_try_extend_from_slice(&mut out, &sep_units, || vm.tick())?;
     }
 
-    let key = PropertyKey::from_string(scope.alloc_string(&i.to_string())?);
-    let value = get_data_property_value(vm, scope, this_obj, &key)?.unwrap_or(Value::Undefined);
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(Value::Object(obj))?;
+
+    let idx_s = iter_scope.alloc_string(&i.to_string())?;
+    iter_scope.push_root(Value::String(idx_s))?;
+    let key = PropertyKey::from_string(idx_s);
+    let value =
+      iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
     let part = match value {
       Value::Undefined | Value::Null => empty,
-      other => scope.to_string(vm, host, hooks, other)?,
+      other => iter_scope.to_string(vm, host, hooks, other)?,
     };
 
-    let units = scope.heap().get_string(part)?.as_code_units();
+    let units = iter_scope.heap().get_string(part)?.as_code_units();
     if JsString::heap_size_bytes_for_len(out.len().saturating_add(units.len())) > max_bytes {
       return Err(VmError::OutOfMemory);
     }
@@ -9812,10 +9789,7 @@ pub fn array_prototype_slice(
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
-  let length_key = string_key(&mut scope, "length")?;
-  let len_value =
-    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
   let (start, end) = slice_range_from_args(vm, &mut scope, host, hooks, len, args)?;
   let count = end.saturating_sub(start);
@@ -9874,7 +9848,7 @@ pub fn array_prototype_push(
   let length_key = string_key(&mut scope, "length")?;
   let len_value =
     scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let mut len = to_length(len_value);
+  let mut len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   for (i, value) in args.iter().copied().enumerate() {
     if i % 1024 == 0 {
@@ -9935,7 +9909,7 @@ pub fn array_prototype_pop(
   let length_key = string_key(&mut scope, "length")?;
   let len_value =
     scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   if len == 0 {
     let ok = scope.ordinary_set_with_host_and_hooks(
@@ -10000,7 +9974,7 @@ pub fn array_prototype_shift(
   let length_key = string_key(&mut scope, "length")?;
   let len_value =
     scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   if len == 0 {
     let ok = scope.ordinary_set_with_host_and_hooks(
@@ -10111,7 +10085,7 @@ pub fn array_prototype_unshift(
   let length_key = string_key(&mut scope, "length")?;
   let len_value =
     scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   let insert_count = args.len();
   if insert_count == 0 {
@@ -10225,7 +10199,7 @@ pub fn array_prototype_splice(
   let length_key = string_key(&mut scope, "length")?;
   let len_value =
     scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-  let len = to_length(len_value);
+  let len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
   let start = args.get(0).copied().unwrap_or(Value::Undefined);
   let actual_start = slice_index_from_value(vm, &mut scope, host, hooks, start, len, 0)?;
@@ -18212,17 +18186,7 @@ pub fn json_parse(
 
     if let Value::Object(obj) = val {
       if crate::spec_ops::is_array_with_host_and_hooks(vm, &mut scope, host, hooks, val)? {
-        let length_key = string_key(&mut scope, "length")?;
-        let len_value = scope.ordinary_get_with_host_and_hooks(
-          vm,
-          host,
-          hooks,
-          obj,
-          length_key,
-          Value::Object(obj),
-        )?;
-        scope.push_root(len_value)?;
-        let len = scope.to_length(vm, host, hooks, len_value)?;
+        let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
         for i in 0..len {
           if i % 1024 == 0 {

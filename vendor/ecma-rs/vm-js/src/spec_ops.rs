@@ -10,28 +10,6 @@ use crate::{
 };
 use std::mem;
 
-// https://tc39.es/ecma262/#sec-tolength
-fn to_length(n: f64) -> usize {
-  // `ToLength` clamps to the safe integer range.
-  const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // 2^53 - 1
-
-  if n.is_nan() || n <= 0.0 {
-    return 0;
-  }
-  if !n.is_finite() {
-    // +Infinity
-    return MAX_SAFE_INTEGER as usize;
-  }
-
-  let int = n.trunc();
-  let clamped = int.min(MAX_SAFE_INTEGER);
-  if clamped >= usize::MAX as f64 {
-    usize::MAX
-  } else {
-    clamped as usize
-  }
-}
-
 /// ECMAScript `[[Get]](P, Receiver)` internal method dispatch for ordinary and Proxy exotic objects.
 ///
 /// This is a minimal implementation today:
@@ -425,7 +403,7 @@ pub fn create_list_from_array_like_with_host_and_hooks(
 /// `LengthOfArrayLike(obj)` (ECMA-262).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-lengthofarraylike>
-fn length_of_array_like_with_host_and_hooks(
+pub fn length_of_array_like_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
@@ -433,16 +411,22 @@ fn length_of_array_like_with_host_and_hooks(
   obj: GcObject,
 ) -> Result<usize, VmError> {
   // `len = ToLength(Get(obj, "length"))`
+  //
+  // Root `obj` across the `Get` and `ToLength` conversions, both of which can allocate and trigger
+  // GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
   let length_key_s = scope.alloc_string("length")?;
   scope.push_root(Value::String(length_key_s))?;
   let length_key = PropertyKey::from_string(length_key_s);
 
   let length_value =
-    get_with_host_and_hooks(vm, scope, host, hooks, obj, length_key, Value::Object(obj))?;
+    get_with_host_and_hooks(vm, &mut scope, host, hooks, obj, length_key, Value::Object(obj))?;
   vm.tick()?;
-  let length_number = scope.to_number(vm, host, hooks, length_value)?;
+  let len = scope.to_length(vm, host, hooks, length_value)?;
   vm.tick()?;
-  Ok(to_length(length_number))
+  Ok(len)
 }
 
 /// ECMAScript `Get(O, P)` with minimal Proxy support.

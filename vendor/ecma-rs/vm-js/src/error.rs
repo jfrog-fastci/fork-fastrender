@@ -68,6 +68,9 @@ pub enum VmError {
   #[error("type error: {0}")]
   TypeError(&'static str),
 
+  #[error("range error: {0}")]
+  RangeError(&'static str),
+
   /// Attempted to call a non-callable value.
   #[error("value is not callable")]
   NotCallable,

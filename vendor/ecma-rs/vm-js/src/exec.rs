@@ -3577,6 +3577,14 @@ impl<'a> Evaluator<'a> {
         let err = new_error(scope, intr.type_error_prototype(), "TypeError", message)?;
         Ok(Completion::Throw(thrown_at_stmt(err)))
       }
+      Err(VmError::RangeError(message)) => {
+        let intr = self
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let err = new_error(scope, intr.range_error_prototype(), "RangeError", message)?;
+        Ok(Completion::Throw(thrown_at_stmt(err)))
+      }
       Err(VmError::PrototypeCycle) => {
         let intr = self
           .vm
@@ -10113,6 +10121,7 @@ fn coerce_error_to_throw_for_async(vm: &Vm, scope: &mut Scope<'_>, err: VmError)
   match err {
     VmError::Throw(_) | VmError::ThrowWithStack { .. } => err,
     VmError::TypeError(message) => throw_type_error(vm, scope, message).unwrap_or_else(|e| e),
+    VmError::RangeError(message) => throw_range_error(vm, scope, message).unwrap_or_else(|e| e),
     VmError::NotCallable => {
       throw_type_error(vm, scope, "value is not callable").unwrap_or_else(|e| e)
     }

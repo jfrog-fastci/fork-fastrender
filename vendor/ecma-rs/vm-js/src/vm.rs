@@ -76,6 +76,7 @@ pub(crate) fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError
   };
   match err {
     VmError::TypeError(message) => crate::throw_type_error(scope, intr, message),
+    VmError::RangeError(message) => crate::throw_range_error(scope, intr, message),
     VmError::NotCallable => crate::throw_type_error(scope, intr, "value is not callable"),
     VmError::NotConstructable => crate::throw_type_error(scope, intr, "value is not a constructor"),
     VmError::PrototypeCycle => crate::throw_type_error(scope, intr, "prototype cycle"),

@@ -43,6 +43,7 @@ fn non_throw_vm_error_message(err: &VmError) -> &'static str {
     VmError::PropertyNotFound => "property not found",
     VmError::PropertyNotData => "property is not a data property",
     VmError::TypeError(msg) => msg,
+    VmError::RangeError(msg) => msg,
     VmError::NotCallable => "value is not callable",
     VmError::NotConstructable => "value is not a constructor",
     VmError::Throw(_) | VmError::ThrowWithStack { .. } => "exception",

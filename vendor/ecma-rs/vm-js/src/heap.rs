@@ -5684,8 +5684,7 @@ impl<'a> Scope<'a> {
   ///
   /// Note: `[[Prototype]]` is initialised to `None` and should be set by the caller.
   pub fn alloc_array(&mut self, len: usize) -> Result<GcObject, VmError> {
-    let len_u32 =
-      u32::try_from(len).map_err(|_| VmError::Unimplemented("array length exceeds u32"))?;
+    let len_u32 = u32::try_from(len).map_err(|_| VmError::RangeError("Invalid array length"))?;
 
     // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
     let mut scope = self.reborrow();

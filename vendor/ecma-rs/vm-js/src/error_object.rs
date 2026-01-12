@@ -117,3 +117,10 @@ pub fn new_range_error(
 ) -> Result<Value, VmError> {
   new_error(scope, intr.range_error_prototype(), "RangeError", message)
 }
+
+pub fn throw_range_error(scope: &mut Scope<'_>, intr: Intrinsics, message: &str) -> VmError {
+  match new_range_error(scope, intr, message) {
+    Ok(value) => VmError::Throw(value),
+    Err(err) => err,
+  }
+}
