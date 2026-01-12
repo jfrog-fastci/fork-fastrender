@@ -14,11 +14,11 @@ Update this inventory in every migration PR:
 The target is **one** main integration-test binary, plus special binaries only when absolutely
 required:
 
-- `tests/integration.rs` — normal integration tests (`mod common; mod api; mod fixtures; mod wpt;`)
+- `tests/integration.rs` — one integration test binary (`mod common; mod api; mod fixtures; mod wpt;`)
 - `tests/allocation_failure.rs` — special: `#[global_allocator]` (must be its own binary)
-- `tests/isolation.rs` — optional special binary for tests that require process-level isolation
-  (env var snapshots / global counters that cannot be made deterministic inside a shared test
-  binary). **Goal: keep total `tests/*.rs` ≤ 3.**
+
+**Goal: keep total `tests/*.rs` at 2.** Any additional test binaries must be justified and treated
+as temporary exceptions.
 
 ## Top-level `tests/*.rs` inventory
 
@@ -49,7 +49,6 @@ section in sync with `ls tests/*.rs`.
 | `tests/container_scroll_state_queries_test.rs` | delete | delete | Pure `#[path]` shim removed; corresponding tests now live under `src/style/tests/style/**`. | DONE |
 | `tests/container_style_queries.rs` | delete | delete | Pure `#[path]` shim removed; corresponding tests now live under `src/style/tests/style/**`. | DONE |
 | `tests/content_visibility_tests.rs` | unit | `src/layout/contexts/*` | Migrated into layout context unit tests (block/flex/grid). | DONE |
-| `tests/csp_img_data_url.rs` | integration | `tests/api/csp_img_data_url.rs` | Top-level crate removed; tests now run via `tests/integration.rs::api`. | DONE |
 | `tests/clip_tests.rs` | unit | `src/paint/display_list_builder.rs` | Migrated clip-rect regression coverage into `src/paint/display_list_builder.rs` unit tests and removed `tests/clip_tests.rs`/`tests/clip/**`. | DONE |
 | `tests/display_list_tests.rs` | unit | `src/paint/display_list_renderer/tests/display_list/mod.rs` | Migrated the display-list backend regression suite into unit tests under `src/paint/display_list_renderer/tests/display_list/**` and removed the standalone test binary. | DONE |
 | `tests/border_tests.rs` | delete | `src/style/tests/border/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
@@ -57,7 +56,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/css_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/css_integration/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/determinism_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/determinism/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/dom_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/dom_integration/**` and is pulled into `tests/integration.rs`. | DONE |
-| `tests/font_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/font/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/font_tests.rs` | delete | `src/text/tests/font/` | Top-level harness removed; suite moved out of `tests/` into `src/text/tests/font/**` unit tests. | DONE |
 | `tests/js_harness_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/js_harness/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/layout_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/layout/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/legacy_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/legacy/**` and is pulled into `tests/integration.rs`. | DONE |
@@ -73,11 +72,11 @@ section in sync with `ls tests/*.rs`.
 | `tests/user_agent_placeholder_pseudo_test.rs` | unit | `src/style/tests/style/user_agent_placeholder_pseudo_test.rs` | Top-level crate removed; test now runs as a lib unit test under `src/style/tests/style/`. | DONE |
 | `tests/paged_media.rs` | unit | `src/layout/tests/paged_media.rs` | Top-level crate removed; tests migrated into layout unit tests (`src/layout/tests/`). | DONE |
 | `tests/js_html_integration.rs` | integration | `tests/integration.rs::js::js_html_integration` | Moved into `tests/js/js_html_integration.rs` and included from `tests/js/mod.rs`. | DONE |
-| `tests/text_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/text/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/text_tests.rs` | delete | `src/text/tests/` | Top-level harness removed; suite moved out of `tests/` into `src/text/tests/**` unit tests. | DONE |
 | `tests/tree_tests.rs` | delete | delete | Top-level harness removed; tree/box generation tests migrated to unit tests under `src/tree/**`. | DONE |
 | `tests/ui_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ui/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/var_tests.rs` | delete | `src/style/tests/var/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
-| `tests/weibo_web_font_relative_url_test.rs` | delete | delete | Migrated to unit tests (`src/text/font_loader.rs`) as `weibo_fixture_font_face_relative_url_resolves_against_document_base_url`. | DONE |
+| `tests/weibo_web_font_relative_url_test.rs` | unit | `src/text/tests/weibo_web_font_relative_url_test.rs` | Migrated to unit tests under `src/text/tests/**`. | DONE |
 | `tests/flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/flex_wrap_order_does_not_trigger_manual_placement.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
 | `tests/fuzz_corpus_smoke_test.rs` | integration | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Moved into `tests/tooling/fuzz_corpus_smoke.rs` and included from `tests/tooling/mod.rs`. | DONE |
@@ -90,13 +89,12 @@ section in sync with `ls tests/*.rs`.
 | `tests/overflow_tests.rs` | unit | `src/paint/stacking.rs` | Migrated into `src/paint/stacking/tests/**`. | DONE |
 | `tests/pipeline_churn_guardrail.rs` | unit | `src/layout/tests/pipeline_churn_guardrail.rs` | Migrated into unit tests under `src/layout/tests/**`; uses `crate::testing::global_test_lock()` to keep counter-reset assertions deterministic, so a dedicated binary is no longer required. | DONE |
 | `tests/regression_tests.rs` | integration | `tests/integration.rs::regression` | Top-level harness removed; suite now lives under `tests/regression/**`. | DONE |
-| `tests/csp_img_data_url.rs` | integration | `tests/integration.rs::api::csp_img_data_url` | Moved into `tests/api/csp_img_data_url.rs` and included from `tests/api/mod.rs`. | DONE |
+| `tests/csp_img_data_url.rs` | integration | `tests/api/csp_img_data_url.rs` | Runs via `tests/integration.rs::api`. | DONE |
 | `tests/quirks_body_percent_height_tests.rs` | integration | `tests/integration.rs::api::quirks` | Moved into `tests/api/quirks_body_percent_height.rs` (uses the shared large-stack helper). | DONE |
 | `tests/render_control_test_render_delay_smoke.rs` | integration | `tests/integration.rs::api::render_control` | Moved into `tests/api/render_control.rs`. | DONE |
 | `tests/resource_tests.rs` | integration | `tests/integration.rs::resource` | Top-level harness removed; suite now lives under `tests/resource/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/shadow_tests.rs` | unit | `src/dom2/shadow_dom.rs` | Migrated to unit tests for declarative shadow DOM + slotting. | DONE |
 | `tests/svg_integration_tests.rs` | unit | `src/image_loader/tests.rs` + `src/paint/svg_filter/tests/**` | Migrated SVG rasterization + filter tests into unit tests and removed the standalone test binary. | DONE |
-| `tests/svg_integration.rs` | delete | delete | Empty placeholder crate; not referenced from `tests/integration.rs` anymore. | DONE |
 | `tests/taffy_cache_tests.rs` | unit | `src/layout/taffy_integration.rs` | Migrated to unit tests; old `tests/taffy_cache/**` directory removed. | DONE |
 | `tests/wpt_test.rs` | integration | `tests/wpt/tests.rs` | Top-level harness removed; runner tests now live under `tests/wpt/**` (must be wired into `tests/integration.rs`). | DONE |
 | `tests/wpt_offline_invariants_test.rs` | delete | delete | Top-level harness removed; offline invariants now live under `tests/wpt/offline_invariants.rs` and run via `tests/integration.rs::wpt`. | DONE |
@@ -111,7 +109,7 @@ migrations.
 | `tests/api/` | public API integration tests | `tests/integration.rs::api` | Must only use public API. |
 | `tests/accessibility/` | accessibility/accname fixtures + assertions | `tests/integration.rs::accessibility` | Public API + fixture-driven; stays in integration. |
 | `tests/allocation_failure/` | OOM + custom allocator harness | `tests/allocation_failure.rs` | Must stay separate due to `#[global_allocator]`. |
-| `tests/animation/` | animation engine tests | `src/animation/` | Unit tests; `tests/animation_tests.rs` also contains top-level test code. |
+| `tests/animation/` | animation engine tests | `src/animation/` | Currently not wired into `tests/integration.rs`; ensure these tests are either migrated into `src/animation/**` unit tests or included from the integration harness. |
 | `tests/bin/` | CLI/binary tests | `tests/integration.rs::bin` | Keep as integration tests; share net/fs helpers via `tests/common/`. |
 | `tests/browser_integration/` | browser/UI worker integration suite | `tests/integration.rs::browser_integration` | Runs in the shared integration binary; avoid process-init env mutation. Tests that touch global state should serialize via `stage_listener_test_lock()` / `common::global_test_lock()`. |
 | `tests/bundled/` | bundled font fixture tests | `tests/integration.rs::bundled` | Integration-style fixture assertions. |
@@ -121,25 +119,25 @@ migrations.
 | `tests/dom_integration/` | DOM parsing/query integration tests | `src/dom/**` + `src/dom2/**` | Unit tests. |
 | `tests/fixtures/` | HTML + golden-image fixtures | `tests/integration.rs::fixtures` | Stays in `tests/` (data-driven integration). |
 | `tests/guards/` | repo invariants / consolidation guards | `tests/integration.rs::guards` | Integration-style checks for repo structure. |
-| `tests/` `image_integration/` | image loading/output integration tests | `tests/integration.rs::api::image_integration` | Network/CORS/streaming output; stays integration. |
+| `tests/image_integration/` | image loading/output integration tests | `tests/integration.rs::image_integration` | Network/CORS/streaming output; stays integration. |
 | `tests/interaction/` | interaction engine tests | `src/interaction/**` | Harness removed; suite is pulled into `tests/integration.rs::interaction` for now, but should eventually migrate to unit tests in `src/interaction/**`. |
 | `tests/js/` | JS subsystem integration tests | `tests/integration.rs::js` | Consolidated into the shared integration binary. |
 | `tests/layout/` | layout regressions, paging, flex/grid/table, etc | `src/layout/**` | Unit tests (bulk of migration). |
 | `tests/misc/` | grab-bag integration tests (legacy bucket) | `tests/integration.rs::misc` + migrate unit tests into `src/**` | Some internal/unit tests have been migrated out already (e.g. composed DOM snapshotting + exportparts algorithm tests are now unit tests in `src/dom.rs`; old files are stubs). |
 | `tests/paint/` + `tests/backdrop/` | paint/backdrop filter/render pipeline tests | `src/paint/**` | Unit tests; move shared Rayon init helper to `src/test_utils` or `tests/common`. |
-| `tests/progress/` | guardrails for committed `progress/` artifacts | `tests/integration.rs::fixtures::progress` | Not library tests; keep in integration. |
+| `tests/progress/` | guardrails for committed `progress/` artifacts | `tests/integration.rs::progress` | Not library tests; keep in integration. |
 | `tests/ref/` | image diff + ref-test harness utilities | `tests/common/` | Not a binary; used by fixtures/determinism/etc. (may be renamed/moved). |
 | `tests/regression/` | cross-cutting regressions | `src/**` (split) | Many unit tests; some may remain fixture-driven integration tests. |
 | `tests/resource/` | resource fetching/cache/CORS tests | `tests/integration.rs::resource` | Uses net harness; stays integration for now. |
 | `tests/style/` | migrated (directory removed) | `src/style/**` | Suite moved into `src/style/tests/**` (unit tests). |
-| `tests/text/` | shaping/text regressions | `src/text/**` | Unit tests. |
+| `tests/text/` | migrated (directory removed) | `src/text/**` | Suite moved into `src/text/tests/**` (unit tests). |
 | `tests/tooling/` | external tool integration (e.g. LLVM stackmaps) | `tests/integration.rs::tooling` | Tests that shell out to toolchains; should skip when tools absent. |
-| `tests/tree/` | box/tree generation regressions | `src/tree/**` | Migrated to unit tests; `tests/tree/` directory removed. |
-| `tests/ui/` | browser UI protocol tests | `tests/integration.rs::api::ui` | Integration tests (feature-gated). |
+| `tests/tree/` | migrated (stub module remains) | `src/tree/**` | Suite migrated to unit tests; `tests/tree/mod.rs` is currently an empty module referenced by `tests/integration.rs`. |
+| `tests/ui/` | browser UI protocol tests | `tests/integration.rs::ui` | Integration tests (feature-gated). |
 | `tests/wpt/` + `tests/wpt_dom/` | WPT runners + fixtures | `tests/integration.rs::wpt` | Stays in `tests/` (fixture-driven integration). |
 
 ## End-state invariants to verify
 
-- `ls tests/*.rs | wc -l` is **≤ 3**
+- `ls tests/*.rs | wc -l` is **2**
 - No `#[path = "..."]` in `tests/` (shims removed): `rg '#\\[path\\s*=' tests/` returns nothing
 - No internal-module imports in `tests/` (integration tests use public API only)
