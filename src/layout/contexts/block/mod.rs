@@ -7334,6 +7334,8 @@ impl BlockFormattingContext {
     let fragmentainer_hint = crate::layout::formatting_context::fragmentainer_block_size_hint()
       .filter(|h| h.is_finite() && *h > 0.0);
     let fragmented_context = fragmentainer_hint.is_some();
+    let fragmentainer_axes =
+      crate::layout::formatting_context::fragmentainer_axes_hint().unwrap_or(axes);
     let mut column_height = match column_fill {
       ColumnFill::Auto => match available_block {
         AvailableSpace::Definite(h) => h,
@@ -7563,9 +7565,7 @@ impl BlockFormattingContext {
     // `FragmentationContext::Column`) still accounts for `break-before/after: page|left|right|recto|verso`.
     let mut forced_pagination_boundaries: Vec<ForcedBoundary> = Vec::new();
     if fragmented_context {
-      let page_progression_is_ltr = crate::layout::formatting_context::fragmentainer_axes_hint()
-        .unwrap_or(axes)
-        .page_progression_is_ltr();
+      let page_progression_is_ltr = fragmentainer_axes.page_progression_is_ltr();
       // `break-before/after: always` forces a break in the *immediately containing* fragmentation
       // context (CSS Break 4). In paged multi-column layout that is the column context, so `always`
       // must not be promoted to a column-set boundary (which would create an extra page).
@@ -7975,10 +7975,18 @@ impl BlockFormattingContext {
           0.0
         };
         let marker_start = (set_start - block_size).max(0.0);
-        let offset = axes.block_offset(marker_start);
-        let bounds = match axes.block_axis() {
-          crate::layout::axis::PhysicalAxis::Y => Rect::from_xywh(offset.x, offset.y, 0.0, block_size),
-          crate::layout::axis::PhysicalAxis::X => Rect::from_xywh(offset.x, offset.y, block_size, 0.0),
+        let mut offset = fragmentainer_axes.block_offset(marker_start);
+        if !fragmentainer_axes.block_positive() {
+          let adjust = fragmentainer_axes.block_offset((page_size - block_size).max(0.0));
+          offset = offset.translate(Point::new(-adjust.x, -adjust.y));
+        }
+        let bounds = match fragmentainer_axes.block_axis() {
+          crate::layout::axis::PhysicalAxis::Y => {
+            Rect::from_xywh(offset.x, offset.y, 0.0, block_size)
+          }
+          crate::layout::axis::PhysicalAxis::X => {
+            Rect::from_xywh(offset.x, offset.y, block_size, 0.0)
+          }
         };
         let mut marker_style = ComputedStyle::default();
         marker_style.display = Display::Block;
@@ -8061,7 +8069,7 @@ impl BlockFormattingContext {
         propagate_fragmentainer_columns(&mut clipped, set, col);
         let offset = axes
           .inline_offset(col as f32 * stride)
-          .translate(axes.block_offset(set_offset(set)));
+          .translate(fragmentainer_axes.block_offset(set_offset(set)));
         fragment_heights[index] = axes.block_size(&clipped.logical_bounding_box());
         let mut children: Vec<_> = std::mem::take(&mut clipped.children).into_iter().collect();
         for child in &mut children {

@@ -874,6 +874,35 @@ fn required_page_side(boundaries: &[ForcedBoundary], pos: f32) -> Option<PageSid
     .and_then(|b| b.page_side)
 }
 
+fn page_boundary_start_for_next_page(
+  previous_boundary_start: f32,
+  token_start: f32,
+  forced: &[ForcedBoundary],
+) -> f32 {
+  if !token_start.is_finite() {
+    return previous_boundary_start;
+  }
+  // The pagination continuation token encodes the start of the *next in-flow content*, but
+  // forced page-side constraints apply to the page boundary itself. In paged multi-column layout,
+  // the next content can start after the page boundary (e.g. when the first column is empty). When
+  // advancing to a new token, treat the latest forced boundary between the previous page start and
+  // the token's resolved position as the current page boundary.
+  if token_start <= previous_boundary_start + EPSILON {
+    return token_start;
+  }
+
+  let mut boundary = token_start;
+  for forced_boundary in forced.iter() {
+    if forced_boundary.position > previous_boundary_start + EPSILON
+      && forced_boundary.position <= token_start + EPSILON
+    {
+      boundary = forced_boundary.position;
+    }
+  }
+
+  boundary
+}
+
 fn dedup_forced_boundaries(mut boundaries: Vec<ForcedBoundary>) -> Vec<ForcedBoundary> {
   boundaries.sort_by(|a, b| {
     a.position
@@ -1177,6 +1206,8 @@ pub fn paginate_fragment_tree(
   )> = Vec::new();
   let base_root_block_size = root_axis.block_size(&base_root.bounds);
   let mut token = BreakToken::Start;
+  let mut base_page_boundary_start = 0.0f32;
+  let mut base_page_boundary_token = token.clone();
   let mut page_index = 0usize;
   let mut pending_footnotes: VecDeque<PendingFootnote> = VecDeque::new();
 
@@ -1193,9 +1224,14 @@ pub fn paginate_fragment_tree(
           })?
       }
     };
+    if token != base_page_boundary_token {
+      base_page_boundary_start =
+        page_boundary_start_for_next_page(base_page_boundary_start, start_in_base, &base_forced);
+      base_page_boundary_token = token.clone();
+    }
     let mut page_name = page_name_for_position(&base_page_names, start_in_base, fallback_page_name);
     let side = page_side_for_index(page_index, first_page_side);
-    let required_side = required_page_side(&base_forced, start_in_base);
+    let required_side = required_page_side(&base_forced, base_page_boundary_start);
     let is_blank_page = required_side.map_or(false, |required| required != side);
 
     if matches!(token, BreakToken::End) && pending_footnotes.is_empty() && !is_blank_page {
