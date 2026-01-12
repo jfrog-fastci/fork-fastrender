@@ -1538,6 +1538,14 @@ impl ModuleGraph {
           ));
         }
 
+        // Ensure we have stored TLA evaluation state (needed so the embedding can abort evaluation
+        // cleanly without leaking async continuation roots).
+        let Some(_state) = self.tla_states.get(idx).and_then(|s| s.as_ref()) else {
+          return Err(VmError::InvariantViolation(
+            "module is evaluating-async but has no stored TLA evaluation state",
+          ));
+        };
+
         // Top-level await evaluation is in progress; per spec, `Evaluate()` is idempotent and must
         // return the existing evaluation promise.
         // Async evaluation is driven by SCC evaluation promises stored on the SCC (cycle) root's

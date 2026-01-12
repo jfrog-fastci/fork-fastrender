@@ -12980,6 +12980,7 @@ impl Painter {
       .pixmap
       .fill_rect(sk_rect, &paint, Transform::identity(), clip_mask);
   }
+
   fn paint_play_triangle_icon(&mut self, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
     let w = rect.width().max(0.0);
     let h = rect.height().max(0.0);
