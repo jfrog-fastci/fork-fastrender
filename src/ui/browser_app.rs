@@ -1651,8 +1651,8 @@ mod browser_app_tests {
     assert_eq!(entry.url, "https://example.com/");
     assert_eq!(entry.title.as_deref(), Some("Example Domain"));
     assert_eq!(entry.visit_count, 1);
-    assert!(
-      entry.visited_at_ms.is_some(),
+    assert_ne!(
+      entry.visited_at_ms, 0,
       "expected committed navigations to have a visit timestamp"
     );
   }

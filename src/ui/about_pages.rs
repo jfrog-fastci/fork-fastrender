@@ -153,10 +153,11 @@ fn history_snapshots_from_global_history_store(store: &GlobalHistoryStore) -> Ve
       .map(str::trim)
       .filter(|t| !t.is_empty())
       .map(str::to_string);
-    let last_visited =
-      entry
-        .visited_at_ms
-        .and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms)));
+    let last_visited = if entry.visited_at_ms == 0 {
+      None
+    } else {
+      UNIX_EPOCH.checked_add(Duration::from_millis(entry.visited_at_ms))
+    };
     out.push(HistorySnapshot {
       title,
       url: url.to_string(),
@@ -1232,28 +1233,27 @@ mod tests {
 
   #[test]
   fn history_snapshot_rebuild_preserves_recency_order_and_visit_counts() {
-    let history = GlobalHistoryStore {
-      entries: vec![
+    let mut history = GlobalHistoryStore::default();
+    history.entries = vec![
         GlobalHistoryEntry {
           url: "https://old.example/".to_string(),
           title: Some("Old".to_string()),
-          visited_at_ms: Some(1),
+          visited_at_ms: 1,
           visit_count: 2,
         },
         GlobalHistoryEntry {
           url: "https://mid.example/".to_string(),
           title: None,
-          visited_at_ms: Some(2),
+          visited_at_ms: 2,
           visit_count: 1,
         },
         GlobalHistoryEntry {
           url: "https://new.example/".to_string(),
           title: Some("New".to_string()),
-          visited_at_ms: Some(3),
+          visited_at_ms: 3,
           visit_count: 9,
         },
-      ],
-    };
+      ];
 
     let snapshot = super::history_snapshots_from_global_history_store(&history);
     assert_eq!(snapshot.len(), 3);
@@ -1278,14 +1278,13 @@ mod tests {
 
   #[test]
   fn history_snapshot_rebuild_uses_normalized_urls_without_fragments() {
-    let mut history = GlobalHistoryStore {
-      entries: vec![GlobalHistoryEntry {
+    let mut history = GlobalHistoryStore::default();
+    history.entries = vec![GlobalHistoryEntry {
         url: "https://example.test/a#frag".to_string(),
         title: None,
-        visited_at_ms: Some(1),
+        visited_at_ms: 1,
         visit_count: 1,
-      }],
-    };
+      }];
     history.normalize_in_place();
 
     let snapshot = super::history_snapshots_from_global_history_store(&history);
@@ -1435,8 +1434,8 @@ mod tests {
 
     for entry in store.entries.iter_mut() {
       match entry.url.as_str() {
-        "https://example.test/a" => entry.visited_at_ms = Some(2000),
-        "https://example.test/b" => entry.visited_at_ms = Some(1000),
+        "https://example.test/a" => entry.visited_at_ms = 2000,
+        "https://example.test/b" => entry.visited_at_ms = 1000,
         _ => {}
       }
     }
@@ -1488,7 +1487,7 @@ mod tests {
     let mut store = GlobalHistoryStore::default();
     store.record("https://example.test/frag#section".to_string(), None);
     if let Some(entry) = store.entries.first_mut() {
-      entry.visited_at_ms = Some(1);
+      entry.visited_at_ms = 1;
     }
 
     set_about_page_snapshot(AboutPageSnapshot::default());

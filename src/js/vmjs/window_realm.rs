@@ -4669,6 +4669,7 @@ fn window_scroll_by_pages_native(
   let args = [Value::Number(0.0), Value::Number(delta_y)];
   window_scroll_by_native(vm, scope, host, hooks, _callee, _this, &args)
 }
+
 fn serialized_origin_for_document_url(url: &str) -> String {
   let Ok(url) = Url::parse(url) else {
     return "null".to_string();
@@ -16966,6 +16967,7 @@ fn mutation_observer_notify_native(
     if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
       continue;
     }
+
     let records_array = {
       // SAFETY: `dom_ptr_for_wrappers` is only used to create wrappers. The reference must not live
       // across the callback invocation (callbacks can mutate the DOM), so keep it scoped to this

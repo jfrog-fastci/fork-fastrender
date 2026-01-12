@@ -180,7 +180,7 @@ impl VisitedUrlStore {
   ///
   /// Behaviour:
   /// - Orders history entries by `visited_at_ms` (oldest → newest), falling back to file order for
-  ///   missing timestamps.
+  ///   missing timestamps (`visited_at_ms == 0`).
   /// - Deduplicates by URL using the same logic as [`VisitedUrlStore::record_visit`].
   /// - Filters `about:` URLs so internal pages like `about:newtab` do not pollute omnibox history.
   /// - Enforces the store's configured capacity.
@@ -195,7 +195,7 @@ impl VisitedUrlStore {
       .entries
       .iter()
       .enumerate()
-      .map(|(idx, entry)| (entry.visited_at_ms.unwrap_or(0), idx))
+      .map(|(idx, entry)| (entry.visited_at_ms, idx))
       .collect();
 
     // Sort by timestamp (ascending); include the original index to make ordering deterministic and
@@ -212,7 +212,11 @@ impl VisitedUrlStore {
         continue;
       }
 
-      let visited_at_ms = entry.visited_at_ms.unwrap_or(0);
+      let visited_at_ms = if entry.visited_at_ms == 0 {
+        idx as u64
+      } else {
+        entry.visited_at_ms
+      };
       let visited_at = UNIX_EPOCH
         .checked_add(Duration::from_millis(visited_at_ms))
         .unwrap_or(UNIX_EPOCH);
@@ -305,9 +309,9 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-  use std::time::Duration;
+  mod tests {
+    use super::*;
+    use std::time::Duration;
 
   #[test]
   fn dedup_refreshes_last_visited_and_preserves_title_when_none() {
@@ -360,36 +364,35 @@ mod tests {
 
   #[test]
   fn seed_from_global_history_dedups_orders_by_timestamp_and_preserves_titles() {
-    let history = GlobalHistoryStore {
-      entries: vec![
-        super::super::GlobalHistoryEntry {
+    let mut history = GlobalHistoryStore::default();
+    history.entries = vec![
+      super::super::GlobalHistoryEntry {
           url: "https://a.example/".to_string(),
           title: Some("A".to_string()),
-          visited_at_ms: Some(2_000),
+          visited_at_ms: 2_000,
           visit_count: 2,
         },
         // More recent, but missing title; should not clobber previous title for the same URL.
-        super::super::GlobalHistoryEntry {
+      super::super::GlobalHistoryEntry {
           url: "https://a.example/".to_string(),
           title: None,
-          visited_at_ms: Some(6_000),
+          visited_at_ms: 6_000,
           visit_count: 3,
         },
         // Out-of-order timestamp compared to file order: this should still be newer than `c`.
-        super::super::GlobalHistoryEntry {
+      super::super::GlobalHistoryEntry {
           url: "https://b.example/".to_string(),
           title: Some("B".to_string()),
-          visited_at_ms: Some(5_000),
+          visited_at_ms: 5_000,
           visit_count: 1,
         },
-        super::super::GlobalHistoryEntry {
+      super::super::GlobalHistoryEntry {
           url: "https://c.example/".to_string(),
           title: Some("C".to_string()),
-          visited_at_ms: Some(3_000),
+          visited_at_ms: 3_000,
           visit_count: 1,
         },
-      ],
-    };
+    ];
 
     let mut store = VisitedUrlStore::new();
     store.seed_from_global_history(&history);
@@ -416,22 +419,21 @@ mod tests {
 
   #[test]
   fn seed_from_global_history_filters_about_urls() {
-    let history = GlobalHistoryStore {
-      entries: vec![
-        super::super::GlobalHistoryEntry {
+    let mut history = GlobalHistoryStore::default();
+    history.entries = vec![
+      super::super::GlobalHistoryEntry {
           url: "about:newtab".to_string(),
           title: Some("New Tab".to_string()),
-          visited_at_ms: Some(10_000),
+          visited_at_ms: 10_000,
           visit_count: 1,
         },
-        super::super::GlobalHistoryEntry {
+      super::super::GlobalHistoryEntry {
           url: "https://example.com/".to_string(),
           title: Some("Example".to_string()),
-          visited_at_ms: Some(11_000),
+          visited_at_ms: 11_000,
           visit_count: 1,
         },
-      ],
-    };
+    ];
 
     let mut store = VisitedUrlStore::new();
     store.seed_from_global_history(&history);
@@ -443,28 +445,27 @@ mod tests {
 
   #[test]
   fn seed_from_global_history_populates_search_results() {
-    let history = GlobalHistoryStore {
-      entries: vec![
+    let mut history = GlobalHistoryStore::default();
+    history.entries = vec![
         super::super::GlobalHistoryEntry {
           url: "https://example.com/".to_string(),
           title: Some("Example Domain".to_string()),
-          visited_at_ms: Some(1_000),
+          visited_at_ms: 1_000,
           visit_count: 1,
         },
         super::super::GlobalHistoryEntry {
           url: "https://www.rust-lang.org/".to_string(),
           title: Some("Rust".to_string()),
-          visited_at_ms: Some(2_000),
+          visited_at_ms: 2_000,
           visit_count: 1,
         },
         super::super::GlobalHistoryEntry {
           url: "https://example.org/other".to_string(),
           title: None,
-          visited_at_ms: Some(3_000),
+          visited_at_ms: 3_000,
           visit_count: 1,
         },
-      ],
-    };
+      ];
 
     let mut store = VisitedUrlStore::new();
     store.seed_from_global_history(&history);
@@ -500,28 +501,27 @@ mod tests {
 
   #[test]
   fn seed_from_global_history_skips_empty_urls() {
-    let history = GlobalHistoryStore {
-      entries: vec![
+    let mut history = GlobalHistoryStore::default();
+    history.entries = vec![
         super::super::GlobalHistoryEntry {
           url: "   ".to_string(),
           title: Some("Whitespace".to_string()),
-          visited_at_ms: Some(1_000),
+          visited_at_ms: 1_000,
           visit_count: 1,
         },
         super::super::GlobalHistoryEntry {
           url: "".to_string(),
           title: Some("Empty".to_string()),
-          visited_at_ms: Some(2_000),
+          visited_at_ms: 2_000,
           visit_count: 1,
         },
         super::super::GlobalHistoryEntry {
           url: "https://example.com/".to_string(),
           title: None,
-          visited_at_ms: Some(3_000),
+          visited_at_ms: 3_000,
           visit_count: 1,
         },
-      ],
-    };
+      ];
 
     let mut store = VisitedUrlStore::new();
     store.seed_from_global_history(&history);
@@ -532,28 +532,27 @@ mod tests {
 
   #[test]
   fn seed_from_global_history_respects_capacity() {
-    let history = GlobalHistoryStore {
-      entries: vec![
+    let mut history = GlobalHistoryStore::default();
+    history.entries = vec![
         super::super::GlobalHistoryEntry {
           url: "https://a.example/".to_string(),
           title: None,
-          visited_at_ms: Some(1_000),
+          visited_at_ms: 1_000,
           visit_count: 1,
         },
         super::super::GlobalHistoryEntry {
           url: "https://b.example/".to_string(),
           title: None,
-          visited_at_ms: Some(2_000),
+          visited_at_ms: 2_000,
           visit_count: 1,
         },
         super::super::GlobalHistoryEntry {
           url: "https://c.example/".to_string(),
           title: None,
-          visited_at_ms: Some(3_000),
+          visited_at_ms: 3_000,
           visit_count: 1,
         },
-      ],
-    };
+      ];
 
     let mut store = VisitedUrlStore::with_capacity(2);
     store.seed_from_global_history(&history);

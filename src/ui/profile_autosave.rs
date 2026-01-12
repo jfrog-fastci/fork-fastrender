@@ -10,7 +10,6 @@ use super::global_history::GlobalHistoryEntry;
 
 const DEFAULT_BOOKMARKS_DEBOUNCE: Duration = Duration::from_secs(1);
 const DEFAULT_HISTORY_DEBOUNCE: Duration = Duration::from_secs(8);
-
 #[derive(Debug)]
 pub enum AutosaveMsg {
   UpdateBookmarks(BookmarkStore),
@@ -245,25 +244,27 @@ mod tests {
       .unwrap();
 
     autosave
-      .send(AutosaveMsg::UpdateHistory(GlobalHistoryStore {
-        entries: vec![GlobalHistoryEntry {
+      .send(AutosaveMsg::UpdateHistory({
+        let mut history = GlobalHistoryStore::default();
+        history.entries = vec![GlobalHistoryEntry {
           url: "https://1.example/".to_string(),
           title: None,
-          visited_at_ms: None,
+          visited_at_ms: 1,
           visit_count: 1,
-        }],
-        ..Default::default()
+        }];
+        history
       }))
       .unwrap();
     autosave
-      .send(AutosaveMsg::UpdateHistory(GlobalHistoryStore {
-        entries: vec![GlobalHistoryEntry {
+      .send(AutosaveMsg::UpdateHistory({
+        let mut history = GlobalHistoryStore::default();
+        history.entries = vec![GlobalHistoryEntry {
           url: "https://2.example/".to_string(),
           title: Some("two".to_string()),
-          visited_at_ms: Some(2),
+          visited_at_ms: 2,
           visit_count: 1,
-        }],
-        ..Default::default()
+        }];
+        history
       }))
       .unwrap();
 
@@ -275,18 +276,14 @@ mod tests {
 
     let saved_history: PersistedGlobalHistoryStore =
       serde_json::from_str(&std::fs::read_to_string(&history_path).unwrap()).unwrap();
-    assert_eq!(
-      saved_history,
-      PersistedGlobalHistoryStore::from_store(&GlobalHistoryStore {
-        entries: vec![GlobalHistoryEntry {
-          url: "https://2.example/".to_string(),
-          title: Some("two".to_string()),
-          visited_at_ms: Some(2),
-          visit_count: 1,
-        }],
-        ..Default::default()
-      })
-    );
+    let mut expected = GlobalHistoryStore::default();
+    expected.entries = vec![GlobalHistoryEntry {
+      url: "https://2.example/".to_string(),
+      title: Some("two".to_string()),
+      visited_at_ms: 2,
+      visit_count: 1,
+    }];
+    assert_eq!(saved_history, PersistedGlobalHistoryStore::from_store(&expected));
 
     autosave.shutdown_with_timeout(Duration::from_millis(500));
   }

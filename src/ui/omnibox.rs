@@ -757,23 +757,23 @@ mod tests {
     }];
 
     let mut visited = VisitedUrlStore::with_capacity(10);
-    visited.seed_from_global_history(&crate::ui::GlobalHistoryStore {
-      entries: vec![
-        crate::ui::GlobalHistoryEntry {
-          url: "https://example.net/".to_string(),
-          title: Some("Example Net".to_string()),
-          visited_at_ms: Some(1_000),
-          visit_count: 1,
-        },
-        // Duplicate URL from open tab should be deduped in favour of the open-tab suggestion.
-        crate::ui::GlobalHistoryEntry {
-          url: "https://example.com/".to_string(),
-          title: Some("Example Domain (history)".to_string()),
-          visited_at_ms: Some(2_000),
-          visit_count: 1,
-        },
-      ],
-    });
+    let mut history = crate::ui::GlobalHistoryStore::default();
+    history.entries = vec![
+      crate::ui::GlobalHistoryEntry {
+        url: "https://example.net/".to_string(),
+        title: Some("Example Net".to_string()),
+        visited_at_ms: 1_000,
+        visit_count: 1,
+      },
+      // Duplicate URL from open tab should be deduped in favour of the open-tab suggestion.
+      crate::ui::GlobalHistoryEntry {
+        url: "https://example.com/".to_string(),
+        title: Some("Example Domain (history)".to_string()),
+        visited_at_ms: 2_000,
+        visit_count: 1,
+      },
+    ];
+    visited.seed_from_global_history(&history);
 
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,
@@ -1210,24 +1210,23 @@ mod tests {
       .unwrap()
       .as_millis() as u64;
 
-    let history = crate::ui::GlobalHistoryStore {
-      entries: vec![
-        // Oldest, low frequency, but lexicographically earlier.
-        crate::ui::GlobalHistoryEntry {
-          url: "https://a.example.com/".to_string(),
-          title: None,
-          visited_at_ms: Some(now_ms - 9 * 24 * 60 * 60 * 1_000),
-          visit_count: 1,
-        },
-        // Recent and frequently visited, but lexicographically later.
-        crate::ui::GlobalHistoryEntry {
-          url: "https://b.example.com/".to_string(),
-          title: None,
-          visited_at_ms: Some(now_ms - 30 * 60 * 1_000),
-          visit_count: 64,
-        },
-      ],
-    };
+    let mut history = crate::ui::GlobalHistoryStore::default();
+    history.entries = vec![
+      // Oldest, low frequency, but lexicographically earlier.
+      crate::ui::GlobalHistoryEntry {
+        url: "https://a.example.com/".to_string(),
+        title: None,
+        visited_at_ms: now_ms - 9 * 24 * 60 * 60 * 1_000,
+        visit_count: 1,
+      },
+      // Recent and frequently visited, but lexicographically later.
+      crate::ui::GlobalHistoryEntry {
+        url: "https://b.example.com/".to_string(),
+        title: None,
+        visited_at_ms: now_ms - 30 * 60 * 1_000,
+        visit_count: 64,
+      },
+    ];
 
     let mut visited = VisitedUrlStore::with_capacity(10);
     visited.seed_from_global_history(&history);
@@ -1324,14 +1323,14 @@ mod tests {
     let closed_tabs = Vec::new();
 
     let mut visited = VisitedUrlStore::new();
-    visited.seed_from_global_history(&crate::ui::GlobalHistoryStore {
-      entries: vec![crate::ui::GlobalHistoryEntry {
-        url: "https://visited.example/".to_string(),
-        title: Some("Needle Title".to_string()),
-        visited_at_ms: Some(1_000),
-        visit_count: 1,
-      }],
-    });
+    let mut history = crate::ui::GlobalHistoryStore::default();
+    history.entries = vec![crate::ui::GlobalHistoryEntry {
+      url: "https://visited.example/".to_string(),
+      title: Some("Needle Title".to_string()),
+      visited_at_ms: 1_000,
+      visit_count: 1,
+    }];
+    visited.seed_from_global_history(&history);
 
     let mut bookmarks = BookmarkStore::default();
     bookmarks

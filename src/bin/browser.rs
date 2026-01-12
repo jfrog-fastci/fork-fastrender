@@ -5565,6 +5565,9 @@ impl App {
     use chrono::{DateTime, Local, Utc};
     use std::time::{Duration, UNIX_EPOCH};
 
+    if visited_at_ms == 0 {
+      return None;
+    }
     let time = UNIX_EPOCH.checked_add(Duration::from_millis(visited_at_ms))?;
     let utc: DateTime<Utc> = time.into();
     Some(
@@ -5610,7 +5613,7 @@ impl App {
   }
 
   fn clear_browsing_data(&mut self, range: fastrender::ui::ClearBrowsingDataRange) {
-    self.browser_state.history.clear_range(range);
+    self.browser_state.history.clear_browsing_data_range(range);
     self.sync_history_after_mutation(true);
   }
 
@@ -7781,8 +7784,8 @@ impl App {
                   ui.label(egui::RichText::new(url).small());
 
                   let ts = entry
-                    .visited_at_ms
-                    .and_then(Self::format_history_timestamp_ms)
+                    .visited_at_ms;
+                  let ts = Self::format_history_timestamp_ms(ts)
                     .unwrap_or_else(|| "Unknown time".to_string());
                   ui.label(egui::RichText::new(ts).small());
 

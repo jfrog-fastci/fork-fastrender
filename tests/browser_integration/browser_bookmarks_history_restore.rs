@@ -95,7 +95,7 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
     entries: vec![fastrender::ui::GlobalHistoryEntry {
       url: "https://example.com/".to_string(),
       title: Some("Example".to_string()),
-      visited_at_ms: Some(123),
+      visited_at_ms: 123,
       visit_count: 1,
     }],
     ..Default::default()
@@ -106,7 +106,10 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
     &[],
     &session_path,
     &[
-      ("FASTR_BROWSER_BOOKMARKS_PATH", bookmarks_path.to_str().unwrap()),
+      (
+        "FASTR_BROWSER_BOOKMARKS_PATH",
+        bookmarks_path.to_str().unwrap(),
+      ),
       ("FASTR_BROWSER_HISTORY_PATH", history_path.to_str().unwrap()),
       (
         "FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON",
@@ -156,7 +159,10 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
     &[],
     &session_path,
     &[
-      ("FASTR_BROWSER_BOOKMARKS_PATH", bookmarks_path.to_str().unwrap()),
+      (
+        "FASTR_BROWSER_BOOKMARKS_PATH",
+        bookmarks_path.to_str().unwrap(),
+      ),
       ("FASTR_BROWSER_HISTORY_PATH", history_path.to_str().unwrap()),
     ],
   );

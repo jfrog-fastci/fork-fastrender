@@ -2,33 +2,46 @@
 //!
 //! This is a small, UI-owned store intended for chrome features like:
 //! - the History panel (and profile autosave),
-//! - a future `about:history` page.
+//! - `about:history` / "Recently visited" sections.
 //!
-//! # Recording semantics (what counts as a visit)
+//! # Model
+//!
+//! The store is a **per-URL summary**: entries are deduplicated by a normalized URL. Each committed
+//! navigation:
+//! - increments [`GlobalHistoryEntry::visit_count`]
+//! - updates [`GlobalHistoryEntry::visited_at_ms`]
+//! - updates [`GlobalHistoryEntry::title`] only when a non-empty title is provided
+//! - moves the entry to the end of the list (most-recent)
+//!
+//! The store is bounded by a configurable capacity (default: [`DEFAULT_GLOBAL_HISTORY_CAPACITY`]),
+//! evicting the oldest entries first.
+//!
+//! # URL normalization
 //!
 //! These rules are intentionally explicit and covered by regression tests so history stays stable
 //! as the UI/worker protocol evolves:
 //!
-//! - Visits are recorded **only** on `WorkerToUi::NavigationCommitted`.
-//!   - `NavigationStarted` and `NavigationFailed` do **not** create history entries.
-//! - Redirects: `NavigationCommitted` already carries the *final* URL, so the store records exactly
-//!   that (no special-case required).
-//! - Fragment navigations: URLs are **normalized by stripping the fragment** (`#...`) for history
+//! - Fragment navigations: URLs are normalized by stripping the fragment (`#...`) for history
 //!   purposes. This avoids separate history entries for in-page anchor jumps.
-//! - `about:` pages are **not** recorded (including `about:history` / `about:bookmarks`) to avoid
+//! - `about:` pages are not recorded (including `about:history` / `about:bookmarks`) to avoid
 //!   recursive/self-referential noise and to keep internal pages out of user history.
-//! - `file:` URLs **are** recorded.
-//! - History is **deduped by normalized URL**. Every committed navigation increments
-//!   [`GlobalHistoryEntry::visit_count`] and updates [`GlobalHistoryEntry::visited_at_ms`]
-//!   (including back/forward/reload).
+//! - `file:` URLs are recorded.
+//! - A conservative scheme allowlist is applied: only http/https/file are recorded.
+//! - Titles are trimmed and empty titles are treated as missing.
 //!
 //! If these semantics change, update the tests in this module.
 
 use crate::ui::about_pages;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
+use std::ops::Range;
+use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
-/// Default maximum number of global history entries stored.
+/// Current on-disk schema version for [`GlobalHistoryStore`].
+pub const GLOBAL_HISTORY_SCHEMA_VERSION: u32 = 1;
+
+/// Default maximum number of global history entries stored in-memory and persisted to disk.
 ///
 /// This must remain bounded: history is stored on the UI side and is also used for omnibox/history
 /// search results, so unbounded growth would cause memory issues and slow UI operations.
@@ -66,8 +79,11 @@ pub struct GlobalHistoryEntry {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub title: Option<String>,
   /// Unix epoch milliseconds for the most recent committed visit to this URL.
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub visited_at_ms: Option<u64>,
+  ///
+  /// This is required for all new entries. Deserialization is permissive so older persisted files
+  /// that used `Option<u64>` (or omitted the field) can be migrated.
+  #[serde(default, deserialize_with = "deserialize_u64_or_null", alias = "ts")]
+  pub visited_at_ms: u64,
   /// Number of committed visits to this URL.
   #[serde(default = "default_visit_count")]
   pub visit_count: u64,
@@ -77,19 +93,106 @@ fn default_visit_count() -> u64 {
   1
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GlobalHistoryStore {
-  #[serde(default)]
+  schema_version: u32,
   pub entries: Vec<GlobalHistoryEntry>,
+  #[serde(skip)]
+  capacity: usize,
+}
+
+impl PartialEq for GlobalHistoryStore {
+  fn eq(&self, other: &Self) -> bool {
+    self.schema_version == other.schema_version && self.entries == other.entries
+  }
+}
+
+impl Eq for GlobalHistoryStore {}
+
+#[derive(Debug, Deserialize)]
+struct GlobalHistoryStoreV1 {
+  schema_version: u32,
+  #[serde(default)]
+  entries: Vec<GlobalHistoryEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyGlobalHistoryStore {
+  #[serde(default)]
+  entries: Vec<GlobalHistoryEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum GlobalHistoryStoreFile {
+  V1(GlobalHistoryStoreV1),
+  Legacy(LegacyGlobalHistoryStore),
+  LegacyVec(Vec<GlobalHistoryEntry>),
+}
+
+impl<'de> Deserialize<'de> for GlobalHistoryStore {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let file = GlobalHistoryStoreFile::deserialize(deserializer)?;
+    let mut store = match file {
+      GlobalHistoryStoreFile::V1(v1) => {
+        if v1.schema_version != GLOBAL_HISTORY_SCHEMA_VERSION {
+          return Err(de::Error::custom(format!(
+            "unsupported global history schema_version {}; expected {}",
+            v1.schema_version, GLOBAL_HISTORY_SCHEMA_VERSION
+          )));
+        }
+        GlobalHistoryStore {
+          schema_version: v1.schema_version,
+          entries: v1.entries,
+          capacity: DEFAULT_GLOBAL_HISTORY_CAPACITY,
+        }
+      }
+      GlobalHistoryStoreFile::Legacy(legacy) => GlobalHistoryStore {
+        schema_version: GLOBAL_HISTORY_SCHEMA_VERSION,
+        entries: legacy.entries,
+        capacity: DEFAULT_GLOBAL_HISTORY_CAPACITY,
+      },
+      GlobalHistoryStoreFile::LegacyVec(entries) => GlobalHistoryStore {
+        schema_version: GLOBAL_HISTORY_SCHEMA_VERSION,
+        entries,
+        capacity: DEFAULT_GLOBAL_HISTORY_CAPACITY,
+      },
+    };
+
+    store.normalize_after_load();
+    Ok(store)
+  }
+}
+
+impl Default for GlobalHistoryStore {
+  fn default() -> Self {
+    Self::with_capacity(DEFAULT_GLOBAL_HISTORY_CAPACITY)
+  }
 }
 
 impl GlobalHistoryStore {
+  pub fn with_capacity(capacity: usize) -> Self {
+    Self {
+      schema_version: GLOBAL_HISTORY_SCHEMA_VERSION,
+      entries: Vec::new(),
+      capacity,
+    }
+  }
+
   pub fn len(&self) -> usize {
     self.entries.len()
   }
 
   pub fn is_empty(&self) -> bool {
     self.entries.is_empty()
+  }
+
+  /// Iterate history entries ordered by recency (most recent first).
+  pub fn iter_recent(&self) -> impl Iterator<Item = (usize, &GlobalHistoryEntry)> {
+    self.entries.iter().enumerate().rev()
   }
 
   /// Record a committed visit to `url`.
@@ -100,20 +203,19 @@ impl GlobalHistoryStore {
   }
 
   fn record_at_ms(&mut self, url: String, title: Option<String>, visited_at_ms: u64) -> bool {
-    if DEFAULT_GLOBAL_HISTORY_CAPACITY == 0 {
+    if self.capacity == 0 {
       return false;
     }
 
     let Some(normalized) = normalize_url_for_history(&url) else {
       return false;
     };
-
     let title = normalize_title(title);
 
     if let Some(idx) = self.entries.iter().position(|e| e.url == normalized) {
       let mut existing = self.entries.remove(idx);
-      existing.visit_count = existing.visit_count.saturating_add(1);
-      existing.visited_at_ms = Some(visited_at_ms);
+      existing.visit_count = existing.visit_count.max(1).saturating_add(1);
+      existing.visited_at_ms = visited_at_ms;
       if title.is_some() {
         existing.title = title;
       }
@@ -125,16 +227,17 @@ impl GlobalHistoryStore {
     self.entries.push(GlobalHistoryEntry {
       url: normalized,
       title,
-      visited_at_ms: Some(visited_at_ms),
+      visited_at_ms,
       visit_count: 1,
     });
-    trim_to_capacity(&mut self.entries);
+    self.enforce_capacity();
     true
   }
 
-  /// Iterate history entries ordered by recency (most recent first).
-  pub fn iter_recent(&self) -> impl Iterator<Item = (usize, &GlobalHistoryEntry)> {
-    self.entries.iter().enumerate().rev()
+  /// Look up an entry by URL, applying the same normalization used for recording.
+  pub fn get(&self, url: &str) -> Option<&GlobalHistoryEntry> {
+    let key = normalize_url_for_history(url)?;
+    self.entries.iter().find(|e| e.url == key)
   }
 
   /// Search history entries, ordered by recency (most recent first).
@@ -174,51 +277,21 @@ impl GlobalHistoryStore {
     out
   }
 
-  /// Look up an entry by URL, applying the same normalization used for recording.
-  pub fn get(&self, url: &str) -> Option<&GlobalHistoryEntry> {
-    let key = normalize_url_for_history(url)?;
-    self.entries.iter().find(|e| e.url == key)
-  }
-
-  /// Normalize + deduplicate entries in-place.
+  /// Delete a single history entry by URL.
   ///
-  /// This is intended as a best-effort migration step for history snapshots loaded from disk:
-  /// older versions of the browser stored one entry per visit, potentially including fragments.
-  pub fn normalize_in_place(&mut self) {
-    let mut out: Vec<GlobalHistoryEntry> = Vec::with_capacity(self.entries.len());
-    for entry in std::mem::take(&mut self.entries) {
-      let Some(url) = normalize_url_for_history(&entry.url) else {
-        continue;
-      };
-
-      let visit_count = entry.visit_count.max(1);
-      let title = normalize_title(entry.title);
-      let visited_at_ms = entry.visited_at_ms;
-
-      if let Some(idx) = out.iter().position(|e| e.url == url) {
-        let mut existing = out.remove(idx);
-        existing.visit_count = existing.visit_count.saturating_add(visit_count);
-        if visited_at_ms.is_some() {
-          existing.visited_at_ms = visited_at_ms;
-        }
-        if title.is_some() {
-          existing.title = title;
-        }
-        out.push(existing);
-      } else {
-        out.push(GlobalHistoryEntry {
-          url,
-          title,
-          visited_at_ms,
-          visit_count,
-        });
-      }
-    }
-
-    self.entries = out;
-    trim_to_capacity(&mut self.entries);
+  /// Returns `true` when an entry was removed.
+  pub fn delete_entry(&mut self, url: &str) -> bool {
+    let Some(key) = normalize_url_for_history(url) else {
+      return false;
+    };
+    let Some(idx) = self.entries.iter().position(|e| e.url == key) else {
+      return false;
+    };
+    self.entries.remove(idx);
+    true
   }
 
+  /// Delete an entry by its index in [`GlobalHistoryStore::entries`].
   pub fn remove_at(&mut self, index: usize) -> Option<GlobalHistoryEntry> {
     if index < self.entries.len() {
       Some(self.entries.remove(index))
@@ -227,15 +300,50 @@ impl GlobalHistoryStore {
     }
   }
 
-  pub fn clear(&mut self) {
+  /// Remove all global history entries.
+  pub fn clear_all(&mut self) {
     self.entries.clear();
   }
 
-  pub fn clear_range(&mut self, range: ClearBrowsingDataRange) {
-    self.clear_range_at_ms(range, now_unix_ms());
+  /// Legacy alias for [`GlobalHistoryStore::clear_all`].
+  pub fn clear(&mut self) {
+    self.clear_all();
   }
 
-  pub fn clear_range_at_ms(&mut self, range: ClearBrowsingDataRange, now_ms: u64) {
+  /// Clear entries visited at or after `since_ms`.
+  ///
+  /// Entries with unknown timestamps (`visited_at_ms == 0`) are preserved unless `since_ms == 0`.
+  pub fn clear_since(&mut self, since_ms: u64) {
+    if since_ms == 0 {
+      self.entries.clear();
+      return;
+    }
+    self
+      .entries
+      .retain(|e| e.visited_at_ms == 0 || e.visited_at_ms < since_ms);
+  }
+
+  /// Clear entries visited within `range` (`start_ms..end_ms`, end-exclusive).
+  ///
+  /// Entries with unknown timestamps (`visited_at_ms == 0`) are preserved unless the range starts
+  /// at `0`.
+  pub fn clear_range(&mut self, range: Range<u64>) {
+    if range.start >= range.end {
+      return;
+    }
+    self.entries.retain(|e| {
+      if e.visited_at_ms == 0 && range.start > 0 {
+        return true;
+      }
+      e.visited_at_ms < range.start || e.visited_at_ms >= range.end
+    });
+  }
+
+  pub fn clear_browsing_data_range(&mut self, range: ClearBrowsingDataRange) {
+    self.clear_browsing_data_range_at_ms(range, now_unix_ms());
+  }
+
+  pub fn clear_browsing_data_range_at_ms(&mut self, range: ClearBrowsingDataRange, now_ms: u64) {
     match range {
       ClearBrowsingDataRange::AllTime => {
         self.entries.clear();
@@ -250,12 +358,104 @@ impl GlobalHistoryStore {
           ClearBrowsingDataRange::AllTime => 0,
         };
         let cutoff_ms = now_ms.saturating_sub(duration_ms);
-        // Keep entries that are older than the cutoff. If a timestamp is missing (legacy data),
-        // keep it for partial clears so we don't accidentally delete entries we cannot classify.
-        self
-          .entries
-          .retain(|entry| entry.visited_at_ms.map_or(true, |ms| ms < cutoff_ms));
+        self.clear_since(cutoff_ms);
       }
+    }
+  }
+
+  /// Normalize + deduplicate entries in-place.
+  ///
+  /// This is intended as a best-effort migration step for history snapshots loaded from disk:
+  /// older versions of the browser stored one entry per visit, potentially including fragments.
+  pub fn normalize_in_place(&mut self) {
+    self.schema_version = GLOBAL_HISTORY_SCHEMA_VERSION;
+
+    if self.capacity == 0 {
+      self.entries.clear();
+      return;
+    }
+
+    #[derive(Debug, Default, Clone)]
+    struct Agg {
+      title: Option<String>,
+      visited_at_ms: u64,
+      visit_count: u64,
+      last_seen_idx: usize,
+    }
+
+    let mut by_url: HashMap<String, Agg> = HashMap::with_capacity(self.entries.len());
+    for (idx, entry) in std::mem::take(&mut self.entries).into_iter().enumerate() {
+      let Some(url) = normalize_url_for_history(&entry.url) else {
+        continue;
+      };
+
+      let title = normalize_title(entry.title);
+      let visited_at_ms = entry.visited_at_ms;
+      let visit_count = entry.visit_count.max(1);
+
+      let agg = by_url.entry(url).or_insert_with(|| Agg {
+        last_seen_idx: idx,
+        ..Default::default()
+      });
+
+      agg.visit_count = agg.visit_count.saturating_add(visit_count);
+
+      // Prefer the newest timestamp; break ties using file order so migration is deterministic even
+      // when timestamps are missing (legacy stores).
+      let is_newer = visited_at_ms > agg.visited_at_ms
+        || (visited_at_ms == agg.visited_at_ms && idx >= agg.last_seen_idx);
+
+      if is_newer {
+        agg.visited_at_ms = visited_at_ms;
+        agg.last_seen_idx = idx;
+        if title.is_some() {
+          agg.title = title;
+        }
+      } else if agg.title.is_none() && title.is_some() {
+        // Best-effort: if the most-recent entry is missing a title but an older one has it, keep
+        // the known title instead of falling back to the raw URL.
+        agg.title = title;
+      }
+    }
+
+    let mut entries: Vec<(u64, usize, GlobalHistoryEntry)> = by_url
+      .into_iter()
+      .map(|(url, agg)| {
+        (
+          agg.visited_at_ms,
+          agg.last_seen_idx,
+          GlobalHistoryEntry {
+            url,
+            title: agg.title,
+            visited_at_ms: agg.visited_at_ms,
+            visit_count: agg.visit_count.max(1),
+          },
+        )
+      })
+      .collect();
+
+    // Ensure deterministic ordering and recency semantics after migration: oldest → newest.
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.url.cmp(&b.2.url)));
+
+    self.entries = entries.into_iter().map(|(_, _, e)| e).collect();
+    self.enforce_capacity();
+  }
+
+  fn normalize_after_load(&mut self) {
+    // Ensure we always persist the current version on the next save.
+    self.schema_version = GLOBAL_HISTORY_SCHEMA_VERSION;
+    self.normalize_in_place();
+  }
+
+  fn enforce_capacity(&mut self) {
+    if self.capacity == 0 {
+      self.entries.clear();
+      return;
+    }
+
+    if self.entries.len() > self.capacity {
+      let excess = self.entries.len() - self.capacity;
+      self.entries.drain(0..excess);
     }
   }
 }
@@ -312,28 +512,28 @@ pub fn normalize_url_for_history(url: &str) -> Option<String> {
 }
 
 fn now_unix_ms() -> u64 {
-  use std::time::{SystemTime, UNIX_EPOCH};
-
   SystemTime::now()
     .duration_since(UNIX_EPOCH)
-    .map(|d| d.as_millis() as u64)
+    .map(|d| {
+      let ms = d.as_millis();
+      if ms > u64::MAX as u128 {
+        u64::MAX
+      } else {
+        ms as u64
+      }
+    })
     .unwrap_or(0)
 }
 
-fn trim_to_capacity(entries: &mut Vec<GlobalHistoryEntry>) {
-  if DEFAULT_GLOBAL_HISTORY_CAPACITY == 0 {
-    entries.clear();
-    return;
-  }
-
-  if entries.len() > DEFAULT_GLOBAL_HISTORY_CAPACITY {
-    let excess = entries.len() - DEFAULT_GLOBAL_HISTORY_CAPACITY;
-    entries.drain(0..excess);
-  }
+fn deserialize_u64_or_null<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or(0))
 }
 
 fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-  // For history/omnibox usage we want lightweight, allocation-free matching. We use ASCII-only
+  // For omnibox/history-panel usage we want lightweight, allocation-free matching. We use ASCII-only
   // case-insensitivity: non-ASCII bytes are compared exactly.
   if needle.is_empty() {
     return true;
@@ -367,7 +567,7 @@ mod tests {
 
   #[test]
   fn strips_fragments_and_dedupes_by_normalized_url() {
-    let mut store = GlobalHistoryStore::default();
+    let mut store = GlobalHistoryStore::with_capacity(10);
 
     assert!(store.record_at_ms(
       "https://example.test/a#one".to_string(),
@@ -378,7 +578,7 @@ mod tests {
     let entry = store.entries.last().unwrap();
     assert_eq!(entry.url, "https://example.test/a");
     assert_eq!(entry.title.as_deref(), Some("A1"));
-    assert_eq!(entry.visited_at_ms, Some(1));
+    assert_eq!(entry.visited_at_ms, 1);
     assert_eq!(entry.visit_count, 1);
 
     assert!(store.record_at_ms(
@@ -390,13 +590,13 @@ mod tests {
     let entry = store.entries.last().unwrap();
     assert_eq!(entry.url, "https://example.test/a");
     assert_eq!(entry.title.as_deref(), Some("A2"));
-    assert_eq!(entry.visited_at_ms, Some(2));
+    assert_eq!(entry.visited_at_ms, 2);
     assert_eq!(entry.visit_count, 2);
   }
 
   #[test]
   fn dedupes_non_consecutive_and_moves_to_end() {
-    let mut store = GlobalHistoryStore::default();
+    let mut store = GlobalHistoryStore::with_capacity(10);
 
     store.record_at_ms("https://a.example/".to_string(), Some("A".to_string()), 1);
     store.record_at_ms("https://b.example/".to_string(), Some("B".to_string()), 2);
@@ -408,17 +608,13 @@ mod tests {
 
     let a = store.get("https://a.example/").unwrap();
     assert_eq!(a.visit_count, 2);
-    assert_eq!(
-      a.title.as_deref(),
-      Some("A"),
-      "title should not be clobbered by None"
-    );
-    assert_eq!(a.visited_at_ms, Some(3));
+    assert_eq!(a.title.as_deref(), Some("A"), "title should not be clobbered");
+    assert_eq!(a.visited_at_ms, 3);
   }
 
   #[test]
   fn ignores_about_pages() {
-    let mut store = GlobalHistoryStore::default();
+    let mut store = GlobalHistoryStore::with_capacity(10);
 
     for url in ["about:newtab", "about:help", "about:history", "ABOUT:BOOKMARKS"] {
       assert!(!store.record_at_ms(url.to_string(), None, 1));
@@ -429,7 +625,7 @@ mod tests {
 
   #[test]
   fn records_file_urls() {
-    let mut store = GlobalHistoryStore::default();
+    let mut store = GlobalHistoryStore::with_capacity(10);
 
     assert!(store.record_at_ms(
       "file:///tmp/a.html#section".to_string(),
@@ -443,7 +639,7 @@ mod tests {
 
   #[test]
   fn every_committed_navigation_increments_visit_count_and_updates_last_visited() {
-    let mut store = GlobalHistoryStore::default();
+    let mut store = GlobalHistoryStore::with_capacity(10);
 
     store.record_at_ms("https://example.test/a".to_string(), None, 1);
     store.record_at_ms("https://example.test/a".to_string(), None, 2);
@@ -451,12 +647,12 @@ mod tests {
 
     let entry = store.get("https://example.test/a").unwrap();
     assert_eq!(entry.visit_count, 3);
-    assert_eq!(entry.visited_at_ms, Some(3));
+    assert_eq!(entry.visited_at_ms, 3);
   }
 
   #[test]
   fn title_is_updated_only_when_some_non_empty() {
-    let mut store = GlobalHistoryStore::default();
+    let mut store = GlobalHistoryStore::with_capacity(10);
 
     store.record_at_ms(
       "https://example.test/".to_string(),
@@ -464,55 +660,165 @@ mod tests {
       1,
     );
     store.record_at_ms("https://example.test/".to_string(), None, 2);
-    store.record_at_ms(
-      "https://example.test/".to_string(),
-      Some("   ".to_string()),
-      3,
-    );
+    store.record_at_ms("https://example.test/".to_string(), Some("   ".to_string()), 3);
 
     let entry = store.get("https://example.test/").unwrap();
     assert_eq!(entry.title.as_deref(), Some("Title"));
     assert_eq!(entry.visit_count, 3);
-    assert_eq!(entry.visited_at_ms, Some(3));
+    assert_eq!(entry.visited_at_ms, 3);
   }
 
   #[test]
-  fn normalize_in_place_merges_duplicates_and_filters_invalid_entries() {
-    let mut store = GlobalHistoryStore {
-      entries: vec![
-        GlobalHistoryEntry {
-          url: "https://a.example/#one".to_string(),
-          title: Some("Old".to_string()),
-          visited_at_ms: Some(1),
-          visit_count: 1,
-        },
-        GlobalHistoryEntry {
-          url: "about:newtab".to_string(),
-          title: Some("New Tab".to_string()),
-          visited_at_ms: Some(2),
-          visit_count: 1,
-        },
-        GlobalHistoryEntry {
-          url: "https://a.example/#two".to_string(),
-          title: Some("New".to_string()),
-          visited_at_ms: Some(3),
-          visit_count: 1,
-        },
-      ],
-    };
+  fn capacity_is_enforced_by_dropping_oldest_entries_first() {
+    let mut store = GlobalHistoryStore::with_capacity(2);
+    store.record_at_ms("https://a.example/".to_string(), None, 1);
+    store.record_at_ms("https://b.example/".to_string(), None, 2);
+    store.record_at_ms("https://c.example/".to_string(), None, 3);
 
-    store.normalize_in_place();
+    assert_eq!(store.len(), 2);
+    let urls: Vec<&str> = store.iter_recent().map(|(_, e)| e.url.as_str()).collect();
+    assert_eq!(urls, vec!["https://c.example/", "https://b.example/"]);
+  }
 
+  #[test]
+  fn search_matches_all_tokens_in_url_or_title_and_is_recency_first() {
+    let mut history = GlobalHistoryStore::with_capacity(10);
+
+    history.record_at_ms(
+      "https://example.com/one".to_string(),
+      Some("First Page".to_string()),
+      1,
+    );
+    history.record_at_ms(
+      "https://example.com/two".to_string(),
+      Some("Second Page".to_string()),
+      2,
+    );
+    history.record_at_ms(
+      "https://rust-lang.org/".to_string(),
+      Some("Rust Language".to_string()),
+      3,
+    );
+
+    let out = history.search("page example", 10);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].1.url, "https://example.com/two");
+    assert_eq!(out[1].1.url, "https://example.com/one");
+
+    // Case-insensitive.
+    let out = history.search("RUST", 10);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].1.url, "https://rust-lang.org/");
+
+    // Empty query returns recent entries.
+    let out = history.search("   ", 2);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].1.url, "https://rust-lang.org/");
+    assert_eq!(out[1].1.url, "https://example.com/two");
+  }
+
+  #[test]
+  fn delete_entry_removes_single_matching_url() {
+    let mut history = GlobalHistoryStore::with_capacity(10);
+    history.record_at_ms("https://a.example/".to_string(), None, 1);
+    history.record_at_ms("https://b.example/".to_string(), None, 2);
+    history.record_at_ms("https://c.example/".to_string(), None, 3);
+
+    assert!(history.delete_entry("https://b.example/"));
+    assert!(!history.delete_entry("https://b.example/"));
+
+    let urls: Vec<&str> = history.iter_recent().map(|(_, e)| e.url.as_str()).collect();
+    assert_eq!(urls, vec!["https://c.example/", "https://a.example/"]);
+  }
+
+  #[test]
+  fn remove_at_removes_entries_by_index() {
+    let mut history = GlobalHistoryStore::with_capacity(10);
+    history.record_at_ms("https://a.example/".to_string(), None, 1);
+    history.record_at_ms("https://b.example/".to_string(), None, 2);
+    history.record_at_ms("https://c.example/".to_string(), None, 3);
+
+    assert_eq!(history.remove_at(99), None);
+
+    let removed = history.remove_at(1).expect("should remove b");
+    assert_eq!(removed.url, "https://b.example/");
+
+    let urls: Vec<&str> = history.iter_recent().map(|(_, e)| e.url.as_str()).collect();
+    assert_eq!(urls, vec!["https://c.example/", "https://a.example/"]);
+  }
+
+  #[test]
+  fn clear_all_since_and_range() {
+    let mut history = GlobalHistoryStore::with_capacity(10);
+    history.record_at_ms("https://a.example/".to_string(), None, 10);
+    history.record_at_ms("https://b.example/".to_string(), None, 20);
+    history.record_at_ms("https://c.example/".to_string(), None, 30);
+
+    history.clear_since(25);
+    let urls: Vec<&str> = history.iter_recent().map(|(_, e)| e.url.as_str()).collect();
+    assert_eq!(urls, vec!["https://b.example/", "https://a.example/"]);
+
+    history.clear_range(15..25);
+    let urls: Vec<&str> = history.iter_recent().map(|(_, e)| e.url.as_str()).collect();
+    assert_eq!(urls, vec!["https://a.example/"]);
+
+    history.clear_range(5..5); // empty range
+    assert_eq!(history.len(), 1);
+
+    history.clear_all();
+    assert!(history.is_empty());
+  }
+
+  #[test]
+  fn legacy_json_is_migrated_deduped_and_normalized() {
+    let raw = r#"{
+      "entries": [
+        { "url": "https://a.example/#one", "title": "Old", "visited_at_ms": 1 },
+        { "url": "about:newtab", "title": "New Tab", "visited_at_ms": 2 },
+        { "url": "https://a.example/#two", "title": "New", "visited_at_ms": 3 }
+      ]
+    }"#;
+
+    let store: GlobalHistoryStore = serde_json::from_str(raw).expect("legacy JSON should parse");
+    assert_eq!(store.schema_version, GLOBAL_HISTORY_SCHEMA_VERSION);
     assert_eq!(store.entries.len(), 1);
     let entry = store.entries.first().unwrap();
     assert_eq!(entry.url, "https://a.example/");
     assert_eq!(entry.title.as_deref(), Some("New"));
     assert_eq!(entry.visit_count, 2);
-    assert_eq!(entry.visited_at_ms, Some(3));
+    assert_eq!(entry.visited_at_ms, 3);
   }
 
   #[test]
-  fn clear_range_removes_entries_within_cutoff() {
+  fn legacy_ts_field_is_migrated() {
+    let raw = r#"[{ "url": "https://example.com", "title": "Example", "ts": 123 }]"#;
+    let store: GlobalHistoryStore = serde_json::from_str(raw).expect("legacy JSON should parse");
+    assert_eq!(store.entries.len(), 1);
+    let entry = store.entries.first().unwrap();
+    assert_eq!(entry.url, "https://example.com/");
+    assert_eq!(entry.title.as_deref(), Some("Example"));
+    assert_eq!(entry.visited_at_ms, 123);
+    assert_eq!(entry.visit_count, 1);
+  }
+
+  #[test]
+  fn serialization_is_versioned() {
+    let mut store = GlobalHistoryStore::with_capacity(10);
+    store.record_at_ms("https://a.example/".to_string(), Some("A".to_string()), 1);
+
+    let v = serde_json::to_value(&store).unwrap();
+    assert_eq!(
+      v.get("schema_version").and_then(|v| v.as_u64()),
+      Some(GLOBAL_HISTORY_SCHEMA_VERSION as u64)
+    );
+    assert!(v
+      .get("entries")
+      .and_then(|v| v.as_array())
+      .is_some_and(|arr| !arr.is_empty()));
+  }
+
+  #[test]
+  fn clear_browsing_data_range_removes_entries_within_cutoff() {
     const HOUR_MS: u64 = 60 * 60 * 1000;
     const DAY_MS: u64 = 24 * HOUR_MS;
     let now_ms = 1_000_000_000_000_u64;
@@ -531,11 +837,11 @@ mod tests {
     history.entries.push(GlobalHistoryEntry {
       url: "https://unknown.example/".to_string(),
       title: None,
-      visited_at_ms: None,
+      visited_at_ms: 0,
       visit_count: 1,
     });
 
-    history.clear_range_at_ms(ClearBrowsingDataRange::LastHour, now_ms);
+    history.clear_browsing_data_range_at_ms(ClearBrowsingDataRange::LastHour, now_ms);
     let urls: Vec<&str> = history.entries.iter().map(|e| e.url.as_str()).collect();
     assert_eq!(
       urls,
@@ -547,7 +853,7 @@ mod tests {
       ]
     );
 
-    history.clear_range_at_ms(ClearBrowsingDataRange::Last24Hours, now_ms);
+    history.clear_browsing_data_range_at_ms(ClearBrowsingDataRange::Last24Hours, now_ms);
     let urls: Vec<&str> = history.entries.iter().map(|e| e.url.as_str()).collect();
     assert_eq!(
       urls,
@@ -558,32 +864,20 @@ mod tests {
       ]
     );
 
-    history.clear_range_at_ms(ClearBrowsingDataRange::Last7Days, now_ms);
+    history.clear_browsing_data_range_at_ms(ClearBrowsingDataRange::Last7Days, now_ms);
     let urls: Vec<&str> = history.entries.iter().map(|e| e.url.as_str()).collect();
     assert_eq!(urls, vec!["https://old.example/", "https://unknown.example/"]);
 
-    history.clear_range_at_ms(ClearBrowsingDataRange::AllTime, now_ms);
+    history.clear_browsing_data_range_at_ms(ClearBrowsingDataRange::AllTime, now_ms);
     assert!(history.entries.is_empty());
   }
 
   #[test]
   fn search_returns_results_ordered_by_recency() {
     let mut history = GlobalHistoryStore::default();
-    history.record_at_ms(
-      "https://example.com/a".to_string(),
-      Some("First".to_string()),
-      1,
-    );
-    history.record_at_ms(
-      "https://example.com/b".to_string(),
-      Some("Second".to_string()),
-      2,
-    );
-    history.record_at_ms(
-      "https://example.com/a".to_string(),
-      Some("Third".to_string()),
-      3,
-    );
+    history.record_at_ms("https://example.com/a".to_string(), Some("First".to_string()), 1);
+    history.record_at_ms("https://example.com/b".to_string(), Some("Second".to_string()), 2);
+    history.record_at_ms("https://example.com/a".to_string(), Some("Third".to_string()), 3);
 
     let results = history.search("example", 10);
     let titles: Vec<Option<&str>> = results.iter().map(|(_, e)| e.title.as_deref()).collect();

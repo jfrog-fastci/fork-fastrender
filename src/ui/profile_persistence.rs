@@ -72,7 +72,8 @@ impl PersistedGlobalHistoryStore {
   }
 
   pub fn into_store(self) -> GlobalHistoryStore {
-    let mut store = GlobalHistoryStore { entries: self.entries };
+    let mut store = GlobalHistoryStore::default();
+    store.entries = self.entries;
     store.normalize_in_place();
     store
   }
@@ -177,18 +178,18 @@ pub fn parse_bookmarks_json(raw: &str) -> Result<BookmarkStore, String> {
 }
 
 /// Parse a history JSON payload (v1 or legacy schemas) into the in-memory [`GlobalHistoryStore`] model.
-pub fn parse_history_json(raw: &str) -> Result<GlobalHistoryStore, String> {
-  #[derive(Debug, Clone, Deserialize)]
-  struct HeadlessHistoryEntry {
-    url: String,
-    #[serde(default)]
-    title: Option<String>,
-    /// Unix epoch milliseconds.
-    #[serde(default, alias = "visited_at_ms")]
-    ts: Option<u64>,
-    #[serde(default)]
-    visit_count: Option<u64>,
-  }
+  pub fn parse_history_json(raw: &str) -> Result<GlobalHistoryStore, String> {
+    #[derive(Debug, Clone, Deserialize)]
+    struct HeadlessHistoryEntry {
+      url: String,
+      #[serde(default)]
+      title: Option<String>,
+      /// Unix epoch milliseconds.
+      #[serde(default, alias = "visited_at_ms")]
+      ts: Option<u64>,
+      #[serde(default)]
+      visit_count: Option<u64>,
+    }
 
   #[derive(Debug, Clone, Deserialize)]
   #[serde(untagged)]
@@ -216,17 +217,16 @@ pub fn parse_history_json(raw: &str) -> Result<GlobalHistoryStore, String> {
       store
     }
     HistoryFile::HeadlessV0(entries) => {
-      let mut store = GlobalHistoryStore {
-        entries: entries
-          .into_iter()
-          .map(|e| GlobalHistoryEntry {
-            url: e.url,
-            title: e.title,
-            visited_at_ms: e.ts,
-            visit_count: e.visit_count.unwrap_or(1).max(1),
-          })
-          .collect(),
-      };
+      let mut store = GlobalHistoryStore::default();
+      store.entries = entries
+        .into_iter()
+        .map(|e| GlobalHistoryEntry {
+          url: e.url,
+          title: e.title,
+          visited_at_ms: e.ts.unwrap_or(0),
+          visit_count: e.visit_count.unwrap_or(1).max(1),
+        })
+        .collect();
       store.normalize_in_place();
       store
     }
@@ -351,7 +351,7 @@ mod tests {
     history.entries.push(GlobalHistoryEntry {
       url: "https://example.com/".to_string(),
       title: Some("Example".to_string()),
-      visited_at_ms: Some(123),
+      visited_at_ms: 123,
       visit_count: 1,
     });
     save_history_atomic(&history_path, &history).unwrap();
@@ -412,7 +412,7 @@ mod tests {
     let store = parse_history_json(v1).unwrap();
     assert_eq!(store.entries.len(), 1);
     assert_eq!(store.entries[0].url, "https://example.com/");
-    assert_eq!(store.entries[0].visited_at_ms, Some(5));
+    assert_eq!(store.entries[0].visited_at_ms, 5);
     assert_eq!(store.entries[0].visit_count, 2);
 
     // Legacy windowed schema (pre-versioning): object without `version`.
@@ -420,7 +420,7 @@ mod tests {
     let store = parse_history_json(legacy_typed).unwrap();
     assert_eq!(store.entries.len(), 1);
     assert_eq!(store.entries[0].url, "https://example.com/");
-    assert_eq!(store.entries[0].visited_at_ms, Some(5));
+    assert_eq!(store.entries[0].visited_at_ms, 5);
     assert_eq!(store.entries[0].visit_count, 1);
 
     // Legacy headless schema: array of objects, `ts` instead of `visited_at_ms`.
@@ -429,7 +429,7 @@ mod tests {
     assert_eq!(store.entries.len(), 1);
     assert_eq!(store.entries[0].url, "https://example.com/");
     assert_eq!(store.entries[0].title.as_deref(), Some("Example"));
-    assert_eq!(store.entries[0].visited_at_ms, Some(123));
+    assert_eq!(store.entries[0].visited_at_ms, 123);
     assert_eq!(store.entries[0].visit_count, 1);
 
     // Unsupported versions should error (do not silently ignore the version field).
