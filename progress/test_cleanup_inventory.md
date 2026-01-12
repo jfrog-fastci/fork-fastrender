@@ -57,7 +57,6 @@ section in sync with `ls tests/*.rs`.
 | `tests/css_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/css_integration/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/determinism_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/determinism/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/dom_integration_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/dom_integration/**` and is pulled into `tests/integration.rs`. | DONE |
-| `tests/image_integration_tests.rs` | delete | delete | Redundant top-level harness removed; suite already runs via `tests/integration.rs::image_integration`. | DONE |
 | `tests/font_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/font/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/js_harness_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/js_harness/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/layout_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/layout/**` and is pulled into `tests/integration.rs`. | DONE |
