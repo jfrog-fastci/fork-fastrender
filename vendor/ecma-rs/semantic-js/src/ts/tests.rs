@@ -2211,6 +2211,10 @@ fn export_modifier_on_ambient_module_reports_ts2668() {
     diags.iter().any(|d| d.code == "TS2668"),
     "expected TS2668, got diagnostics: {diags:?}"
   );
+  assert!(
+    diags.iter().any(|d| d.code == "TS2664"),
+    "expected TS2664 (unresolved augmentation target), got diagnostics: {diags:?}"
+  );
 }
 
 #[test]
