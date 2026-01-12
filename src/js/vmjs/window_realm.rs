@@ -2019,6 +2019,18 @@ fn console_call_native(
   Ok(Value::Undefined)
 }
 
+fn console_noop_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
 const REPORT_ERROR_SINK_ID_SLOT: usize = 0;
 
 fn window_report_error_native(
@@ -16170,6 +16182,7 @@ fn init_window_globals(
   let console_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(console_obj))?;
   let console_call_id = vm.register_native_call(console_call_native)?;
+  let console_noop_call_id = vm.register_native_call(console_noop_native)?;
   let sink_id_key_s = scope.alloc_string(CONSOLE_SINK_ID_KEY)?;
   scope.push_root(Value::String(sink_id_key_s))?;
 
@@ -16200,23 +16213,50 @@ fn init_window_globals(
       Ok(Value::Object(func))
     };
 
+  let define_console_noop_method =
+    |scope: &mut Scope<'_>, name: &str| -> Result<Value, VmError> {
+      let name_s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(name_s))?;
+      let func = scope.alloc_native_function(console_noop_call_id, None, name_s, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+      scope.push_root(Value::Object(func))?;
+      Ok(Value::Object(func))
+    };
+
   let log_key = alloc_key(&mut scope, "log")?;
   let info_key = alloc_key(&mut scope, "info")?;
   let warn_key = alloc_key(&mut scope, "warn")?;
   let error_key = alloc_key(&mut scope, "error")?;
   let debug_key = alloc_key(&mut scope, "debug")?;
+  let trace_key = alloc_key(&mut scope, "trace")?;
+  let group_key = alloc_key(&mut scope, "group")?;
+  let group_collapsed_key = alloc_key(&mut scope, "groupCollapsed")?;
+  let group_end_key = alloc_key(&mut scope, "groupEnd")?;
+  let clear_key = alloc_key(&mut scope, "clear")?;
 
   let log_func = define_console_method(&mut scope, "log", ConsoleMessageLevel::Log)?;
   let info_func = define_console_method(&mut scope, "info", ConsoleMessageLevel::Info)?;
   let warn_func = define_console_method(&mut scope, "warn", ConsoleMessageLevel::Warn)?;
   let error_func = define_console_method(&mut scope, "error", ConsoleMessageLevel::Error)?;
   let debug_func = define_console_method(&mut scope, "debug", ConsoleMessageLevel::Debug)?;
+  let trace_func = define_console_method(&mut scope, "trace", ConsoleMessageLevel::Debug)?;
+  let group_func = define_console_noop_method(&mut scope, "group")?;
+  let group_collapsed_func = define_console_noop_method(&mut scope, "groupCollapsed")?;
+  let group_end_func = define_console_noop_method(&mut scope, "groupEnd")?;
+  let clear_func = define_console_noop_method(&mut scope, "clear")?;
 
   scope.define_property(console_obj, log_key, data_desc(log_func))?;
   scope.define_property(console_obj, info_key, data_desc(info_func))?;
   scope.define_property(console_obj, warn_key, data_desc(warn_func))?;
   scope.define_property(console_obj, error_key, data_desc(error_func))?;
   scope.define_property(console_obj, debug_key, data_desc(debug_func))?;
+  scope.define_property(console_obj, trace_key, data_desc(trace_func))?;
+  scope.define_property(console_obj, group_key, data_desc(group_func))?;
+  scope.define_property(console_obj, group_collapsed_key, data_desc(group_collapsed_func))?;
+  scope.define_property(console_obj, group_end_key, data_desc(group_end_func))?;
+  scope.define_property(console_obj, clear_key, data_desc(clear_func))?;
 
   let console_sink_guard = config.console_sink.clone().map(ConsoleSinkGuard::new);
   if let Some(guard) = console_sink_guard.as_ref() {
@@ -18965,6 +19005,7 @@ mod tests {
       ("warn", ConsoleMessageLevel::Warn, Value::Number(3.0)),
       ("error", ConsoleMessageLevel::Error, Value::Number(4.0)),
       ("debug", ConsoleMessageLevel::Debug, Value::Number(5.0)),
+      ("trace", ConsoleMessageLevel::Debug, Value::Number(6.0)),
     ];
     for (name, _level, arg) in calls {
       let func = get_prop(vm, &mut scope, console_obj, name)?;
@@ -19001,8 +19042,34 @@ mod tests {
           level: ConsoleMessageLevel::Debug,
           args: vec![CapturedConsoleArg::Number(5.0)]
         },
+        CapturedConsoleCall {
+          level: ConsoleMessageLevel::Debug,
+          args: vec![CapturedConsoleArg::Number(6.0)]
+        },
       ]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn console_extra_methods_exist_and_do_not_throw() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const c = console;\n\
+        if (c.trace(undefined, null, true, 1, 's', {}, Symbol('x')) !== undefined) return false;\n\
+        if (c.group('label') !== undefined) return false;\n\
+        if (c.groupCollapsed('label') !== undefined) return false;\n\
+        if (c.groupEnd() !== undefined) return false;\n\
+        if (c.clear() !== undefined) return false;\n\
+        // Methods must remain callable even when extracted (no `this` binding).\n\
+        const { trace, group, groupCollapsed, groupEnd, clear } = c;\n\
+        trace('x'); group('x'); groupCollapsed('x'); groupEnd(); clear();\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
