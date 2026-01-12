@@ -820,6 +820,7 @@ impl InstMeta {
     self.excludes_nullish = src.excludes_nullish;
     self.ownership = src.ownership;
     self.result_escape = src.result_escape;
+    self.stack_alloc_candidate = src.stack_alloc_candidate;
     self.value = src.value.clone();
   }
 

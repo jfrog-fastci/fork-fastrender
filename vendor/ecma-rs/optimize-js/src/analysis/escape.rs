@@ -1003,6 +1003,30 @@ pub fn analyze_escape(cfg: &Cfg) -> EscapeResults {
   EscapeResults { alloc_states }
 }
 
+/// Allocation-only escape analysis results using explicit parameter ordering and optional
+/// interprocedural summaries.
+///
+/// This is the allocation-focused companion to [`analyze_cfg_escapes_with_params_and_summaries`]:
+/// it filters the full per-variable escape result down to only allocation-defining temps.
+pub fn analyze_escape_with_params_and_summaries(
+  cfg: &Cfg,
+  params: &[u32],
+  summaries: Option<&ProgramEscapeSummaries>,
+  call_summaries: Option<&[FnSummary]>,
+) -> EscapeResults {
+  let facts = collect_local_alloc_flow_facts(cfg, call_summaries);
+  let all = analyze_cfg_escapes_with_params_and_summaries(cfg, params, summaries, call_summaries);
+
+  let mut alloc_states = BTreeMap::new();
+  for alloc in facts.alloc_vars.iter() {
+    alloc_states.insert(
+      *alloc,
+      all.get(alloc).copied().unwrap_or(EscapeState::NoEscape),
+    );
+  }
+  EscapeResults { alloc_states }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

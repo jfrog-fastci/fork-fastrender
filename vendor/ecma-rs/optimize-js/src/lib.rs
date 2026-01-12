@@ -83,6 +83,7 @@ use opt::optpass_inline::optpass_inline;
 use opt::optpass_licm::optpass_licm;
 use opt::optpass_loop_opts::optpass_loop_opts;
 use opt::optpass_redundant_assigns::optpass_redundant_assigns;
+use opt::optpass_scalar_replace::optpass_scalar_replace;
 use opt::optpass_trivial_dce::optpass_trivial_dce;
 use opt::PassResult;
 use parse_js::ast::node::Node;
@@ -843,6 +844,47 @@ fn annotate_ssa_cfg_escape_and_ownership(
 }
 
 fn annotate_program_ssa_metadata(program: &mut Program) {
+  fn mark_stack_alloc_candidates(cfg: &mut Cfg) {
+    use crate::analysis::escape::EscapeState;
+    use crate::il::inst::{Arg, InstTyp};
+
+    for (_, block) in cfg.bblocks.all_mut() {
+      for inst in block.iter_mut() {
+        inst.meta.stack_alloc_candidate = false;
+      }
+    }
+
+    for (_, block) in cfg.bblocks.all_mut() {
+      for inst in block.iter_mut() {
+        if inst.t != InstTyp::Call {
+          continue;
+        }
+        if inst.meta.result_escape != Some(EscapeState::NoEscape) {
+          continue;
+        }
+        let (tgt, callee, _this, _args, _spreads) = inst.as_call();
+        if tgt.is_none() {
+          continue;
+        }
+        if matches!(
+          callee,
+          Arg::Builtin(name)
+            if matches!(
+              name.as_str(),
+              "__optimize_js_object"
+                | "__optimize_js_array"
+                | "__optimize_js_regex"
+                | "__optimize_js_template"
+                | "__optimize_js_tagged_template"
+                | "__optimize_js_new"
+            )
+        ) {
+          inst.meta.stack_alloc_candidate = true;
+        }
+      }
+    }
+  }
+
   // Escape/ownership inference can be prohibitively expensive on the top-level CFG when compiling
   // in non-module modes (e.g. `TopLevelMode::Global`), because global bindings are lowered through
   // `UnknownLoad`/`UnknownStore` and the resulting coercion/state-machine IR can explode.
@@ -856,6 +898,51 @@ fn annotate_program_ssa_metadata(program: &mut Program) {
     return;
   }
 
+  // Late optimization that depends on whole-program interprocedural summaries.
+  //
+  // This runs on SSA-form CFGs (stored in `ssa_body`) so native backends can consume the results.
+  // We run to a fixpoint because scalar replacement can improve the precision of summaries (e.g.
+  // turning an opaque `GetProp` return into a direct return-by-alias).
+  let max_iters = std::cmp::max(1, (program.functions.len() + 1) * 4);
+  for _ in 0..max_iters {
+    let call_summaries = analysis::call_summary::summarize_program(program);
+    let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
+
+    // Scalar replacement consults `InstMeta.result_escape`, so annotate escapes before running it.
+    if annotate_top_level {
+      if let Some(cfg) = program.top_level.ssa_body.as_mut() {
+        annotate_ssa_cfg_escape_and_ownership(
+          cfg,
+          &program.top_level.params,
+          &summaries,
+          &call_summaries,
+        );
+      }
+    }
+    for func in program.functions.iter_mut() {
+      if let Some(cfg) = func.ssa_body.as_mut() {
+        annotate_ssa_cfg_escape_and_ownership(cfg, &func.params, &summaries, &call_summaries);
+      }
+    }
+
+    let mut changed = false;
+    if annotate_top_level {
+      if let Some(cfg) = program.top_level.ssa_body.as_mut() {
+        changed |= optpass_scalar_replace(cfg).changed;
+      }
+    }
+    for func in program.functions.iter_mut() {
+      if let Some(cfg) = func.ssa_body.as_mut() {
+        changed |= optpass_scalar_replace(cfg).changed;
+      }
+    }
+
+    if !changed {
+      break;
+    }
+  }
+
+  // Recompute summaries and annotate final metadata after scalar replacement converges.
   let call_summaries = analysis::call_summary::summarize_program(program);
   let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
 
@@ -867,11 +954,13 @@ fn annotate_program_ssa_metadata(program: &mut Program) {
         &summaries,
         &call_summaries,
       );
+      mark_stack_alloc_candidates(cfg);
     }
   }
   for func in program.functions.iter_mut() {
     if let Some(cfg) = func.ssa_body.as_mut() {
       annotate_ssa_cfg_escape_and_ownership(cfg, &func.params, &summaries, &call_summaries);
+      mark_stack_alloc_candidates(cfg);
     }
   }
 }
