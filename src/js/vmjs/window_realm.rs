@@ -2278,14 +2278,16 @@ pub(crate) fn dom_token_list_exotic_get(
 
   let idx = idx as usize;
   let Some(token) = tokens.get(idx) else {
-    return Ok(Some(Value::Undefined));
+    // Not a supported index; fall back to ordinary property lookup so `classList[999]` behaves like a
+    // missing property (and can still be an expando if user code defines it).
+    return Ok(None);
   };
   Ok(Some(Value::String(scope.alloc_string(token)?)))
 }
 
 pub(crate) fn dom_token_list_exotic_set(
   scope: &mut Scope<'_>,
-  _host: Option<&mut dyn VmHost>,
+  mut host: Option<&mut dyn VmHost>,
   obj: GcObject,
   key: PropertyKey,
   _value: Value,
@@ -2302,8 +2304,33 @@ pub(crate) fn dom_token_list_exotic_set(
     return Ok(None);
   }
 
-  if canonical_array_index(scope, key)?.is_some() {
-    // Indexed properties on DOMTokenList are read-only.
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+
+  let Some(host) = host.as_deref_mut() else {
+    return Ok(None);
+  };
+  let Some(host) = crate::js::dom_host::dom_host_vmjs(host) else {
+    return Ok(None);
+  };
+
+  let node_index = match usize::try_from(slots.a) {
+    Ok(v) => v,
+    Err(_) => return Ok(None),
+  };
+  let node_id = match host.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+
+  let tokens = match host.class_list_tokens(node_id) {
+    Ok(tokens) => tokens,
+    Err(_) => return Ok(None),
+  };
+
+  if (idx as usize) < tokens.len() {
+    // Supported indexed properties on DOMTokenList are read-only.
     return Ok(Some(false));
   }
 
@@ -2312,7 +2339,7 @@ pub(crate) fn dom_token_list_exotic_set(
 
 pub(crate) fn dom_token_list_exotic_delete(
   scope: &mut Scope<'_>,
-  _host: Option<&mut dyn VmHost>,
+  mut host: Option<&mut dyn VmHost>,
   obj: GcObject,
   key: PropertyKey,
 ) -> Result<Option<bool>, VmError> {
@@ -2328,8 +2355,33 @@ pub(crate) fn dom_token_list_exotic_delete(
     return Ok(None);
   }
 
-  if canonical_array_index(scope, key)?.is_some() {
-    // Indexed properties on DOMTokenList are read-only.
+  let Some(idx) = canonical_array_index(scope, key)? else {
+    return Ok(None);
+  };
+
+  let Some(host) = host.as_deref_mut() else {
+    return Ok(None);
+  };
+  let Some(host) = crate::js::dom_host::dom_host_vmjs(host) else {
+    return Ok(None);
+  };
+
+  let node_index = match usize::try_from(slots.a) {
+    Ok(v) => v,
+    Err(_) => return Ok(None),
+  };
+  let node_id = match host.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(None),
+  };
+
+  let tokens = match host.class_list_tokens(node_id) {
+    Ok(tokens) => tokens,
+    Err(_) => return Ok(None),
+  };
+
+  if (idx as usize) < tokens.len() {
+    // Supported indexed properties on DOMTokenList are read-only.
     return Ok(Some(false));
   }
 
@@ -29142,6 +29194,28 @@ mod tests {
           err = e;\n\
         }\n\
         return err && err.name === 'TypeError' && el.classList[0] === 'a';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_token_list_out_of_range_indices_are_ordinary_properties() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        el.className = 'a b';\n\
+        (() => { 'use strict'; el.classList[2] = 'x'; })();\n\
+        if (el.classList[2] !== 'x') return false;\n\
+        if (!delete el.classList[2]) return false;\n\
+        return el.classList[2] === undefined;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
