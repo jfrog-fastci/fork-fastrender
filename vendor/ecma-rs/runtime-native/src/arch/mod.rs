@@ -27,9 +27,11 @@ pub type RegContext = stackmap_context::ThreadContext;
 ///
 /// # Stack pointer semantics (important!)
 ///
-/// LLVM StackMaps encode stack slots as `Indirect [SP + off]`, where `SP` is the
-/// *caller's* stack pointer value at the stackmap record PC (i.e. the
-/// instruction **after** the call returns).
+/// LLVM StackMaps encode stack slots as `Indirect [SP/FP + off]`.
+///
+/// For `Indirect [SP + off]`, `SP` is the *caller's* stack pointer value at the stackmap record PC
+/// (i.e. the instruction **after** the call returns). FP-relative locations are evaluated from the
+/// frame pointer chain.
 ///
 /// When a thread is stopped *inside* the safepoint callee, the callee-entry SP
 /// differs from the stackmap SP on some architectures:
