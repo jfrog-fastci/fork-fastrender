@@ -938,6 +938,7 @@ struct EffectsDetailsRaw {
   // in `EffectTemplate::DependsOnArgs`, so we only parse this field to avoid
   // rejecting older files.
   #[serde(default)]
+  #[serde(alias = "dependsOnArgs")]
   depends_on_args: Vec<usize>,
   #[serde(default)]
   template: Option<String>,
@@ -1887,6 +1888,30 @@ purity:
         args: vec![0],
       }
     );
+  }
+
+  #[test]
+  fn effects_depends_on_args_accepts_camel_case_field() {
+    let yaml = r#"
+name: x
+effects:
+  template: dependsOnCallback
+  dependsOnArgs: [0, 2]
+  allocates: true
+purity: Impure
+"#;
+    let parsed = parse_api_semantics_yaml_str(yaml).unwrap();
+    assert_eq!(parsed.len(), 1);
+    let api = parsed.first().unwrap();
+    assert_eq!(
+      api.effects,
+      EffectTemplate::DependsOnArgs {
+        base: EffectSet::ALLOCATES | EffectSet::MAY_THROW,
+        args: vec![0, 2],
+      }
+    );
+    assert!(api.effect_summary.flags.contains(EffectSet::ALLOCATES));
+    assert_eq!(api.effect_summary.throws, ThrowBehavior::Maybe);
   }
 
   #[test]
