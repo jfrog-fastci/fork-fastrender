@@ -1148,7 +1148,7 @@ fn whitespace_has_visible_glyphs(text: &str, white_space: WhiteSpace) -> bool {
     // Preserve spaces/newlines verbatim.
     WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::BreakSpaces => true,
     // `pre-line` preserves line breaks but collapses runs of spaces.
-    WhiteSpace::PreLine => text.contains('\n') || text.contains('\r'),
+    WhiteSpace::PreLine => text.contains('\n') || text.contains('\r') || text.contains('\u{000C}'),
     // `normal`/`nowrap` collapse whitespace; whitespace-only text does not count as visible content.
     WhiteSpace::Normal | WhiteSpace::Nowrap => false,
   }
@@ -11914,6 +11914,47 @@ mod tests {
   }
 
   #[test]
+  fn empty_cells_hide_row_does_not_collapse_when_white_space_pre_line_preserves_form_feeds() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.white_space = WhiteSpace::PreLine;
+
+    let text = BoxNode::new_text(Arc::new(text_style), "\u{000C}".to_string());
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![text]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with pre-line form-feed whitespace");
+
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "`white-space: pre-line` should treat form feeds as preserved line breaks (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
   fn empty_cells_hide_row_collapses_when_only_positioned_descendant() {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
@@ -11999,6 +12040,47 @@ mod tests {
     assert!(
       fragment.bounds.height() > 0.5,
       "replaced content should prevent empty-cells row collapse (got {:.2})",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn empty_cells_hide_row_does_not_collapse_with_marker_content() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.padding_top = Length::px(10.0);
+    cell_style.padding_bottom = Length::px(10.0);
+    cell_style.border_top_width = Length::px(5.0);
+    cell_style.border_bottom_width = Length::px(5.0);
+    cell_style.border_top_style = BorderStyle::Solid;
+    cell_style.border_bottom_style = BorderStyle::Solid;
+    cell_style.empty_cells = EmptyCells::Hide;
+
+    let mut marker_style = ComputedStyle::default();
+    marker_style.display = Display::Inline;
+    marker_style.white_space = WhiteSpace::Normal;
+    let marker = BoxNode::new_marker(Arc::new(marker_style), MarkerContent::Text("x".to_string()));
+
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![marker]);
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![row]);
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc
+      .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
+      .expect("layout with marker content");
+
+    assert!(
+      fragment.bounds.height() > 0.5,
+      "marker content should prevent empty-cells row collapse (got {:.2})",
       fragment.bounds.height()
     );
   }
