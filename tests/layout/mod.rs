@@ -22,12 +22,12 @@ mod profile_diagnostics;
 mod render_wrap;
 mod text_wrap_pretty_does_not_rebalance;
 
-mod test_locks;
-
 fn layout_parallel_debug_lock() -> parking_lot::MutexGuard<'static, ()> {
-  test_locks::layout_parallel_debug_lock()
+  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+  LOCK.lock()
 }
 
 fn layout_profile_lock() -> parking_lot::MutexGuard<'static, ()> {
-  test_locks::layout_profile_lock()
+  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+  LOCK.lock()
 }
