@@ -314,6 +314,8 @@ pub fn chrome_ui(
     // Tabs row.
     ui.horizontal_wrapped(|ui| {
       let can_close_tabs = app.tabs.len() > 1;
+      let underline_id = ui.make_persistent_id("tabs_active_underline");
+      let mut active_tab_rect: Option<egui::Rect> = None;
       for tab in &app.tabs {
         let is_active = app.active_tab_id() == Some(tab.id);
         let title = tab.display_title();
@@ -363,7 +365,11 @@ pub fn chrome_ui(
           }
         });
 
-        // Micro-interactions: tab hover highlight + active underline.
+        if is_active {
+          active_tab_rect = Some(inner.response.rect);
+        }
+
+        // Micro-interactions: tab hover highlight.
         let hovered = inner.response.hovered();
         let hover_t = motion.animate_bool(
           ctx,
@@ -383,32 +389,52 @@ pub fn chrome_ui(
           );
         }
 
-        let active_t = motion.animate_bool(
-          ctx,
-          tab_anim_id.with("underline"),
-          is_active,
-          motion.durations.tab_underline,
-        );
-        if active_t > 0.0 {
-          let underline_height = 2.0;
-          let underline_width = inner.response.rect.width() * active_t;
-          let cx = inner.response.rect.center().x;
-          let x0 = cx - underline_width * 0.5;
-          let x1 = cx + underline_width * 0.5;
-          let y1 = inner.response.rect.bottom();
-          let y0 = y1 - underline_height;
-          let rect = egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
-          let color = with_alpha(ui.visuals().selection.stroke.color, active_t);
-          ui
-            .painter()
-            .rect_filled(rect, egui::Rounding::same(1.0), color);
-        }
-
         ui.separator();
       }
 
       if icon_button(ui, BrowserIcon::NewTab, "New tab (Ctrl/Cmd+T)", true).clicked() {
         actions.push(ChromeAction::NewTab);
+      }
+
+      // Micro-interaction: active tab underline transitions smoothly between tabs.
+      if let Some(rect) = active_tab_rect {
+        let cx_target = rect.center().x;
+        let width_target = rect.width();
+        let y_target = rect.bottom();
+
+        let cx = motion.animate_f32(
+          ctx,
+          underline_id.with("cx"),
+          cx_target,
+          motion.durations.tab_underline,
+        );
+        let width = motion.animate_f32(
+          ctx,
+          underline_id.with("w"),
+          width_target,
+          motion.durations.tab_underline,
+        );
+        let y = motion.animate_f32(
+          ctx,
+          underline_id.with("y"),
+          y_target,
+          motion.durations.tab_underline,
+        );
+
+        if width > 0.0 {
+          let underline_height = 2.0;
+          let x0 = cx - width * 0.5;
+          let x1 = cx + width * 0.5;
+          let rect = egui::Rect::from_min_max(
+            egui::pos2(x0, y - underline_height),
+            egui::pos2(x1, y),
+          );
+          ui.painter().rect_filled(
+            rect,
+            egui::Rounding::same(1.0),
+            ui.visuals().selection.stroke.color,
+          );
+        }
       }
     });
 
@@ -551,7 +577,10 @@ pub fn chrome_ui(
           .map(|p| p.clamp(0.0, 1.0))
           .unwrap_or(0.0);
         // Ensure the bar appears quickly on navigation start even before the first stage heartbeat.
-        let progress = if loading { progress.max(0.02) } else { progress };
+        //
+        // When loading finishes, keep the bar full width while it fades out to avoid a sudden
+        // disappearance (and to mimic typical browser "complete then fade" behaviour).
+        let progress = if loading { progress.max(0.02) } else { 1.0 };
         let x1 = response.rect.left() + response.rect.width() * progress;
         let rect = egui::Rect::from_min_max(
           egui::pos2(response.rect.left(), response.rect.bottom() - bar_h),
