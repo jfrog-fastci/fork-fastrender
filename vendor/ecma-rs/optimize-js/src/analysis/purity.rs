@@ -67,9 +67,13 @@ fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummarie
   // - throw (BigInt/Symbol), or
   // - invoke user code (`ToPrimitive` on objects/functions via `valueOf`/`toString`).
   //
-  // We only mark these calls as pure when the first argument is known to be a non-BigInt,
-  // non-Symbol primitive. In untyped builds this generally means "literal constants"; typed builds
-  // can propagate more precise summaries through `Inst.value_type`.
+  // We only mark these calls as pure when all *used* arguments are known to be safe for
+  // `ToNumber` without invoking user code:
+  // - no BigInt/Symbol (TypeError)
+  // - no object/function (may run user-defined `valueOf`/`toString`)
+  //
+  // In untyped builds this generally means "literal constants"; typed builds can propagate more
+  // precise summaries through `Inst.value_type`.
   let safe_to_number_arg = |ty: ValueTypeSummary| {
     !ty.is_unknown()
       && !ty.contains(ValueTypeSummary::BIGINT)
@@ -78,6 +82,10 @@ fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummarie
       && !ty.contains(ValueTypeSummary::FUNCTION)
   };
 
+  let arg_type = |idx: usize| match args.get(idx) {
+    Some(arg) => value_types.arg(arg).unwrap_or(ValueTypeSummary::UNKNOWN),
+    None => ValueTypeSummary::UNDEFINED,
+  };
   let all_args_safe_to_number = || {
     args.iter().all(|arg| {
       let ty = value_types.arg(arg).unwrap_or(ValueTypeSummary::UNKNOWN);
@@ -102,14 +110,10 @@ fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummarie
     | "Math.expm1"
     | "Math.floor"
     | "Math.fround"
-    | "Math.imul"
     | "Math.log"
     | "Math.log10"
     | "Math.log1p"
     | "Math.log2"
-    | "Math.max"
-    | "Math.min"
-    | "Math.pow"
     | "Math.round"
     | "Math.sign"
     | "Math.sin"
@@ -119,6 +123,20 @@ fn builtin_call_purity(path: &str, args: &[Arg], value_types: &ValueTypeSummarie
     | "Math.tanh"
     | "Math.trunc"
     | "Number" => {
+      if safe_to_number_arg(arg_type(0)) {
+        Purity::Pure
+      } else {
+        Purity::Impure
+      }
+    }
+    "Math.imul" | "Math.pow" => {
+      if safe_to_number_arg(arg_type(0)) && safe_to_number_arg(arg_type(1)) {
+        Purity::Pure
+      } else {
+        Purity::Impure
+      }
+    }
+    "Math.max" | "Math.min" => {
       if all_args_safe_to_number() {
         Purity::Pure
       } else {

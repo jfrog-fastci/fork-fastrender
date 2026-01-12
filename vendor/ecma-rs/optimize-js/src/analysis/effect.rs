@@ -1,9 +1,11 @@
 use crate::cfg::cfg::Cfg;
-use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp};
+use crate::il::inst::{Arg, BinOp, EffectLocation, EffectSet, Inst, InstTyp, ValueTypeSummary};
 use crate::symbol::semantics::SymbolId;
 use crate::{FnId, Program};
 use effect_model::{EffectFlags, ThrowBehavior};
 use std::collections::{BTreeMap, BTreeSet};
+
+use super::value_types::ValueTypeSummaries;
 
 /// Function-level effect summaries for every function in a [`crate::Program`].
 ///
@@ -168,8 +170,48 @@ fn resolve_var_fn_id(var: u32, defs: &BTreeMap<u32, CalleeVarDef>, visiting: &mu
   out
 }
 
-fn is_pure_consteval_builtin_call(path: &str) -> bool {
-  matches!(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToNumberConversion {
+  Pure,
+  MaybeThrow,
+  AlwaysThrow,
+  Unknown,
+}
+
+fn to_number_conversion(ty: ValueTypeSummary) -> ToNumberConversion {
+  if ty.is_unknown() || ty.contains(ValueTypeSummary::OBJECT) || ty.contains(ValueTypeSummary::FUNCTION) {
+    return ToNumberConversion::Unknown;
+  }
+  if ty == ValueTypeSummary::BIGINT || ty == ValueTypeSummary::SYMBOL {
+    return ToNumberConversion::AlwaysThrow;
+  }
+  if ty.contains(ValueTypeSummary::BIGINT) || ty.contains(ValueTypeSummary::SYMBOL) {
+    return ToNumberConversion::MaybeThrow;
+  }
+
+  // Remaining possibilities are unions of {null, undefined, boolean, number, string}, which never
+  // throw and do not invoke user code.
+  ToNumberConversion::Pure
+}
+
+fn to_number_builtin_conversion(
+  path: &str,
+  args: &[Arg],
+  value_types: Option<&ValueTypeSummaries>,
+) -> Option<ToNumberConversion> {
+  let arg_type = |idx: usize| match args.get(idx) {
+    None => ValueTypeSummary::UNDEFINED,
+    Some(arg) => match value_types {
+      Some(types) => types.arg(arg).unwrap_or(ValueTypeSummary::UNKNOWN),
+      None => match arg {
+        Arg::Const(c) => ValueTypeSummary::from_const(c),
+        Arg::Fn(_) => ValueTypeSummary::FUNCTION,
+        _ => ValueTypeSummary::UNKNOWN,
+      },
+    },
+  };
+
+  let unary = matches!(
     path,
     "Math.abs"
       | "Math.acos"
@@ -188,7 +230,51 @@ fn is_pure_consteval_builtin_call(path: &str) -> bool {
       | "Math.tan"
       | "Math.trunc"
       | "Number"
-  )
+  );
+  if unary {
+    return Some(to_number_conversion(arg_type(0)));
+  }
+
+  if path == "Math.pow" {
+    let base = to_number_conversion(arg_type(0));
+    let exp = to_number_conversion(arg_type(1));
+    let combined = match base {
+      ToNumberConversion::Unknown => ToNumberConversion::Unknown,
+      ToNumberConversion::AlwaysThrow => ToNumberConversion::AlwaysThrow,
+      ToNumberConversion::Pure => exp,
+      ToNumberConversion::MaybeThrow => match exp {
+        ToNumberConversion::Unknown => ToNumberConversion::Unknown,
+        // If either conversion step always throws, the overall builtin always throws.
+        ToNumberConversion::AlwaysThrow => ToNumberConversion::AlwaysThrow,
+        ToNumberConversion::MaybeThrow | ToNumberConversion::Pure => ToNumberConversion::MaybeThrow,
+      },
+    };
+    return Some(combined);
+  }
+
+  None
+}
+
+fn local_effect_for_tonumber_builtin(
+  path: &str,
+  args: &[Arg],
+  value_types: Option<&ValueTypeSummaries>,
+) -> Option<EffectSet> {
+  let conversion = to_number_builtin_conversion(path, args, value_types)?;
+  let mut effects = EffectSet::default();
+  match conversion {
+    ToNumberConversion::Pure => {}
+    ToNumberConversion::MaybeThrow => {
+      effects.summary.throws = ThrowBehavior::Maybe;
+    }
+    ToNumberConversion::AlwaysThrow => {
+      effects.summary.throws = ThrowBehavior::Always;
+    }
+    ToNumberConversion::Unknown => {
+      effects.mark_unknown();
+    }
+  }
+  Some(effects)
 }
 
 /// Classify the local effects of a single IL instruction.
@@ -196,7 +282,7 @@ fn is_pure_consteval_builtin_call(path: &str) -> bool {
 /// This excludes interprocedural callee summaries for direct `Arg::Fn` calls;
 /// those are incorporated by [`compute_program_effects`] (function summaries)
 /// and [`annotate_cfg_effects`] (per-instruction metadata).
-pub fn inst_local_effect(inst: &Inst) -> EffectSet {
+fn inst_local_effect_with_value_types(inst: &Inst, value_types: Option<&ValueTypeSummaries>) -> EffectSet {
   let mut effects = EffectSet::default();
 
   match inst.t {
@@ -236,7 +322,7 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
       effects.summary.throws = ThrowBehavior::Maybe;
     }
     InstTyp::Call => {
-      let (_, callee, _, _, _) = inst.as_call();
+      let (_, callee, _, args, _) = inst.as_call();
       match callee {
         Arg::Fn(_) => {
           // The callee effects are accounted for interprocedurally.
@@ -268,10 +354,10 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
           "__optimize_js_new" | "__optimize_js_await" | "import" => {
             effects.mark_unknown();
           }
-          _ if is_pure_consteval_builtin_call(path) => {}
-          _ => {
-            effects.mark_unknown();
-          }
+          _ => match local_effect_for_tonumber_builtin(path, args, value_types) {
+            Some(local) => effects = local,
+            None => effects.mark_unknown(),
+          },
         },
         _ => {
           effects.mark_unknown();
@@ -291,22 +377,27 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
   effects
 }
 
+pub fn inst_local_effect(inst: &Inst) -> EffectSet {
+  inst_local_effect_with_value_types(inst, None)
+}
+
 fn inst_total_effect(
   inst: &Inst,
   fn_summaries: &FnEffectMap,
   defs: &BTreeMap<u32, CalleeVarDef>,
+  value_types: Option<&ValueTypeSummaries>,
 ) -> EffectSet {
   if inst.t != InstTyp::Call {
-    return inst_local_effect(inst);
+    return inst_local_effect_with_value_types(inst, value_types);
   }
 
   let (_, callee, _, _, _) = inst.as_call();
   if matches!(callee, Arg::Builtin(_)) {
-    return inst_local_effect(inst);
+    return inst_local_effect_with_value_types(inst, value_types);
   }
 
   let Some(id) = resolve_fn_id(callee, defs, &mut Vec::new()) else {
-    return inst_local_effect(inst);
+    return inst_local_effect_with_value_types(inst, value_types);
   };
 
   let mut effects = EffectSet::default();
@@ -328,23 +419,24 @@ fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
 
 fn cfg_local_effects(cfg: &Cfg, foreign_fns: &BTreeMap<SymbolId, FnId>) -> EffectSet {
   let defs = build_callee_var_defs(cfg, foreign_fns);
+  let value_types = ValueTypeSummaries::new(cfg);
   let mut effects = EffectSet::default();
   for inst in collect_insts(cfg) {
     if inst.t != InstTyp::Call {
-      effects.merge(&inst_local_effect(inst));
+      effects.merge(&inst_local_effect_with_value_types(inst, Some(&value_types)));
       continue;
     }
     let (_, callee, _, _, _) = inst.as_call();
     // Builtin calls have intrinsic local effects.
     if matches!(callee, Arg::Builtin(_)) {
-      effects.merge(&inst_local_effect(inst));
+      effects.merge(&inst_local_effect_with_value_types(inst, Some(&value_types)));
       continue;
     }
     // Direct calls to nested functions are accounted for interprocedurally.
     if resolve_fn_id(callee, &defs, &mut Vec::new()).is_some() {
       continue;
     }
-    effects.merge(&inst_local_effect(inst));
+    effects.merge(&inst_local_effect_with_value_types(inst, Some(&value_types)));
   }
   effects
 }
@@ -435,9 +527,10 @@ pub fn compute_program_effects(program: &Program) -> FnEffectMap {
 /// and does not attempt to preserve metadata through subsequent opt passes.
 pub fn annotate_cfg_effects(cfg: &mut Cfg, fn_summaries: &FnEffectMap) {
   let defs = build_callee_var_defs(cfg, fn_summaries.constant_foreign_fns());
+  let value_types = ValueTypeSummaries::new(cfg);
   for label in cfg_labels_sorted(cfg) {
     for inst in cfg.bblocks.get_mut(label) {
-      inst.meta.effects = inst_total_effect(inst, fn_summaries, &defs);
+      inst.meta.effects = inst_total_effect(inst, fn_summaries, &defs, Some(&value_types));
     }
   }
 }
@@ -449,6 +542,7 @@ mod tests {
   use crate::il::inst::Const;
   use crate::symbol::semantics::SymbolId;
   use crate::{OptimizationStats, ProgramFunction, TopLevelMode};
+  use num_bigint::BigInt;
 
   const EXIT: u32 = u32::MAX;
 
@@ -595,6 +689,45 @@ mod tests {
     let eff = inst_local_effect(&call);
     assert!(eff.unknown);
     assert_eq!(eff.summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
+  fn tonumber_builtin_call_with_bigint_const_is_always_throwing() {
+    let call = Inst::call(
+      None::<u32>,
+      Arg::Builtin("Math.abs".to_string()),
+      Arg::Const(Const::Undefined),
+      vec![Arg::Const(Const::BigInt(BigInt::from(1)))],
+      Vec::new(),
+    );
+    let eff = inst_local_effect(&call);
+    assert_eq!(eff.summary.throws, ThrowBehavior::Always);
+    assert!(!eff.unknown);
+    assert!(eff.reads.is_empty());
+    assert!(eff.writes.is_empty());
+  }
+
+  #[test]
+  fn tonumber_builtin_call_uses_value_type_summaries() {
+    let call = Inst::call(
+      None::<u32>,
+      Arg::Builtin("Math.abs".to_string()),
+      Arg::Const(Const::Undefined),
+      vec![Arg::Var(0)],
+      Vec::new(),
+    );
+
+    let naive = inst_local_effect(&call);
+    assert!(naive.unknown, "expected no-type-context effect to be unknown");
+
+    let cfg = cfg_single_block(vec![
+      Inst::var_assign(0, Arg::Const(Const::Str("1".to_string()))),
+      call.clone(),
+    ]);
+    let value_types = ValueTypeSummaries::new(&cfg);
+    let refined = inst_local_effect_with_value_types(&call, Some(&value_types));
+    assert!(refined.is_pure());
+    assert!(!refined.unknown);
   }
 
   #[test]
