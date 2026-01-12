@@ -9,15 +9,15 @@ use crate::{
   VmHostHooks, VmJobContext,
 };
 use diagnostics::{Diagnostic, FileId};
-use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
+use parse_js::ast::class_or_object::{ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMemberType};
 use parse_js::ast::expr::lit::{
   LitArrElem, LitArrExpr, LitBigIntExpr, LitBoolExpr, LitNumExpr, LitObjExpr, LitStrExpr,
   LitTemplateExpr, LitTemplatePart,
 };
 use parse_js::ast::expr::pat::{IdPat, Pat};
 use parse_js::ast::expr::{
-  ArrowFuncExpr, BinaryExpr, CallExpr, ComputedMemberExpr, CondExpr, Expr, FuncExpr, IdExpr,
-  ImportExpr, MemberExpr, TaggedTemplateExpr, UnaryExpr, UnaryPostfixExpr,
+  ArrowFuncExpr, BinaryExpr, CallExpr, ClassExpr, ComputedMemberExpr, CondExpr, Expr, FuncExpr,
+  IdExpr, ImportExpr, MemberExpr, TaggedTemplateExpr, UnaryExpr, UnaryPostfixExpr,
 };
 use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::{literal_string_code_units, Node, ParenthesizedExpr};
@@ -188,6 +188,13 @@ fn syntax_error(loc: parse_js::loc::Loc, message: impl Into<String>) -> VmError 
 enum VarEnv {
   GlobalObject,
   Env(GcEnv),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ClassBinding<'a> {
+  None,
+  Mutable(&'a str),
+  Immutable(&'a str),
 }
 
 #[derive(Debug, Clone)]
@@ -2768,40 +2775,37 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn eval_class_decl(
+  fn eval_class(
     &mut self,
     scope: &mut Scope<'_>,
-    decl: &Node<ClassDecl>,
-  ) -> Result<Completion, VmError> {
-    if decl.stx.extends.is_some() {
-      return Err(VmError::Unimplemented("class inheritance"));
-    }
-    if !decl.stx.decorators.is_empty() {
-      return Err(VmError::Unimplemented("class decorators"));
-    }
-    if decl.stx.type_parameters.is_some() {
-      return Err(VmError::Unimplemented("class type parameters"));
-    }
-    if !decl.stx.implements.is_empty() {
-      return Err(VmError::Unimplemented("class implements"));
-    }
-    if decl.stx.declare || decl.stx.abstract_ {
-      return Err(VmError::Unimplemented("class modifiers"));
-    }
+    binding: ClassBinding<'_>,
+    func_name: &str,
+    members: &[Node<ClassMember>],
+  ) -> Result<GcObject, VmError> {
+    let class_env = self.env.lexical_env;
 
-    let binding_name = match decl.stx.name.as_ref() {
-      Some(name) => name.stx.name.as_str(),
-      None => "*default*",
-    };
-
-    let func_name = match decl.stx.name.as_ref() {
-      Some(name) => name.stx.name.as_str(),
-      None => "default",
-    };
+    // Ensure the requested class binding exists before creating any class element closures that may
+    // reference it.
+    match binding {
+      ClassBinding::None => {}
+      ClassBinding::Mutable(name) => {
+        if !scope.heap().env_has_binding(class_env, name)? {
+          scope.env_create_mutable_binding(class_env, name)?;
+        }
+      }
+      ClassBinding::Immutable(name) => {
+        if scope.heap().env_has_binding(class_env, name)? {
+          return Err(VmError::InvariantViolation(
+            "class binding already exists in class environment",
+          ));
+        }
+        scope.env_create_immutable_binding(class_env, name)?;
+      }
+    }
 
     // Find an explicit `constructor(...) { ... }` method, if present.
     let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
-    for member in &decl.stx.members {
+    for member in members {
       self.tick()?;
       if !member.stx.decorators.is_empty() {
         return Err(VmError::Unimplemented("class member decorators"));
@@ -2903,34 +2907,28 @@ impl<'a> Evaluator<'a> {
       None
     };
 
-    let func_obj =
-      self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+    let func_obj = self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
 
-    {
-      // Root the class constructor object before performing any binding instantiation work, which may
-      // allocate and trigger GC in non-block statement contexts that did not perform lexical hoisting.
+    // Initialize the requested binding now that the class constructor object exists.
+    if let Some(binding_name) = match binding {
+      ClassBinding::None => None,
+      ClassBinding::Mutable(name) | ClassBinding::Immutable(name) => Some(name),
+    } {
+      // Root the class constructor object during initialization so if the operation grows the root
+      // stack (and triggers GC) we don't collect the class constructor before it becomes reachable
+      // from its binding.
       let mut init_scope = scope.reborrow();
       init_scope.push_root(Value::Object(func_obj))?;
-
-      if !init_scope
-        .heap()
-        .env_has_binding(self.env.lexical_env, binding_name)?
-      {
-        // Non-block statement contexts may not have performed lexical hoisting yet.
-        init_scope.env_create_mutable_binding(self.env.lexical_env, binding_name)?;
-      }
-
-      init_scope.heap_mut().env_initialize_binding(
-        self.env.lexical_env,
-        binding_name,
-        Value::Object(func_obj),
-      )?;
+      init_scope
+        .heap_mut()
+        .env_initialize_binding(class_env, binding_name, Value::Object(func_obj))?;
     }
 
     // Extract the prototype object created by `make_constructor`.
     let mut class_scope = scope.reborrow();
     class_scope.push_root(Value::Object(func_obj))?;
     let prototype_key_s = class_scope.alloc_string("prototype")?;
+    class_scope.push_root(Value::String(prototype_key_s))?;
     let prototype_key = PropertyKey::from_string(prototype_key_s);
     let Some(prototype_desc) = class_scope.heap().get_own_property(func_obj, prototype_key)? else {
       return Err(VmError::InvariantViolation(
@@ -2960,7 +2958,7 @@ impl<'a> Evaluator<'a> {
     )?;
 
     // Define prototype and static methods.
-    for member in &decl.stx.members {
+    for member in members {
       self.tick()?;
 
       if !member.stx.decorators.is_empty() {
@@ -3270,7 +3268,86 @@ impl<'a> Evaluator<'a> {
         }
       }
     }
+
+    Ok(func_obj)
+  }
+
+  fn eval_class_decl(
+    &mut self,
+    scope: &mut Scope<'_>,
+    decl: &Node<ClassDecl>,
+  ) -> Result<Completion, VmError> {
+    if decl.stx.extends.is_some() {
+      return Err(VmError::Unimplemented("class inheritance"));
+    }
+    if !decl.stx.decorators.is_empty() {
+      return Err(VmError::Unimplemented("class decorators"));
+    }
+    if decl.stx.type_parameters.is_some() {
+      return Err(VmError::Unimplemented("class type parameters"));
+    }
+    if !decl.stx.implements.is_empty() {
+      return Err(VmError::Unimplemented("class implements"));
+    }
+    if decl.stx.declare || decl.stx.abstract_ {
+      return Err(VmError::Unimplemented("class modifiers"));
+    }
+
+    let binding_name = match decl.stx.name.as_ref() {
+      Some(name) => name.stx.name.as_str(),
+      None => "*default*",
+    };
+
+    let func_name = match decl.stx.name.as_ref() {
+      Some(name) => name.stx.name.as_str(),
+      None => "default",
+    };
+
+    let _ = self.eval_class(
+      scope,
+      ClassBinding::Mutable(binding_name),
+      func_name,
+      &decl.stx.members,
+    )?;
     Ok(Completion::empty())
+  }
+
+  fn eval_class_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<ClassExpr>) -> Result<Value, VmError> {
+    if expr.stx.extends.is_some() {
+      return Err(VmError::Unimplemented("class inheritance"));
+    }
+    if !expr.stx.decorators.is_empty() {
+      return Err(VmError::Unimplemented("class decorators"));
+    }
+    if expr.stx.type_parameters.is_some() {
+      return Err(VmError::Unimplemented("class type parameters"));
+    }
+    if !expr.stx.implements.is_empty() {
+      return Err(VmError::Unimplemented("class implements"));
+    }
+
+    // Named class expressions introduce an inner immutable binding for the class name.
+    let outer = self.env.lexical_env;
+    let result = (|| {
+      let Some(name) = expr.stx.name.as_ref() else {
+        let func_obj = self.eval_class(scope, ClassBinding::None, "", &expr.stx.members)?;
+        return Ok(Value::Object(func_obj));
+      };
+
+      let class_env = scope.env_create(Some(outer))?;
+      self.env.set_lexical_env(scope.heap_mut(), class_env);
+
+      let func_obj = self.eval_class(
+        scope,
+        ClassBinding::Immutable(name.stx.name.as_str()),
+        name.stx.name.as_str(),
+        &expr.stx.members,
+      )?;
+      Ok(Value::Object(func_obj))
+    })();
+
+    self.env.set_lexical_env(scope.heap_mut(), outer);
+    result
   }
 
   fn eval_if(&mut self, scope: &mut Scope<'_>, stmt: &IfStmt) -> Result<Completion, VmError> {
@@ -4228,6 +4305,7 @@ impl<'a> Evaluator<'a> {
       Expr::Import(node) => self.eval_import(scope, &node.stx),
       Expr::Func(node) => self.eval_func_expr(scope, node),
       Expr::ArrowFunc(node) => self.eval_arrow_func_expr(scope, node),
+      Expr::Class(node) => self.eval_class_expr(scope, node),
       Expr::Member(node) => self.eval_member(scope, &node.stx),
       Expr::ComputedMember(node) => self.eval_computed_member(scope, &node.stx),
       Expr::Unary(node) => self.eval_unary(scope, &node.stx),

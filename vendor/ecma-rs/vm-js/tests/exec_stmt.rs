@@ -456,3 +456,43 @@ fn class_methods_are_strict_mode() {
     .unwrap();
   assert_value_is_utf8(&rt, value, "ReferenceError");
 }
+
+#[test]
+fn class_expression_constructor_and_methods_execute() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var C = class {
+        constructor(x) { this.x = x; }
+        m() { return this.x; }
+      };
+      new C(2).m()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(2.0));
+}
+
+#[test]
+fn named_class_expression_creates_inner_const_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var X = class C {
+        static f() { return C; }
+        static g() { try { C = 1; return "no"; } catch(e) { return e.name; } }
+      };
+
+      var a = X.f() === X;
+      var b;
+      try { C; b = "no"; } catch(e) { b = e.name; }
+      var c = X.g();
+
+      a && b === "ReferenceError" && c === "TypeError"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
