@@ -3830,6 +3830,8 @@ pub fn function_constructor_construct(
 
 /// `%GeneratorFunction%` (ECMA-262).
 ///
+/// Calling `%GeneratorFunction%` as a function behaves like `new %GeneratorFunction%`.
+///
 /// Note: generator function *execution* semantics are implemented in a separate task. This
 /// constructor implements dynamic creation semantics so code can observe `%GeneratorFunction%` and
 /// create generator function objects.
@@ -3846,6 +3848,9 @@ pub fn generator_function_constructor_call(
 }
 
 /// `%GeneratorFunction%` `[[Construct]]` (ECMA-262).
+///
+/// This is `CreateDynamicFunction` for generator functions: it parses the provided parameter list
+/// and body text and returns a fresh generator function object.
 pub fn generator_function_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4048,7 +4053,11 @@ pub fn generator_function_constructor_construct(
   scope
     .heap_mut()
     .object_set_prototype(func_obj, Some(intr.generator_function_prototype()))?;
-  crate::function_properties::make_generator(scope, func_obj, intr.generator_prototype())?;
+  crate::function_properties::make_generator_function_instance_prototype(
+    scope,
+    func_obj,
+    intr.generator_prototype(),
+  )?;
   scope
     .heap_mut()
     .set_function_realm(func_obj, global_object)?;

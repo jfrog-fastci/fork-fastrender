@@ -2959,7 +2959,11 @@ impl<'a> Evaluator<'a> {
       scope.heap_mut().set_function_job_realm(func_obj, realm)?;
     }
     if is_generator {
-      crate::function_properties::make_generator(scope, func_obj, intr.generator_prototype())?;
+      crate::function_properties::make_generator_function_instance_prototype(
+        scope,
+        func_obj,
+        intr.generator_prototype(),
+      )?;
     }
     Ok(func_obj)
   }
@@ -4066,7 +4070,7 @@ impl<'a> Evaluator<'a> {
               .set_function_job_realm(func_obj, realm)?;
           }
           if func_node.stx.generator {
-            crate::function_properties::make_generator(
+            crate::function_properties::make_generator_function_instance_prototype(
               &mut member_scope,
               func_obj,
               intr.generator_prototype(),
@@ -5733,7 +5737,11 @@ impl<'a> Evaluator<'a> {
       scope.heap_mut().set_function_job_realm(func_obj, realm)?;
     }
     if is_generator {
-      crate::function_properties::make_generator(scope, func_obj, intr.generator_prototype())?;
+      crate::function_properties::make_generator_function_instance_prototype(
+        scope,
+        func_obj,
+        intr.generator_prototype(),
+      )?;
     }
     if func.arrow {
       scope
@@ -6293,7 +6301,7 @@ impl<'a> Evaluator<'a> {
                   .set_function_job_realm(func_obj, realm)?;
               }
               if func_node.stx.generator {
-                crate::function_properties::make_generator(
+                crate::function_properties::make_generator_function_instance_prototype(
                   &mut member_scope,
                   func_obj,
                   intr.generator_prototype(),
