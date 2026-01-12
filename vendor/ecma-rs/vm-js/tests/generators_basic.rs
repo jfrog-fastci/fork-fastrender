@@ -134,3 +134,35 @@ fn generator_reentrancy_next_while_executing_throws() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_yield_without_operand_yields_undefined_even_if_shadowed() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { var undefined = 123; yield; }
+      var it = g();
+      var r1 = it.next();
+      r1.value === undefined && r1.done === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_undefined_evaluates_operand_when_explicit() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { var undefined = 123; yield undefined; }
+      var it = g();
+      var r1 = it.next();
+      r1.value === 123 && r1.done === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

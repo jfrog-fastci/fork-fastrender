@@ -24144,6 +24144,21 @@ fn gen_eval_expr(
 
   let res = match &*expr.stx {
     Expr::Unary(unary) if unary.stx.operator == OperatorName::Yield => {
+      // `parse-js` currently represents `yield;` as `yield undefined` with a synthetic
+      // `IdExpr("undefined")`. That is incorrect if `undefined` is shadowed. Detect this shape
+      // and treat it as a true `undefined` value.
+      let is_synthetic_undefined = unary.stx.argument.loc == unary.loc
+        && matches!(
+          unary.stx.argument.stx.as_ref(),
+          Expr::Id(id) if id.stx.name == "undefined"
+        );
+      if is_synthetic_undefined {
+        return Ok(GenEval::Suspend(GenSuspend {
+          yield_value: Value::Undefined,
+          frames: VecDeque::new(),
+        }));
+      }
+
       match gen_eval_expr(evaluator, scope, &unary.stx.argument)? {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => Ok(GenEval::Suspend(GenSuspend {
