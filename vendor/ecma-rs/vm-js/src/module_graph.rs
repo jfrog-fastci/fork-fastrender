@@ -682,11 +682,19 @@ impl ModuleGraph {
       let mut scope = heap.scope();
 
       let reason = match vm.intrinsics() {
-        Some(intr) => crate::new_error(&mut scope, intr.error_prototype(), "Error", TLA_ABORT_REASON)
-          .unwrap_or(Value::Undefined),
+        Some(intr) => {
+          crate::error_object::new_type_error_object(&mut scope, &intr, TLA_ABORT_REASON)
+            .unwrap_or(Value::Undefined)
+        }
         None => Value::Undefined,
       };
-      let _ = self.cache_module_error_value(&mut scope, idx, reason);
+
+      // Mark the module as errored so further evaluation attempts fail deterministically. Cache the
+      // abort reason so future `Evaluate()` calls can rethrow/reject with the same value.
+      if idx < self.modules.len() {
+        self.modules[idx].status = ModuleStatus::Errored;
+        let _ = self.cache_module_error_value(&mut scope, idx, reason);
+      }
 
       if let Some(reject) = scope.heap().get_root(roots.reject_root()) {
         // Best-effort: ensure the promise settles deterministically so embeddings that inspect the
@@ -747,8 +755,10 @@ impl ModuleGraph {
       if self.modules[idx].error.is_none() {
         let mut scope = heap.scope();
         let reason = match vm.intrinsics() {
-          Some(intr) => crate::new_error(&mut scope, intr.error_prototype(), "Error", TLA_ABORT_REASON)
-            .unwrap_or(Value::Undefined),
+          Some(intr) => {
+            crate::error_object::new_type_error_object(&mut scope, &intr, TLA_ABORT_REASON)
+              .unwrap_or(Value::Undefined)
+          }
           None => Value::Undefined,
         };
         let _ = self.cache_module_error_value(&mut scope, idx, reason);
@@ -1092,14 +1102,25 @@ impl ModuleGraph {
 
   fn cache_module_error_from_err(
     &mut self,
+    vm: &mut Vm,
     scope: &mut Scope<'_>,
     module_index: usize,
     err: &VmError,
   ) -> Result<(), VmError> {
-    let Some(thrown) = err.thrown_value() else {
-      return Ok(());
+    if let Some(thrown) = err.thrown_value() {
+      return self.cache_module_error_value(scope, module_index, thrown);
+    }
+
+    // Internal VM errors (OOM, termination, invalid handles, unimplemented paths, etc) should still
+    // transition the module into a deterministic errored state. Create and cache a stable `Error`
+    // instance when possible.
+    let message = non_throw_vm_error_message(err);
+    let value = match vm.intrinsics() {
+      Some(intr) => crate::new_error(scope, intr.error_prototype(), "Error", message)
+        .unwrap_or(Value::Undefined),
+      None => Value::Undefined,
     };
-    self.cache_module_error_value(scope, module_index, thrown)
+    self.cache_module_error_value(scope, module_index, value)
   }
 
   fn module_errored_value(
@@ -1121,11 +1142,11 @@ impl ModuleGraph {
     // completion.
     let Some(intr) = vm.intrinsics() else {
       return Err(VmError::InvariantViolation(
-        "module is in an errored state but no error value is cached",
+        "errored module has no cached error value",
       ));
     };
 
-    let value = crate::new_error(scope, intr.error_prototype(), "Error", "module is in an errored state")?;
+    let value = crate::new_error(scope, intr.error_prototype(), "Error", "errored module")?;
     self.cache_module_error_value(scope, module_index, value)?;
     Ok(value)
   }
@@ -1376,7 +1397,7 @@ impl ModuleGraph {
       }
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
-        self.cache_module_error_from_err(scope, idx, &err)?;
+        self.cache_module_error_from_err(vm, scope, idx, &err)?;
         Err(err)
       }
     }
@@ -1418,32 +1439,38 @@ impl ModuleGraph {
       let roots = [cap.promise, cap.resolve, cap.reject];
       eval_scope.push_roots(&roots)?;
 
+      let idx = module_index(module);
+
+      fn reject_promise(
+        vm: &mut Vm,
+        scope: &mut Scope<'_>,
+        host: &mut dyn VmHost,
+        hooks: &mut dyn VmHostHooks,
+        reject: Value,
+        reason: Value,
+        err: &VmError,
+        ) -> Result<(), VmError> {
+        attach_stack_property_for_promise_rejection(scope, reason, err);
+        scope.push_roots(&[reject, reason])?;
+        let _ =
+          vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
+        Ok(())
+      }
+
       // Link before evaluating. If linking fails (including the module already being in an errored
       // state), reject the evaluation promise with the thrown/cached value.
       if let Err(err) = self.link_with_scope(vm, &mut eval_scope, global_object, module) {
         let reason = if let Some(thrown) = err.thrown_value() {
           thrown
         } else {
-          let message = err.to_string();
-          crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
-            .unwrap_or(Value::Undefined)
+          // Best-effort: ensure we have a cached thrown value for deterministic subsequent
+          // operations.
+          self.cache_module_error_from_err(vm, &mut eval_scope, idx, &err)?;
+          self.module_errored_value(vm, &mut eval_scope, idx)?
         };
-        attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
-        eval_scope.push_root(cap.reject)?;
-        eval_scope.push_root(reason)?;
-        let _ = vm.call_with_host_and_hooks(
-          host,
-          &mut eval_scope,
-          hooks,
-          cap.reject,
-          Value::Undefined,
-          &[reason],
-        )?;
-
+        reject_promise(vm, &mut eval_scope, host, hooks, cap.reject, reason, &err)?;
         return Ok(promise);
       }
-
-      let idx = module_index(module);
 
       if !self.modules[idx].has_tla {
         let result = self.eval_inner(
@@ -1469,26 +1496,14 @@ impl ModuleGraph {
             )?;
           }
           Err(err) => {
-            // For JS throw completions, reject with the thrown value. For internal VM errors (OOM,
-            // InvalidHandle, unimplemented paths), prefer rejecting with an `Error` object so callers
-            // have some debugging signal instead of a bare `undefined`.
             let reason = if let Some(thrown) = err.thrown_value() {
               thrown
             } else {
-              let message = non_throw_vm_error_message(&err);
-              crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", message)
-                .unwrap_or(Value::Undefined)
+              // `eval_inner` should have transitioned the module to `Errored` and cached a thrown
+              // value; re-use it for a deterministic rejection reason.
+              self.module_errored_value(vm, &mut eval_scope, idx)?
             };
-            attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
-            eval_scope.push_roots(&[cap.reject, reason])?;
-            let _ = vm.call_with_host_and_hooks(
-              host,
-              &mut eval_scope,
-              hooks,
-              cap.reject,
-              Value::Undefined,
-              &[reason],
-            )?;
+            reject_promise(vm, &mut eval_scope, host, hooks, cap.reject, reason, &err)?;
           }
         }
 
@@ -1557,53 +1572,30 @@ impl ModuleGraph {
             Err(err) => {
               // Async evaluation didn't start successfully; treat this as an evaluation failure and
               // reject the evaluation promise.
-              let Some(mut state) = self.tla_states.get_mut(idx).and_then(|s| s.take()) else {
+              let Some(state) = self.tla_states.get_mut(idx).and_then(|s| s.take()) else {
                 return Err(VmError::InvariantViolation(
                   "missing async module evaluation state after scheduling failure",
                 ));
               };
               self.modules[idx].status = ModuleStatus::Errored;
-              self.cache_module_error_from_err(&mut eval_scope, idx, &err)?;
 
-              let Some(roots) = state.promise_roots.take() else {
-                return Err(VmError::InvariantViolation(
-                  "missing async module evaluation promise roots after scheduling failure",
-                ));
-              };
-
-              let reason = if let Some(thrown) = err.thrown_value() {
-                thrown
+              let cache_res = self.cache_module_error_from_err(vm, &mut eval_scope, idx, &err);
+              let reason_res = if let Some(thrown) = err.thrown_value() {
+                Ok(thrown)
               } else {
-                let message = non_throw_vm_error_message(&err);
-                crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", message)
-                  .unwrap_or(Value::Undefined)
+                self.module_errored_value(vm, &mut eval_scope, idx)
               };
-              attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
+              let reject_res = match reason_res {
+                Ok(reason) => {
+                  reject_promise(vm, &mut eval_scope, host, hooks, cap.reject, reason, &err)
+                }
+                Err(err) => Err(err),
+              };
 
-              let result = (|| {
-                let cap = roots
-                  .capability(eval_scope.heap())
-                  .ok_or_else(VmError::invalid_handle)?;
-                let reject = cap.reject;
-                let mut call_scope = eval_scope.reborrow();
-                call_scope.push_roots(&[reject, reason])?;
-                let _ = vm.call_with_host_and_hooks(
-                  host,
-                  &mut call_scope,
-                  hooks,
-                  reject,
-                  Value::Undefined,
-                  &[reason],
-                )?;
-                Ok::<(), VmError>(())
-              })();
-
-              roots.teardown(eval_scope.heap_mut());
               state.teardown(vm, eval_scope.heap_mut());
 
-              if let Err(err) = result {
-                return Err(err);
-              }
+              cache_res?;
+              reject_res?;
             }
           }
         }
@@ -1611,20 +1603,9 @@ impl ModuleGraph {
           let reason = if let Some(thrown) = err.thrown_value() {
             thrown
           } else {
-            let message = non_throw_vm_error_message(&err);
-            crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", message)
-              .unwrap_or(Value::Undefined)
+            self.module_errored_value(vm, &mut eval_scope, idx)?
           };
-          attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
-          eval_scope.push_roots(&[cap.reject, reason])?;
-          let _ = vm.call_with_host_and_hooks(
-            host,
-            &mut eval_scope,
-            hooks,
-            cap.reject,
-            Value::Undefined,
-            &[reason],
-          )?;
+          reject_promise(vm, &mut eval_scope, host, hooks, cap.reject, reason, &err)?;
         }
       };
 
@@ -1802,10 +1783,8 @@ impl ModuleGraph {
         source,
         &ast.stx.body,
       )?;
-
       Ok(())
     })();
-
     match eval_result {
       Ok(()) => {
         self.modules[idx].status = ModuleStatus::Evaluated;
@@ -1813,7 +1792,7 @@ impl ModuleGraph {
       }
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
-        self.cache_module_error_from_err(scope, idx, &err)?;
+        self.cache_module_error_from_err(vm, scope, idx, &err)?;
         Err(err)
       }
     }
@@ -1849,7 +1828,7 @@ impl ModuleGraph {
 
     self.modules[idx].status = ModuleStatus::EvaluatingAsync;
 
-    let step = (|| -> Result<ModuleAsyncEvalResult, VmError> {
+    let eval_result = (|| -> Result<ModuleAsyncEvalResult, VmError> {
       // Evaluate dependencies synchronously (top-level await in dependencies remains unsupported).
       let requested_modules = self.modules[idx].requested_modules.clone();
       const EVAL_TICK_EVERY: usize = 32;
@@ -1905,11 +1884,11 @@ impl ModuleGraph {
       }
     })();
 
-    match step {
+    match eval_result {
       Ok(step) => Ok(step),
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
-        self.cache_module_error_from_err(scope, idx, &err)?;
+        self.cache_module_error_from_err(vm, scope, idx, &err)?;
         Err(err)
       }
     }
@@ -2184,6 +2163,7 @@ fn module_tla_resume_inner(
   // persistent roots even if it returns an error (termination, OOM, etc).
   if let Err(err) = vm.tick() {
     graph.modules[idx].status = ModuleStatus::Errored;
+    let _ = graph.cache_module_error_from_err(vm, scope, idx, &err);
     state.teardown(vm, scope.heap_mut());
     return Err(err);
   }
@@ -2255,7 +2235,7 @@ fn module_tla_resume_inner(
           ));
         };
         graph.modules[idx].status = ModuleStatus::Errored;
-        graph.cache_module_error_from_err(scope, idx, &err)?;
+        let cache_res = graph.cache_module_error_from_err(vm, scope, idx, &err);
 
         let Some(roots) = state.promise_roots.take() else {
           state.teardown(vm, scope.heap_mut());
@@ -2264,38 +2244,39 @@ fn module_tla_resume_inner(
           ));
         };
 
-        let reason = if let Some(thrown) = err.thrown_value() {
-          thrown
+        let reason_res = if let Some(thrown) = err.thrown_value() {
+          Ok(thrown)
         } else {
-          let intr = vm
-            .intrinsics()
-            .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-          let message = non_throw_vm_error_message(&err);
-          crate::new_error(scope, intr.error_prototype(), "Error", message).unwrap_or(Value::Undefined)
+          graph.module_errored_value(vm, scope, idx)
         };
-        attach_stack_property_for_promise_rejection(scope, reason, &err);
-
-        let reject_res = (|| {
-          let cap = roots
-            .capability(scope.heap())
-            .ok_or_else(VmError::invalid_handle)?;
-          let reject = cap.reject;
-          let mut call_scope = scope.reborrow();
-          call_scope.push_roots(&[reject, reason])?;
-          let _ = vm.call_with_host_and_hooks(
-            host,
-            &mut call_scope,
-            hooks,
-            reject,
-            Value::Undefined,
-            &[reason],
-          )?;
-          Ok::<(), VmError>(())
-        })();
+        let reject_res = match reason_res {
+          Ok(reason) => {
+            attach_stack_property_for_promise_rejection(scope, reason, &err);
+            (|| {
+              let cap = roots
+                .capability(scope.heap())
+                .ok_or_else(VmError::invalid_handle)?;
+              let reject = cap.reject;
+              let mut call_scope = scope.reborrow();
+              call_scope.push_roots(&[reject, reason])?;
+              let _ = vm.call_with_host_and_hooks(
+                host,
+                &mut call_scope,
+                hooks,
+                reject,
+                Value::Undefined,
+                &[reason],
+              )?;
+              Ok::<(), VmError>(())
+            })()
+          }
+          Err(err) => Err(err),
+        };
 
         roots.teardown(scope.heap_mut());
         state.teardown(vm, scope.heap_mut());
 
+        cache_res?;
         if matches!(err, VmError::Termination(_)) {
           return Err(err);
         }
@@ -2305,7 +2286,7 @@ fn module_tla_resume_inner(
     }
     Err(err) => {
       graph.modules[idx].status = ModuleStatus::Errored;
-      graph.cache_module_error_from_err(scope, idx, &err)?;
+      graph.cache_module_error_from_err(vm, scope, idx, &err)?;
 
       let Some(roots) = state.promise_roots.take() else {
         state.teardown(vm, scope.heap_mut());
@@ -2317,11 +2298,7 @@ fn module_tla_resume_inner(
       let reason = if let Some(thrown) = err.thrown_value() {
         thrown
       } else {
-        let intr = vm
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-        let message = non_throw_vm_error_message(&err);
-        crate::new_error(scope, intr.error_prototype(), "Error", message).unwrap_or(Value::Undefined)
+        graph.module_errored_value(vm, scope, idx)?
       };
       attach_stack_property_for_promise_rejection(scope, reason, &err);
 

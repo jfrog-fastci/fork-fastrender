@@ -276,7 +276,6 @@ pub struct SourceTextModuleRecord {
   #[allow(dead_code)]
   pub(crate) pending_async_dependencies: Option<usize>,
   /// `[[EvaluationError]]` – thrown value during evaluation (or empty).
-  #[allow(dead_code)]
   pub(crate) evaluation_error: Option<ValueRoot>,
 }
 
@@ -303,8 +302,11 @@ impl SourceTextModuleRecord {
     }
   }
 
-  #[allow(dead_code)]
-  pub(crate) fn set_evaluation_error(&mut self, scope: &mut Scope<'_>, value: Value) -> Result<(), VmError> {
+  pub(crate) fn set_evaluation_error(
+    &mut self,
+    scope: &mut Scope<'_>,
+    value: Value,
+  ) -> Result<(), VmError> {
     if self.evaluation_error.is_some() {
       return Err(VmError::InvariantViolation(
         "module already has an evaluation error value",
@@ -314,7 +316,6 @@ impl SourceTextModuleRecord {
     Ok(())
   }
 
-  #[allow(dead_code)]
   pub(crate) fn teardown_evaluation_error(&mut self, heap: &mut Heap) {
     if let Some(root) = self.evaluation_error.take() {
       root.teardown(heap);
