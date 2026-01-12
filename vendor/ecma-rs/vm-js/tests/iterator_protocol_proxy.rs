@@ -41,7 +41,7 @@ fn expect_string(rt: &JsRuntime, value: Value) -> String {
 #[test]
 fn for_of_observes_proxy_get_trap_for_symbol_iterator() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
   let global = rt.realm().global_object();
 
@@ -56,6 +56,7 @@ fn for_of_observes_proxy_get_trap_for_symbol_iterator() -> Result<(), VmError> {
       globalThis.trap
     "#,
   )?;
+  let trap_root = rt.heap.add_root(trap)?;
 
   // Target is a simple iterable that terminates immediately.
   let target = rt.exec_script(
@@ -69,6 +70,10 @@ fn for_of_observes_proxy_get_trap_for_symbol_iterator() -> Result<(), VmError> {
       })
     "#,
   )?;
+  let trap = rt
+    .heap
+    .get_root(trap_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
 
   {
     let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
@@ -91,6 +96,7 @@ fn for_of_observes_proxy_get_trap_for_symbol_iterator() -> Result<(), VmError> {
     let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
     define_global(&mut scope, global, "proxyIterable", Value::Object(proxy))?;
   }
+  rt.heap.remove_root(trap_root);
 
   let count = rt.exec_script(
     r#"
@@ -124,8 +130,13 @@ fn iterator_result_done_and_value_use_proxy_get_trap() -> Result<(), VmError> {
       globalThis.trap
     "#,
   )?;
+  let trap_root = rt.heap.add_root(trap)?;
 
   let iter_result_target = rt.exec_script("({ done: false, value: 123 })")?;
+  let trap = rt
+    .heap
+    .get_root(trap_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
 
   {
     let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
@@ -148,6 +159,7 @@ fn iterator_result_done_and_value_use_proxy_get_trap() -> Result<(), VmError> {
     let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
     define_global(&mut scope, global, "iterResultProxy", Value::Object(proxy))?;
   }
+  rt.heap.remove_root(trap_root);
 
   let ok = rt.exec_script(
     r#"
@@ -179,7 +191,7 @@ fn iterator_result_done_and_value_use_proxy_get_trap() -> Result<(), VmError> {
 #[test]
 fn revoked_proxy_iterable_throws_type_error_in_for_of() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
   let global = rt.realm().global_object();
 
@@ -248,6 +260,7 @@ fn for_await_of_observes_proxy_get_trap_for_next_method() -> Result<(), VmError>
       globalThis.trap
     "#,
   )?;
+  let trap_root = rt.heap.add_root(trap)?;
 
   // Async iterator target: yields one value then completes.
   let target = rt.exec_script(
@@ -264,6 +277,10 @@ fn for_await_of_observes_proxy_get_trap_for_next_method() -> Result<(), VmError>
       })()
     "#,
   )?;
+  let trap = rt
+    .heap
+    .get_root(trap_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
 
   {
     let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
@@ -286,6 +303,7 @@ fn for_await_of_observes_proxy_get_trap_for_next_method() -> Result<(), VmError>
     let proxy = scope.alloc_proxy(Some(target_obj), Some(handler))?;
     define_global(&mut scope, global, "proxyAsyncIterator", Value::Object(proxy))?;
   }
+  rt.heap.remove_root(trap_root);
 
   // Kick off async iteration (resolved via microtasks).
   let out = rt.exec_script(

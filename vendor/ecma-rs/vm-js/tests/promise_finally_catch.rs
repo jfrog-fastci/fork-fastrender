@@ -546,7 +546,8 @@ fn promise_finally_waits_for_returned_promise_before_continuing() -> Result<(), 
       return Err(VmError::Unimplemented("Promise.resolve returned non-object"));
     };
     // Root `p` before any further VM calls/allocations: the returned handle alone does not keep the
-    // promise alive across GC.
+    // promise alive across GC. This test uses the host-facing VM API directly (no JS stack roots),
+    // so `p` must be kept alive across any potential GC.
     scope.push_root(Value::Object(p))?;
 
     // gate = Promise.withResolvers()
