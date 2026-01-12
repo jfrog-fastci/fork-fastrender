@@ -112,6 +112,7 @@ mod mix_blend_mode_non_isolated_group_surface_test;
 mod multi_root_display_list;
 mod offscreen_culling_stress;
 mod opacity_layer_rounding_test;
+mod legacy_border_radius_does_not_clip_opacity_group;
 mod optimize_test;
 mod optimizer_pixel_equivalence_test;
 mod overflow_clip_margin_test;

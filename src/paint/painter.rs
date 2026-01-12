@@ -4010,7 +4010,7 @@ impl Painter {
         }
 
         let device_radii = base_painter.device_radii(radii);
-        if !radii.is_zero() || !filters.is_empty() {
+        if !filters.is_empty() {
           let (device_out_l, device_out_t, device_out_r, device_out_b) =
             compute_filter_outset(&filters, root_rect, self.scale);
           let clip_rect = Rect::from_xywh(
@@ -4020,7 +4020,7 @@ impl Painter {
             device_root_rect.height() + device_out_t + device_out_b,
           );
           let radii_clip_start = profile_enabled.then(Instant::now);
-          apply_clip_mask_rect(&mut base_painter.pixmap, clip_rect, device_radii)?;
+          apply_clip_mask_rect(&mut base_painter.pixmap, clip_rect, BorderRadii::ZERO)?;
           if let Some(start) = radii_clip_start {
             radii_clip_ms = start.elapsed().as_secs_f64() * 1000.0;
           }
