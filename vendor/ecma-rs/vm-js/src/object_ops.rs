@@ -2406,6 +2406,13 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
+    // Integer-indexed exotic behaviour for typed arrays.
+    //
+    // Spec: https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-delete-p
+    //
+    // For numeric indices:
+    // - if the index is *invalid* (includes detached/out-of-bounds), `delete` succeeds (`true`)
+    // - otherwise (valid index), typed array elements are non-configurable and cannot be deleted (`false`)
     if self.string_object_in_range_index(obj, &key)?.is_some() {
       return Ok(false);
     }
@@ -2415,6 +2422,10 @@ impl<'a> Scope<'a> {
     if self.heap().is_typed_array_object(obj) {
       if let PropertyKey::String(s) = key {
         if let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? {
+          // `IsValidIntegerIndex` includes a detached/out-of-bounds check.
+          if self.heap().typed_array_is_out_of_bounds(obj)? {
+            return Ok(true);
+          }
           // `IsValidIntegerIndex`
           if numeric_index.is_finite()
             && numeric_index.fract() == 0.0
@@ -2459,6 +2470,9 @@ impl<'a> Scope<'a> {
       return Ok(result);
     }
 
+    // Integer-indexed exotic behaviour for typed arrays.
+    //
+    // See `ordinary_delete` for details.
     if self.string_object_in_range_index(obj, &key)?.is_some() {
       return Ok(false);
     }
@@ -2468,6 +2482,9 @@ impl<'a> Scope<'a> {
     if self.heap().is_typed_array_object(obj) {
       if let PropertyKey::String(s) = key {
         if let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? {
+          if self.heap().typed_array_is_out_of_bounds(obj)? {
+            return Ok(true);
+          }
           // `IsValidIntegerIndex`
           if numeric_index.is_finite()
             && numeric_index.fract() == 0.0

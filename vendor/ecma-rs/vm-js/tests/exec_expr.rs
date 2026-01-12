@@ -113,6 +113,28 @@ fn object_prototype_has_own_property_works_on_typed_arrays() {
 }
 
 #[test]
+fn delete_uint8_array_numeric_indices_follow_ecma262() {
+  let mut rt = new_runtime();
+
+  // In-bounds indices are non-configurable element properties and cannot be deleted.
+  // Out-of-bounds indices behave like missing properties and delete succeeds.
+  let value = rt
+    .exec_script(r#"var u=new Uint8Array(2); (delete u[0]===false) && (delete u[99]===true)"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  // Detach the backing buffer via the host heap API; numeric indices become invalid.
+  let buffer = rt.exec_script("u.buffer").unwrap();
+  let Value::Object(buffer) = buffer else {
+    panic!("expected u.buffer to be an object");
+  };
+  rt.heap_mut().detach_array_buffer(buffer).unwrap();
+
+  let value = rt.exec_script("delete u[0]").unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn computed_member_get_set() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"var o = {}; o["x"] = 3; o.x"#).unwrap();
