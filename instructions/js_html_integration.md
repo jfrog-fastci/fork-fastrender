@@ -4,24 +4,27 @@
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
 
-### Assume every process can misbehave
+**Every command requires `timeout -k` — script loading can trigger infinite JS:**
 
-**Every command must have hard external limits:**
-- `timeout -k 10 <seconds>` — time limit with guaranteed SIGKILL
-- `bash scripts/run_limited.sh --as 64G` — memory ceiling enforced by kernel
-- Scoped test runs (`-p <crate>`, `--test <name>`) — don't compile/run the universe
+```bash
+# ALWAYS use this format (no exceptions):
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib js::event_loop
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-vm-js --lib
 
-**MANDATORY (no exceptions):**
-- `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
-- `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
+# NEVER run without timeout:
+bash scripts/cargo_agent.sh test ...  # WRONG
+cargo test  # WRONG
+```
+
+If a command times out, that's a bug to investigate — not a limit to raise.
 
 ---
 
-This workstream owns how **JavaScript integrates with HTML**: script loading, module execution, the event loop, and the execution lifecycle.
+This workstream owns how **JavaScript integrates with HTML**: script loading, module execution, the event loop, host hooks, and the execution lifecycle.
 
 ## The job
 
-Make scripts run **at the right time, in the right order, with the right context**—exactly as the HTML Standard specifies.
+Make scripts run **at the right time, in the right order, with the right context**—exactly as the HTML Standard specifies. Make vm-js a **clean, embeddable JavaScript engine** that integrates with FastRender's DOM and event loop.
 
 ## What counts
 
@@ -31,6 +34,9 @@ A change counts if it lands at least one of:
 - **Module support**: ES modules work (static and dynamic import).
 - **Event loop correctness**: Tasks and microtasks run in correct order.
 - **Lifecycle correctness**: DOMContentLoaded, load, beforeunload fire correctly.
+- **Host hook implementation**: A vm-js host hook is added or improved.
+- **Promise integration**: Promise job scheduling works correctly with event loop.
+- **WebIDL support**: WebIDL type conversion or binding generation is improved.
 
 ## Scope
 
@@ -58,6 +64,18 @@ A change counts if it lands at least one of:
 - Microtask checkpoints
 - Rendering opportunities
 
+**Host hooks (ECMA-262 §8.6):**
+- `HostEnqueuePromiseJob` — Promise job scheduling
+- `HostResolveImportedModule` — Module resolution
+- `HostImportModuleDynamically` — Dynamic import()
+- `HostGetImportMetaProperties` — import.meta
+- `HostMakeJobCallback` / `HostCallJobCallback` — Job callbacks
+
+**Promise job queue:**
+- Job enqueueing API
+- GC safety for queued jobs (jobs must root their captured values)
+- Integration with microtask queue
+
 **Page lifecycle:**
 - `DOMContentLoaded` event
 - `load` event (window.onload)
@@ -72,13 +90,20 @@ A change counts if it lands at least one of:
 - `this` binding in scripts
 - Strict mode handling
 
+**WebIDL support:**
+- Type conversion (JS ↔ IDL types)
+- Exception handling (DOMException mapping)
+- Overload resolution
+- Sequence/record/union types
+- webidl-vm-js crate
+
 ### NOT owned (see other workstreams)
 
 - JavaScript language execution → `js_engine.md`
 - DOM APIs → `js_dom.md`
 - Web APIs (fetch, timers) → `js_web_apis.md`
 
-## Priority order (P0 → P1 → P2)
+## Priority order (P0 → P1 → P2 → P3)
 
 ### P0: Scripts execute (basic page JS works)
 
@@ -100,110 +125,175 @@ A change counts if it lands at least one of:
    - Promise `.then()` runs as microtasks
    - `queueMicrotask()` works
 
-4. **DOMContentLoaded**
+4. **VmHostHooks trait (vm-js side)**
+   - Clean, stable trait definition
+   - `host_enqueue_promise_job(job, realm)` — queue Promise jobs
+   - Default no-op implementations
+   - Documentation
+
+5. **Promise job GC safety**
+   - Jobs must root captured values until executed
+   - Values survive GC between enqueue and execution
+   - No use-after-free, no leaks
+
+6. **DOMContentLoaded**
    - Fires after parsing completes
    - Fires after all deferred scripts run
    - `document.readyState` transitions correctly
 
 ### P1: Script ordering (complex pages work)
 
-5. **async scripts**
+7. **async scripts**
    - `<script async src="url">` doesn't block parser
    - Executes as soon as fetched (unordered relative to other async)
    - Still blocks at its execution point
 
-6. **defer scripts**
+8. **defer scripts**
    - `<script defer src="url">` doesn't block parser
    - Executes after parsing, before DOMContentLoaded
    - Executes in document order
 
-7. **Dynamic script insertion**
+9. **Dynamic script insertion**
    - `document.createElement('script')` + appendChild
    - Dynamic scripts are async by default
    - `script.async = false` preserves insertion order
 
-8. **document.write()**
-   - Works during parsing (inserts into token stream)
-   - No-op or warning after parsing
-   - Handles nested document.write()
+10. **document.write()**
+    - Works during parsing (inserts into token stream)
+    - No-op or warning after parsing
+    - Handles nested document.write()
+
+11. **Basic module support**
+    - `HostResolveImportedModule` hook
+    - Static import resolution
+    - Module caching
 
 ### P2: Modules (modern JS works)
 
-9. **Module scripts (static)**
-   - `<script type="module">` runs as module
-   - Modules are always deferred
-   - Top-level await support
-   - Strict mode by default
+12. **Module scripts (static)**
+    - `<script type="module">` runs as module
+    - Modules are always deferred
+    - Top-level await support
+    - Strict mode by default
 
-10. **Static imports**
-    - `import { x } from './module.js'`
-    - Module graph resolution
+13. **Module graph**
+    - Module record representation
+    - Link and evaluate phases
     - Circular dependency handling
-    - Module caching (execute once)
+    - Error handling during module loading
 
-11. **Dynamic imports**
+14. **Dynamic imports**
     - `import('./module.js')` returns Promise
     - Works from classic and module scripts
-    - Honors import maps
+    - `HostImportModuleDynamically` hook
 
-12. **Import maps**
+15. **Import meta**
+    - `import.meta` object
+    - `HostGetImportMetaProperties` hook
+    - `import.meta.url`, `import.meta.resolve()`
+
+16. **Import maps**
     - `<script type="importmap">` parsed and applied
     - Bare specifier resolution (`import 'lodash'`)
     - Scoped mappings
     - Integrity hashes
 
-### P3: Advanced lifecycle
+### P3: Advanced
 
-13. **load event**
+17. **WebIDL completeness**
+    - All IDL type conversions
+    - Sequence/record/union types
+    - Callback types
+    - Overload resolution
+
+18. **Exception mapping**
+    - DOMException → JS Error
+    - JS Error → DOMException
+    - Stack trace preservation
+
+19. **load event**
     - `window.onload` / `addEventListener('load')`
     - Fires after all resources (images, stylesheets) loaded
 
-14. **beforeunload/unload**
+20. **beforeunload/unload**
     - Navigation interception
     - Cleanup handlers
 
-15. **Page visibility**
-    - `document.visibilityState`
-    - `visibilitychange` event
-
-16. **Error handling**
+21. **Error handling**
     - `window.onerror` / `addEventListener('error')`
     - `unhandledrejection` event for Promises
 
 ## Implementation notes
 
-### Architecture
-
-```
-src/js/
-  html_script_processing.rs  — HTML script processing model
-  script_scheduler.rs        — Script scheduling and ordering
-  html_classic_scripts.rs    — Classic script handling
-  streaming.rs               — Parse-time script handling
-  event_loop.rs              — Task/microtask queues
-  import_maps/               — Import map parsing and resolution
-  module_graph_loader.rs     — Module loading
-  realm_module_loader.rs     — Module resolution
-
-src/api/
-  browser_tab.rs             — Script execution integration
-```
-
-### Script scheduler
-
-The script scheduler produces actions for the parser:
+### VmHostHooks trait (vm-js)
 
 ```rust
-pub enum ScriptSchedulerAction {
-    FetchExternal { url, ... },
-    BlockParser,
-    UnblockParser,
-    ExecuteNow { script },
-    QueueForLater { script },
+// vendor/ecma-rs/vm-js/src/host.rs
+pub trait VmHostHooks {
+    /// Queue a Promise job for later execution.
+    /// The job MUST root any captured Values until run/discard.
+    fn host_enqueue_promise_job(&mut self, job: Job, realm: RealmId);
+    
+    /// Resolve a module specifier to a module.
+    fn host_resolve_imported_module(
+        &mut self,
+        referrer: &Module,
+        specifier: &str,
+    ) -> Result<Module, JsError>;
+    
+    /// Handle dynamic import().
+    fn host_import_module_dynamically(
+        &mut self,
+        referrer: &Module,
+        specifier: &str,
+    ) -> Result<Promise, JsError>;
+    
+    // ... other hooks
 }
 ```
 
-The parser/execution loop processes these actions.
+### Job GC safety
+
+Promise jobs capture JavaScript values. These values must survive garbage collection:
+
+```rust
+pub struct Job {
+    callback: Value,       // Must be rooted
+    arguments: Vec<Value>, // Must be rooted
+    roots: Vec<GcRoot>,    // Prevents GC
+}
+
+impl Job {
+    pub fn run(self, vm: &mut Vm) -> Result<Value, JsError> {
+        // Roots are released after execution
+    }
+    
+    pub fn discard(self) {
+        // Roots are released without execution
+    }
+}
+```
+
+FastRender's event loop owns queued jobs and must ensure they're properly rooted.
+
+### FastRender host hooks implementation
+
+```rust
+// src/js/vmjs/window_timers.rs
+impl VmHostHooks for VmJsEventLoopHooks<'_> {
+    fn host_enqueue_promise_job(&mut self, job: Job, _realm: RealmId) {
+        self.event_loop.queue_microtask(Microtask::PromiseJob(job));
+    }
+    
+    fn host_resolve_imported_module(&mut self, referrer: &Module, specifier: &str) 
+        -> Result<Module, JsError> {
+        // 1. Apply import maps
+        // 2. Resolve URL relative to referrer
+        // 3. Check module cache
+        // 4. Fetch and parse if needed
+    }
+}
+```
 
 ### Event loop
 
@@ -226,20 +316,38 @@ impl EventLoop {
 }
 ```
 
-### Module loading
+### Script scheduler
 
-Module loading uses host hooks in vm-js:
+The script scheduler produces actions for the parser:
 
 ```rust
-impl VmHostHooks for BrowserHost {
-    fn host_resolve_imported_module(&mut self, referrer: &Module, specifier: &str) 
-        -> Result<Module> {
-        // 1. Apply import maps
-        // 2. Resolve URL relative to referrer
-        // 3. Check module cache
-        // 4. Fetch and parse if needed
-    }
+pub enum ScriptSchedulerAction {
+    FetchExternal { url, ... },
+    BlockParser,
+    UnblockParser,
+    ExecuteNow { script },
+    QueueForLater { script },
 }
+```
+
+### Architecture
+
+```
+src/js/
+  html_script_processing.rs  — HTML script processing model
+  script_scheduler.rs        — Script scheduling and ordering
+  html_classic_scripts.rs    — Classic script handling
+  streaming.rs               — Parse-time script handling
+  event_loop.rs              — Task/microtask queues
+  import_maps/               — Import map parsing and resolution
+  module_graph_loader.rs     — Module loading
+  realm_module_loader.rs     — Module resolution
+
+vendor/ecma-rs/
+  vm-js/src/host.rs          — VmHostHooks trait
+  vm-js/src/job.rs           — Promise job type
+  vm-js/src/module.rs        — Module records
+  webidl-vm-js/              — WebIDL runtime and type conversions
 ```
 
 ### Testing
@@ -253,6 +361,12 @@ timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib js::event
 
 # Module tests
 timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib js::import_maps
+
+# Host integration tests (vm-js)
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib -- host
+
+# WebIDL tests
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p webidl-vm-js --lib
 ```
 
 ### Key documents
@@ -265,8 +379,11 @@ timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib js::impor
 
 HTML integration is **done** when:
 - Scripts execute in correct order (parser-blocking, async, defer, modules)
+- VmHostHooks trait is stable and well-documented
+- Promise jobs are GC-safe (no use-after-free, no leaks)
 - Microtasks run at correct checkpoints (after scripts, after tasks)
 - DOMContentLoaded and load fire at correct times
 - ES modules work with static and dynamic imports
 - Import maps resolve bare specifiers
+- webidl-vm-js handles common WebIDL patterns
 - Real-world sites with complex script loading work correctly

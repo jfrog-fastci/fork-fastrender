@@ -1,30 +1,32 @@
-# Workstream: JavaScript Engine (ecma-rs vm-js)
+# Workstream: JavaScript Engine (vm-js)
 
 ---
 
-**STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
+**STOP. JavaScript is hostile input. Read [`AGENTS.md`](../AGENTS.md) first.**
 
-### Assume every process can misbehave
+**Every command requires `timeout -k` — JS execution can `while(true){}` forever:**
 
-JavaScript is hostile input. **Any script can `while(true){}`, allocate unbounded arrays, or ignore signals.**
+```bash
+# ALWAYS use this format (no exceptions):
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p vm-js
 
-**Every command must have hard external limits:**
-- `timeout -k 10 <seconds>` — time limit with guaranteed SIGKILL (SIGTERM can be ignored)
-- `bash scripts/run_limited.sh --as 64G` — memory ceiling enforced by kernel
-- Scoped test runs (`-p <crate>`, `--test <name>`) — don't compile/run the universe
+# NEVER run without timeout (tests execute arbitrary JS):
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib  # WRONG
+cargo test  # WRONG
+```
 
-**MANDATORY (no exceptions):**
-- `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
-- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh ...` for ecma-rs workspace
-- `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
+If a command times out, that's a bug to investigate — not a limit to raise.
 
 ---
 
-This workstream owns the **JavaScript engine core**: the vm-js runtime in ecma-rs that executes JavaScript code.
+This workstream owns the **vm-js JavaScript runtime**: execution, garbage collection, built-in objects, and ECMA-262 spec compliance.
+
+**This is FastRender's highest priority JavaScript workstream.** vm-js is the engine that powers browser script execution.
 
 ## The job
 
-Make vm-js a **production-quality JavaScript runtime** capable of executing real-world scripts reliably. Not a toy. Not "mostly works." A real engine.
+Make vm-js a **production-quality JavaScript engine** that can execute real-world browser scripts reliably and efficiently. Not a toy. Not "mostly works." A real engine.
 
 ## Relationship to ecma-rs
 
@@ -39,111 +41,146 @@ Key directories:
 
 A change counts if it lands at least one of:
 
-- **Spec compliance**: A JavaScript language feature now works per ECMA-262.
+- **Spec compliance**: A JavaScript feature now works per ECMA-262.
 - **Performance**: Execution is measurably faster.
 - **Robustness**: A crash, hang, or incorrect behavior is fixed.
 - **Safety**: Execution budgets, interrupts, or memory limits are improved.
-- **Test262 progress**: More test262 tests pass.
+- **test262 progress**: More test262 tests pass.
 
 ## Scope
 
 ### Owned by this workstream
 
-- **Core language features**: Variables, functions, closures, classes, iterators, generators
-- **Built-in objects**: Object, Array, String, Number, Boolean, Symbol, BigInt, Map, Set, WeakMap, WeakSet
-- **Control flow**: if/else, for, while, do-while, switch, try/catch/finally, throw
-- **Operators**: Arithmetic, comparison, logical, bitwise, assignment, spread, optional chaining, nullish coalescing
-- **Async**: Promises, async/await, generators
-- **Modules**: import/export, dynamic import(), module resolution hooks
-- **Execution**: Call stack, execution contexts, closures, this binding
-- **Memory**: Garbage collection, heap management, memory limits
-- **Safety**: Execution budgets, interrupts, timeouts
+**Execution:**
+- Call stack and execution contexts
+- Function calls (regular, method, constructor)
+- Closures and scope chains
+- `this` binding rules
+- Strict mode
+- Evaluation (direct/indirect eval)
+
+**Memory management:**
+- Garbage collection
+- Heap management
+- Memory limits and OOM handling
+- Object allocation
+
+**Built-in objects:**
+- Object, Array, Function
+- String, Number, Boolean, Symbol, BigInt
+- Map, Set, WeakMap, WeakSet
+- Date, RegExp, Math, JSON
+- Error types (Error, TypeError, RangeError, etc.)
+- Typed arrays and ArrayBuffer
+- Promise (execution model)
+- Proxy and Reflect
+
+**Language features:**
+- Variables (var, let, const, hoisting, TDZ)
+- Functions (declaration, expression, arrow, generator, async)
+- Classes (declaration, expression, inheritance, private fields)
+- Destructuring and spread
+- Iterators and for...of
+- Template literals
+- Optional chaining and nullish coalescing
+- Modules (import/export syntax support)
+
+**Safety:**
+- Instruction count budgets (`RunLimits.max_instructions`)
+- Wall-clock time limits (`RunLimits.max_wall_time`)
+- Interrupt/cancel mechanism
+- Stack overflow prevention
+- No resource leaks on termination
 
 ### NOT owned (see other workstreams)
 
 - DOM APIs (document, window, etc.) → `js_dom.md`
 - Web APIs (fetch, URL, timers) → `js_web_apis.md`
-- HTML script processing (<script>, modules) → `js_html_integration.md`
+- HTML script processing (<script>, modules, event loop) → `js_html_integration.md`
 
 ## Priority order (P0 → P1 → P2)
 
-### P0: Core reliability (scripts don't crash/hang)
+### P0: Reliability (scripts don't crash the browser)
 
 1. **Execution budgets**
-   - Instruction count limits
-   - Wall-clock time limits
-   - Interrupt/cancel mechanism
-   - Clean termination (no resource leaks)
+   - Instruction count limits (`RunLimits.max_instructions`)
+   - Wall-clock time limits (`RunLimits.max_wall_time`)
+   - Clean interrupt mechanism
+   - No resource leaks on termination
 
 2. **Memory safety**
-   - Heap size limits
-   - GC under memory pressure
+   - Heap size limits (`HeapLimits`)
+   - GC triggers under memory pressure
    - No unbounded allocations from JS
-   - Clean OOM handling
+   - Clean OOM handling (throw, don't panic)
 
 3. **Error handling**
-   - All errors are catchable (no panics from JS)
-   - Stack traces are accurate
-   - Error messages are helpful
+   - All JS errors are catchable (no Rust panics from JS)
+   - Accurate stack traces
+   - Helpful error messages
+   - Proper exception propagation
 
-4. **Basic spec compliance**
-   - Variables (var, let, const)
-   - Functions (declaration, expression, arrow)
-   - Objects and arrays
-   - Control flow
-   - Operators
+4. **Core language correctness**
+   - Variables work correctly (var hoisting, let/const TDZ)
+   - Functions work correctly (this binding, closures)
+   - Objects work correctly (prototype chain, property access)
+   - Arrays work correctly (length, holes, methods)
 
-### P1: Language completeness (real scripts work)
+### P1: Completeness (real scripts work)
 
 5. **Classes**
-   - Class declarations
-   - Constructors
-   - Methods (static, instance, getter/setter)
+   - Class declarations and expressions
+   - Constructors and super()
+   - Static and instance methods
+   - Getters and setters
+   - Private fields and methods (#field)
    - Inheritance (extends)
-   - Private fields/methods
 
-6. **Iterators and generators**
-   - for...of loops
-   - Spread operator
-   - Generator functions
-   - yield/yield*
-
-7. **Async/await**
-   - Promise creation and chaining
+6. **Async/await and Promises**
+   - Promise construction (new Promise, Promise.resolve/reject)
+   - Promise chaining (.then, .catch, .finally)
+   - Promise combinators (all, race, allSettled, any)
    - async functions
    - await expressions
-   - Promise.all/race/allSettled/any
+   - Top-level await (in modules)
+
+7. **Iterators and generators**
+   - Iterator protocol
+   - for...of loops
+   - Spread operator in arrays and calls
+   - Generator functions (function*)
+   - yield and yield*
+   - Async generators
 
 8. **Built-in completeness**
-   - Array methods (map, filter, reduce, find, etc.)
-   - String methods
-   - Object methods (keys, values, entries, assign, etc.)
-   - Math, Date, RegExp
-   - JSON.parse/stringify
-   - Typed arrays and ArrayBuffer
+   - Array: all methods (map, filter, reduce, find, flat, etc.)
+   - String: all methods (slice, split, replace, match, etc.)
+   - Object: keys, values, entries, assign, fromEntries, etc.
+   - RegExp: full spec compliance
+   - Date: construction, methods, formatting
+   - Math: all methods
+   - JSON: parse, stringify with replacer/reviver
 
 ### P2: Advanced features
 
-9. **Modules**
-   - Static import/export
-   - Dynamic import()
-   - Module namespace objects
-   - Circular dependencies
+9. **Proxies and Reflect**
+   - All Proxy traps
+   - Reflect methods
+   - Revocable proxies
 
-10. **Proxies and Reflect**
-    - Proxy handlers
-    - Reflect methods
+10. **WeakRef and FinalizationRegistry**
 
-11. **WeakRef and FinalizationRegistry**
+11. **Realms and compartments** (for browser security)
 
-12. **Performance**
+12. **Performance optimizations**
     - Inline caching
-    - Hidden classes/shapes
-    - JIT compilation (longer term)
+    - Hidden classes / shapes
+    - Polymorphic inline caches
+    - (JIT compilation is longer-term)
 
-## Test262 as oracle
+## test262 as oracle
 
-ECMAScript test262 is the authoritative conformance suite.
+ECMA-262 test262 is the authoritative conformance suite.
 
 ### Running test262
 
@@ -151,16 +188,19 @@ ECMAScript test262 is the authoritative conformance suite.
 # Initialize submodule
 git submodule update --init vendor/ecma-rs/test262-semantic/data
 
-# Run curated suite
+# Run curated suite via FastRender xtask
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask js test262
+
+# Or run directly
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --lib
 ```
 
 ### Tracking progress
 
-Test262 results should improve monotonically. Track:
-- Total passing tests
-- Passing tests per feature area
-- No regressions without justification
+- Track total passing tests
+- Track pass rate per feature area
+- No regressions without explicit justification
+- Target: 95%+ of "core" test262 tests passing
 
 ## Implementation notes
 
@@ -186,15 +226,32 @@ pub struct RunLimits {
 }
 ```
 
+### Key files
+
+```
+vendor/ecma-rs/vm-js/
+├── src/
+│   ├── lib.rs              — Public API
+│   ├── vm.rs               — VM struct, execution entry points
+│   ├── heap.rs             — GC heap
+│   ├── value.rs            — JavaScript values
+│   ├── object.rs           — JavaScript objects
+│   ├── builtins/           — Built-in objects (Array, String, etc.)
+│   ├── execution/          — Execution contexts, call stack
+│   └── ...
+├── tests/
+│   └── ...
+```
+
 ### Host hooks
 
 vm-js uses `VmHostHooks` for browser integration:
 - `host_enqueue_promise_job` — Promise job queue
 - `host_resolve_imported_module` — Module loading
 
-Implement these correctly for HTML integration.
+See `js_html_integration.md` for how FastRender implements these.
 
-### Testing in ecma-rs
+### Testing
 
 ```bash
 # Run vm-js tests
@@ -207,8 +264,9 @@ timeout -k 10 300 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
 ## Success criteria
 
 The JavaScript engine is **done** when:
-- 95%+ of test262 "core" tests pass (language features, built-ins)
-- No known crashes or hangs from valid JavaScript
+- 95%+ of test262 core tests pass (language features, built-ins)
+- No crashes or hangs from valid JavaScript
 - Execution budgets reliably prevent runaway scripts
 - Memory limits prevent OOM from JavaScript allocations
-- Real-world scripts from popular sites execute correctly
+- Real-world browser scripts execute correctly
+- Performance is acceptable for interactive use
