@@ -915,16 +915,30 @@ pub fn this_bigint_value(scope: &mut Scope<'_>, value: Value) -> Result<GcBigInt
       scope.heap().get_bigint(b)?;
       Ok(b)
     }
-    Value::Object(obj) => match get_internal_data_property(scope, obj, "vm-js.internal.BigIntData")?
-    {
-      Some(Value::BigInt(b)) => {
+    Value::Object(obj) => {
+      // Fast path: wrapper objects created by vm-js store the BigInt value under an internal symbol
+      // (not `Symbol.for`).
+      let marker_sym = match scope.heap().internal_bigint_data_symbol() {
+        Some(sym) => sym,
+        None => scope.heap_mut().ensure_internal_bigint_data_symbol()?,
+      };
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      if let Some(Value::BigInt(b)) = scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
         scope.heap().get_bigint(b)?;
-        Ok(b)
+        return Ok(b);
       }
-      _ => Err(VmError::TypeError(
-        "BigInt.prototype.valueOf called on incompatible receiver",
-      )),
-    },
+
+      // Compatibility path: older callers used `Symbol.for("vm-js.internal.BigIntData")` markers.
+      match get_internal_data_property(scope, obj, "vm-js.internal.BigIntData")? {
+        Some(Value::BigInt(b)) => {
+          scope.heap().get_bigint(b)?;
+          Ok(b)
+        }
+        _ => Err(VmError::TypeError(
+          "BigInt.prototype.valueOf called on incompatible receiver",
+        )),
+      }
+    }
     _ => Err(VmError::TypeError(
       "BigInt.prototype.valueOf called on incompatible receiver",
     )),

@@ -25,7 +25,7 @@ use parse_js::lex::KEYWORDS_MAPPING;
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Module linking/loading status.
@@ -903,6 +903,13 @@ fn module_record_from_top_level(
   let mut record = SourceTextModuleRecord::default();
   record.has_tla = module_contains_top_level_await(top, &mut ctx)?;
 
+  // `export { ... }` (without `from "mod"`) export entries are parsed as `LocalExportEntry` records,
+  // but later need to be reclassified as `IndirectExportEntry` records when they re-export an
+  // imported binding (including imported module namespace objects).
+  //
+  // Spec: `ParseModule`, step 10 (`importedBoundNames` re-export conversion).
+  let mut pending_export_entries_without_from: Vec<LocalExportEntry> = Vec::new();
+
   for stmt in &top.stx.body {
     ctx.budget_tick()?;
 
@@ -1113,13 +1120,12 @@ fn module_record_from_top_level(
             }
           }
           (ExportNames::Specific(names), None) => {
-            record
-              .local_export_entries
+            pending_export_entries_without_from
               .try_reserve(names.len())
               .map_err(|_| VmError::OutOfMemory)?;
             for name in names {
               ctx.budget_tick()?;
-              record.local_export_entries.push(LocalExportEntry {
+              pending_export_entries_without_from.push(LocalExportEntry {
                 export_name: try_string_from_identifier_name(&name.stx.alias.stx.name)?,
                 local_name: try_string_from_identifier_name(name.stx.exportable.as_str())?,
               });
@@ -1184,6 +1190,61 @@ fn module_record_from_top_level(
       }
 
       _ => {}
+    }
+  }
+
+  // Convert `export { local as exported }` entries that re-export imported bindings (including
+  // imported namespace objects) into `[[IndirectExportEntries]]`. This must happen after we have
+  // parsed the full `[[ImportEntries]]` list, because import/export declarations can appear in any
+  // order within a module.
+  if !pending_export_entries_without_from.is_empty() && !record.import_entries.is_empty() {
+    // Map `[[LocalName]]` -> import entry for fast lookup.
+    let mut import_by_local_name: HashMap<&str, &ImportEntry> = HashMap::new();
+    import_by_local_name
+      .try_reserve(record.import_entries.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for entry in &record.import_entries {
+      ctx.budget_tick()?;
+      import_by_local_name.insert(entry.local_name.as_str(), entry);
+    }
+
+    for entry in pending_export_entries_without_from {
+      ctx.budget_tick()?;
+      if let Some(import_entry) = import_by_local_name.get(entry.local_name.as_str()) {
+        record
+          .indirect_export_entries
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+
+        // The indirect export entry references the original import, not the local binding.
+        let module_request = clone_module_request(&import_entry.module_request, &mut ctx)?;
+        let import_name = match &import_entry.import_name {
+          ImportName::All => ImportName::All,
+          ImportName::Name(name) => ImportName::Name(try_string_from_str(name)?),
+        };
+        record.indirect_export_entries.push(IndirectExportEntry {
+          export_name: entry.export_name,
+          module_request,
+          import_name,
+        });
+      } else {
+        record
+          .local_export_entries
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        record.local_export_entries.push(entry);
+      }
+    }
+  } else {
+    // No imports (or no pending entries): all `export { ... }` entries are local exports.
+    if !pending_export_entries_without_from.is_empty() {
+      record
+        .local_export_entries
+        .try_reserve(pending_export_entries_without_from.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      record
+        .local_export_entries
+        .extend(pending_export_entries_without_from);
     }
   }
 
@@ -2663,7 +2724,7 @@ fn syntax_error(loc: parse_js::loc::Loc, message: &str) -> VmError {
 
 #[cfg(test)]
 mod tests {
-  use super::{LocalExportEntry, SourceTextModuleRecord};
+  use super::{ImportName, IndirectExportEntry, LocalExportEntry, SourceTextModuleRecord};
   use crate::{Heap, HeapLimits, SourceText, TerminationReason, Vm, VmError, VmOptions};
   use std::sync::Arc;
 
@@ -2739,6 +2800,35 @@ mod tests {
           local_name: String::from("rest"),
         },
       ]
+    );
+  }
+
+  #[test]
+  fn export_list_reexports_namespace_import_as_indirect_export() {
+    let record = parse("import * as foo from \"m\"; export { foo };").unwrap();
+    assert!(record.local_export_entries.is_empty());
+    assert_eq!(
+      record.indirect_export_entries,
+      vec![IndirectExportEntry {
+        export_name: "foo".to_string(),
+        module_request: crate::ModuleRequest::new("m", vec![]),
+        import_name: ImportName::All,
+      }]
+    );
+  }
+
+  #[test]
+  fn export_list_reexports_named_import_as_indirect_export() {
+    let record =
+      parse("import { foo as bar } from \"m\"; export { bar as baz };").unwrap();
+    assert!(record.local_export_entries.is_empty());
+    assert_eq!(
+      record.indirect_export_entries,
+      vec![IndirectExportEntry {
+        export_name: "baz".to_string(),
+        module_request: crate::ModuleRequest::new("m", vec![]),
+        import_name: ImportName::Name("foo".to_string()),
+      }]
     );
   }
 

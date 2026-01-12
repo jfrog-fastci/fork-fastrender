@@ -214,6 +214,31 @@ impl<'a> Scope<'a> {
     if self.heap().is_proxy_object(obj) {
       return proxy_get_own_property_with_tick(vm, self, host, hooks, obj, key, tick);
     }
+
+    // Module Namespace Exotic Objects `[[GetOwnProperty]]` must compute `[[Value]]` via `[[Get]]`,
+    // which can throw `ReferenceError` for TDZ exports. `ordinary_get_own_property_with_tick` does
+    // not have access to a `Vm` to translate heap-level TDZ sentinels to real error objects, so
+    // handle this case here.
+    if self.heap().object_is_module_namespace(obj)? {
+      if let PropertyKey::String(s) = key {
+        let Some(export) = self.heap().module_namespace_export(obj, s)? else {
+          return Ok(None);
+        };
+        let mut scope = self.reborrow();
+        scope.push_roots(&[Value::Object(obj), Value::String(s)])?;
+        tick(vm)?;
+        let value = scope.module_namespace_get_export_value(vm, obj, export)?;
+        return Ok(Some(PropertyDescriptor {
+          enumerable: true,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value,
+            writable: true,
+          },
+        }));
+      }
+    }
+
     let mut tick0 = || tick(vm);
     self.ordinary_get_own_property_with_tick(obj, key, &mut tick0)
   }
@@ -516,6 +541,29 @@ impl<'a> Scope<'a> {
 
       let proxy = self.heap().get_proxy_data(current)?;
       let Some(proxy) = proxy else {
+        // Module Namespace Exotic Objects `[[GetOwnProperty]]` must compute `[[Value]]` via `[[Get]]`,
+        // which can throw `ReferenceError` for TDZ exports. `ordinary_get_own_property_with_tick` does
+        // not have access to a `Vm` to translate heap-level TDZ sentinels to real error objects, so
+        // handle this case here.
+        if self.heap().object_is_module_namespace(current)? {
+          if let PropertyKey::String(s) = key {
+            let Some(export) = self.heap().module_namespace_export(current, s)? else {
+              return Ok(None);
+            };
+            let mut scope = self.reborrow();
+            scope.push_roots(&[Value::Object(current), Value::String(s)])?;
+            let value = scope.module_namespace_get_export_value(vm, current, export)?;
+            return Ok(Some(PropertyDescriptor {
+              enumerable: true,
+              configurable: false,
+              kind: PropertyKind::Data {
+                value,
+                writable: true,
+              },
+            }));
+          }
+        }
+
         return self.ordinary_get_own_property_with_tick(current, key, || vm.tick());
       };
 
