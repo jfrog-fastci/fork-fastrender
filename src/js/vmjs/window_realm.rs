@@ -8084,23 +8084,46 @@ fn element_closest_native(
   }
 }
 
-fn dom_rect_value_to_number_or_zero(scope: &mut Scope<'_>, value: Value) -> Result<f64, VmError> {
+fn dom_rect_value_to_number_or_zero(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<f64, VmError> {
   match value {
     Value::Undefined => Ok(0.0),
-    other => scope.heap_mut().to_number(other),
+    other => {
+      // Root `other` while running `ToNumber`: it can allocate and trigger GC via user code.
+      let mut scope = scope.reborrow();
+      scope.push_root(other)?;
+      scope.to_number(vm, host, hooks, other)
+    }
   }
 }
 
 fn dom_rect_arg_to_number_or_zero(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   args: &[Value],
   idx: usize,
 ) -> Result<f64, VmError> {
-  dom_rect_value_to_number_or_zero(scope, args.get(idx).copied().unwrap_or(Value::Undefined))
+  dom_rect_value_to_number_or_zero(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(idx).copied().unwrap_or(Value::Undefined),
+  )
 }
 
-fn dom_rect_get_own_number_or_zero(
+fn dom_rect_get_number_or_zero(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   obj: GcObject,
   name: &str,
 ) -> Result<f64, VmError> {
@@ -8108,11 +8131,8 @@ fn dom_rect_get_own_number_or_zero(
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(obj))?;
   let key = alloc_key(&mut scope, name)?;
-  let value = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &key)?
-    .unwrap_or(Value::Undefined);
-  dom_rect_value_to_number_or_zero(&mut scope, value)
+  let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, key)?;
+  dom_rect_value_to_number_or_zero(vm, &mut scope, host, hooks, value)
 }
 
 fn dom_rect_create_instance(
@@ -8157,10 +8177,10 @@ fn dom_rect_create_instance(
 }
 
 fn dom_rect_top_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -8168,14 +8188,16 @@ fn dom_rect_top_get_native(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("DOMRectReadOnly.top must be called on an object"));
   };
-  Ok(Value::Number(dom_rect_get_own_number_or_zero(scope, obj, "y")?))
+  Ok(Value::Number(dom_rect_get_number_or_zero(
+    vm, scope, host, hooks, obj, "y",
+  )?))
 }
 
 fn dom_rect_left_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -8183,14 +8205,16 @@ fn dom_rect_left_get_native(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("DOMRectReadOnly.left must be called on an object"));
   };
-  Ok(Value::Number(dom_rect_get_own_number_or_zero(scope, obj, "x")?))
+  Ok(Value::Number(dom_rect_get_number_or_zero(
+    vm, scope, host, hooks, obj, "x",
+  )?))
 }
 
 fn dom_rect_right_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -8200,16 +8224,16 @@ fn dom_rect_right_get_native(
       "DOMRectReadOnly.right must be called on an object",
     ));
   };
-  let x = dom_rect_get_own_number_or_zero(scope, obj, "x")?;
-  let width = dom_rect_get_own_number_or_zero(scope, obj, "width")?;
+  let x = dom_rect_get_number_or_zero(vm, scope, host, hooks, obj, "x")?;
+  let width = dom_rect_get_number_or_zero(vm, scope, host, hooks, obj, "width")?;
   Ok(Value::Number(x + width))
 }
 
 fn dom_rect_bottom_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -8219,16 +8243,16 @@ fn dom_rect_bottom_get_native(
       "DOMRectReadOnly.bottom must be called on an object",
     ));
   };
-  let y = dom_rect_get_own_number_or_zero(scope, obj, "y")?;
-  let height = dom_rect_get_own_number_or_zero(scope, obj, "height")?;
+  let y = dom_rect_get_number_or_zero(vm, scope, host, hooks, obj, "y")?;
+  let height = dom_rect_get_number_or_zero(vm, scope, host, hooks, obj, "height")?;
   Ok(Value::Number(y + height))
 }
 
 fn dom_rect_to_json_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -8239,10 +8263,10 @@ fn dom_rect_to_json_native(
     ));
   };
 
-  let x = dom_rect_get_own_number_or_zero(scope, obj, "x")?;
-  let y = dom_rect_get_own_number_or_zero(scope, obj, "y")?;
-  let width = dom_rect_get_own_number_or_zero(scope, obj, "width")?;
-  let height = dom_rect_get_own_number_or_zero(scope, obj, "height")?;
+  let x = dom_rect_get_number_or_zero(vm, scope, host, hooks, obj, "x")?;
+  let y = dom_rect_get_number_or_zero(vm, scope, host, hooks, obj, "y")?;
+  let width = dom_rect_get_number_or_zero(vm, scope, host, hooks, obj, "width")?;
+  let height = dom_rect_get_number_or_zero(vm, scope, host, hooks, obj, "height")?;
   let left = x;
   let top = y;
   let right = x + width;
@@ -8283,18 +8307,18 @@ fn dom_rect_to_json_native(
 }
 
 fn dom_rect_read_only_constructor_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let x = dom_rect_arg_to_number_or_zero(scope, args, 0)?;
-  let y = dom_rect_arg_to_number_or_zero(scope, args, 1)?;
-  let width = dom_rect_arg_to_number_or_zero(scope, args, 2)?;
-  let height = dom_rect_arg_to_number_or_zero(scope, args, 3)?;
+  let x = dom_rect_arg_to_number_or_zero(vm, scope, host, hooks, args, 0)?;
+  let y = dom_rect_arg_to_number_or_zero(vm, scope, host, hooks, args, 1)?;
+  let width = dom_rect_arg_to_number_or_zero(vm, scope, host, hooks, args, 2)?;
+  let height = dom_rect_arg_to_number_or_zero(vm, scope, host, hooks, args, 3)?;
   dom_rect_create_instance(scope, callee, true, x, y, width, height)
 }
 
@@ -8315,18 +8339,18 @@ fn dom_rect_read_only_constructor_construct_native(
 }
 
 fn dom_rect_constructor_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let x = dom_rect_arg_to_number_or_zero(scope, args, 0)?;
-  let y = dom_rect_arg_to_number_or_zero(scope, args, 1)?;
-  let width = dom_rect_arg_to_number_or_zero(scope, args, 2)?;
-  let height = dom_rect_arg_to_number_or_zero(scope, args, 3)?;
+  let x = dom_rect_arg_to_number_or_zero(vm, scope, host, hooks, args, 0)?;
+  let y = dom_rect_arg_to_number_or_zero(vm, scope, host, hooks, args, 1)?;
+  let width = dom_rect_arg_to_number_or_zero(vm, scope, host, hooks, args, 2)?;
+  let height = dom_rect_arg_to_number_or_zero(vm, scope, host, hooks, args, 3)?;
   dom_rect_create_instance(scope, callee, false, x, y, width, height)
 }
 
@@ -8366,7 +8390,10 @@ fn dom_rect_from_rect_slots(scope: &Scope<'_>, callee: GcObject) -> Result<(GcOb
 }
 
 fn dom_rect_init_get_number_or_zero(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   init: GcObject,
   name: &str,
 ) -> Result<f64, VmError> {
@@ -8374,18 +8401,15 @@ fn dom_rect_init_get_number_or_zero(
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(init))?;
   let key = alloc_key(&mut scope, name)?;
-  let value = scope
-    .heap()
-    .object_get_own_data_property_value(init, &key)?
-    .unwrap_or(Value::Undefined);
-  dom_rect_value_to_number_or_zero(&mut scope, value)
+  let value = vm.get_with_host_and_hooks(host, &mut scope, hooks, init, key)?;
+  dom_rect_value_to_number_or_zero(vm, &mut scope, host, hooks, value)
 }
 
 fn dom_rect_from_rect_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -8393,14 +8417,18 @@ fn dom_rect_from_rect_native(
   let (ctor, read_only) = dom_rect_from_rect_slots(scope, callee)?;
   let init = args.get(0).copied().unwrap_or(Value::Undefined);
 
-  let (x, y, width, height) = match init {
-    Value::Object(obj) => (
-      dom_rect_init_get_number_or_zero(scope, obj, "x")?,
-      dom_rect_init_get_number_or_zero(scope, obj, "y")?,
-      dom_rect_init_get_number_or_zero(scope, obj, "width")?,
-      dom_rect_init_get_number_or_zero(scope, obj, "height")?,
-    ),
-    _ => (0.0, 0.0, 0.0, 0.0),
+  let (x, y, width, height) = if matches!(init, Value::Undefined | Value::Null) {
+    (0.0, 0.0, 0.0, 0.0)
+  } else {
+    // Spec: convert `other` to a `DOMRectInit` dictionary, which uses `ToObject` + `Get` for each
+    // member. This allows inherited properties, accessors, and boxed primitives.
+    let init_obj = scope.to_object(vm, host, hooks, init)?;
+    (
+      dom_rect_init_get_number_or_zero(vm, scope, host, hooks, init_obj, "x")?,
+      dom_rect_init_get_number_or_zero(vm, scope, host, hooks, init_obj, "y")?,
+      dom_rect_init_get_number_or_zero(vm, scope, host, hooks, init_obj, "width")?,
+      dom_rect_init_get_number_or_zero(vm, scope, host, hooks, init_obj, "height")?,
+    )
   };
 
   dom_rect_create_instance(scope, ctor, read_only, x, y, width, height)
