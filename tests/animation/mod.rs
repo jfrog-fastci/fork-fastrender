@@ -21,5 +21,5 @@ mod browser_document_transition_state;
 mod transitions_dynamic_engine_test;
 mod transitions_dynamic_value_pair_discrete_test;
 
-// Formerly `tests/animation_tests.rs` (top-level integration-test binary).
+// Formerly a standalone `tests/*.rs` integration-test binary; now included from `tests/integration.rs`.
 mod animation_tests;
