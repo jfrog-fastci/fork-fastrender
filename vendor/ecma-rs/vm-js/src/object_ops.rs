@@ -1324,6 +1324,12 @@ impl<'a> Scope<'a> {
     // successful so strict-mode assignments do not throw.
     if self.heap().is_typed_array_object(obj) {
       if let Some(index) = self.heap().array_index(&key) {
+        let Value::Object(receiver_obj) = receiver else {
+          return Ok(false);
+        };
+        if receiver_obj != obj {
+          return Ok(false);
+        }
         let _ = self
           .heap_mut()
           .typed_array_set_element_value(obj, index as usize, value)?;
@@ -1426,9 +1432,16 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
-    // Integer-indexed exotic objects (typed arrays): see `ordinary_set`.
+    // Integer-indexed exotic objects (typed arrays): numeric index keys never consult host exotic
+    // setters or the prototype chain.
     if self.heap().is_typed_array_object(obj) {
       if let Some(index) = self.heap().array_index(&key) {
+        let Value::Object(receiver_obj) = receiver else {
+          return Ok(false);
+        };
+        if receiver_obj != obj {
+          return Ok(false);
+        }
         let _ = self
           .heap_mut()
           .typed_array_set_element_value(obj, index as usize, value)?;

@@ -227,13 +227,11 @@ pub struct SourceTextModuleRecord {
   pub requested_modules: Vec<ModuleRequest>,
   pub import_entries: Vec<ImportEntry>,
   pub status: ModuleStatus,
-  /// Evaluator-specific stored error completion for a module that finished evaluation with an
-  /// error.
+  /// Cached thrown value for modules in the [`ModuleStatus::Errored`] state.
   ///
-  /// This is currently represented as the message for a `VmError::Unimplemented` rejection reason.
-  /// It is used to make repeated `Evaluate()` calls deterministic, and to support host embeddings
-  /// (like FastRender) that abort in-progress top-level await evaluation.
-  pub(crate) evaluation_error_unimplemented: Option<&'static str>,
+  /// Stored as a persistent GC root so that subsequent linking/evaluation attempts can fail
+  /// deterministically with the **same** thrown value (object identity is preserved).
+  pub(crate) error: Option<RootId>,
   /// `[[HasTLA]]` – whether this module contains top-level `await`.
   pub has_tla: bool,
   pub local_export_entries: Vec<LocalExportEntry>,

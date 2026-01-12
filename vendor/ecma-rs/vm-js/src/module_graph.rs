@@ -385,6 +385,9 @@ impl ModuleGraph {
       if let Some(root) = module.import_meta.take() {
         heap.remove_root(root);
       }
+      if let Some(root) = module.error.take() {
+        heap.remove_root(root);
+      }
 
       // Cyclic module record persistent roots (top-level await state / cached errors).
       module.teardown_top_level_capability(heap);
@@ -448,6 +451,7 @@ impl ModuleGraph {
           .unwrap_or(Value::Undefined),
         None => Value::Undefined,
       };
+      let _ = self.cache_module_error_value(&mut scope, idx, reason);
 
       if let Some(reject) = scope.heap().get_root(roots.reject_root()) {
         // Best-effort: ensure the promise settles deterministically so embeddings that inspect the
@@ -502,11 +506,18 @@ impl ModuleGraph {
       roots.teardown(scope.heap_mut());
     }
 
-    // Mark the module as evaluated-with-error so further evaluation attempts fail deterministically
-    // (mirrors ECMA-262's "evaluated with error" pattern).
-    if let Some(record) = self.modules.get_mut(idx) {
-      record.status = ModuleStatus::Evaluated;
-      record.evaluation_error_unimplemented = Some(TLA_ABORT_REASON);
+    // Mark the module as errored so further evaluation attempts fail deterministically.
+    if idx < self.modules.len() {
+      self.modules[idx].status = ModuleStatus::Errored;
+      if self.modules[idx].error.is_none() {
+        let mut scope = heap.scope();
+        let reason = match vm.intrinsics() {
+          Some(intr) => crate::new_error(&mut scope, intr.error_prototype(), "Error", TLA_ABORT_REASON)
+            .unwrap_or(Value::Undefined),
+          None => Value::Undefined,
+        };
+        let _ = self.cache_module_error_value(&mut scope, idx, reason);
+      }
     }
   }
 
@@ -761,6 +772,61 @@ impl ModuleGraph {
     Ok((obj, sorted_exports))
   }
 
+  fn cache_module_error_value(
+    &mut self,
+    scope: &mut Scope<'_>,
+    module_index: usize,
+    value: Value,
+  ) -> Result<(), VmError> {
+    if self.modules[module_index].error.is_some() {
+      return Ok(());
+    }
+    let root = scope.heap_mut().add_root(value)?;
+    self.modules[module_index].error = Some(root);
+    self.torn_down = false;
+    Ok(())
+  }
+
+  fn cache_module_error_from_err(
+    &mut self,
+    scope: &mut Scope<'_>,
+    module_index: usize,
+    err: &VmError,
+  ) -> Result<(), VmError> {
+    let Some(thrown) = err.thrown_value() else {
+      return Ok(());
+    };
+    self.cache_module_error_value(scope, module_index, thrown)
+  }
+
+  fn module_errored_value(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    module_index: usize,
+  ) -> Result<Value, VmError> {
+    if let Some(root) = self.modules[module_index].error {
+      return scope
+        .heap()
+        .get_root(root)
+        .ok_or_else(|| VmError::InvariantViolation("module error root missing from heap"));
+    }
+
+    // If we don't have a cached error value, this is most likely an internal bug (the module should
+    // only enter `Errored` via a throw completion). Best-effort: if intrinsics are available,
+    // allocate a generic `Error` instance so callers still observe an ECMAScript-style abrupt
+    // completion.
+    let Some(intr) = vm.intrinsics() else {
+      return Err(VmError::InvariantViolation(
+        "module is in an errored state but no error value is cached",
+      ));
+    };
+
+    let value = crate::new_error(scope, intr.error_prototype(), "Error", "module is in an errored state")?;
+    self.cache_module_error_value(scope, module_index, value)?;
+    Ok(value)
+  }
+
   /// Links a module using an existing [`Scope`].
   ///
   /// This is a lower-level variant of [`ModuleGraph::link`] for callers that already hold a `Scope`
@@ -809,11 +875,8 @@ impl ModuleGraph {
       | ModuleStatus::Evaluated => return Ok(()),
       ModuleStatus::Linking => return Ok(()),
       ModuleStatus::Errored => {
-        if let Some(root) = self.modules[idx].evaluation_error.clone() {
-          let value = root.get(scope.heap()).ok_or_else(|| VmError::invalid_handle())?;
-          return Err(VmError::Throw(value));
-        }
-        return Err(VmError::Unimplemented("module is in an errored state"));
+        let value = self.module_errored_value(vm, scope, idx)?;
+        return Err(VmError::Throw(value));
       }
       ModuleStatus::New | ModuleStatus::Unlinked => {}
     }
@@ -826,8 +889,8 @@ impl ModuleGraph {
     // Mark linking in progress (cycle-safe).
     self.modules[idx].status = ModuleStatus::Linking;
     let link_result = (|| -> Result<(), VmError> {
-      // Ensure the module has an environment root allocated early so cycles can create import bindings
-      // to it.
+      // Ensure the module has an environment root allocated early so cycles can create import
+      // bindings to it.
       if self.modules[idx].environment.is_none() {
         let env = scope.env_create(self.global_lexical_env)?;
         scope.push_env_root(env)?;
@@ -1010,12 +1073,7 @@ impl ModuleGraph {
       }
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
-        if self.modules[idx].evaluation_error.is_none() {
-          if let Some(thrown) = err.thrown_value() {
-            self.modules[idx].set_evaluation_error(scope, thrown)?;
-            self.torn_down = false;
-          }
-        }
+        self.cache_module_error_from_err(scope, idx, &err)?;
         Err(err)
       }
     }
@@ -1041,8 +1099,6 @@ impl ModuleGraph {
     let mut graph_guard = ModuleGraphPtrGuard::install(vm, self);
 
     let result = (|| -> Result<Value, VmError> {
-      self.link_with_scope(vm, scope, global_object, module)?;
-
       let mut eval_scope = scope.reborrow();
       let intr = vm
         .intrinsics()
@@ -1058,6 +1114,31 @@ impl ModuleGraph {
       let promise = cap.promise;
       let roots = [cap.promise, cap.resolve, cap.reject];
       eval_scope.push_roots(&roots)?;
+
+      // Link before evaluating. If linking fails (including the module already being in an errored
+      // state), reject the evaluation promise with the thrown/cached value.
+      if let Err(err) = self.link_with_scope(vm, &mut eval_scope, global_object, module) {
+        let reason = if let Some(thrown) = err.thrown_value() {
+          thrown
+        } else {
+          let message = err.to_string();
+          crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
+            .unwrap_or(Value::Undefined)
+        };
+        attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
+        eval_scope.push_root(cap.reject)?;
+        eval_scope.push_root(reason)?;
+        let _ = vm.call_with_host_and_hooks(
+          host,
+          &mut eval_scope,
+          hooks,
+          cap.reject,
+          Value::Undefined,
+          &[reason],
+        )?;
+
+        return Ok(promise);
+      }
 
       let idx = module_index(module);
 
@@ -1286,15 +1367,14 @@ impl ModuleGraph {
   ) -> Result<(), VmError> {
     let idx = module_index(module);
     let status = self.modules[idx].status;
-    let evaluation_error = self.modules[idx].evaluation_error_unimplemented;
     match status {
-      ModuleStatus::Evaluated => match evaluation_error {
-        Some(msg) => return Err(VmError::Unimplemented(msg)),
-        None => return Ok(()),
-      },
+      ModuleStatus::Evaluated => return Ok(()),
       ModuleStatus::Evaluating | ModuleStatus::EvaluatingAsync => return Ok(()),
       ModuleStatus::Linked => {}
-      ModuleStatus::Errored => return Err(VmError::Unimplemented("module is in an errored state")),
+      ModuleStatus::Errored => {
+        let value = self.module_errored_value(vm, scope, idx)?;
+        return Err(VmError::Throw(value));
+      }
       _ => return Err(VmError::Unimplemented("module is not linked")),
     }
 
@@ -1304,55 +1384,60 @@ impl ModuleGraph {
 
     self.modules[idx].status = ModuleStatus::Evaluating;
 
-    let requested_modules = self.modules[idx].requested_modules.clone();
-    const EVAL_TICK_EVERY: usize = 32;
-    for (i, request) in requested_modules.into_iter().enumerate() {
-      if i % EVAL_TICK_EVERY == 0 && i != 0 {
-        vm.tick()?;
+    let eval_result = (|| -> Result<(), VmError> {
+      let requested_modules = self.modules[idx].requested_modules.clone();
+      const EVAL_TICK_EVERY: usize = 32;
+      for (i, request) in requested_modules.into_iter().enumerate() {
+        if i % EVAL_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
+        }
+        let imported = self
+          .get_imported_module(module, &request)
+          .ok_or(VmError::Unimplemented("unlinked module request"))?;
+        self.eval_inner(vm, scope, global_object, realm_id, imported, host, hooks)?;
       }
-      let imported = self
-        .get_imported_module(module, &request)
-        .ok_or(VmError::Unimplemented("unlinked module request"))?;
-      self.eval_inner(vm, scope, global_object, realm_id, imported, host, hooks)?;
-    }
 
-    let env_root = self.modules[idx]
-      .environment
-      .ok_or(VmError::InvariantViolation("module environment missing"))?;
-    let module_env = scope
-      .heap()
-      .get_env_root(env_root)
-      .ok_or_else(|| VmError::invalid_handle())?;
+      let env_root = self.modules[idx]
+        .environment
+        .ok_or(VmError::InvariantViolation("module environment missing"))?;
+      let module_env = scope
+        .heap()
+        .get_env_root(env_root)
+        .ok_or_else(|| VmError::invalid_handle())?;
 
-    let source = self.modules[idx]
-      .source
-      .clone()
-      .ok_or(VmError::Unimplemented("module source missing"))?;
-    let ast = self.modules[idx]
-      .ast
-      .clone()
-      .ok_or(VmError::Unimplemented("module AST missing"))?;
+      let source = self.modules[idx]
+        .source
+        .clone()
+        .ok_or(VmError::Unimplemented("module source missing"))?;
+      let ast = self.modules[idx]
+        .ast
+        .clone()
+        .ok_or(VmError::Unimplemented("module AST missing"))?;
 
-    let run_result = run_module(
-      vm,
-      scope,
-      host,
-      hooks,
-      global_object,
-      realm_id,
-      module,
-      module_env,
-      source,
-      &ast.stx.body,
-    );
+      run_module(
+        vm,
+        scope,
+        host,
+        hooks,
+        global_object,
+        realm_id,
+        module,
+        module_env,
+        source,
+        &ast.stx.body,
+      )?;
 
-    match run_result {
+      Ok(())
+    })();
+
+    match eval_result {
       Ok(()) => {
         self.modules[idx].status = ModuleStatus::Evaluated;
         Ok(())
       }
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
+        self.cache_module_error_from_err(scope, idx, &err)?;
         Err(err)
       }
     }
@@ -1370,15 +1455,16 @@ impl ModuleGraph {
   ) -> Result<ModuleTlaStepResult, VmError> {
     let idx = module_index(module);
     let status = self.modules[idx].status;
-    let evaluation_error = self.modules[idx].evaluation_error_unimplemented;
     match status {
-      ModuleStatus::Evaluated => match evaluation_error {
-        Some(msg) => return Err(VmError::Unimplemented(msg)),
-        None => return Ok(ModuleTlaStepResult::Completed),
-      },
-      ModuleStatus::Evaluating | ModuleStatus::EvaluatingAsync => return Ok(ModuleTlaStepResult::Completed),
+      ModuleStatus::Evaluated => return Ok(ModuleTlaStepResult::Completed),
+      ModuleStatus::Evaluating | ModuleStatus::EvaluatingAsync => {
+        return Ok(ModuleTlaStepResult::Completed)
+      }
       ModuleStatus::Linked => {}
-      ModuleStatus::Errored => return Err(VmError::Unimplemented("module is in an errored state")),
+      ModuleStatus::Errored => {
+        let value = self.module_errored_value(vm, scope, idx)?;
+        return Err(VmError::Throw(value));
+      }
       _ => return Err(VmError::Unimplemented("module is not linked")),
     }
 
@@ -1387,20 +1473,31 @@ impl ModuleGraph {
 
     self.modules[idx].status = ModuleStatus::Evaluating;
 
-    // Evaluate dependencies synchronously (top-level await in dependencies remains unsupported).
-    let requested_modules = self.modules[idx].requested_modules.clone();
-    const EVAL_TICK_EVERY: usize = 32;
-    for (i, request) in requested_modules.into_iter().enumerate() {
-      if i % EVAL_TICK_EVERY == 0 && i != 0 {
-        vm.tick()?;
+    let step = (|| -> Result<ModuleTlaStepResult, VmError> {
+      // Evaluate dependencies synchronously (top-level await in dependencies remains unsupported).
+      let requested_modules = self.modules[idx].requested_modules.clone();
+      const EVAL_TICK_EVERY: usize = 32;
+      for (i, request) in requested_modules.into_iter().enumerate() {
+        if i % EVAL_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
+        }
+        let imported = self
+          .get_imported_module(module, &request)
+          .ok_or(VmError::Unimplemented("unlinked module request"))?;
+        self.eval_inner(vm, scope, global_object, realm_id, imported, host, hooks)?;
       }
-      let imported = self
-        .get_imported_module(module, &request)
-        .ok_or(VmError::Unimplemented("unlinked module request"))?;
-      self.eval_inner(vm, scope, global_object, realm_id, imported, host, hooks)?;
-    }
 
-    self.eval_tla_body_from_index(vm, scope, global_object, realm_id, module, host, hooks, 0)
+      self.eval_tla_body_from_index(vm, scope, global_object, realm_id, module, host, hooks, 0)
+    })();
+
+    match step {
+      Ok(step) => Ok(step),
+      Err(err) => {
+        self.modules[idx].status = ModuleStatus::Errored;
+        self.cache_module_error_from_err(scope, idx, &err)?;
+        Err(err)
+      }
+    }
   }
 
   fn eval_tla_body_from_index(
@@ -1685,6 +1782,7 @@ pub(crate) fn module_tla_on_fulfilled(
     Err(err) => {
       state.restore_module_graph(vm);
       graph.modules[idx].status = ModuleStatus::Errored;
+      graph.cache_module_error_from_err(scope, idx, &err)?;
 
       let Some(roots) = state.promise_roots.take() else {
         return Err(VmError::InvariantViolation(
@@ -1756,6 +1854,10 @@ pub(crate) fn module_tla_on_rejected(
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
 
   let result = (|| {
+    // Cache the rejection reason so subsequent module evaluation attempts fail deterministically
+    // with the same thrown value (preserving object identity).
+    graph.cache_module_error_value(scope, idx, reason)?;
+
     let cap = roots
       .capability(scope.heap())
       .ok_or_else(VmError::invalid_handle)?;

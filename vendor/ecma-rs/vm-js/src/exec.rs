@@ -9565,13 +9565,42 @@ fn async_handle_body_result(
         async_teardown_continuation(&mut await_scope, cont);
         return Err(err);
       }
-      let awaited_promise = match crate::promise_ops::promise_resolve_with_host_and_hooks(
-        vm,
-        &mut await_scope,
-        host,
-        hooks,
-        await_value,
-      ) {
+      // `await` must not trigger Promise species side effects. In particular, coercing a Promise
+      // via `PromiseResolve(%Promise%, promise)` can (via thenable resolution jobs) call
+      // `promise.then`, which creates a derived promise using `promise.constructor[Symbol.species]`.
+      //
+      // We still need to perform `Get(promise, \"constructor\")` for side effects/throws (per
+      // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
+      // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
+      // undefined)` is sufficient and avoids Promise species side effects.
+      let resolve_res = (|| -> Result<Value, VmError> {
+        if let Value::Object(obj) = await_value {
+          if await_scope.heap().is_promise_object(obj) {
+            let ctor_key_s = await_scope.alloc_string("constructor")?;
+            await_scope.push_root(Value::String(ctor_key_s))?;
+            let ctor_key = PropertyKey::from_string(ctor_key_s);
+            let _ = await_scope.ordinary_get_with_host_and_hooks(
+              vm,
+              host,
+              hooks,
+              obj,
+              ctor_key,
+              Value::Object(obj),
+            )?;
+            return Ok(await_value);
+          }
+        }
+
+        crate::promise_ops::promise_resolve_with_host_and_hooks(
+          vm,
+          &mut await_scope,
+          host,
+          hooks,
+          await_value,
+        )
+      })();
+
+      let awaited_promise = match resolve_res {
         Ok(p) => p,
         Err(VmError::Throw(reason)) => {
           // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
@@ -20301,13 +20330,42 @@ pub(crate) fn run_ecma_function(
           return Err(err);
         }
 
-        let awaited_promise = match crate::promise_ops::promise_resolve_with_host_and_hooks(
-          evaluator.vm,
-          &mut root_scope,
-          &mut *evaluator.host,
-          &mut *evaluator.hooks,
-          await_value,
-        ) {
+        let resolve_res = (|| -> Result<Value, VmError> {
+          if let Value::Object(obj) = await_value {
+            if root_scope.heap().is_promise_object(obj) {
+              let ctor_key_s = root_scope.alloc_string("constructor")?;
+              root_scope.push_root(Value::String(ctor_key_s))?;
+              let ctor_key = PropertyKey::from_string(ctor_key_s);
+              let _ = root_scope.ordinary_get_with_host_and_hooks(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                obj,
+                ctor_key,
+                Value::Object(obj),
+              )?;
+              Ok(await_value)
+            } else {
+              crate::promise_ops::promise_resolve_with_host_and_hooks(
+                evaluator.vm,
+                &mut root_scope,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                await_value,
+              )
+            }
+          } else {
+            crate::promise_ops::promise_resolve_with_host_and_hooks(
+              evaluator.vm,
+              &mut root_scope,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              await_value,
+            )
+          }
+        })();
+
+        let awaited_promise = match resolve_res {
           Ok(p) => p,
           Err(VmError::Throw(reason)) => {
             // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
@@ -20752,13 +20810,38 @@ pub(crate) fn run_module_until_await(
               let awaited_value = evaluator.eval_expr(scope, &unary.stx.argument)?;
               let mut promise_scope = scope.reborrow();
               promise_scope.push_root(awaited_value)?;
-              let promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut promise_scope,
-                host,
-                hooks,
-                awaited_value,
-              )?;
+              let promise = if let Value::Object(obj) = awaited_value {
+                if promise_scope.heap().is_promise_object(obj) {
+                  let ctor_key_s = promise_scope.alloc_string("constructor")?;
+                  promise_scope.push_root(Value::String(ctor_key_s))?;
+                  let ctor_key = PropertyKey::from_string(ctor_key_s);
+                  let _ = promise_scope.ordinary_get_with_host_and_hooks(
+                    &mut *vm_frame,
+                    host,
+                    hooks,
+                    obj,
+                    ctor_key,
+                    Value::Object(obj),
+                  )?;
+                  awaited_value
+                } else {
+                  crate::promise_ops::promise_resolve_with_host_and_hooks(
+                    &mut *vm_frame,
+                    &mut promise_scope,
+                    host,
+                    hooks,
+                    awaited_value,
+                  )?
+                }
+              } else {
+                crate::promise_ops::promise_resolve_with_host_and_hooks(
+                  &mut *vm_frame,
+                  &mut promise_scope,
+                  host,
+                  hooks,
+                  awaited_value,
+                )?
+              };
               return Ok(ModuleTlaStepResult::Await {
                 promise,
                 resume_index: idx.saturating_add(1),
@@ -20783,13 +20866,38 @@ pub(crate) fn run_module_until_await(
 
               let mut promise_scope = scope.reborrow();
               promise_scope.push_root(awaited_value)?;
-              let awaited_promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut promise_scope,
-                host,
-                hooks,
-                awaited_value,
-              )?;
+              let awaited_promise = if let Value::Object(obj) = awaited_value {
+                if promise_scope.heap().is_promise_object(obj) {
+                  let ctor_key_s = promise_scope.alloc_string("constructor")?;
+                  promise_scope.push_root(Value::String(ctor_key_s))?;
+                  let ctor_key = PropertyKey::from_string(ctor_key_s);
+                  let _ = promise_scope.ordinary_get_with_host_and_hooks(
+                    &mut *vm_frame,
+                    host,
+                    hooks,
+                    obj,
+                    ctor_key,
+                    Value::Object(obj),
+                  )?;
+                  awaited_value
+                } else {
+                  crate::promise_ops::promise_resolve_with_host_and_hooks(
+                    &mut *vm_frame,
+                    &mut promise_scope,
+                    host,
+                    hooks,
+                    awaited_value,
+                  )?
+                }
+              } else {
+                crate::promise_ops::promise_resolve_with_host_and_hooks(
+                  &mut *vm_frame,
+                  &mut promise_scope,
+                  host,
+                  hooks,
+                  awaited_value,
+                )?
+              };
               promise_scope.push_root(awaited_promise)?;
 
               // Defer default export binding initialization until the awaited promise is fulfilled,

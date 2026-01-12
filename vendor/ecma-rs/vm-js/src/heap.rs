@@ -1266,8 +1266,10 @@ impl Heap {
   /// round-tripping through JS property sets.
   ///
   /// Returns the number of bytes written, which is `min(bytes.len(), view.length - index)`. If
-  /// `index` is out of bounds, this returns `Ok(0)` (mirroring typed array out-of-bounds write
-  /// semantics).
+  /// `index` is out of bounds or `bytes` is empty, this returns `Ok(0)` (mirroring typed array
+  /// out-of-bounds write semantics).
+  ///
+  /// If the backing buffer is detached, this returns a TypeError.
   ///
   /// If the backing buffer is detached and the write is in-bounds, this returns a `TypeError`.
   ///
