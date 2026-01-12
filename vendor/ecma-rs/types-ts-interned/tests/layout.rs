@@ -419,3 +419,54 @@ fn gc_ptr_offsets_include_pointers_common_to_all_union_variants() {
   let mixed_layout = store.layout_of(mixed_union);
   assert!(store.gc_ptr_offsets(mixed_layout).is_empty());
 }
+
+#[test]
+fn gc_trace_reports_tagged_union_variants() {
+  use types_ts_interned::GcTraceStep;
+
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let mixed_union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.number]));
+  let mixed_layout = store.layout_of(mixed_union);
+
+  let Layout::TaggedUnion {
+    tag,
+    payload_offset,
+    variants,
+    ..
+  } = store.layout(mixed_layout)
+  else {
+    panic!("expected union to lower to TaggedUnion layout");
+  };
+
+  let trace = store.gc_trace(mixed_layout);
+  let [GcTraceStep::TaggedUnion {
+    tag: trace_tag,
+    variants: trace_variants,
+  }] = trace.as_slice()
+  else {
+    panic!("expected gc_trace to return a single TaggedUnion step, got {trace:?}");
+  };
+
+  assert_eq!(&tag, trace_tag);
+  assert_eq!(variants.len(), trace_variants.len());
+
+  // The string variant should contain a GC pointer in the payload; the number
+  // variant should contain no pointers.
+  for (variant, trace_variant) in variants.iter().zip(trace_variants.iter()) {
+    assert_eq!(variant.discriminant, trace_variant.discriminant);
+    match store.layout(variant.layout) {
+      Layout::Ptr { .. } => {
+        assert_eq!(
+          trace_variant.trace,
+          vec![GcTraceStep::Ptr { offset: payload_offset }]
+        );
+      }
+      Layout::Scalar { .. } => {
+        assert!(trace_variant.trace.is_empty());
+      }
+      other => panic!("unexpected union member layout: {other:?}"),
+    }
+  }
+}
