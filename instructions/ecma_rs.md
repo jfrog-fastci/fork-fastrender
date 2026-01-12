@@ -1,5 +1,13 @@
 # `ecma-rs` integration (vendored)
 
+> **⚠️ DEPRECATED**: This integration guide has been superseded:
+>
+> - For **FastRender JS engine work**, see [`js_engine.md`](js_engine.md)
+> - For **ecma-rs workstreams**, see [`vendor/ecma-rs/AGENTS.md`](../vendor/ecma-rs/AGENTS.md)
+>
+> FastRender **owns** ecma-rs and modifies it directly. All JS engine work should go through the
+> appropriate workstream above. This file is kept for historical reference.
+
 ---
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**

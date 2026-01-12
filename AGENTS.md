@@ -4,25 +4,62 @@ This file contains **repo-wide** rules shared by all workstreams.
 
 ## Workstreams
 
-Pick one workstream and follow its specific doc:
+Pick one workstream and follow its specific doc. Work can proceed **in parallel** across all workstreams.
+
+### Rendering Engine (correctness & capability)
 
 - **Capability buildout (spec-first primitives)**: `instructions/capability_buildout.md`
 - **Pageset page loop (fix pages one-by-one)**: `instructions/pageset_page_loop.md`
-- **Browser UI / chrome (tabs, address bar, inputs)**: `instructions/browser_ui.md`
-- **JavaScript support (full JS + web APIs)**: `instructions/javascript_support.md`
 
-Supporting docs:
+### Browser Application (user-facing product)
 
-- `ecma-rs` submodule workflow: `instructions/ecma_rs.md`
+- **Browser chrome (tabs, navigation, address bar)**: `instructions/browser_chrome.md`
+- **Browser UX & visual design (modern look, responsiveness)**: `instructions/browser_ux.md`
+- **Browser page interaction (forms, focus, scrolling)**: `instructions/browser_interaction.md`
+
+### JavaScript (full browser JS support)
+
+- **JS engine (vm-js core, execution, GC)**: `instructions/js_engine.md`
+- **JS DOM bindings (document, element, events)**: `instructions/js_dom.md`
+- **JS Web APIs (fetch, URL, timers, storage)**: `instructions/js_web_apis.md`
+- **JS HTML integration (script loading, modules, event loop)**: `instructions/js_html_integration.md`
+
+### Quick reference: what each workstream owns
+
+| Workstream | Owns | Does NOT own |
+|------------|------|--------------|
+| `capability_buildout` | CSS, layout algorithms, paint correctness | Page-specific fixes, browser UI |
+| `pageset_page_loop` | Fixing specific pages end-to-end | Generic capability work |
+| `browser_chrome` | Tabs, address bar, navigation, shortcuts | Visual design, page interaction |
+| `browser_ux` | Theming, loading states, responsiveness | Chrome functionality |
+| `browser_interaction` | Forms, focus, selection, scrolling | Chrome UI, JS events |
+| `js_engine` | vm-js execution, GC, spec compliance | DOM, Web APIs |
+| `js_dom` | Document, Element, Node, events | Web APIs, script loading |
+| `js_web_apis` | fetch, URL, timers, storage, crypto | DOM, engine internals |
+| `js_html_integration` | Script loading, modules, event loop | DOM APIs, engine internals |
 
 ## Non-negotiables
 
 - **No page-specific hacks** (no hostname/selector special-cases, no magic numbers for one site).
-- **No deviating-spec behavior** as a “compat shortcut”. Implement the spec behavior the page depends on (incomplete is OK; wrong is not).
+- **No deviating-spec behavior** as a "compat shortcut". Implement the spec behavior the page depends on (incomplete is OK; wrong is not).
 - **No post-layout pixel nudging**; keep the pipeline staged (parse → style → box tree → layout → paint).
 - **No panics** in production code. Return errors cleanly and bound work.
 - **Keep Taffy vendored** (`vendor/taffy/`) and only use it for flex/grid; do not update it via Cargo.
 - **JavaScript execution must be bounded**: the JS engine must support interrupts/timeouts and avoid unbounded host allocations.
+
+## Philosophy & culture
+
+**Read [`docs/philosophy.md`](docs/philosophy.md)** for hard-won lessons, mindset principles, and development wisdom.
+
+**Read [`docs/triage.md`](docs/triage.md)** for priority order, failure classification, and the operating model.
+
+Key points:
+- **Correct pixels are the product.** Everything else exists to help us ship correct pixels faster.
+- **90/10 rule**: 90% accuracy + capability, 10% performance + infra. This is the GOAL.
+- **Data-driven method**: Inject, trace, collect, understand, systematize. This is the HOW.
+- **Priority order**: Panics → Timeouts → Accuracy failures → Hotspots → Polish → Spec expansion.
+- **No vanity work**: Changes that don't improve pageset accuracy, eliminate crashes, or reduce uncertainty for imminent fixes are not acceptable.
+- **Ruthless triage**: If you can't turn a symptom into a task with a measurable outcome quickly, stop and split the work.
 
 ## What counts
 
@@ -33,6 +70,15 @@ A change counts if it lands at least one of:
 - **Stability** (crash/panic eliminated) with a regression.
 - **Termination** (timeout/loop eliminated) with a regression.
 - **Conformance** (meaningful new WPT/fixture coverage).
+- **UX improvement** (user-visible quality, responsiveness, visual polish).
+
+### What does NOT count (guard against drift)
+
+- **Tooling/infra-only work** unless immediately used to ship an accuracy/capability/stability win.
+- **Perf-only work** unless it fixes a timeout/loop or makes an accuracy fix feasible.
+- **Docs-only work** unless it removes confusion actively blocking fixes.
+
+If you find yourself "improving the harness" without changing renderer behavior, **stop and implement the missing behavior**.
 
 ## System resources (RAM / time / disk) — mandatory safety
 
@@ -166,8 +212,7 @@ When uncertain, add the regression first, then implement the fix.
 ## Test organization (mandatory)
 
 **NEVER create loose `tests/*.rs` files for individual tests.** Each `.rs` file directly in `tests/`
-becomes a
-separate integration-test binary that must be compiled and linked. This repo previously had
+becomes a separate integration-test binary that must be compiled and linked. This repo previously had
 ~80+ standalone `tests/*.rs` binaries and made accidental `cargo test` runs extremely slow and
 memory-hungry. The suite is now consolidated into category harnesses (a few dozen top-level test
 crates); keep it that way.
@@ -205,3 +250,11 @@ tests/
 **If no category fits**, add to `tests/misc/` and update `tests/misc/mod.rs`.
 
 **NEVER** create a new top-level `tests/foo.rs` file unless you are creating a new harness (requires approval).
+
+## Archived workstreams
+
+The following instruction files are **deprecated** and replaced by the workstreams above:
+
+- `instructions/browser_ui.md` → replaced by `browser_chrome.md`, `browser_ux.md`, `browser_interaction.md`
+- `instructions/javascript_support.md` → replaced by `js_engine.md`, `js_dom.md`, `js_web_apis.md`, `js_html_integration.md`
+- `instructions/ecma_rs.md` → merged into `js_engine.md` (FastRender owns ecma-rs and modifies it directly)

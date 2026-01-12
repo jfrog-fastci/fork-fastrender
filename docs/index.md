@@ -7,14 +7,30 @@ If a document can’t be kept accurate, delete it and replace it with something 
 ## Start here
 
 - Common agent rules & resource safety: [`AGENTS.md`](../AGENTS.md)
-- Capability buildout workstream: [`instructions/capability_buildout.md`](../instructions/capability_buildout.md)
-- Pageset-by-page fixing loop: [`instructions/pageset_page_loop.md`](../instructions/pageset_page_loop.md)
-- Page-loop tooling playbook (fixtures, `page-loop`, `inspect_frag`): [page_loop_tooling.md](page_loop_tooling.md)
-- Browser UI / chrome work: [`instructions/browser_ui.md`](../instructions/browser_ui.md)
+- **Philosophy & culture** (hard-won lessons, mindset): [philosophy.md](philosophy.md)
+- **Triage & operations** (priority order, failure classification, operating model): [triage.md](triage.md)
+- **Accuracy workflow** (how to fix rendering issues): [accuracy_workflow.md](accuracy_workflow.md)
+
+## Rendering engine workstreams
+
+- Capability buildout (spec-first primitives): [`instructions/capability_buildout.md`](../instructions/capability_buildout.md)
+- Pageset page loop (fix pages one-by-one): [`instructions/pageset_page_loop.md`](../instructions/pageset_page_loop.md)
+- Page-loop tooling playbook: [page_loop_tooling.md](page_loop_tooling.md)
+
+## Browser application workstreams
+
+- Browser chrome (tabs, navigation, address bar): [`instructions/browser_chrome.md`](../instructions/browser_chrome.md)
+- Browser UX & visual design: [`instructions/browser_ux.md`](../instructions/browser_ux.md)
+- Browser page interaction (forms, focus): [`instructions/browser_interaction.md`](../instructions/browser_interaction.md)
 - Desktop browser app (`browser` binary): [browser.md](browser.md)
 - Running the desktop browser UI locally: [browser_ui.md](browser_ui.md)
-- JavaScript support workstream: [`instructions/javascript_support.md`](../instructions/javascript_support.md)
-- `ecma-rs` submodule workflow: [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)
+
+## JavaScript workstreams
+
+- JS engine (vm-js core): [`instructions/js_engine.md`](../instructions/js_engine.md)
+- JS DOM bindings: [`instructions/js_dom.md`](../instructions/js_dom.md)
+- JS Web APIs (fetch, timers, etc.): [`instructions/js_web_apis.md`](../instructions/js_web_apis.md)
+- JS HTML integration (script loading, modules): [`instructions/js_html_integration.md`](../instructions/js_html_integration.md)
 - JavaScript integration architecture: [javascript.md](javascript.md)
 - LLVM StackMaps / statepoint metadata decoding: [llvm_stackmaps.md](llvm_stackmaps.md)
 - LLVM 18 statepoint StackMap ABI assumptions (regression-tested): [llvm_statepoint_stackmap_abi.md](llvm_statepoint_stackmap_abi.md)

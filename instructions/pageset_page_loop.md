@@ -1,4 +1,4 @@
-# Pageset page loop (fix pages one-by-one)
+# Workstream: Pageset Page Loop (fix pages one-by-one)
 
 ---
 
@@ -27,14 +27,37 @@ If something exceeds limits, that's a **bug to investigate**, not a limit to rai
 
 ---
 
-This document defines the **page-by-page** work mode: pick a pageset page, turn it inside out, and keep fixing it until it renders at **really good quality**.
+This workstream owns **fixing pages end-to-end**: pick a pageset page, diagnose issues, fix root causes, and make it render correctly.
 
-This is intentionally **not** “work by subsystem” (style/layout/paint/etc.). We parallelize by **page** to avoid the coordination bottleneck of feature ownership.
+## Relationship to other workstreams
+
+This workstream is **vertically integrated** — you touch whatever subsystem is broken:
+
+- **Capability buildout** (`capability_buildout.md`) — Generic primitives land there with regressions
+- **Browser chrome** (`browser_chrome.md`) — Page navigation/loading issues
+- **JS workstreams** (`js_*.md`) — Script execution issues
+
+When you fix a page, the **primitive** gets a generic regression in the appropriate workstream. The page just validates the fix works end-to-end.
+
+## The job
+
+Pick a pageset page, turn it inside out, and keep fixing it until it renders at **really good quality**. Then move to the next page.
+
+This is intentionally **not** "work by subsystem" (style/layout/paint/etc.). We parallelize by **page** to avoid the coordination bottleneck of feature ownership.
+
+## What counts
+
+A change counts if it lands at least one of:
+
+- **Page improvement**: A specific page renders better (with regression for the fixed primitive).
+- **Root cause fix**: A bug affecting multiple pages is fixed (with regression).
+- **Page declared "good"**: A page reaches "good" quality with documented remaining gaps.
 
 ## Scope
 
-- **Source of truth pages**: `src/pageset.rs` (the official pageset list).
-- **Goal**: each page becomes “good” (visually correct enough that remaining differences are clearly attributable to *known, explicit missing features*, not pervasive broken primitives).
+- **Source of truth pages**: `src/pageset.rs` (the official pageset list, ~170 pages).
+- **Progress tracking**: `progress/pages/<stem>.json` files.
+- **Goal**: each page becomes "good" (visually correct enough that remaining differences are clearly attributable to *known, explicit missing features*, not pervasive broken primitives).
 - **How to measure**: you do **not** need Chrome baselines, pixel diffs, or stats dashboards. Use judgment, specs, and tight regressions.
 
 ## Rules (non-negotiable)
@@ -44,28 +67,28 @@ This is intentionally **not** “work by subsystem” (style/layout/paint/etc.).
 - **Fix root causes, not symptoms**: if something looks wrong, find the primitive that is wrong (parsing/cascade/layout/paint/text/resources) and correct it.
 - **Add regressions**: every meaningful fix must land with a regression (unit/layout/paint fixture). The page is the motivation; the regression is the permanent guardrail.
 
-## Parallelism policy (by page)
+## Supporting documentation
 
-- One agent owns one page at a time.
-- You may touch any subsystem needed (style/layout/paint/text/resources), but **the page is the organizing unit**.
-- If multiple agents must touch the same primitive, coordinate by *landing minimal regressions first*, then implement fixes.
+- **Accuracy workflow**: [`docs/accuracy_workflow.md`](../docs/accuracy_workflow.md) — Detailed step-by-step guide for fixing accuracy issues
+- **Philosophy**: [`docs/philosophy.md`](../docs/philosophy.md) — Hard-won lessons and mindset principles
 
 ## The loop (do this repeatedly for the page)
 
-### 1) Choose and “freeze” the page
+### 1) Choose and "freeze" the page
 
 - Pick a pageset URL from `src/pageset.rs`.
-- Prefer working from cached inputs when possible (stable HTML/CSS/resources) so “the target” doesn’t move every run.
+- Prefer working from cached inputs when possible (stable HTML/CSS/resources) so "the target" doesn't move every run.
+- Check `progress/pages/<stem>.json` for current status.
 
-### 2) Create a concrete “brokenness inventory”
+### 2) Create a concrete "brokenness inventory"
 
-Do not hand-wave “layout is wrong.” Write down **specific observable failures**, e.g.:
+Do not hand-wave "layout is wrong." Write down **specific observable failures**, e.g.:
 
-- “Header overlaps hero image”
-- “Links are stacked vertically instead of horizontal nav”
-- “Floats intrude into line boxes; text wraps through image”
-- “Form controls have wrong intrinsic size / baseline”
-- “Stacking context order is wrong; overlay appears behind content”
+- "Header overlaps hero image"
+- "Links are stacked vertically instead of horizontal nav"
+- "Floats intrude into line boxes; text wraps through image"
+- "Form controls have wrong intrinsic size / baseline"
+- "Stacking context order is wrong; overlay appears behind content"
 
 For each item, identify the likely subsystem:
 
@@ -75,9 +98,9 @@ For each item, identify the likely subsystem:
 - **Text**: font fallback, metrics, line-height, shaping, bidi, wrapping.
 - **Resources**: base URL, redirects, caching, content-type sniffing, decoding, image sizing, SVG.
 
-### 3) “Turn the guts inside out” until you can explain the failure
+### 3) "Turn the guts inside out" until you can explain the failure
 
-Use the renderer’s inspection/debug tooling to locate the first wrong decision:
+Use the renderer's inspection/debug tooling to locate the first wrong decision:
 
 - DOM → styled tree: is the element present? are attributes parsed? are styles applied?
 - Styled → box tree: are anonymous wrappers correct? `display: contents`? pseudo-elements?
@@ -85,7 +108,7 @@ Use the renderer’s inspection/debug tooling to locate the first wrong decision
 - Layout → fragments: are positions/bounds correct? line boxes? floats?
 - Fragments → display list: is painting order correct? clips/transforms?
 
-If you can’t explain the failure in terms of a spec rule + code path, you are not done investigating.
+If you can't explain the failure in terms of a spec rule + code path, you are not done investigating.
 
 ### 4) Implement the missing primitive (spec-first)
 
@@ -100,13 +123,13 @@ Prefer, in order:
 1. **Unit test** (parser / cascade / computed value).
 2. **Layout test** under `tests/layout/`.
 3. **Paint test** under `tests/paint/`.
-4. **Tiny fixture** (offline HTML/CSS) only when the behavior can’t be expressed otherwise.
+4. **Tiny fixture** (offline HTML/CSS) only when the behavior can't be expressed otherwise.
 
 The regression should encode the *primitive* (not the whole live page).
 
-### 6) Repeat until the page is “good”
+### 6) Repeat until the page is "good"
 
-“Good” means:
+"Good" means:
 
 - major structure is correct (no global collapse into one column, no massive overlap),
 - text flows in the correct regions (no pervasive float/linebox failures),
@@ -114,11 +137,20 @@ The regression should encode the *primitive* (not the whole live page).
 - stacking/clipping is mostly correct for the visible chrome/overlays,
 - remaining issues are attributable to **explicit missing features** you can name.
 
-## What counts as “done” for a page
+## What counts as "done" for a page
 
-You can declare a page “good” when:
+You can declare a page "good" when:
 
 - you can enumerate the remaining diffs as a short list of missing features (with at least one tracked regression per new primitive you implemented), and
-- there are no “mystery” failures you cannot trace to a spec rule + code path.
+- there are no "mystery" failures you cannot trace to a spec rule + code path.
 
-If you reach diminishing returns, stop and pick the next page; the goal is a steady march toward “most pages are good.”
+If you reach diminishing returns, stop and pick the next page; the goal is a steady march toward "most pages are good."
+
+## Success criteria
+
+The pageset workstream is **done** when:
+
+- >90% of pageset pages are "good" quality
+- Remaining issues on each page are documented with known root causes
+- No page has "mystery" failures that can't be explained
+- New pages can be added and quickly brought to "good" status

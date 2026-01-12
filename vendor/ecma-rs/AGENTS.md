@@ -2,12 +2,40 @@
 
 This file contains **repo-wide** rules shared by all workstreams.
 
+**Note**: ecma-rs is **vendored into FastRender** at `vendor/ecma-rs/`. FastRender owns this code and
+modifies it directly for browser JavaScript support. Changes here serve FastRender's browser needs first.
+
 ## Workstreams
 
-Pick one workstream and follow its specific doc:
+Pick one workstream and follow its specific doc. Work can proceed **in parallel** across all workstreams.
+
+### Browser JavaScript (FastRender priority)
+
+These workstreams support FastRender's browser JS needs and are the **highest priority**:
+
+- **vm-js runtime (execution, GC, builtins)**: `instructions/vm_js.md`
+- **Web platform integration (host hooks, modules)**: `instructions/web_platform.md`
+
+### Language Tooling (independent tracks)
+
+These workstreams develop ecma-rs as standalone JS/TS tooling:
 
 - **TypeScript type checking (from-scratch rigorous checker)**: `instructions/ts_typecheck.md`
 - **Native AOT compilation (LLVM-based JS/TS → native)**: `instructions/native_aot.md`
+
+## FastRender integration
+
+FastRender uses ecma-rs as its JavaScript engine. Key integration points:
+
+- **vm-js** (`vm-js/`) — The JavaScript runtime used by FastRender
+- **parse-js** (`parse-js/`) — JavaScript parser
+- **Host hooks** — `VmHostHooks` for Promise jobs, module loading, etc.
+
+When making changes, consider FastRender's needs:
+- Execution budgets (instruction limits, wall-time limits)
+- Memory safety (heap limits, GC under pressure)
+- Host hook integration (Promise jobs → event loop, module resolution)
+- Performance (real-world scripts must execute efficiently)
 
 ## Agent Resource Guidelines
 
@@ -33,8 +61,8 @@ If something exceeds limits, that's a **bug to investigate** — not a limit to 
 
 **Not a constraint:** CPU and disk I/O. Scheduler handles contention fine. Don't be overly conservative.
 
-**Vendored checkout note:** In this repository, ecma-rs lives under `vendor/ecma-rs/` as a nested
-workspace. The commands below are written to run from the **top-level repo root**. If you've
+**Vendored checkout note:** In FastRender, ecma-rs lives under `vendor/ecma-rs/` as a nested
+workspace. The commands below are written to run from the **FastRender repo root**. If you've
 already `cd vendor/ecma-rs`, drop the `vendor/ecma-rs/` prefix from paths (scripts and `target/`).
 
 ### Rules
@@ -42,11 +70,11 @@ already `cd vendor/ecma-rs`, drop the `vendor/ecma-rs/` prefix from paths (scrip
 **1. Always use timeout + wrapper scripts:**
 ```bash
 # CORRECT — time limit + memory limit + scoped:
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p effect-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p vm-js
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
 
 # WRONG — no time limit (can hang forever):
-bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p native-js
+bash vendor/ecma-rs/scripts/cargo_agent.sh build --release -p vm-js
 
 # WRONG — no wrapper (uncontrolled parallelism + no memory limit):
 cargo build
@@ -65,8 +93,8 @@ the top-level `scripts/cargo_agent.sh` wrapper. It enforces:
 **2. Scope your cargo commands:**
 ```bash
 # CORRECT (scoped to specific crate + timeout):
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-js --lib
-timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p effect-js
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh build -p parse-js
 
 # WRONG (compiles entire workspace — combinatorial explosion):
 bash vendor/ecma-rs/scripts/cargo_agent.sh build --all

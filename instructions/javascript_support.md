@@ -1,5 +1,14 @@
 # JavaScript support (full JS + web APIs)
 
+> **⚠️ DEPRECATED**: This workstream has been split into four focused workstreams for parallelism:
+>
+> - **JS engine** (vm-js core, execution, GC): [`js_engine.md`](js_engine.md)
+> - **JS DOM bindings** (document, element, events): [`js_dom.md`](js_dom.md)
+> - **JS Web APIs** (fetch, URL, timers, storage): [`js_web_apis.md`](js_web_apis.md)
+> - **JS HTML integration** (script loading, modules, event loop): [`js_html_integration.md`](js_html_integration.md)
+>
+> Use the new workstreams for all new work. This file is kept for historical reference.
+
 ---
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**

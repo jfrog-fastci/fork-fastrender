@@ -1,5 +1,13 @@
 # Browser UI / chrome (cross-platform app frame)
 
+> **⚠️ DEPRECATED**: This workstream has been split into three focused workstreams:
+>
+> - **Browser chrome** (tabs, navigation, address bar): [`browser_chrome.md`](browser_chrome.md)
+> - **Browser UX & visual design** (modern look, responsiveness): [`browser_ux.md`](browser_ux.md)
+> - **Browser page interaction** (forms, focus, scrolling): [`browser_interaction.md`](browser_interaction.md)
+>
+> Use the new workstreams for all new work. This file is kept for historical reference.
+
 ---
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
