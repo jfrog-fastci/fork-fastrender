@@ -2994,8 +2994,7 @@ fn duplicate_import_binding_reports_previous_span() {
 
 #[test]
 fn merge_mismatch_diagnostic_ts2395_uses_identifier_spans() {
-  // https://github.com/microsoft/TypeScript/blob/main/tests/cases/compiler/namespaceNotMergedWithFunctionDefaultExport.ts
-  let source = "export default function foo() {}\nnamespace foo { export const x = 1; }\n";
+  let source = "export function foo() {}\nnamespace foo { export const x = 1; }\n";
   let file = FileId(9000);
   let ast = parse(source).expect("parse");
   let lowered = lower_file(file, HirFileKind::Ts, &ast);
@@ -3302,6 +3301,11 @@ fn default_export_class_cannot_merge_with_interface_reports_ts2652() {
 
   let ts2652: Vec<_> = diags.iter().filter(|d| d.code == "TS2652").collect();
   assert_eq!(ts2652.len(), 2);
+  assert_eq!(
+    diags.len(),
+    2,
+    "expected only TS2652 diagnostics, got {diags:?}"
+  );
 
   let positions = positions(source, "Decl");
   assert_eq!(positions.len(), 2);
@@ -3336,6 +3340,11 @@ fn default_export_async_function_merge_reports_ts2652_on_name_span() {
 
   let ts2652: Vec<_> = diags.iter().filter(|d| d.code == "TS2652").collect();
   assert_eq!(ts2652.len(), 2);
+  assert_eq!(
+    diags.len(),
+    2,
+    "expected only TS2652 diagnostics, got {diags:?}"
+  );
 
   let positions = positions(source, "Foo");
   assert_eq!(positions.len(), 2);

@@ -3494,6 +3494,25 @@ fn emit_merge_mismatch_diagnostics(
       continue;
     }
 
+    // `tsc` does not report TS2395 for merged declarations containing a default
+    // export declaration; those scenarios are instead covered by TS2652.
+    //
+    // Example:
+    // ```ts
+    // export default function Foo() {}
+    // namespace Foo {}
+    // ```
+    // only reports TS2652 (not TS2395).
+    let is_default_export_decl = |decl: &DeclId| {
+      let data = symbols.decl(*decl);
+      matches!(data.exported, Exported::Default)
+        && matches!(data.kind, DeclKind::Function | DeclKind::Class)
+    };
+    if decls.iter().any(is_default_export_decl) && decls.iter().any(|d| !is_default_export_decl(d))
+    {
+      continue;
+    }
+
     decls.sort_by(|a, b| decl_sort_key(symbols, *a).cmp(&decl_sort_key(symbols, *b)));
     let baseline = decls[0];
     let baseline_data = symbols.decl(baseline);
