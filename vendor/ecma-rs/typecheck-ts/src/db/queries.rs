@@ -316,7 +316,7 @@ fn unresolved_module_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
     file_id: FileId,
     semantics: &'a TsSemantics,
     source: &'a str,
-    seen: AHashSet<(u32, u32, &'a str)>,
+    seen: AHashSet<(u32, u32, &'a str, &'static str)>,
   }
 
   impl<'a> UnresolvedModuleChecker<'a> {
@@ -336,6 +336,27 @@ fn unresolved_module_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
       span
     }
 
+    fn emit_untyped_module_augmentation(
+      &mut self,
+      specifier: &'a str,
+      span: TextRange,
+      diags: &mut Vec<Diagnostic>,
+    ) {
+      let range = self.refine_span(span, specifier);
+      let key = (range.start, range.end, specifier, "TS2665");
+      if !self.seen.insert(key) {
+        return;
+      }
+
+      diags.push(Diagnostic::error(
+        "TS2665",
+        format!(
+          "Invalid module name in augmentation. Module '{specifier}' resolves to an untyped module and cannot be augmented."
+        ),
+        Span::new(self.file_id, range),
+      ));
+    }
+
     fn emit_unresolved(
       &mut self,
       specifier: &'a str,
@@ -352,7 +373,12 @@ fn unresolved_module_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
       }
 
       let range = self.refine_span(span, specifier);
-      let key = (range.start, range.end, specifier);
+      let key = (
+        range.start,
+        range.end,
+        specifier,
+        codes::UNRESOLVED_MODULE.as_str(),
+      );
       if !self.seen.insert(key) {
         return;
       }
@@ -367,6 +393,21 @@ fn unresolved_module_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
 
     fn check_value(&mut self, specifier: &'a str, span: TextRange, diags: &mut Vec<Diagnostic>) {
       if module_resolve_ref(self.db, self.file_id, specifier).is_some() {
+        return;
+      }
+      self.emit_unresolved(specifier, span, diags);
+    }
+
+    fn check_module_augmentation(
+      &mut self,
+      specifier: &'a str,
+      span: TextRange,
+      diags: &mut Vec<Diagnostic>,
+    ) {
+      if let Some(target) = module_resolve_ref(self.db, self.file_id, specifier) {
+        if matches!(file_kind(self.db, target), FileKind::Js | FileKind::Jsx) {
+          self.emit_untyped_module_augmentation(specifier, span, diags);
+        }
         return;
       }
       self.emit_unresolved(specifier, span, diags);
@@ -458,7 +499,7 @@ fn unresolved_module_diagnostics_for(db: &dyn Db, file: FileInput) -> Arc<[Diagn
             match stmt.stx.as_ref() {
               Stmt::ModuleDecl(module) => {
                 if let ModuleName::String(spec) = &module.stx.name {
-                  checker.check_value(spec.as_str(), to_range(module.stx.name_loc), diags);
+                  checker.check_module_augmentation(spec.as_str(), to_range(module.stx.name_loc), diags);
                 }
               }
               Stmt::GlobalDecl(global) => {
