@@ -405,10 +405,24 @@ fn parse_protocols(
       })();
 
       if let Err(err) = collect_result {
-        let _ = iterator::iterator_close(vm, host, hooks, scope, &record);
+        let _ = iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          scope,
+          &record,
+          iterator::CloseCompletionKind::Throw,
+        );
         return Err(err);
       }
-      let _ = iterator::iterator_close(vm, host, hooks, scope, &record);
+      let _ = iterator::iterator_close(
+        vm,
+        host,
+        hooks,
+        scope,
+        &record,
+        iterator::CloseCompletionKind::NonThrow,
+      );
       Ok(out)
     }
     other => {
