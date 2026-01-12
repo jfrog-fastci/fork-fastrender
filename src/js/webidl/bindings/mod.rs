@@ -43,6 +43,9 @@ mod webidl_bindings_codegen_toy_generated_vmjs {
 }
 
 #[cfg(test)]
+mod webidl_union_record_tests;
+
+#[cfg(test)]
 mod tests {
   use super::{
     install_window_bindings, install_window_bindings_vm_js, BindingValue, WebHostBindings,

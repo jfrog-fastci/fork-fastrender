@@ -1,7 +1,7 @@
-use fastrender::js::bindings::{install_window_bindings, BindingValue, WebHostBindings};
-use fastrender::js::webidl::WebIdlBindingsRuntime;
-use fastrender::js::webidl::{
-  InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlHooks, WebIdlLimits,
+use super::{install_window_bindings, BindingValue, WebHostBindings};
+use crate::js::webidl::{
+  InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime, WebIdlHooks,
+  WebIdlLimits,
 };
 use vm_js::{Heap, HeapLimits, JsRuntime as VmJsScriptRuntime, Value, Vm, VmError, VmOptions};
 
@@ -161,54 +161,3 @@ fn vm_js_union_record_conversions_reach_host_through_window_bindings() -> Result
   Ok(())
 }
 
-fn test_enum_fn<'a>(
-  rt: &mut VmJsWebIdlBindingsCx<'a, ()>,
-  host: &mut (),
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let _ = fastrender::js::webidl::conversions::to_enum(rt, host, value, "TestEnum", &["a", "b"])?;
-  Ok(Value::Bool(true))
-}
-
-#[test]
-fn vm_js_enum_conversion_throws_type_error_on_invalid_value() -> Result<(), VmError> {
-  let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(32 * 1024 * 1024, 32 * 1024 * 1024));
-  let mut runtime = VmJsScriptRuntime::new(vm, heap)?;
-
-  let state = Box::new(VmJsWebIdlBindingsState::<()>::new(
-    runtime.realm().global_object(),
-    WebIdlLimits::default(),
-    Box::new(NoHooks),
-  ));
-
-  let mut host = ();
-
-  // Install a single native function that uses the shared enum conversion helper.
-  {
-    let (vm, heap, _realm) = webidl_vm_js::split_js_runtime(&mut runtime);
-    let mut cx = VmJsWebIdlBindingsCx::new(vm, heap, &state);
-    let global = cx.global_object()?;
-    let func = cx.create_function("testEnum", 1, test_enum_fn)?;
-    cx.define_method(global, "testEnum", func)?;
-  }
-
-  let ok = runtime.exec_script_with_host(
-    &mut host,
-    r#"
-      (function () {
-        try {
-          testEnum("c");
-          return false;
-        } catch (e) {
-          return e instanceof TypeError &&
-            e.message === "Value is not a valid member of the `TestEnum` enum";
-        }
-      })()
-    "#,
-  )?;
-  assert_eq!(ok, Value::Bool(true));
-  Ok(())
-}

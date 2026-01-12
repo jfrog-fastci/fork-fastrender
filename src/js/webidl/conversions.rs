@@ -389,20 +389,32 @@ mod tests {
     let mut rt = VmJsRuntime::new();
     let mut host = ();
 
+    let enum_name = "TestEnum";
+
     let value = rt.alloc_string_value("a").unwrap();
-    let s = to_enum::<(), _>(&mut rt, &mut host, value, "E", &["a", "b"]).unwrap();
+    let s = to_enum::<(), _>(&mut rt, &mut host, value, enum_name, &["a", "b"]).unwrap();
     assert_eq!(s, "a");
 
     let invalid = rt.alloc_string_value("c").unwrap();
-    let err = to_enum::<(), _>(&mut rt, &mut host, invalid, "E", &["a", "b"]).unwrap_err();
+    let err = to_enum::<(), _>(&mut rt, &mut host, invalid, enum_name, &["a", "b"]).unwrap_err();
     let Some(thrown) = err.thrown_value() else {
       panic!("expected thrown error, got {err:?}");
     };
     let s = webidl_js_runtime::JsRuntime::to_string(&mut rt, thrown).unwrap();
     let msg = as_utf8_lossy(&rt, s);
-    assert!(
-      msg.starts_with("TypeError:"),
-      "expected TypeError, got {msg:?}"
+    assert_eq!(
+      msg,
+      format!("TypeError: Value is not a valid member of the `{enum_name}` enum")
+    );
+
+    // Mirror JS-visible `TypeError#message` (no "TypeError:" prefix).
+    let message_key = rt.property_key_from_str("message").unwrap();
+    let message_val = webidl_js_runtime::JsRuntime::get(&mut rt, thrown, message_key).unwrap();
+    let s = webidl_js_runtime::JsRuntime::to_string(&mut rt, message_val).unwrap();
+    let msg = as_utf8_lossy(&rt, s);
+    assert_eq!(
+      msg,
+      format!("Value is not a valid member of the `{enum_name}` enum")
     );
   }
 
