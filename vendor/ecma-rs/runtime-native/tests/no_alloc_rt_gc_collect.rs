@@ -6,6 +6,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::statepoints::StatepointRecord;
@@ -40,18 +41,33 @@ safepoint:
 struct CountingAlloc;
 
 static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_RECORD_LEN: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_SIZES: [AtomicUsize; 16] = [const { AtomicUsize::new(0) }; 16];
+static ALLOC_ALIGNS: [AtomicUsize; 16] = [const { AtomicUsize::new(0) }; 16];
+
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
 unsafe impl GlobalAlloc for CountingAlloc {
   unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-    ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    let idx = ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    if idx < ALLOC_SIZES.len() {
+      ALLOC_SIZES[idx].store(layout.size(), Ordering::Relaxed);
+      ALLOC_ALIGNS[idx].store(layout.align(), Ordering::Relaxed);
+      ALLOC_RECORD_LEN.fetch_max(idx + 1, Ordering::Relaxed);
+    }
     System.alloc(layout)
   }
 
   unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-    ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    let idx = ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    if idx < ALLOC_SIZES.len() {
+      ALLOC_SIZES[idx].store(layout.size(), Ordering::Relaxed);
+      ALLOC_ALIGNS[idx].store(layout.align(), Ordering::Relaxed);
+      ALLOC_RECORD_LEN.fetch_max(idx + 1, Ordering::Relaxed);
+    }
     System.alloc_zeroed(layout)
   }
 
@@ -60,7 +76,12 @@ unsafe impl GlobalAlloc for CountingAlloc {
   }
 
   unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-    ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    let idx = ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+    if idx < ALLOC_SIZES.len() {
+      ALLOC_SIZES[idx].store(new_size, Ordering::Relaxed);
+      ALLOC_ALIGNS[idx].store(layout.align(), Ordering::Relaxed);
+      ALLOC_RECORD_LEN.fetch_max(idx + 1, Ordering::Relaxed);
+    }
     System.realloc(ptr, layout, new_size)
   }
 }
@@ -90,6 +111,10 @@ fn trigger_gc_via_stackmap_test() {
 
 #[test]
 fn rt_gc_collect_does_not_allocate_after_thread_init() {
+  // This test overrides the process-global allocator to count `alloc`/`realloc` calls. The test
+  // harness runs tests in parallel by default, so ensure this binary's tests do not race on the
+  // shared allocator counters (and on the runtime-global thread registration state).
+  let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
   let _rt = TestRuntimeGuard::new();
 
   // Registering a thread should eagerly parse and index stackmaps so stop-the-world GC doesn't do
@@ -105,10 +130,20 @@ fn rt_gc_collect_does_not_allocate_after_thread_init() {
   let _ = runtime_native::threading::safepoint::threads_waiting_at_safepoint();
 
   ALLOC_CALLS.store(0, Ordering::SeqCst);
+  ALLOC_RECORD_LEN.store(0, Ordering::SeqCst);
 
   trigger_gc_via_stackmap_test();
 
   let allocs = ALLOC_CALLS.load(Ordering::SeqCst);
+  if allocs != 0 {
+    let n = ALLOC_RECORD_LEN.load(Ordering::SeqCst).min(ALLOC_SIZES.len());
+    eprintln!("no_alloc_rt_gc_collect: saw {allocs} allocations; first {n} layouts:");
+    for i in 0..n {
+      let size = ALLOC_SIZES[i].load(Ordering::SeqCst);
+      let align = ALLOC_ALIGNS[i].load(Ordering::SeqCst);
+      eprintln!("  #{i}: size={size} align={align}");
+    }
+  }
   assert_eq!(
     allocs, 0,
     "rt_gc_collect performed unexpected allocations after thread init (alloc calls={allocs})"
@@ -119,6 +154,8 @@ fn rt_gc_collect_does_not_allocate_after_thread_init() {
 
 #[test]
 fn rt_gc_collect_does_not_allocate_after_thread_init_with_card_tables() {
+  // See comment in `rt_gc_collect_does_not_allocate_after_thread_init`.
+  let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
   let _rt = TestRuntimeGuard::new();
   rt_thread_init(3);
 
@@ -143,10 +180,20 @@ fn rt_gc_collect_does_not_allocate_after_thread_init_with_card_tables() {
   let _ = runtime_native::threading::safepoint::threads_waiting_at_safepoint();
 
   ALLOC_CALLS.store(0, Ordering::SeqCst);
+  ALLOC_RECORD_LEN.store(0, Ordering::SeqCst);
 
   trigger_gc_via_stackmap_test();
 
   let allocs = ALLOC_CALLS.load(Ordering::SeqCst);
+  if allocs != 0 {
+    let n = ALLOC_RECORD_LEN.load(Ordering::SeqCst).min(ALLOC_SIZES.len());
+    eprintln!("no_alloc_rt_gc_collect(card tables): saw {allocs} allocations; first {n} layouts:");
+    for i in 0..n {
+      let size = ALLOC_SIZES[i].load(Ordering::SeqCst);
+      let align = ALLOC_ALIGNS[i].load(Ordering::SeqCst);
+      eprintln!("  #{i}: size={size} align={align}");
+    }
+  }
   assert_eq!(
     allocs, 0,
     "rt_gc_collect performed unexpected allocations after installing card tables (alloc calls={allocs})"
