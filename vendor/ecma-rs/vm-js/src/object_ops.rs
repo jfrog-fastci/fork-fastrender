@@ -2456,22 +2456,27 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    // Built-ins sometimes call `ordinary_get` with Proxy receivers. Rather than crashing with
-    // `InvalidHandle`, dispatch to the Proxy-aware `[[Get]]` implementation so traps are observed.
+    // Built-ins and tests sometimes call `ordinary_get` on Proxy receivers. Rather than crashing
+    // with `InvalidHandle`, delegate to the Proxy-aware internal-method dispatch.
     if self.heap().is_proxy_object(obj) {
       return self.get(vm, obj, key, receiver);
     }
 
-    // Root inputs so Proxy traps and accessors can allocate freely.
-    //
-    // Keep all temporary roots local to this operation.
+    // Root inputs for the duration of the operation: Proxy traps/accessor getters can invoke user
+    // code and allocate, so we must keep `obj`, `key`, and `receiver` alive across GC.
     let mut scope = self.reborrow();
-    let key_value = match key {
-      PropertyKey::String(s) => Value::String(s),
-      PropertyKey::Symbol(s) => Value::Symbol(s),
-    };
-    scope.push_roots(&[Value::Object(obj), key_value, receiver])?;
+    let roots = [
+      Value::Object(obj),
+      match key {
+        PropertyKey::String(s) => Value::String(s),
+        PropertyKey::Symbol(s) => Value::Symbol(s),
+      },
+      receiver,
+    ];
+    scope.push_roots(&roots)?;
+    let key_value = roots[1];
 
+    // Module Namespace Exotic Object `[[Get]]` (ECMA-262 §9.4.6).
     if scope.heap().object_is_module_namespace(obj)? {
       if let PropertyKey::String(s) = key {
         let Some(export) = scope.heap().module_namespace_export(obj, s)? else {
@@ -2564,9 +2569,8 @@ impl<'a> Scope<'a> {
         let Some(handler) = scope.heap().proxy_handler(current)? else {
           return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
         };
-        // Root `target`/`handler` across trap lookup + invocation. `GetMethod(handler, "get")` can
-        // invoke user code via accessors on the handler, which can revoke this Proxy and then
-        // trigger a GC.
+        // Root `target`/`handler` across trap lookup + invocation. `Get` can run user code via
+        // accessors on the handler, which can revoke this Proxy and then trigger a GC.
         scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
 
         // Let trap be ? GetMethod(handler, "get").
@@ -2581,10 +2585,11 @@ impl<'a> Scope<'a> {
           }
         };
 
-        let trap = vm.get_method(&mut scope, Value::Object(handler), get_key)?;
+        // `GetMethod` uses `GetV`/`ToObject`. Here `handler` is already an object.
+        let trap = scope.get(vm, handler, get_key, Value::Object(handler))?;
 
-        // If trap is undefined, forward to the target.
-        let Some(trap) = trap else {
+        // If trap is undefined or null, forward to the target.
+        if matches!(trap, Value::Undefined | Value::Null) {
           current = target;
           if visited.try_reserve(1).is_err() {
             return Err(VmError::OutOfMemory);
@@ -2595,7 +2600,10 @@ impl<'a> Scope<'a> {
           // Root the forwarded target so it remains valid across GC while the traversal continues.
           scope.push_root(Value::Object(current))?;
           continue;
-        };
+        }
+        if !scope.heap().is_callable(trap)? {
+          return Err(VmError::TypeError("Proxy get trap is not callable"));
+        }
         // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
         scope.push_root(trap)?;
 
@@ -2614,6 +2622,8 @@ impl<'a> Scope<'a> {
         }
       }
 
+      // --- Ordinary [[Get]] ---
+      //
       // Fast path: own property.
       if let Some(desc) = scope
         .heap()
@@ -2990,9 +3000,12 @@ impl<'a> Scope<'a> {
     value: Value,
     receiver: Value,
   ) -> Result<bool, VmError> {
-    // Root inputs so Proxy traps and accessors can allocate freely.
+    // Root inputs together so GC cannot collect `key`/`value`/`receiver` while growing the root
+    // stack (important when setting a new property on an object, where the key/value are not yet
+    // reachable from any heap object).
     //
-    // Keep all temporary roots local to this operation.
+    // Use a temporary child scope so these roots (and any prototypes we root while traversing) are
+    // released when the operation completes.
     let mut scope = self.reborrow();
     let roots = [
       Value::Object(obj),
@@ -3004,15 +3017,11 @@ impl<'a> Scope<'a> {
       receiver,
     ];
     scope.push_roots(&roots)?;
-
     let key_value = roots[1];
 
-    // OrdinarySet (ECMA-262): we must not scan the prototype chain as ordinary objects, since the
-    // prototype can contain Proxy objects. If the property is not an own property, delegate to
-    // `proto.[[Set]]` so Proxy `set` traps are observed.
-    //
-    // Implement this by walking the chain iteratively so we can keep a visited set to guard against
-    // prototype cycles.
+    // Spec-shaped OrdinarySet implementation: we must not scan the prototype chain as ordinary
+    // objects, since the chain can contain Proxy objects. If the property is not an own property,
+    // delegate to `proto.[[Set]]` so Proxy `set` traps are observed.
     let mut visited: HashSet<GcObject> = HashSet::new();
     if visited.try_reserve(1).is_err() {
       return Err(VmError::OutOfMemory);
@@ -3025,7 +3034,9 @@ impl<'a> Scope<'a> {
     let mut current = obj;
     let mut steps = 0usize;
 
-    let desc = loop {
+    loop {
+      // Budget prototype/proxy traversal so deep chains can't run unbounded work inside a single
+      // `Set(O, P, V, Receiver)` operation.
       const TICK_EVERY: usize = 1024;
       if steps != 0 && steps % TICK_EVERY == 0 {
         vm.tick()?;
@@ -3059,30 +3070,88 @@ impl<'a> Scope<'a> {
             k
           }
         };
+
         let trap = vm.get_method(&mut scope, Value::Object(handler), trap_key)?;
 
         // If the trap is undefined, forward to the target.
         let Some(trap) = trap else {
           current = target;
-          scope.push_root(Value::Object(current))?;
           if visited.try_reserve(1).is_err() {
             return Err(VmError::OutOfMemory);
           }
           if !visited.insert(current) {
             return Err(VmError::PrototypeCycle);
           }
+          // Root the forwarded target so it remains valid across GC while the traversal continues.
+          scope.push_root(Value::Object(current))?;
           continue;
         };
-        scope.push_root(trap)?;
 
         let trap_args = [Value::Object(target), key_value, value, receiver];
-        // See `ordinary_get`: prefer `Vm::call` so any active host hook override is honored.
+        // Like `ordinary_get`, prefer `Vm::call` so any active host hook override is honored.
         let mut dummy_host = ();
-        let trap_result =
-          vm.call(&mut dummy_host, &mut scope, trap, Value::Object(handler), &trap_args)?;
-        return scope.heap().to_boolean(trap_result);
+        let trap_result = vm.call(
+          &mut dummy_host,
+          &mut scope,
+          trap,
+          Value::Object(handler),
+          &trap_args,
+        )?;
+        let trap_ok = scope.heap().to_boolean(trap_result)?;
+        if !trap_ok {
+          return Ok(false);
+        }
+
+        // Proxy invariants (ECMA-262):
+        // If the target has a non-configurable, non-writable data property, the trap cannot report
+        // success unless `value` is `SameValue` to the target's current value. Similarly, for
+        // non-configurable accessor properties without a setter, the trap cannot report success.
+        //
+        // Note: full Proxy `[[GetOwnProperty]]` dispatch for proxy targets is implemented in the
+        // host-aware path. Here we enforce invariants when `target` is a non-Proxy object.
+        if !scope.heap().is_proxy_object(target) {
+          let target_desc = scope.ordinary_get_own_property_with_tick(target, key, || vm.tick())?;
+          if let Some(target_desc) = target_desc {
+            if !target_desc.configurable {
+              match target_desc.kind {
+                PropertyKind::Data {
+                  writable: false,
+                  value: mut target_value,
+                  ..
+                } => {
+                  // Ensure string exotic index properties materialize their actual value.
+                  if matches!(target_value, Value::Undefined) {
+                    if let Some(v) =
+                      scope.string_object_get_index_value_with_tick(target, &key, || vm.tick())?
+                    {
+                      target_value = v;
+                    }
+                  }
+
+                  if !value.same_value(target_value, scope.heap()) {
+                    return Err(VmError::TypeError(
+                      "Proxy set trap returned true for a non-writable, non-configurable data property with a different value",
+                    ));
+                  }
+                }
+                PropertyKind::Accessor {
+                  set: Value::Undefined,
+                  ..
+                } => {
+                  return Err(VmError::TypeError(
+                    "Proxy set trap returned true for a non-configurable accessor property with an undefined setter",
+                  ));
+                }
+                _ => {}
+              }
+            }
+          }
+        }
+
+        return Ok(true);
       }
 
+      // --- Ordinary / exotic objects ---
       if scope.heap().object_is_module_namespace(current)? {
         if matches!(key, PropertyKey::String(_)) {
           return Ok(false);
@@ -3090,7 +3159,7 @@ impl<'a> Scope<'a> {
       }
 
       // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys use
-      // TypedArray `[[Set]]` semantics.
+      // TypedArray `[[Set]]` semantics (and do not consult the prototype chain).
       if scope.heap().is_typed_array_object(current) {
         if let PropertyKey::String(s) = key {
           if let Some(numeric_index) = scope.heap_mut().canonical_numeric_index_string(s)? {
@@ -3099,9 +3168,9 @@ impl<'a> Scope<'a> {
             if let Value::Object(receiver_obj) = receiver {
               if receiver_obj == current {
                 // `TypedArraySetElement` always performs `ToNumber(value)` before checking
-                // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `"-1"`,
-                // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because `ToNumber(Symbol)`
-                // / `ToNumber(BigInt)` throw.
+                // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `\"-1\"`,
+                // `\"1.5\"`, `\"NaN\"`, `\"Infinity\"`, `\"-0\"`). This matters because
+                // `ToNumber(Symbol)` / `ToNumber(BigInt)` throw.
                 //
                 // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
                 let index = if numeric_index.is_finite()
@@ -3157,83 +3226,90 @@ impl<'a> Scope<'a> {
         }
       }
 
-      let Some(desc) = scope.ordinary_get_own_property_with_tick(current, key, || vm.tick())? else {
-        let Some(proto) = scope.heap().object_prototype(current)? else {
-          // No prototype: treat as a new writable data property.
-          break PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: Value::Undefined,
-              writable: true,
-            },
-          };
-        };
+      // Own property check.
+      let mut desc = scope.ordinary_get_own_property_with_tick(current, key, || vm.tick())?;
+      if desc.is_none() {
+        // Delegate to the prototype's `[[Set]]` internal method (Proxy-aware).
+        if let Some(proto) = scope.heap().object_prototype(current)? {
+          current = proto;
+          if visited.try_reserve(1).is_err() {
+            return Err(VmError::OutOfMemory);
+          }
+          if !visited.insert(current) {
+            return Err(VmError::PrototypeCycle);
+          }
+          // Root prototypes so a `__proto__` mutation during user code (Proxy traps) cannot
+          // invalidate the iterator's internal object handle before we reach it.
+          scope.push_root(Value::Object(current))?;
+          continue;
+        }
 
-        current = proto;
-        // Root prototypes so a `__proto__` mutation during user code (Proxy traps) cannot invalidate
-        // the iterator's internal object handle before we reach it.
-        scope.push_root(Value::Object(current))?;
-        if visited.try_reserve(1).is_err() {
-          return Err(VmError::OutOfMemory);
-        }
-        if !visited.insert(current) {
-          return Err(VmError::PrototypeCycle);
-        }
-        continue;
+        // No prototype: treat as a new writable data property.
+        desc = Some(PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Undefined,
+            writable: true,
+          },
+        });
+      }
+
+      let Some(desc) = desc else {
+        return Err(VmError::InvariantViolation(
+          "ordinary_set: internal error: missing property descriptor",
+        ));
       };
 
-      break desc;
-    };
-
-    match desc.kind {
-      PropertyKind::Data { writable, .. } => {
-        if !writable {
-          return Ok(false);
-        }
-        let Value::Object(receiver_obj) = receiver else {
-          return Ok(false);
-        };
-
-        let existing_desc =
-          scope.ordinary_get_own_property_with_tick(receiver_obj, key, || vm.tick())?;
-        if let Some(existing_desc) = existing_desc {
-          if existing_desc.is_accessor_descriptor() {
+      return match desc.kind {
+        PropertyKind::Data { writable, .. } => {
+          if !writable {
             return Ok(false);
           }
-          let receiver_writable = match existing_desc.kind {
-            PropertyKind::Data { writable, .. } => writable,
-            PropertyKind::Accessor { .. } => return Ok(false),
+          let Value::Object(receiver_obj) = receiver else {
+            return Ok(false);
           };
-          if !receiver_writable {
-            return Ok(false);
+
+          let existing_desc =
+            scope.ordinary_get_own_property_with_tick(receiver_obj, key, || vm.tick())?;
+          if let Some(existing_desc) = existing_desc {
+            if existing_desc.is_accessor_descriptor() {
+              return Ok(false);
+            }
+            let receiver_writable = match existing_desc.kind {
+              PropertyKind::Data { writable, .. } => writable,
+              PropertyKind::Accessor { .. } => return Ok(false),
+            };
+            if !receiver_writable {
+              return Ok(false);
+            }
+
+            return scope.define_own_property_with_tick(
+              receiver_obj,
+              key,
+              PropertyDescriptorPatch {
+                value: Some(value),
+                ..Default::default()
+              },
+              || vm.tick(),
+            );
           }
 
-          return scope.define_own_property_with_tick(
-            receiver_obj,
-            key,
-            PropertyDescriptorPatch {
-              value: Some(value),
-              ..Default::default()
-            },
-            || vm.tick(),
-          );
+          scope.create_data_property(receiver_obj, key, value)
         }
-
-        scope.create_data_property(receiver_obj, key, value)
-      }
-      PropertyKind::Accessor { set, .. } => {
-        if matches!(set, Value::Undefined) {
-          return Ok(false);
+        PropertyKind::Accessor { set, .. } => {
+          if matches!(set, Value::Undefined) {
+            return Ok(false);
+          }
+          if !scope.heap().is_callable(set)? {
+            return Err(VmError::TypeError("accessor setter is not callable"));
+          }
+          // See `ordinary_get`: prefer `Vm::call` so any active host hook override is honored.
+          let mut dummy_host = ();
+          let _ = vm.call(&mut dummy_host, &mut scope, set, receiver, &[value])?;
+          Ok(true)
         }
-        if !scope.heap().is_callable(set)? {
-          return Err(VmError::TypeError("accessor setter is not callable"));
-        }
-        // See `ordinary_get`: prefer `Vm::call` so any active host hook override is honored.
-        let mut dummy_host = ();
-        let _ = vm.call(&mut dummy_host, &mut scope, set, receiver, &[value])?;
-        Ok(true)
-      }
+      };
     }
   }
 

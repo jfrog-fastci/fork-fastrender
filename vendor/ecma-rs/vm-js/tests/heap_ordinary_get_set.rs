@@ -55,6 +55,85 @@ fn setter_sets_seen(
   Ok(Value::Undefined)
 }
 
+fn proxy_get_trap_increments_counter_and_returns_target_value(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // args: [target, key, receiver]
+  let Some(Value::Object(target)) = args.get(0).copied() else {
+    return Ok(Value::Undefined);
+  };
+  let Some(key) = args.get(1).copied() else {
+    return Ok(Value::Undefined);
+  };
+
+  if let Some(counter) = vm.user_data_mut::<usize>() {
+    *counter += 1;
+  }
+
+  let key = match key {
+    Value::String(s) => PropertyKey::String(s),
+    Value::Symbol(s) => PropertyKey::Symbol(s),
+    _ => return Ok(Value::Undefined),
+  };
+
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(target, &key)?
+      .unwrap_or(Value::Undefined),
+  )
+}
+
+fn proxy_set_trap_increments_counter_and_sets_target_property(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // args: [target, key, value, receiver]
+  let Some(Value::Object(target)) = args.get(0).copied() else {
+    return Ok(Value::Bool(false));
+  };
+  let Some(key) = args.get(1).copied() else {
+    return Ok(Value::Bool(false));
+  };
+  let value = args.get(2).copied().unwrap_or(Value::Undefined);
+
+  if let Some(counter) = vm.user_data_mut::<usize>() {
+    *counter += 1;
+  }
+
+  let key = match key {
+    Value::String(s) => PropertyKey::String(s),
+    Value::Symbol(s) => PropertyKey::Symbol(s),
+    _ => return Ok(Value::Bool(false)),
+  };
+
+  scope.define_property(
+    target,
+    key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Bool(true))
+}
+
 #[test]
 fn heap_ordinary_get_invokes_accessor_getter_with_receiver() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -146,6 +225,132 @@ fn heap_ordinary_get_invokes_accessor_getter_with_receiver() -> Result<(), VmErr
 }
 
 #[test]
+fn vm_get_and_heap_ordinary_get_observe_proxy_get_trap_in_prototype_chain() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_user_data(0usize);
+
+  let (obj_root, proxy_root, target_root, handler_root, key_x) = {
+    let mut scope = heap.scope();
+
+    let call_id = vm.register_native_call(proxy_get_trap_increments_counter_and_returns_target_value)?;
+    let get_trap = {
+      let name = scope.alloc_string("get_trap")?;
+      scope.alloc_native_function(call_id, None, name, 3)?
+    };
+
+    let target = scope.alloc_object()?;
+    let x_s = scope.alloc_string("x")?;
+    let key_x = PropertyKey::String(x_s);
+    scope.define_property(
+      target,
+      key_x,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Number(1.0),
+          writable: true,
+        },
+      },
+    )?;
+
+    let handler = scope.alloc_object()?;
+    let key_get = PropertyKey::String(scope.alloc_string("get")?);
+    scope.define_property(
+      handler,
+      key_get,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(get_trap),
+          writable: true,
+        },
+      },
+    )?;
+
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+
+    let obj = scope.alloc_object()?;
+    scope.object_set_prototype(obj, Some(proxy))?;
+
+    let obj_root = scope.heap_mut().add_root(Value::Object(obj))?;
+    let proxy_root = scope.heap_mut().add_root(Value::Object(proxy))?;
+    let target_root = scope.heap_mut().add_root(Value::Object(target))?;
+    let handler_root = scope.heap_mut().add_root(Value::Object(handler))?;
+    drop(scope);
+
+    (obj_root, proxy_root, target_root, handler_root, key_x)
+  };
+
+  let obj = heap
+    .get_root(obj_root)
+    .ok_or_else(|| VmError::invalid_handle())?
+    .as_object()
+    .unwrap();
+
+  let mut scope = heap.scope();
+  let value = vm.get(&mut scope, obj, key_x)?;
+  assert_eq!(value, Value::Number(1.0));
+  assert_eq!(*vm.user_data::<usize>().unwrap(), 1);
+  drop(scope);
+
+  // `Heap::ordinary_get` uses the same dummy-host `Scope::ordinary_get` implementation.
+  let value = heap.ordinary_get(&mut vm, obj, key_x, Value::Object(obj))?;
+  assert_eq!(value, Value::Number(1.0));
+  assert_eq!(*vm.user_data::<usize>().unwrap(), 2);
+
+  heap.remove_root(obj_root);
+  heap.remove_root(proxy_root);
+  heap.remove_root(target_root);
+  heap.remove_root(handler_root);
+  Ok(())
+}
+
+#[test]
+fn vm_get_throws_for_revoked_proxy_in_prototype_chain() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+
+  let (obj_root, proxy_root) = {
+    let mut scope = heap.scope();
+
+    let target = scope.alloc_object()?;
+    let handler = scope.alloc_object()?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+
+    let obj = scope.alloc_object()?;
+    scope.object_set_prototype(obj, Some(proxy))?;
+
+    // Revoke after it is installed in the prototype chain.
+    scope.revoke_proxy(proxy)?;
+
+    let obj_root = scope.heap_mut().add_root(Value::Object(obj))?;
+    let proxy_root = scope.heap_mut().add_root(Value::Object(proxy))?;
+    drop(scope);
+
+    (obj_root, proxy_root)
+  };
+
+  let obj = heap
+    .get_root(obj_root)
+    .ok_or_else(|| VmError::invalid_handle())?
+    .as_object()
+    .unwrap();
+
+  let mut scope = heap.scope();
+  let key_x = PropertyKey::String(scope.alloc_string("x")?);
+  let result = vm.get(&mut scope, obj, key_x);
+  assert!(matches!(result, Err(VmError::TypeError(_))));
+  drop(scope);
+
+  heap.remove_root(obj_root);
+  heap.remove_root(proxy_root);
+  Ok(())
+}
+
+#[test]
 fn heap_ordinary_set_invokes_accessor_setter_with_receiver() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
@@ -209,6 +414,82 @@ fn heap_ordinary_set_invokes_accessor_setter_with_receiver() -> Result<(), VmErr
 
   heap.remove_root(proto_root);
   heap.remove_root(child_root);
+  Ok(())
+}
+
+#[test]
+fn heap_ordinary_set_observes_proxy_set_trap_in_prototype_chain() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_user_data(0usize);
+
+  let (obj_root, target_root) = {
+    let mut scope = heap.scope();
+
+    let call_id = vm.register_native_call(proxy_set_trap_increments_counter_and_sets_target_property)?;
+    let set_trap = {
+      let name = scope.alloc_string("set_trap")?;
+      scope.alloc_native_function(call_id, None, name, 4)?
+    };
+
+    let target = scope.alloc_object()?;
+    let handler = scope.alloc_object()?;
+    let key_set = PropertyKey::String(scope.alloc_string("set")?);
+    scope.define_property(
+      handler,
+      key_set,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(set_trap),
+          writable: true,
+        },
+      },
+    )?;
+
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+
+    let obj = scope.alloc_object()?;
+    scope.object_set_prototype(obj, Some(proxy))?;
+
+    let obj_root = scope.heap_mut().add_root(Value::Object(obj))?;
+    let target_root = scope.heap_mut().add_root(Value::Object(target))?;
+    drop(scope);
+    (obj_root, target_root)
+  };
+
+  let obj = heap
+    .get_root(obj_root)
+    .ok_or_else(|| VmError::invalid_handle())?
+    .as_object()
+    .unwrap();
+  let target = heap
+    .get_root(target_root)
+    .ok_or_else(|| VmError::invalid_handle())?
+    .as_object()
+    .unwrap();
+
+  let mut scope = heap.scope();
+  let key_x = PropertyKey::String(scope.alloc_string("x")?);
+  drop(scope);
+
+  assert!(heap.ordinary_set(
+    &mut vm,
+    obj,
+    key_x,
+    Value::Number(99.0),
+    Value::Object(obj)
+  )?);
+
+  assert_eq!(
+    heap.object_get_own_data_property_value(target, &key_x)?,
+    Some(Value::Number(99.0))
+  );
+  assert_eq!(*vm.user_data::<usize>().unwrap(), 1);
+
+  heap.remove_root(obj_root);
+  heap.remove_root(target_root);
   Ok(())
 }
 
