@@ -130,26 +130,17 @@ fn rejects_for_in_loop() {
 }
 
 #[test]
-fn rejects_non_i32_numeric_literals() {
-  let err = validate("const a: number = 1.5;\nconst b: number = 1e3;\na;\nb;\n", FileKind::Ts).unwrap_err();
-  assert_has_code(&err, "NJS0009");
+fn accepts_non_i32_numeric_literals() {
+  let ok = validate(
+    "const a: number = 1.5;\nconst b: number = 1e3;\nconst c: number = 2147483648;\nconst d: number = 0x1_0000_0000;\na;\nb;\nc;\nd;\n",
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
 }
 
 #[test]
 fn rejects_array_literal() {
   let err = validate("const xs = [1, 2];\nxs;\n", FileKind::Ts).unwrap_err();
-  assert_has_code(&err, "NJS0009");
-}
-
-#[test]
-fn rejects_float_literal() {
-  let err = validate("const x = 1.5;\n", FileKind::Ts).unwrap_err();
-  assert_has_code(&err, "NJS0009");
-}
-
-#[test]
-fn rejects_out_of_range_numeric_literal() {
-  let err = validate("const x = 2147483648;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
 }
 

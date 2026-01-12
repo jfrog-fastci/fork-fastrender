@@ -431,7 +431,7 @@ export function main() {
       "expected generated IR to define a C ABI main() shim, got:\n{ir}"
     );
     assert!(
-      ir.contains(&format!("call i32 @{expected_symbol}")),
+      ir.contains(&format!("call double @{expected_symbol}")),
       "expected main() shim to call the lowered TS main() `{expected_symbol}`, got:\n{ir}"
     );
   }

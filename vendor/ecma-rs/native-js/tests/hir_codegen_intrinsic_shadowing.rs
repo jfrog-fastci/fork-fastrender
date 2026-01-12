@@ -47,8 +47,8 @@ export function main(): number {
 
   let ir = module.print_to_string().to_string();
   assert!(
-    ir.contains("rt_print_i32"),
-    "expected global `print(1);` to lower to the `rt_print_i32` intrinsic call:\n{ir}"
+    ir.contains("rt_print_f64"),
+    "expected global `print(1);` to lower to the `rt_print_f64` intrinsic call:\n{ir}"
   );
 }
 
@@ -94,7 +94,7 @@ export function main(): number {
 
   let ir = module.print_to_string().to_string();
   assert!(
-    !ir.contains("rt_print_i32"),
-    "expected user-defined print not to lower to rt_print_i32 intrinsic call:\n{ir}"
+    !ir.contains("rt_print_f64"),
+    "expected user-defined print not to lower to rt_print_f64 intrinsic call:\n{ir}"
   );
 }

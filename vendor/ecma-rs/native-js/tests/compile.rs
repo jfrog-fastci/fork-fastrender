@@ -84,8 +84,8 @@ fn compile_emits_llvm_ir_file() {
   assert!(ir.contains("define"), "expected LLVM IR to contain `define`:\n{ir}");
   assert!(ir.contains("@main"), "expected LLVM IR to contain `@main`:\n{ir}");
   assert!(
-    ir.contains("add i32"),
-    "expected LLVM IR to include codegen for `x + 2` (missing `add i32`):\n{ir}"
+    ir.contains("fadd double"),
+    "expected LLVM IR to include codegen for `x + 2` (missing `fadd double`):\n{ir}"
   );
 
   let _ = std::fs::remove_file(&artifact.path);

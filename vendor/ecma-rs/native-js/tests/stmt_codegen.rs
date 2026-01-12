@@ -64,7 +64,6 @@ fn run_main(source: &str) -> i32 {
     "expected sample to pass strict validation, got: {strict_diags:#?}"
   );
   let entrypoint = strict::entrypoint(&program, file).expect("valid entrypoint");
-  let ts_main_sym = native_js::llvm_symbol_for_def(&program, entrypoint.main_def);
 
   let context = Context::create();
   let module = codegen::codegen(
@@ -115,26 +114,31 @@ fn run_main(source: &str) -> i32 {
       b.build_return(None).expect("ret void");
     }
   }
+  // The C `main` wrapper calls into thread lifecycle entrypoints so the runtime can
+  // register/unregister the current thread. In AOT builds these resolve to
+  // `runtime-native`, but for JIT-level tests we provide no-op stubs.
+  for name in ["rt_thread_init", "rt_thread_deinit"] {
+    if let Some(func) = module.get_function(name) {
+      if func.count_basic_blocks() == 0 {
+        let bb = context.append_basic_block(func, "entry");
+        let b = context.create_builder();
+        b.position_at_end(bb);
+        b.build_return(None).expect("ret void");
+      }
+    }
+  }
 
   let engine = module
     .create_jit_execution_engine(OptimizationLevel::None)
     .expect("create ee");
 
   unsafe {
-    let init_sym = native_js::llvm_symbol_for_file_init(file);
-
-    if module.get_function(&init_sym).is_some() {
-      let init = engine
-        .get_function::<unsafe extern "C" fn()>(&init_sym)
-        .expect("get file init");
-      init.call();
-    }
-
     let main = engine
-      // native-js codegen also emits a C `main` wrapper for executables. For these JIT-level
-      // statement tests we want to call the TS entrypoint directly.
-      .get_function::<unsafe extern "C" fn() -> i32>(&ts_main_sym)
-      .expect("get main");
+      // Call the generated C ABI `main` wrapper to avoid having to mirror the
+      // TS entrypoint ABI in this test harness (the HIR backend uses typed
+      // returns like `double` / `i1` / `void`).
+      .get_function::<unsafe extern "C" fn() -> i32>("main")
+      .expect("get C main wrapper");
     main.call()
   }
 }

@@ -548,15 +548,6 @@ fn validate_body_syntax(
       ExprKind::Literal(Literal::Regex(_)) => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "regex literals are not supported by native-js yet");
       }
-      ExprKind::Literal(Literal::Number(raw)) => {
-        if !numeric_literal_is_i32(raw) {
-          push_unsupported_syntax(
-            out,
-            Span::new(file, expr.span),
-            format!("unsupported numeric literal `{raw}` (expected 32-bit integer)"),
-          );
-        }
-      }
       ExprKind::Unary { op, .. } => {
         // `await` is handled above.
         if !matches!(op, UnaryOp::Plus | UnaryOp::Minus | UnaryOp::Not | UnaryOp::BitNot) {
@@ -880,7 +871,7 @@ fn validate_type_kind(program: &Program, span: Span, ty: typecheck_ts::TypeId, o
   out.push(
     codes::STRICT_SUBSET_UNSUPPORTED_TYPE
       .error(message, span)
-      .with_note("supported types are currently limited to: number (32-bit integer), boolean, void/undefined, never"),
+      .with_note("supported types are currently limited to: number, boolean, void/undefined, never"),
   );
 }
 
@@ -1001,38 +992,6 @@ fn codegen_callable_function_param_count(program: &Program, def: typecheck_ts::D
   let body = lowered.body(body_id)?;
   let meta = body.function.as_ref()?;
   Some(meta.params.len())
-}
-
-fn numeric_literal_is_i32(raw: &str) -> bool {
-  // Keep this logic in sync with `native_js::codegen::parse_i32_const`.
-  let raw = raw.trim();
-  if raw.is_empty() {
-    return false;
-  }
-  let normalized: String = raw.chars().filter(|c| *c != '_').collect();
-  let (radix, digits) = if let Some(rest) = normalized.strip_prefix("0x") {
-    (16, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0X") {
-    (16, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0b") {
-    (2, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0B") {
-    (2, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0o") {
-    (8, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0O") {
-    (8, rest)
-  } else {
-    if normalized.contains('.') || normalized.contains('e') || normalized.contains('E') {
-      return false;
-    }
-    (10, normalized.as_str())
-  };
-
-  let Ok(value) = i64::from_str_radix(digits, radix) else {
-    return false;
-  };
-  i32::try_from(value).is_ok()
 }
 
 struct SyntaxState<'a, 'b, 'p> {

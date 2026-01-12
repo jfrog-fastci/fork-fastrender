@@ -17,7 +17,7 @@
 //! - `NJS0101`: failed to access lowered HIR for a function body / failed to locate `main` for codegen
 //! - `NJS0102`: missing function metadata
 //! - `NJS0103`: expression id out of bounds
-//! - `NJS0104`: numeric literal cannot be represented as a 32-bit integer
+//! - `NJS0104`: invalid numeric literal
 //! - `NJS0105`: unsupported unary operator
 //! - `NJS0106`: unsupported binary operator
 //! - `NJS0107`: unsupported expression in the current codegen subset
@@ -60,10 +60,13 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
-use inkwell::types::IntType;
-use inkwell::values::{FunctionValue, GlobalValue, IntValue, PointerValue};
-use inkwell::AddressSpace;
-use inkwell::IntPredicate;
+use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType};
+use inkwell::values::{
+  BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue, GlobalValue, IntValue,
+  PointerValue,
+};
+use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use parse_js::num::JsNumber;
 use std::collections::{HashMap, HashSet, VecDeque};
 use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
 
@@ -99,6 +102,15 @@ enum TsAbiKind {
 }
 
 impl TsAbiKind {
+  fn from_value_type_kind(kind: &TypeKindSummary) -> Option<Self> {
+    match kind {
+      TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
+      TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(Self::Boolean),
+      TypeKindSummary::Void | TypeKindSummary::Undefined | TypeKindSummary::Never => Some(Self::Void),
+      _ => None,
+    }
+  }
+
   fn from_param_type_kind(kind: &TypeKindSummary) -> Option<Self> {
     match kind {
       TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(Self::Number),
@@ -117,11 +129,52 @@ impl TsAbiKind {
   }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum NativeValue<'ctx> {
+  Number(FloatValue<'ctx>),
+  Boolean(IntValue<'ctx>),
+  Void,
+}
+
+impl<'ctx> NativeValue<'ctx> {
+  fn kind(self) -> TsAbiKind {
+    match self {
+      NativeValue::Number(_) => TsAbiKind::Number,
+      NativeValue::Boolean(_) => TsAbiKind::Boolean,
+      NativeValue::Void => TsAbiKind::Void,
+    }
+  }
+
+  fn as_basic_value(self) -> Option<BasicValueEnum<'ctx>> {
+    match self {
+      NativeValue::Number(v) => Some(v.into()),
+      NativeValue::Boolean(v) => Some(v.into()),
+      NativeValue::Void => None,
+    }
+  }
+
+  fn into_basic_metadata(self) -> Option<BasicMetadataValueEnum<'ctx>> {
+    self.as_basic_value().map(Into::into)
+  }
+}
+
 #[derive(Clone, Debug)]
 struct TsFunctionSigKind {
   #[allow(dead_code)]
   params: Vec<TsAbiKind>,
   ret: TsAbiKind,
+}
+
+#[derive(Clone, Copy)]
+struct GlobalSlot<'ctx> {
+  global: GlobalValue<'ctx>,
+  kind: TsAbiKind,
+}
+
+#[derive(Clone, Copy)]
+struct LocalSlot<'ctx> {
+  ptr: PointerValue<'ctx>,
+  kind: TsAbiKind,
 }
 
 fn ts_function_sig_kind(
@@ -218,13 +271,16 @@ fn ts_function_sig_kind(
 struct ProgramCodegen<'ctx, 'p> {
   context: &'ctx Context,
   module: Module<'ctx>,
+  f64_ty: FloatType<'ctx>,
   i32_ty: IntType<'ctx>,
-  bool_ty: IntType<'ctx>,
+  i64_ty: IntType<'ctx>,
+  i1_ty: IntType<'ctx>,
   program: &'p Program,
   resolver: Resolver<'p>,
   exported_defs: HashSet<DefId>,
-  globals: HashMap<DefId, GlobalValue<'ctx>>,
+  globals: HashMap<DefId, GlobalSlot<'ctx>>,
   functions: HashMap<DefId, FunctionValue<'ctx>>,
+  function_sigs: HashMap<DefId, TsFunctionSigKind>,
   file_inits: HashMap<FileId, FunctionValue<'ctx>>,
 }
 
@@ -233,13 +289,16 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     Self {
       context,
       module: context.create_module(module_name),
+      f64_ty: context.f64_type(),
       i32_ty: context.i32_type(),
-      bool_ty: context.bool_type(),
+      i64_ty: context.i64_type(),
+      i1_ty: context.bool_type(),
       program,
       resolver: Resolver::new(program),
       exported_defs: HashSet::new(),
       globals: HashMap::new(),
       functions: HashMap::new(),
+      function_sigs: HashMap::new(),
       file_inits: HashMap::new(),
     }
   }
@@ -264,7 +323,6 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
     let main_def = entrypoint.main_def;
     let main_sig = ts_function_sig_kind(self.program, main_def, entry_file, 0, true)?;
-    let allow_void_main_return = main_sig.ret == TsAbiKind::Void;
 
     let files = self.runtime_files(entry_file);
     self.collect_exported_defs(&files);
@@ -275,7 +333,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     // Predeclare all top-level functions (so calls can reference them).
-    let mut function_bodies: Vec<(DefId, FileId, hir_js::BodyId, bool)> = Vec::new();
+    let mut function_bodies: Vec<(DefId, FileId, hir_js::BodyId)> = Vec::new();
     for file in &files {
       let Some(lowered) = self.program.hir_lowered(*file) else {
         continue;
@@ -297,14 +355,13 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
           continue;
         };
 
-        let allow_void_return = if def.id == main_def {
-          allow_void_main_return
+        let sig = if def.id == main_def {
+          main_sig.clone()
         } else {
-          let sig = ts_function_sig_kind(self.program, def.id, *file, function.params.len(), false)?;
-          sig.ret == TsAbiKind::Void
+          ts_function_sig_kind(self.program, def.id, *file, function.params.len(), false)?
         };
-        self.ensure_ts_function(def.id, function.params.len());
-        function_bodies.push((def.id, *file, body_id, allow_void_return));
+        self.ensure_ts_function(def.id, sig);
+        function_bodies.push((def.id, *file, body_id));
       }
     }
 
@@ -321,12 +378,12 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     // Define all top-level functions.
-    for (def, file, body_id, allow_void_return) in function_bodies {
-      self.build_ts_function(def, file, body_id, allow_void_return)?;
+    for (def, file, body_id) in function_bodies {
+      self.build_ts_function(def, file, body_id)?;
     }
 
     // Build C entrypoint wrapper that runs module initializers and then calls TS main.
-    self.build_c_main(entry_file, main_fn, &init_order)?;
+    self.build_c_main(entry_file, main_fn, main_sig.ret, &init_order)?;
 
     Ok(())
   }
@@ -435,15 +492,32 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     self.file_inits.insert(file, func);
   }
 
-  fn ensure_ts_function(&mut self, def: DefId, param_count: usize) {
+  fn ensure_ts_function(&mut self, def: DefId, sig: TsFunctionSigKind) {
     if self.functions.contains_key(&def) {
+      // Ensure signature metadata is available even if the `FunctionValue` was already
+      // materialized (e.g. via import aliasing).
+      self.function_sigs.entry(def).or_insert(sig);
       return;
     }
+
     let name = crate::llvm_symbol_for_def(self.program, def);
-    let params: Vec<_> = std::iter::repeat(self.i32_ty.into())
-      .take(param_count)
-      .collect();
-    let fn_ty = self.i32_ty.fn_type(&params, false);
+
+    let mut params = Vec::with_capacity(sig.params.len());
+    for p in &sig.params {
+      let ty = match p {
+        TsAbiKind::Number => self.f64_ty.into(),
+        TsAbiKind::Boolean => self.i1_ty.into(),
+        TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
+      };
+      params.push(ty);
+    }
+
+    let fn_ty = match sig.ret {
+      TsAbiKind::Number => self.f64_ty.fn_type(&params, false),
+      TsAbiKind::Boolean => self.i1_ty.fn_type(&params, false),
+      TsAbiKind::Void => self.context.void_type().fn_type(&params, false),
+    };
+
     let linkage = if self.exported_defs.contains(&def) {
       None
     } else {
@@ -452,6 +526,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let func = self.module.add_function(&name, fn_ty, linkage);
     crate::stack_walking::apply_stack_walking_attrs(self.context, func);
     self.functions.insert(def, func);
+    self.function_sigs.insert(def, sig);
   }
 
   fn build_file_init(&mut self, file: FileId) -> Result<(), Vec<Diagnostic>> {
@@ -464,19 +539,22 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     let Some(lowered) = self.program.hir_lowered(file) else {
       return Ok(());
     };
-    let Some(body) = lowered.body(lowered.root_body()) else {
+    let body_id = lowered.root_body();
+    let Some(body) = lowered.body(body_id) else {
       return Ok(());
     };
+    let types = self.program.check_body(body_id);
 
     let mut cg = FnCodegen::new(
       self,
       func,
       file,
+      body_id,
       body,
+      types.as_ref(),
       lowered.names.as_ref(),
       CodegenMode::FileInit,
-      ReturnKind::Void,
-      false,
+      TsAbiKind::Void,
     );
 
     let mut fallthrough = true;
@@ -497,7 +575,6 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     def: DefId,
     file: FileId,
     body_id: hir_js::BodyId,
-    allow_void_return: bool,
   ) -> Result<(), Vec<Diagnostic>> {
     let Some(func) = self.functions.get(&def).copied() else {
       return Ok(());
@@ -522,15 +599,23 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       )]);
     };
 
+    let sig = self
+      .function_sigs
+      .get(&def)
+      .cloned()
+      .ok_or_else(|| vec![Diagnostic::error("NJS0102", "missing function signature metadata", Span::new(file, hir_body.span))])?;
+
+    let types = self.program.check_body(body_id);
     let mut cg = FnCodegen::new(
       self,
       func,
       file,
+      body_id,
       hir_body,
+      types.as_ref(),
       lowered.names.as_ref(),
       CodegenMode::TsFunction,
-      ReturnKind::I32,
-      allow_void_return,
+      sig.ret,
     );
 
     // Parameters.
@@ -556,12 +641,28 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         })
         .unwrap_or("param");
 
-      let slot = cg.ensure_local_slot(binding, debug_name);
-      let value = func
-        .get_nth_param(idx as u32)
-        .expect("missing param")
-        .into_int_value();
-      cg.builder.build_store(slot, value).expect("store param");
+      let Some(&param_kind) = sig.params.get(idx) else {
+        return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+          "native-js: signature/parameter count mismatch",
+          Span::new(file, hir_body.span),
+        )]);
+      };
+
+      let slot = cg.ensure_local_slot(binding, param_kind, debug_name, Span::new(file, hir_body.span))?;
+      let value = func.get_nth_param(idx as u32).expect("missing param");
+      match param_kind {
+        TsAbiKind::Number => {
+          cg.builder
+            .build_store(slot, value.into_float_value())
+            .expect("store param");
+        }
+        TsAbiKind::Boolean => {
+          cg.builder
+            .build_store(slot, value.into_int_value())
+            .expect("store param");
+        }
+        TsAbiKind::Void => unreachable!("void is not a valid parameter ABI kind"),
+      }
 
       if let Some(name) = cg.pat_ident_name(param.pat) {
         cg.env.bind(name, binding);
@@ -571,14 +672,26 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     match function_meta.body {
       hir_js::FunctionBody::Expr(expr) => {
         let value = cg.codegen_expr(expr)?;
-        let ret = if allow_void_return {
-          cg.cg.i32_ty.const_zero()
-        } else {
-          value
-        };
-        cg.builder
-          .build_return(Some(&ret))
-          .expect("failed to build return");
+        match (sig.ret, value) {
+          (TsAbiKind::Void, NativeValue::Void) => {
+            cg.builder.build_return(None).expect("failed to build return");
+          }
+          (TsAbiKind::Number, NativeValue::Number(v)) => {
+            cg.builder.build_return(Some(&v)).expect("failed to build return");
+          }
+          (TsAbiKind::Boolean, NativeValue::Boolean(v)) => {
+            cg.builder.build_return(Some(&v)).expect("failed to build return");
+          }
+          (expected, actual) => {
+            return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+              format!(
+                "return type mismatch (expected {expected:?}, got {got:?})",
+                got = actual.kind()
+              ),
+              Span::new(file, hir_body.span),
+            )]);
+          }
+        }
       }
       hir_js::FunctionBody::Block(ref stmts) => {
         let mut fallthrough = true;
@@ -590,9 +703,9 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         }
 
         if fallthrough {
-          if allow_void_return {
+          if matches!(sig.ret, TsAbiKind::Void) {
             cg.builder
-              .build_return(Some(&cg.cg.i32_ty.const_zero()))
+              .build_return(None)
               .expect("failed to build implicit return");
           } else {
             return Err(vec![codes::HIR_CODEGEN_MISSING_RETURN.error(
@@ -611,6 +724,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     &mut self,
     entry_file: FileId,
     ts_main: FunctionValue<'ctx>,
+    ts_main_ret: TsAbiKind,
     init_order: &[FileId],
   ) -> Result<(), Vec<Diagnostic>> {
     let ice_span = Span::new(entry_file, TextRange::new(0, 0));
@@ -663,14 +777,37 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       .build_call(ts_main, &[], "ret")
       .map_err(|e| vec![diagnostics::ice(ice_span, format!("failed to build call to ts main: {e}"))])?;
     crate::stack_walking::mark_call_notail(call);
-    let ret_val = call
-      .try_as_basic_value()
-      .left()
-      .map(|v| v.into_int_value())
-      .unwrap_or_else(|| self.i32_ty.const_zero());
+
+    let ret_val = match ts_main_ret {
+      TsAbiKind::Void => self.i32_ty.const_zero(),
+      TsAbiKind::Number => {
+        let v = call
+          .try_as_basic_value()
+          .left()
+          .expect("non-void TS main should return a value")
+          .into_float_value();
+        // Note: `fptosi` truncates toward zero. Values outside the i32 range (or NaN) are
+        // currently undefined behavior in LLVM IR; we keep this simple conversion for now since
+        // native-js uses the `main()` return purely as a process exit code.
+        builder
+          .build_float_to_signed_int(v, self.i32_ty, "exitcode")
+          .expect("failed to build fptosi")
+      }
+      TsAbiKind::Boolean => {
+        let v = call
+          .try_as_basic_value()
+          .left()
+          .expect("non-void TS main should return a value")
+          .into_int_value();
+        builder
+          .build_int_z_extend(v, self.i32_ty, "exitcode")
+          .expect("failed to build zext")
+      }
+    };
+
     // Chosen convention: the value returned from the exported `main()` becomes the process exit
-    // code (truncated by the OS to 8 bits on Unix). For `void`/`undefined` entrypoints the TS
-    // codegen always returns `0`, so the process exits successfully.
+    // code (truncated by the OS to 8 bits on Unix). For `void`/`undefined`/`never` entrypoints the
+    // process exits successfully with code 0.
     //
     // This keeps the wrapper free of libc/vararg calls (e.g. `printf`) which are
     // not rewritten into statepoints by LLVM and therefore violate our GC callsite
@@ -685,7 +822,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     Ok(())
   }
 
-  fn ensure_global_var(&mut self, def: DefId, span: Span) -> Result<GlobalValue<'ctx>, Vec<Diagnostic>> {
+  fn ensure_global_var(&mut self, def: DefId, span: Span) -> Result<GlobalSlot<'ctx>, Vec<Diagnostic>> {
     if let Some(existing) = self.globals.get(&def).copied() {
       return Ok(existing);
     }
@@ -699,19 +836,52 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
     match kind {
       typecheck_ts::DefKind::Var(_) | typecheck_ts::DefKind::VarDeclarator(_) => {
+        let ts_ty = self.program.type_of_def_interned(def);
+        let ts_kind = self.program.type_kind(ts_ty);
+        let Some(abi_kind) = TsAbiKind::from_value_type_kind(&ts_kind) else {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            format!(
+              "unsupported global type for native-js ABI (expected number|boolean): {}",
+              self.program.display_type(ts_ty)
+            ),
+            span,
+          )]);
+        };
+        if abi_kind == TsAbiKind::Void {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`void`/`undefined`/`never` global bindings are not supported in native-js codegen",
+            span,
+          )]);
+        }
+
         let name = crate::llvm_symbol_for_def(self.program, def);
-        let global = self.module.add_global(self.i32_ty, None, &name);
-        global.set_initializer(&self.i32_ty.const_zero());
+        let global_ty: BasicTypeEnum<'ctx> = match abi_kind {
+          TsAbiKind::Number => self.f64_ty.into(),
+          TsAbiKind::Boolean => self.i1_ty.into(),
+          TsAbiKind::Void => unreachable!(),
+        };
+        let global = self.module.add_global(global_ty, None, &name);
+        match abi_kind {
+          TsAbiKind::Number => global.set_initializer(&self.f64_ty.const_float(0.0)),
+          TsAbiKind::Boolean => global.set_initializer(&self.i1_ty.const_int(0, false)),
+          TsAbiKind::Void => unreachable!(),
+        };
         if !self.exported_defs.contains(&def) {
           global.set_linkage(Linkage::Internal);
         }
-        self.globals.insert(def, global);
-        Ok(global)
+
+        let slot = GlobalSlot {
+          global,
+          kind: abi_kind,
+        };
+        self.globals.insert(def, slot);
+        Ok(slot)
       }
       typecheck_ts::DefKind::Import(import) => match import.target {
         typecheck_ts::ImportTarget::File(target_file) => {
           let target = self.resolve_export_def(target_file, import.original.as_str(), span)?;
-          self.ensure_global_var(target, span)
+          let slot = self.ensure_global_var(target, span)?;
+          Ok(slot)
         }
         _ => Err(vec![codes::HIR_CODEGEN_UNRESOLVED_IMPORT_BINDING.error(
           "unresolved import in codegen",
@@ -785,12 +955,6 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum ReturnKind {
-  I32,
-  Void,
-}
-
-#[derive(Clone, Copy, Debug)]
 enum CodegenMode {
   TsFunction,
   FileInit,
@@ -843,15 +1007,16 @@ struct FnCodegen<'ctx, 'p, 'a> {
   builder: Builder<'ctx>,
   alloca_builder: Builder<'ctx>,
   func: FunctionValue<'ctx>,
+  body_id: hir_js::BodyId,
   body: &'a hir_js::Body,
+  types: &'a typecheck_ts::BodyCheckResult,
   names: &'a hir_js::NameInterner,
   file: FileId,
-  locals: HashMap<BindingId, PointerValue<'ctx>>,
+  locals: HashMap<BindingId, LocalSlot<'ctx>>,
   env: LocalEnv,
   loop_stack: Vec<LoopContext<'ctx>>,
   mode: CodegenMode,
-  return_kind: ReturnKind,
-  allow_void_return: bool,
+  return_kind: TsAbiKind,
 }
 
 impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
@@ -859,11 +1024,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     cg: &'a mut ProgramCodegen<'ctx, 'p>,
     func: FunctionValue<'ctx>,
     file: FileId,
+    body_id: hir_js::BodyId,
     body: &'a hir_js::Body,
+    types: &'a typecheck_ts::BodyCheckResult,
     names: &'a hir_js::NameInterner,
     mode: CodegenMode,
-    return_kind: ReturnKind,
-    allow_void_return: bool,
+    return_kind: TsAbiKind,
   ) -> Self {
     let builder = cg.context.create_builder();
     let alloca_builder = cg.context.create_builder();
@@ -876,7 +1042,9 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       builder,
       alloca_builder,
       func,
+      body_id,
       body,
+      types,
       names,
       file,
       locals: HashMap::new(),
@@ -884,7 +1052,6 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       loop_stack: Vec::new(),
       mode,
       return_kind,
-      allow_void_return,
     }
   }
 
@@ -906,6 +1073,46 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     })
   }
 
+  fn expr_abi_kind(&self, expr: ExprId, span: Span) -> Result<TsAbiKind, Vec<Diagnostic>> {
+    let ty = self.types.expr_type(expr).ok_or_else(|| {
+      vec![Diagnostic::error(
+        "NJS0103",
+        "missing type information for expression",
+        span,
+      )]
+    })?;
+    let kind = self.cg.program.type_kind(ty);
+    TsAbiKind::from_value_type_kind(&kind).ok_or_else(|| {
+      vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+        format!(
+          "unsupported type for native-js codegen: {}",
+          self.cg.program.display_type(ty)
+        ),
+        span,
+      )]
+    })
+  }
+
+  fn pat_abi_kind(&self, pat: hir_js::PatId, span: Span) -> Result<TsAbiKind, Vec<Diagnostic>> {
+    let ty = self.types.pat_type(pat).ok_or_else(|| {
+      vec![Diagnostic::error(
+        "NJS0122",
+        "missing type information for pattern",
+        span,
+      )]
+    })?;
+    let kind = self.cg.program.type_kind(ty);
+    TsAbiKind::from_value_type_kind(&kind).ok_or_else(|| {
+      vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+        format!(
+          "unsupported type for native-js codegen: {}",
+          self.cg.program.display_type(ty)
+        ),
+        span,
+      )]
+    })
+  }
+
   fn pat_ident_name(&self, pat: hir_js::PatId) -> Option<NameId> {
     let pat = self.body.pats.get(pat.0 as usize)?;
     match pat.kind {
@@ -922,9 +1129,22 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
   }
 
-  fn ensure_local_slot(&mut self, binding: BindingId, debug_name: &str) -> PointerValue<'ctx> {
+  fn ensure_local_slot(
+    &mut self,
+    binding: BindingId,
+    kind: TsAbiKind,
+    debug_name: &str,
+    span: Span,
+  ) -> Result<PointerValue<'ctx>, Vec<Diagnostic>> {
     if let Some(existing) = self.locals.get(&binding).copied() {
-      return existing;
+      return Ok(existing.ptr);
+    }
+
+    if matches!(kind, TsAbiKind::Void) {
+      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+        "`void`/`undefined`/`never` local bindings are not supported in native-js codegen",
+        span,
+      )]);
     }
 
     let entry_bb = self
@@ -937,26 +1157,90 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       self.alloca_builder.position_at_end(entry_bb);
     }
 
+    let slot_ty: BasicTypeEnum<'ctx> = match kind {
+      TsAbiKind::Number => self.cg.f64_ty.as_basic_type_enum(),
+      TsAbiKind::Boolean => self.cg.i1_ty.as_basic_type_enum(),
+      TsAbiKind::Void => unreachable!(),
+    };
+
     let slot = self
       .alloca_builder
-      .build_alloca(self.cg.i32_ty, debug_name)
+      .build_alloca(slot_ty, debug_name)
       .expect("failed to build alloca");
-    self.locals.insert(binding, slot);
-    slot
+    self.locals.insert(binding, LocalSlot { ptr: slot, kind });
+    Ok(slot)
   }
 
-  fn bool_to_i32(&self, v: IntValue<'ctx>) -> IntValue<'ctx> {
-    self
-      .builder
-      .build_int_z_extend(v, self.cg.i32_ty, "bool")
-      .expect("failed to zext bool")
+  fn is_truthy_i1(&self, v: NativeValue<'ctx>) -> IntValue<'ctx> {
+    match v {
+      NativeValue::Boolean(v) => v,
+      NativeValue::Number(v) => self
+        .builder
+        .build_float_compare(FloatPredicate::ONE, v, self.cg.f64_ty.const_float(0.0), "truthy")
+        .expect("failed to build truthy compare"),
+      // `undefined` is falsy in JS; we treat `void` expressions similarly when used in a truthy
+      // context.
+      NativeValue::Void => self.cg.i1_ty.const_int(0, false),
+    }
   }
 
-  fn is_truthy_i1(&self, v: IntValue<'ctx>) -> IntValue<'ctx> {
+  /// Convert a `number` (`double`) to a 32-bit integer for bitwise operators.
+  ///
+  /// This is intended to approximate JS `ToInt32` without invoking UB in LLVM IR:
+  /// - `NaN`/`±Infinity` become 0.
+  /// - finite values are reduced with `frem` by 2^32 and then truncated toward zero.
+  fn number_to_i32(&self, v: FloatValue<'ctx>) -> IntValue<'ctx> {
+    let is_nan = self
+      .builder
+      .build_float_compare(FloatPredicate::UNO, v, v, "is_nan")
+      .expect("fcmp uno");
+    let is_pos_inf = self
+      .builder
+      .build_float_compare(
+        FloatPredicate::OEQ,
+        v,
+        self.cg.f64_ty.const_float(f64::INFINITY),
+        "is_pos_inf",
+      )
+      .expect("fcmp oeq inf");
+    let is_neg_inf = self
+      .builder
+      .build_float_compare(
+        FloatPredicate::OEQ,
+        v,
+        self.cg.f64_ty.const_float(f64::NEG_INFINITY),
+        "is_neg_inf",
+      )
+      .expect("fcmp oeq -inf");
+    let is_inf = self
+      .builder
+      .build_or(is_pos_inf, is_neg_inf, "is_inf")
+      .expect("or inf");
+    let is_bad = self
+      .builder
+      .build_or(is_nan, is_inf, "is_bad")
+      .expect("or bad");
+
+    let two32 = self.cg.f64_ty.const_float(4294967296.0);
+    let rem = self
+      .builder
+      .build_float_rem(v, two32, "frem_2p32")
+      .expect("frem");
+
+    let sanitized = self
+      .builder
+      .build_select(is_bad, self.cg.f64_ty.const_float(0.0), rem, "frem.s")
+      .expect("select")
+      .into_float_value();
+
+    let as_i64 = self
+      .builder
+      .build_float_to_signed_int(sanitized, self.cg.i64_ty, "to_i64")
+      .expect("fptosi i64");
     self
       .builder
-      .build_int_compare(IntPredicate::NE, v, self.cg.i32_ty.const_zero(), "truthy")
-      .expect("failed to build truthy compare")
+      .build_int_truncate(as_i64, self.cg.i32_ty, "to_i32")
+      .expect("trunc i32")
   }
 
   fn codegen_stmt(&mut self, stmt_id: StmtId) -> Result<bool, Vec<Diagnostic>> {
@@ -974,40 +1258,54 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         let _ = self.codegen_expr(expr)?;
         Ok(true)
       }
-      StmtKind::Return(Some(_)) if matches!(self.return_kind, ReturnKind::Void) => Err(vec![
-        codes::HIR_CODEGEN_UNSUPPORTED_RETURN.error("`return <expr>` is not supported here", span),
-      ]),
       StmtKind::Return(Some(expr)) => {
         let value = self.codegen_expr(expr)?;
-        let ret = if self.allow_void_return {
-          self.cg.i32_ty.const_zero()
+        match (self.return_kind, value) {
+          (TsAbiKind::Void, NativeValue::Void) => {
+            self.builder.build_return(None).expect("failed to build return");
+          }
+          (TsAbiKind::Number, NativeValue::Number(v)) => {
+            self.builder
+              .build_return(Some(&v))
+              .expect("failed to build return");
+          }
+          (TsAbiKind::Boolean, NativeValue::Boolean(v)) => {
+            self.builder
+              .build_return(Some(&v))
+              .expect("failed to build return");
+          }
+          (TsAbiKind::Void, other) => {
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_RETURN.error(
+              format!(
+                "`return <expr>` is only supported when the expression has type void/undefined/never (got {got:?})",
+                got = other.kind()
+              ),
+              span,
+            )]);
+          }
+          (expected, got) => {
+            return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+              format!(
+                "return type mismatch (expected {expected:?}, got {got:?})",
+                got = got.kind()
+              ),
+              span,
+            )]);
+          }
+        }
+        Ok(false)
+      }
+      StmtKind::Return(None) => {
+        if matches!(self.return_kind, TsAbiKind::Void) {
+          self.builder.build_return(None).expect("failed to build return");
+          Ok(false)
         } else {
-          value
-        };
-        self
-          .builder
-          .build_return(Some(&ret))
-          .expect("failed to build return");
-        Ok(false)
+          Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_RETURN.error(
+            "`return` without a value is only supported when the function returns void/undefined/never",
+            span,
+          )])
+        }
       }
-      StmtKind::Return(None) if matches!(self.return_kind, ReturnKind::Void) => {
-        self
-          .builder
-          .build_return(None)
-          .expect("failed to build return");
-        Ok(false)
-      }
-      StmtKind::Return(None) if self.allow_void_return => {
-        self
-          .builder
-          .build_return(Some(&self.cg.i32_ty.const_zero()))
-          .expect("failed to build return");
-        Ok(false)
-      }
-      StmtKind::Return(None) => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_RETURN.error(
-        "`return` without a value is not supported in this codegen subset",
-        span,
-      )]),
       StmtKind::Decl(_) => match self.mode {
         CodegenMode::FileInit => Ok(true),
         CodegenMode::TsFunction => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_STMT.error(
@@ -1071,29 +1369,39 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
   }
 
   fn codegen_print_stmt(&mut self, expr: ExprId) -> Result<bool, Vec<Diagnostic>> {
-    let expr = self.expr_data(expr)?;
-    let ExprKind::Call(call) = &expr.kind else {
-      return Ok(false);
+    let (callee, arg_expr, expr_span) = {
+      let expr = self.expr_data(expr)?;
+      let ExprKind::Call(call) = &expr.kind else {
+        return Ok(false);
+      };
+      if call.optional || call.is_new {
+        return Ok(false);
+      }
+      if call.args.len() != 1 {
+        return Ok(false);
+      }
+      let Some(arg) = call.args.first() else {
+        return Ok(false);
+      };
+      if arg.spread {
+        return Ok(false);
+      }
+
+      (call.callee, arg.expr, expr.span)
     };
-    if call.optional || call.is_new {
-      return Ok(false);
-    }
-    if call.args.len() != 1 {
-      return Ok(false);
-    }
-    let Some(arg) = call.args.first() else {
-      return Ok(false);
-    };
-    if arg.spread {
+
+    if self.callee_global_intrinsic(callee) != Some(NativeJsIntrinsic::Print) {
       return Ok(false);
     }
 
-    if self.callee_global_intrinsic(call.callee) != Some(NativeJsIntrinsic::Print) {
-      return Ok(false);
-    }
-
-    let value = self.codegen_expr(arg.expr)?;
-    self.emit_print_i32(value);
+    let value = self.codegen_expr(arg_expr)?;
+    let NativeValue::Number(value) = value else {
+      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+        "the `print` intrinsic currently only supports `number` arguments",
+        Span::new(self.file, expr_span),
+      )]);
+    };
+    self.emit_print_f64(value);
     Ok(true)
   }
 
@@ -1118,7 +1426,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .then_some(intrinsic)
   }
 
-  fn emit_print_i32(&self, value: IntValue<'ctx>) {
+  fn emit_print_f64(&self, value: FloatValue<'ctx>) {
     // NOTE: Do not call `printf` directly from TS-generated functions.
     //
     // The native pipeline runs LLVM's `rewrite-statepoints-for-gc` pass and enforces that
@@ -1127,10 +1435,10 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     // See `llvm::passes::verify_no_stray_calls_in_ts_generated_functions`.
     // LLVM does not rewrite varargs calls like `printf` into statepoints reliably, so we route the
     // intrinsic through a small non-TS wrapper.
-    let rt_print = declare_rt_print_i32(self.cg.context, &self.cg.module);
+    let rt_print = declare_rt_print_f64(self.cg.context, &self.cg.module);
     let call = self
       .builder
-      .build_call(rt_print, &[value.into()], "native_js_print_i32")
+      .build_call(rt_print, &[value.into()], "native_js_print_f64")
       .expect("failed to build print call");
     crate::stack_walking::mark_call_notail(call);
   }
@@ -1226,7 +1534,14 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
   }
 
-  fn codegen_logical_and(&mut self, left: ExprId, right: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+  fn codegen_logical_and(
+    &mut self,
+    expr: ExprId,
+    left: ExprId,
+    right: ExprId,
+    span: Span,
+  ) -> Result<NativeValue<'ctx>, Vec<Diagnostic>> {
+    let expected = self.expr_abi_kind(expr, span)?;
     let lhs = self.codegen_expr(left)?;
     let lhs_bb = self
       .builder
@@ -1253,15 +1568,55 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build logical-and rhs branch");
 
     self.builder.position_at_end(end_bb);
-    let phi = self
-      .builder
-      .build_phi(self.cg.i32_ty, "land")
-      .expect("failed to build phi");
-    phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
-    Ok(phi.as_basic_value().into_int_value())
+    match expected {
+      TsAbiKind::Void => {
+        if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`&&` currently only supports `void && void`, `number && number`, or `boolean && boolean`",
+            span,
+          )]);
+        }
+        Ok(NativeValue::Void)
+      }
+      TsAbiKind::Number => {
+        let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`&&` currently only supports `void && void`, `number && number`, or `boolean && boolean`",
+            span,
+          )]);
+        };
+        let phi = self
+          .builder
+          .build_phi(self.cg.f64_ty, "land")
+          .expect("failed to build phi");
+        phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
+        Ok(NativeValue::Number(phi.as_basic_value().into_float_value()))
+      }
+      TsAbiKind::Boolean => {
+        let (NativeValue::Boolean(lhs), NativeValue::Boolean(rhs)) = (lhs, rhs) else {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`&&` currently only supports `void && void`, `number && number`, or `boolean && boolean`",
+            span,
+          )]);
+        };
+        let phi = self
+          .builder
+          .build_phi(self.cg.i1_ty, "land")
+          .expect("failed to build phi");
+        phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
+        Ok(NativeValue::Boolean(phi.as_basic_value().into_int_value()))
+      }
+    }
   }
 
-  fn codegen_logical_or(&mut self, left: ExprId, right: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+  fn codegen_logical_or(
+    &mut self,
+    expr: ExprId,
+    left: ExprId,
+    right: ExprId,
+    span: Span,
+  ) -> Result<NativeValue<'ctx>, Vec<Diagnostic>> {
+    let expected = self.expr_abi_kind(expr, span)?;
     let lhs = self.codegen_expr(left)?;
     let lhs_bb = self
       .builder
@@ -1288,15 +1643,48 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       .expect("failed to build logical-or rhs branch");
 
     self.builder.position_at_end(end_bb);
-    let phi = self
-      .builder
-      .build_phi(self.cg.i32_ty, "lor")
-      .expect("failed to build phi");
-    phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
-    Ok(phi.as_basic_value().into_int_value())
+    match expected {
+      TsAbiKind::Void => {
+        if lhs.kind() != TsAbiKind::Void || rhs.kind() != TsAbiKind::Void {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`||` currently only supports `void || void`, `number || number`, or `boolean || boolean`",
+            span,
+          )]);
+        }
+        Ok(NativeValue::Void)
+      }
+      TsAbiKind::Number => {
+        let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`||` currently only supports `void || void`, `number || number`, or `boolean || boolean`",
+            span,
+          )]);
+        };
+        let phi = self
+          .builder
+          .build_phi(self.cg.f64_ty, "lor")
+          .expect("failed to build phi");
+        phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
+        Ok(NativeValue::Number(phi.as_basic_value().into_float_value()))
+      }
+      TsAbiKind::Boolean => {
+        let (NativeValue::Boolean(lhs), NativeValue::Boolean(rhs)) = (lhs, rhs) else {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`||` currently only supports `void || void`, `number || number`, or `boolean || boolean`",
+            span,
+          )]);
+        };
+        let phi = self
+          .builder
+          .build_phi(self.cg.i1_ty, "lor")
+          .expect("failed to build phi");
+        phi.add_incoming(&[(&lhs, lhs_bb), (&rhs, rhs_end_bb)]);
+        Ok(NativeValue::Boolean(phi.as_basic_value().into_int_value()))
+      }
+    }
   }
 
-  fn codegen_comma(&mut self, left: ExprId, right: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+  fn codegen_comma(&mut self, left: ExprId, right: ExprId) -> Result<NativeValue<'ctx>, Vec<Diagnostic>> {
     let _ = self.codegen_expr(left)?;
     self.codegen_expr(right)
   }
@@ -1518,7 +1906,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         let v = self.codegen_expr(test)?;
         self.is_truthy_i1(v)
       } else {
-        self.cg.bool_ty.const_int(1, false)
+        self.cg.i1_ty.const_int(1, false)
       };
       self
         .builder
@@ -1572,6 +1960,16 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
 
     for declarator in decl.declarators.iter() {
+      let pat_span = Span::new(
+        self.file,
+        self
+          .body
+          .pats
+          .get(declarator.pat.0 as usize)
+          .map(|pat| pat.span)
+          .unwrap_or(span.range),
+      );
+
       let binding = self
         .cg
         .resolver
@@ -1608,21 +2006,55 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       };
 
       let value = self.codegen_expr(init)?;
+      let expected_kind = self.pat_abi_kind(declarator.pat, pat_span)?;
+      if value.kind() != expected_kind {
+        return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+          format!(
+            "variable initializer type mismatch (expected {expected:?}, got {got:?})",
+            expected = expected_kind,
+            got = value.kind()
+          ),
+          pat_span,
+        )]);
+      }
 
       match binding {
         BindingId::Def(def) if is_toplevel_def(self.cg.program, def) => {
-          let global = self.cg.ensure_global_var(def, span)?;
-          self
-            .builder
-            .build_store(global.as_pointer_value(), value)
-            .expect("failed to build store");
+          let global = self.cg.ensure_global_var(def, pat_span)?;
+          if global.kind != expected_kind {
+            return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+              "global binding type mismatch",
+              pat_span,
+            )]);
+          }
+
+          match value {
+            NativeValue::Number(v) => {
+              self
+                .builder
+                .build_store(global.global.as_pointer_value(), v)
+                .expect("failed to build store");
+            }
+            NativeValue::Boolean(v) => {
+              self
+                .builder
+                .build_store(global.global.as_pointer_value(), v)
+                .expect("failed to build store");
+            }
+            NativeValue::Void => unreachable!("void globals are rejected in ensure_global_var"),
+          }
         }
         _ => {
-          let slot = self.ensure_local_slot(binding, debug_name);
-          self
-            .builder
-            .build_store(slot, value)
-            .expect("failed to build store");
+          let slot = self.ensure_local_slot(binding, expected_kind, debug_name, pat_span)?;
+          match value {
+            NativeValue::Number(v) => {
+              self.builder.build_store(slot, v).expect("failed to build store");
+            }
+            NativeValue::Boolean(v) => {
+              self.builder.build_store(slot, v).expect("failed to build store");
+            }
+            NativeValue::Void => unreachable!("void locals are rejected in ensure_local_slot"),
+          }
 
           if let Some(name) = self.pat_ident_name(declarator.pat) {
             self.env.bind(name, binding);
@@ -1633,14 +2065,17 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     Ok(())
   }
 
-  fn ptr_for_binding(&mut self, binding: BindingId, span: Span) -> Result<PointerValue<'ctx>, Vec<Diagnostic>> {
-    if let Some(ptr) = self.locals.get(&binding).copied() {
-      return Ok(ptr);
+  fn slot_for_binding(&mut self, binding: BindingId, span: Span) -> Result<LocalSlot<'ctx>, Vec<Diagnostic>> {
+    if let Some(slot) = self.locals.get(&binding).copied() {
+      return Ok(slot);
     }
     match binding {
       BindingId::Def(def) if is_toplevel_def(self.cg.program, def) => {
         let global = self.cg.ensure_global_var(def, span)?;
-        Ok(global.as_pointer_value())
+        Ok(LocalSlot {
+          ptr: global.global.as_pointer_value(),
+          kind: global.kind,
+        })
       }
       _ => Err(vec![codes::HIR_CODEGEN_UNKNOWN_IDENTIFIER.error(
         "use of unknown/unbound identifier in native-js codegen",
@@ -1649,131 +2084,221 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
   }
 
-  fn codegen_expr(&mut self, expr: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+  fn codegen_expr(&mut self, expr: ExprId) -> Result<NativeValue<'ctx>, Vec<Diagnostic>> {
     let (kind, span) = {
       let expr_data = self.expr_data(expr)?;
-      (
-        expr_data.kind.clone(),
-        Span::new(self.file, expr_data.span),
-      )
+      (expr_data.kind.clone(), Span::new(self.file, expr_data.span))
     };
 
     match kind {
       ExprKind::TypeAssertion { expr, .. }
       | ExprKind::NonNull { expr }
       | ExprKind::Satisfies { expr, .. } => self.codegen_expr(expr),
-      ExprKind::Literal(Literal::Number(raw)) => parse_i32_const(self.cg.i32_ty, &raw).ok_or_else(|| {
-        vec![codes::HIR_CODEGEN_LITERAL_NOT_I32.error(
-          format!("unsupported numeric literal `{raw}` (expected 32-bit integer)"),
-          span,
-        )]
-      }),
-      ExprKind::Literal(Literal::Boolean(b)) => Ok(self.cg.i32_ty.const_int(u64::from(b), false)),
+
+      ExprKind::Literal(Literal::Number(raw)) => {
+        let Some(number) = JsNumber::from_literal(&raw).map(|n| n.0) else {
+          return Err(vec![codes::HIR_CODEGEN_INVALID_NUMERIC_LITERAL.error(
+            format!("invalid numeric literal `{raw}`"),
+            span,
+          )]);
+        };
+        Ok(NativeValue::Number(self.cg.f64_ty.const_float(number)))
+      }
+
+      ExprKind::Literal(Literal::Boolean(b)) => Ok(NativeValue::Boolean(self.cg.i1_ty.const_int(u64::from(b), false))),
+
       ExprKind::Unary { op, expr } => {
         let inner = self.codegen_expr(expr)?;
         match op {
-          UnaryOp::Plus => Ok(inner),
-          UnaryOp::Minus => Ok(
-            self
-              .builder
-              .build_int_neg(inner, "neg")
-              .expect("failed to build negation"),
-          ),
+          UnaryOp::Plus => match inner {
+            NativeValue::Number(v) => Ok(NativeValue::Number(v)),
+            _ => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error("unary `+` expects a number", span)]),
+          },
+          UnaryOp::Minus => match inner {
+            NativeValue::Number(v) => Ok(NativeValue::Number(
+              self
+                .builder
+                .build_float_neg(v, "neg")
+                .expect("failed to build negation"),
+            )),
+            _ => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error("unary `-` expects a number", span)]),
+          },
           UnaryOp::Not => {
-            let is_false = self
+            let truthy = self.is_truthy_i1(inner);
+            let not = self
               .builder
-              .build_int_compare(IntPredicate::EQ, inner, self.cg.i32_ty.const_zero(), "not")
-              .expect("failed to build compare");
-            Ok(self.bool_to_i32(is_false))
+              .build_not(truthy, "not")
+              .expect("failed to build not");
+            Ok(NativeValue::Boolean(not))
           }
-           UnaryOp::BitNot => Ok(self
-             .builder
-             .build_not(inner, "bitnot")
-             .expect("failed to build bitnot")),
+          UnaryOp::BitNot => match inner {
+            NativeValue::Number(v) => {
+              let i32_v = self.number_to_i32(v);
+              let not = self.builder.build_not(i32_v, "bitnot").expect("bitnot");
+              let out = self
+                .builder
+                .build_signed_int_to_float(not, self.cg.f64_ty, "bitnot.f")
+                .expect("sitofp");
+              Ok(NativeValue::Number(out))
+            }
+            _ => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error("unary `~` expects a number", span)]),
+          },
           _ => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_UNARY_OP.error(
             format!("unsupported unary operator `{op:?}`"),
             span,
           )]),
         }
       }
+
       ExprKind::Binary { op, left, right } => {
         match op {
-          BinaryOp::LogicalAnd => return self.codegen_logical_and(left, right),
-          BinaryOp::LogicalOr => return self.codegen_logical_or(left, right),
+          BinaryOp::LogicalAnd => return self.codegen_logical_and(expr, left, right, span),
+          BinaryOp::LogicalOr => return self.codegen_logical_or(expr, left, right, span),
           BinaryOp::Comma => return self.codegen_comma(left, right),
           _ => {}
         }
 
         let lhs = self.codegen_expr(left)?;
         let rhs = self.codegen_expr(right)?;
-        let v = match op {
-          BinaryOp::Add => self
-            .builder
-            .build_int_add(lhs, rhs, "add")
-            .expect("failed to build add"),
-          BinaryOp::Subtract => self
-            .builder
-            .build_int_sub(lhs, rhs, "sub")
-            .expect("failed to build sub"),
-          BinaryOp::Multiply => self
-            .builder
-            .build_int_mul(lhs, rhs, "mul")
-            .expect("failed to build mul"),
-          BinaryOp::Divide => self
-            .builder
-            .build_int_signed_div(lhs, rhs, "div")
-            .expect("failed to build div"),
-          BinaryOp::Remainder => self
-            .builder
-            .build_int_signed_rem(lhs, rhs, "rem")
-            .expect("failed to build rem"),
-          BinaryOp::BitAnd => self.builder.build_and(lhs, rhs, "and").expect("failed to build and"),
-          BinaryOp::BitOr => self.builder.build_or(lhs, rhs, "or").expect("failed to build or"),
-          BinaryOp::BitXor => self.builder.build_xor(lhs, rhs, "xor").expect("failed to build xor"),
-          BinaryOp::ShiftLeft => self
-            .builder
-            .build_left_shift(lhs, rhs, "shl")
-            .expect("failed to build shl"),
-          BinaryOp::ShiftRight => self
-            .builder
-            .build_right_shift(lhs, rhs, true, "shr")
-            .expect("failed to build shr"),
-          BinaryOp::ShiftRightUnsigned => self
-            .builder
-            .build_right_shift(lhs, rhs, false, "shr_u")
-            .expect("failed to build shr_u"),
-          BinaryOp::LessThan
-          | BinaryOp::LessEqual
-          | BinaryOp::GreaterThan
-          | BinaryOp::GreaterEqual
-          | BinaryOp::Equality
-          | BinaryOp::Inequality
-          | BinaryOp::StrictEquality
-          | BinaryOp::StrictInequality => {
+
+        match op {
+          // Arithmetic on numbers.
+          BinaryOp::Add
+          | BinaryOp::Subtract
+          | BinaryOp::Multiply
+          | BinaryOp::Divide
+          | BinaryOp::Remainder => {
+            let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
+              return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                "numeric operators currently require `number` operands",
+                span,
+              )]);
+            };
+            let out = match op {
+              BinaryOp::Add => self.builder.build_float_add(lhs, rhs, "fadd").expect("fadd"),
+              BinaryOp::Subtract => self.builder.build_float_sub(lhs, rhs, "fsub").expect("fsub"),
+              BinaryOp::Multiply => self.builder.build_float_mul(lhs, rhs, "fmul").expect("fmul"),
+              BinaryOp::Divide => self.builder.build_float_div(lhs, rhs, "fdiv").expect("fdiv"),
+              BinaryOp::Remainder => self.builder.build_float_rem(lhs, rhs, "frem").expect("frem"),
+              _ => unreachable!(),
+            };
+            Ok(NativeValue::Number(out))
+          }
+
+          // Bitwise operators on numbers (`ToInt32`).
+          BinaryOp::BitAnd
+          | BinaryOp::BitOr
+          | BinaryOp::BitXor
+          | BinaryOp::ShiftLeft
+          | BinaryOp::ShiftRight
+          | BinaryOp::ShiftRightUnsigned => {
+            let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
+              return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                "bitwise operators currently require `number` operands",
+                span,
+              )]);
+            };
+            let lhs_i32 = self.number_to_i32(lhs);
+            let rhs_i32 = self.number_to_i32(rhs);
+            let shamt = self
+              .builder
+              .build_and(rhs_i32, self.cg.i32_ty.const_int(31, false), "shamt")
+              .expect("shamt");
+            let out_i32 = match op {
+              BinaryOp::BitAnd => self.builder.build_and(lhs_i32, rhs_i32, "and").expect("and"),
+              BinaryOp::BitOr => self.builder.build_or(lhs_i32, rhs_i32, "or").expect("or"),
+              BinaryOp::BitXor => self.builder.build_xor(lhs_i32, rhs_i32, "xor").expect("xor"),
+              BinaryOp::ShiftLeft => self
+                .builder
+                .build_left_shift(lhs_i32, shamt, "shl")
+                .expect("shl"),
+              BinaryOp::ShiftRight => self
+                .builder
+                .build_right_shift(lhs_i32, shamt, true, "shr")
+                .expect("shr"),
+              BinaryOp::ShiftRightUnsigned => self
+                .builder
+                .build_right_shift(lhs_i32, shamt, false, "shr_u")
+                .expect("shr_u"),
+              _ => unreachable!(),
+            };
+
+            let out = if matches!(op, BinaryOp::ShiftRightUnsigned) {
+              self
+                .builder
+                .build_unsigned_int_to_float(out_i32, self.cg.f64_ty, "uitofp")
+                .expect("uitofp")
+            } else {
+              self
+                .builder
+                .build_signed_int_to_float(out_i32, self.cg.f64_ty, "sitofp")
+                .expect("sitofp")
+            };
+            Ok(NativeValue::Number(out))
+          }
+
+          // Comparisons.
+          BinaryOp::LessThan | BinaryOp::LessEqual | BinaryOp::GreaterThan | BinaryOp::GreaterEqual => {
+            let (NativeValue::Number(lhs), NativeValue::Number(rhs)) = (lhs, rhs) else {
+              return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                "ordering comparisons currently require `number` operands",
+                span,
+              )]);
+            };
             let pred = match op {
-              BinaryOp::LessThan => IntPredicate::SLT,
-              BinaryOp::LessEqual => IntPredicate::SLE,
-              BinaryOp::GreaterThan => IntPredicate::SGT,
-              BinaryOp::GreaterEqual => IntPredicate::SGE,
-              BinaryOp::Equality | BinaryOp::StrictEquality => IntPredicate::EQ,
-              BinaryOp::Inequality | BinaryOp::StrictInequality => IntPredicate::NE,
+              BinaryOp::LessThan => FloatPredicate::OLT,
+              BinaryOp::LessEqual => FloatPredicate::OLE,
+              BinaryOp::GreaterThan => FloatPredicate::OGT,
+              BinaryOp::GreaterEqual => FloatPredicate::OGE,
               _ => unreachable!(),
             };
             let cmp = self
               .builder
-              .build_int_compare(pred, lhs, rhs, "cmp")
-              .expect("failed to build compare");
-            self.bool_to_i32(cmp)
+              .build_float_compare(pred, lhs, rhs, "fcmp")
+              .expect("fcmp");
+            Ok(NativeValue::Boolean(cmp))
           }
-          _ => {
-            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_BINARY_OP.error(
-              format!("unsupported binary operator `{op:?}`"),
-              span,
-            )]);
+
+          BinaryOp::Equality | BinaryOp::StrictEquality | BinaryOp::Inequality | BinaryOp::StrictInequality => {
+            match (lhs, rhs) {
+              (NativeValue::Number(lhs), NativeValue::Number(rhs)) => {
+                let pred = match op {
+                  BinaryOp::Equality | BinaryOp::StrictEquality => FloatPredicate::OEQ,
+                  BinaryOp::Inequality | BinaryOp::StrictInequality => FloatPredicate::UNE,
+                  _ => unreachable!(),
+                };
+                let cmp = self
+                  .builder
+                  .build_float_compare(pred, lhs, rhs, "fcmp")
+                  .expect("fcmp");
+                Ok(NativeValue::Boolean(cmp))
+              }
+              (NativeValue::Boolean(lhs), NativeValue::Boolean(rhs)) => {
+                let pred = match op {
+                  BinaryOp::Equality | BinaryOp::StrictEquality => IntPredicate::EQ,
+                  BinaryOp::Inequality | BinaryOp::StrictInequality => IntPredicate::NE,
+                  _ => unreachable!(),
+                };
+                let cmp = self
+                  .builder
+                  .build_int_compare(pred, lhs, rhs, "icmp")
+                  .expect("icmp");
+                Ok(NativeValue::Boolean(cmp))
+              }
+              _ => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+                "equality comparisons currently require both operands to have the same primitive type",
+                span,
+              )]),
+            }
           }
-        };
-        Ok(v)
+
+          _ => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_BINARY_OP.error(
+            format!("unsupported binary operator `{op:?}`"),
+            span,
+          )]),
+        }
       }
+
       ExprKind::Ident(name) => {
         let binding = if let Some(binding) = self.env.resolve(name) {
           binding
@@ -1786,36 +2311,46 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .ok_or_else(|| vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error("failed to resolve identifier", span)])?
         };
 
-        if let Some(ptr) = self.locals.get(&binding).copied() {
-          return Ok(
-            self
-              .builder
-              .build_load(self.cg.i32_ty, ptr, "load")
-              .expect("failed to build load")
-              .into_int_value(),
-          );
-        }
-
-        match binding {
+        let slot = match binding {
+          b if self.locals.contains_key(&b) => self.locals.get(&b).copied().unwrap(),
           BindingId::Def(def) if is_toplevel_def(self.cg.program, def) => {
             let global = self.cg.ensure_global_var(def, span)?;
-            Ok(
-              self
-                .builder
-                .build_load(self.cg.i32_ty, global.as_pointer_value(), "global.load")
-                .expect("failed to build load")
-                .into_int_value(),
-            )
+            LocalSlot {
+              ptr: global.global.as_pointer_value(),
+              kind: global.kind,
+            }
           }
           _ => {
             let label = self.names.resolve(name).unwrap_or("<unknown>");
-            Err(vec![codes::HIR_CODEGEN_UNKNOWN_IDENTIFIER.error(
+            return Err(vec![codes::HIR_CODEGEN_UNKNOWN_IDENTIFIER.error(
               format!("unknown identifier `{label}` in native-js codegen"),
               span,
-            )])
+            )]);
           }
+        };
+
+        match slot.kind {
+          TsAbiKind::Number => Ok(NativeValue::Number(
+            self
+              .builder
+              .build_load(self.cg.f64_ty, slot.ptr, "load")
+              .expect("failed to build load")
+              .into_float_value(),
+          )),
+          TsAbiKind::Boolean => Ok(NativeValue::Boolean(
+            self
+              .builder
+              .build_load(self.cg.i1_ty, slot.ptr, "load")
+              .expect("failed to build load")
+              .into_int_value(),
+          )),
+          TsAbiKind::Void => Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "`void` values are not supported in this context",
+            span,
+          )]),
         }
       }
+
       ExprKind::Assignment { op, target, value } => {
         let binding = if let Some(name) = self.pat_ident_name(target) {
           if let Some(binding) = self.env.resolve(name) {
@@ -1859,17 +2394,21 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             })?
         };
 
-        let ptr = self.ptr_for_binding(binding, span)?;
+        let slot = self.slot_for_binding(binding, span)?;
         let rhs = self.codegen_expr(value)?;
-        self.codegen_assignment_to_ptr(ptr, span, &op, rhs)
+        self.codegen_assignment_to_slot(slot, span, &op, rhs)
       }
+
       ExprKind::Update { op, expr, prefix } => {
-        let inner = self.expr_data(expr)?;
-        let ExprKind::Ident(name) = inner.kind else {
-          return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
-            "unsupported update target (expected identifier)",
-            Span::new(self.file, inner.span),
-          )]);
+        let (name, inner_span) = {
+          let inner = self.expr_data(expr)?;
+          let ExprKind::Ident(name) = inner.kind else {
+            return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
+              "unsupported update target (expected identifier)",
+              Span::new(self.file, inner.span),
+            )]);
+          };
+          (name, inner.span)
         };
 
         let binding = if let Some(binding) = self.env.resolve(name) {
@@ -1883,34 +2422,36 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             .ok_or_else(|| {
               vec![codes::HIR_CODEGEN_FAILED_TO_RESOLVE_IDENT.error(
                 "failed to resolve update target",
-                Span::new(self.file, inner.span),
+                Span::new(self.file, inner_span),
               )]
             })?
         };
-        let ptr = self.ptr_for_binding(binding, Span::new(self.file, inner.span))?;
+
+        let slot = self.slot_for_binding(binding, Span::new(self.file, inner_span))?;
+        if slot.kind != TsAbiKind::Number {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "update operators (`++`/`--`) currently require `number` bindings",
+            Span::new(self.file, inner_span),
+          )]);
+        }
 
         let old = self
           .builder
-          .build_load(self.cg.i32_ty, ptr, "load")
+          .build_load(self.cg.f64_ty, slot.ptr, "load")
           .expect("failed to build load")
-          .into_int_value();
-        let one = self.cg.i32_ty.const_int(1, false);
+          .into_float_value();
+        let one = self.cg.f64_ty.const_float(1.0);
         let new = match op {
-          UpdateOp::Increment => self
-            .builder
-            .build_int_add(old, one, "inc")
-            .expect("failed to build inc"),
-          UpdateOp::Decrement => self
-            .builder
-            .build_int_sub(old, one, "dec")
-            .expect("failed to build dec"),
+          UpdateOp::Increment => self.builder.build_float_add(old, one, "inc").expect("inc"),
+          UpdateOp::Decrement => self.builder.build_float_sub(old, one, "dec").expect("dec"),
         };
         self
           .builder
-          .build_store(ptr, new)
+          .build_store(slot.ptr, new)
           .expect("failed to build store");
-        Ok(if prefix { new } else { old })
+        Ok(NativeValue::Number(if prefix { new } else { old }))
       }
+
       ExprKind::Call(call) => {
         if call.optional || call.is_new {
           return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_CALL_SYNTAX.error(
@@ -1953,6 +2494,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
             span,
           )]);
         };
+        let sig = self
+          .cg
+          .function_sigs
+          .get(&resolved)
+          .cloned()
+          .ok_or_else(|| vec![Diagnostic::error("NJS0102", "missing function signature metadata", span)])?;
+
         if def != resolved {
           self.cg.functions.entry(def).or_insert(target);
         }
@@ -1977,9 +2525,29 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         }
 
         let mut args = Vec::with_capacity(call.args.len());
-        for arg in &call.args {
+        for (idx, arg) in call.args.iter().enumerate() {
           let value = self.codegen_expr(arg.expr)?;
-          args.push(value.into());
+          let Some(&expected_kind) = sig.params.get(idx) else {
+            return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+              "native-js: signature/parameter count mismatch",
+              span,
+            )]);
+          };
+          if value.kind() != expected_kind {
+            return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+              format!(
+                "argument type mismatch (param #{idx} expects {expected:?}, got {got:?})",
+                expected = expected_kind,
+                got = value.kind()
+              ),
+              span,
+            )]);
+          }
+          args.push(
+            value
+              .into_basic_metadata()
+              .ok_or_else(|| vec![Diagnostic::error("NJS0145", "void argument not supported", span)])?,
+          );
         }
 
         let call = self
@@ -1987,13 +2555,26 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
           .build_call(target, &args, "call")
           .expect("failed to build call");
         crate::stack_walking::mark_call_notail(call);
-        let ret = call
-          .try_as_basic_value()
-          .left()
-          .ok_or_else(|| vec![codes::HIR_CODEGEN_INVALID_CALL.error("void call not supported", span)])?
-          .into_int_value();
-        Ok(ret)
+
+        match sig.ret {
+          TsAbiKind::Void => Ok(NativeValue::Void),
+          TsAbiKind::Number => Ok(NativeValue::Number(
+            call
+              .try_as_basic_value()
+              .left()
+              .expect("non-void call should return a value")
+              .into_float_value(),
+          )),
+          TsAbiKind::Boolean => Ok(NativeValue::Boolean(
+            call
+              .try_as_basic_value()
+              .left()
+              .expect("non-void call should return a value")
+              .into_int_value(),
+          )),
+        }
       }
+
       _ => Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_EXPR.error(
         "unsupported expression in native-js codegen",
         span,
@@ -2001,13 +2582,24 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     }
   }
 
-  fn codegen_assignment_to_ptr(
+  fn codegen_assignment_to_slot(
     &self,
-    ptr: PointerValue<'ctx>,
+    slot: LocalSlot<'ctx>,
     span: Span,
     op: &AssignOp,
-    rhs: IntValue<'ctx>,
-  ) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    rhs: NativeValue<'ctx>,
+  ) -> Result<NativeValue<'ctx>, Vec<Diagnostic>> {
+    if rhs.kind() != slot.kind {
+      return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+        format!(
+          "assignment type mismatch (expected {expected:?}, got {got:?})",
+          expected = slot.kind,
+          got = rhs.kind()
+        ),
+        span,
+      )]);
+    }
+
     let out = match op {
       AssignOp::Assign => rhs,
       AssignOp::AddAssign
@@ -2015,34 +2607,29 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       | AssignOp::MulAssign
       | AssignOp::DivAssign
       | AssignOp::RemAssign => {
+        if slot.kind != TsAbiKind::Number {
+          return Err(vec![codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "compound assignments are only supported for `number` bindings",
+            span,
+          )]);
+        }
+        let NativeValue::Number(rhs) = rhs else {
+          unreachable!("checked kind above");
+        };
         let cur = self
           .builder
-          .build_load(self.cg.i32_ty, ptr, "load")
+          .build_load(self.cg.f64_ty, slot.ptr, "load")
           .expect("failed to build load")
-          .into_int_value();
-        match op {
-          AssignOp::AddAssign => self
-            .builder
-            .build_int_add(cur, rhs, "addassign")
-            .expect("failed to build add"),
-          AssignOp::SubAssign => self
-            .builder
-            .build_int_sub(cur, rhs, "subassign")
-            .expect("failed to build sub"),
-          AssignOp::MulAssign => self
-            .builder
-            .build_int_mul(cur, rhs, "mulassign")
-            .expect("failed to build mul"),
-          AssignOp::DivAssign => self
-            .builder
-            .build_int_signed_div(cur, rhs, "divassign")
-            .expect("failed to build div"),
-          AssignOp::RemAssign => self
-            .builder
-            .build_int_signed_rem(cur, rhs, "remassign")
-            .expect("failed to build rem"),
+          .into_float_value();
+        let new = match op {
+          AssignOp::AddAssign => self.builder.build_float_add(cur, rhs, "addassign").expect("addassign"),
+          AssignOp::SubAssign => self.builder.build_float_sub(cur, rhs, "subassign").expect("subassign"),
+          AssignOp::MulAssign => self.builder.build_float_mul(cur, rhs, "mulassign").expect("mulassign"),
+          AssignOp::DivAssign => self.builder.build_float_div(cur, rhs, "divassign").expect("divassign"),
+          AssignOp::RemAssign => self.builder.build_float_rem(cur, rhs, "remassign").expect("remassign"),
           _ => unreachable!(),
-        }
+        };
+        NativeValue::Number(new)
       }
       _ => {
         return Err(vec![codes::HIR_CODEGEN_UNSUPPORTED_ASSIGN_OP.error(
@@ -2052,10 +2639,22 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       }
     };
 
-    self
-      .builder
-      .build_store(ptr, out)
-      .expect("failed to build store");
+    match out {
+      NativeValue::Number(v) => {
+        self
+          .builder
+          .build_store(slot.ptr, v)
+          .expect("failed to build store");
+      }
+      NativeValue::Boolean(v) => {
+        self
+          .builder
+          .build_store(slot.ptr, v)
+          .expect("failed to build store");
+      }
+      NativeValue::Void => unreachable!("void values are not assignable"),
+    }
+
     Ok(out)
   }
 }
@@ -2244,16 +2843,16 @@ fn is_toplevel_def(program: &Program, def: DefId) -> bool {
   true
 }
 
-fn declare_rt_print_i32<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-  if let Some(existing) = module.get_function("rt_print_i32") {
+fn declare_rt_print_f64<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("rt_print_f64") {
     return existing;
   }
 
   let void_ty = context.void_type();
-  let i32_ty = context.i32_type();
+  let f64_ty = context.f64_type();
   let func = module.add_function(
-    "rt_print_i32",
-    void_ty.fn_type(&[i32_ty.into()], false),
+    "rt_print_f64",
+    void_ty.fn_type(&[f64_ty.into()], false),
     Some(Linkage::Internal),
   );
   // Keep frame pointers / disable tail calls for stack walking, but do not mark
@@ -2266,12 +2865,13 @@ fn declare_rt_print_i32<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> 
 
   let printf = declare_printf(context, module);
   let fmt = builder
-    .build_global_string_ptr("%d\n", "native_js_print_fmt")
+    // Match the parse-js backend's debug-friendly number formatting.
+    .build_global_string_ptr("%.15g\n", "native_js_print_fmt")
     .expect("failed to create printf format string");
   let value = func
     .get_nth_param(0)
     .expect("missing print arg")
-    .into_int_value();
+    .into_float_value();
   let call = builder
     .build_call(
       printf,
@@ -2292,36 +2892,6 @@ fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Functi
   let i32_ty = context.i32_type();
   let ptr_ty = context.ptr_type(AddressSpace::default());
   module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
-}
-
-fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'ctx>> {
-  let raw = raw.trim();
-  if raw.is_empty() {
-    return None;
-  }
-  let normalized: String = raw.chars().filter(|c| *c != '_').collect();
-  let (radix, digits) = if let Some(rest) = normalized.strip_prefix("0x") {
-    (16, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0X") {
-    (16, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0b") {
-    (2, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0B") {
-    (2, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0o") {
-    (8, rest)
-  } else if let Some(rest) = normalized.strip_prefix("0O") {
-    (8, rest)
-  } else {
-    if normalized.contains('.') || normalized.contains('e') || normalized.contains('E') {
-      return None;
-    }
-    (10, normalized.as_str())
-  };
-
-  let value = i64::from_str_radix(digits, radix).ok()?;
-  let value = i32::try_from(value).ok()?;
-  Some(i32_ty.const_int(value as u64, true))
 }
 
 mod builtins;

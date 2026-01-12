@@ -80,9 +80,9 @@ pub const HIR_CODEGEN_MISSING_FUNCTION_META: Code =
 pub const HIR_CODEGEN_EXPR_ID_OUT_OF_BOUNDS: Code =
   Code::new("NJS0103", "HIR codegen: expression id out of bounds");
 
-/// NJS0104: Numeric literal cannot be represented as a 32-bit integer.
-pub const HIR_CODEGEN_LITERAL_NOT_I32: Code =
-  Code::new("NJS0104", "HIR codegen: numeric literal is not a 32-bit integer");
+/// NJS0104: Invalid numeric literal.
+pub const HIR_CODEGEN_INVALID_NUMERIC_LITERAL: Code =
+  Code::new("NJS0104", "HIR codegen: invalid numeric literal");
 
 /// NJS0105: Unary operator is not supported by the current HIR codegen subset.
 pub const HIR_CODEGEN_UNSUPPORTED_UNARY_OP: Code =
