@@ -66,6 +66,7 @@ fn browser_tab_records_console_messages_with_levels() -> fastrender::Result<()> 
 
 #[test]
 fn browser_tab_console_assert_preserves_substitution_string_formatting() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -330,6 +331,7 @@ fn browser_tab_module_script_exception_stack_includes_external_module_url() -> f
 
 #[test]
 fn browser_tab_console_substitution_string_formatting_is_recorded_in_diagnostics() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -380,6 +382,7 @@ fn browser_tab_console_substitution_string_formatting_is_recorded_in_diagnostics
 
 #[test]
 fn browser_tab_console_assert_records_error_message() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -415,6 +418,7 @@ fn browser_tab_console_assert_records_error_message() -> fastrender::Result<()> 
 
 #[test]
 fn browser_tab_console_count_increments_per_label() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -452,6 +456,7 @@ fn browser_tab_console_count_increments_per_label() -> fastrender::Result<()> {
 
 #[test]
 fn browser_tab_console_time_end_warns_when_timer_missing() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
@@ -482,6 +487,7 @@ fn browser_tab_console_time_end_warns_when_timer_missing() -> fastrender::Result
 
 #[test]
 fn browser_tab_console_dir_and_table_emit_log_messages() -> fastrender::Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <body>
