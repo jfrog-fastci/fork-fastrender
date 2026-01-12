@@ -5,7 +5,9 @@ mod common;
 
 use common::compile_source;
 use optimize_js::analysis::driver::annotate_program;
-use optimize_js::il::inst::{Arg, Inst, InstTyp, ParallelPlan};
+use optimize_js::il::inst::{Inst, InstTyp, ParallelPlan};
+#[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
+use optimize_js::il::inst::Arg;
 use optimize_js::TopLevelMode;
 use optimize_js::Program;
 
@@ -72,6 +74,7 @@ fn promise_all_with_heap_write_is_not_parallelizable() {
   );
 }
 
+#[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
 #[test]
 fn array_map_with_pure_callback_is_parallelizable() {
   let source = r#"
@@ -97,6 +100,30 @@ fn array_map_with_pure_callback_is_parallelizable() {
   );
 }
 
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+#[test]
+fn array_map_with_pure_callback_is_parallelizable() {
+  let source = r#"
+    function run(arr) {
+      return arr.map(x => x + 1);
+    }
+    void run([1, 2, 3]);
+  "#;
+
+  let mut program = compile_source(source, TopLevelMode::Module, false);
+  let _analyses = annotate_program(&mut program);
+
+  let inst = find_inst(&program, |inst| inst.t == InstTyp::ArrayChain)
+    .expect("expected ArrayChain instruction for Array.prototype.map");
+
+  assert!(
+    matches!(inst.meta.parallel, Some(ParallelPlan::Parallelizable)),
+    "expected ArrayChain(map) to be parallelizable but got {:?}",
+    inst.meta.parallel
+  );
+}
+
+#[cfg(not(any(feature = "native-fusion", feature = "native-array-ops")))]
 #[test]
 fn array_map_with_impure_callback_is_not_parallelizable() {
   let source = r#"
@@ -123,7 +150,31 @@ fn array_map_with_impure_callback_is_not_parallelizable() {
   );
 }
 
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
+#[test]
+fn array_map_with_impure_callback_is_not_parallelizable() {
+  let source = r#"
+    function run(arr) {
+      const obj = {};
+      return arr.map(x => { obj.x = x; return x; });
+    }
+    void run([1, 2, 3]);
+  "#;
+
+  let mut program = compile_source(source, TopLevelMode::Module, false);
+  let _analyses = annotate_program(&mut program);
+
+  let inst = find_inst(&program, |inst| inst.t == InstTyp::ArrayChain)
+    .expect("expected ArrayChain instruction for Array.prototype.map");
+
+  assert!(
+    matches!(inst.meta.parallel, Some(ParallelPlan::NotParallelizable(_))),
+    "expected ArrayChain(map) to be non-parallelizable but got {:?}",
+    inst.meta.parallel
+  );
+}
+
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 #[test]
 fn array_chain_map_filter_pure_is_parallelizable() {
   let source = r#"

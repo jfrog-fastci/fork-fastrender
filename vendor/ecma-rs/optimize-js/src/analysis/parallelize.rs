@@ -7,7 +7,7 @@ use crate::{FnId, Program};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 use crate::il::inst::ArrayChainOp;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -235,7 +235,7 @@ fn promise_components_plan(
   Ok(())
 }
 
-#[cfg(feature = "native-fusion")]
+#[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
 fn array_chain_plan(
   args: &[Arg],
   ops: &[ArrayChainOp],
@@ -562,7 +562,7 @@ pub fn annotate_cfg_parallelize(
 
   for label in cfg.graph.labels_sorted() {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
-      #[cfg(feature = "native-fusion")]
+      #[cfg(any(feature = "native-fusion", feature = "native-array-ops"))]
       if inst.t == InstTyp::ArrayChain {
         let plan = {
           let (_tgt, _base, ops) = inst.as_array_chain();
