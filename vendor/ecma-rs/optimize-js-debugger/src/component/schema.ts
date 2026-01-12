@@ -1,12 +1,10 @@
 import {
-  Valid,
   Validator,
   ValuePath,
   VArray,
   VBoolean,
   VFiniteNumber,
   VInteger,
-  VMap,
   VOptional,
   VString,
   VStringEnum,
@@ -15,6 +13,10 @@ import {
   VUnion,
   VUnknown,
 } from "@wzlin/valid";
+
+//
+// Legacy ("/compile") schema
+//
 
 export type StableId =
   | {
@@ -35,19 +37,6 @@ export type StableArg =
   | { kind: "const"; value: StableConst }
   | { kind: "fn"; value: number }
   | { kind: "var"; value: number };
-
-export type StableInst = {
-  t: string;
-  tgts: number[];
-  args: StableArg[];
-  spreads: number[];
-  labels: number[];
-  binOp?: string;
-  unOp?: string;
-  foreign?: StableId;
-  unknown?: string;
-  meta?: StableInstMeta;
-};
 
 export type StableEffectLocation =
   | { kind: "heap" }
@@ -85,6 +74,19 @@ export type StableInstMeta = {
   ownership?: StableOwnershipState;
   typeId?: StableId;
   nativeLayout?: StableId;
+};
+
+export type StableInst = {
+  t: string;
+  tgts: number[];
+  args: StableArg[];
+  spreads: number[];
+  labels: number[];
+  binOp?: string;
+  unOp?: string;
+  foreign?: StableId;
+  unknown?: string;
+  meta?: StableInstMeta;
 };
 
 export type StableDebugStep = {
@@ -139,16 +141,118 @@ export type StableProgramSymbols = {
   scopes: StableScope[];
 };
 
-export type ProgramDumpV1 = {
+export type CompileProgramDumpV1 = {
   functions: StableFunction[];
   top_level: StableFunction;
   symbols?: StableProgramSymbols;
 };
 
-export type ProgramDump = {
+export type CompileProgramDump = {
   version: "v1";
-  program: ProgramDumpV1;
+  program: CompileProgramDumpV1;
 };
+
+//
+// Program dump ("/compile_dump") schema
+//
+
+export type SourceModeDump = "module" | "script" | "global";
+
+export type NullabilityFactDump = {
+  mayBeNull: boolean;
+  mayBeUndefined: boolean;
+  mayBeOther: boolean;
+  isBottom: boolean;
+};
+
+export type DumpInstMeta = {
+  effects: {
+    reads: unknown[];
+    writes: unknown[];
+    summary: unknown;
+    unknown: boolean;
+  };
+  purity: string;
+  calleePurity: string;
+  ownership: string;
+  argUseModes: string[];
+  inPlaceHint?: unknown;
+  resultEscape?: unknown;
+  range?: unknown;
+  nullability?: NullabilityFactDump;
+  encoding?: string;
+  typeId?: string;
+  typeSummary?: string;
+  excludesNullish: boolean;
+  nativeLayout?: string;
+  span?: { start: number; end: number };
+  preserveVarAssign?: boolean;
+  stackAllocCandidate?: boolean;
+  awaitKnownResolved?: boolean;
+  awaitBehavior?: unknown;
+  parallel?: unknown;
+  nullabilityNarrowing?: unknown;
+  value?: unknown;
+  layoutId?: number;
+  hirExpr?: number;
+};
+
+export type DumpInst = {
+  t: string;
+  tgts: number[];
+  args: StableArg[];
+  spreads: number[];
+  labels: number[];
+  binOp?: string;
+  unOp?: string;
+  foreign?: StableId | number;
+  unknown?: string;
+  meta: DumpInstMeta;
+};
+
+export type DumpCfg = {
+  entry: number;
+  bblockOrder: number[];
+  bblocks: Map<number, DumpInst[]>;
+  cfgEdges: Map<number, number[]>;
+};
+
+export type DumpFunction = {
+  id?: number;
+  params: number[];
+  cfg: DumpCfg;
+  cfgDeconstructed?: DumpCfg;
+};
+
+export type ProgramDump = {
+  version: number;
+  sourceMode: SourceModeDump;
+  topLevel: DumpFunction;
+  functions: DumpFunction[];
+  symbols?: unknown;
+  analyses?: unknown;
+};
+
+//
+// Shared / normalization
+//
+
+export type GraphInst = StableInst | DumpInst;
+
+export type NormalizedBlock = {
+  label: number;
+  insts: GraphInst[];
+};
+
+export type NormalizedStep = {
+  name: string;
+  blocks: NormalizedBlock[];
+  children: Map<number, number[]>;
+};
+
+//
+// Validators
+//
 
 class VObjectMapAsMap<K, V> extends Validator<Map<K, V>> {
   constructor(
@@ -159,6 +263,14 @@ class VObjectMapAsMap<K, V> extends Validator<Map<K, V>> {
   }
 
   parse(theValue: ValuePath, raw: unknown): Map<K, V> {
+    if (raw instanceof Map) {
+      return new Map(
+        [...raw.entries()].map(([k, v]) => [
+          this.key.parse(theValue.andThen(String(k)), k),
+          this.value.parse(theValue.andThen(String(k)), v),
+        ]),
+      );
+    }
     if (typeof raw != "object" || !raw) {
       throw theValue.isBadAsIt("is not an object");
     }
@@ -195,6 +307,7 @@ const vArg = new VTagged("kind", {
   var: new VStruct({ value: new VInteger() }),
 });
 
+// /compile meta
 const vEffectLocation = new VTagged("kind", {
   heap: new VStruct({}),
   foreign: new VStruct({ id: vId }),
@@ -239,7 +352,7 @@ const vEscapeState = new VTagged("kind", {
   unknown: new VStruct({}),
 });
 
-const vInstMeta = new VStruct({
+const vStableInstMeta = new VStruct({
   effects: new VOptional(vEffects),
   purity: new VOptional(vPurity),
   calleePurity: new VOptional(vPurity),
@@ -249,7 +362,7 @@ const vInstMeta = new VStruct({
   nativeLayout: new VOptional(vId),
 });
 
-const vInst = new VStruct({
+const vStableInst = new VStruct({
   t: new VString(),
   tgts: new VArray(new VInteger()),
   args: new VArray(vArg),
@@ -259,13 +372,13 @@ const vInst = new VStruct({
   unOp: new VOptional(new VString()),
   foreign: new VOptional(vId),
   unknown: new VOptional(new VString()),
-  meta: new VOptional(vInstMeta),
+  meta: new VOptional(vStableInstMeta),
 });
 
 const vDebugStep = new VStruct({
   name: new VString(),
   bblockOrder: new VArray(new VInteger()),
-  bblocks: new VObjectMapAsMap(new VInteger(), new VArray(vInst)),
+  bblocks: new VObjectMapAsMap(new VInteger(), new VArray(vStableInst)),
   cfgChildren: new VObjectMapAsMap(new VInteger(), new VArray(new VInteger())),
 });
 
@@ -275,7 +388,7 @@ const vDebug = new VStruct({
 
 const vCfg = new VStruct({
   bblockOrder: new VArray(new VInteger()),
-  bblocks: new VObjectMapAsMap(new VInteger(), new VArray(vInst)),
+  bblocks: new VObjectMapAsMap(new VInteger(), new VArray(vStableInst)),
   cfgChildren: new VObjectMapAsMap(new VInteger(), new VArray(new VInteger())),
 });
 
@@ -314,25 +427,118 @@ const vProgramSymbols = new VStruct({
   scopes: new VArray(vScope),
 });
 
-const vProgram = new VStruct({
+const vCompileProgram = new VStruct({
   functions: new VArray(vFunction),
   top_level: vFunction,
   symbols: new VOptional(vProgramSymbols),
 });
 
-const vProgramDump = new VStruct({
+const vCompileProgramDump = new VStruct({
   version: new VStringEnum({ v1: "v1" }),
-  program: vProgram,
+  program: vCompileProgram,
+});
+
+export const parseCompileProgramDump = (raw: unknown): CompileProgramDump =>
+  vCompileProgramDump.parseRoot(raw);
+
+export const parseCompileProgram = (raw: unknown): CompileProgramDumpV1 =>
+  parseCompileProgramDump(raw).program;
+
+// /compile_dump
+const vDumpEffectSet = new VStruct({
+  reads: new VArray(new VUnknown()),
+  writes: new VArray(new VUnknown()),
+  summary: new VUnknown(),
+  unknown: new VBoolean(),
+});
+
+const vNullabilityFact = new VStruct({
+  mayBeNull: new VBoolean(),
+  mayBeUndefined: new VBoolean(),
+  mayBeOther: new VBoolean(),
+  isBottom: new VBoolean(),
+});
+
+const vSpan = new VStruct({
+  start: new VInteger(),
+  end: new VInteger(),
+});
+
+const vDumpInstMeta = new VStruct({
+  effects: vDumpEffectSet,
+  purity: new VString(),
+  calleePurity: new VString(),
+  ownership: new VString(),
+  argUseModes: new VArray(new VString()),
+  inPlaceHint: new VOptional(new VUnknown()),
+  resultEscape: new VOptional(new VUnknown()),
+  range: new VOptional(new VUnknown()),
+  nullability: new VOptional(vNullabilityFact),
+  encoding: new VOptional(new VString()),
+  typeId: new VOptional(new VString()),
+  typeSummary: new VOptional(new VString()),
+  excludesNullish: new VBoolean(),
+  nativeLayout: new VOptional(new VString()),
+  span: new VOptional(vSpan),
+  preserveVarAssign: new VOptional(new VBoolean()),
+  stackAllocCandidate: new VOptional(new VBoolean()),
+  awaitKnownResolved: new VOptional(new VBoolean()),
+  awaitBehavior: new VOptional(new VUnknown()),
+  parallel: new VOptional(new VUnknown()),
+  nullabilityNarrowing: new VOptional(new VUnknown()),
+  value: new VOptional(new VUnknown()),
+  layoutId: new VOptional(new VInteger()),
+  hirExpr: new VOptional(new VInteger()),
+});
+
+const vForeign = new VUnion(vId, new VInteger());
+
+const vDumpInst = new VStruct({
+  t: new VString(),
+  tgts: new VArray(new VInteger()),
+  args: new VArray(vArg),
+  spreads: new VArray(new VInteger()),
+  labels: new VArray(new VInteger()),
+  binOp: new VOptional(new VString()),
+  unOp: new VOptional(new VString()),
+  foreign: new VOptional(vForeign),
+  unknown: new VOptional(new VString()),
+  meta: vDumpInstMeta,
+});
+
+const vDumpCfg = new VStruct({
+  entry: new VInteger(),
+  bblockOrder: new VArray(new VInteger()),
+  bblocks: new VObjectMapAsMap(new VInteger(), new VArray(vDumpInst)),
+  cfgEdges: new VObjectMapAsMap(new VInteger(), new VArray(new VInteger())),
+});
+
+const vDumpFunction = new VStruct({
+  id: new VOptional(new VInteger()),
+  params: new VArray(new VInteger()),
+  cfg: vDumpCfg,
+  cfgDeconstructed: new VOptional(vDumpCfg),
+});
+
+const vProgramDump = new VStruct({
+  version: new VInteger(),
+  sourceMode: new VStringEnum({
+    module: "module",
+    script: "script",
+    global: "global",
+  }),
+  topLevel: vDumpFunction,
+  functions: new VArray(vDumpFunction),
+  symbols: new VOptional(new VUnknown()),
+  analyses: new VOptional(new VUnknown()),
 });
 
 export const parseProgramDump = (raw: unknown): ProgramDump => vProgramDump.parseRoot(raw);
 
-export const parseProgram = (raw: unknown): ProgramDumpV1 => parseProgramDump(raw).program;
-
 export const formatId = (id: StableId): string => id.value;
 
-export const idMatchesQuery = (id: StableId, query: string): boolean =>
-  formatId(id).toLowerCase().includes(query);
+export const formatForeign = (id: StableId | number): string =>
+  typeof id === "number" ? `${id}` : formatId(id);
 
 export const constToLabel = (value: StableConst): string => {
   switch (value.kind) {
@@ -377,28 +583,20 @@ export const buildSymbolNames = (
   return map;
 };
 
-export type NormalizedBlock = {
-  label: number;
-  insts: StableInst[];
-};
-
-export type NormalizedStep = {
-  name: string;
-  blocks: NormalizedBlock[];
-  children: Map<number, number[]>;
-};
-
-const normalizeBBlockEntries = (
-  blocks: StableDebugStep["bblocks"],
-): Array<[number, StableInst[]]> =>
+const normalizeBBlockEntries = (blocks: any): Array<[number, GraphInst[]]> =>
   blocks instanceof Map
     ? [...blocks.entries()]
-    : Object.entries(blocks).map(([k, v]) => [Number(k), v]);
+    : Object.entries(blocks).map(([k, v]) => [Number(k), v as GraphInst[]]);
 
-const normalizeChildEntries = (children: StableDebugStep["cfgChildren"]): Map<number, number[]> =>
+const normalizeChildEntries = (children: any): Map<number, number[]> =>
   children instanceof Map
     ? children
-    : new Map(Object.entries(children).map(([k, v]) => [Number(k), v.map((n) => Number(n))]));
+    : new Map(
+        Object.entries(children).map(([k, v]) => [
+          Number(k),
+          (v as any[]).map((n) => Number(n)),
+        ]),
+      );
 
 export const normalizeStep = (step: StableDebugStep): NormalizedStep => {
   const blocks = normalizeBBlockEntries(step.bblocks)
@@ -411,19 +609,31 @@ export const normalizeStep = (step: StableDebugStep): NormalizedStep => {
   };
 };
 
+export const normalizeCfg = (name: string, cfg: DumpCfg): NormalizedStep => {
+  const blocks = normalizeBBlockEntries(cfg.bblocks)
+    .map(([label, insts]) => ({ label, insts }))
+    .sort((a, b) => a.label - b.label);
+  return {
+    name,
+    blocks,
+    children: normalizeChildEntries(cfg.cfgEdges),
+  };
+};
+
 const instMatchesQuery = (
-  inst: StableInst,
+  inst: GraphInst,
   query: string,
   symbolNames?: Map<string, string>,
 ): boolean => {
   if (inst.t.toLowerCase().includes(query)) {
     return true;
   }
-  if (inst.unknown?.toLowerCase().includes(query)) {
+  if ((inst as any).unknown?.toLowerCase().includes(query)) {
     return true;
   }
-  if (inst.foreign) {
-    const key = formatId(inst.foreign);
+  const foreign = (inst as any).foreign;
+  if (foreign != undefined) {
+    const key = formatForeign(foreign);
     if (key.toLowerCase().includes(query)) {
       return true;
     }
@@ -454,18 +664,18 @@ export const blockMatchesQuery = (
   return block.insts.some((inst) => instMatchesQuery(inst, query, symbolNames));
 };
 
-const instSignature = (inst: StableInst): string =>
+const instSignature = (inst: GraphInst): string =>
   JSON.stringify({
     t: inst.t,
     tgts: inst.tgts,
     args: inst.args.map(argToLabel),
     spreads: inst.spreads,
     labels: inst.labels,
-    binOp: inst.binOp,
-    unOp: inst.unOp,
-    foreign: inst.foreign ? formatId(inst.foreign) : undefined,
-    unknown: inst.unknown,
-    meta: inst.meta,
+    binOp: (inst as any).binOp,
+    unOp: (inst as any).unOp,
+    foreign: (inst as any).foreign == undefined ? undefined : formatForeign((inst as any).foreign),
+    unknown: (inst as any).unknown,
+    meta: (inst as any).meta,
   });
 
 export const computeChangedBlocks = (steps: NormalizedStep[]): Array<Set<number>> => {

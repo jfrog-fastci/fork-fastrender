@@ -226,6 +226,61 @@
   white-space: pre-wrap;
 }
 
+.InstMetaPanel {
+  flex-shrink: 0;
+  border-top: 1px solid #eee;
+  border-bottom: 1px solid #eee;
+  padding: 0.5rem;
+  overflow: auto;
+  max-height: 30vh;
+  font-family: var(--monospace-font-family);
+}
+
+.InstMetaPanel header {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  margin-bottom: 0.25rem;
+}
+
+.InstMetaPanel .inst-summary {
+  color: #555;
+}
+
+.InstMetaPanel .toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.InstMetaPanel .toggle {
+  display: inline-flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.InstMetaPanel h2 {
+  font-size: 0.9rem;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.InstMetaPanel ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.InstMetaPanel .raw {
+  margin: 0;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
+.InstMetaPanel .empty {
+  margin: 0.25rem 0 0;
+  color: #555;
+}
+
 .App .pane .editor {
   flex-shrink: 0;
   border: 1px solid #ccc;

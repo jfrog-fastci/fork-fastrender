@@ -17,14 +17,15 @@ use crate::il::inst::{
 };
 use crate::il::meta::{EscapeState as ValueEscapeState, ValueFacts};
 use crate::symbol::semantics::{ScopeId, SymbolId};
-use crate::{Program, TopLevelMode};
+use crate::{compile_source, Program, TopLevelMode};
+use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use std::collections::BTreeMap;
 
 /// Version number for the [`ProgramDump`] schema.
 pub type DumpVersion = u32;
 
 /// Current [`ProgramDump`] schema version.
-pub const DUMP_VERSION: DumpVersion = 1;
+pub const DUMP_VERSION: DumpVersion = 2;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DumpOptions {
@@ -41,6 +42,97 @@ impl DumpOptions {
       include_analyses: false,
     }
   }
+}
+
+/// Options for [`compile_source_to_dump`].
+#[derive(Clone, Copy, Debug)]
+pub struct CompileDumpOptions {
+  /// Enable type checking when `optimize-js` is built with feature `"typed"`.
+  pub typed: bool,
+  /// Require that `optimize-js` is built with feature `"semantic-ops"`.
+  ///
+  /// Semantic ops are enabled at compile time; this flag exists so downstream
+  /// tooling can surface a clear error message when a user requests semantic ops
+  /// but the server binary was built without that feature.
+  pub semantic_ops: bool,
+  /// Run [`crate::analysis::annotate_program`] before dumping.
+  pub run_analyses: bool,
+  /// Include the optional symbol table dump.
+  pub include_symbols: bool,
+  /// Include the optional program-wide analysis summary.
+  pub include_analyses: bool,
+  /// Preserve optimizer debug checkpoints (`OptimizerDebug`) during compilation.
+  ///
+  /// Note: the dump format does not currently include optimizer steps, but
+  /// retaining them can be useful for tools that also consume the compiled
+  /// [`crate::Program`] separately.
+  pub debug: bool,
+}
+
+impl Default for CompileDumpOptions {
+  fn default() -> Self {
+    Self {
+      typed: false,
+      semantic_ops: false,
+      run_analyses: true,
+      include_symbols: true,
+      include_analyses: false,
+      debug: false,
+    }
+  }
+}
+
+fn compile_dump_option_error(code: &'static str, message: impl Into<String>) -> Vec<Diagnostic> {
+  vec![Diagnostic::error(
+    code,
+    message,
+    Span::new(FileId(0), TextRange::new(0, 0)),
+  )]
+}
+
+/// Compile a source string to a [`ProgramDump`].
+///
+/// This is a convenience wrapper around [`crate::compile_source`] (or its typed
+/// variant) + optional [`crate::analysis::annotate_program`] + [`dump_program`].
+pub fn compile_source_to_dump(
+  source: &str,
+  mode: TopLevelMode,
+  options: CompileDumpOptions,
+) -> Result<ProgramDump, Vec<Diagnostic>> {
+  if options.semantic_ops && !cfg!(feature = "semantic-ops") {
+    return Err(compile_dump_option_error(
+      "OPTDBG0002",
+      "semantic ops requested but optimize-js was built without feature \"semantic-ops\"",
+    ));
+  }
+
+  let mut program = if options.typed {
+    #[cfg(feature = "typed")]
+    {
+      crate::compile_source_typed(source, mode, options.debug)?
+    }
+    #[cfg(not(feature = "typed"))]
+    {
+      return Err(compile_dump_option_error(
+        "OPTDBG0001",
+        "typed compilation requested but optimize-js was built without feature \"typed\"",
+      ));
+    }
+  } else {
+    compile_source(source, mode, options.debug)?
+  };
+
+  if options.run_analyses {
+    analysis::annotate_program(&mut program);
+  }
+
+  Ok(dump_program(
+    &program,
+    DumpOptions {
+      include_symbols: options.include_symbols,
+      include_analyses: options.include_analyses,
+    },
+  ))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -99,6 +191,8 @@ pub struct FunctionDump {
   pub id: Option<u32>,
   pub params: Vec<u32>,
   pub cfg: CfgDump,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub cfg_deconstructed: Option<CfgDump>,
 }
 
 #[derive(Clone, Debug)]
@@ -1047,21 +1141,35 @@ fn dump_program_analyses(program: &Program) -> ProgramAnalysesDump {
 pub fn dump_program(program: &Program, opts: DumpOptions) -> ProgramDump {
   let top_level_cfg = program.top_level.analyzed_cfg();
   let top_level_analyses = analyze_cfg(top_level_cfg);
+  let top_level_deconstructed_cfg = &program.top_level.body;
+  let top_level_deconstructed_analyses = analyze_cfg(top_level_deconstructed_cfg);
 
   let top_level = FunctionDump {
     id: None,
     params: program.top_level.params.clone(),
     cfg: dump_cfg(top_level_cfg, &top_level_analyses, program.source_len),
+    cfg_deconstructed: Some(dump_cfg(
+      top_level_deconstructed_cfg,
+      &top_level_deconstructed_analyses,
+      program.source_len,
+    )),
   };
 
   let mut functions = Vec::with_capacity(program.functions.len());
   for (idx, func) in program.functions.iter().enumerate() {
     let cfg = func.analyzed_cfg();
     let analyses = analyze_cfg(cfg);
+    let deconstructed_cfg = &func.body;
+    let deconstructed_analyses = analyze_cfg(deconstructed_cfg);
     functions.push(FunctionDump {
       id: Some(idx as u32),
       params: func.params.clone(),
       cfg: dump_cfg(cfg, &analyses, program.source_len),
+      cfg_deconstructed: Some(dump_cfg(
+        deconstructed_cfg,
+        &deconstructed_analyses,
+        program.source_len,
+      )),
     });
   }
 

@@ -10,7 +10,9 @@ Developer UI for inspecting `optimize-js` optimizer output (CFG, debug steps, sy
 { "version": "v1", "program": { /* ProgramDumpV1 */ } }
 ```
 
-Each instruction in the CFG/debug steps may include an optional `meta` field (effects/purity/escape/ownership/type/layout), which the UI can display via metadata toggles in the toolbar.
+Each instruction in the CFG/debug steps may include an optional `meta` field (effects/purity/escape/ownership/type/layout).
+
+`POST /compile_dump` returns the newer `optimize_js::dump::ProgramDump` schema (with full analysis metadata).
 
 ## Quickstart
 
@@ -29,7 +31,14 @@ From the repository root:
 bash scripts/cargo_agent.sh run -p optimize-js-debugger
 ```
 
-This starts an HTTP server on `http://localhost:3001` (serves `POST /compile`).
+This starts an HTTP server on `http://localhost:3001`.
+
+Endpoints:
+
+- `POST /compile_dump`: returns the new `optimize_js::dump::ProgramDump` schema (includes per-instruction
+  analysis metadata). This is what the UI uses for the \"Analyzed CFG\" view.
+  - Request flags (all optional): `typed`, `semantic_ops`, `run_analyses`.
+- `POST /compile`: versioned snapshot schema used by the UI for optimizer debug steps and symbols.
 
 ### Run the UI dev server
 

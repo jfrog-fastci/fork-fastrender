@@ -36,12 +36,12 @@
 pub mod analysis;
 pub mod cfg;
 pub mod decompile;
+#[cfg(feature = "serde")]
+pub mod dump;
 pub mod dom;
 pub mod eval;
 pub mod graph;
 pub mod il;
-#[cfg(feature = "serde")]
-pub mod dump;
 pub mod strict_native;
 pub mod opt;
 pub mod ssa;

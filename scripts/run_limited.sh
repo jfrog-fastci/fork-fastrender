@@ -115,6 +115,33 @@ fi
 
 cmd=("$@")
 
+# Vite/Vitest (as of Node 25 / V8) uses a WASM-based ES module lexer. Even though the actual RSS
+# stays low, the WASM instance reserves a large amount of *virtual* address space. When we run with
+# a low RLIMIT_AS this can fail with:
+#   RangeError: WebAssembly.instantiate(): Out of memory: Cannot allocate Wasm memory for new instance
+#
+# The project commonly runs Vitest via:
+#   scripts/run_limited.sh --as 8G -- node .../vitest run
+#
+# Keep that invocation working by clamping RLIMIT_AS to a minimum for Vite/Vitest. This still
+# enforces an upper bound, but avoids tripping over V8's virtual memory reservations.
+if [[ -n "${AS}" && "${AS}" != "0" && "${AS}" != "unlimited" ]]; then
+  cmd0_basename="$(basename "${cmd[0]}")"
+  if [[ "${cmd0_basename}" == "node" ]]; then
+    for arg in "${cmd[@]}"; do
+      if [[ "${arg}" == *vitest* || "${arg}" == *vite* ]]; then
+        min_as="18G"
+        if as_bytes="$(to_bytes "${AS}" 2>/dev/null)" && min_bytes="$(to_bytes "${min_as}")"; then
+          if [[ "${as_bytes}" -lt "${min_bytes}" ]]; then
+            AS="${min_as}"
+          fi
+        fi
+        break
+      fi
+    done
+  fi
+fi
+
 # Windows (Git Bash / MSYS / Cygwin) note:
 #
 # This repo primarily relies on Linux/macOS resource limits (RLIMIT_AS via prlimit/ulimit) to keep

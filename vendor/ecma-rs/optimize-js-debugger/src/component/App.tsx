@@ -2,16 +2,21 @@ import { Editor } from "@monaco-editor/react";
 import { decode, encode } from "@msgpack/msgpack";
 import { useEffect, useMemo, useState } from "react";
 import { Graph } from "./Graph";
+import { InstMetaPanel } from "./InstMetaPanel";
 import { SymbolsPanel } from "./SymbolsPanel";
 import "./App.css";
 import {
-  ProgramDumpV1,
+  CompileProgramDumpV1,
+  GraphInst,
   NormalizedStep,
+  ProgramDump,
+  buildSymbolNames,
   computeChangedBlocks,
   formatId,
+  normalizeCfg,
   normalizeStep,
-  parseProgram,
-  buildSymbolNames,
+  parseCompileProgram,
+  parseProgramDump,
 } from "./schema";
 
 const INIT_SOURCE = `
@@ -32,23 +37,31 @@ const INIT_SOURCE = `
 })();
 `.trim();
 
+const errorMessage = (raw: unknown, status: number): string => {
+  if (Array.isArray((raw as any)?.diagnostics)) {
+    return (raw as any).diagnostics.map((d: any) => `${d.code}: ${d.message}`).join("\n");
+  }
+  return `HTTP ${status}`;
+};
+
 export const App = () => {
   const [source, setSource] = useState(INIT_SOURCE);
-  const [data, setData] = useState<ProgramDumpV1>();
+  const [dump, setDump] = useState<ProgramDump>();
+  const [compileProgram, setCompileProgram] = useState<CompileProgramDumpV1>();
   const [curFnId, setCurFnId] = useState<number>();
   const [error, setError] = useState<string>();
   const [isGlobal, setIsGlobal] = useState(true);
   const [filter, setFilter] = useState("");
   const [stepIdx, setStepIdx] = useState(0);
-  const [view, setView] = useState<"cfg" | "symbols">("cfg");
+  const [view, setView] = useState<"analysis" | "steps" | "symbols">("analysis");
   const [showDiff, setShowDiff] = useState(true);
-  const [showMetaEffects, setShowMetaEffects] = useState(false);
-  const [showMetaPurity, setShowMetaPurity] = useState(false);
-  const [showMetaEscape, setShowMetaEscape] = useState(false);
-  const [showMetaOwnership, setShowMetaOwnership] = useState(false);
-  const [showMetaTypeId, setShowMetaTypeId] = useState(false);
-  const [showMetaNativeLayout, setShowMetaNativeLayout] = useState(false);
-  const [showMetaParallelizable, setShowMetaParallelizable] = useState(false);
+  const [typed, setTyped] = useState(false);
+  const [semanticOps, setSemanticOps] = useState(false);
+  const [runAnalyses, setRunAnalyses] = useState(true);
+  const [onlyUnknownEffects, setOnlyUnknownEffects] = useState(false);
+  const [onlyEscapingAllocs, setOnlyEscapingAllocs] = useState(false);
+  const [analysisCfg, setAnalysisCfg] = useState<"ssa" | "deconstructed">("ssa");
+  const [hoveredInst, setHoveredInst] = useState<GraphInst>();
 
   useEffect(() => {
     const src = source.trim();
@@ -56,25 +69,68 @@ export const App = () => {
       return;
     }
     const ac = new AbortController();
+
+    const fetchDump = async (): Promise<ProgramDump> => {
+      const res = await fetch("//localhost:3001/compile_dump", {
+        signal: ac.signal,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/msgpack",
+        },
+        body: encode({
+          source: src,
+          is_global: isGlobal,
+          typed,
+          semantic_ops: semanticOps,
+          run_analyses: runAnalyses,
+        }),
+      });
+      const raw = decode(await res.arrayBuffer());
+      if (!res.ok) {
+        throw new Error(`compile_dump: ${errorMessage(raw, res.status)}`);
+      }
+      return parseProgramDump(raw);
+    };
+
+    const fetchCompile = async (): Promise<CompileProgramDumpV1> => {
+      const res = await fetch("//localhost:3001/compile", {
+        signal: ac.signal,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/msgpack",
+        },
+        body: encode({
+          source: src,
+          is_global: isGlobal,
+        }),
+      });
+      const raw = decode(await res.arrayBuffer());
+      if (!res.ok) {
+        throw new Error(`compile: ${errorMessage(raw, res.status)}`);
+      }
+      return parseCompileProgram(raw);
+    };
+
     (async () => {
       try {
-        const res = await fetch("//localhost:3001/compile", {
-          signal: ac.signal,
-          method: "POST",
-          headers: {
-            "Content-Type": "application/msgpack",
-          },
-          body: encode({ source: src, is_global: isGlobal }),
-        });
-        const raw = decode(await res.arrayBuffer());
-        if (!res.ok) {
-          const message = Array.isArray((raw as any)?.diagnostics)
-            ? (raw as any).diagnostics.map((d: any) => `${d.code}: ${d.message}`).join("\n")
-            : `HTTP ${res.status}`;
-          throw new Error(message);
+        const [dumpResult, compileResult] = await Promise.allSettled([fetchDump(), fetchCompile()]);
+
+        const errors: string[] = [];
+        if (dumpResult.status === "fulfilled") {
+          setDump(dumpResult.value);
+        } else {
+          setDump(undefined);
+          errors.push(String(dumpResult.reason));
         }
-        setData(parseProgram(raw));
-        setError(undefined);
+
+        if (compileResult.status === "fulfilled") {
+          setCompileProgram(compileResult.value);
+        } else {
+          setCompileProgram(undefined);
+          errors.push(String(compileResult.reason));
+        }
+
+        setError(errors.length > 0 ? errors.join("\n") : undefined);
         setStepIdx(0);
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
@@ -82,58 +138,59 @@ export const App = () => {
         }
         console.error(err);
         setError(String(err));
-        setData(undefined);
+        setDump(undefined);
+        setCompileProgram(undefined);
         setCurFnId(undefined);
       }
     })();
-    return () => ac.abort();
-  }, [source, isGlobal]);
 
-  const symbolNames = useMemo(() => buildSymbolNames(data?.symbols), [data]);
-  const currentFunction = curFnId == undefined ? data?.top_level : data?.functions[curFnId];
-  const normalizedSteps: NormalizedStep[] = useMemo(
-    () => currentFunction?.debug.steps.map(normalizeStep) ?? [],
-    [currentFunction],
+    return () => ac.abort();
+  }, [source, isGlobal, typed, semanticOps, runAnalyses]);
+
+  const symbolNames = useMemo(() => buildSymbolNames(compileProgram?.symbols), [compileProgram]);
+
+  const currentCompileFunction =
+    curFnId == undefined ? compileProgram?.top_level : compileProgram?.functions[curFnId];
+
+  const debugSteps: NormalizedStep[] = useMemo(
+    () => currentCompileFunction?.debug.steps.map(normalizeStep) ?? [],
+    [currentCompileFunction],
   );
-  const diffs = useMemo(() => computeChangedBlocks(normalizedSteps), [normalizedSteps]);
-  const safeStepIdx =
-    normalizedSteps.length === 0 ? 0 : Math.min(stepIdx, normalizedSteps.length - 1);
-  const currentStep = normalizedSteps[safeStepIdx];
-  const overlays = useMemo(
-    () => ({
-      effects: showMetaEffects,
-      purity: showMetaPurity,
-      escape: showMetaEscape,
-      ownership: showMetaOwnership,
-      typeId: showMetaTypeId,
-      nativeLayout: showMetaNativeLayout,
-      parallelizable: showMetaParallelizable,
-    }),
-    [
-      showMetaEffects,
-      showMetaPurity,
-      showMetaEscape,
-      showMetaOwnership,
-      showMetaTypeId,
-      showMetaNativeLayout,
-      showMetaParallelizable,
-    ],
-  );
+
+  const diffs = useMemo(() => computeChangedBlocks(debugSteps), [debugSteps]);
+  const safeStepIdx = debugSteps.length === 0 ? 0 : Math.min(stepIdx, debugSteps.length - 1);
+  const currentDebugStep = debugSteps[safeStepIdx];
+
+  const currentDumpFunction = curFnId == undefined ? dump?.topLevel : dump?.functions[curFnId];
+
+  const analyzedStep: NormalizedStep | undefined = useMemo(() => {
+    if (!currentDumpFunction) {
+      return undefined;
+    }
+    const cfg =
+      analysisCfg === "ssa"
+        ? currentDumpFunction.cfg
+        : currentDumpFunction.cfgDeconstructed ?? currentDumpFunction.cfg;
+    return normalizeCfg(analysisCfg, cfg);
+  }, [currentDumpFunction, analysisCfg]);
 
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
-      if (normalizedSteps.length === 0) {
+      if (view !== "steps" || debugSteps.length === 0) {
         return;
       }
       if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
         setStepIdx((idx) => Math.max(0, idx - 1));
       } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-        setStepIdx((idx) => Math.min((normalizedSteps.length ?? 1) - 1, idx + 1));
+        setStepIdx((idx) => Math.min((debugSteps.length ?? 1) - 1, idx + 1));
       }
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, [normalizedSteps.length]);
+  }, [debugSteps.length, view]);
+
+  const fnCount = Math.max(dump?.functions.length ?? 0, compileProgram?.functions.length ?? 0);
+  const fnIds = [undefined, ...Array.from({ length: fnCount }, (_, i) => i)];
 
   return (
     <div className="App">
@@ -141,7 +198,7 @@ export const App = () => {
         <div className="canvas">
           <div className="toolbar">
             <div className="function-tabs">
-              {[undefined, ...(data?.functions.map((_, i) => i) ?? [])].map((fnId) => (
+              {fnIds.map((fnId) => (
                 <button
                   key={fnId ?? -1}
                   className={fnId === curFnId ? "active" : ""}
@@ -155,32 +212,23 @@ export const App = () => {
               ))}
             </div>
             <div className="step-controls">
-              <label>
-                Step:
-                <select value={safeStepIdx} onChange={(e) => setStepIdx(Number(e.target.value))}>
-                  {normalizedSteps.map((step, i) => (
-                    <option key={i} value={i}>
-                      {i}. {step.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
               <label className="toggle">
                 <input
-                  type="checkbox"
-                  checked={showDiff}
-                  onChange={(e) => setShowDiff(e.target.checked)}
+                  type="radio"
+                  name="view"
+                  checked={view === "analysis"}
+                  onChange={() => setView("analysis")}
                 />
-                Highlight changed blocks
+                Analyzed CFG
               </label>
               <label className="toggle">
                 <input
                   type="radio"
                   name="view"
-                  checked={view === "cfg"}
-                  onChange={() => setView("cfg")}
+                  checked={view === "steps"}
+                  onChange={() => setView("steps")}
                 />
-                CFG
+                Optimizer steps
               </label>
               <label className="toggle">
                 <input
@@ -191,101 +239,106 @@ export const App = () => {
                 />
                 Symbols
               </label>
-              <span className="meta-label">Meta:</span>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={showMetaPurity}
-                  onChange={(e) => setShowMetaPurity(e.target.checked)}
-                />
-                Purity
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={showMetaEffects}
-                  onChange={(e) => setShowMetaEffects(e.target.checked)}
-                />
-                Effects
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={showMetaEscape}
-                  onChange={(e) => setShowMetaEscape(e.target.checked)}
-                />
-                Escape
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={showMetaOwnership}
-                  onChange={(e) => setShowMetaOwnership(e.target.checked)}
-                />
-                Ownership
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={showMetaTypeId}
-                  onChange={(e) => setShowMetaTypeId(e.target.checked)}
-                />
-                Type ID
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={showMetaNativeLayout}
-                  onChange={(e) => setShowMetaNativeLayout(e.target.checked)}
-                />
-                Native layout
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={showMetaParallelizable}
-                  onChange={(e) => setShowMetaParallelizable(e.target.checked)}
-                />
-                Parallelizable
-              </label>
+              {view === "analysis" && (
+                <label>
+                  CFG:
+                  <select value={analysisCfg} onChange={(e) => setAnalysisCfg(e.target.value as any)}>
+                    <option value="ssa">ssa (analyzed)</option>
+                    <option value="deconstructed">deconstructed</option>
+                  </select>
+                </label>
+              )}
+              {view === "steps" && (
+                <>
+                  <label>
+                    Step:
+                    <select value={safeStepIdx} onChange={(e) => setStepIdx(Number(e.target.value))}>
+                      {debugSteps.map((step, i) => (
+                        <option key={i} value={i}>
+                          {i}. {step.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={showDiff}
+                      onChange={(e) => setShowDiff(e.target.checked)}
+                    />
+                    Highlight changed blocks
+                  </label>
+                </>
+              )}
               <input
                 type="search"
                 placeholder="Filter symbol/temp/label"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
-              {currentStep && (
+              {view === "analysis" && (
+                <>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={onlyUnknownEffects}
+                      onChange={(e) => setOnlyUnknownEffects(e.target.checked)}
+                    />
+                    Unknown effects
+                  </label>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={onlyEscapingAllocs}
+                      onChange={(e) => setOnlyEscapingAllocs(e.target.checked)}
+                    />
+                    Escaping allocs
+                  </label>
+                </>
+              )}
+              {view === "steps" && currentDebugStep && (
                 <span className="step-summary">
-                  {currentStep.blocks.length} blocks •{" "}
-                  {showDiff && diffs[safeStepIdx]
-                    ? `${diffs[safeStepIdx].size} changed`
-                    : "diffs off"}
+                  {currentDebugStep.blocks.length} blocks •{" "}
+                  {showDiff && diffs[safeStepIdx] ? `${diffs[safeStepIdx].size} changed` : "diffs off"}
                 </span>
               )}
             </div>
           </div>
 
-          {view === "cfg" && currentStep && (
-              <Graph
-                step={currentStep}
-                stepNames={normalizedSteps.map((s) => s.name)}
-                symbolNames={symbolNames}
-                changed={showDiff ? diffs[safeStepIdx] : undefined}
-                filter={filter}
-                overlays={overlays}
-              />
-            )}
-          {view === "symbols" && <SymbolsPanel symbols={data?.symbols} filter={filter} />}
+          {view === "analysis" && analyzedStep && (
+            <Graph
+              step={analyzedStep}
+              stepNames={[analyzedStep.name]}
+              symbolNames={symbolNames}
+              changed={undefined}
+              filter={filter}
+              onlyUnknownEffects={onlyUnknownEffects}
+              onlyEscapingAllocs={onlyEscapingAllocs}
+              onHoverInst={setHoveredInst}
+            />
+          )}
+          {view === "steps" && currentDebugStep && (
+            <Graph
+              step={currentDebugStep}
+              stepNames={debugSteps.map((s) => s.name)}
+              symbolNames={symbolNames}
+              changed={showDiff ? diffs[safeStepIdx] : undefined}
+              filter={filter}
+              onHoverInst={setHoveredInst}
+            />
+          )}
+          {view === "symbols" && <SymbolsPanel symbols={compileProgram?.symbols} filter={filter} />}
         </div>
         <div className="pane">
           <div className="info">
             {error && <p className="error">{error}</p>}
-            {data?.symbols && (
+            {compileProgram?.symbols && (
               <p className="symbol-summary">
-                {data.symbols.symbols.length} symbols across {data.symbols.scopes.length} scopes
+                {compileProgram.symbols.symbols.length} symbols across {compileProgram.symbols.scopes.length} scopes
               </p>
             )}
           </div>
+          <InstMetaPanel inst={hoveredInst} />
           <div className="editor">
             <div className="controls">
               <label>
@@ -298,6 +351,22 @@ export const App = () => {
                   <option value="module">module</option>
                 </select>
               </label>
+              <label className="toggle">
+                <input type="checkbox" checked={runAnalyses} onChange={(e) => setRunAnalyses(e.target.checked)} />
+                Run analyses
+              </label>
+              <label className="toggle">
+                <input type="checkbox" checked={typed} onChange={(e) => setTyped(e.target.checked)} />
+                Typed
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={semanticOps}
+                  onChange={(e) => setSemanticOps(e.target.checked)}
+                />
+                Semantic ops
+              </label>
             </div>
             <Editor
               height="50vh"
@@ -306,11 +375,11 @@ export const App = () => {
               defaultValue={INIT_SOURCE}
               onChange={(e) => setSource(e?.trim() ?? "")}
             />
-            {data && (
+            {compileProgram?.symbols && (
               <div className="legend">
                 <span>Foreign vars: </span>
                 <span>
-                  {[...(data.symbols?.symbols ?? [])]
+                  {[...compileProgram.symbols.symbols]
                     .filter((s) => s.captured)
                     .map((s) => formatId(s.id))
                     .join(", ") || "none"}

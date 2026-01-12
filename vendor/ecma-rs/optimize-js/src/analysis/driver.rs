@@ -831,8 +831,6 @@ where
   for (key, (nullability_result, range_result, numeric_repr_result, encoding_result)) in
     analysis_results
   {
-    analyses.nullability.insert(key, nullability_result);
-    analyses.range.insert(key, range_result);
     annotate_cfg_nullability_narrowings(cfg_for_key_deconstructed_mut(program, key));
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       annotate_cfg_nullability_narrowings(cfg);
@@ -842,6 +840,8 @@ where
     // on the SSA CFG (`ProgramFunction::analyzed_cfg()`).
     {
       let cfg = cfg_for_key_mut(program, key);
+      nullability::annotate_cfg_nullability_facts(cfg, &nullability_result);
+      range::annotate_cfg_range_facts(cfg, &range_result);
       numeric_repr::annotate_cfg_numeric_repr(cfg, &numeric_repr_result);
       encoding::annotate_cfg_encoding(cfg, &encoding_result);
     }
@@ -852,6 +852,10 @@ where
       cfg_for_key_deconstructed_mut(program, key),
       deconstructed_encoding,
     );
+    // Preserve analysis results for consumers that prefer to work with the full
+    // dataflow lattices.
+    analyses.nullability.insert(key, nullability_result);
+    analyses.range.insert(key, range_result);
     analyses.encoding.insert(key, encoding_result);
   }
 

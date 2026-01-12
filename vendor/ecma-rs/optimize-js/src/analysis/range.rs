@@ -471,6 +471,43 @@ pub fn analyze_ranges(cfg: &Cfg) -> RangeResult {
   RangeResult { result }
 }
 
+/// Annotate `cfg`'s instructions with best-effort integer range information.
+///
+/// This populates [`crate::il::meta::ValueFacts::int_range`] on each instruction
+/// that defines a temp variable (`inst.tgts[0]`) with a non-`Unknown` range.
+///
+/// Consumers that need instruction-level range facts in tooling (e.g. debugger
+/// UIs) should call this after running [`analyze_ranges`].
+pub(crate) fn annotate_cfg_range_facts(cfg: &mut Cfg, result: &RangeResult) {
+  let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
+  labels.sort_unstable();
+
+  for label in labels {
+    let Some(entry) = result.entry(label).cloned() else {
+      continue;
+    };
+    let mut state = entry;
+    let mut analysis = RangeAnalysis::new_for_replay(state.ranges.len());
+
+    for (inst_idx, inst) in cfg.bblocks.get_mut(label).iter_mut().enumerate() {
+      analysis.apply_to_instruction(label, inst_idx, &*inst, &mut state);
+      let Some(tgt) = inst.tgts.get(0).copied() else {
+        continue;
+      };
+      let IntRange::Interval { lo, hi } = state.range_of_var(tgt) else {
+        continue;
+      };
+      let min = lo.as_i64();
+      let max = hi.as_i64();
+      if min.is_none() && max.is_none() {
+        continue;
+      }
+      let facts = inst.meta.value.get_or_insert_with(Default::default);
+      facts.int_range = Some(crate::il::meta::IntRange { min, max });
+    }
+  }
+}
+
 struct RangeAnalysis {
   var_count: usize,
   entry_vars: Vec<u32>,

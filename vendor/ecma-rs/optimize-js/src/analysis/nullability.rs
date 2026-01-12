@@ -357,6 +357,51 @@ pub fn calculate_nullability(cfg: &Cfg) -> NullabilityResult {
   NullabilityResult { result }
 }
 
+/// Annotate `cfg`'s instructions with coarse nullability information.
+///
+/// This populates [`crate::il::meta::ValueFacts::nullability`] for each
+/// instruction that defines a temp variable (`inst.tgts[0]`) when the analysis
+/// can prove the value is definitely nullish or definitely non-nullish.
+pub(crate) fn annotate_cfg_nullability_facts(cfg: &mut Cfg, result: &NullabilityResult) {
+  let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
+  labels.sort_unstable();
+  let types = ValueTypeSummaries::new(cfg);
+
+  for label in labels {
+    let Some(entry) = result.state_at_block_entry(label).cloned() else {
+      continue;
+    };
+    let mut state = entry;
+    let mut analysis = NullabilityAnalysis {
+      var_count: state.masks.len(),
+      types: types.clone(),
+    };
+
+    for (inst_idx, inst) in cfg.bblocks.get_mut(label).iter_mut().enumerate() {
+      analysis.apply_to_instruction(label, inst_idx, &*inst, &mut state);
+      let Some(tgt) = inst.tgts.get(0).copied() else {
+        continue;
+      };
+      if !state.is_reachable() {
+        continue;
+      }
+      let mask = state.mask_of_var(tgt);
+      let nullability = if mask.is_non_nullish() {
+        Some(crate::il::meta::Nullability::NonNullish)
+      } else if !mask.contains(NullabilityMask::OTHER) && !mask.is_bottom() {
+        Some(crate::il::meta::Nullability::Nullish)
+      } else {
+        None
+      };
+      let Some(nullability) = nullability else {
+        continue;
+      };
+      let facts = inst.meta.value.get_or_insert_with(Default::default);
+      facts.nullability = Some(nullability);
+    }
+  }
+}
+
 struct NullabilityAnalysis {
   var_count: usize,
   types: ValueTypeSummaries,

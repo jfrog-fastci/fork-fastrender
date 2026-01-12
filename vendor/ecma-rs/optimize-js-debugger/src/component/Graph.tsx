@@ -15,33 +15,20 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
+  GraphInst,
   NormalizedBlock,
   NormalizedStep,
   StableArg,
   StableConst,
-  StableEffectLocation,
-  StableEscapeState,
-  StableInst,
-  StablePurity,
   argToLabel,
   blockMatchesQuery,
-  formatId,
+  formatForeign,
 } from "./schema";
-
-export type InstMetaOverlays = {
-  effects: boolean;
-  purity: boolean;
-  escape: boolean;
-  ownership: boolean;
-  typeId: boolean;
-  nativeLayout: boolean;
-  parallelizable: boolean;
-};
 
 export type BBlockNode = Node<
   {
     label: number;
-    insts: Array<StableInst>;
+    insts: Array<GraphInst>;
   },
   "bblock"
 >;
@@ -78,184 +65,16 @@ const ArgElement = ({ arg }: { arg: StableArg }) => {
   }
 };
 
-const effectLocationLabel = (
-  loc: StableEffectLocation,
-  symbolNames?: Map<string, string>,
-): string => {
-  switch (loc.kind) {
-    case "heap":
-      return "heap";
-    case "foreign": {
-      const key = formatId(loc.id);
-      const name = symbolNames?.get(key);
-      return name ? `foreign ${key} (${name})` : `foreign ${key}`;
-    }
-    case "unknown":
-      return `unknown ${loc.name}`;
-  }
-};
-
-const escapeLabel = (state: StableEscapeState): string => {
-  switch (state.kind) {
-    case "no_escape":
-      return "no_escape";
-    case "arg_escape":
-      return `arg_escape(${state.value})`;
-    case "return_escape":
-      return "return_escape";
-    case "global_escape":
-      return "global_escape";
-    case "unknown":
-      return "unknown";
-  }
-};
-
-const purityLabel = (purity: StablePurity): string => {
-  switch (purity) {
-    case "pure":
-      return "pure";
-    case "read_only":
-      return "read_only";
-    case "allocating":
-      return "allocating";
-    case "impure":
-      return "impure";
-  }
-};
-
-const purityClass = (purity: StablePurity): string => {
-  switch (purity) {
-    case "pure":
-      return "pure";
-    case "read_only":
-      return "readonly";
-    case "allocating":
-      return "allocating";
-    case "impure":
-      return "impure";
-  }
-};
-
-const InstMetaBadges = ({
-  inst,
-  overlays,
-  symbolNames,
-}: {
-  inst: StableInst;
-  overlays: InstMetaOverlays;
-  symbolNames?: Map<string, string>;
-}) => {
-  const meta = inst.meta;
-
-  const badges: Array<JSX.Element> = [];
-
-  if (overlays.purity) {
-    const purity: StablePurity = meta?.purity ?? "pure";
-    badges.push(
-      <span key="purity" className={`inst-meta-badge purity ${purityClass(purity)}`}>
-        {purityLabel(purity)}
-      </span>,
-    );
-
-    if (inst.t === "Call") {
-      const calleePurity: StablePurity = meta?.calleePurity ?? "impure";
-      badges.push(
-        <span
-          key="callee-purity"
-          className={`inst-meta-badge callee-purity ${purityClass(calleePurity)}`}
-        >
-          callee:{purityLabel(calleePurity)}
-        </span>,
-      );
-    }
-  }
-
-  if (overlays.effects && meta?.effects) {
-    const reads = meta.effects.reads ?? [];
-    const writes = meta.effects.writes ?? [];
-    const summary = meta.effects.summary;
-    const details = [
-      `flags: ${summary.flags}`,
-      `throws: ${summary.throws}`,
-      reads.length ? `reads: ${reads.map((r) => effectLocationLabel(r, symbolNames)).join(", ")}` : "",
-      writes.length
-        ? `writes: ${writes.map((w) => effectLocationLabel(w, symbolNames)).join(", ")}`
-        : "",
-      meta.effects.unknown ? "unknown: true" : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-    badges.push(
-      <span key="effects" className="inst-meta-badge effects" title={details}>
-        fx
-      </span>,
-    );
-  }
-
-  if (overlays.escape && meta?.resultEscape) {
-    badges.push(
-      <span key="escape" className="inst-meta-badge escape">
-        {escapeLabel(meta.resultEscape)}
-      </span>,
-    );
-  }
-
-  if (overlays.ownership && meta?.ownership) {
-    badges.push(
-      <span key="ownership" className="inst-meta-badge ownership">
-        {meta.ownership}
-      </span>,
-    );
-  }
-
-  if (overlays.typeId && meta?.typeId) {
-    badges.push(
-      <span key="typeId" className="inst-meta-badge type-id">
-        type:{formatId(meta.typeId)}
-      </span>,
-    );
-  }
-
-  if (overlays.nativeLayout && meta?.nativeLayout) {
-    badges.push(
-      <span key="nativeLayout" className="inst-meta-badge native-layout">
-        layout:{formatId(meta.nativeLayout)}
-      </span>,
-    );
-  }
-
-  if (overlays.parallelizable) {
-    const purity: StablePurity = meta?.purity ?? "pure";
-    const throws = meta?.effects?.summary.throws ?? "never";
-    const unknown = meta?.effects?.unknown ?? false;
-    const parallelizable = purity === "pure" && throws === "never" && !unknown;
-    if (parallelizable) {
-      badges.push(
-        <span key="parallel" className="inst-meta-badge parallelizable">
-          parallel
-        </span>,
-      );
-    }
-  }
-
-  if (badges.length === 0) {
-    return null;
-  }
-
-  return <div className="inst-meta-badges">{badges}</div>;
-};
-
 const InstElement = ({
   inst,
   symbolNames,
-  overlays,
 }: {
-  inst: StableInst;
+  inst: GraphInst;
   symbolNames?: Map<string, string>;
-  overlays: InstMetaOverlays;
 }) => {
   const foreignLabel = () => {
-    const key = inst.foreign ? formatId(inst.foreign) : "foreign";
+    const foreign = (inst as any).foreign;
+    const key = foreign != undefined ? formatForeign(foreign) : "foreign";
     const name = key && symbolNames?.get(key);
     return name ? `foreign ${key} (${name})` : `foreign ${key}`;
   };
@@ -270,11 +89,8 @@ const InstElement = ({
           </div>
           <div>
             <ArgElement arg={inst.args[0]} />
-            <span> {inst.binOp} </span>
+            <span> {(inst as any).binOp} </span>
             <ArgElement arg={inst.args[1]} />
-          </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -299,9 +115,6 @@ const InstElement = ({
             ))}
             <span>)</span>
           </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
-          </div>
         </>
       );
     case "CondGoto":
@@ -317,9 +130,6 @@ const InstElement = ({
             <span> else </span>
             <span className="label">:{inst.labels[1]}</span>
           </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
-          </div>
         </>
       );
     case "ForeignLoad":
@@ -332,9 +142,6 @@ const InstElement = ({
           <div>
             <span className="foreign">{foreignLabel()}</span>
           </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
-          </div>
         </>
       );
     case "ForeignStore":
@@ -346,9 +153,6 @@ const InstElement = ({
           </div>
           <div>
             <ArgElement arg={inst.args[0]} />
-          </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -368,11 +172,8 @@ const InstElement = ({
                 <span> ⇒ </span>
                 <ArgElement arg={inst.args[i]} />
               </Fragment>
-              ))}
+            ))}
             <span>)</span>
-          </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -389,9 +190,6 @@ const InstElement = ({
           <div>
             <ArgElement arg={inst.args[2]} />
           </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
-          </div>
         </>
       );
     case "Un":
@@ -402,11 +200,8 @@ const InstElement = ({
             <span className="eq"> =</span>
           </div>
           <div>
-            <span>{inst.unOp} </span>
+            <span>{(inst as any).unOp} </span>
             <ArgElement arg={inst.args[0]} />
-          </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -418,10 +213,7 @@ const InstElement = ({
             <span className="eq"> =</span>
           </div>
           <div>
-            <span className="unknown">unknown {inst.unknown}</span>
-          </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
+            <span className="unknown">unknown {(inst as any).unknown}</span>
           </div>
         </>
       );
@@ -429,14 +221,11 @@ const InstElement = ({
       return (
         <>
           <div>
-            <span className="unknown">unknown {inst.unknown}</span>
+            <span className="unknown">unknown {(inst as any).unknown}</span>
             <span className="eq"> =</span>
           </div>
           <div>
             <ArgElement arg={inst.args[0]} />
-          </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
           </div>
         </>
       );
@@ -450,9 +239,6 @@ const InstElement = ({
           <div>
             <ArgElement arg={inst.args[0]} />
           </div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
-          </div>
         </>
       );
     default:
@@ -462,24 +248,40 @@ const InstElement = ({
             <span className="unknown">{inst.t}</span>
           </div>
           <div>{inst.args.map(argToLabel).join(", ")}</div>
-          <div className="inst-meta">
-            <InstMetaBadges inst={inst} overlays={overlays} symbolNames={symbolNames} />
-          </div>
         </>
       );
   }
+};
+
+const escapeKind = (state: any): string | undefined => {
+  if (state == undefined) {
+    return undefined;
+  }
+  if (typeof state === "string") {
+    return state;
+  }
+  if (typeof state === "object" && state) {
+    if (typeof state.kind === "string") {
+      return state.kind;
+    }
+    const entries = Object.entries(state);
+    if (entries.length === 1 && typeof entries[0][0] === "string") {
+      return entries[0][0];
+    }
+  }
+  return undefined;
 };
 
 const BBlockElement = ({
   data: { label, insts },
   symbolNames,
   changed,
-  overlays,
+  onHoverInst,
 }: {
   data: BBlockNode["data"];
   symbolNames?: Map<string, string>;
   changed?: boolean;
-  overlays: InstMetaOverlays;
+  onHoverInst?: (inst: GraphInst | undefined) => void;
 }) => {
   return (
     <>
@@ -488,8 +290,14 @@ const BBlockElement = ({
         <h1>:{label}</h1>
         <ol className="insts">
           {insts.map((s, i) => (
-            <li key={i} className="inst">
-              <InstElement inst={s} symbolNames={symbolNames} overlays={overlays} />
+            <li
+              key={i}
+              className="inst"
+              title={(s as any).meta ? JSON.stringify((s as any).meta, null, 2) : undefined}
+              onMouseEnter={() => onHoverInst?.(s)}
+              onMouseLeave={() => onHoverInst?.(undefined)}
+            >
+              <InstElement inst={s} symbolNames={symbolNames} />
             </li>
           ))}
         </ol>
@@ -531,30 +339,134 @@ export const getLayoutedElements = (
   };
 };
 
+const GraphCanvas = ({
+  stepNames,
+  currentStepName,
+  initNodes,
+  initEdges,
+  nodeTypes,
+}: {
+  stepNames: Array<string>;
+  currentStepName: string;
+  initNodes: Array<BBlockNode>;
+  initEdges: Array<Edge>;
+  nodeTypes: Record<string, any>;
+}) => {
+  const { fitView } = useReactFlow();
+  const [nodes, setNodes, onNodesChange] = useNodesState(initNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges);
+  const nodesSized = useNodesInitialized();
+  const [layoutCalculated, setLayoutCalculated] = useState(false);
+  useEffect(() => {
+    setNodes(initNodes);
+    setEdges(initEdges);
+    setLayoutCalculated(false);
+  }, [initNodes, initEdges, setNodes, setEdges]);
+
+  useEffect(() => {
+    if (!nodesSized || layoutCalculated) {
+      return;
+    }
+    const layouted = getLayoutedElements(nodes, edges, { direction: "TB" });
+    setNodes(layouted.nodes);
+    setEdges(layouted.edges);
+    setLayoutCalculated(true);
+  }, [nodesSized, layoutCalculated, nodes, edges, setNodes, setEdges]);
+
+  useEffect(() => {
+    if (nodesSized && layoutCalculated) {
+      fitView();
+    }
+  }, [nodesSized, layoutCalculated, fitView]);
+
+  return (
+    <ReactFlow
+      edges={edges}
+      fitView
+      nodes={nodes}
+      nodesDraggable={false}
+      nodeTypes={nodeTypes}
+      onEdgesChange={onEdgesChange}
+      onNodesChange={onNodesChange}
+    >
+      <Panel position="top-left">
+        <ul className="step-names">
+          {stepNames.map((name, i) => (
+            <li key={i} className={name == currentStepName ? "current" : ""}>
+              {name}
+            </li>
+          ))}
+        </ul>
+      </Panel>
+    </ReactFlow>
+  );
+};
+
 export const Graph = ({
   stepNames,
   step,
   symbolNames,
   changed,
   filter,
-  overlays,
+  onlyUnknownEffects,
+  onlyEscapingAllocs,
+  onHoverInst,
 }: {
   stepNames: Array<string>;
   step: NormalizedStep;
   symbolNames?: Map<string, string>;
   changed?: Set<number>;
   filter: string;
-  overlays: InstMetaOverlays;
+  onlyUnknownEffects?: boolean;
+  onlyEscapingAllocs?: boolean;
+  onHoverInst?: (inst: GraphInst | undefined) => void;
 }) => {
   const query = filter.trim().toLowerCase();
-  const filteredBlocks: NormalizedBlock[] = useMemo(
-    () =>
-      query
-        ? step.blocks.filter((block) => blockMatchesQuery(block, query, symbolNames))
-        : step.blocks,
-    [step, query, symbolNames],
-  );
-  const visible = new Set(filteredBlocks.map((b) => b.label));
+
+  const metaFilteredBlocks: NormalizedBlock[] = useMemo(() => {
+    const unknown = !!onlyUnknownEffects;
+    const escaping = !!onlyEscapingAllocs;
+    if (!unknown && !escaping) {
+      return step.blocks;
+    }
+
+    const isEscaping = (inst: GraphInst): boolean => {
+      const kind = escapeKind((inst as any).meta?.resultEscape);
+      if (!kind) {
+        return false;
+      }
+      return kind !== "no_escape" && kind !== "NoEscape";
+    };
+
+    const shouldKeep = (inst: GraphInst): boolean => {
+      const effectsUnknown = (inst as any).meta?.effects?.unknown === true;
+      const escapes = isEscaping(inst);
+      if (unknown && escaping) {
+        return effectsUnknown || escapes;
+      }
+      if (unknown) {
+        return effectsUnknown;
+      }
+      return escapes;
+    };
+
+    return step.blocks
+      .map((block) => ({ ...block, insts: block.insts.filter(shouldKeep) }))
+      .filter((block) => block.insts.length > 0);
+  }, [step, onlyUnknownEffects, onlyEscapingAllocs]);
+
+  const filteredBlocks: NormalizedBlock[] = useMemo(() => {
+    if (!query) {
+      return metaFilteredBlocks;
+    }
+    return metaFilteredBlocks.filter((block) => blockMatchesQuery(block, query, symbolNames));
+  }, [metaFilteredBlocks, query, symbolNames]);
+
+  useEffect(() => {
+    onHoverInst?.(undefined);
+  }, [step, query, onlyUnknownEffects, onlyEscapingAllocs]);
+
+  const visible = useMemo(() => new Set(filteredBlocks.map((b) => b.label)), [filteredBlocks]);
   const initNodes = useMemo(
     () =>
       filteredBlocks.map<BBlockNode>((block) => ({
@@ -567,7 +479,7 @@ export const Graph = ({
         position: { x: 0, y: 0 },
         className: changed?.has(block.label) ? "changed" : undefined,
       })),
-    [step, changed, query],
+    [filteredBlocks, changed],
   );
   const initEdges = useMemo(
     () =>
@@ -583,7 +495,7 @@ export const Graph = ({
               animated: true,
             })),
         ),
-    [step, query],
+    [step, visible],
   );
 
   const nodeTypes = useMemo(
@@ -593,68 +505,23 @@ export const Graph = ({
           {...props}
           symbolNames={symbolNames}
           changed={changed?.has(props.data.label)}
-          overlays={overlays}
+          onHoverInst={onHoverInst}
         />
       ),
     }),
-    [symbolNames, changed, overlays],
+    [symbolNames, changed, onHoverInst],
   );
-
-  const GraphCanvas = () => {
-    const { fitView } = useReactFlow();
-    const [nodes, setNodes, onNodesChange] = useNodesState(initNodes);
-    const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges);
-    const nodesSized = useNodesInitialized();
-    const [layoutCalculated, setLayoutCalculated] = useState(false);
-    useEffect(() => {
-      setNodes(initNodes);
-      setEdges(initEdges);
-      setLayoutCalculated(false);
-    }, [step, query]);
-
-    useEffect(() => {
-      if (!nodesSized || layoutCalculated) {
-        return;
-      }
-      const layouted = getLayoutedElements(nodes, edges, { direction: "TB" });
-      setNodes(layouted.nodes);
-      setEdges(layouted.edges);
-      setLayoutCalculated(true);
-    }, [nodesSized]);
-
-    useEffect(() => {
-      if (nodesSized && layoutCalculated) {
-        fitView();
-      }
-    }, [layoutCalculated]);
-
-    return (
-      <ReactFlow
-        edges={edges}
-        fitView
-        nodes={nodes}
-        nodesDraggable={false}
-        nodeTypes={nodeTypes}
-        onEdgesChange={onEdgesChange}
-        onNodesChange={onNodesChange}
-      >
-        <Panel position="top-left">
-          <ul className="step-names">
-            {stepNames.map((name, i) => (
-              <li key={i} className={name == step.name ? "current" : ""}>
-                {name}
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      </ReactFlow>
-    );
-  };
 
   return (
     <div className="BBlocksExplorer">
       <ReactFlowProvider>
-        <GraphCanvas />
+        <GraphCanvas
+          stepNames={stepNames}
+          currentStepName={step.name}
+          initNodes={initNodes}
+          initEdges={initEdges}
+          nodeTypes={nodeTypes}
+        />
       </ReactFlowProvider>
     </div>
   );
