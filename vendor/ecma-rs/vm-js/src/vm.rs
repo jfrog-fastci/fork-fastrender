@@ -3428,6 +3428,13 @@ impl Vm {
 mod tests {
   use super::*;
 
+  fn value_to_string(rt: &crate::JsRuntime, value: Value) -> String {
+    let Value::String(s) = value else {
+      panic!("expected string, got {value:?}");
+    };
+    rt.heap.get_string(s).unwrap().to_utf8_lossy()
+  }
+
   fn noop_call(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
@@ -3528,6 +3535,47 @@ mod tests {
     let second = vm.module_namespace_getter_call_id()?;
     assert_eq!(first, second);
     assert_eq!(len, vm.native_calls.len());
+    Ok(())
+  }
+
+  #[test]
+  fn for_await_of_does_not_register_native_calls_per_iteration() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(crate::HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = crate::JsRuntime::new(vm, heap)?;
+
+    rt.exec_script(
+      r#"
+        var out = "";
+        async function f() {
+          out = "";
+          for await (const x of [Promise.resolve("a"), Promise.resolve("b"), Promise.resolve("c")]) {
+            out += x;
+          }
+        }
+      "#,
+    )?;
+
+    let before = rt.vm.native_call_count();
+
+    rt.exec_script("f(); out")?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    let out_value = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out_value), "abc");
+    let after_first = rt.vm.native_call_count();
+
+    rt.exec_script("f(); out")?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    let out_value = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out_value), "abc");
+    let after_second = rt.vm.native_call_count();
+
+    assert_eq!(
+      after_first,
+      after_second,
+      "for await..of should not register new native calls after first use (native_calls: {before} -> {after_first} -> {after_second})"
+    );
+
     Ok(())
   }
 }
