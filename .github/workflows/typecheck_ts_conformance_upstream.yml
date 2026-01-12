@@ -483,3 +483,110 @@ jobs:
       - name: Fail on uncovered regressions (post-upload)
         if: steps.run_conformance.outputs.status != '0'
         run: exit ${{ steps.run_conformance.outputs.status }}
+
+  upstream-conformance-merge:
+    name: Upstream TypeScript conformance (merged triage)
+    runs-on: ubuntu-latest
+    needs:
+      - upstream-conformance-matrix
+      - upstream-conformance
+    if: >-
+      always() &&
+      needs.upstream-conformance-matrix.outputs.run_enabled == 'true' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout (no submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install Rust toolchain (vendor/ecma-rs)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - name: Install jq (if missing)
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
+      - name: Download shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: typecheck_ts_conformance_upstream_shard_*
+          path: reports/shards
+          merge-multiple: true
+
+      - name: Merge shard JSON reports
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+
+          shopt -s nullglob
+          all=(reports/shards/typecheck-conformance-upstream-shard-*.json)
+          files=()
+          for f in "${all[@]}"; do
+            # Exclude the per-shard triage JSON artifacts; we only want the raw conformance reports.
+            if [[ "${f}" == *.triage.json ]]; then
+              continue
+            fi
+            files+=("${f}")
+          done
+
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No shard conformance JSON reports found under reports/shards/." >&2
+            exit 1
+          fi
+
+          # Surface stub-report errors (e.g. shard crashed before emitting JSON).
+          : > reports/typecheck-ts-upstream-conformance-shard-errors.txt
+          for f in "${files[@]}"; do
+            err="$(jq -r '.error // empty' "$f" || true)"
+            if [[ -n "${err}" ]]; then
+              echo "${f}: ${err}" | tee -a reports/typecheck-ts-upstream-conformance-shard-errors.txt >&2
+            fi
+          done
+          if [[ ! -s reports/typecheck-ts-upstream-conformance-shard-errors.txt ]]; then
+            echo "(none)" > reports/typecheck-ts-upstream-conformance-shard-errors.txt
+          fi
+
+          jq -s '{
+            compare_mode: (.[0].compare_mode),
+            results: ([.[].results[]] | sort_by(.id))
+          }' "${files[@]}" > reports/typecheck-ts-upstream-conformance-merged.json
+
+      - name: Triage merged report
+        run: |
+          set -euo pipefail
+
+          # Ensure the vendored `vendor/ecma-rs` tree is available for the nested cargo wrapper.
+          bash scripts/ci_init_ecma_rs_submodule.sh
+
+          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
+            triage \
+            --input reports/typecheck-ts-upstream-conformance-merged.json \
+            --json \
+            > reports/typecheck-ts-upstream-conformance-triage.json 2> reports/typecheck-ts-upstream-conformance-triage.stderr.log
+
+          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
+            triage \
+            --input reports/typecheck-ts-upstream-conformance-merged.json \
+            --emit-manifest \
+            > reports/typecheck-ts-upstream-conformance-suggestions.toml 2> /dev/null
+
+      - name: Upload merged reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck_ts_conformance_upstream_merged
+          path: |
+            reports/typecheck-ts-upstream-conformance-shard-errors.txt
+            reports/typecheck-ts-upstream-conformance-merged.json
+            reports/typecheck-ts-upstream-conformance-triage.json
+            reports/typecheck-ts-upstream-conformance-triage.stderr.log
+            reports/typecheck-ts-upstream-conformance-suggestions.toml
