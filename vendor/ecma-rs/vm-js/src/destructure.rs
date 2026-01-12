@@ -402,7 +402,9 @@ fn bind_object_pattern(
               ))),
               Expr::Member(member) => {
                 if member.stx.optional_chaining {
-                  return Err(VmError::Unimplemented("optional chaining assignment target"));
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
                 }
 
                 let base = eval_expr(
@@ -423,7 +425,9 @@ fn bind_object_pattern(
               }
               Expr::ComputedMember(member) => {
                 if member.stx.optional_chaining {
-                  return Err(VmError::Unimplemented("optional chaining assignment target"));
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
                 }
 
                 let base = eval_expr(
@@ -745,7 +749,9 @@ fn bind_array_pattern(
               ))),
               Expr::Member(member) => {
                 if member.stx.optional_chaining {
-                  return Err(VmError::Unimplemented("optional chaining assignment target"));
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
                 }
 
                 let base = eval_expr(
@@ -766,7 +772,9 @@ fn bind_array_pattern(
               }
               Expr::ComputedMember(member) => {
                 if member.stx.optional_chaining {
-                  return Err(VmError::Unimplemented("optional chaining assignment target"));
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
                 }
 
                 let base = eval_expr(
@@ -946,7 +954,7 @@ fn bind_array_pattern(
     Member { base: Value, key: &'a str },
     ComputedMember { base: Value, key_value: Value },
   }
-
+ 
   let mut rest_assignment_target: Option<RestAssignmentTarget<'_>> = None;
   if matches!(kind, BindingKind::Assignment) {
     match &*rest_pat.stx {
@@ -967,9 +975,11 @@ fn bind_array_pattern(
             ))),
             Expr::Member(member) => {
               if member.stx.optional_chaining {
-                return Err(VmError::Unimplemented("optional chaining assignment target"));
+                return Err(VmError::InvariantViolation(
+                  "optional chaining used in assignment target",
+                ));
               }
-  
+   
               let base = eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.left)?;
               let base = scope.push_root(base)?;
               Ok(Some(RestAssignmentTarget::Member {
@@ -979,9 +989,11 @@ fn bind_array_pattern(
             }
             Expr::ComputedMember(member) => {
               if member.stx.optional_chaining {
-                return Err(VmError::Unimplemented("optional chaining assignment target"));
+                return Err(VmError::InvariantViolation(
+                  "optional chaining used in assignment target",
+                ));
               }
-  
+   
               let base =
                 eval_expr(vm, host, hooks, env, strict, this, scope, &member.stx.object)?;
               let base = scope.push_root(base)?;
@@ -1212,7 +1224,9 @@ fn assign_to_member(
   this: Value,
 ) -> Result<(), VmError> {
   if member.optional_chaining {
-    return Err(VmError::Unimplemented("optional chaining assignment target"));
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in assignment target",
+    ));
   }
 
   // Root the RHS across evaluation of the LHS object.
@@ -1239,7 +1253,9 @@ fn assign_to_computed_member(
   this: Value,
 ) -> Result<(), VmError> {
   if member.optional_chaining {
-    return Err(VmError::Unimplemented("optional chaining assignment target"));
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in assignment target",
+    ));
   }
 
   // Root the RHS across evaluation of the LHS object/key.

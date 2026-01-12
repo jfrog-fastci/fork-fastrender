@@ -30,6 +30,12 @@ pub struct WellKnownSymbols {
 #[derive(Debug, Clone, Copy)]
 pub struct Intrinsics {
   well_known_symbols: WellKnownSymbols,
+  /// Private symbol used by the async evaluator to represent an optional-chaining short-circuit
+  /// across `await` suspension points.
+  ///
+  /// This value must never be observable from user code; it is converted back to `undefined` at the
+  /// boundary of optional-chain evaluation.
+  optional_chain_sentinel: GcSymbol,
   object_prototype: GcObject,
   function_prototype: GcObject,
   throw_type_error: GcObject,
@@ -617,6 +623,8 @@ impl Intrinsics {
     roots: &mut Vec<RootId>,
   ) -> Result<Self, VmError> {
     let well_known_symbols = WellKnownSymbols::init(scope, roots)?;
+    let optional_chain_sentinel =
+      alloc_rooted_symbol(scope, roots, "vm-js optional chain sentinel")?;
 
     // --- Base prototypes ---
     let object_prototype = alloc_rooted_object(scope, roots)?;
@@ -6285,6 +6293,7 @@ impl Intrinsics {
     }
     Ok(Self {
       well_known_symbols,
+      optional_chain_sentinel,
       object_prototype,
       function_prototype,
       throw_type_error,
@@ -6400,6 +6409,10 @@ impl Intrinsics {
 
   pub fn well_known_symbols(&self) -> &WellKnownSymbols {
     &self.well_known_symbols
+  }
+
+  pub(crate) fn optional_chain_sentinel(&self) -> GcSymbol {
+    self.optional_chain_sentinel
   }
   pub fn object_prototype(&self) -> GcObject {
     self.object_prototype

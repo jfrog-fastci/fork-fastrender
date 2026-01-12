@@ -2764,6 +2764,29 @@ enum NumericValue {
   BigInt(GcBigInt),
 }
 
+#[derive(Clone, Copy, Debug)]
+enum OptionalChainEval {
+  /// A normal evaluation result.
+  Value(Value),
+  /// Indicates that an optional chain has short-circuited and the current chain expression should
+  /// evaluate to `undefined`.
+  ///
+  /// This is distinct from `Value::Undefined` so that chain continuations like `a?.b.c` can avoid
+  /// confusing an *actual* `undefined` value (e.g. the property value of `a.b`) with an optional
+  /// chain short-circuit (e.g. `a` was nullish).
+  ShortCircuit,
+}
+
+impl OptionalChainEval {
+  #[inline]
+  fn into_value(self) -> Value {
+    match self {
+      OptionalChainEval::Value(v) => v,
+      OptionalChainEval::ShortCircuit => Value::Undefined,
+    }
+  }
+}
+
 impl<'a> Evaluator<'a> {
   /// Runs one VM "tick".
   ///
@@ -7086,42 +7109,52 @@ impl<'a> Evaluator<'a> {
   }
 
   fn eval_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<Expr>) -> Result<Value, VmError> {
+    Ok(self.eval_expr_chain(scope, expr)?.into_value())
+  }
+
+  fn eval_expr_chain(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &Node<Expr>,
+  ) -> Result<OptionalChainEval, VmError> {
     // One tick per expression.
     self.tick()?;
 
-    match &*expr.stx {
-      Expr::LitStr(node) => self.eval_lit_str(scope, node),
-      Expr::LitNum(node) => self.eval_lit_num(&node.stx),
-      Expr::LitBigInt(node) => self.eval_lit_bigint(scope, &node.stx),
-      Expr::LitBool(node) => self.eval_lit_bool(&node.stx),
-      Expr::LitNull(_) => Ok(Value::Null),
-      Expr::LitRegex(node) => self.eval_lit_regex(scope, node),
-      Expr::LitArr(node) => self.eval_lit_arr(scope, &node.stx),
-      Expr::LitObj(node) => self.eval_lit_obj(scope, &node.stx),
-      Expr::LitTemplate(node) => self.eval_lit_template(scope, &node.stx),
-      Expr::TaggedTemplate(node) => self.eval_tagged_template(scope, node),
-      Expr::This(_) => Ok(self.this),
-      Expr::NewTarget(_) => Ok(self.new_target),
-      Expr::Id(node) => self.eval_id(scope, &node.stx),
-      Expr::ImportMeta(_) => self.eval_import_meta(scope),
-      Expr::Call(node) => self.eval_call(scope, &node.stx, node.loc),
-      Expr::Import(node) => self.eval_import(scope, &node.stx),
-      Expr::Func(node) => self.eval_func_expr(scope, node),
-      Expr::ArrowFunc(node) => self.eval_arrow_func_expr(scope, node),
-      Expr::Class(node) => self.eval_class_expr(scope, node),
-      Expr::Member(node) => self.eval_member(scope, &node.stx),
-      Expr::ComputedMember(node) => self.eval_computed_member(scope, &node.stx),
-      Expr::Unary(node) => self.eval_unary(scope, &node.stx, node.loc),
-      Expr::UnaryPostfix(node) => self.eval_unary_postfix(scope, &node.stx),
-      Expr::Binary(node) => self.eval_binary(scope, &node.stx),
-      Expr::Cond(node) => self.eval_cond(scope, &node.stx),
+    Ok(match &*expr.stx {
+      Expr::LitStr(node) => OptionalChainEval::Value(self.eval_lit_str(scope, node)?),
+      Expr::LitNum(node) => OptionalChainEval::Value(self.eval_lit_num(&node.stx)?),
+      Expr::LitBigInt(node) => OptionalChainEval::Value(self.eval_lit_bigint(scope, &node.stx)?),
+      Expr::LitBool(node) => OptionalChainEval::Value(self.eval_lit_bool(&node.stx)?),
+      Expr::LitNull(_) => OptionalChainEval::Value(Value::Null),
+      Expr::LitRegex(node) => OptionalChainEval::Value(self.eval_lit_regex(scope, node)?),
+      Expr::LitArr(node) => OptionalChainEval::Value(self.eval_lit_arr(scope, &node.stx)?),
+      Expr::LitObj(node) => OptionalChainEval::Value(self.eval_lit_obj(scope, &node.stx)?),
+      Expr::LitTemplate(node) => OptionalChainEval::Value(self.eval_lit_template(scope, &node.stx)?),
+      Expr::TaggedTemplate(node) => OptionalChainEval::Value(self.eval_tagged_template(scope, node)?),
+      Expr::This(_) => OptionalChainEval::Value(self.this),
+      Expr::NewTarget(_) => OptionalChainEval::Value(self.new_target),
+      Expr::Id(node) => OptionalChainEval::Value(self.eval_id(scope, &node.stx)?),
+      Expr::ImportMeta(_) => OptionalChainEval::Value(self.eval_import_meta(scope)?),
+      Expr::Call(node) => self.eval_call(scope, &node.stx, node.loc)?,
+      Expr::Import(node) => OptionalChainEval::Value(self.eval_import(scope, &node.stx)?),
+      Expr::Func(node) => OptionalChainEval::Value(self.eval_func_expr(scope, node)?),
+      Expr::ArrowFunc(node) => OptionalChainEval::Value(self.eval_arrow_func_expr(scope, node)?),
+      Expr::Class(node) => OptionalChainEval::Value(self.eval_class_expr(scope, node)?),
+      Expr::Member(node) => self.eval_member(scope, &node.stx)?,
+      Expr::ComputedMember(node) => self.eval_computed_member(scope, &node.stx)?,
+      Expr::Unary(node) => OptionalChainEval::Value(self.eval_unary(scope, &node.stx, node.loc)?),
+      Expr::UnaryPostfix(node) => {
+        OptionalChainEval::Value(self.eval_unary_postfix(scope, &node.stx)?)
+      }
+      Expr::Binary(node) => OptionalChainEval::Value(self.eval_binary(scope, &node.stx)?),
+      Expr::Cond(node) => OptionalChainEval::Value(self.eval_cond(scope, &node.stx)?),
 
       // Patterns sometimes show up in expression position (e.g. assignment targets). We only
       // support simple identifier patterns for now.
-      Expr::IdPat(node) => self.eval_id_pat(scope, &node.stx),
+      Expr::IdPat(node) => OptionalChainEval::Value(self.eval_id_pat(scope, &node.stx)?),
 
-      _ => Err(VmError::Unimplemented("expression type")),
-    }
+      _ => return Err(VmError::Unimplemented("expression type")),
+    })
   }
 
   fn eval_import(&mut self, scope: &mut Scope<'_>, expr: &ImportExpr) -> Result<Value, VmError> {
@@ -7165,10 +7198,30 @@ impl<'a> Evaluator<'a> {
     )
   }
 
-  fn eval_member(&mut self, scope: &mut Scope<'_>, expr: &MemberExpr) -> Result<Value, VmError> {
-    let base = self.eval_expr(scope, &expr.left)?;
+  fn eval_chain_base(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &Node<Expr>,
+  ) -> Result<OptionalChainEval, VmError> {
+    // Parenthesized expressions break optional-chain propagation:
+    // `(a?.b).c` should not short-circuit `.c` when `a` is nullish.
+    if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+      return Ok(OptionalChainEval::Value(self.eval_expr(scope, expr)?));
+    }
+    self.eval_expr_chain(scope, expr)
+  }
+
+  fn eval_member(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &MemberExpr,
+  ) -> Result<OptionalChainEval, VmError> {
+    let base = match self.eval_chain_base(scope, &expr.left)? {
+      OptionalChainEval::Value(v) => v,
+      OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+    };
     if expr.optional_chaining && is_nullish(base) {
-      return Ok(Value::Undefined);
+      return Ok(OptionalChainEval::ShortCircuit);
     }
 
     // `MemberExpression` creates a property reference for any non-nullish base value. The actual
@@ -7181,17 +7234,21 @@ impl<'a> Evaluator<'a> {
       base,
       key: PropertyKey::from_string(key_s),
     };
-    self.get_value_from_reference(&mut key_scope, &reference)
+    let value = self.get_value_from_reference(&mut key_scope, &reference)?;
+    Ok(OptionalChainEval::Value(value))
   }
 
   fn eval_computed_member(
     &mut self,
     scope: &mut Scope<'_>,
     expr: &ComputedMemberExpr,
-  ) -> Result<Value, VmError> {
-    let base = self.eval_expr(scope, &expr.object)?;
+  ) -> Result<OptionalChainEval, VmError> {
+    let base = match self.eval_chain_base(scope, &expr.object)? {
+      OptionalChainEval::Value(v) => v,
+      OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+    };
     if expr.optional_chaining && is_nullish(base) {
-      return Ok(Value::Undefined);
+      return Ok(OptionalChainEval::ShortCircuit);
     }
 
     // `ComputedMemberExpression` performs `ToPropertyKey` on the member expression (which may
@@ -7203,7 +7260,8 @@ impl<'a> Evaluator<'a> {
     key_scope.push_root(member_value)?;
     let key = self.to_property_key_operator(&mut key_scope, member_value)?;
     let reference = Reference::Property { base, key };
-    self.get_value_from_reference(&mut key_scope, &reference)
+    let value = self.get_value_from_reference(&mut key_scope, &reference)?;
+    Ok(OptionalChainEval::Value(value))
   }
 
   fn eval_reference<'b>(
@@ -8688,34 +8746,73 @@ impl<'a> Evaluator<'a> {
           }
           Ok(Value::Bool(ok))
         }
-        Expr::Member(_) | Expr::ComputedMember(_) => {
-          let reference = self.eval_reference(scope, &expr.argument)?;
-          match reference {
-            Reference::Property { base, key } => {
-              let mut del_scope = scope.reborrow();
-              self.root_reference(&mut del_scope, &reference)?;
-              let object = self.to_object_operator(&mut del_scope, base)?;
-              del_scope.push_root(Value::Object(object))?;
-              let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
-                self.vm,
-                &mut del_scope,
-                &mut *self.host,
-                &mut *self.hooks,
-                object,
-                key,
-              )?;
-              if self.strict && !ok {
-                return Err(throw_type_error(
-                  self.vm,
-                  &mut del_scope,
-                  "Cannot delete property",
-                )?);
-              }
-              Ok(Value::Bool(ok))
-            }
-            // Deleting bindings (`delete x`) is handled above.
-            Reference::Binding(_) => Ok(Value::Bool(false)),
+        Expr::Member(member) => {
+          // `delete a?.b.c` is a delete of an optional chain continuation: if the chain short
+          // circuits, the operand is not a reference and `delete` returns true.
+          let base = match self.eval_chain_base(scope, &member.stx.left)? {
+            OptionalChainEval::Value(v) => v,
+            OptionalChainEval::ShortCircuit => return Ok(Value::Bool(true)),
+          };
+          let mut del_scope = scope.reborrow();
+          del_scope.push_root(base)?;
+          let key_s = del_scope.alloc_string(&member.stx.right)?;
+          del_scope.push_root(Value::String(key_s))?;
+          let key = PropertyKey::from_string(key_s);
+
+          let object = self.to_object_operator(&mut del_scope, base)?;
+          del_scope.push_root(Value::Object(object))?;
+          let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
+            self.vm,
+            &mut del_scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            object,
+            key,
+          )?;
+          if self.strict && !ok {
+            return Err(throw_type_error(
+              self.vm,
+              &mut del_scope,
+              "Cannot delete property",
+            )?);
           }
+          Ok(Value::Bool(ok))
+        }
+        Expr::ComputedMember(member) => {
+          let base = match self.eval_chain_base(scope, &member.stx.object)? {
+            OptionalChainEval::Value(v) => v,
+            OptionalChainEval::ShortCircuit => return Ok(Value::Bool(true)),
+          };
+
+          let mut del_scope = scope.reborrow();
+          del_scope.push_root(base)?;
+          let member_value = self.eval_expr(&mut del_scope, &member.stx.member)?;
+          del_scope.push_root(member_value)?;
+          let key = self.to_property_key_operator(&mut del_scope, member_value)?;
+          let key_root = match key {
+            PropertyKey::String(s) => Value::String(s),
+            PropertyKey::Symbol(s) => Value::Symbol(s),
+          };
+          del_scope.push_root(key_root)?;
+
+          let object = self.to_object_operator(&mut del_scope, base)?;
+          del_scope.push_root(Value::Object(object))?;
+          let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
+            self.vm,
+            &mut del_scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            object,
+            key,
+          )?;
+          if self.strict && !ok {
+            return Err(throw_type_error(
+              self.vm,
+              &mut del_scope,
+              "Cannot delete property",
+            )?);
+          }
+          Ok(Value::Bool(ok))
         }
         // `delete` of non-reference expressions always returns true (after evaluating the operand).
         _ => {
@@ -8973,7 +9070,7 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     expr: &CallExpr,
     loc: parse_js::loc::Loc,
-  ) -> Result<Value, VmError> {
+  ) -> Result<OptionalChainEval, VmError> {
     // Track whether this call is *syntactically* a direct eval candidate (`eval(...)`).
     //
     // A call is only a direct eval if:
@@ -8981,8 +9078,9 @@ impl<'a> Evaluator<'a> {
     // - `eval` resolves to the original `%eval%` intrinsic function object.
     //
     // Otherwise this is an indirect eval (or just an ordinary call if `eval` was shadowed).
+    let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
     let direct_eval_syntax = !expr.optional_chaining
-      && expr.callee.assoc.get::<ParenthesizedExpr>().is_none()
+      && !callee_is_parenthesized
       && match &*expr.callee.stx {
         Expr::Id(id) => id.stx.name == "eval",
         Expr::IdPat(id) => id.stx.name == "eval",
@@ -8991,11 +9089,16 @@ impl<'a> Evaluator<'a> {
 
     // Evaluate the callee and compute the `this` value for the call.
     let (callee_value, this_value) = match &*expr.callee.stx {
-      Expr::Member(member) if member.stx.optional_chaining => {
-        let base = self.eval_expr(scope, &member.stx.left)?;
+      // Optional member call (e.g. `obj?.method()`): only applies when the optional-chain member
+      // expression is directly in the call callee position (i.e. not parenthesized).
+      Expr::Member(member) if member.stx.optional_chaining && !callee_is_parenthesized => {
+        let base = match self.eval_chain_base(scope, &member.stx.left)? {
+          OptionalChainEval::Value(v) => v,
+          OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+        };
         if is_nullish(base) {
           // Optional chaining short-circuit on the base value.
-          return Ok(Value::Undefined);
+          return Ok(OptionalChainEval::ShortCircuit);
         }
 
         // Optional chaining member call: preserve the base value for the call `this` binding.
@@ -9009,14 +9112,19 @@ impl<'a> Evaluator<'a> {
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, base)
       }
-      Expr::ComputedMember(member) if member.stx.optional_chaining => {
-        let base = self.eval_expr(scope, &member.stx.object)?;
+      // Optional computed-member call (e.g. `obj?.[expr]()`): only applies when the optional-chain
+      // computed member expression is directly in the call callee position (i.e. not parenthesized).
+      Expr::ComputedMember(member) if member.stx.optional_chaining && !callee_is_parenthesized => {
+        let base = match self.eval_chain_base(scope, &member.stx.object)? {
+          OptionalChainEval::Value(v) => v,
+          OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+        };
         if is_nullish(base) {
-          return Ok(Value::Undefined);
+          return Ok(OptionalChainEval::ShortCircuit);
         }
 
-        // Optional chaining computed-member call: `ToPropertyKey` may allocate and invoke user
-        // code. Only if the base is non-nullish do we dereference the property reference.
+        // `ToPropertyKey` may allocate and invoke user code. Only if the base is non-nullish do we
+        // evaluate the key and dereference the property reference.
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
@@ -9026,18 +9134,80 @@ impl<'a> Evaluator<'a> {
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, base)
       }
-      Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
-        let reference = self.eval_reference(scope, &expr.callee)?;
-        let this_value = match reference {
-          Reference::Property { base, .. } => base,
-          _ => Value::Undefined,
-        };
+      // Ordinary member call (e.g. `obj.method()`), but with optional-chain propagation when the
+      // member base expression is an unparenthesized optional chain (e.g. `a?.b.c()`).
+      Expr::Member(member) if !member.stx.optional_chaining => {
+        match self.eval_chain_base(scope, &member.stx.left)? {
+          OptionalChainEval::Value(base) => {
+            if is_nullish(base) {
+              return Err(throw_type_error(
+                self.vm,
+                scope,
+                "Cannot convert undefined or null to object",
+              )?);
+            }
 
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(base)?;
+            let key_s = key_scope.alloc_string(&member.stx.right)?;
+            let reference = Reference::Property {
+              base,
+              key: PropertyKey::from_string(key_s),
+            };
+            let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+            (callee_value, base)
+          }
+          OptionalChainEval::ShortCircuit => {
+            if callee_is_parenthesized {
+              // `(a?.b.c)()` is not part of the optional chain: the callee evaluates to `undefined`,
+              // and the call will throw (after evaluating arguments) like any other `undefined()`.
+              (Value::Undefined, Value::Undefined)
+            } else {
+              return Ok(OptionalChainEval::ShortCircuit);
+            }
+          }
+        }
+      }
+      // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
+      Expr::ComputedMember(member) if !member.stx.optional_chaining => {
+        match self.eval_chain_base(scope, &member.stx.object)? {
+          OptionalChainEval::Value(base) => {
+            // In non-optional computed member access, the key expression is evaluated even if the
+            // base is nullish (the TypeError is thrown only when the reference is dereferenced).
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(base)?;
+            let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
+            key_scope.push_root(member_value)?;
+            let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+            if is_nullish(base) {
+              return Err(throw_type_error(
+                self.vm,
+                &mut key_scope,
+                "Cannot convert undefined or null to object",
+              )?);
+            }
+            let reference = Reference::Property { base, key };
+            let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+            (callee_value, base)
+          }
+          OptionalChainEval::ShortCircuit => {
+            if callee_is_parenthesized {
+              (Value::Undefined, Value::Undefined)
+            } else {
+              return Ok(OptionalChainEval::ShortCircuit);
+            }
+          }
+        }
+      }
+      Expr::Id(_) | Expr::IdPat(_) => {
+        let reference = self.eval_reference(scope, &expr.callee)?;
         let mut callee_scope = scope.reborrow();
         self.root_reference(&mut callee_scope, &reference)?;
         let callee_value = self.get_value_from_reference(&mut callee_scope, &reference)?;
-        (callee_value, this_value)
+        (callee_value, Value::Undefined)
       }
+      // Any other callee expression, including optional member access that is not in direct call
+      // position (e.g. `(obj?.method)()`).
       _ => {
         let callee_value = self.eval_expr(scope, &expr.callee)?;
         (callee_value, Value::Undefined)
@@ -9046,7 +9216,7 @@ impl<'a> Evaluator<'a> {
 
     // Optional call: if the callee is nullish, return `undefined` without evaluating args.
     if expr.optional_chaining && is_nullish(callee_value) {
-      return Ok(Value::Undefined);
+      return Ok(OptionalChainEval::ShortCircuit);
     }
 
     // Root callee/this/args for the duration of the call.
@@ -9121,8 +9291,8 @@ impl<'a> Evaluator<'a> {
         // Direct eval: execute in the caller's lexical environment (with strictness propagation).
         let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
         return match arg0 {
-          Value::String(s) => self.eval_direct_eval_string(&mut call_scope, s),
-          other => Ok(other),
+          Value::String(s) => Ok(OptionalChainEval::Value(self.eval_direct_eval_string(&mut call_scope, s)?)),
+          other => Ok(OptionalChainEval::Value(other)),
         };
       }
     }
@@ -9131,7 +9301,7 @@ impl<'a> Evaluator<'a> {
     let rel_start = loc.start_u32().saturating_sub(self.env.prefix_len());
     let abs_offset = self.env.base_offset().saturating_add(rel_start);
 
-    self.vm.call_with_host_and_hooks_at_location(
+    let value = self.vm.call_with_host_and_hooks_at_location(
       &mut *self.host,
       &mut call_scope,
       &mut *self.hooks,
@@ -9140,7 +9310,8 @@ impl<'a> Evaluator<'a> {
       &args,
       source.as_ref(),
       abs_offset,
-    )
+    )?;
+    Ok(OptionalChainEval::Value(value))
   }
 
   fn eval_direct_eval_string(
@@ -10431,6 +10602,12 @@ enum AsyncFrame {
   RootModuleBody,
   /// Root frame for async classic script evaluation (top-level await / `for await...of` in scripts).
   RootScriptBody,
+  /// Converts the internal optional-chaining sentinel value to `undefined`.
+  ///
+  /// This frame is injected by `async_eval_expr` so the async evaluator can propagate optional-chain
+  /// short-circuits through non-optional chain segments, while ensuring the sentinel never becomes
+  /// observable from user code when an expression completes.
+  ConvertOptionalChainShortCircuit,
 
   /// Resume statement-list evaluation after a suspended statement completes.
   StmtList {
@@ -11919,6 +12096,31 @@ fn coerce_error_to_throw_for_async(vm: &Vm, scope: &mut Scope<'_>, err: VmError)
     )
     .unwrap_or_else(|e| e),
     other => other,
+  }
+}
+
+#[inline]
+fn optional_chain_sentinel_value(vm: &Vm) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  Ok(Value::Symbol(intr.optional_chain_sentinel()))
+}
+
+#[inline]
+fn is_optional_chain_sentinel(vm: &Vm, value: Value) -> bool {
+  let Some(intr) = vm.intrinsics() else {
+    return false;
+  };
+  value == Value::Symbol(intr.optional_chain_sentinel())
+}
+
+#[inline]
+fn convert_optional_chain_sentinel_to_undefined(vm: &Vm, value: Value) -> Value {
+  if is_optional_chain_sentinel(vm, value) {
+    Value::Undefined
+  } else {
+    value
   }
 }
 
@@ -16943,15 +17145,50 @@ fn async_eval_expr(
   scope: &mut Scope<'_>,
   expr: &Node<Expr>,
 ) -> Result<AsyncEval<Value>, VmError> {
+  match async_eval_expr_chain(evaluator, scope, expr)? {
+    AsyncEval::Complete(v) => Ok(AsyncEval::Complete(convert_optional_chain_sentinel_to_undefined(
+      evaluator.vm, v,
+    ))),
+    AsyncEval::Suspend(mut suspend) => {
+      async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::ConvertOptionalChainShortCircuit,
+      )?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+  }
+}
+
+fn async_eval_chain_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+) -> Result<AsyncEval<Value>, VmError> {
+  // Parenthesized expressions break optional-chain propagation:
+  // `(a?.b).c` should not short-circuit `.c` when `a` is nullish.
+  if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+    return async_eval_expr(evaluator, scope, expr);
+  }
+  async_eval_expr_chain(evaluator, scope, expr)
+}
+
+fn async_eval_expr_chain(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+) -> Result<AsyncEval<Value>, VmError> {
   evaluator.tick()?;
 
   if !expr_contains_await(expr) {
-    return match evaluator.eval_expr(scope, expr) {
-      Ok(v) => Ok(AsyncEval::Complete(v)),
+    return match evaluator.eval_expr_chain(scope, expr) {
+      Ok(OptionalChainEval::Value(v)) => Ok(AsyncEval::Complete(v)),
+      Ok(OptionalChainEval::ShortCircuit) => {
+        Ok(AsyncEval::Complete(optional_chain_sentinel_value(evaluator.vm)?))
+      }
       Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, scope, err)),
     };
   }
- 
+
   match &*expr.stx {
     Expr::Unary(unary)
       if matches!(
@@ -17049,7 +17286,7 @@ fn async_eval_expr(
       &unary.stx.argument,
       unary.stx.operator,
     ),
-    Expr::Member(member) => match async_eval_expr(evaluator, scope, &member.stx.left)? {
+    Expr::Member(member) => match async_eval_chain_base(evaluator, scope, &member.stx.left)? {
       AsyncEval::Complete(base) => Ok(AsyncEval::Complete(async_member_after_base(
         evaluator,
         scope,
@@ -17066,8 +17303,11 @@ fn async_eval_expr(
         Ok(AsyncEval::Suspend(suspend))
       }
     },
-    Expr::ComputedMember(member) => match async_eval_expr(evaluator, scope, &member.stx.object)? {
-      AsyncEval::Complete(base) => async_computed_member_after_base(evaluator, scope, &member.stx, base),
+    Expr::ComputedMember(member) => match async_eval_chain_base(evaluator, scope, &member.stx.object)?
+    {
+      AsyncEval::Complete(base) => {
+        async_computed_member_after_base(evaluator, scope, &member.stx, base)
+      }
       AsyncEval::Suspend(mut suspend) => {
         async_frames_push(
           &mut suspend.frames,
@@ -18224,7 +18464,9 @@ fn async_eval_assignment_to_member(
   member: &MemberExpr,
 ) -> Result<AsyncEval<Value>, VmError> {
   if member.optional_chaining {
-    return Err(VmError::Unimplemented("optional chaining member access"));
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in assignment target",
+    ));
   }
 
   match async_eval_expr(evaluator, scope, &member.left)? {
@@ -18277,8 +18519,8 @@ fn async_eval_assignment_to_computed_member(
   member: &ComputedMemberExpr,
 ) -> Result<AsyncEval<Value>, VmError> {
   if member.optional_chaining {
-    return Err(VmError::Unimplemented(
-      "optional chaining computed member access",
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in assignment target",
     ));
   }
 
@@ -18528,7 +18770,9 @@ fn async_eval_update_expression(
     Expr::Member(member) => {
       let member = &member.stx;
       if member.optional_chaining {
-        return Err(VmError::Unimplemented("optional chaining member access"));
+        return Err(VmError::InvariantViolation(
+          "optional chaining used in update target",
+        ));
       }
 
       match async_eval_expr(evaluator, scope, &member.left)? {
@@ -18553,8 +18797,8 @@ fn async_eval_update_expression(
     Expr::ComputedMember(member) => {
       let member = &member.stx;
       if member.optional_chaining {
-        return Err(VmError::Unimplemented(
-          "optional chaining computed member access",
+        return Err(VmError::InvariantViolation(
+          "optional chaining used in update target",
         ));
       }
 
@@ -18586,7 +18830,9 @@ fn async_reference_from_member(
   base: Value,
 ) -> Result<Reference<'static>, VmError> {
   if member.optional_chaining {
-    return Err(VmError::Unimplemented("optional chaining member access"));
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in reference position",
+    ));
   }
   if is_nullish(base) {
     return Err(throw_type_error(
@@ -18649,8 +18895,8 @@ fn async_reference_from_computed_member(
   member_value: Value,
 ) -> Result<Reference<'static>, VmError> {
   if member.optional_chaining {
-    return Err(VmError::Unimplemented(
-      "optional chaining computed member access",
+    return Err(VmError::InvariantViolation(
+      "optional chaining used in reference position",
     ));
   }
 
@@ -19235,7 +19481,7 @@ fn async_eval_delete_expr(
   expr: &UnaryExpr,
 ) -> Result<AsyncEval<Value>, VmError> {
   match &*expr.argument.stx {
-    Expr::Member(member) => match async_eval_expr(evaluator, scope, &member.stx.left)? {
+    Expr::Member(member) => match async_eval_chain_base(evaluator, scope, &member.stx.left)? {
       AsyncEval::Complete(base) => Ok(AsyncEval::Complete(async_delete_member_after_base(
         evaluator,
         scope,
@@ -19252,8 +19498,11 @@ fn async_eval_delete_expr(
         Ok(AsyncEval::Suspend(suspend))
       }
     },
-    Expr::ComputedMember(member) => match async_eval_expr(evaluator, scope, &member.stx.object)? {
-      AsyncEval::Complete(base) => async_delete_computed_member_after_base(evaluator, scope, &member.stx, base),
+    Expr::ComputedMember(member) => {
+      match async_eval_chain_base(evaluator, scope, &member.stx.object)? {
+        AsyncEval::Complete(base) => {
+          async_delete_computed_member_after_base(evaluator, scope, &member.stx, base)
+        }
       AsyncEval::Suspend(mut suspend) => {
         async_frames_push(
           &mut suspend.frames,
@@ -19263,7 +19512,8 @@ fn async_eval_delete_expr(
         )?;
         Ok(AsyncEval::Suspend(suspend))
       }
-    },
+      }
+    }
     _ => match async_eval_expr(evaluator, scope, &expr.argument)? {
       AsyncEval::Complete(_) => Ok(AsyncEval::Complete(Value::Bool(true))),
       AsyncEval::Suspend(mut suspend) => {
@@ -19280,6 +19530,11 @@ fn async_delete_member_after_base(
   expr: &MemberExpr,
   base: Value,
 ) -> Result<Value, VmError> {
+  // Optional-chain propagation (`delete a?.b.c`): if the base expression short-circuits, the operand
+  // is not a reference and `delete` returns true.
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(Value::Bool(true));
+  }
   // `delete obj?.prop` short-circuits to `true` when the base is nullish.
   if expr.optional_chaining && is_nullish(base) {
     return Ok(Value::Bool(true));
@@ -19322,6 +19577,9 @@ fn async_delete_computed_member_after_base(
   expr: &ComputedMemberExpr,
   base: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(AsyncEval::Complete(Value::Bool(true)));
+  }
   // `delete obj?.[expr]` short-circuits to `true` when the base is nullish and does not evaluate
   // the member expression.
   if expr.optional_chaining && is_nullish(base) {
@@ -19453,8 +19711,11 @@ fn async_member_after_base(
   expr: &MemberExpr,
   base: Value,
 ) -> Result<Value, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(base);
+  }
   if expr.optional_chaining && is_nullish(base) {
-    return Ok(Value::Undefined);
+    return Ok(optional_chain_sentinel_value(evaluator.vm)?);
   }
 
   let mut key_scope = scope.reborrow();
@@ -19475,8 +19736,11 @@ fn async_computed_member_after_base(
   expr: &ComputedMemberExpr,
   base: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(AsyncEval::Complete(base));
+  }
   if expr.optional_chaining && is_nullish(base) {
-    return Ok(AsyncEval::Complete(Value::Undefined));
+    return Ok(AsyncEval::Complete(optional_chain_sentinel_value(evaluator.vm)?));
   }
 
   match async_eval_expr(evaluator, scope, &expr.member)? {
@@ -19898,37 +20162,81 @@ fn async_eval_call(
   scope: &mut Scope<'_>,
   expr: &CallExpr,
 ) -> Result<AsyncEval<Value>, VmError> {
+  let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
+
   match &*expr.callee.stx {
-    Expr::Member(member) => match async_eval_expr(evaluator, scope, &member.stx.left)? {
-      AsyncEval::Complete(base) => {
-        async_call_member_after_base(evaluator, scope, expr, &member.stx, base)
+    // Optional member call (e.g. `obj?.method()`): only applies when the optional member expression
+    // is directly in the callee position (i.e. not parenthesized).
+    Expr::Member(member) if member.stx.optional_chaining && !callee_is_parenthesized => {
+      match async_eval_chain_base(evaluator, scope, &member.stx.left)? {
+        AsyncEval::Complete(base) => async_call_member_after_base(evaluator, scope, expr, &member.stx, base),
+        AsyncEval::Suspend(mut suspend) => {
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::CallMemberAfterBase {
+              expr: expr as *const CallExpr,
+              member: &*member.stx as *const MemberExpr,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
       }
-      AsyncEval::Suspend(mut suspend) => {
-        async_frames_push(
-          &mut suspend.frames,
-          AsyncFrame::CallMemberAfterBase {
-            expr: expr as *const CallExpr,
-            member: &*member.stx as *const MemberExpr,
-          },
-        )?;
-        Ok(AsyncEval::Suspend(suspend))
+    }
+    // Optional computed-member call (e.g. `obj?.[expr]()`).
+    Expr::ComputedMember(member) if member.stx.optional_chaining && !callee_is_parenthesized => {
+      match async_eval_chain_base(evaluator, scope, &member.stx.object)? {
+        AsyncEval::Complete(base) => {
+          async_call_computed_member_after_base(evaluator, scope, expr, &member.stx, base)
+        }
+        AsyncEval::Suspend(mut suspend) => {
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::CallComputedMemberAfterBase {
+              expr: expr as *const CallExpr,
+              member: &*member.stx as *const ComputedMemberExpr,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
       }
-    },
-    Expr::ComputedMember(member) => match async_eval_expr(evaluator, scope, &member.stx.object)? {
-      AsyncEval::Complete(base) => {
-        async_call_computed_member_after_base(evaluator, scope, expr, &member.stx, base)
+    }
+    // Ordinary member call (e.g. `obj.method()`), but with optional-chain propagation when the base
+    // expression is an unparenthesized optional chain (e.g. `a?.b.c()`).
+    Expr::Member(member) if !member.stx.optional_chaining => {
+      match async_eval_chain_base(evaluator, scope, &member.stx.left)? {
+        AsyncEval::Complete(base) => async_call_member_after_base(evaluator, scope, expr, &member.stx, base),
+        AsyncEval::Suspend(mut suspend) => {
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::CallMemberAfterBase {
+              expr: expr as *const CallExpr,
+              member: &*member.stx as *const MemberExpr,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
       }
-      AsyncEval::Suspend(mut suspend) => {
-        async_frames_push(
-          &mut suspend.frames,
-          AsyncFrame::CallComputedMemberAfterBase {
-            expr: expr as *const CallExpr,
-            member: &*member.stx as *const ComputedMemberExpr,
-          },
-        )?;
-        Ok(AsyncEval::Suspend(suspend))
+    }
+    // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
+    Expr::ComputedMember(member) if !member.stx.optional_chaining => {
+      match async_eval_chain_base(evaluator, scope, &member.stx.object)? {
+        AsyncEval::Complete(base) => {
+          async_call_computed_member_after_base(evaluator, scope, expr, &member.stx, base)
+        }
+        AsyncEval::Suspend(mut suspend) => {
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::CallComputedMemberAfterBase {
+              expr: expr as *const CallExpr,
+              member: &*member.stx as *const ComputedMemberExpr,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
       }
-    },
+    }
+    // Any other callee expression, including optional member access that is not in direct call
+    // position (e.g. `(obj?.method)()`).
     _ => match async_eval_expr(evaluator, scope, &expr.callee)? {
       AsyncEval::Complete(callee_value) => {
         async_call_begin(evaluator, scope, expr, callee_value, Value::Undefined)
@@ -19953,8 +20261,17 @@ fn async_call_member_after_base(
   member: &MemberExpr,
   base: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
+  let callee_is_parenthesized = call.callee.assoc.get::<ParenthesizedExpr>().is_some();
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    if callee_is_parenthesized {
+      // `(a?.b.c)()` is not part of the optional chain: the callee evaluates to `undefined`, and
+      // the call will throw (after evaluating arguments) like any other `undefined()`.
+      return async_call_begin(evaluator, scope, call, Value::Undefined, Value::Undefined);
+    }
+    return Ok(AsyncEval::Complete(base));
+  }
   if member.optional_chaining && is_nullish(base) {
-    return Ok(AsyncEval::Complete(Value::Undefined));
+    return Ok(AsyncEval::Complete(optional_chain_sentinel_value(evaluator.vm)?));
   }
   if is_nullish(base) {
     return Err(throw_type_error(
@@ -19987,8 +20304,15 @@ fn async_call_computed_member_after_base(
   member: &ComputedMemberExpr,
   base: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
+  let callee_is_parenthesized = call.callee.assoc.get::<ParenthesizedExpr>().is_some();
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    if callee_is_parenthesized {
+      return async_call_begin(evaluator, scope, call, Value::Undefined, Value::Undefined);
+    }
+    return Ok(AsyncEval::Complete(base));
+  }
   if member.optional_chaining && is_nullish(base) {
-    return Ok(AsyncEval::Complete(Value::Undefined));
+    return Ok(AsyncEval::Complete(optional_chain_sentinel_value(evaluator.vm)?));
   }
 
   match async_eval_expr(evaluator, scope, &member.member)? {
@@ -20052,9 +20376,13 @@ fn async_call_begin(
   callee_value: Value,
   this_value: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, callee_value) {
+    return Ok(AsyncEval::Complete(callee_value));
+  }
+
   // Optional call: if the callee is nullish, return `undefined` without evaluating args.
   if call.optional_chaining && is_nullish(callee_value) {
-    return Ok(AsyncEval::Complete(Value::Undefined));
+    return Ok(AsyncEval::Complete(optional_chain_sentinel_value(evaluator.vm)?));
   }
 
   // Fast-path: no arguments means no opportunity to suspend during argument evaluation, so we can
@@ -20524,7 +20852,9 @@ fn async_resume_from_frames(
 
       AsyncFrame::RootScriptBody => match state {
         AsyncState::Completion(completion) => match completion {
-          Completion::Normal(v) => return Ok(AsyncBodyResult::CompleteOk(v.unwrap_or(Value::Undefined))),
+          Completion::Normal(v) => {
+            return Ok(AsyncBodyResult::CompleteOk(v.unwrap_or(Value::Undefined)))
+          }
           Completion::Throw(thrown) => return Ok(AsyncBodyResult::CompleteThrow(thrown.value)),
           Completion::Return(_) => {
             return Err(VmError::InvariantViolation(
@@ -20545,6 +20875,21 @@ fn async_resume_from_frames(
         AsyncState::Expr(_) => {
           return Err(VmError::InvariantViolation(
             "script body resumed with expression state",
+          ))
+        }
+      },
+
+      AsyncFrame::ConvertOptionalChainShortCircuit => match state {
+        AsyncState::Expr(Ok(v)) => {
+          state = AsyncState::Expr(Ok(convert_optional_chain_sentinel_to_undefined(
+            evaluator.vm,
+            v,
+          )));
+        }
+        AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "optional-chain conversion frame received completion state",
           ))
         }
       },
