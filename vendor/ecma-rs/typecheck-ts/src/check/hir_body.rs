@@ -3487,14 +3487,14 @@ impl<'a> Checker<'a> {
         } else {
           obj_ty
         };
-        if let Some(prop_data) = self.member_prop_data(base_obj_ty, &mem.stx.right) {
-          self.check_member_access(&mem.stx.right, &prop_data, prop_range);
-        }
         let prop_ty = if chain_optional && base_obj_ty == prim.never {
           prim.undefined
         } else {
           match self.member_type_opt(base_obj_ty, &mem.stx.right) {
-            Some(ty) => ty,
+            Some(ty) => {
+              self.check_member_access_for_type(base_obj_ty, &mem.stx.right, prop_range);
+              ty
+            }
             None => {
               if !matches!(
                 self.store.type_kind(base_obj_ty),
@@ -3562,12 +3562,6 @@ impl<'a> Checker<'a> {
             _ => None,
           },
         };
-        if let Some(key) = literal_key.as_deref() {
-          let key_range = loc_to_range(self.file, mem.stx.member.loc);
-          if let Some(prop_data) = self.member_prop_data(base_obj_ty, key) {
-            self.check_member_access(key, &prop_data, key_range);
-          }
-        }
 
         let key_is_string_or_number = matches!(
           mem.stx.member.stx.as_ref(),
@@ -3581,7 +3575,11 @@ impl<'a> Checker<'a> {
           prim.undefined
         } else if let Some(key) = literal_key {
           match self.member_type_opt(base_obj_ty, &key) {
-            Some(ty) => ty,
+            Some(ty) => {
+              let key_range = loc_to_range(self.file, mem.stx.member.loc);
+              self.check_member_access_for_type(base_obj_ty, &key, key_range);
+              ty
+            }
             None => {
               if key_is_string_or_number
                 && !matches!(
@@ -7550,39 +7548,58 @@ impl<'a> Checker<'a> {
     }
   }
 
-  fn member_prop_data(&mut self, obj: TypeId, prop: &str) -> Option<PropData> {
-    let obj = self.expand_ref(obj);
-    match self.store.type_kind(obj) {
-      TypeKind::Ref { .. } => None,
-      TypeKind::Object(obj_id) => {
-        let shape = self.store.shape(self.store.object(obj_id).shape);
-        for candidate in shape.properties.iter() {
-          match &candidate.key {
-            PropKey::String(name_id) => {
-              if self.store.name(*name_id) == prop {
-                return Some(candidate.data.clone());
-              }
-            }
-            PropKey::Number(num) => {
-              if prop.parse::<i64>().ok() == Some(*num) {
-                return Some(candidate.data.clone());
-              }
-            }
-            _ => {}
-          }
-        }
-        None
+  fn check_member_access_for_type(&mut self, obj: TypeId, prop: &str, span: TextRange) {
+    fn inner(
+      checker: &mut Checker<'_>,
+      obj: TypeId,
+      prop: &str,
+      span: TextRange,
+      seen: &mut HashSet<TypeId>,
+    ) -> bool {
+      let obj = checker.expand_callable_type(obj);
+      let obj = checker.store.canon(obj);
+      if !seen.insert(obj) {
+        return false;
       }
-      TypeKind::Union(members) => members
-        .iter()
-        .filter_map(|member| self.member_prop_data(*member, prop))
-        .next(),
-      TypeKind::Intersection(members) => members
-        .iter()
-        .filter_map(|member| self.member_prop_data(*member, prop))
-        .next(),
-      _ => None,
+      match checker.store.type_kind(obj) {
+        TypeKind::Object(obj_id) => {
+          let shape = checker.store.shape(checker.store.object(obj_id).shape);
+          for candidate in shape.properties.iter() {
+            let matches = match &candidate.key {
+              PropKey::String(name_id) => checker.store.name(*name_id) == prop,
+              PropKey::Number(num) => prop.parse::<i64>().ok() == Some(*num),
+              _ => false,
+            };
+            if matches {
+              return checker.check_member_access(prop, &candidate.data, span);
+            }
+          }
+          false
+        }
+        TypeKind::Union(members) => {
+          for member in members {
+            if inner(checker, member, prop, span, seen) {
+              return true;
+            }
+          }
+          false
+        }
+        TypeKind::Intersection(members) => {
+          for member in members {
+            if checker.member_type_opt(member, prop).is_some()
+              && inner(checker, member, prop, span, seen)
+            {
+              return true;
+            }
+          }
+          false
+        }
+        _ => false,
+      }
     }
+
+    let mut seen = HashSet::new();
+    let _ = inner(self, obj, prop, span, &mut seen);
   }
 
   fn is_subclass_of(&self, derived: DefId, base: DefId) -> bool {
@@ -7622,7 +7639,7 @@ impl<'a> Checker<'a> {
     false
   }
 
-  fn check_member_access(&mut self, prop: &str, prop_data: &PropData, span: TextRange) {
+  fn check_member_access(&mut self, prop: &str, prop_data: &PropData, span: TextRange) -> bool {
     let accessibility = prop_data.accessibility.or_else(|| {
       if prop.starts_with('#') {
         Some(Accessibility::Private)
@@ -7632,7 +7649,7 @@ impl<'a> Checker<'a> {
     });
 
     let Some(accessibility) = accessibility else {
-      return;
+      return false;
     };
 
     let (is_private, is_protected) = match accessibility {
@@ -7642,7 +7659,7 @@ impl<'a> Checker<'a> {
     };
 
     if !is_private && !is_protected {
-      return;
+      return false;
     }
 
     let Some(current_class) = self.current_class_def else {
@@ -7659,7 +7676,7 @@ impl<'a> Checker<'a> {
             Span::new(self.file, span),
           ));
       }
-      return;
+      return true;
     };
 
     let declaring = prop_data.declared_on;
@@ -7672,7 +7689,7 @@ impl<'a> Checker<'a> {
     };
 
     if allowed {
-      return;
+      return false;
     }
 
     if is_private {
@@ -7688,6 +7705,7 @@ impl<'a> Checker<'a> {
           Span::new(self.file, span),
         ));
     }
+    true
   }
 
   fn type_has_prop(&self, ty: TypeId, prop: &str) -> bool {
