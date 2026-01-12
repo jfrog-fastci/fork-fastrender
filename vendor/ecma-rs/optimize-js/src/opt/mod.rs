@@ -4,6 +4,7 @@ pub mod optpass_dvn;
 pub mod optpass_impossible_branches;
 pub mod optpass_licm;
 pub mod optpass_redundant_assigns;
+pub mod optpass_scalar_replace;
 pub mod optpass_trivial_dce;
 
 #[derive(Default, Clone, Copy, Debug)]

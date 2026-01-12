@@ -595,6 +595,15 @@ pub struct InstMeta {
     serde(default, skip_serializing_if = "Option::is_none")
   )]
   pub result_escape: Option<crate::analysis::escape::EscapeState>,
+  /// Hint for downstream backends: this instruction produces an allocation that
+  /// has been proven `NoEscape` (via escape analysis), but was not eliminated by
+  /// scalar replacement.
+  ///
+  /// Backends may use this to place the allocation on the stack (or otherwise
+  /// avoid GC/heap allocation) while still preserving object identity within
+  /// the current function.
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub stack_alloc_candidate: bool,
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "Purity::is_default")
@@ -646,6 +655,7 @@ impl InstMeta {
     self.excludes_nullish = false;
     self.ownership = OwnershipState::Unknown;
     self.result_escape = None;
+    self.stack_alloc_candidate = false;
     self.value = None;
   }
 
@@ -706,6 +716,7 @@ impl InstMeta {
       && is_default_arg_use_modes(&self.arg_use_modes)
       && self.in_place_hint.is_none()
       && self.result_escape.is_none()
+      && !self.stack_alloc_candidate
       && self.callee_purity.is_default()
       && self.nullability_narrowing.is_none()
       && self.await_behavior.is_none()

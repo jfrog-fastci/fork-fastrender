@@ -141,6 +141,7 @@ fn trivial_dce_clears_call_result_metadata_when_tgt_is_removed() {
   call.meta.result_type = non_default_type_info();
   call.meta.ownership = OwnershipState::Owned;
   call.meta.result_escape = Some(EscapeState::ReturnEscape);
+  call.meta.stack_alloc_candidate = true;
 
   let mut bblocks = CfgBBlocks::default();
   bblocks.add(0, vec![call]);
@@ -171,4 +172,5 @@ fn trivial_dce_clears_call_result_metadata_when_tgt_is_removed() {
   assert_eq!(meta.result_type, TypeInfo::default());
   assert_eq!(meta.ownership, OwnershipState::Unknown);
   assert_eq!(meta.result_escape, None);
+  assert!(!meta.stack_alloc_candidate);
 }
