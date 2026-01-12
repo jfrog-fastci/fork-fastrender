@@ -30,7 +30,6 @@ section in sync with `ls tests/*.rs`.
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
 | `tests/allocation_failure.rs` | special | keep | Contains `#[global_allocator]` (via `tests/allocation_failure/mod.rs`); must remain separate. | DONE |
-| `tests/image_integration_tests.rs` | delete | delete | Compatibility shim so `cargo test --test image_integration_tests` keeps working; suite also runs via `tests/integration.rs::image_integration`. | TODO |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
 ### Completed (top-level crate removed)
 
@@ -70,6 +69,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/render_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/render/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/scroll_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/scroll/**` and is pulled into `tests/integration.rs`. | DONE |
 | `tests/style_tests.rs` | delete | `src/style/tests/style/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
+| `tests/property_parser_no_panic_regression_test.rs` | delete | `src/style/tests/style/property_parser_no_panic_regression_test.rs` | Pure `#[path]` shim removed; tests now run as lib unit tests under `src/style/tests/style/`. | DONE |
 | `tests/css_font_feature_values_test.rs` | unit | `src/style/tests/style/css_font_feature_values_test.rs` | Top-level crate removed; test now runs as a lib unit test under `src/style/tests/style/`. | DONE |
 | `tests/user_agent_placeholder_pseudo_test.rs` | unit | `src/style/tests/style/user_agent_placeholder_pseudo_test.rs` | Top-level crate removed; test now runs as a lib unit test under `src/style/tests/style/`. | DONE |
 | `tests/paged_media.rs` | unit | `src/layout/tests/paged_media.rs` | Top-level crate removed; tests migrated into layout unit tests (`src/layout/tests/`). | DONE |

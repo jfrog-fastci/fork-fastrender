@@ -135,4 +135,3 @@ fn stylesheet_with_many_malformed_declarations_does_not_panic_in_cascade() {
   let node = find_by_id(&styled, "t").expect("node");
   assert!((node.styles.opacity - 0.5).abs() < 1e-6);
 }
-
