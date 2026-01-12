@@ -97,6 +97,8 @@ pub mod window_blob;
 pub mod window_crypto;
 #[path = "vmjs/window_css.rs"]
 pub mod window_css;
+#[path = "vmjs/window_file.rs"]
+pub mod window_file;
 #[path = "vmjs/window_env.rs"]
 pub mod window_env;
 #[path = "vmjs/window_fetch.rs"]

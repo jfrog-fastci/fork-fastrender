@@ -12,6 +12,7 @@ use vm_js::{
 };
 
 use crate::js::window_blob::{self, BlobData};
+use crate::js::window_file;
 
 const REALM_ID_SLOT: usize = 0;
 const ITER_PROTO_SLOT: usize = 1;
@@ -305,7 +306,9 @@ fn form_data_append_native(
   let blob = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), value_val)?;
   let value = if let Some(blob) = blob {
     let filename = match args.get(2).copied() {
-      None | Some(Value::Undefined) => "blob".to_string(),
+      None | Some(Value::Undefined) => window_file::clone_file_metadata_for_object(vm, scope.heap(), value_val)?
+        .map(|meta| meta.name)
+        .unwrap_or_else(|| "blob".to_string()),
       Some(v) => js_value_to_string(
         vm,
         scope,
@@ -368,7 +371,9 @@ fn form_data_set_native(
   let blob = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), value_val)?;
   let value = if let Some(blob) = blob {
     let filename = match args.get(2).copied() {
-      None | Some(Value::Undefined) => "blob".to_string(),
+      None | Some(Value::Undefined) => window_file::clone_file_metadata_for_object(vm, scope.heap(), value_val)?
+        .map(|meta| meta.name)
+        .unwrap_or_else(|| "blob".to_string()),
       Some(v) => js_value_to_string(
         vm,
         scope,

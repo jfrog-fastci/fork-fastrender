@@ -341,6 +341,16 @@ pub(crate) fn update_time_bindings_clock(
   Ok(())
 }
 
+/// Returns the deterministic value used by `Date.now()` for the current `vm-js` heap.
+///
+/// This is intended for native bindings (e.g. `File` default `lastModified`) that need a stable
+/// timestamp without invoking any user-observable JavaScript (like reading `globalThis.Date.now`,
+/// which scripts can overwrite).
+pub(crate) fn date_now_ms(scope: &Scope<'_>) -> Result<i64, VmError> {
+  let (web_time, clock) = with_time_context(scope, |ctx| (ctx.web_time, ctx.clock.clone()))?;
+  Ok(web_time.time_origin_unix_ms.saturating_add(duration_to_millis_i64(clock.now())))
+}
+
 fn with_time_context<T>(
   scope: &Scope<'_>,
   f: impl FnOnce(&TimeContext) -> T,

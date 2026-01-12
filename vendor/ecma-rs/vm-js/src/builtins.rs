@@ -4944,31 +4944,49 @@ pub fn function_prototype_bind(
 
 /// `Object.prototype.toString` (partial).
 pub fn object_prototype_to_string(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let s = match this {
-    Value::Undefined => "[object Undefined]",
-    Value::Null => "[object Null]",
-    Value::Bool(_) => "[object Boolean]",
-    Value::Number(_) => "[object Number]",
-    Value::BigInt(_) => "[object BigInt]",
-    Value::String(_) => "[object String]",
-    Value::Symbol(_) => "[object Symbol]",
+  let mut scope = scope.reborrow();
+  let intr = require_intrinsics(vm)?;
+  let (builtin_tag, tag) = match this {
+    Value::Undefined => ("Undefined", None),
+    Value::Null => ("Null", None),
+    Value::Bool(_) => ("Boolean", None),
+    Value::Number(_) => ("Number", None),
+    Value::BigInt(_) => ("BigInt", None),
+    Value::String(_) => ("String", None),
+    Value::Symbol(_) => ("Symbol", None),
     Value::Object(obj) => {
-      if scope.heap().is_callable(Value::Object(obj))? {
-        "[object Function]"
+      scope.push_root(Value::Object(obj))?;
+
+      let builtin_tag = if scope.heap().is_callable(Value::Object(obj))? {
+        "Function"
       } else {
-        "[object Object]"
-      }
+        "Object"
+      };
+
+      let to_string_tag_key = PropertyKey::from_symbol(intr.well_known_symbols().to_string_tag);
+      let value =
+        scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, to_string_tag_key, this)?;
+      let tag = match value {
+        Value::String(s) => Some(scope.heap().get_string(s)?.to_utf8_lossy()),
+        _ => None,
+      };
+      (builtin_tag, tag)
     }
   };
-  Ok(Value::String(scope.alloc_string(s)?))
+
+  let out = match tag {
+    Some(tag) => format!("[object {tag}]"),
+    None => format!("[object {builtin_tag}]"),
+  };
+  Ok(Value::String(scope.alloc_string(&out)?))
 }
 
 /// `Object.prototype.hasOwnProperty` (ECMA-262).

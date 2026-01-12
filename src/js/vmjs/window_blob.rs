@@ -27,7 +27,7 @@ const BLOB_CTOR_REALM_ID_SLOT: usize = 0;
 ///
 /// This is intentionally kept <= `WebFetchLimits::max_request_body_bytes` (10MiB) so `Blob` can be
 /// used as a `fetch()` request body without additional surprising size limits.
-const MAX_BLOB_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_BLOB_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct BlobData {
@@ -148,7 +148,7 @@ fn require_blob<'a>(
   Ok((obj, data))
 }
 
-fn normalize_type(s: &str) -> String {
+pub(crate) fn normalize_type(s: &str) -> String {
   if s.is_empty() {
     return String::new();
   }
@@ -453,7 +453,7 @@ fn blob_slice_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let (this_obj, data) = require_blob(vm, scope, callee, this)?;
+  let (_this_obj, data) = require_blob(vm, scope, callee, this)?;
 
   let size = data.bytes.len() as i64;
   let start = to_integer_or_default(
@@ -500,11 +500,9 @@ fn blob_slice_native(
   }
   let content_type = normalize_type(&content_type);
 
-  let proto = scope.heap().object_prototype(this_obj)?.unwrap_or_else(|| {
-    vm.intrinsics()
-      .map(|i| i.object_prototype())
-      .unwrap_or(this_obj)
-  });
+  // Spec behavior: `Blob.prototype.slice` always returns a `Blob` instance (even when invoked on
+  // subclasses like `File`), so we always construct with this realm's `Blob.prototype`.
+  let proto = with_realm_state_mut(vm, scope, callee, |state| Ok(state.blob_proto))?;
 
   let blob = create_blob_with_proto(
     vm,
