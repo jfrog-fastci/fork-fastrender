@@ -323,6 +323,7 @@ mod gc_trace_tests {
 
   #[test]
   fn minor_gc_relocates_uint8array_buffer_pointer() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     let mut heap = GcHeap::new();
 
     let mut roots = RootStack::new();

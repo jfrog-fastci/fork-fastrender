@@ -79,7 +79,7 @@ fn gc_config_api_child() {
   ensure_shape_table();
 
   // First allocation initializes the process-global heap.
-  let _ = rt_alloc(256, RtShapeId(1));
+  let first_obj = rt_alloc(256, RtShapeId(1)) as usize;
 
   let mut young_start: *mut u8 = core::ptr::null_mut();
   let mut young_end: *mut u8 = core::ptr::null_mut();
@@ -89,6 +89,7 @@ fn gc_config_api_child() {
   assert!(!young_start.is_null());
   assert!(!young_end.is_null());
   assert_eq!(young_end as usize - young_start as usize, cfg.nursery_size_bytes);
+  assert!((young_start as usize..young_end as usize).contains(&first_obj));
 
   // With a small nursery and a low minor-GC trigger threshold, the allocator should trigger a minor
   // collection quickly. A rooted young object should then be evacuated/promoted out of the nursery.

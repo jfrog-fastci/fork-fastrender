@@ -1657,6 +1657,7 @@ mod tests {
 
   #[test]
   fn gc_traces_pointer_arrays_in_minor_gc() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     let mut heap = GcHeap::new();
 
     let a = heap.alloc_young(&LEAF_DESC);
@@ -1690,6 +1691,7 @@ mod tests {
 
   #[test]
   fn gc_does_not_trace_ptr_sized_byte_arrays_in_minor_gc() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     let mut heap = GcHeap::new();
 
     let obj = heap.alloc_young(&LEAF_DESC);
@@ -1858,6 +1860,7 @@ int main(void) {
 
   #[test]
   fn major_gc_traces_by_type_descriptor_and_reclaims_unreachable() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     let mut heap = GcHeap::new();
     let mut roots = RootStack::new();
     let mut remembered = NullRememberedSet::default();
@@ -1911,6 +1914,7 @@ int main(void) {
 
   #[test]
   fn repeated_major_collections_make_progress() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
     let mut heap = GcHeap::new();
     let mut roots = RootStack::new();
     let mut remembered = NullRememberedSet::default();

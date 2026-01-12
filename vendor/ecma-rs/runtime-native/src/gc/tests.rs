@@ -15,6 +15,7 @@ static DESC_LINE: TypeDescriptor = TypeDescriptor::new(gc::heap::IMMIX_LINE_SIZE
 
 #[test]
 fn align_up_basic() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   assert_eq!(align_up(0, 8), 0);
   assert_eq!(align_up(1, 8), 8);
   assert_eq!(align_up(8, 8), 8);
@@ -23,6 +24,7 @@ fn align_up_basic() {
 
 #[test]
 fn obj_header_round_trip_and_meta_tagging_invariants() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   use std::alloc::{alloc_zeroed, dealloc, Layout};
   use std::sync::atomic::AtomicU64;
 
@@ -294,6 +296,7 @@ fn minor_gc_promotes_young_reachable_from_remembered_old_object() {
 
 #[test]
 fn simple_remembered_set_remember_is_idempotent() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
   let mut remembered = SimpleRememberedSet::new();
 
@@ -318,6 +321,7 @@ fn simple_remembered_set_remember_is_idempotent() {
 
 #[test]
 fn set_remembered_idempotent_does_not_corrupt_forwarded_header() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   // Mark a nursery object as forwarded, then ensure `set_remembered_idempotent` does not mutate the
@@ -400,6 +404,7 @@ use core::ptr::NonNull;
 
 #[test]
 fn alloc_get_free_lifecycle() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let table = HandleTable::<u8>::new();
 
   let ptr = NonNull::new(Box::into_raw(Box::new(123u8))).unwrap();
@@ -418,6 +423,7 @@ fn alloc_get_free_lifecycle() {
 
 #[test]
 fn stale_generation_detection() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let table = HandleTable::<u8>::new();
 
   let p1 = NonNull::new(Box::into_raw(Box::new(1u8))).unwrap();
@@ -446,6 +452,7 @@ fn stale_generation_detection() {
 
 #[test]
 fn relocation_update_changes_get_result() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let table = HandleTable::<u8>::new();
 
   let p1 = NonNull::new(Box::into_raw(Box::new(1u8))).unwrap();
@@ -472,6 +479,7 @@ fn relocation_update_changes_get_result() {
 
 #[test]
 fn handle_id_round_trip_u64() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let id = HandleId::from_parts(123, 456);
   let raw: u64 = id.into();
   let id2 = HandleId::from(raw);
@@ -483,6 +491,7 @@ fn handle_id_round_trip_u64() {
 
 #[test]
 fn clear_for_tests_invalidates_stale_handle_ids() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let table = HandleTable::<u8>::new();
 
   let p1 = NonNull::new(Box::into_raw(Box::new(1u8))).unwrap();
@@ -516,6 +525,7 @@ use std::thread;
 
 #[test]
 fn handle_table_is_send_sync_even_when_t_isnt() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   fn assert_send_sync<T: Send + Sync>() {}
 
   // Rc is !Send + !Sync; HandleTable stores opaque pointers and should still be Send + Sync.
@@ -524,6 +534,7 @@ fn handle_table_is_send_sync_even_when_t_isnt() {
 
 #[test]
 fn concurrent_get_with_alloc_free() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   const READERS: usize = 4;
   const READ_ITERS: usize = 25_000;
   const WRITES: usize = 2_000;
@@ -585,6 +596,7 @@ fn concurrent_get_with_alloc_free() {
 
 #[test]
 fn stw_relocation_updates_pointers() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let table = Arc::new(HandleTable::<u8>::new());
 
   let old_ptr = NonNull::new(Box::into_raw(Box::new(1u8))).unwrap();
@@ -634,6 +646,7 @@ fn align_up_overflow_child() {
   if std::env::var_os("GC_ALIGN_UP_OVERFLOW_CHILD").is_none() {
     return;
   }
+  let _rt = crate::test_util::TestRuntimeGuard::new();
 
   // This should overflow when rounding up to the next 8-byte boundary.
   let _ = align_up(usize::MAX - 3, 8);
@@ -642,6 +655,7 @@ fn align_up_overflow_child() {
 
 #[test]
 fn align_up_overflow_traps() {
+  let _rt = crate::test_util::TestRuntimeGuard::new();
   let exe = std::env::current_exe().expect("current_exe");
 
   let status = Command::new(exe)
