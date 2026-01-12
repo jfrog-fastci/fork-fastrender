@@ -1814,7 +1814,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
 }
 
 #[cfg(test)]
-mod tests {
+mod window_document_tests {
   use super::*;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::window_timers::VmJsEventLoopHooks;
