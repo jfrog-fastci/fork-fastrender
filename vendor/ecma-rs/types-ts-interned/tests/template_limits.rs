@@ -37,8 +37,8 @@ fn template_total_bytes_limit_widens_to_string() {
   let expander = NoopExpander;
 
   let atom = store.union(vec![
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("x"))),
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("y"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("y"))),
   ]);
 
   let (tpl, long_len) = build_long_template(&store, atom);
@@ -60,8 +60,8 @@ fn template_string_len_limit_widens_to_string() {
   let expander = NoopExpander;
 
   let atom = store.union(vec![
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("x"))),
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("y"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("y"))),
   ]);
 
   let (tpl, _long_len) = build_long_template(&store, atom);
@@ -80,8 +80,8 @@ fn template_limits_allow_enumeration_when_large_enough() {
   let expander = NoopExpander;
 
   let atom = store.union(vec![
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("x"))),
-    store.intern_type(TypeKind::StringLiteral(store.intern_name("y"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("x"))),
+    store.intern_type(TypeKind::StringLiteral(store.intern_name_ref("y"))),
   ]);
 
   let long_len = 100_000;

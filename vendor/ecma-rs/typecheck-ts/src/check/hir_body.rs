@@ -5353,13 +5353,13 @@ impl<'a> Checker<'a> {
     self.jsx_collect_children_attribute_keys(children_attr_ty, &mut candidates, &mut seen);
     candidates.sort();
     candidates.dedup();
-    let selected = match candidates.as_slice() {
-      [] => fallback,
-      [only] => self.store.intern_name(only.clone()),
-      _ => {
-        self.diagnostics.push(
-          codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
-            "The global type 'JSX.ElementChildrenAttribute' may not have more than one property.",
+      let selected = match candidates.as_slice() {
+        [] => fallback,
+        [only] => self.store.intern_name_ref(only),
+        _ => {
+          self.diagnostics.push(
+            codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.error(
+              "The global type 'JSX.ElementChildrenAttribute' may not have more than one property.",
             Span::new(self.file, loc_to_range(self.file, loc)),
           ),
         );

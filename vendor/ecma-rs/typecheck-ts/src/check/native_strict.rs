@@ -43,9 +43,9 @@ pub fn validate_native_strict_body(
 
   // Used for type-based detection of "function-like" values when validating
   // `.constructor` access. (Do not confuse with `hir_js::NameId` above.)
-  let type_call_name = store.intern_name("call");
-  let type_apply_name = store.intern_name("apply");
-  let type_bind_name = store.intern_name("bind");
+  let type_call_name = store.intern_name_ref("call");
+  let type_apply_name = store.intern_name_ref("apply");
+  let type_bind_name = store.intern_name_ref("bind");
   let type_expander = relate.expander();
 
   fn object_key_is_ident(key: &ObjectKey, name: hir_js::NameId) -> bool {

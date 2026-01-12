@@ -445,7 +445,7 @@ fn callable_and_object_intersection_lowers_to_callable_object_layout() {
     overloads: vec![sig],
   });
 
-  let name_x = store.intern_name("x");
+  let name_x = store.intern_name_ref("x");
   let mut shape = Shape::new();
   shape.properties.push(Property {
     key: PropKey::String(name_x),

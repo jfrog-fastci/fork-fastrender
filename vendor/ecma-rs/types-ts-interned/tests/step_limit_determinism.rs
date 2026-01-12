@@ -21,8 +21,8 @@ impl TypeExpander for NoopExpander {
 }
 
 fn build_expensive_enough_type(store: &Arc<TypeStore>) -> (TypeId, TypeId) {
-  let a = store.intern_name("a");
-  let upper = store.intern_name("A");
+  let a = store.intern_name_ref("a");
+  let upper = store.intern_name_ref("A");
   let input = store.intern_type(TypeKind::Intrinsic {
     kind: IntrinsicKind::Uppercase,
     ty: store.intern_type(TypeKind::StringLiteral(a)),
