@@ -221,6 +221,13 @@ include = [
   "built-ins/WeakMap/iterator-value-failure.js",
   "built-ins/WeakSet/iterator-next-failure.js",
   "built-ins/WeakSet/iterator-value-failure.js",
+
+  # Builtin receiver/type error conformance (catchable exceptions, no VmError::Unimplemented).
+  "built-ins/String/prototype/toString/non-generic.js",
+  "built-ins/Number/prototype/valueOf/S15.7.4.4_A2_T03.js",
+  "built-ins/Boolean/prototype/valueOf/S15.6.4.3_A2_T4.js",
+  "built-ins/Error/prototype/toString/invalid-receiver.js",
+  "built-ins/Array/length/S15.4.2.2_A2.2_T1.js",
 ]
 
 exclude = [

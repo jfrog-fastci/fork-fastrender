@@ -4,8 +4,8 @@
 //! intended to be used by built-ins so their algorithms remain spec-shaped.
 
 use crate::{
-  GcObject, GcString, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError, VmHost,
-  VmHostHooks,
+  GcObject, GcString, JsBigInt, PropertyDescriptorPatch, PropertyKey, Scope, Value, Vm, VmError,
+  VmHost, VmHostHooks,
 };
 use std::mem;
 
@@ -784,4 +784,118 @@ fn alloc_u64_decimal_string(scope: &mut Scope<'_>, mut n: u64) -> Result<GcStrin
   let s = std::str::from_utf8(&buf[i..])
     .map_err(|_| VmError::InvariantViolation("u64 decimal string conversion produced invalid utf-8"))?;
   scope.alloc_string(s)
+}
+
+/// `RequireObjectCoercible(argument)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-requireobjectcoercible>
+#[inline]
+pub fn require_object_coercible(value: Value) -> Result<Value, VmError> {
+  match value {
+    Value::Undefined | Value::Null => Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    )),
+    other => Ok(other),
+  }
+}
+
+fn get_internal_data_property(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  marker: &str,
+) -> Result<Option<Value>, VmError> {
+  // Root `obj` and the marker string while interning the marker symbol. This may allocate and GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let marker_s = scope.alloc_string(marker)?;
+  scope.push_root(Value::String(marker_s))?;
+
+  let marker_sym = scope.heap_mut().symbol_for(marker_s)?;
+  let marker_key = PropertyKey::from_symbol(marker_sym);
+
+  match scope.heap().object_get_own_data_property_value(obj, &marker_key) {
+    Ok(v) => Ok(v),
+    // If the user mutated the marker property into an accessor, treat it as "missing" so the
+    // caller can throw a TypeError.
+    Err(VmError::PropertyNotData) => Ok(None),
+    Err(e) => Err(e),
+  }
+}
+
+/// `thisStringValue(value)` (ECMA-262) for `String` builtins.
+///
+/// Spec: <https://tc39.es/ecma262/#sec-thisstringvalue>
+pub fn this_string_value(scope: &mut Scope<'_>, value: Value) -> Result<GcString, VmError> {
+  match value {
+    Value::String(s) => Ok(s),
+    Value::Object(obj) => match get_internal_data_property(scope, obj, "vm-js.internal.StringData")?
+    {
+      Some(Value::String(s)) => Ok(s),
+      _ => Err(VmError::TypeError(
+        "String.prototype.toString called on incompatible receiver",
+      )),
+    },
+    _ => Err(VmError::TypeError(
+      "String.prototype.toString called on incompatible receiver",
+    )),
+  }
+}
+
+/// `thisNumberValue(value)` (ECMA-262) for `Number` builtins.
+///
+/// Spec: <https://tc39.es/ecma262/#sec-thisnumbervalue>
+pub fn this_number_value(scope: &mut Scope<'_>, value: Value) -> Result<f64, VmError> {
+  match value {
+    Value::Number(n) => Ok(n),
+    Value::Object(obj) => match get_internal_data_property(scope, obj, "vm-js.internal.NumberData")?
+    {
+      Some(Value::Number(n)) => Ok(n),
+      _ => Err(VmError::TypeError(
+        "Number.prototype.valueOf called on incompatible receiver",
+      )),
+    },
+    _ => Err(VmError::TypeError(
+      "Number.prototype.valueOf called on incompatible receiver",
+    )),
+  }
+}
+
+/// `thisBooleanValue(value)` (ECMA-262) for `Boolean` builtins.
+///
+/// Spec: <https://tc39.es/ecma262/#sec-thisbooleanvalue>
+pub fn this_boolean_value(scope: &mut Scope<'_>, value: Value) -> Result<bool, VmError> {
+  match value {
+    Value::Bool(b) => Ok(b),
+    Value::Object(obj) => {
+      match get_internal_data_property(scope, obj, "vm-js.internal.BooleanData")? {
+        Some(Value::Bool(b)) => Ok(b),
+        _ => Err(VmError::TypeError(
+          "Boolean.prototype.valueOf called on incompatible receiver",
+        )),
+      }
+    }
+    _ => Err(VmError::TypeError(
+      "Boolean.prototype.valueOf called on incompatible receiver",
+    )),
+  }
+}
+
+/// `thisBigIntValue(value)` (ECMA-262) for `BigInt` builtins.
+///
+/// Spec: <https://tc39.es/ecma262/#sec-thisbigintvalue>
+pub fn this_bigint_value(scope: &mut Scope<'_>, value: Value) -> Result<JsBigInt, VmError> {
+  match value {
+    Value::BigInt(b) => Ok(b),
+    Value::Object(obj) => match get_internal_data_property(scope, obj, "vm-js.internal.BigIntData")?
+    {
+      Some(Value::BigInt(b)) => Ok(b),
+      _ => Err(VmError::TypeError(
+        "BigInt.prototype.valueOf called on incompatible receiver",
+      )),
+    },
+    _ => Err(VmError::TypeError(
+      "BigInt.prototype.valueOf called on incompatible receiver",
+    )),
+  }
 }

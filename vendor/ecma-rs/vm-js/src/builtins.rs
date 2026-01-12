@@ -318,7 +318,6 @@ fn slice_range_from_args(
   }
   Ok((start, finish))
 }
-
 fn set_function_job_realm_to_current(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1736,9 +1735,7 @@ pub fn object_set_prototype_of(
   // `RequireObjectCoercible(O)` and returns the original value unchanged when `O` is not an object.
   // This matches JS behaviour where attempting to set the prototype of a primitive is a no-op.
   let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  if matches!(obj_val, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError("Cannot convert undefined or null to object"));
-  }
+  let obj_val = crate::spec_ops::require_object_coercible(obj_val)?;
   let proto_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let proto = match proto_val {
     Value::Object(o) => Some(o),
@@ -19279,21 +19276,25 @@ pub fn error_prototype_to_string(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-error.prototype.tostring
   //
-  // 1. Let O be ? ToObject(this value).
-  // 2. Let name be ? Get(O, "name").
-  // 3. If name is undefined, set name to "Error".
-  // 4. Else, set name to ? ToString(name).
-  // 5. Let msg be ? Get(O, "message").
-  // 6. If msg is undefined, set msg to the empty String.
-  // 7. Else, set msg to ? ToString(msg).
-  // 8. If name is the empty String, return msg.
-  // 9. If msg is the empty String, return name.
-  // 10. Return the string-concatenation of name, ": ", and msg.
-  let mut scope = scope.reborrow();
+  // 1. Let O be this value.
+  // 2. If Type(O) is not Object, throw a TypeError exception.
+  // 3. Let name be ? Get(O, "name").
+  // 4. If name is undefined, set name to "Error".
+  // 5. Else, set name to ? ToString(name).
+  // 6. Let msg be ? Get(O, "message").
+  // 7. If msg is undefined, set msg to the empty String.
+  // 8. Else, set msg to ? ToString(msg).
+  // 9. If name is the empty String, return msg.
+  // 10. If msg is the empty String, return name.
+  // 11. Return the string-concatenation of name, ": ", and msg.
+  let Value::Object(o) = this else {
+    return Err(VmError::TypeError(
+      "Error.prototype.toString called on non-object",
+    ));
+  };
 
-  let o = scope.to_object(vm, host, hooks, this)?;
+  let mut scope = scope.reborrow();
   let receiver = Value::Object(o);
-  // Root `O` while performing property gets and allocating output strings.
   scope.push_root(receiver)?;
 
   let name_key = string_key(&mut scope, "name")?;
@@ -19312,7 +19313,6 @@ pub fn error_prototype_to_string(
   // `Get(O, "message")`: must be Proxy-aware and invoke accessors.
   let message_value = scope.get_with_host_and_hooks(vm, host, hooks, o, message_key, receiver)?;
   scope.push_root(message_value)?;
-
   let message = match message_value {
     Value::Undefined => scope.alloc_string("")?,
     other => scope.to_string(vm, host, hooks, other)?,
