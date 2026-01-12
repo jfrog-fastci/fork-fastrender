@@ -459,6 +459,12 @@ impl Document {
 
       // DOM: notify mutation observers removes all transient registered observers for `observer`.
       Self::mutation_observer_cleanup_transient_registrations(nodes, &mut agent, observer, &node_list);
+      Self::mutation_observer_cleanup_transient_registrations(
+        nodes,
+        &mut agent,
+        observer,
+        &node_list,
+      );
 
       if !records.is_empty() {
         out.push((observer, records));

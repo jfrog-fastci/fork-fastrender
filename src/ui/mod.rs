@@ -121,7 +121,9 @@ pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, FrameReadyUpdate,
   FindInPageState, LatestFrameMeta, OpenSelectDropdownUpdate,
 };
-pub use global_history::{GlobalHistoryEntry, GlobalHistoryStore};
+pub use global_history::{
+  ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistoryStore, DEFAULT_GLOBAL_HISTORY_CAPACITY,
+};
 pub use history::{HistoryEntry, TabHistory};
 pub use visited::{VisitedUrlRecord, VisitedUrlStore};
 pub use zoom::{

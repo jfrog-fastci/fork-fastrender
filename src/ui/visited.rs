@@ -60,7 +60,12 @@ impl VisitedUrlStore {
     self.record_visit_at(url, title, SystemTime::now());
   }
 
-  fn record_visit_at(&mut self, url: String, title: Option<String>, visited_at: SystemTime) {
+  pub(crate) fn record_visit_at(
+    &mut self,
+    url: String,
+    title: Option<String>,
+    visited_at: SystemTime,
+  ) {
     if self.capacity == 0 {
       return;
     }
@@ -223,16 +228,8 @@ mod tests {
     let t2 = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
     let t3 = SystemTime::UNIX_EPOCH + Duration::from_secs(3);
 
-    store.record_visit_at(
-      "https://a.example/".to_string(),
-      Some("A".to_string()),
-      t1,
-    );
-    store.record_visit_at(
-      "https://b.example/".to_string(),
-      Some("B".to_string()),
-      t2,
-    );
+    store.record_visit_at("https://a.example/".to_string(), Some("A".to_string()), t1);
+    store.record_visit_at("https://b.example/".to_string(), Some("B".to_string()), t2);
 
     // Visiting an existing URL should dedup it and refresh the timestamp, without clobbering the
     // title when the new title is `None`.

@@ -3479,10 +3479,11 @@ fn window_scroll_to_native(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let (x, y) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
+
   let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
     return Ok(Value::Undefined);
   };
-  let (x, y) = parse_scroll_offsets_from_args(vm, scope, document, hooks, args)?;
 
   let desired = crate::geometry::Point::new(x, y);
   let Ok(clamped) = document.clamp_viewport_scroll_offset(desired) else {
@@ -3501,10 +3502,11 @@ fn window_scroll_by_native(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let (dx, dy) = parse_scroll_offsets_from_args(vm, scope, host, hooks, args)?;
+
   let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
     return Ok(Value::Undefined);
   };
-  let (dx, dy) = parse_scroll_offsets_from_args(vm, scope, document, hooks, args)?;
   let current = document.viewport_scroll_offset();
   let desired = crate::geometry::Point::new(
     sanitize_scroll_coord(current.x as f64 + dx as f64),

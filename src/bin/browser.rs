@@ -1844,6 +1844,7 @@ struct App {
   bookmarks_panel_open: bool,
   clear_browsing_data_dialog_open: bool,
   bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState,
+  clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
@@ -2219,6 +2220,7 @@ impl App {
       history_panel_open: false,
       bookmarks_panel_open: false,
       clear_browsing_data_dialog_open: false,
+      clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange::default(),
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
       tab_cancel: std::collections::HashMap::new(),
@@ -4245,36 +4247,7 @@ impl App {
         self.handle_chrome_actions(vec![ChromeAction::Reload]);
       }
       PageContextMenuAction::OpenLinkInNewTab(url) => {
-        use fastrender::ui::RepaintReason;
-        use fastrender::ui::UiToWorker;
-
-        session_dirty = true;
-        let tab_id = fastrender::ui::TabId::new();
-        let tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
-        let cancel = tab_state.cancel.clone();
-        self.tab_cancel.insert(tab_id, cancel.clone());
-
-        self.browser_state.push_tab(tab_state, true);
-        self.browser_state.chrome.address_bar_text = url.clone();
-        // Opening a context-menu link in a new tab should focus the page (similar to clicking it).
-        self.page_has_focus = true;
-        self.viewport_cache_tab = None;
-        self.pointer_captured = false;
-        self.captured_button = fastrender::ui::PointerButton::None;
-        self.cursor_in_page = false;
-        self.hover_sync_pending = true;
-        self.pending_pointer_move = None;
-
-        self.send_worker_msg(UiToWorker::CreateTab {
-          tab_id,
-          initial_url: Some(url),
-          cancel,
-        });
-        self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
-        self.send_worker_msg(UiToWorker::RequestRepaint {
-          tab_id,
-          reason: RepaintReason::Explicit,
-        });
+        session_dirty |= self.open_url_in_new_tab(url);
       }
       action @ (PageContextMenuAction::BookmarkLink(_)
       | PageContextMenuAction::BookmarkPage(_)
@@ -4767,7 +4740,10 @@ impl App {
         true
       }
       Some(ProfileShortcutAction::ClearHistory) => {
-        self.clear_history();
+        // Match canonical browser UX: Ctrl/Cmd+Shift+Delete opens a "Clear browsing data" dialog
+        // rather than immediately wiping data.
+        self.clear_browsing_data_range = fastrender::ui::ClearBrowsingDataRange::default();
+        self.handle_chrome_actions(vec![ChromeAction::OpenClearBrowsingDataDialog]);
         true
       }
       None => false,
@@ -4812,10 +4788,61 @@ impl App {
     self.sync_about_newtab_bookmarks_snapshot();
   }
 
-  fn clear_history(&mut self) {
-    self.browser_state.clear_history();
-    fastrender::ui::about_pages::set_about_snapshot_from_stores(
-      &self.bookmarks,
+  fn format_history_timestamp_ms(visited_at_ms: u64) -> Option<String> {
+    use chrono::{DateTime, Local, Utc};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let time = UNIX_EPOCH.checked_add(Duration::from_millis(visited_at_ms))?;
+    let utc: DateTime<Utc> = time.into();
+    Some(
+      utc
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M")
+        .to_string(),
+    )
+  }
+
+  /// Open `url` in a new tab and focus the page (matching the expected "open in new tab" UX).
+  fn open_url_in_new_tab(&mut self, url: String) -> bool {
+    use fastrender::ui::RepaintReason;
+    use fastrender::ui::UiToWorker;
+
+    let tab_id = fastrender::ui::TabId::new();
+    let tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
+    let cancel = tab_state.cancel.clone();
+    self.tab_cancel.insert(tab_id, cancel.clone());
+
+    self.browser_state.push_tab(tab_state, true);
+    self.browser_state.chrome.address_bar_text = url.clone();
+    self.page_has_focus = true;
+    self.viewport_cache_tab = None;
+    self.pointer_captured = false;
+    self.captured_button = fastrender::ui::PointerButton::None;
+    self.cursor_in_page = false;
+    self.hover_sync_pending = true;
+    self.pending_pointer_move = None;
+
+    self.send_worker_msg(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: Some(url),
+      cancel,
+    });
+    self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+    self.send_worker_msg(UiToWorker::RequestRepaint {
+      tab_id,
+      reason: RepaintReason::Explicit,
+    });
+    self.window.request_redraw();
+    true
+  }
+
+  fn sync_history_after_mutation(&mut self, flush: bool) {
+    // Keep omnibox history suggestions consistent with the canonical global store.
+    self.browser_state.visited.clear();
+    self.browser_state.seed_visited_from_history();
+    self.browser_state.chrome.omnibox.reset();
+
+    fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
       &self.browser_state.history,
     );
     self.window.request_redraw();
@@ -4828,11 +4855,28 @@ impl App {
       self.browser_state.history.clone(),
     ));
 
-    // Force an immediate write of the cleared state, but don't block the UI thread waiting for the
-    // ack.
-    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-    drop(done_rx);
-    let _ = autosave.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
+    if flush {
+      // Force an immediate write of the cleared state, but don't block the UI thread waiting for
+      // the ack.
+      let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+      drop(done_rx);
+      let _ = autosave.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
+    }
+  }
+
+  fn delete_history_entry_at(&mut self, index: usize) {
+    if self.browser_state.history.remove_at(index).is_some() {
+      self.sync_history_after_mutation(false);
+    }
+  }
+
+  fn clear_browsing_data(&mut self, range: fastrender::ui::ClearBrowsingDataRange) {
+    self.browser_state.history.clear_range(range);
+    self.sync_history_after_mutation(true);
+  }
+
+  fn clear_history(&mut self) {
+    self.clear_browsing_data(fastrender::ui::ClearBrowsingDataRange::AllTime);
   }
 
   fn cancel_pointer_capture(&mut self) {
@@ -6003,6 +6047,8 @@ impl App {
         }
         ChromeAction::OpenClearBrowsingDataDialog => {
           self.clear_browsing_data_dialog_open = true;
+          // Default to a "safe" time range when the dialog is opened (including from shortcuts).
+          self.clear_browsing_data_range = fastrender::ui::ClearBrowsingDataRange::default();
           self.window.request_redraw();
         }
         ChromeAction::NewTab => {
@@ -6418,7 +6464,8 @@ impl App {
     let mut panel_actions: Vec<fastrender::ui::ChromeAction> = Vec::new();
     let mut close_bookmarks_panel = false;
     let mut close_history_panel = false;
-    let mut open_clear_browsing_data_dialog = false;
+    let mut history_open_in_new_tab: Option<String> = None;
+    let mut history_delete_index: Option<usize> = None;
 
     if self.bookmarks_panel_open {
       let output = fastrender::ui::bookmarks_manager::bookmarks_manager_side_panel(
@@ -6471,86 +6518,81 @@ impl App {
             });
           });
 
-          ui.separator();
           ui.horizontal(|ui| {
-            ui.add(
+            let search = ui.add(
               egui::TextEdit::singleline(&mut self.browser_state.chrome.history_search_text)
                 .hint_text("Search history…")
                 .desired_width(f32::INFINITY),
             );
+            search.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search history")
+            });
             if ui.button("Clear browsing data…").clicked() {
-              open_clear_browsing_data_dialog = true;
+              panel_actions.push(fastrender::ui::ChromeAction::OpenClearBrowsingDataDialog);
             }
           });
 
           ui.separator();
 
-          if self.browser_state.history.entries.is_empty() {
-            ui.label("No history.");
+          const HISTORY_PANEL_LIMIT: usize = 500;
+          let query = self.browser_state.chrome.history_search_text.trim();
+          let results: Vec<(usize, &fastrender::ui::GlobalHistoryEntry)> = if query.is_empty() {
+            self
+              .browser_state
+              .history
+              .iter_recent()
+              .take(HISTORY_PANEL_LIMIT)
+              .collect()
+          } else {
+            self.browser_state.history.search(query, HISTORY_PANEL_LIMIT)
+          };
+
+          if results.is_empty() {
+            if self.browser_state.history.entries.is_empty() {
+              ui.label("No history.");
+            } else {
+              ui.label("No results.");
+            }
             return;
           }
-
-          let query = self
-            .browser_state
-            .chrome
-            .history_search_text
-            .trim()
-            .to_ascii_lowercase();
-          let mut shown = 0usize;
 
           egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-              for entry in self.browser_state.history.entries.iter().rev() {
-                if shown >= 200 {
-                  break;
-                }
-
-                if !query.is_empty() {
-                  let title = entry.title.as_deref().unwrap_or("");
-                  if !entry.url.to_ascii_lowercase().contains(&query)
-                    && !title.to_ascii_lowercase().contains(&query)
-                  {
-                    continue;
-                  }
-                }
-                shown += 1;
-
-                let label = entry
+              for (idx, entry) in results {
+                let title = entry
                   .title
                   .as_deref()
-                  .filter(|t| !t.trim().is_empty())
+                  .map(str::trim)
+                  .filter(|t| !t.is_empty())
                   .unwrap_or(entry.url.as_str());
+                let url = &entry.url;
 
-                let ts = entry.visited_at_ms.and_then(|ms| {
-                  let ms = i64::try_from(ms).ok()?;
-                  chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                ui.group(|ui| {
+                  ui.label(egui::RichText::new(title).strong());
+                  ui.label(egui::RichText::new(url).small());
+
+                  let ts = entry
+                    .visited_at_ms
+                    .and_then(Self::format_history_timestamp_ms)
+                    .unwrap_or_else(|| "Unknown time".to_string());
+                  ui.label(egui::RichText::new(ts).small());
+
+                  ui.horizontal(|ui| {
+                    if ui.small_button("Open").clicked() {
+                      panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(url.clone()));
+                    }
+                    if ui.small_button("New tab").clicked() {
+                      history_open_in_new_tab = Some(url.clone());
+                    }
+                    if ui.small_button("Delete").clicked() {
+                      history_delete_index = Some(idx);
+                    }
+                  });
                 });
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                  if let Some(ts) = ts.as_deref() {
-                    ui.add(
-                      egui::Label::new(
-                        egui::RichText::new(ts).small().color(ui.visuals().weak_text_color()),
-                      )
-                      .wrap(false),
-                    );
-                  }
-
-                  let resp = ui
-                    .add_sized([ui.available_width(), 0.0], egui::Button::new(label))
-                    .on_hover_text(&entry.url);
-                  if resp.clicked() {
-                    panel_actions.push(fastrender::ui::ChromeAction::NavigateTo(entry.url.clone()));
-                  }
-                });
+                ui.add_space(8.0);
               }
             });
-
-          if !query.is_empty() && shown == 0 {
-            ui.label("No matching history entries.");
-          }
         });
     }
 
@@ -6563,11 +6605,14 @@ impl App {
       self.history_panel_open = false;
       self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus;
     }
-    if open_clear_browsing_data_dialog {
-      self.clear_browsing_data_dialog_open = true;
-    }
     if !panel_actions.is_empty() {
-      self.handle_chrome_actions(panel_actions);
+      session_dirty |= self.handle_chrome_actions(panel_actions);
+    }
+    if let Some(url) = history_open_in_new_tab.take() {
+      session_dirty |= self.open_url_in_new_tab(url);
+    }
+    if let Some(index) = history_delete_index.take() {
+      self.delete_history_entry_at(index);
     }
 
     if self.clear_browsing_data_dialog_open {
@@ -6584,8 +6629,34 @@ impl App {
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .open(&mut open)
         .show(&ctx, |ui| {
-          ui.label("Clear browsing history for this profile?");
-          ui.add_space(8.0);
+          use fastrender::ui::ClearBrowsingDataRange;
+
+          ui.label("Clear browsing data for this profile.");
+          ui.add_space(10.0);
+
+          ui.label("Time range:");
+          ui.radio_value(
+            &mut self.clear_browsing_data_range,
+            ClearBrowsingDataRange::LastHour,
+            ClearBrowsingDataRange::LastHour.label(),
+          );
+          ui.radio_value(
+            &mut self.clear_browsing_data_range,
+            ClearBrowsingDataRange::Last24Hours,
+            ClearBrowsingDataRange::Last24Hours.label(),
+          );
+          ui.radio_value(
+            &mut self.clear_browsing_data_range,
+            ClearBrowsingDataRange::Last7Days,
+            ClearBrowsingDataRange::Last7Days.label(),
+          );
+          ui.radio_value(
+            &mut self.clear_browsing_data_range,
+            ClearBrowsingDataRange::AllTime,
+            ClearBrowsingDataRange::AllTime.label(),
+          );
+
+          ui.add_space(10.0);
           ui.label("This will clear the History panel and Recently visited suggestions.");
           ui.add_space(12.0);
           ui.horizontal(|ui| {
@@ -6604,7 +6675,7 @@ impl App {
       }
       self.clear_browsing_data_dialog_open = open;
       if clear_now {
-        self.clear_history();
+        self.clear_browsing_data(self.clear_browsing_data_range);
       }
     }
 
