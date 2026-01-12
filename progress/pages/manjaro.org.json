@@ -14,7 +14,7 @@
     "layout": 15.03846866197183,
     "paint": 32.08206647887324
   },
-  "notes": "Remaining pixel diffs are scattered and mostly from minor OKLCH (CSS Color 4) conversion precision/rounding and text rasterization differences (hinting/subpixel-AA) vs Chrome; overall layout and imagery match closely, so treat this guardrail as \"good\".",
+  "notes": "Scattered pixel diffs are mostly minor OKLCH (CSS Color 4) rounding and text rasterization (hinting/subpixel-AA) differences vs Chrome; layout and imagery match closely. Treat as \"good\".",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 89599,
