@@ -1,7 +1,7 @@
 //! JavaScript host integration utilities.
 //!
 //! See [`docs/html_script_processing.md`](../../docs/html_script_processing.md) for the spec-mapped
-//! design of HTML `<script>` processing + parser integration (classic scripts first).
+//! design of HTML `<script>` processing + parser integration (classic + module + import map).
 //!
 //! # Module layout
 //!
@@ -50,26 +50,21 @@ pub mod dom_integration;
 pub mod event_loop;
 pub mod fetch;
 pub mod host_document;
-pub mod html_classic_scripts;
-pub mod html_script_pipeline;
-pub mod html_script_processing;
-pub mod html_script_scheduler;
 pub mod html_scripting;
+pub mod html_script_pipeline;
+pub mod html_script_scheduler;
 pub mod import_maps;
 pub mod module_graph_loader;
 pub mod options;
 pub mod orchestrator;
 pub mod page_load;
+pub mod script_blocking_stylesheets;
 pub mod promise;
 pub mod realm_module_loader;
-pub mod script_blocking_stylesheets;
 pub mod script_encoding;
-pub mod script_loader_resource;
-pub mod script_scheduler;
 pub(crate) mod sri;
 pub mod streaming;
 pub mod streaming_dom2;
-pub mod streaming_pipeline;
 pub mod time;
 pub mod url;
 pub mod url_resolve;
@@ -220,10 +215,6 @@ pub use fetch::{
   fetch, FetchInit, HeadersInit, JsHeaders, JsRequest, JsResponse, RequestInit, WebFetchHost,
 };
 pub use host_document::{DocumentHostState, HostDocumentState};
-pub use html_classic_scripts::{
-  parse_and_run_classic_scripts, ClassicScriptExecutor, ClassicScriptFetcher,
-  ResourceFetcherClassicScriptFetcher,
-};
 pub use html_script_scheduler::{
   HtmlDiscoveredScript, HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction,
   HtmlScriptWork,
@@ -248,11 +239,6 @@ pub use promise::{JsPromise, JsPromiseResolver, JsPromiseValue};
 pub use realm_module_loader::{ModuleKey, ModuleLoader, ModuleLoaderHandle};
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
-pub use script_loader_resource::ResourceScriptLoader;
-pub use script_scheduler::{
-  ClassicScriptScheduler, DiscoveredScript, ScriptElementEvent, ScriptEventDispatcher,
-  ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler, ScriptSchedulerAction,
-};
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_bindings::{install_url_bindings, install_url_bindings_with_limits};

@@ -57,7 +57,7 @@ FastRender currently exposes **two** “tab-like” host containers:
 
 - `fastrender::BrowserTab` (implementation: `src/api/browser_tab.rs`)
   - owns a live `dom2` document via `BrowserDocumentDom2`,
-  - owns an HTML-shaped `EventLoop` plus a `<script>` scheduler (`ScriptScheduler`),
+  - owns an HTML-shaped `EventLoop` plus an HTML-like `<script>` scheduler (`HtmlScriptScheduler`),
   - executes classic + module scripts through a host-supplied `BrowserTabJsExecutor` trait (engine-agnostic).
 
 - `fastrender::api::BrowserDocumentJs` (implementation: `src/api/browser_document_js.rs`)
@@ -142,9 +142,12 @@ Key modules:
   - HTML-shaped `EventLoop`
   - `RunLimits` (max tasks/microtasks/wall-time) + `QueueLimits` (caps queued work)
   - integrates with renderer cancellation via `render_control::check_active(...)`
-- `src/js/script_scheduler.rs`
-  - `ScriptScheduler` → produces `ScriptSchedulerAction` values (start fetch / block parser / execute now / queue task)
-  - `ClassicScriptScheduler` helper that runs classic scripts against an `EventLoop` through a tiny host trait boundary
+- `src/js/html_script_scheduler.rs`
+  - `HtmlScriptScheduler` → produces `HtmlScriptSchedulerAction` values (start classic fetch / start module graph fetch /
+    block parser / execute now / queue task / queue script event task)
+  - Supports classic scripts, module scripts, and import maps (host integration via `BrowserTabHost` and `HtmlScriptPipeline`).
+- `src/js/html_script_pipeline.rs`
+  - test harness / lightweight orchestrator that connects `StreamingHtmlParser` yields to `HtmlScriptScheduler` actions
 - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`
   - parse-time helpers for building `ScriptElementSpec` (base URL timing + attrs + inline text)
 - `src/js/import_maps/`
@@ -264,7 +267,7 @@ FastRender’s implementation scaffolding is split into clean boundaries:
 
 - streaming parser driver: `src/html/pausable_html5ever.rs`
 - base URL timing: `src/html/base_url_tracker.rs`
-- scheduler actions: `src/js/script_scheduler.rs`
+- scheduler actions: `src/js/html_script_scheduler.rs`
 - event loop: `src/js/event_loop.rs`
 
 Details and spec anchors: [`docs/html_script_processing.md`](html_script_processing.md).

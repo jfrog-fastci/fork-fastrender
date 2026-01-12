@@ -6,8 +6,8 @@
 //! - [`super::event_loop::EventLoop`],
 //! - and [`super::orchestrator::ScriptOrchestrator`] for `Document.currentScript` bookkeeping.
 //!
-//! It is intentionally separate from [`super::streaming_pipeline`] (classic-only) so we can migrate
-//! the engine in stages.
+//! This replaces the legacy classic-only streaming pipeline (now removed) so the engine only has
+//! one HTML `<script>` integration harness.
 
 use crate::dom2::{Document, NodeId};
 use crate::error::{Error, Result};

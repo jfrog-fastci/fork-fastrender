@@ -2346,7 +2346,10 @@ mod tests {
       JsExecutionOptions::default(),
     )?;
 
-    let script_text = "Object.create(null, {});";
+    // Pick a `vm-js` feature that is intentionally unimplemented so the executor records a
+    // `VmError::Unimplemented` telemetry entry. Class fields are parsed but rejected during
+    // evaluation.
+    let script_text = "class C { x = 1; }";
     let spec = ScriptElementSpec {
       base_url: Some("https://example.com/doc.html".to_string()),
       src: None,
@@ -2368,7 +2371,7 @@ mod tests {
 
     let _err = executor
       .execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)
-      .expect_err("expected Object.create propertiesObject to be unimplemented");
+      .expect_err("expected class fields to be unimplemented");
 
     let snapshot = diag.into_inner();
     assert!(
@@ -2383,8 +2386,8 @@ mod tests {
     assert!(
       js.top_unimplemented
         .iter()
-        .any(|entry| entry.message == "Object.create propertiesObject"),
-      "expected Object.create unimplemented reason in telemetry, got {js:?}"
+        .any(|entry| entry.message == "class fields"),
+      "expected class fields unimplemented reason in telemetry, got {js:?}"
     );
     Ok(())
   }

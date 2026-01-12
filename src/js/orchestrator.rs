@@ -996,8 +996,8 @@ mod quickjs_current_script_tests {
 
   use crate::dom2::{Document, NodeId};
   use crate::js::{
-    EventLoop, RunLimits, ScriptElementSpec, ScriptId, ScriptScheduler, ScriptSchedulerAction,
-    ScriptType, TaskSource,
+    EventLoop, HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork,
+    RunLimits, ScriptElementSpec, ScriptType, TaskSource,
   };
   use crate::{Error, Result};
   use rquickjs::{Context, Ctx, Object, Runtime, Value};
@@ -1333,46 +1333,53 @@ mod quickjs_current_script_tests {
 
     let mut host = JsHost::new(dom, &[a, b, c, d])?;
     let mut event_loop = EventLoop::<JsHost>::new();
-    let mut scheduler = ScriptScheduler::<NodeId>::new();
+    let mut scheduler = HtmlScriptScheduler::<NodeId>::new();
 
-    let mut blocked_parser_on: Option<ScriptId> = None;
+    let mut blocked_parser_on: Option<HtmlScriptId> = None;
 
     let mut apply_actions =
-      |blocked_parser_on: &mut Option<ScriptId>,
+      |blocked_parser_on: &mut Option<HtmlScriptId>,
        host: &mut JsHost,
        event_loop: &mut EventLoop<JsHost>,
-       actions: Vec<ScriptSchedulerAction<NodeId>>|
+       actions: Vec<HtmlScriptSchedulerAction<NodeId>>|
        -> Result<()> {
         for action in actions {
           match action {
-            ScriptSchedulerAction::StartFetch { .. } => {}
-            ScriptSchedulerAction::StartModuleGraphFetch { .. } => {}
-            ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
+            HtmlScriptSchedulerAction::StartClassicFetch { .. } => {}
+            HtmlScriptSchedulerAction::StartModuleGraphFetch { .. } => {}
+            HtmlScriptSchedulerAction::StartInlineModuleGraphFetch { .. } => {}
+            HtmlScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
               *blocked_parser_on = Some(script_id);
             }
-            ScriptSchedulerAction::ExecuteNow {
+            HtmlScriptSchedulerAction::ExecuteNow {
               script_id,
               node_id,
-              source_text,
+              work,
             } => {
-              host.set_script_source(node_id, &source_text);
-              host.run_script_element(node_id, ScriptType::Classic)?;
-              event_loop.perform_microtask_checkpoint(host)?;
-              if *blocked_parser_on == Some(script_id) {
-                *blocked_parser_on = None;
+              if let HtmlScriptWork::Classic { source_text } = work {
+                let Some(source_text) = source_text else {
+                  continue;
+                };
+                host.set_script_source(node_id, &source_text);
+                host.run_script_element(node_id, ScriptType::Classic)?;
+                event_loop.perform_microtask_checkpoint(host)?;
+                if *blocked_parser_on == Some(script_id) {
+                  *blocked_parser_on = None;
+                }
               }
             }
-            ScriptSchedulerAction::QueueTask {
-              script_id: _,
-              node_id,
-              source_text,
-            } => {
-              host.set_script_source(node_id, &source_text);
-              event_loop.queue_task(TaskSource::Script, move |host, _event_loop| {
-                host.run_script_element(node_id, ScriptType::Classic)
-              })?;
+            HtmlScriptSchedulerAction::QueueTask { node_id, work, .. } => {
+              if let HtmlScriptWork::Classic { source_text } = work {
+                let Some(source_text) = source_text else {
+                  continue;
+                };
+                event_loop.queue_task(TaskSource::Script, move |host, _event_loop| {
+                  host.set_script_source(node_id, &source_text);
+                  host.run_script_element(node_id, ScriptType::Classic)
+                })?;
+              }
             }
-            ScriptSchedulerAction::QueueScriptEventTask { .. } => {
+            HtmlScriptSchedulerAction::QueueScriptEventTask { .. } => {
               // These tasks fire `load`/`error` events at `<script>` elements as required by the HTML
               // script processing model. The `currentScript` tests don't model DOM events, so we can
               // safely ignore them here.
@@ -1415,7 +1422,10 @@ mod quickjs_current_script_tests {
     assert_eq!(blocked_parser_on, Some(a_id));
 
     // Fetch completes; the blocking script executes synchronously and unblocks the parser.
-    let actions = scheduler.fetch_completed(a_id, "log.push(document.currentScript);".to_string())?;
+    let actions = scheduler.classic_fetch_completed(
+      a_id,
+      "log.push(document.currentScript);".to_string(),
+    )?;
     apply_actions(&mut blocked_parser_on, &mut host, &mut event_loop, actions)?;
     assert_eq!(blocked_parser_on, None);
 
@@ -1523,13 +1533,13 @@ mod quickjs_current_script_tests {
       &mut blocked_parser_on,
       &mut host,
       &mut event_loop,
-      scheduler.fetch_completed(c_id, "log.push(document.currentScript);".to_string())?,
+      scheduler.classic_fetch_completed(c_id, "log.push(document.currentScript);".to_string())?,
     )?;
     apply_actions(
       &mut blocked_parser_on,
       &mut host,
       &mut event_loop,
-      scheduler.fetch_completed(d_id, "log.push(document.currentScript);".to_string())?,
+      scheduler.classic_fetch_completed(d_id, "log.push(document.currentScript);".to_string())?,
     )?;
 
     // Drain event loop tasks (async/defer scripts run here).

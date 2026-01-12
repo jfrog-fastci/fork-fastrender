@@ -1,4 +1,4 @@
-# HTML `<script>` processing + parser integration (classic scripts first)
+# HTML `<script>` processing + parser integration (classic + module + import maps)
 
 ## Purpose
 FastRender’s JavaScript support needs to follow the WHATWG HTML **script processing model** so that:
@@ -9,8 +9,8 @@ FastRender’s JavaScript support needs to follow the WHATWG HTML **script proce
 4. Relative `src` URLs resolve against the **base URL in effect at script preparation time**.
 
 This document is a spec-mapped design for that integration. It is written to prevent future
-implementers from having to “rediscover” scattered HTML Standard details when extending support to
-module scripts and end-to-end import map integration later.
+implementers from having to “rediscover” scattered HTML Standard details when extending and refining
+support for module scripts and end-to-end import map integration.
 
 ## Status in this repository (reality check)
 FastRender has the **core building blocks** for a spec-shaped, streaming, parse-time classic
@@ -55,15 +55,17 @@ What exists today (in-tree):
     - helper: `resolve_imports_match(...)` (`resolve.rs`) — implements the spec’s "resolve an imports match"
       algorithm and throws `ImportMapError` for blocked cases
     - Import maps are integrated into:
-      - `BrowserTab`'s streaming `<script>` pipeline (via `ScriptScheduler` +
+      - `BrowserTab`'s streaming `<script>` pipeline (via `HtmlScriptScheduler` +
         `BrowserTabJsExecutor::execute_import_map_script`), and
       - tooling module execution (`fetch_and_render --js`, `VmJsModuleLoader` in
         `src/js/vmjs/module_loader.rs`).
   - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
 - **Script scheduling + event loop:**
-  - `src/js/script_scheduler.rs`: `<script>` ordering (parser-blocking vs `async` vs `defer`),
-    including an action-based scheduler (`ScriptSchedulerAction`) plus a higher-level helper
-    (`ClassicScriptScheduler`).
+  - `src/js/html_script_scheduler.rs`: HTML `<script>` ordering (parser-blocking vs `async` vs
+    `defer`, plus module scripts and import maps) implemented as an action-based scheduler
+    (`HtmlScriptSchedulerAction`).
+  - `src/js/html_script_pipeline.rs`: lightweight orchestrator that connects `StreamingHtmlParser`
+    yields to `HtmlScriptScheduler` actions (used by unit tests and some harnesses).
   - `src/js/event_loop.rs`: task + microtask queues, explicit microtask checkpoints, timers, run
     limits (`RunLimits`), and queue caps (`QueueLimits`).
   - `src/js/script_blocking_stylesheets.rs`: `ScriptBlockingStyleSheetSet` used by `BrowserTab` to
@@ -75,9 +77,9 @@ What exists today (in-tree):
     state like `document.currentScript` via `CurrentScriptStateHandle`.
 - **JS-enabled host container (early embedding surface):**
   - `src/api/browser_tab.rs`: `BrowserTab` couples `BrowserDocumentDom2` + `EventLoop` +
-    `ScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. For HTML-string loads
-    and URL navigations, it drives `StreamingHtmlParser` so parser-inserted scripts execute during
-    parsing.
+    `HtmlScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. For HTML-string
+    loads and URL navigations, it drives `StreamingHtmlParser` so parser-inserted scripts execute
+    during parsing.
   - `src/api/browser_document_js.rs`: `BrowserDocumentJs` couples a live `dom2` document, a JS
     runtime adapter, an HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
 - **Mutable DOM for bindings (`dom2`):**
@@ -106,8 +108,9 @@ Some end-to-end scheduling/currentScript coverage lives in integration tests (ex
 
 ---
 
-## What we implement in the classic-script milestone (in-scope)
-This is the **v1** execution model that should be implemented before modules/import maps.
+## What we implement (core behaviors)
+This section describes the core script execution model implemented by `HtmlScriptScheduler` and the
+`BrowserTab` streaming pipeline.
 
 ### 1) Parser-inserted classic scripts
 - `<script>` elements encountered by the HTML parser are treated as **parser-inserted**.
@@ -304,7 +307,8 @@ resolution timing.
   at preparation time.
 
 ### 4) Script scheduling (state machine + external fetch integration)
-**Responsibility:** implement the classic-script subset of the HTML processing model:
+**Responsibility:** implement HTML’s script scheduling model for classic scripts, module scripts, and
+import maps:
 
 - classify scripts (classic/module/importmap/unknown) and ignore non-executable types,
 - resolve `src` against the base URL *at preparation time*,
@@ -312,39 +316,31 @@ resolution timing.
 - decide whether parsing must block, or whether execution is deferred/async,
 - enqueue script execution into the event loop and run microtask checkpoints afterward.
 
-**Home:** `src/js/script_scheduler.rs`.
+**Home:** `src/js/html_script_scheduler.rs` (`HtmlScriptScheduler`).
 
-This module contains two layers:
+This scheduler is intentionally action-based so it can be driven by a streaming parser integration
+that needs explicit "block parser" signals.
 
-- **Action-based state machine:** `ScriptScheduler<NodeId>` returning `ScriptSchedulerAction` values.
-  This is designed for a streaming parser driver that needs explicit "block parser" signals.
-- **Host-integrated helper:** `ClassicScriptScheduler<Host>` which executes scripts against an
-  `EventLoop` via a `ScriptLoader`/`ScriptExecutor` trait boundary (useful for unit tests and early
-  integration).
+**Orchestration helpers:**
+
+- `src/js/html_script_pipeline.rs`: lightweight harness/orchestrator used by unit tests.
+- `src/api/browser_tab.rs`: production “tab” integration (streaming parsing + script scheduling +
+  DOM mutation + rendering).
 
 **Inputs:**
 
-- script element node id (from `dom2` TreeSink) and accessors for its attributes/text,
-- current base URL (from `BaseUrlTracker`),
-- a fetch interface (initially `crate::resource::ResourceFetcher` in `src/resource.rs`).
+- `ScriptElementSpec` snapshots built at parse time (or dynamic insertion time),
+- current base URL (from `BaseUrlTracker` / streaming parser state),
+- a fetch interface (host-provided via action handling).
 
-**Outputs (for the action-based scheduler):**
+**Outputs (scheduler actions):**
 
-- “block parser until executed” signals for the streaming parser driver (as an action),
-- tasks queued into `EventLoop` for async/defer script execution (as an action).
-
-**State machine sketch (classic scripts only; action-based scheduler):**
-
-`src/js/script_scheduler.rs::ScriptScheduler` tracks:
-
-- `scripts: HashMap<ScriptId, ExternalScriptEntry<NodeId>>` for external scripts (blocking/async/defer)
-  and their fetch/execution readiness
-- `defer_queue: Vec<ScriptId>` + `next_defer_to_queue: usize` to preserve document order for deferred
-  scripts
-- `parsing_completed: bool` to gate when deferred scripts become eligible to run
-
-Parser blocking is represented explicitly via `ScriptSchedulerAction::BlockParserUntilExecuted`
-(the orchestrator decides when to resume parsing).
+- `StartClassicFetch { ... }` for external classic scripts.
+- `StartModuleGraphFetch { ... }` / `StartInlineModuleGraphFetch { ... }` for module scripts.
+- `BlockParserUntilExecuted { ... }` for parser-blocking scripts.
+- `ExecuteNow { ... }` for synchronous script-boundary work.
+- `QueueTask { ... }` for async/defer/in-order execution tasks.
+- `QueueScriptEventTask { ... }` for `<script>` load/error event dispatch.
 
 ### 5) `EventLoop` + microtask checkpoint points
 **Responsibility:** provide HTML-style scheduling primitives:
@@ -380,13 +376,13 @@ boundaries explicit.
    - accumulated inline text content (if no `src`),
    - the current base URL from `BaseUrlTracker`.
 3. The parser driver feeds that spec into the action-based scheduler:
-   `ScriptScheduler::discovered_parser_script(spec, node_id, base_url_at_discovery)`.
-4. The scheduler returns a `DiscoveredScript { id, actions }`, where `actions` can include:
-   - `StartFetch { script_id, node_id, url }` (external script),
-   - `BlockParserUntilExecuted { script_id, node_id }` (parser-blocking external script),
-   - `ExecuteNow { script_id, node_id, source_text }` (inline scripts, or blocking externals after
-     fetch completion),
-   - `QueueTask { script_id, node_id, source_text }` (async/defer execution).
+   `HtmlScriptScheduler::discovered_parser_script(spec, node_id, base_url_at_discovery)`.
+4. The scheduler returns a `HtmlDiscoveredScript { id, actions }`, where `actions` can include:
+   - `StartClassicFetch { script_id, url, ... }` (external classic script),
+   - `StartModuleGraphFetch { ... }` / `StartInlineModuleGraphFetch { ... }` (module scripts),
+   - `BlockParserUntilExecuted { ... }` (parser-blocking script),
+   - `ExecuteNow { ... }` (synchronous boundary work like import maps),
+   - `QueueTask { ... }` (async/defer/in-order execution tasks).
 5. The orchestrator applies these actions:
    - starts fetches in the host networking layer,
    - pauses/resumes the parser as directed,
@@ -411,14 +407,14 @@ When it is time to run a script (via `ExecuteNow` or `QueueTask`):
 ### C) End of parsing
 When the streaming parser reaches end-of-input:
 
-1. Notify the scheduler (`ScriptScheduler::parsing_completed()`).
+1. Notify the scheduler (`HtmlScriptScheduler::parsing_completed()`).
 2. Apply any returned actions, typically queueing deferred scripts as tasks in document order.
 3. Then allow later lifecycle steps (DOMContentLoaded/readyState changes) to be scheduled (future).
 
 ---
 
-## Module scripts + import maps (milestone)
-This milestone extends the classic-script pipeline with spec-correct behavior for:
+## Module scripts + import maps
+FastRender’s scheduler/pipeline also implements key spec-correct behavior for:
 
 - module scripts (`<script type="module">`)
 - import maps (`<script type="importmap">`)
@@ -497,14 +493,14 @@ resolution:
     does not retroactively affect already-resolved modules* (rules that would impact them are
     ignored).
 
-### 6) Code map for the milestone (where this should live)
-No integrated module-script/import-map pipeline exists yet. When implementing it, keep the same
-boundaries as the classic-script pipeline:
+### 6) Code map (where this lives)
+The integrated module-script/import-map pipeline lives in:
 
 - **Streaming parser driver:** `src/html/streaming_parser.rs` (pause/resume at `</script>`)
 - **Base URL timing:** `src/html/base_url_tracker.rs` (`BaseUrlTracker`)
 - **Import maps algorithms:** `src/js/import_maps/` (parsing + state + merge/register + resolution; see
   [`docs/import_maps.md`](import_maps.md))
-- **Scheduler/orchestration:** likely a new or extended scheduler under `src/js/` that models HTML’s
-  scheduling lists/sets for classic + module + import map scripts and produces explicit actions for
-  the orchestrator/event loop.
+- **Scheduler/orchestration:**
+  - `src/js/html_script_scheduler.rs`
+  - `src/js/html_script_pipeline.rs` (test harness)
+  - `src/api/browser_tab.rs` (production “tab” integration)

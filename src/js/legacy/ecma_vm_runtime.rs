@@ -18,7 +18,6 @@ use vm_js::{
 use webidl_vm_js::{WebIdlBindingsHost, WebIdlBindingsHostSlot};
 
 use super::event_loop::{EventLoop, TimerId};
-use super::script_scheduler::ScriptExecutor;
 use super::vm_error_format;
 use super::ScriptElementSpec;
 
@@ -841,10 +840,10 @@ impl<State: WebIdlBindingsHost + 'static> VmJobContext for FastRenderJobContext<
     unsafe { (&mut *self.heap).remove_root(id) }
   }
 }
-// --- ScriptScheduler adapter ---
+// --- Script execution helpers ---
 
-impl<State: WebIdlBindingsHost + 'static> ScriptExecutor for EcmaVmRuntime<State> {
-  fn execute_classic_script(
+impl<State: WebIdlBindingsHost + 'static> EcmaVmRuntime<State> {
+  pub fn execute_classic_script(
     &mut self,
     script_text: &str,
     _spec: &ScriptElementSpec,
@@ -854,7 +853,7 @@ impl<State: WebIdlBindingsHost + 'static> ScriptExecutor for EcmaVmRuntime<State
     self.execute_script_text(script_text)
   }
 
-  fn execute_module_script(
+  pub fn execute_module_script(
     &mut self,
     script_text: &str,
     _spec: &ScriptElementSpec,

@@ -4,7 +4,7 @@
 //! fetch network resources directly. Instead, callers drive it with explicit discovery/completion
 //! events and perform the returned [`HtmlScriptSchedulerAction`] values.
 //!
-//! Compared to [`crate::js::script_scheduler::ScriptScheduler`], this scheduler models:
+//! Compared to the legacy classic-only `ScriptScheduler` (removed), this scheduler models:
 //! - classic scripts (parser-blocking vs `async` vs `defer`)
 //! - module scripts (`type="module"`, inline + external)
 //! - import maps (`type="importmap"`, inline-only)

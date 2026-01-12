@@ -3130,7 +3130,7 @@ impl BrowserTabHost {
 
     let Some(entry) = self.scripts.get(&script_id).cloned() else {
       return Err(Error::Other(format!(
-        "ScriptScheduler requested execution for unknown script_id={}",
+        "HtmlScriptScheduler requested execution for unknown script_id={}",
         script_id.as_u64()
       )));
     };
@@ -3571,7 +3571,7 @@ impl BrowserTabHost {
         .map(|entry| entry.node_id)
         .ok_or_else(|| {
           Error::Other(format!(
-            "ScriptScheduler requested fetch for unknown script_id={}",
+            "HtmlScriptScheduler requested fetch for unknown script_id={}",
             script_id.as_u64()
           ))
         })?;
