@@ -795,6 +795,20 @@ impl<'a> Cursor<'a> {
 /// avoids interpreting record location kinds so it can still succeed on some malformed inputs (e.g.
 /// unknown location kinds) in order to produce best-effort diagnostics.
 fn scan_record_offsets(bytes: &[u8]) -> Result<Vec<RecordMeta>, ParseError> {
+    // Keep this in sync with the parser's `MAX_STACKMAP_SECTION_BYTES` (see
+    // `stackmap/parser.rs`). The offset scanner is only for diagnostics and should not spend
+    // unbounded time or allocate unbounded memory on arbitrary input.
+    const MAX_STACKMAP_SECTION_BYTES: usize = 64 * 1024 * 1024;
+    if bytes.len() > MAX_STACKMAP_SECTION_BYTES {
+        return Err(ParseError {
+            offset: 0,
+            message: format!(
+                ".llvm_stackmaps section too large to scan safely: {} bytes (cap {MAX_STACKMAP_SECTION_BYTES})",
+                bytes.len()
+            ),
+        });
+    }
+
     const STACKMAP_VERSION: u8 = 3;
     const STACKMAP_V3_HEADER_SIZE: usize = 16;
     const FUNCTION_ENTRY_SIZE: usize = 24;
@@ -876,13 +890,40 @@ fn scan_record_offsets(bytes: &[u8]) -> Result<Vec<RecordMeta>, ParseError> {
                 message: "num_functions exceeds remaining bytes".to_string(),
             });
         }
-        let mut functions: Vec<(u64, u64)> = Vec::with_capacity(num_functions_usize);
+        let mut functions: Vec<(u64, u64)> = Vec::new();
+        functions
+            .try_reserve(num_functions_usize)
+            .map_err(|_| ParseError {
+                offset: off + c.pos(),
+                message: format!("functions table allocation failed (len={num_functions_usize})"),
+            })?;
         for _ in 0..num_functions_usize {
             let address = c.read_u64()?;
             let _stack_size = c.read_u64()?;
             let record_count = c.read_u64()?;
             functions.push((address, record_count));
         }
+
+        // Validate record_count sum matches the header and reserve metadata capacity.
+        let mut expected_records: u64 = 0;
+        for (_addr, rc) in &functions {
+            expected_records = expected_records.checked_add(*rc).ok_or_else(|| ParseError {
+                offset: off + c.pos(),
+                message: "record_count overflow while summing functions".to_string(),
+            })?;
+        }
+        if expected_records != u64::from(num_records) {
+            return Err(ParseError {
+                offset: off + c.pos(),
+                message: format!(
+                    "record count mismatch: functions expect {expected_records}, header says {num_records}"
+                ),
+            });
+        }
+        out.try_reserve(num_records_usize).map_err(|_| ParseError {
+            offset: off + c.pos(),
+            message: format!("record metadata allocation failed (len={num_records_usize})"),
+        })?;
 
         // Constants.
         if num_constants_usize > c.remaining() / CONSTANT_ENTRY_SIZE {
