@@ -180,6 +180,7 @@ fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down tab1");
   ui_tx
@@ -204,6 +205,7 @@ fn relative_url_and_subresource_resolution_is_isolated_per_tab() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down tab2");
   ui_tx

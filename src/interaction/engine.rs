@@ -2008,6 +2008,105 @@ fn textarea_value_for_editing(node: &DomNode) -> String {
   crate::dom::textarea_current_value(node)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordSelectionClass {
+  Word,
+  Whitespace,
+  Other,
+}
+
+fn word_selection_class(ch: char) -> WordSelectionClass {
+  use unicode_general_category::GeneralCategory;
+  if ch.is_alphanumeric()
+    || ch == '_'
+    || matches!(
+      unicode_general_category::get_general_category(ch),
+      GeneralCategory::NonspacingMark | GeneralCategory::SpacingMark | GeneralCategory::EnclosingMark
+    )
+  {
+    WordSelectionClass::Word
+  } else if ch.is_whitespace() {
+    WordSelectionClass::Whitespace
+  } else {
+    WordSelectionClass::Other
+  }
+}
+
+fn word_selection_range(text: &str, caret: usize) -> Option<(usize, usize)> {
+  use unicode_segmentation::UnicodeSegmentation;
+
+  let len = text.chars().count();
+  if len == 0 {
+    return None;
+  }
+  let caret = caret.min(len);
+  let hit = if caret == len { len - 1 } else { caret };
+
+  let mut idx = 0usize;
+  let mut run_start = 0usize;
+  let mut run_class: Option<WordSelectionClass> = None;
+
+  let mut target_class: Option<WordSelectionClass> = None;
+  let mut target_start = 0usize;
+
+  for segment in UnicodeSegmentation::split_word_bounds(text) {
+    for ch in segment.chars() {
+      let class = word_selection_class(ch);
+      if run_class != Some(class) {
+        if let Some(target) = target_class {
+          if run_class == Some(target) {
+            return Some((target_start, idx));
+          }
+        }
+        run_class = Some(class);
+        run_start = idx;
+      }
+
+      if idx == hit {
+        target_class = Some(class);
+        target_start = run_start;
+      }
+
+      idx += 1;
+    }
+  }
+
+  // Reached end of string; if we hit a target class, its run extends to the end.
+  target_class.map(|_| (target_start, len))
+}
+
+fn textarea_line_selection_range(text: &str, caret: usize) -> (usize, usize) {
+  let len = text.chars().count();
+  if len == 0 {
+    return (0, 0);
+  }
+  let caret = caret.min(len);
+
+  // Find the start of the line containing `caret` (exclusive of the previous '\n').
+  let mut start = 0usize;
+  let mut idx = 0usize;
+  for ch in text.chars() {
+    if idx >= caret {
+      break;
+    }
+    if ch == '\n' {
+      start = idx.saturating_add(1);
+    }
+    idx += 1;
+  }
+
+  // Find the end of the line (exclusive of the next '\n').
+  let mut end = len;
+  for (i, ch) in text.chars().enumerate().skip(start) {
+    if ch == '\n' {
+      end = i;
+      break;
+    }
+  }
+
+  (start.min(len), end.min(len))
+}
+
 fn inset_rect_uniform(rect: Rect, inset: f32) -> Rect {
   Rect::from_xywh(
     rect.x() + inset,
@@ -3694,6 +3793,31 @@ impl InteractionEngine {
     scroll: &ScrollState,
     viewport_point: Point,
   ) -> bool {
+    self.pointer_down_with_click_count(
+      dom,
+      box_tree,
+      fragment_tree,
+      scroll,
+      viewport_point,
+      PointerButton::Primary,
+      PointerModifiers::NONE,
+      1,
+    )
+  }
+
+  /// Like [`InteractionEngine::pointer_down`], but allows the UI layer to provide click metadata
+  /// needed for browser-like text selection gestures in `<input>`/`<textarea>`.
+  pub fn pointer_down_with_click_count(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    viewport_point: Point,
+    button: PointerButton,
+    modifiers: PointerModifiers,
+    click_count: u8,
+  ) -> bool {
     self.modality = InputModality::Pointer;
 
     self.range_drag = None;
@@ -3717,7 +3841,8 @@ impl InteractionEngine {
 
     let mut dom_changed = changed || selection_changed;
     if let Some(hit) = down_hit.as_ref() {
-      if index.node(hit.dom_node_id).is_some_and(is_range_input) {
+      if matches!(button, PointerButton::Primary) && index.node(hit.dom_node_id).is_some_and(is_range_input)
+      {
         self.range_drag = Some(RangeDragState {
           node_id: hit.dom_node_id,
           box_id: hit.box_id,
@@ -3736,9 +3861,10 @@ impl InteractionEngine {
       }
 
       // Click-to-place caret / begin selection dragging for focused text controls.
-      if index
-        .node(hit.dom_node_id)
-        .is_some_and(|node| is_text_input(node) || is_textarea(node))
+      if matches!(button, PointerButton::Primary)
+        && index
+          .node(hit.dom_node_id)
+          .is_some_and(|node| is_text_input(node) || is_textarea(node))
       {
         let focus_before = self.state.focused;
         let spin_direction = number_input_spin_direction_at_point(
@@ -3775,23 +3901,128 @@ impl InteractionEngine {
           )
           .unwrap_or((0, CaretAffinity::Downstream));
 
+          let node = index.node(hit.dom_node_id);
+          let is_textarea = node.is_some_and(is_textarea);
+          let current_value = node
+            .map(|node| {
+              if is_textarea {
+                textarea_value_for_editing(node)
+              } else {
+                node.get_attribute_ref("value").unwrap_or("").to_string()
+              }
+            })
+            .unwrap_or_default();
+          let current_len = current_value.chars().count();
+
+          let click_count = click_count.clamp(1, 3);
+          let click_count = if click_count > 1 && focus_before != Some(hit.dom_node_id) {
+            1
+          } else {
+            click_count
+          };
+
+          let shift_extend = modifiers.shift() && focus_before == Some(hit.dom_node_id);
+
           let text_edit_changed = if let Some(state) = self
             .text_edit
             .as_mut()
             .filter(|state| state.node_id == hit.dom_node_id)
           {
             let prev = (state.caret, state.caret_affinity, state.selection_anchor);
-            state.set_caret_with_affinity(caret, caret_affinity);
-            state.clear_selection();
+
+            match click_count {
+              1 => {
+                state.set_caret_with_affinity_and_maybe_extend_selection(
+                  caret.min(current_len),
+                  caret_affinity,
+                  shift_extend,
+                );
+              }
+              2 => {
+                if let Some((start, end)) =
+                  word_selection_range(&current_value, caret.min(current_len))
+                {
+                  state.caret = end.min(current_len);
+                  state.caret_affinity = CaretAffinity::Downstream;
+                  state.selection_anchor = Some(start.min(current_len));
+                  state.preferred_column = None;
+                } else {
+                  state.set_caret_with_affinity(caret.min(current_len), caret_affinity);
+                  state.clear_selection();
+                }
+              }
+              _ => {
+                if is_textarea {
+                  let (start, end) =
+                    textarea_line_selection_range(&current_value, caret.min(current_len));
+                  state.caret = end.min(current_len);
+                  state.caret_affinity = CaretAffinity::Downstream;
+                  state.selection_anchor = if start == end {
+                    None
+                  } else {
+                    Some(start.min(current_len))
+                  };
+                  state.preferred_column = None;
+                } else if current_len == 0 {
+                  state.caret = 0;
+                  state.caret_affinity = CaretAffinity::Downstream;
+                  state.selection_anchor = None;
+                  state.preferred_column = None;
+                } else {
+                  state.caret = current_len;
+                  state.caret_affinity = CaretAffinity::Downstream;
+                  state.selection_anchor = Some(0);
+                  state.preferred_column = None;
+                }
+              }
+            }
+
             (state.caret, state.caret_affinity, state.selection_anchor) != prev
           } else {
-            self.text_edit = Some(TextEditState {
+            let (caret, caret_affinity) = (caret.min(current_len), caret_affinity);
+            let mut edit = TextEditState {
               node_id: hit.dom_node_id,
               caret,
               caret_affinity,
               selection_anchor: None,
               preferred_column: None,
-            });
+            };
+
+            match click_count {
+              1 => {
+                // No pre-existing edit state for this control, so shift-extend has nothing to extend
+                // from; treat it like a normal caret placement.
+              }
+              2 => {
+                if let Some((start, end)) = word_selection_range(&current_value, caret) {
+                  edit.caret = end.min(current_len);
+                  edit.caret_affinity = CaretAffinity::Downstream;
+                  edit.selection_anchor = Some(start.min(current_len));
+                }
+              }
+              _ => {
+                if is_textarea {
+                  let (start, end) = textarea_line_selection_range(&current_value, caret);
+                  edit.caret = end.min(current_len);
+                  edit.caret_affinity = CaretAffinity::Downstream;
+                  edit.selection_anchor = if start == end {
+                    None
+                  } else {
+                    Some(start.min(current_len))
+                  };
+                } else if current_len == 0 {
+                  edit.caret = 0;
+                  edit.caret_affinity = CaretAffinity::Downstream;
+                  edit.selection_anchor = None;
+                } else {
+                  edit.caret = current_len;
+                  edit.caret_affinity = CaretAffinity::Downstream;
+                  edit.selection_anchor = Some(0);
+                }
+              }
+            }
+
+            self.text_edit = Some(edit);
             true
           };
 
@@ -3799,10 +4030,17 @@ impl InteractionEngine {
             dom_changed = true;
           }
           dom_changed |= self.sync_text_edit_paint_state();
+
+          let drag_anchor = self
+            .text_edit
+            .as_ref()
+            .filter(|state| state.node_id == hit.dom_node_id)
+            .map(|state| state.selection_anchor.unwrap_or(state.caret))
+            .unwrap_or(caret.min(current_len));
           self.text_drag = Some(TextDragState {
             node_id: hit.dom_node_id,
             box_id: hit.box_id,
-            anchor: caret,
+            anchor: drag_anchor,
             focus_before,
           });
         }

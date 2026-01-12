@@ -730,6 +730,7 @@ fn canceled_navigation_does_not_mutate_committed_base_url_hints() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("PointerDown");
   worker

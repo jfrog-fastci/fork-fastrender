@@ -732,6 +732,25 @@ pub fn pointer_down(tab_id: TabId, pos_css: (f32, f32), button: PointerButton) -
     pos_css,
     button,
     modifiers: PointerModifiers::NONE,
+    click_count: 1,
+  }
+}
+
+/// Construct a `UiToWorker::PointerDown` message with explicit modifier/click-count metadata.
+#[cfg(feature = "browser_ui")]
+pub fn pointer_down_with(
+  tab_id: TabId,
+  pos_css: (f32, f32),
+  button: PointerButton,
+  modifiers: PointerModifiers,
+  click_count: u8,
+) -> UiToWorker {
+  UiToWorker::PointerDown {
+    tab_id,
+    pos_css,
+    button,
+    modifiers,
+    click_count,
   }
 }
 

@@ -127,8 +127,9 @@ impl BrowserTabController {
         tab_id,
         pos_css,
         button,
-        modifiers: _,
-      } if tab_id == self.tab_id => self.handle_pointer_down(pos_css, button),
+        modifiers,
+        click_count,
+      } if tab_id == self.tab_id => self.handle_pointer_down(pos_css, button, modifiers, click_count),
       UiToWorker::PointerUp {
         tab_id,
         pos_css,
@@ -312,6 +313,8 @@ impl BrowserTabController {
     &mut self,
     pos_css: (f32, f32),
     button: PointerButton,
+    modifiers: crate::ui::PointerModifiers,
+    click_count: u8,
   ) -> Result<Vec<WorkerToUi>> {
     if button != PointerButton::Primary && button != PointerButton::Middle {
       return Ok(Vec::new());
@@ -334,12 +337,15 @@ impl BrowserTabController {
     let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let changed = self.document.mutate_dom(|dom| {
-      self.interaction.pointer_down(
+      self.interaction.pointer_down_with_click_count(
         dom,
         unsafe { &*box_tree_ptr },
         fragment_tree,
         &self.scroll_state,
         viewport_point,
+        button,
+        modifiers,
+        click_count,
       )
     });
     if changed {

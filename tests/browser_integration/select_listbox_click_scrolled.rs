@@ -164,6 +164,7 @@ fn select_listbox_click_accounts_for_scroll_offset() {
       pos_css: click_pos,
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("PointerDown 2");
   worker
@@ -322,6 +323,7 @@ fn select_listbox_click_on_scrollbar_does_not_select_option() {
       pos_css: click_pos,
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("PointerDown");
   worker

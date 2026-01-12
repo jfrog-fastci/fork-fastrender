@@ -136,6 +136,7 @@ fn dropdown_select_pick_updates_dom_and_repaints() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .unwrap();
   ui_tx
@@ -264,6 +265,7 @@ fn dropdown_select_cancel_emits_select_dropdown_closed_message() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .unwrap();
   ui_tx

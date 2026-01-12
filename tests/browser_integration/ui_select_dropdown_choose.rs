@@ -66,6 +66,7 @@ fn browser_tab_controller_select_dropdown_choose_updates_dom_and_repaints() -> R
     pos_css: (10.0, 10.0),
     button: PointerButton::Primary,
     modifiers: PointerModifiers::NONE,
+    click_count: 1,
   })?;
   let open_msgs = controller.handle_message(UiToWorker::PointerUp {
     tab_id,

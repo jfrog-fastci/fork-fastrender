@@ -325,6 +325,7 @@ fn browser_tab_controller_select_listbox_scroll_then_click_selects_scrolled_row(
     pos_css: click_viewport_css,
     button: PointerButton::Primary,
     modifiers: PointerModifiers::NONE,
+    click_count: 1,
   })?;
   let _ = controller.handle_message(UiToWorker::PointerUp {
     tab_id,
@@ -410,6 +411,7 @@ fn browser_tab_controller_select_dropdown_popup_opens_and_selects() -> Result<()
     pos_css: (15.0, 15.0),
     button: PointerButton::Primary,
     modifiers: PointerModifiers::NONE,
+    click_count: 1,
   })?;
   let open_msgs = controller.handle_message(UiToWorker::PointerUp {
     tab_id,

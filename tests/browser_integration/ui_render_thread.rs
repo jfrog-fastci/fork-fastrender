@@ -380,6 +380,7 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
     pos_css: (10.0, 10.0),
     button: PointerButton::Primary,
     modifiers: fastrender::ui::PointerModifiers::NONE,
+    click_count: 1,
   })
   .unwrap();
   tx.send(UiToWorker::PointerUp {

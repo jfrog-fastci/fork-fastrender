@@ -1295,6 +1295,14 @@ struct ScrollbarDrag {
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone, Copy)]
+struct PointerClickSequence {
+  last_pos_points: egui::Pos2,
+  last_instant: std::time::Instant,
+  click_count: u8,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy)]
 struct WgpuInitOptions {
   backends: wgpu::Backends,
   power_preference: wgpu::PowerPreference,
@@ -1563,6 +1571,7 @@ struct App {
   page_has_focus: bool,
   pointer_captured: bool,
   captured_button: fastrender::ui::PointerButton,
+  primary_click_sequence: Option<PointerClickSequence>,
   last_cursor_pos_points: Option<egui::Pos2>,
   cursor_in_page: bool,
   page_cursor_override: Option<fastrender::ui::CursorKind>,
@@ -1622,6 +1631,8 @@ impl App {
   const SELECT_DROPDOWN_PAGE_STEP: isize = 10;
   const SELECT_DROPDOWN_TYPEAHEAD_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(1000);
+  const MULTI_CLICK_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+  const MULTI_CLICK_MAX_DIST_POINTS: f32 = 4.0;
 
   fn refresh_theme_from_system_theme(&mut self, system_theme: Option<winit::window::Theme>) -> bool {
     use fastrender::ui::theme::ThemeMode;
@@ -1695,6 +1706,37 @@ impl App {
       .last_cursor_pos_points
       .is_some_and(|pos| self.cursor_near_overlay_scrollbars(pos));
     dragging || hovering
+  }
+
+  fn click_count_for_pointer_down(
+    &mut self,
+    button: fastrender::ui::PointerButton,
+    pos_points: egui::Pos2,
+  ) -> u8 {
+    if !matches!(button, fastrender::ui::PointerButton::Primary) {
+      self.primary_click_sequence = None;
+      return 1;
+    }
+
+    let now = std::time::Instant::now();
+    let mut count = 1u8;
+    if let Some(prev) = self.primary_click_sequence {
+      let dt = now.saturating_duration_since(prev.last_instant);
+      let dx = pos_points.x - prev.last_pos_points.x;
+      let dy = pos_points.y - prev.last_pos_points.y;
+      let dist2 = dx * dx + dy * dy;
+      let max_dist2 = Self::MULTI_CLICK_MAX_DIST_POINTS * Self::MULTI_CLICK_MAX_DIST_POINTS;
+      if dt <= Self::MULTI_CLICK_MAX_DELAY && dist2 <= max_dist2 {
+        count = prev.click_count.saturating_add(1).min(3);
+      }
+    }
+
+    self.primary_click_sequence = Some(PointerClickSequence {
+      last_pos_points: pos_points,
+      last_instant: now,
+      click_count: count,
+    });
+    count
   }
 
   fn new<T: 'static>(
@@ -1837,6 +1879,7 @@ impl App {
       page_has_focus: false,
       pointer_captured: false,
       captured_button: fastrender::ui::PointerButton::None,
+      primary_click_sequence: None,
       last_cursor_pos_points: None,
       cursor_in_page: false,
       page_cursor_override: None,
@@ -4413,6 +4456,7 @@ impl App {
             if matches!(mapped_button, fastrender::ui::PointerButton::Secondary) {
               // Right-click: request worker hit-test and open an egui context menu once the worker
               // responds with link information.
+              self.primary_click_sequence = None;
               self.page_has_focus = true;
               self.cursor_in_page = true;
               self.close_context_menu();
@@ -4430,6 +4474,7 @@ impl App {
             }
 
             self.page_has_focus = true;
+            let click_count = self.click_count_for_pointer_down(mapped_button, pos_points);
             if matches!(mapped_button, fastrender::ui::PointerButton::Primary) {
               self.pointer_captured = true;
               self.captured_button = mapped_button;
@@ -4440,6 +4485,7 @@ impl App {
               pos_css,
               button: mapped_button,
               modifiers: map_modifiers(self.modifiers),
+              click_count,
             });
           }
           ElementState::Released => {

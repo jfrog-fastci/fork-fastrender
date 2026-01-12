@@ -82,6 +82,7 @@ fn click_submit_navigates_to_get_form_submission_url() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -199,6 +200,7 @@ fn enter_in_text_input_navigates_to_get_form_submission_url() {
       pos_css: (10.0, 70.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -322,6 +324,7 @@ fn enter_in_text_input_without_submitter_navigates_even_if_input_click_prevent_d
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -443,6 +446,7 @@ fn submit_prevent_default_blocks_enter_form_submission_navigation_without_submit
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -546,6 +550,7 @@ fn submit_prevent_default_blocks_click_submit_navigation() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -643,6 +648,7 @@ fn submit_prevent_default_blocks_enter_form_submission_navigation() {
       pos_css: (10.0, 70.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -843,6 +849,7 @@ fn click_submit_navigates_with_post_urlencoded_form_submission() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx

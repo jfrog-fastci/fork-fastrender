@@ -1346,8 +1346,9 @@ impl BrowserRuntime {
         pos_css,
         button,
         modifiers,
+        click_count,
       } => {
-        self.handle_pointer_down(tab_id, pos_css, button, modifiers);
+        self.handle_pointer_down(tab_id, pos_css, button, modifiers, click_count);
       }
       UiToWorker::PointerUp {
         tab_id,
@@ -1829,7 +1830,8 @@ impl BrowserRuntime {
     tab_id: TabId,
     pos_css: (f32, f32),
     button: PointerButton,
-    _modifiers: crate::ui::PointerModifiers,
+    modifiers: crate::ui::PointerModifiers,
+    click_count: u8,
   ) {
     if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
       return;
@@ -1848,7 +1850,16 @@ impl BrowserRuntime {
       let scrolled =
         (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
       let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-      let changed = engine.pointer_down(dom, box_tree, fragment_tree, scroll, viewport_point);
+      let changed = engine.pointer_down_with_click_count(
+        dom,
+        box_tree,
+        fragment_tree,
+        scroll,
+        viewport_point,
+        button,
+        modifiers,
+        click_count,
+      );
       (changed, changed)
     }) {
       Ok(changed) => changed,

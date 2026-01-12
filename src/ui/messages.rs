@@ -307,6 +307,13 @@ pub enum UiToWorker {
     pos_css: (f32, f32),
     button: PointerButton,
     modifiers: PointerModifiers,
+    /// Consecutive click count reported by the UI layer (1 = single click, 2 = double click, ...).
+    ///
+    /// This is used for browser-style text selection gestures in `<input>`/`<textarea>` (double
+    /// click selects a word; triple click selects a line / all).
+    ///
+    /// UIs that do not implement multi-click detection should always send `1`.
+    click_count: u8,
   },
   PointerUp {
     tab_id: TabId,

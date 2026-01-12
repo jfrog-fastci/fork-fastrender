@@ -74,6 +74,7 @@ fn select_dropdown_open_and_choose_roundtrip() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
 

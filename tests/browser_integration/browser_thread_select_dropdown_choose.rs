@@ -75,6 +75,7 @@ fn browser_thread_select_dropdown_choose_updates_styles_and_repaints() {
     pos_css: click_pos,
     button: PointerButton::Primary,
     modifiers: PointerModifiers::NONE,
+    click_count: 1,
   })
   .expect("PointerDown");
   tx.send(UiToWorker::PointerUp {

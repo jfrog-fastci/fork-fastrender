@@ -107,6 +107,7 @@ fn link_activation_can_request_open_in_new_tab() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .unwrap();
   ui_tx
@@ -127,6 +128,7 @@ fn link_activation_can_request_open_in_new_tab() {
       pos_css: (10.0, 60.0),
       button: PointerButton::Middle,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .unwrap();
   ui_tx
@@ -152,6 +154,7 @@ fn link_activation_can_request_open_in_new_tab() {
       pos_css: (10.0, 60.0),
       button: PointerButton::Primary,
       modifiers: new_tab_modifiers,
+      click_count: 1,
     })
     .unwrap();
   ui_tx
@@ -172,6 +175,7 @@ fn link_activation_can_request_open_in_new_tab() {
       pos_css: (10.0, 60.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .unwrap();
   ui_tx

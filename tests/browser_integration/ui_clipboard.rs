@@ -157,6 +157,7 @@ fn ui_clipboard_copy_cut_paste_for_focused_input() {
       pos_css: (15.0, 15.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -272,6 +273,7 @@ fn ui_clipboard_copy_cut_paste_for_focused_textarea() {
       pos_css: (15.0, 15.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -403,6 +405,7 @@ fn ui_clipboard_respects_readonly_input() {
       pos_css: (15.0, 15.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -546,6 +549,7 @@ fn ui_clipboard_copy_cut_respects_selection() {
       pos_css: (15.0, 15.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -667,6 +671,7 @@ fn ui_clipboard_paste_replaces_selection() {
       pos_css: (15.0, 15.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx

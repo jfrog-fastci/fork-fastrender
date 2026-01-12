@@ -162,6 +162,7 @@ fn browser_tab_controller_listbox_click_accounts_for_wheel_scroll() -> Result<()
     pos_css: (click_viewport_point.x, click_viewport_point.y),
     button: PointerButton::Primary,
     modifiers: PointerModifiers::NONE,
+    click_count: 1,
   })?;
   let _ = controller.handle_message(UiToWorker::PointerUp {
     tab_id,

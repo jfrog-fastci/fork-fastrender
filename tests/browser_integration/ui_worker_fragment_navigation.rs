@@ -427,6 +427,7 @@ fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_w
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   worker

@@ -273,6 +273,7 @@ fn number_input_step_affects_get_form_submission_value() {
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
       modifiers: fastrender::ui::messages::PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("pointer down");
   ui_tx
@@ -316,4 +317,3 @@ fn number_input_step_affects_get_form_submission_value() {
   drop(ui_tx);
   join.join().expect("worker join");
 }
-

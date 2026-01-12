@@ -776,6 +776,7 @@ fn tab_and_shift_tab_traverse_focus_and_wrap_in_ui_worker() {
       pos_css: (110.0, 110.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
+      click_count: 1,
     })
     .expect("PointerDown");
   ui_tx
