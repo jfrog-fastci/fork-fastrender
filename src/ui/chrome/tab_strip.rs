@@ -321,14 +321,26 @@ fn tab_ui(
 
   if let Some(close_rect) = close_rect {
     let close_id = ui.make_persistent_id(("tab_strip_close", tab.id));
+    let close_has_focus = ui.ctx().memory(|mem| mem.has_focus(close_id));
+    let close_enabled = is_active || response.hovered() || close_has_focus;
     let close_resp = ui
-      .interact(close_rect, close_id, Sense::click())
+      .interact(
+        close_rect,
+        close_id,
+        if close_enabled {
+          Sense::click()
+        } else {
+          // When the close icon is hidden (non-active tab, not hovered), avoid stealing clicks/focus
+          // from the tab itself.
+          Sense::hover()
+        },
+      )
       .on_hover_text("Close tab (Ctrl/Cmd+W)");
     close_resp.widget_info({
       let label = format!("{}: {}", a11y::ChromeIconButton::CloseTab.label(), title);
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
-    close_clicked = close_resp.clicked();
+    close_clicked = close_enabled && close_resp.clicked();
 
     // Micro-interaction: fade close button hover fill in/out.
     let close_rounding =
@@ -346,8 +358,8 @@ fn tab_ui(
         with_alpha(visuals.widgets.hovered.bg_fill.gamma_multiply(0.85), close_hover_t),
       );
     }
- 
-    let close_t = if is_active { 1.0 } else { hover_t };
+
+    let close_t = if is_active || close_has_focus { 1.0 } else { hover_t };
     if close_t > 0.0 {
       paint_icon_in_rect(
         ui,
