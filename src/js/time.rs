@@ -101,6 +101,21 @@ fn global_data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn readonly_data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: false,
+    },
+  }
+}
+
+fn readonly_num_desc(value: f64) -> PropertyDescriptor {
+  readonly_data_desc(Value::Number(value))
+}
+
 /// Installs `Date.now()` and `performance.now()` into a `vm-js` realm.
 ///
 /// ## Determinism
@@ -296,6 +311,84 @@ pub fn install_time_bindings(
           writable: false,
         },
       },
+    )?;
+
+    // --- performance.timing (legacy Navigation Timing Level 1) ---
+    //
+    // Many analytics libraries still probe `performance.timing.navigationStart` even though the
+    // API is deprecated. Provide a deterministic stub so pages can feature-detect without
+    // throwing.
+    //
+    // All timestamps are in ms since Unix epoch; we map all fields to `navigationStart` for an
+    // MVP deterministic model (durations become 0).
+    let timing = scope.alloc_object()?;
+    scope.push_root(Value::Object(timing))?;
+    let navigation_start_ms = web_time.time_origin_unix_ms as f64;
+
+    let timing_fields: [(&str, f64); 21] = [
+      ("navigationStart", navigation_start_ms),
+      ("unloadEventStart", navigation_start_ms),
+      ("unloadEventEnd", navigation_start_ms),
+      ("redirectStart", navigation_start_ms),
+      ("redirectEnd", navigation_start_ms),
+      ("fetchStart", navigation_start_ms),
+      ("domainLookupStart", navigation_start_ms),
+      ("domainLookupEnd", navigation_start_ms),
+      ("connectStart", navigation_start_ms),
+      ("connectEnd", navigation_start_ms),
+      // Per spec this is 0 when not applicable; keep deterministic 0 for now.
+      ("secureConnectionStart", 0.0),
+      ("requestStart", navigation_start_ms),
+      ("responseStart", navigation_start_ms),
+      ("responseEnd", navigation_start_ms),
+      ("domLoading", navigation_start_ms),
+      ("domInteractive", navigation_start_ms),
+      ("domContentLoadedEventStart", navigation_start_ms),
+      ("domContentLoadedEventEnd", navigation_start_ms),
+      ("domComplete", navigation_start_ms),
+      ("loadEventStart", navigation_start_ms),
+      ("loadEventEnd", navigation_start_ms),
+    ];
+
+    for (name, value) in timing_fields {
+      let key_s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      scope.define_property(timing, key, readonly_num_desc(value))?;
+    }
+
+    let timing_key_s = scope.alloc_string("timing")?;
+    scope.push_root(Value::String(timing_key_s))?;
+    let timing_key = PropertyKey::from_string(timing_key_s);
+    scope.define_property(
+      performance,
+      timing_key,
+      readonly_data_desc(Value::Object(timing)),
+    )?;
+
+    // --- performance.navigation (legacy Navigation Timing Level 1) ---
+    //
+    // Minimal stub for libraries that still read `performance.navigation.type`.
+    let navigation = scope.alloc_object()?;
+    scope.push_root(Value::Object(navigation))?;
+
+    let nav_type_key_s = scope.alloc_string("type")?;
+    scope.push_root(Value::String(nav_type_key_s))?;
+    let nav_type_key = PropertyKey::from_string(nav_type_key_s);
+    scope.define_property(navigation, nav_type_key, readonly_num_desc(0.0))?;
+
+    let redirect_count_key_s = scope.alloc_string("redirectCount")?;
+    scope.push_root(Value::String(redirect_count_key_s))?;
+    let redirect_count_key = PropertyKey::from_string(redirect_count_key_s);
+    scope.define_property(navigation, redirect_count_key, readonly_num_desc(0.0))?;
+
+    let navigation_key_s = scope.alloc_string("navigation")?;
+    scope.push_root(Value::String(navigation_key_s))?;
+    let navigation_key = PropertyKey::from_string(navigation_key_s);
+    scope.define_property(
+      performance,
+      navigation_key,
+      readonly_data_desc(Value::Object(navigation)),
     )?;
 
     let perf_key_s = scope.alloc_string("performance")?;
@@ -596,11 +689,25 @@ mod tests {
     let date_now = get_object_property(&mut heap, date_obj, "now");
     let perf_now = get_object_property(&mut heap, performance_obj, "now");
     let time_origin = get_object_property(&mut heap, performance_obj, "timeOrigin");
+    let timing = get_object_property(&mut heap, performance_obj, "timing");
 
     assert_eq!(
       time_origin,
       Value::Number(web_time.time_origin_unix_ms as f64),
       "performance.timeOrigin should reflect WebTime origin"
+    );
+
+    let timing_obj = match timing {
+      Value::Object(o) => o,
+      _ => panic!("performance.timing should be an object"),
+    };
+    let navigation_start = get_object_property(&mut heap, timing_obj, "navigationStart");
+    let Value::Number(_) = navigation_start else {
+      panic!("performance.timing.navigationStart should be a number");
+    };
+    assert_eq!(
+      navigation_start, time_origin,
+      "performance.timing.navigationStart should match performance.timeOrigin"
     );
 
     let v = call0(&mut vm, &mut heap, date_now, Value::Object(date_obj));
