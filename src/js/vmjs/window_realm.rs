@@ -16558,6 +16558,7 @@ fn init_window_globals(
   // manipulate URLs. This must happen after `scope` is dropped because it borrows `heap` mutably.
   drop(scope);
   crate::js::window_abort::install_window_abort_bindings(vm, realm, heap)?;
+  crate::js::window_intersection_observer::install_window_intersection_observer_bindings(vm, realm, heap)?;
   crate::js::window_crypto::install_window_crypto_bindings(vm, realm, heap)?;
   crate::js::window_css::install_window_css_bindings(vm, realm, heap)?;
   crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;

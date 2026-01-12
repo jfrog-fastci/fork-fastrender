@@ -70,6 +70,7 @@ mod js_execution_budgets;
 #[cfg(feature = "quickjs")]
 mod js_fetch_bindings;
 mod js_fetch_tests;
+mod js_intersection_observer;
 mod js_runtime_consolidation_guard;
 mod js_script_fetch_semantics;
 mod js_time_determinism;
