@@ -1,7 +1,7 @@
 use knowledge_base::JsonValue;
 use std::collections::BTreeMap;
 
-use crate::{Api, CallSiteInfo};
+use crate::{Api, CallSiteInfo, EffectSet, Purity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputLengthRelation {
@@ -78,15 +78,39 @@ pub fn output_length_relation(api: &Api) -> OutputLengthRelation {
   }
 }
 
+fn callback_is_pure(callsite: &CallSiteInfo) -> Option<bool> {
+  if let Some(p) = callsite.callback_purity {
+    return Some(matches!(p, Purity::Pure | Purity::Allocating));
+  }
+  callsite.callback_is_pure
+}
+
+fn callback_may_throw(callsite: &CallSiteInfo) -> Option<bool> {
+  if let Some(effects) = callsite.callback_effects {
+    return Some(effects.contains(EffectSet::MAY_THROW) || effects.contains(EffectSet::UNKNOWN_CALL));
+  }
+  callsite.callback_may_throw
+}
+
 pub fn is_parallelizable(api: &Api, callsite: &CallSiteInfo) -> bool {
   let requires_callback_pure = get_path(&api.properties, &["parallel", "requires_callback_pure"])
     .and_then(get_bool)
     .unwrap_or(false);
-  if !requires_callback_pure {
+  let associative_if_callback_associative = get_path(
+    &api.properties,
+    &["reduce", "associative_if_callback_associative"],
+  )
+  .and_then(get_bool)
+  .unwrap_or(false);
+  if !requires_callback_pure && !associative_if_callback_associative {
     return false;
   }
 
-  if callsite.callback_is_pure != Some(true) {
+  if callback_is_pure(callsite) != Some(true) {
+    return false;
+  }
+
+  if associative_if_callback_associative && callsite.callback_is_associative != Some(true) {
     return false;
   }
 
@@ -121,6 +145,13 @@ pub fn is_parallelizable(api: &Api, callsite: &CallSiteInfo) -> bool {
     return false;
   }
 
+  let forbid_may_throw = get_path(&api.properties, &["parallel", "forbid_may_throw"])
+    .and_then(get_bool)
+    .unwrap_or(false);
+  if forbid_may_throw && callback_may_throw(callsite) != Some(false) {
+    return false;
+  }
+
   true
 }
 
@@ -140,6 +171,9 @@ mod tests {
     let map = db.get("Array.prototype.map").unwrap();
 
     let callsite = CallSiteInfo {
+      callback_purity: Some(Purity::Pure),
+      callback_effects: Some(EffectSet::empty()),
+      callback_may_throw: Some(false),
       callback_is_pure: Some(true),
       callback_uses_index: Some(false),
       callback_uses_array: Some(false),
@@ -154,8 +188,44 @@ mod tests {
     let map = db.get("Array.prototype.map").unwrap();
 
     let callsite = CallSiteInfo {
+      callback_purity: Some(Purity::Pure),
+      callback_effects: Some(EffectSet::empty()),
+      callback_may_throw: Some(false),
       callback_is_pure: Some(true),
       callback_uses_index: Some(true),
+      callback_uses_array: Some(false),
+      ..Default::default()
+    };
+    assert!(!is_parallelizable(map, &callsite));
+  }
+
+  #[test]
+  fn reduce_is_parallelizable_when_callback_is_pure_and_associative() {
+    let db = array_db();
+    let reduce = db.get("Array.prototype.reduce").unwrap();
+
+    let callsite = CallSiteInfo {
+      callback_purity: Some(Purity::Pure),
+      callback_effects: Some(EffectSet::empty()),
+      callback_may_throw: Some(false),
+      callback_is_pure: Some(true),
+      callback_is_associative: Some(true),
+      ..Default::default()
+    };
+    assert!(is_parallelizable(reduce, &callsite));
+  }
+
+  #[test]
+  fn map_is_not_parallelizable_when_callback_may_throw_and_kb_forbids_it() {
+    let db = array_db();
+    let map = db.get("Array.prototype.map").unwrap();
+
+    let callsite = CallSiteInfo {
+      callback_purity: Some(Purity::Pure),
+      callback_effects: Some(EffectSet::MAY_THROW),
+      callback_may_throw: Some(true),
+      callback_is_pure: Some(true),
+      callback_uses_index: Some(false),
       callback_uses_array: Some(false),
       ..Default::default()
     };

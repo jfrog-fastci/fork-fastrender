@@ -108,6 +108,60 @@ fn normalize_ident(raw: &str) -> String {
     .replace(['-', ' '], "_")
 }
 
+fn get_property_path<'a>(
+  props: &'a BTreeMap<String, JsonValue>,
+  path: &[&str],
+) -> Option<&'a JsonValue> {
+  let (first, rest) = path.split_first()?;
+  if let Some(mut cur) = props.get(*first) {
+    let mut ok = true;
+    for field in rest {
+      let Some(obj) = cur.as_object() else {
+        ok = false;
+        break;
+      };
+      let Some(next) = obj.get(*field) else {
+        ok = false;
+        break;
+      };
+      cur = next;
+    }
+    if ok {
+      return Some(cur);
+    }
+  }
+
+  // For resilience, also accept dotted key spellings (e.g. `parallel.forbid_may_throw`).
+  if path.len() > 1 {
+    let dotted = path.join(".");
+    return props.get(&dotted);
+  }
+
+  None
+}
+
+fn validate_boolish_property(
+  api: &ApiSemantics,
+  field: &str,
+  value: &JsonValue,
+  errors: &mut Vec<ValidationError>,
+) {
+  if value.as_bool().is_some() {
+    return;
+  }
+  if let Some(s) = value.as_str() {
+    if matches!(s, "true" | "True" | "TRUE" | "false" | "False" | "FALSE") {
+      return;
+    }
+  }
+
+  errors.push(ValidationError::UnknownEnumString {
+    api: api.name.clone(),
+    field: field.to_string(),
+    value: value.to_string(),
+  });
+}
+
 fn parse_usize_list(raw: &JsonValue) -> Result<Vec<usize>, ()> {
   if let Some(arr) = raw.as_array() {
     let mut out = Vec::with_capacity(arr.len());
@@ -267,6 +321,22 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
           field: "encoding.length_preserving_if".to_string(),
           value: value.to_string(),
         });
+      }
+    }
+
+    // Validate boolean-ish metadata that `effect-js` interprets for parallelism/associativity.
+    for (path, field) in [
+      (&["parallel", "requires_callback_pure"][..], "parallel.requires_callback_pure"),
+      (&["parallel", "forbid_uses_index"][..], "parallel.forbid_uses_index"),
+      (&["parallel", "forbid_uses_array"][..], "parallel.forbid_uses_array"),
+      (&["parallel", "forbid_may_throw"][..], "parallel.forbid_may_throw"),
+      (
+        &["reduce", "associative_if_callback_associative"][..],
+        "reduce.associative_if_callback_associative",
+      ),
+    ] {
+      if let Some(value) = get_property_path(&api.properties, path) {
+        validate_boolish_property(api, field, value, &mut errors);
       }
     }
 

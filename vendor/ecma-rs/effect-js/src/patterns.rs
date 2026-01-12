@@ -26,7 +26,7 @@ impl ArrayOpKind {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{parse_api_semantics_yaml_str, ApiDatabase, CallSiteInfo};
+  use crate::{parse_api_semantics_yaml_str, ApiDatabase, CallSiteInfo, EffectSet, Purity};
 
   fn array_db() -> ApiDatabase {
     let yaml = include_str!("../../knowledge-base/core/array.yaml");
@@ -35,6 +35,9 @@ mod tests {
 
   fn pure_callsite() -> CallSiteInfo {
     CallSiteInfo {
+      callback_purity: Some(Purity::Pure),
+      callback_effects: Some(EffectSet::empty()),
+      callback_may_throw: Some(false),
       callback_is_pure: Some(true),
       callback_uses_index: Some(false),
       callback_uses_array: Some(false),

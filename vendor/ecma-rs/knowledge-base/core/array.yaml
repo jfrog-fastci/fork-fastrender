@@ -29,6 +29,7 @@
       requires_callback_pure: true
       forbid_uses_index: true
       forbid_uses_array: true
+      forbid_may_throw: true
 
 - name: Array.prototype.filter
   semantics: Filter
@@ -54,6 +55,7 @@
       requires_callback_pure: true
       forbid_uses_index: true
       forbid_uses_array: true
+      forbid_may_throw: true
 
 - name: Array.prototype.flatMap
   semantics: FlatMap

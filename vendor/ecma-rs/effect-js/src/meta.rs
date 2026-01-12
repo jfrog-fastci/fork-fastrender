@@ -2,13 +2,6 @@ use knowledge_base::Api;
 
 use crate::db::CallSiteInfo;
 
-fn has_semantics(api: &Api, expected: &str) -> bool {
-  api
-    .semantics
-    .as_deref()
-    .is_some_and(|s| s.eq_ignore_ascii_case(expected))
-}
-
 pub fn is_async(api: &Api) -> bool {
   api.async_.unwrap_or(false)
 }
@@ -29,30 +22,14 @@ pub fn parallelizable_at_callsite(api: &Api, callsite: &CallSiteInfo) -> bool {
   if let Some(p) = api.parallelizable {
     return p;
   }
-
-  // Fallback heuristic for callback-driven collection APIs when the KB entry
-  // doesn't specify `parallelizable` directly.
-  if has_semantics(api, "Map")
-    || has_semantics(api, "Filter")
-    || api.name.ends_with(".map")
-    || api.name.ends_with(".filter")
-  {
-    return callsite.callback_is_pure.unwrap_or(false)
-      && !callsite.callback_uses_index.unwrap_or(false)
-      && !callsite.callback_uses_array.unwrap_or(false);
-  }
-  if has_semantics(api, "Reduce") || api.name.ends_with(".reduce") {
-    return callsite.callback_is_pure.unwrap_or(false)
-      && callsite.callback_is_associative.unwrap_or(false);
-  }
-
-  false
+  crate::properties::is_parallelizable(api, callsite)
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::EffectDb;
+  use crate::{EffectSet, Purity};
   use hir_js::{BodyId, ExprId, StmtKind};
 
   fn first_stmt_expr(lowered: &hir_js::LowerResult) -> (BodyId, ExprId) {
@@ -151,7 +128,12 @@ mod tests {
     let (body, call_expr) = first_stmt_expr(&lowered);
     let callsite = crate::callsite_info_for_args(&lowered, body, call_expr, db.kb());
 
-    assert!(parallelizable_at_callsite(api, &callsite));
+    assert_eq!(callsite.callback_purity, Some(Purity::Pure));
+    assert!(callsite
+      .callback_effects
+      .is_some_and(|e| e.contains(EffectSet::MAY_THROW)));
+    assert_eq!(callsite.callback_may_throw, Some(true));
+    assert!(!parallelizable_at_callsite(api, &callsite));
   }
 
   #[test]

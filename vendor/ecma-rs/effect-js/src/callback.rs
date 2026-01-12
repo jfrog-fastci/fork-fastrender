@@ -49,9 +49,16 @@ pub fn callsite_info_for_args(
     return crate::db::CallSiteInfo::default();
   };
   let callback = analyze_inline_callback(lowered, body, callback_expr, kb);
+  let callback_purity = callback.map(|cb| cb.purity);
+  let callback_effects = callback.map(|cb| cb.effects);
+  let callback_may_throw = callback_effects
+    .map(|e| e.contains(EffectSet::MAY_THROW) || e.contains(EffectSet::UNKNOWN_CALL));
   let associative = callback.and_then(|_| infer_associative_inline_callback(lowered, body, callback_expr));
   crate::db::CallSiteInfo {
-    callback_is_pure: callback.map(|cb| matches!(cb.purity, Purity::Pure | Purity::Allocating)),
+    callback_purity,
+    callback_effects,
+    callback_may_throw,
+    callback_is_pure: callback_purity.map(|p| matches!(p, Purity::Pure | Purity::Allocating)),
     callback_uses_index: callback.map(|cb| cb.uses_index),
     callback_uses_array: callback.map(|cb| cb.uses_array),
     callback_is_associative: associative,
@@ -1526,6 +1533,24 @@ mod tests {
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.uses_index);
+  }
+
+  #[test]
+  fn callsite_info_callback_fetch_effects_are_recorded() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(() => fetch('https://example.com'));",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert!(info.callback_effects.is_some_and(|e| e.contains(EffectSet::IO)));
+    assert!(info
+      .callback_effects
+      .is_some_and(|e| e.contains(EffectSet::NETWORK)));
+    assert_eq!(info.callback_may_throw, Some(true));
   }
 
   #[test]

@@ -2,19 +2,30 @@ use anyhow::{anyhow, Result};
 
 use knowledge_base::{Api, KnowledgeBase};
 
-use crate::ApiId;
+use crate::{ApiId, EffectSet, Purity};
 
 #[derive(Debug, Clone)]
 pub struct EffectDb {
   kb: KnowledgeBase,
 }
 
-/// Facts inferred about a specific callsite (e.g. callback purity/index usage).
+/// Facts inferred about a specific callsite (e.g. callback purity/effects/index usage).
 ///
 /// This is intentionally a small, stable surface that downstream analyses can
 /// consume without needing to understand the full callback body.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CallSiteInfo {
+  /// Coarse purity classification for an inline callback argument, when available.
+  pub callback_purity: Option<Purity>,
+  /// Effect flags for an inline callback argument, when available.
+  pub callback_effects: Option<EffectSet>,
+  /// Whether the callback may throw.
+  ///
+  /// This is derived from `callback_effects` (i.e. `MAY_THROW` / `UNKNOWN_CALL`).
+  pub callback_may_throw: Option<bool>,
+  /// Legacy: whether the callback is "pure enough" for parallelization heuristics.
+  ///
+  /// This is equivalent to `callback_purity` being `Pure` or `Allocating`.
   pub callback_is_pure: Option<bool>,
   pub callback_uses_index: Option<bool>,
   pub callback_uses_array: Option<bool>,
