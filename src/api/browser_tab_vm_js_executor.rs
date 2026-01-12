@@ -1198,7 +1198,7 @@ fn ensure_promise_fulfilled(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::api::{BrowserTab, FastRender, RenderOptions};
+  use crate::api::{BrowserTab, FastRender, RenderDiagnostics, RenderOptions};
   use crate::js::ImportMapLimits;
   use crate::resource::{FetchRequest, FetchedResource};
   use crate::text::font_db::FontConfig;
@@ -1363,6 +1363,67 @@ mod tests {
       .exec_script("console.log('x')")
       .map_err(|err| Error::Other(err.to_string()))?;
 
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_browser_tab_executor_records_formatted_console_messages_when_diagnostics_enabled(
+  ) -> Result<()> {
+    let _lock = env_lock()
+      .lock()
+      .expect("env var test mutex should not be poisoned");
+    let _guard = EnvVarGuard::set("FASTR_CONSOLE_STDERR", "0");
+
+    let mut document =
+      BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
+    let diag = Arc::new(Mutex::new(RenderDiagnostics::default()));
+    document
+      .renderer_mut()
+      .set_diagnostics_sink(Some(Arc::clone(&diag)));
+
+    let current_script = CurrentScriptStateHandle::default();
+    let mut executor = VmJsBrowserTabExecutor::new();
+    let mut event_loop = crate::js::EventLoop::<BrowserTabHost>::new();
+    executor.reset_for_navigation(
+      Some("https://example.com/doc.html"),
+      &mut document,
+      &current_script,
+      JsExecutionOptions::default(),
+    )?;
+
+    assert!(
+      diag.lock().unwrap().console_messages.is_empty(),
+      "expected console messages to start empty"
+    );
+
+    let script_text = "console.log('[%s %d %% %cX]', 'hi', 3, 'color:red');";
+    let spec = ScriptElementSpec {
+      base_url: Some("https://example.com/doc.html".to_string()),
+      src: None,
+      src_attr_present: false,
+      inline_text: script_text.to_string(),
+      async_attr: false,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: true,
+      node_id: None,
+      script_type: crate::js::ScriptType::Classic,
+    };
+    executor.execute_classic_script(script_text, &spec, None, &mut document, &mut event_loop)?;
+
+    let messages = diag.lock().unwrap().console_messages.clone();
+    assert!(
+      !messages.is_empty(),
+      "expected console message to be recorded when diagnostics are enabled"
+    );
+    assert_eq!(messages[0].level, ConsoleMessageLevel::Log);
+    assert_eq!(messages[0].message, "[hi 3 % X]");
     Ok(())
   }
 
