@@ -31478,6 +31478,71 @@ mod tests {
   }
 
   #[test]
+  fn window_location_set_fragment_navigation_updates_url_and_emits_hashchange(
+  ) -> crate::error::Result<()> {
+    let mut host = WindowHost::new(
+      dom2::Document::new(QuirksMode::NoQuirks),
+      "https://example.com/",
+    )?;
+
+    host.exec_script(
+      "globalThis.__events = [];\n\
+       window.addEventListener('hashchange', (e) => { __events.push(e.oldURL + '|' + e.newURL); });\n\
+       location = '#a';\n\
+       globalThis.__href = location.href;\n\
+       globalThis.__hist_len = history.length;",
+    )?;
+
+    assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
+    assert!(host
+      .host_mut()
+      .window_realm()
+      .take_pending_navigation_request()
+      .is_none());
+    let href_v = host.exec_script("__href")?;
+    {
+      let heap = host.host_mut().window_realm().heap();
+      assert_eq!(get_string(heap, href_v), "https://example.com/#a");
+    }
+
+    host.run_until_idle(crate::js::RunLimits::unbounded())?;
+    assert_eq!(host.exec_script("__events.length")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn location_assign_fragment_navigation_updates_url_and_emits_hashchange() -> crate::error::Result<()> {
+    let mut host = WindowHost::new(
+      dom2::Document::new(QuirksMode::NoQuirks),
+      "https://example.com/",
+    )?;
+
+    host.exec_script(
+      "globalThis.__events = [];\n\
+       window.addEventListener('hashchange', (e) => { __events.push(e.oldURL + '|' + e.newURL); });\n\
+       location.assign('#a');\n\
+       globalThis.__href = location.href;\n\
+       globalThis.__hist_len = history.length;",
+    )?;
+
+    assert_eq!(host.exec_script("__hist_len")?, Value::Number(2.0));
+    assert!(host
+      .host_mut()
+      .window_realm()
+      .take_pending_navigation_request()
+      .is_none());
+    let href_v = host.exec_script("__href")?;
+    {
+      let heap = host.host_mut().window_realm().heap();
+      assert_eq!(get_string(heap, href_v), "https://example.com/#a");
+    }
+
+    host.run_until_idle(crate::js::RunLimits::unbounded())?;
+    assert_eq!(host.exec_script("__events.length")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
   fn location_replace_fragment_replaces_entry_and_emits_hashchange() -> crate::error::Result<()> {
     let mut host = WindowHost::new(
       dom2::Document::new(QuirksMode::NoQuirks),
