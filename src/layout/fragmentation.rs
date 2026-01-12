@@ -7608,6 +7608,71 @@ mod tests {
   }
 
   #[test]
+  fn column_fragmentation_allows_early_sibling_breaks_to_avoid_slicing_next_block() {
+    let fragmentainer_size = 200.0;
+
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    let style = Arc::new(style);
+
+    // The second child starts far enough before the fragmentainer limit (200) that the "prefer the
+    // hard limit over early sibling boundaries" heuristic would otherwise trigger and slice the
+    // child even though it fits entirely in the next column.
+    let mut child1 = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 50.0),
+      vec![],
+      Arc::clone(&style),
+    );
+    child1.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut child2 = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 100.0, 100.0, 150.0),
+      vec![],
+      Arc::clone(&style),
+    );
+    child2.content = FragmentContent::Block { box_id: Some(2) };
+
+    let root = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 250.0),
+      vec![child1, child2],
+      style,
+    );
+
+    let options = FragmentationOptions::new(fragmentainer_size).with_columns(2, 0.0);
+    let fragments = fragment_tree(&root, &options).expect("fragment tree");
+    assert_eq!(fragments.len(), 2, "expected two column fragments, got {fragments:?}");
+
+    let col0 = &fragments[0];
+    let col1 = &fragments[1];
+
+    let col0_ids: Vec<_> = col0.children.iter().map(box_id).collect();
+    assert_eq!(
+      col0_ids,
+      vec![Some(1)],
+      "expected the second child to be moved wholly to the next column, got {col0_ids:?}"
+    );
+
+    let col1_ids: Vec<_> = col1.children.iter().map(box_id).collect();
+    assert_eq!(
+      col1_ids,
+      vec![Some(2)],
+      "expected the second child to appear wholly in the next column, got {col1_ids:?}"
+    );
+
+    let child2_fragment = &col1.children[0];
+    assert!(
+      child2_fragment.slice_info.is_first,
+      "expected the moved child to start a fresh slice in the next column, got {:?}",
+      child2_fragment.slice_info
+    );
+    assert!(
+      child2_fragment.slice_info.slice_offset.abs() < 0.01,
+      "expected the moved child slice to have offset 0 in the next column, got {:?}",
+      child2_fragment.slice_info
+    );
+  }
+
+  #[test]
   fn column_grid_parallel_item_forced_break_does_not_force_container_columns() {
     let fragmentainer_size = 50.0;
 
