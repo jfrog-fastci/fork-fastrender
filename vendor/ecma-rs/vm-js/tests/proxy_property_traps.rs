@@ -721,6 +721,100 @@ fn proxy_property_access_throws_on_revoked_proxy() -> Result<(), VmError> {
 }
 
 #[test]
+fn proxy_get_trap_invariants_are_enforced() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = r#"
+    (() => {
+      // Non-configurable, non-writable data property.
+      {
+        const target = {};
+        Object.defineProperty(target, "x", { value: 1, writable: false, configurable: false });
+
+        const pBad = new Proxy(target, { get() { return 2; } });
+        let okBad = false;
+        try { pBad.x; } catch (e) { okBad = e instanceof TypeError; }
+
+        const pOk = new Proxy(target, { get() { return 1; } });
+        const okOk = (pOk.x === 1);
+
+        const objBad = Object.create(pBad);
+        let okProtoBad = false;
+        try { objBad.x; } catch (e) { okProtoBad = e instanceof TypeError; }
+
+        const objOk = Object.create(pOk);
+        const okProtoOk = (objOk.x === 1);
+
+        if (!(okBad && okOk && okProtoBad && okProtoOk)) return false;
+      }
+
+      // Non-configurable accessor with undefined getter.
+      {
+        const target = {};
+        Object.defineProperty(target, "x", { get: undefined, set: undefined, configurable: false });
+
+        const pBad = new Proxy(target, { get() { return 123; } });
+        let okBad = false;
+        try { pBad.x; } catch (e) { okBad = e instanceof TypeError; }
+
+        const pOk = new Proxy(target, { get() { return undefined; } });
+        const okOk = (pOk.x === undefined);
+
+        const objBad = Object.create(pBad);
+        let okProtoBad = false;
+        try { objBad.x; } catch (e) { okProtoBad = e instanceof TypeError; }
+
+        const objOk = Object.create(pOk);
+        const okProtoOk = (objOk.x === undefined);
+
+        if (!(okBad && okOk && okProtoBad && okProtoOk)) return false;
+      }
+
+      return true;
+    })()
+  "#;
+  let value = rt.exec_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn proxy_get_trap_invariants_observe_string_index_values() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = r#"
+    (() => {
+      const target = new String("abc");
+
+      // String index properties are non-writable/non-configurable data properties with a concrete
+      // value (e.g. `"a"` for `"0"`). A Proxy cannot report an impossible trap result.
+      const pBad = new Proxy(target, { get() { return undefined; } });
+      let okBad = false;
+      try { pBad["0"]; } catch (e) { okBad = e instanceof TypeError; }
+
+      const pOk = new Proxy(target, { get(_t, prop) { return prop === "0" ? "a" : undefined; } });
+      const okOk = (pOk["0"] === "a");
+
+      const objBad = Object.create(pBad);
+      let okProtoBad = false;
+      try { objBad["0"]; } catch (e) { okProtoBad = e instanceof TypeError; }
+
+      const objOk = Object.create(pOk);
+      const okProtoOk = (objOk["0"] === "a");
+
+      return okBad && okOk && okProtoBad && okProtoOk;
+    })()
+  "#;
+  let value = rt.exec_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn proxy_get_trap_can_revoke_during_trap_lookup_without_breaking_operation() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

@@ -144,6 +144,77 @@ fn property_key_to_value(key: PropertyKey) -> Value {
   }
 }
 
+fn validate_proxy_get_trap_result(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  target: GcObject,
+  key: PropertyKey,
+  trap_result: Value,
+) -> Result<(), VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-proxy-object-internal-methods-and-internal-slots-get-p-receiver
+  //
+  // Invariants:
+  // - If the target has a non-configurable, non-writable data property, the trap result must be
+  //   `SameValue` to the target's value.
+  // - If the target has a non-configurable accessor property whose getter is undefined, the trap
+  //   result must be `undefined`.
+  //
+  // Root the trap result across descriptor lookup and any subsequent allocations/GC. The trap is
+  // allowed to return a freshly-allocated value that is not otherwise reachable.
+  let key_value = property_key_to_value(key);
+  scope.push_roots(&[Value::Object(target), key_value, trap_result])?;
+
+  let target_desc = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?;
+  let Some(target_desc) = &target_desc else {
+    return Ok(());
+  };
+  if target_desc.configurable {
+    return Ok(());
+  }
+
+  match target_desc.kind {
+    PropertyKind::Data { writable: false, .. } => {
+      // Ensure string exotic index properties materialize their actual value.
+      let Some(target_desc) =
+        scope.object_get_own_property_with_host_and_hooks_complete(vm, host, hooks, target, key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "validate_proxy_get_trap_result: internal error: missing target property descriptor",
+        ));
+      };
+      let PropertyKind::Data { value: target_value, .. } = target_desc.kind else {
+        return Err(VmError::InvariantViolation(
+          "validate_proxy_get_trap_result: internal error: expected data descriptor",
+        ));
+      };
+
+      // Root the descriptor value across any allocations (e.g. error construction).
+      scope.push_root(target_value)?;
+
+      if !trap_result.same_value(target_value, scope.heap()) {
+        return Err(VmError::TypeError(
+          "Proxy get trap returned a different value for a non-writable, non-configurable data property",
+        ));
+      }
+    }
+    PropertyKind::Accessor {
+      get: Value::Undefined,
+      ..
+    } => {
+      if !matches!(trap_result, Value::Undefined) {
+        return Err(VmError::TypeError(
+          "Proxy get trap returned a non-undefined value for a non-configurable accessor property with an undefined getter",
+        ));
+      }
+    }
+    _ => {}
+  }
+
+  Ok(())
+}
+
 fn proxy_target_and_handler(scope: &Scope<'_>, proxy: GcObject) -> Result<(GcObject, GcObject), VmError> {
   let target = scope.heap().proxy_target(proxy)?;
   let handler = scope.heap().proxy_handler(proxy)?;
@@ -996,67 +1067,7 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    // Root inputs so a Proxy trap can allocate freely.
-    let mut scope = self.reborrow();
-    let key_root = match key {
-      PropertyKey::String(s) => Value::String(s),
-      PropertyKey::Symbol(s) => Value::Symbol(s),
-    };
-    scope.push_roots(&[Value::Object(obj), key_root, receiver])?;
- 
-    // Allocate the trap key once (rather than once per proxy hop).
-    let trap_key_s = scope.alloc_string("get")?;
-    scope.push_root(Value::String(trap_key_s))?;
-    let trap_key = PropertyKey::from_string(trap_key_s);
- 
-    // Follow Proxy chains iteratively to avoid recursion.
-    let mut current = obj;
-    let mut steps = 0usize;
-    loop {
-      if steps != 0 && steps % 1024 == 0 {
-        vm.tick()?;
-      }
-      steps = steps.saturating_add(1);
- 
-      let Some(proxy) = scope.heap().get_proxy_data(current)? else {
-        return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
-      };
- 
-      vm.tick()?;
- 
-      let (Some(target), Some(handler)) = (proxy.target, proxy.handler) else {
-        return Err(VmError::TypeError("Cannot perform 'get' on a proxy that has been revoked"));
-      };
- 
-      // Root target/handler for the duration of trap lookup + invocation.
-      let mut trap_scope = scope.reborrow();
-      trap_scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
- 
-      let trap = vm.get_method_with_host_and_hooks(
-        host,
-        &mut trap_scope,
-        hooks,
-        Value::Object(handler),
-        trap_key,
-      )?;
- 
-      // If the trap is undefined, forward to the target's `[[Get]]`.
-      let Some(trap) = trap else {
-        current = target;
-        continue;
-      };
- 
-      // Call the trap with `(target, key, receiver)`.
-      let trap_args = [Value::Object(target), key_root, receiver];
-      return vm.call_with_host_and_hooks(
-        host,
-        &mut trap_scope,
-        hooks,
-        trap,
-        Value::Object(handler),
-        &trap_args,
-      );
-    }
+    self.get_with_host_and_hooks(vm, host, hooks, obj, key, receiver)
   }
 
   /// ECMAScript `[[DefineOwnProperty]]` for ordinary objects.
@@ -1569,6 +1580,15 @@ impl<'a> Scope<'a> {
         return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
       };
 
+      // Root the Proxy's `[[ProxyTarget]]` and `[[ProxyHandler]]` while we look up and invoke the
+      // `get` trap.
+      //
+      // `GetMethod(handler, "get")` can run user code via accessor properties. That user code can
+      // revoke `current` (clearing `[[ProxyTarget]]`/`[[ProxyHandler]]`) and then trigger a GC.
+      // If that happens, `target` could become unreachable and collected even though the Proxy
+      // algorithm is still required to use the original target object for this operation.
+      scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
       let trap = vm.get_method(&mut scope, Value::Object(handler), get_key)?;
       match trap {
         None => {
@@ -1579,7 +1599,47 @@ impl<'a> Scope<'a> {
           let args = [Value::Object(target), key_value, receiver];
           // Like `ordinary_get`, prefer `Vm::call` so any active host hooks override is honored.
           let mut dummy_host = ();
-          return vm.call(&mut dummy_host, &mut scope, trap, Value::Object(handler), &args);
+          let trap_result = vm.call(&mut dummy_host, &mut scope, trap, Value::Object(handler), &args)?;
+
+          // Enforce Proxy `[[Get]]` invariants (ECMA-262).
+          //
+          // This requires `target.[[GetOwnProperty]](P)`, which can invoke user JS via nested Proxy
+          // traps, so route the check through the active host hook implementation when available.
+          if let Some(hooks_ptr) = vm.active_host_hooks_ptr() {
+            // SAFETY: `active_host_hooks_ptr` is only set while a host hooks implementation is
+            // mutably borrowed by a VM entrypoint (e.g. `Vm::call_with_host_and_hooks` or
+            // `Vm::with_host_hooks_override`).
+            let hooks = unsafe { &mut *hooks_ptr };
+            validate_proxy_get_trap_result(
+              vm,
+              &mut scope,
+              &mut dummy_host,
+              hooks,
+              target,
+              key,
+              trap_result,
+            )?;
+          } else {
+            let mut hooks = std::mem::take(vm.microtask_queue_mut());
+            let result = validate_proxy_get_trap_result(
+              vm,
+              &mut scope,
+              &mut dummy_host,
+              &mut hooks,
+              target,
+              key,
+              trap_result,
+            );
+            // Merge any Promise jobs that native code enqueued directly onto the VM-owned queue
+            // while it was temporarily moved out.
+            while let Some((realm, job)) = vm.microtask_queue_mut().pop_front() {
+              hooks.enqueue_promise_job(job, realm);
+            }
+            *vm.microtask_queue_mut() = hooks;
+            result?;
+          }
+
+          return Ok(trap_result);
         }
       }
     }
@@ -1682,41 +1742,7 @@ impl<'a> Scope<'a> {
       let args = [Value::Object(target), key_value, receiver];
       let trap_result =
         vm.call_with_host_and_hooks(host, &mut scope, hooks, trap, Value::Object(handler), &args)?;
-
-      // Root the trap result across invariant checks, which can allocate and trigger GC. Proxy `get`
-      // traps are allowed to synthesize fresh values that are not otherwise reachable.
-      scope.push_root(trap_result)?;
-
-      // Proxy invariants (ECMA-262 `Proxy.[[Get]]`):
-      // If the target has a non-configurable own property, the trap result must be consistent with
-      // that property descriptor.
-      let target_desc =
-        scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, target, key)?;
-      if let Some(target_desc) = target_desc {
-        if !target_desc.configurable {
-          match target_desc.kind {
-            PropertyKind::Data {
-              writable: false,
-              value: target_value,
-            } => {
-              if !trap_result.same_value(target_value, scope.heap()) {
-                return Err(VmError::TypeError(
-                  "Proxy get trap returned a value inconsistent with a non-writable, non-configurable target property",
-                ));
-              }
-            }
-            PropertyKind::Accessor { get, .. } => {
-              if matches!(get, Value::Undefined) && !matches!(trap_result, Value::Undefined) {
-                return Err(VmError::TypeError(
-                  "Proxy get trap returned a non-undefined value for a non-configurable accessor with an undefined getter",
-                ));
-              }
-            }
-            _ => {}
-          }
-        }
-      }
-
+      validate_proxy_get_trap_result(vm, &mut scope, host, hooks, target, key, trap_result)?;
       return Ok(trap_result);
     }
   }
@@ -2853,14 +2879,16 @@ impl<'a> Scope<'a> {
         scope.push_root(trap)?;
 
         let args = [Value::Object(target), key_value, receiver];
-        return vm.call_with_host_and_hooks(
+        let trap_result = vm.call_with_host_and_hooks(
           host,
           &mut scope,
           hooks,
           trap,
           Value::Object(handler),
           &args,
-        );
+        )?;
+        validate_proxy_get_trap_result(vm, &mut scope, host, hooks, target, key, trap_result)?;
+        return Ok(trap_result);
       }
 
       // Fast path: own property.
