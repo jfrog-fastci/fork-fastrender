@@ -1001,13 +1001,15 @@ impl Heap {
   /// This is intended for host bindings that need to read `ArrayBuffer` contents (e.g. `TextDecoder`).
   /// The returned slice is valid as long as the underlying `ArrayBuffer` remains live and the heap is
   /// not mutably borrowed.
+  ///
+  /// # Errors
+  ///
+  /// Returns a `TypeError` if the `ArrayBuffer` is detached.
   pub fn array_buffer_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     let buf = self.get_array_buffer(obj)?;
     buf
       .data
       .as_deref()
-      // Detachment is user-observable (e.g. ArrayBuffer transfer / structured clone), so accessing
-      // the backing store must fail as a JS-catchable TypeError rather than an engine-bug error.
       .ok_or(VmError::TypeError("ArrayBuffer is detached"))
   }
 
@@ -1018,14 +1020,7 @@ impl Heap {
   ///
   /// This is intended for host embeddings implementing "transfer"/structured clone semantics.
   pub fn detach_array_buffer(&mut self, obj: GcObject) -> Result<(), VmError> {
-    let buf = self.get_array_buffer_mut(obj)?;
-    let Some(data) = buf.data.take() else {
-      // Already detached.
-      return Ok(());
-    };
-    let len = data.len();
-    drop(data);
-    self.sub_external_bytes(len);
+    let _ = self.detach_array_buffer_take_data(obj)?;
     Ok(())
   }
 
@@ -1133,6 +1128,10 @@ impl Heap {
   ///
   /// The returned slice is valid as long as the underlying `Uint8Array` and its backing `ArrayBuffer`
   /// remain live and the heap is not mutably borrowed.
+  ///
+  /// # Errors
+  ///
+  /// Returns a `TypeError` if the backing `ArrayBuffer` is detached or if the view is out of bounds.
   pub fn uint8_array_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     let view = self.get_typed_array(obj)?;
     if view.kind != TypedArrayKind::Uint8 {
@@ -1147,9 +1146,9 @@ impl Heap {
       .data
       .as_deref()
       .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
-    data.get(start..end).ok_or(VmError::InvariantViolation(
-      "Uint8Array view references out-of-bounds ArrayBuffer data",
-    ))
+    data
+      .get(start..end)
+      .ok_or(VmError::TypeError("Uint8Array view out of bounds"))
   }
 
   /// Writes `bytes` into a `Uint8Array` view starting at element index `index`.
@@ -1158,13 +1157,12 @@ impl Heap {
   /// round-tripping through JS property sets.
   ///
   /// Returns the number of bytes written, which is `min(bytes.len(), view.length - index)`. If
-  /// `index` is out of bounds, this returns `Ok(0)` (mirroring typed array out-of-bounds write
-  /// semantics).
+  /// `index` is out of bounds, or if the backing buffer is detached (or the view is out of bounds),
+  /// this returns `Ok(0)` (mirroring typed array out-of-bounds write semantics).
   ///
   /// # Errors
   ///
-  /// Returns an error if `obj` is not a live `Uint8Array` object or if the view's `byteOffset` +
-  /// `length` does not fit within its backing `ArrayBuffer`.
+  /// Returns an error if `obj` is not a live `Uint8Array` object.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length) = {
@@ -1180,6 +1178,10 @@ impl Heap {
     }
     let max_write = bytes.len().min(length - index);
 
+    let view_end = byte_offset
+      .checked_add(length)
+      .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
+
     let abs_start = byte_offset
       .checked_add(index)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
@@ -1187,23 +1189,17 @@ impl Heap {
       .checked_add(max_write)
       .ok_or(VmError::InvariantViolation("Uint8Array byte offset overflow"))?;
 
-    let buf_len = self
-      .get_array_buffer(buffer)?
-      .data
-      .as_deref()
-      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?
-      .len();
-    if abs_end > buf_len {
-      return Err(VmError::InvariantViolation(
-        "Uint8Array view references out-of-bounds ArrayBuffer data",
-      ));
+    let buf_len = {
+      let buf = self.get_array_buffer(buffer)?;
+      let Some(data) = buf.data.as_deref() else { return Ok(0) };
+      data.len()
+    };
+    if view_end > buf_len {
+      return Ok(0);
     }
 
     let buf = self.get_array_buffer_mut(buffer)?;
-    let data = buf
-      .data
-      .as_deref_mut()
-      .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+    let Some(data) = buf.data.as_deref_mut() else { return Ok(0) };
     data[abs_start..abs_end].copy_from_slice(&bytes[..max_write]);
     Ok(max_write)
   }
@@ -6933,6 +6929,71 @@ mod external_memory_accounting_tests {
       let mut scope = heap.scope();
       scope.alloc_object()?;
     }
+
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod detached_array_buffer_tests {
+  use super::*;
+
+  #[test]
+  fn detached_array_buffer_backing_stores_are_not_invariant_violations() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(4)?;
+    scope.push_root(Value::Object(ab))?;
+    let view = scope.alloc_uint8_array(ab, 0, 4)?;
+    scope.push_root(Value::Object(view))?;
+
+    assert!(scope.heap_mut().detach_array_buffer_take_data(ab)?.is_some());
+
+    match scope.heap().array_buffer_data(ab) {
+      Err(VmError::TypeError(_)) => {}
+      Err(other) => panic!("expected TypeError, got {other:?}"),
+      Ok(_) => panic!("expected error for detached ArrayBuffer"),
+    }
+
+    match scope.heap().uint8_array_data(view) {
+      Err(VmError::TypeError(_)) => {}
+      Err(other) => panic!("expected TypeError, got {other:?}"),
+      Ok(_) => panic!("expected error for Uint8Array backed by a detached ArrayBuffer"),
+    }
+
+    let wrote = scope.heap_mut().uint8_array_write(view, 0, &[1, 2, 3])?;
+    assert_eq!(wrote, 0);
+
+    Ok(())
+  }
+
+  #[test]
+  fn uint8_array_data_out_of_bounds_is_type_error_and_writes_are_noop() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(2)?;
+    scope.push_root(Value::Object(ab))?;
+    let view = scope.alloc_uint8_array(ab, 0, 2)?;
+    scope.push_root(Value::Object(view))?;
+
+    match scope.heap_mut().get_heap_object_mut(view.0)? {
+      HeapObject::TypedArray(arr) => {
+        assert_eq!(arr.kind, TypedArrayKind::Uint8);
+        arr.length = 3;
+      }
+      _ => panic!("expected Uint8Array"),
+    }
+
+    match scope.heap().uint8_array_data(view) {
+      Err(VmError::TypeError(_)) => {}
+      Err(other) => panic!("expected TypeError, got {other:?}"),
+      Ok(_) => panic!("expected error for out-of-bounds Uint8Array view"),
+    }
+
+    let wrote = scope.heap_mut().uint8_array_write(view, 0, &[1])?;
+    assert_eq!(wrote, 0);
 
     Ok(())
   }
