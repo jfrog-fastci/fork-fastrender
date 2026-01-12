@@ -27,6 +27,17 @@ bash scripts/cargo_agent.sh run -p types-ts-interned --example types_ts_interned
 This example shows how to create a [`TypeStore`], intern structural types, and
 run assignability checks via [`RelateCtx`].
 
+## Name interning
+
+`TypeStore` interns string names used by `PropKey::{String,Symbol}` and
+`TypeKind::StringLiteral`.
+
+- Prefer `TypeStore::intern_name_ref(&str)` when you already have a borrowed
+  `&str` / `&String` (common in parsers/typecheckers). This avoids allocating on
+  hits and uses a read-fast lookup path.
+- Use `TypeStore::intern_name(String)` when you already own the `String` and can
+  move it into the store (avoids allocating again on insert).
+
 ## Native layout model (experimental)
 
 `types-ts-interned` also contains an LLVM-agnostic native layout engine used by
