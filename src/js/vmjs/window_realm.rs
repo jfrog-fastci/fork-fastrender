@@ -1804,6 +1804,9 @@ const NODE_REMOVE_KEY: &str = "__fastrender_node_remove";
 const NODE_TEXT_CONTENT_GET_KEY: &str = "__fastrender_node_text_content_get";
 const NODE_TEXT_CONTENT_SET_KEY: &str = "__fastrender_node_text_content_set";
 const NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
+const NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
+const HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
+const HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_REMOVE_ATTRIBUTE_KEY: &str = "__fastrender_element_remove_attribute";
@@ -4377,6 +4380,87 @@ fn sync_child_nodes_array(
   Ok(())
 }
 
+fn sync_children_collection(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: &dom2::Document,
+  node_id: NodeId,
+  collection: GcObject,
+) -> Result<(), VmError> {
+  let mut children: Vec<NodeId> = Vec::new();
+  if dom.node(node_id).inert_subtree {
+    // Keep `<template>` contents inert: treat the element as having no element children.
+    //
+    // FastRender represents template contents by storing descendants under the `<template>` element,
+    // but marks the element as `inert_subtree`. DOM traversal properties (`children`,
+    // `firstElementChild`, etc) must not expose these inert descendants.
+  } else {
+    children
+      .try_reserve(dom.node(node_id).children.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for &child in dom.node(node_id).children.iter() {
+      if child.index() >= dom.nodes_len() {
+        continue;
+      }
+      if dom.node(child).parent != Some(node_id) {
+        continue;
+      }
+      // Skip non-elements and `ShadowRoot` nodes in the light DOM child list.
+      match &dom.node(child).kind {
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => children.push(child),
+        NodeKind::ShadowRoot { .. } => {}
+        _ => {}
+      }
+    }
+  }
+
+  // Root objects while allocating property keys.
+  scope.push_root(Value::Object(document_obj))?;
+  scope.push_root(Value::Object(collection))?;
+
+  let length_key = alloc_key(scope, "length")?;
+  let old_len = match scope
+    .heap()
+    .object_get_own_data_property_value(collection, &length_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0,
+  };
+
+  // Overwrite / populate indices.
+  let mut idx_buf = [0u8; 20];
+  for (idx, child_id) in children.iter().copied().enumerate() {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), child_id)?;
+    scope.define_property(collection, key, data_desc(wrapper))?;
+  }
+
+  // Delete leftover indices when the list shrinks.
+  for idx in children.len()..old_len {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    scope.heap_mut().delete_property_or_throw(collection, key)?;
+  }
+
+  scope.define_property(
+    collection,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(children.len() as f64),
+        // Writable so we can update the value even though the property is non-configurable.
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(())
+}
+
 fn sync_cached_child_nodes_for_wrapper(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4411,6 +4495,42 @@ fn sync_cached_child_nodes_for_node_id(
     return Ok(());
   };
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)
+}
+
+fn sync_cached_children_for_wrapper(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: &dom2::Document,
+  wrapper_obj: GcObject,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  let key = alloc_key(scope, NODE_CHILDREN_KEY)?;
+  let Some(Value::Object(collection)) = scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &key)?
+  else {
+    return Ok(());
+  };
+  sync_children_collection(vm, scope, document_obj, dom, node_id, collection)
+}
+
+fn sync_cached_children_for_node_id(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  dom: &dom2::Document,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  let wrapper_obj = if node_id.index() == 0 {
+    Some(document_obj)
+  } else {
+    dom_platform_mut(vm).and_then(|platform| platform.get_existing_wrapper(scope.heap(), node_id))
+  };
+  let Some(wrapper_obj) = wrapper_obj else {
+    return Ok(());
+  };
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)
 }
 
 fn document_window_from_document(
@@ -9674,13 +9794,16 @@ fn node_append_child_native(
   }
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
   if let Some(old_parent) = old_parent {
     if old_parent != parent_node_id {
       sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, scope, document_obj, dom, old_parent)?;
     }
   }
   if child_is_fragment {
     sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, child_obj, child_node_id)?;
+    sync_cached_children_for_wrapper(vm, scope, document_obj, dom, child_obj, child_node_id)?;
   }
 
   let inserted_roots: Vec<NodeId> = if child_is_fragment {
@@ -9839,9 +9962,11 @@ fn node_insert_before_native(
   }
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
   if let Some(old_parent) = old_parent {
     if old_parent != parent_node_id {
       sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, scope, document_obj, dom, old_parent)?;
     }
   }
   if new_child_is_fragment {
@@ -9853,6 +9978,7 @@ fn node_insert_before_native(
       new_child_obj,
       new_child_node_id,
     )?;
+    sync_cached_children_for_wrapper(vm, scope, document_obj, dom, new_child_obj, new_child_node_id)?;
   }
 
   let inserted_roots: Vec<NodeId> = if new_child_is_fragment {
@@ -9958,6 +10084,7 @@ fn node_remove_child_native(
   }
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
 
   run_dynamic_script_children_changed_steps(
     vm,
@@ -10089,13 +10216,23 @@ fn node_replace_child_native(
   }
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
   if let Some(old_parent) = old_parent {
     if old_parent != parent_node_id {
       sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, scope, document_obj, dom, old_parent)?;
     }
   }
   if new_child_is_fragment {
     sync_cached_child_nodes_for_wrapper(
+      vm,
+      scope,
+      document_obj,
+      dom,
+      new_child_obj,
+      new_child_node_id,
+    )?;
+    sync_cached_children_for_wrapper(
       vm,
       scope,
       document_obj,
@@ -10545,6 +10682,280 @@ fn node_child_nodes_get_native(
   Ok(Value::Object(array))
 }
 
+fn html_collection_item_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(collection_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let index_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut n = scope.heap_mut().to_number(index_value)?;
+  if !n.is_finite() || n.is_nan() {
+    n = 0.0;
+  }
+  let n = n.trunc();
+  if n < 0.0 {
+    return Ok(Value::Null);
+  }
+
+  let idx = if n >= usize::MAX as f64 {
+    usize::MAX
+  } else {
+    n as usize
+  };
+
+  let mut idx_buf = [0u8; 20];
+  let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+  let key = alloc_key(scope, idx_str)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(collection_obj, &key)?
+      .filter(|v| !matches!(v, Value::Undefined))
+      .unwrap_or(Value::Null),
+  )
+}
+
+fn parent_node_children_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  // `children` is exposed only on ParentNode implementers.
+  match &dom.node(node_id).kind {
+    NodeKind::Document { .. }
+    | NodeKind::DocumentFragment
+    | NodeKind::Element { .. }
+    | NodeKind::Slot { .. } => {}
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+
+  let children_key = alloc_key(scope, NODE_CHILDREN_KEY)?;
+  let collection = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &children_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      let collection = scope.alloc_object()?;
+      scope.push_root(Value::Object(collection))?;
+
+      // Use the realm's HTMLCollection prototype so `instanceof HTMLCollection` works.
+      let proto_key = alloc_key(scope, HTML_COLLECTION_PROTOTYPE_KEY)?;
+      let proto = match scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &proto_key)?
+      {
+        Some(Value::Object(obj)) => obj,
+        _ => return Err(VmError::InvariantViolation("missing HTMLCollection prototype")),
+      };
+      scope
+        .heap_mut()
+        .object_set_prototype(collection, Some(proto))?;
+
+      // Keep the root wrapper alive even if the caller only holds the collection object.
+      let root_key = alloc_key(scope, HTML_COLLECTION_ROOT_KEY)?;
+      scope.define_property(
+        collection,
+        root_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(wrapper_obj),
+            writable: false,
+          },
+        },
+      )?;
+
+      scope.define_property(
+        wrapper_obj,
+        children_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(collection),
+            writable: false,
+          },
+        },
+      )?;
+
+      collection
+    }
+  };
+
+  sync_children_collection(vm, scope, document_obj, dom, node_id, collection)?;
+  Ok(Value::Object(collection))
+}
+
+fn parent_node_child_element_count_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  match &dom.node(node_id).kind {
+    NodeKind::Document { .. }
+    | NodeKind::DocumentFragment
+    | NodeKind::Element { .. }
+    | NodeKind::Slot { .. } => {}
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  }
+
+  Ok(Value::Number(dom.child_element_count(node_id) as f64))
+}
+
+fn parent_node_first_element_child_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  match &dom.node(node_id).kind {
+    NodeKind::Document { .. }
+    | NodeKind::DocumentFragment
+    | NodeKind::Element { .. }
+    | NodeKind::Slot { .. } => {}
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  }
+
+  let Some(found) = dom.first_element_child(node_id) else {
+    return Ok(Value::Null);
+  };
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found)
+}
+
+fn parent_node_last_element_child_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  match &dom.node(node_id).kind {
+    NodeKind::Document { .. }
+    | NodeKind::DocumentFragment
+    | NodeKind::Element { .. }
+    | NodeKind::Slot { .. } => {}
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  }
+
+  let Some(found) = dom.last_element_child(node_id) else {
+    return Ok(Value::Null);
+  };
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found)
+}
+
+fn element_next_element_sibling_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let Some(found) = dom.next_element_sibling(node_id) else {
+    return Ok(Value::Null);
+  };
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found)
+}
+
+fn element_previous_element_sibling_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let node_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_element_id(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+
+  let Some(found) = dom.previous_element_sibling(node_id) else {
+    return Ok(Value::Null);
+  };
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found)
+}
+
 fn node_remove_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -10599,6 +11010,7 @@ fn node_remove_native(
 
   // Keep cached `childNodes` live NodeLists updated.
   sync_cached_child_nodes_for_node_id(vm, scope, document_obj, dom, parent)?;
+  sync_cached_children_for_node_id(vm, scope, document_obj, dom, parent)?;
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
 
@@ -16589,6 +17001,73 @@ fn init_window_globals(
     let text_key = alloc_key(&mut scope, "Text")?;
     scope.define_property(global, text_key, data_desc(Value::Object(text_ctor)))?;
 
+    // HTMLCollection constructor + prototype.
+    //
+    // This is needed for `ParentNode.children` (`instanceof HTMLCollection`).
+    let html_collection_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(html_collection_proto))?;
+    scope.heap_mut().object_set_prototype(
+      html_collection_proto,
+      Some(realm.intrinsics().object_prototype()),
+    )?;
+
+    let html_collection_ctor = make_illegal_ctor(&mut scope, "HTMLCollection")?;
+    scope.push_root(Value::Object(html_collection_ctor))?;
+    scope.define_property(
+      html_collection_ctor,
+      prototype_key,
+      data_desc(Value::Object(html_collection_proto)),
+    )?;
+    scope.define_property(
+      html_collection_proto,
+      constructor_key,
+      data_desc(Value::Object(html_collection_ctor)),
+    )?;
+    let html_collection_key = alloc_key(&mut scope, "HTMLCollection")?;
+    scope.define_property(
+      global,
+      html_collection_key,
+      data_desc(Value::Object(html_collection_ctor)),
+    )?;
+
+    // HTMLCollection.prototype.item(index)
+    let html_collection_item_call_id = vm.register_native_call(html_collection_item_native)?;
+    let html_collection_item_name = scope.alloc_string("item")?;
+    scope.push_root(Value::String(html_collection_item_name))?;
+    let html_collection_item_func = scope.alloc_native_function(
+      html_collection_item_call_id,
+      None,
+      html_collection_item_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      html_collection_item_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(html_collection_item_func))?;
+    let html_collection_item_key = alloc_key(&mut scope, "item")?;
+    scope.define_property(
+      html_collection_proto,
+      html_collection_item_key,
+      data_desc(Value::Object(html_collection_item_func)),
+    )?;
+
+    // Store the HTMLCollection prototype on `document` so node wrappers can create collections
+    // without walking the global object.
+    let html_collection_proto_key = alloc_key(&mut scope, HTML_COLLECTION_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      html_collection_proto_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(html_collection_proto),
+          writable: false,
+        },
+      },
+    )?;
+
     // Node prototype accessors and methods used by WPT DOM tests.
     let node_type_get_call_id = vm.register_native_call(node_node_type_get_native)?;
     let node_type_get_name = scope.alloc_string("get nodeType")?;
@@ -16810,6 +17289,188 @@ fn init_window_globals(
         configurable: true,
         kind: PropertyKind::Accessor {
           get: Value::Object(tag_name_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    // --- ParentNode (Element/Document/DocumentFragment): children + element-only traversal ------
+
+    let parent_children_get_call_id = vm.register_native_call(parent_node_children_get_native)?;
+    let parent_children_get_name = scope.alloc_string("get children")?;
+    scope.push_root(Value::String(parent_children_get_name))?;
+    let parent_children_get_func = scope.alloc_native_function(
+      parent_children_get_call_id,
+      None,
+      parent_children_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      parent_children_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(parent_children_get_func))?;
+
+    let parent_child_element_count_get_call_id =
+      vm.register_native_call(parent_node_child_element_count_get_native)?;
+    let parent_child_element_count_get_name = scope.alloc_string("get childElementCount")?;
+    scope.push_root(Value::String(parent_child_element_count_get_name))?;
+    let parent_child_element_count_get_func = scope.alloc_native_function(
+      parent_child_element_count_get_call_id,
+      None,
+      parent_child_element_count_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      parent_child_element_count_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(parent_child_element_count_get_func))?;
+
+    let parent_first_element_child_get_call_id =
+      vm.register_native_call(parent_node_first_element_child_get_native)?;
+    let parent_first_element_child_get_name = scope.alloc_string("get firstElementChild")?;
+    scope.push_root(Value::String(parent_first_element_child_get_name))?;
+    let parent_first_element_child_get_func = scope.alloc_native_function(
+      parent_first_element_child_get_call_id,
+      None,
+      parent_first_element_child_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      parent_first_element_child_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(parent_first_element_child_get_func))?;
+
+    let parent_last_element_child_get_call_id =
+      vm.register_native_call(parent_node_last_element_child_get_native)?;
+    let parent_last_element_child_get_name = scope.alloc_string("get lastElementChild")?;
+    scope.push_root(Value::String(parent_last_element_child_get_name))?;
+    let parent_last_element_child_get_func = scope.alloc_native_function(
+      parent_last_element_child_get_call_id,
+      None,
+      parent_last_element_child_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      parent_last_element_child_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(parent_last_element_child_get_func))?;
+
+    let children_key = alloc_key(&mut scope, "children")?;
+    let child_element_count_key = alloc_key(&mut scope, "childElementCount")?;
+    let first_element_child_key = alloc_key(&mut scope, "firstElementChild")?;
+    let last_element_child_key = alloc_key(&mut scope, "lastElementChild")?;
+
+    for proto in [element_proto, document_proto, document_fragment_proto] {
+      scope.define_property(
+        proto,
+        children_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(parent_children_get_func),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+      scope.define_property(
+        proto,
+        child_element_count_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(parent_child_element_count_get_func),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+      scope.define_property(
+        proto,
+        first_element_child_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(parent_first_element_child_get_func),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+      scope.define_property(
+        proto,
+        last_element_child_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(parent_last_element_child_get_func),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // --- Element: nextElementSibling / previousElementSibling --------------------------------
+
+    let next_element_sibling_get_call_id = vm.register_native_call(element_next_element_sibling_get_native)?;
+    let next_element_sibling_get_name = scope.alloc_string("get nextElementSibling")?;
+    scope.push_root(Value::String(next_element_sibling_get_name))?;
+    let next_element_sibling_get_func = scope.alloc_native_function(
+      next_element_sibling_get_call_id,
+      None,
+      next_element_sibling_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      next_element_sibling_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(next_element_sibling_get_func))?;
+
+    let previous_element_sibling_get_call_id =
+      vm.register_native_call(element_previous_element_sibling_get_native)?;
+    let previous_element_sibling_get_name = scope.alloc_string("get previousElementSibling")?;
+    scope.push_root(Value::String(previous_element_sibling_get_name))?;
+    let previous_element_sibling_get_func = scope.alloc_native_function(
+      previous_element_sibling_get_call_id,
+      None,
+      previous_element_sibling_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      previous_element_sibling_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(previous_element_sibling_get_func))?;
+
+    let next_element_sibling_key = alloc_key(&mut scope, "nextElementSibling")?;
+    scope.define_property(
+      element_proto,
+      next_element_sibling_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(next_element_sibling_get_func),
+          set: Value::Undefined,
+        },
+      },
+    )?;
+
+    let previous_element_sibling_key = alloc_key(&mut scope, "previousElementSibling")?;
+    scope.define_property(
+      element_proto,
+      previous_element_sibling_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(previous_element_sibling_get_func),
           set: Value::Undefined,
         },
       },
