@@ -1339,6 +1339,115 @@ pub fn reflect_set_prototype_of(
   }
 }
 
+pub fn proxy_constructor_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  throw_type_error(vm, scope, hooks, "Proxy constructor must be called with new")
+}
+
+pub fn proxy_constructor_construct(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let handler_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  let handler = require_object(handler_val)?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  Ok(Value::Object(proxy))
+}
+
+pub fn proxy_revocable(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-proxy.revocable
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let handler_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let target = require_object(target_val)?;
+  let handler = require_object(handler_val)?;
+  scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  scope.push_root(Value::Object(proxy))?;
+
+  // Create the revocation function.
+  let revoke_call = intr.proxy_revoke_call();
+  let revoke_name = scope.alloc_string("revoke")?;
+  scope.push_root(Value::String(revoke_name))?;
+  let revoke_slots = [Value::Object(proxy)];
+  let revoke = scope.alloc_native_function_with_slots(revoke_call, None, revoke_name, 0, &revoke_slots)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(revoke, Some(intr.function_prototype()))?;
+  scope.push_root(Value::Object(revoke))?;
+
+  // Return the record { proxy, revoke }.
+  let record = scope.alloc_object()?;
+  scope.push_root(Value::Object(record))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(record, Some(intr.object_prototype()))?;
+
+  let proxy_key_s = scope.alloc_string("proxy")?;
+  scope.push_root(Value::String(proxy_key_s))?;
+  scope.define_property(
+    record,
+    PropertyKey::from_string(proxy_key_s),
+    data_desc(Value::Object(proxy), true, true, true),
+  )?;
+
+  let revoke_key_s = scope.alloc_string("revoke")?;
+  scope.push_root(Value::String(revoke_key_s))?;
+  scope.define_property(
+    record,
+    PropertyKey::from_string(revoke_key_s),
+    data_desc(Value::Object(revoke), true, true, true),
+  )?;
+
+  Ok(Value::Object(record))
+}
+
+pub fn proxy_revoke(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-proxy-revocation-functions
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(Value::Object(proxy)) = slots.get(0).copied() else {
+    return Err(VmError::InvariantViolation(
+      "Proxy revoke function missing proxy native slot",
+    ));
+  };
+  scope.revoke_proxy(proxy)?;
+  Ok(Value::Undefined)
+}
+
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
 
@@ -4514,7 +4623,7 @@ fn invoke_then(
   let then_key_s = scope.alloc_string("then")?;
   scope.push_root(Value::String(then_key_s))?;
   let then_key = PropertyKey::from_string(then_key_s);
-  let then = get_property_value_with_host(vm, &mut scope, host, hooks, obj, then_key, receiver)?;
+  let then = scope.get_with_host_and_hooks(vm, host, hooks, obj, then_key, receiver)?;
   if !scope.heap().is_callable(then)? {
     return Err(crate::throw_type_error(
       &mut scope,

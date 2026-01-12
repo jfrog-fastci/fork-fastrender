@@ -449,6 +449,13 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.reflect())),
       )?;
 
+      let proxy_key = PropertyKey::from_string(scope.alloc_string("Proxy")?);
+      scope.define_property(
+        global_object,
+        proxy_key,
+        global_data_desc(Value::Object(intrinsics.proxy())),
+      )?;
+
       let error_key = PropertyKey::from_string(scope.alloc_string("Error")?);
       scope.define_property(
         global_object,
