@@ -10735,20 +10735,10 @@ fn async_apply_binary_operator(
     | OperatorName::GreaterThanOrEqual => {
       let mut op_scope = scope.reborrow();
       op_scope.push_roots(&[left, right])?;
-      let left_n = evaluator
-        .to_number_operator(&mut op_scope, left)
+      let ok = evaluator
+        .relational_comparison_operator(&mut op_scope, operator, left, right)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
-      let right_n = evaluator
-        .to_number_operator(&mut op_scope, right)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
-
-      Ok(match operator {
-        OperatorName::LessThan => Value::Bool(left_n < right_n),
-        OperatorName::LessThanOrEqual => Value::Bool(left_n <= right_n),
-        OperatorName::GreaterThan => Value::Bool(left_n > right_n),
-        OperatorName::GreaterThanOrEqual => Value::Bool(left_n >= right_n),
-        _ => unreachable!(),
-      })
+      Ok(Value::Bool(ok))
     }
     _ => Err(VmError::Unimplemented("binary operator")),
   }
