@@ -129,16 +129,17 @@ fn c_can_link_and_call_runtime_native() {
   let bin_path = tmp.path().join("smoke");
 
  fs::write(
-    &c_path,
-    r#"
-#define _POSIX_C_SOURCE 200809L
-#include "runtime_native.h"
-#include <stdlib.h>
-#include <time.h>
-#include <unistd.h>
-static void sleep_us(long us) {
-  struct timespec ts;
-  ts.tv_sec = us / 1000000;
+     &c_path,
+     r#"
+ #define _POSIX_C_SOURCE 200809L
+ #include "runtime_native.h"
+ #include <stdlib.h>
+ #include <string.h>
+ #include <time.h>
+ #include <unistd.h>
+ static void sleep_us(long us) {
+   struct timespec ts;
+   ts.tv_sec = us / 1000000;
   ts.tv_nsec = (us % 1000000) * 1000;
   nanosleep(&ts, (struct timespec*)0);
 }
@@ -489,18 +490,50 @@ int main(void) {
     rt_thread_deinit();
     return 51;
   }
-  // Draining after cancellation should be a no-op and must not run stale resume microtasks.
-  rt_drain_microtasks();
-  if (cancel_ran != 0) {
-    rt_thread_deinit();
-    return 52;
-  }
+   // Draining after cancellation should be a no-op and must not run stale resume microtasks.
+   rt_drain_microtasks();
+   if (cancel_ran != 0) {
+     rt_thread_deinit();
+     return 52;
+   }
 
-  rt_gc_safepoint();
-  rt_gc_set_young_range((uint8_t*)0, (uint8_t*)0);
-  rt_write_barrier_range((uint8_t*)0, (uint8_t*)0, 0);
-  rt_thread_deinit();
-  return 0;
+   // Error reporting: exceeding async limits should populate `rt_async_take_last_error`.
+   rt_async_set_limits(100000, 1);
+   int runaway_ran = 0;
+   Microtask runaway_task = {
+     .func = set_int,
+     .data = (uint8_t*)&runaway_ran,
+   };
+   rt_queue_microtask(runaway_task);
+   // This enqueue should exceed `max_ready_queue_len=1` and record a last-error string.
+   rt_queue_microtask(runaway_task);
+   char* err = rt_async_take_last_error();
+   if (err == (char*)0) {
+     rt_thread_deinit();
+     return 53;
+   }
+   if (strstr(err, "max_ready_queue_len=1") == (char*)0) {
+     rt_async_free_c_string(err);
+     rt_thread_deinit();
+     return 54;
+   }
+   rt_async_free_c_string(err);
+   // `take_last_error` clears the stored error.
+   char* err2 = rt_async_take_last_error();
+   if (err2 != (char*)0) {
+     rt_async_free_c_string(err2);
+     rt_thread_deinit();
+     return 55;
+   }
+   // Clear the queued microtask so the runtime is idle at exit.
+   rt_async_cancel_all();
+   rt_async_set_limits(100000, 100000);
+
+   rt_gc_safepoint();
+   rt_gc_set_young_range((uint8_t*)0, (uint8_t*)0);
+   rt_write_barrier_range((uint8_t*)0, (uint8_t*)0, 0);
+   rt_thread_deinit();
+   return 0;
 }
 "#,
   )

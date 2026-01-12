@@ -606,6 +606,28 @@ int main(void) {
   if (check(handle_microtask_dropped == cancel_handle_obj)) { rc = 39; goto done; }
   if (check(rt_handle_load(cancel_handle) == NULL)) { rc = 40; goto done; }
 
+  // Error reporting: exceeding async limits should populate `rt_async_take_last_error`.
+  rt_async_set_limits(100000, 1);
+  int runaway_ran = 0;
+  Microtask runaway_task = {
+    .func = set_int,
+    .data = (uint8_t*)&runaway_ran,
+  };
+  rt_queue_microtask(runaway_task);
+  // This enqueue should exceed `max_ready_queue_len=1` and record a last-error string.
+  rt_queue_microtask(runaway_task);
+  char* err = rt_async_take_last_error();
+  if (check(err != NULL)) { rc = 51; goto done; }
+  if (check(strstr(err, "max_ready_queue_len=1") != NULL)) { rc = 52; goto done; }
+  rt_async_free_c_string(err);
+  // `take_last_error` clears the stored error.
+  char* err2 = rt_async_take_last_error();
+  if (check(err2 == NULL)) { rc = 53; goto done; }
+  rt_async_free_c_string(err2);
+  // Clear the queued microtask so the runtime is idle at exit.
+  rt_async_cancel_all();
+  rt_async_set_limits(100000, 100000);
+
 done:
   if (wake_thread_started) {
     (void)pthread_join(wake_thread, NULL);
