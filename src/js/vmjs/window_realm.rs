@@ -31411,7 +31411,11 @@ mod tests {
 
     host.exec_script(
       "globalThis.__events = [];\n\
-       window.addEventListener('hashchange', (e) => { __events.push(e.oldURL + '|' + e.newURL); });\n\
+       globalThis.__is_hashchange_event = null;\n\
+       window.addEventListener('hashchange', (e) => {\n\
+         __events.push(e.oldURL + '|' + e.newURL);\n\
+         __is_hashchange_event = (typeof HashChangeEvent === 'function') && (e instanceof HashChangeEvent);\n\
+       });\n\
        location.href = '#a';\n\
        globalThis.__sync_len = __events.length;\n\
        globalThis.__href = location.href;\n\
@@ -31437,6 +31441,7 @@ mod tests {
 
     host.run_until_idle(crate::js::RunLimits::unbounded())?;
     assert_eq!(host.exec_script("__events.length")?, Value::Number(1.0));
+    assert_eq!(host.exec_script("__is_hashchange_event")?, Value::Bool(true));
     let event_v = host.exec_script("__events[0]")?;
     {
       let heap = host.host_mut().window_realm().heap();
