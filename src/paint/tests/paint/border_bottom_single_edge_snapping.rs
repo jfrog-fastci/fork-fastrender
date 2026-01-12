@@ -89,3 +89,41 @@ fn single_edge_bottom_border_snaps_like_chrome_even_width() {
     "expected pixel below 2px border to remain background"
   );
 }
+
+#[test]
+fn single_edge_bottom_border_does_not_shift_when_pixel_aligned() {
+  // The half-pixel bias used to match Chrome's fractional snapping should not affect borders whose
+  // top edge is already aligned to device pixels. Otherwise, a 1px bottom border can be painted one
+  // row too low.
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: #ff6600; }
+      #line {
+        position: absolute;
+        left: 0;
+        top: 0px;
+        width: 20px;
+        height: 0;
+        border-bottom: 1px solid #fff;
+      }
+    </style>
+    <div id="line"></div>
+  "#;
+
+  let mut renderer = create_stacking_context_bounds_renderer();
+  let pixmap = renderer.render_html(html, 30, 10).expect("render");
+
+  let border = pixmap.pixel(5, 0).expect("border pixel");
+  assert_eq!(
+    (border.red(), border.green(), border.blue(), border.alpha()),
+    (255, 255, 255, 255),
+    "expected bottom border to remain on the first device pixel row"
+  );
+
+  let below = pixmap.pixel(5, 1).expect("below pixel");
+  assert_eq!(
+    (below.red(), below.green(), below.blue(), below.alpha()),
+    (255, 102, 0, 255),
+    "expected pixel below border to remain background"
+  );
+}

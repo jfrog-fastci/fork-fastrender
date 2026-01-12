@@ -249,6 +249,7 @@ pub fn compare_pngs(
 
 #[cfg(test)]
 mod tests {
+  use super::super::test_utils::EnvVarGuard;
   use super::*;
   use std::collections::HashMap;
 
