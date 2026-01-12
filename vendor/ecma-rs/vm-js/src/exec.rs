@@ -10942,6 +10942,7 @@ pub(crate) enum GenFrame {
   /// iterator object and `next` method remain GC-reachable across yields.
   YieldStar {
     iterator_record: iterator::IteratorRecord,
+    returning: bool,
   },
   /// Continue evaluating a non-`yield` unary expression after its operand completes.
   UnaryAfterArgument {
@@ -11034,7 +11035,7 @@ impl Trace for GenFrame {
           tracer.trace_value(v);
         }
       }
-      GenFrame::YieldStar { iterator_record } => {
+      GenFrame::YieldStar { iterator_record, .. } => {
         tracer.trace_value(iterator_record.iterator);
         tracer.trace_value(iterator_record.next_method);
       }
@@ -26457,7 +26458,13 @@ fn gen_yield_star_begin(
   scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
 
   let mut frames: VecDeque<GenFrame> = VecDeque::new();
-  gen_frames_push(&mut frames, GenFrame::YieldStar { iterator_record })?;
+  gen_frames_push(
+    &mut frames,
+    GenFrame::YieldStar {
+      iterator_record,
+      returning: false,
+    },
+  )?;
 
   Ok(GenEval::Suspend(GenSuspend {
     yielded: GenYield::IteratorResult(value),
@@ -27041,7 +27048,10 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::YieldStar { mut iterator_record } => match state {
+      GenFrame::YieldStar {
+        mut iterator_record,
+        mut returning,
+      } => match state {
         Completion::Normal(v) => {
           let received = v.unwrap_or(Value::Undefined);
 
@@ -27088,12 +27098,212 @@ fn gen_resume_from_frames(
                 continue;
               }
             };
-            state = Completion::normal(value);
+            state = if returning {
+              Completion::Return(value)
+            } else {
+              Completion::normal(value)
+            };
             continue;
           }
 
           let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
-          gen_frames_push(&mut out_frames, GenFrame::YieldStar { iterator_record })?;
+          gen_frames_push(
+            &mut out_frames,
+            GenFrame::YieldStar {
+              iterator_record,
+              returning,
+            },
+          )?;
+          out_frames.append(&mut frames);
+          return Ok(GenEval::Suspend(GenSuspend {
+            yielded: GenYield::IteratorResult(iter_result),
+            frames: out_frames,
+          }));
+        }
+        Completion::Throw(thrown) => {
+          let reason = thrown.value;
+          scope.push_root(reason)?;
+
+          let throw_key_s = scope.alloc_string("throw")?;
+          scope.push_root(Value::String(throw_key_s))?;
+          let throw_key = PropertyKey::from_string(throw_key_s);
+
+          let throw_method = match crate::spec_ops::get_method_with_host_and_hooks(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            iterator_record.iterator,
+            throw_key,
+          ) {
+            Ok(m) => m,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let Some(throw_method) = throw_method else {
+            // No `throw` method: close the iterator and rethrow the original reason.
+            match evaluator.iterator_close_on_completion(scope, &iterator_record, Completion::Throw(thrown)) {
+              Ok(c) => state = c,
+              Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+            }
+            continue;
+          };
+
+          scope.push_root(throw_method)?;
+          let call_args = [reason];
+          let iter_result = match evaluator.vm.call_with_host_and_hooks(
+            &mut *evaluator.host,
+            scope,
+            &mut *evaluator.hooks,
+            throw_method,
+            iterator_record.iterator,
+            &call_args,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let done = match iterator::iterator_complete(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          if done {
+            let value = match iterator::iterator_value(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              iter_result,
+            ) {
+              Ok(v) => v,
+              Err(err) => {
+                state = gen_error_to_completion(evaluator, scope, err)?;
+                continue;
+              }
+            };
+            state = if returning {
+              Completion::Return(value)
+            } else {
+              Completion::normal(value)
+            };
+            continue;
+          }
+
+          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
+          gen_frames_push(
+            &mut out_frames,
+            GenFrame::YieldStar {
+              iterator_record,
+              returning,
+            },
+          )?;
+          out_frames.append(&mut frames);
+          return Ok(GenEval::Suspend(GenSuspend {
+            yielded: GenYield::IteratorResult(iter_result),
+            frames: out_frames,
+          }));
+        }
+        Completion::Return(v) => {
+          scope.push_root(v)?;
+
+          let return_key_s = scope.alloc_string("return")?;
+          scope.push_root(Value::String(return_key_s))?;
+          let return_key = PropertyKey::from_string(return_key_s);
+
+          let return_method = match crate::spec_ops::get_method_with_host_and_hooks(
+            evaluator.vm,
+            scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            iterator_record.iterator,
+            return_key,
+          ) {
+            Ok(m) => m,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let Some(return_method) = return_method else {
+            state = Completion::Return(v);
+            continue;
+          };
+
+          scope.push_root(return_method)?;
+          let call_args = [v];
+          let iter_result = match evaluator.vm.call_with_host_and_hooks(
+            &mut *evaluator.host,
+            scope,
+            &mut *evaluator.hooks,
+            return_method,
+            iterator_record.iterator,
+            &call_args,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let done = match iterator::iterator_complete(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            iter_result,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          if done {
+            let value = match iterator::iterator_value(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              iter_result,
+            ) {
+              Ok(v) => v,
+              Err(err) => {
+                state = gen_error_to_completion(evaluator, scope, err)?;
+                continue;
+              }
+            };
+            state = Completion::Return(value);
+            continue;
+          }
+
+          returning = true;
+          let mut out_frames: VecDeque<GenFrame> = VecDeque::new();
+          gen_frames_push(
+            &mut out_frames,
+            GenFrame::YieldStar {
+              iterator_record,
+              returning,
+            },
+          )?;
           out_frames.append(&mut frames);
           return Ok(GenEval::Suspend(GenSuspend {
             yielded: GenYield::IteratorResult(iter_result),
@@ -27821,7 +28031,7 @@ fn gen_root_values_for_continuation(
           values.push(*v);
         }
       }
-      GenFrame::YieldStar { iterator_record } => {
+      GenFrame::YieldStar { iterator_record, .. } => {
         values.push(iterator_record.iterator);
         values.push(iterator_record.next_method);
       }

@@ -63,9 +63,11 @@ fn iterator_step_value_sets_done_true_when_done_getter_throws() -> Result<(), Vm
   let throw_id = vm.register_native_call(throw_1)?;
   let throw_name = scope.alloc_string("throw")?;
   let throw_fn = scope.alloc_native_function(throw_id, None, throw_name, 0)?;
+  scope.push_root(Value::Object(throw_fn))?;
 
   // Iterator result object whose `done` getter throws.
   let iter_result = scope.alloc_object()?;
+  scope.push_root(Value::Object(iter_result))?;
   let done_key = PropertyKey::from_string(scope.alloc_string("done")?);
   scope.define_property(
     iter_result,
@@ -92,9 +94,11 @@ fn iterator_step_value_sets_done_true_when_done_getter_throws() -> Result<(), Vm
     0,
     &[Value::Object(iter_result)],
   )?;
+  scope.push_root(Value::Object(next_fn))?;
 
   // Iterator object.
   let iterator_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(iterator_obj))?;
   let next_key = PropertyKey::from_string(scope.alloc_string("next")?);
   scope.define_property(iterator_obj, next_key, data_desc(Value::Object(next_fn)))?;
 
@@ -107,6 +111,7 @@ fn iterator_step_value_sets_done_true_when_done_getter_throws() -> Result<(), Vm
     0,
     &[Value::Object(iterator_obj)],
   )?;
+  scope.push_root(Value::Object(iter_method))?;
 
   let mut record = iterator::get_iterator_from_method(
     &mut vm,
@@ -214,7 +219,7 @@ fn iterator_step_value_sets_done_true_when_value_getter_throws() -> Result<(), V
 }
 
 #[test]
-fn iterator_close_suppresses_get_method_error_for_throw_completion() -> Result<(), VmError> {
+fn iterator_close_propagates_get_method_error_for_throw_completion() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
@@ -227,14 +232,17 @@ fn iterator_close_suppresses_get_method_error_for_throw_completion() -> Result<(
   let throw_id = vm.register_native_call(throw_1)?;
   let throw_name = scope.alloc_string("throw")?;
   let throw_fn = scope.alloc_native_function(throw_id, None, throw_name, 0)?;
+  scope.push_root(Value::Object(throw_fn))?;
 
   // Iterator object with a callable `next` (required by GetIteratorFromMethod), and a `"return"`
   // accessor getter that throws.
   let return_slot0_id = vm.register_native_call(return_slot0)?;
   let next_name = scope.alloc_string("next")?;
   let next_fn = scope.alloc_native_function(return_slot0_id, None, next_name, 0)?;
+  scope.push_root(Value::Object(next_fn))?;
 
   let iterator_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(iterator_obj))?;
   let next_key = PropertyKey::from_string(scope.alloc_string("next")?);
   scope.define_property(iterator_obj, next_key, data_desc(Value::Object(next_fn)))?;
 
@@ -260,6 +268,7 @@ fn iterator_close_suppresses_get_method_error_for_throw_completion() -> Result<(
     0,
     &[Value::Object(iterator_obj)],
   )?;
+  scope.push_root(Value::Object(iter_method))?;
 
   let record = iterator::get_iterator_from_method(
     &mut vm,
@@ -270,17 +279,20 @@ fn iterator_close_suppresses_get_method_error_for_throw_completion() -> Result<(
     Value::Object(iter_method),
   )?;
 
-  // Throw completion: suppress the abrupt completion from `GetMethod(iterator, "return")`.
-  iterator::iterator_close(
+  // Throw completion: closing errors from `GetMethod(iterator, "return")` must still propagate and
+  // override the incoming completion.
+  let err = iterator::iterator_close(
     &mut vm,
     &mut host,
     &mut hooks,
     &mut scope,
     &record,
     CloseCompletionKind::Throw,
-  )?;
+  )
+  .expect_err("expected IteratorClose to propagate GetMethod error for Throw completion");
+  assert_eq!(err.thrown_value(), Some(Value::Number(1.0)));
 
-  // Non-throw completion: propagate the abrupt completion.
+  // Non-throw completion: closing errors must also propagate.
   let err = iterator::iterator_close(
     &mut vm,
     &mut host,
@@ -333,12 +345,15 @@ fn iterator_close_non_object_return_value_ignored_for_throw_completion() -> Resu
   let return_slot0_id = vm.register_native_call(return_slot0)?;
   let next_name = scope.alloc_string("next")?;
   let next_fn = scope.alloc_native_function(return_slot0_id, None, next_name, 0)?;
+  scope.push_root(Value::Object(next_fn))?;
 
   let inc_id = vm.register_native_call(inc_host_and_return_number)?;
   let return_name = scope.alloc_string("return")?;
   let return_fn = scope.alloc_native_function(inc_id, None, return_name, 0)?;
+  scope.push_root(Value::Object(return_fn))?;
 
   let iterator_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(iterator_obj))?;
   let next_key = PropertyKey::from_string(scope.alloc_string("next")?);
   scope.define_property(iterator_obj, next_key, data_desc(Value::Object(next_fn)))?;
   let return_key = PropertyKey::from_string(scope.alloc_string("return")?);
@@ -352,6 +367,7 @@ fn iterator_close_non_object_return_value_ignored_for_throw_completion() -> Resu
     0,
     &[Value::Object(iterator_obj)],
   )?;
+  scope.push_root(Value::Object(iter_method))?;
 
   let record = iterator::get_iterator_from_method(
     &mut vm,

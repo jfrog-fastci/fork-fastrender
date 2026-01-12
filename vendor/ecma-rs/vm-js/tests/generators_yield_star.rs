@@ -158,3 +158,134 @@ fn yield_star_yields_iterator_result_object_directly() -> Result<(), VmError> {
   assert_eq!(v, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn yield_star_throw_delegates_to_iterator_throw() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = r#"
+    var log = '';
+
+    var iterator = {
+      next: function (v) {
+        log += 'n' + v;
+        return { value: 1, done: false };
+      },
+
+      throw: function (e) {
+        log += 't' + e;
+        return { value: 99, done: true };
+      }
+    };
+    var iterable = {};
+    iterable[Symbol.iterator] = function () { return iterator; };
+
+    function* g() { return yield* iterable; }
+
+    var it = g();
+    var r1 = it.next(123);
+    var ok1 = r1.value === 1 && r1.done === false;
+
+    var r2 = it.throw('boom');
+    var ok2 = r2.value === 99 && r2.done === true;
+
+    ok1 && ok2 && log === 'nundefinedtboom'
+  "#;
+
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn yield_star_throw_without_throw_method_closes_iterator_and_rethrows() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = r#"
+    var returnCalls = 0;
+
+    var iterator = {
+      next: function () { return { value: 1, done: false }; },
+      return: function () { returnCalls++; return {}; }
+    };
+    var iterable = {};
+    iterable[Symbol.iterator] = function () { return iterator; };
+
+    function* g() { yield* iterable; }
+
+    var it = g();
+    it.next();
+
+    var caught = false;
+    try {
+      it.throw('boom');
+    } catch (e) {
+      caught = (e === 'boom');
+    }
+
+    caught && returnCalls === 1
+  "#;
+
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn yield_star_return_delegates_to_iterator_return() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = r#"
+    var log = '';
+
+    var iterator = {
+      next: function () { log += 'n'; return { value: 1, done: false }; },
+      return: function (v) { log += 'r' + v; return { value: 77, done: true }; }
+    };
+    var iterable = {};
+    iterable[Symbol.iterator] = function () { return iterator; };
+
+    function* g() { yield* iterable; }
+
+    var it = g();
+    it.next();
+    var r = it.return(42);
+
+    r.done === true && r.value === 77 && log === 'nr42'
+  "#;
+
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn yield_star_return_pending_propagates_out_of_generator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = r#"
+    var after = false;
+
+    function* inner() {
+      try { yield 1; } finally { yield 2; }
+    }
+    function* outer() {
+      yield* inner();
+      after = true;
+    }
+
+    var it = outer();
+    var r1 = it.next();
+    var r2 = it.return('R');
+    var r3 = it.next();
+
+    r1.value === 1 && r1.done === false &&
+    r2.value === 2 && r2.done === false &&
+    r3.value === 'R' && r3.done === true &&
+    after === false
+  "#;
+
+  let v = rt.exec_script(script)?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
