@@ -170,6 +170,10 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     HEADER.contains("typedef struct Microtask"),
     "`runtime_native.h` is missing the Microtask ABI type"
   );
+  assert!(
+    HEADER.contains("RT_INTERNED_ID_INVALID"),
+    "`runtime_native.h` is missing the RT_INTERNED_ID_INVALID InternedId sentinel macro"
+  );
 
   // Parallel → Promise bridge.
   for sym in ["rt_parallel_spawn_promise_legacy("] {
