@@ -968,6 +968,7 @@ impl WindowRealmHost for WindowHostState {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::window_realm::DomBindingsBackend;
 
   use crate::resource::FetchedResource;
   use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -1429,6 +1430,35 @@ mod tests {
   }
 
   #[test]
+  fn window_realm_webidl_dom_backend_installs_event_target_and_node_and_reuses_node_prototype_for_wrappers(
+  ) -> Result<()> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+
+    let mut exec = |source: &str| -> Result<Value> {
+      match realm.exec_script(source) {
+        Ok(value) => Ok(value),
+        Err(err) => Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
+      }
+    };
+
+    assert_eq!(exec("typeof EventTarget === 'function'")?, Value::Bool(true));
+    assert_eq!(exec("typeof Node === 'function'")?, Value::Bool(true));
+    assert_eq!(
+      exec("Object.getPrototypeOf(Node.prototype) === EventTarget.prototype")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      exec("Node.prototype.isPrototypeOf(document.createElement('div'))")?,
+      Value::Bool(true)
+    );
+    Ok(())
+  }
+
+  #[test]
   fn node_wrappers_do_not_shadow_event_target_prototype_methods() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
@@ -1827,7 +1857,6 @@ mod tests {
       }
       other => panic!("expected accessor descriptor for Text.prototype.data, got {other:?}"),
     }
-
     Ok(())
   }
 

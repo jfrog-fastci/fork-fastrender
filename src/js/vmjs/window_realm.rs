@@ -67,6 +67,15 @@ use webidl_vm_js::WebIdlBindingsHost;
 pub type ConsoleSink =
   Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomBindingsBackend {
+  /// Install handcrafted `vm-js` shims and allocate per-realm DOM prototypes via [`DomPlatform`].
+  Handwritten,
+  /// Install WebIDL-generated constructors/prototypes for core DOM interfaces and reuse those
+  /// global prototype objects for native wrapper creation.
+  WebIdl,
+}
+
 /// Lightweight `VmHost` context used by `WindowRealm` helpers that need a stable downcast target.
 ///
 /// `vm-js` passes a `&mut dyn VmHost` into every native call/construct handler. In full browser
@@ -132,6 +141,8 @@ pub struct WindowRealmConfig {
   pub crypto_rng_seed: Option<u64>,
   /// Maximum size of a single Web Storage area (`localStorage` / `sessionStorage`), in UTF-16 bytes.
   pub web_storage_quota_utf16_bytes: usize,
+  /// Selects how DOM interface constructors/prototypes are installed for this realm.
+  pub dom_bindings_backend: DomBindingsBackend,
 }
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
@@ -169,6 +180,7 @@ impl WindowRealmConfig {
       web_time: WebTime::default(),
       crypto_rng_seed: None,
       web_storage_quota_utf16_bytes: 5 * 1024 * 1024,
+      dom_bindings_backend: DomBindingsBackend::Handwritten,
     }
   }
 
@@ -222,6 +234,11 @@ impl WindowRealmConfig {
 
   pub fn with_web_storage_quota_utf16_bytes(mut self, quota_bytes: usize) -> Self {
     self.web_storage_quota_utf16_bytes = quota_bytes;
+    self
+  }
+
+  pub fn with_dom_bindings_backend(mut self, backend: DomBindingsBackend) -> Self {
+    self.dom_bindings_backend = backend;
     self
   }
 }
@@ -27126,6 +27143,18 @@ fn init_window_globals(
   realm: &Realm,
   config: &WindowRealmConfig,
 ) -> Result<(Option<u64>, Option<u64>, GcObject, GcString), VmError> {
+  {
+    let mut scope = heap.scope();
+    // Ensure `DOMException` exists early: many real-world libraries use it for quota errors, token
+    // validation, etc.
+    DomExceptionClassVmJs::install(vm, &mut scope, realm)?;
+  }
+
+  if config.dom_bindings_backend == DomBindingsBackend::WebIdl {
+    crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)?;
+  }
+
   let mut scope = heap.scope();
   let global = realm.global_object();
   scope.heap_mut().object_set_host_slots(
@@ -27135,10 +27164,6 @@ fn init_window_globals(
       b: 0,
     },
   )?;
-
-  // Ensure `DOMException` exists early: many real-world libraries use it for quota errors, token
-  // validation, etc.
-  DomExceptionClassVmJs::install(vm, &mut scope, realm)?;
 
   let global_this_key = alloc_key(&mut scope, "globalThis")?;
   let window_key = alloc_key(&mut scope, "window")?;
@@ -27573,7 +27598,10 @@ fn init_window_globals(
   )?;
   scope.push_root(Value::Object(window_location_set_func))?;
 
-  let mut dom_platform = Some(DomPlatform::new(&mut scope, realm)?);
+  let mut dom_platform = Some(match config.dom_bindings_backend {
+    DomBindingsBackend::Handwritten => DomPlatform::new(&mut scope, realm)?,
+    DomBindingsBackend::WebIdl => DomPlatform::new_from_global_prototypes(&mut scope, realm)?,
+  });
 
   let document_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(document_obj))?;
@@ -29629,11 +29657,14 @@ fn init_window_globals(
     proto
   };
   scope.push_root(Value::Object(event_target_proto))?;
-  scope.define_property(
-    event_target_proto,
-    add_event_listener_key,
-    data_desc(Value::Object(add_event_listener_func)),
-  )?;
+
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    scope.define_property(
+      event_target_proto,
+      add_event_listener_key,
+      data_desc(Value::Object(add_event_listener_func)),
+    )?;
+  }
   if !proto_chain_has_own_property(scope.heap(), document_obj, &add_event_listener_key)? {
     scope.define_property(
       document_obj,
@@ -29642,11 +29673,13 @@ fn init_window_globals(
     )?;
   }
   let remove_event_listener_key = alloc_key(&mut scope, "removeEventListener")?;
-  scope.define_property(
-    event_target_proto,
-    remove_event_listener_key,
-    data_desc(Value::Object(remove_event_listener_func)),
-  )?;
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    scope.define_property(
+      event_target_proto,
+      remove_event_listener_key,
+      data_desc(Value::Object(remove_event_listener_func)),
+    )?;
+  }
   if !proto_chain_has_own_property(scope.heap(), document_obj, &remove_event_listener_key)? {
     scope.define_property(
       document_obj,
@@ -29655,11 +29688,13 @@ fn init_window_globals(
     )?;
   }
   let dispatch_event_key = alloc_key(&mut scope, "dispatchEvent")?;
-  scope.define_property(
-    event_target_proto,
-    dispatch_event_key,
-    data_desc(Value::Object(dispatch_event_func)),
-  )?;
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    scope.define_property(
+      event_target_proto,
+      dispatch_event_key,
+      data_desc(Value::Object(dispatch_event_func)),
+    )?;
+  }
   if !proto_chain_has_own_property(scope.heap(), document_obj, &dispatch_event_key)? {
     scope.define_property(
       document_obj,
@@ -29701,38 +29736,40 @@ fn init_window_globals(
     data_desc(Value::Object(dispatch_event_global_func)),
   )?;
 
-  let event_target_ctor_call_id = vm.register_native_call(event_target_constructor_native)?;
-  let event_target_ctor_construct_id =
-    vm.register_native_construct(event_target_constructor_construct_native)?;
-  let event_target_ctor_name = scope.alloc_string("EventTarget")?;
-  scope.push_root(Value::String(event_target_ctor_name))?;
-  let event_target_ctor_func = scope.alloc_native_function(
-    event_target_ctor_call_id,
-    Some(event_target_ctor_construct_id),
-    event_target_ctor_name,
-    1,
-  )?;
-  scope.heap_mut().object_set_prototype(
-    event_target_ctor_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(event_target_ctor_func))?;
-  scope.define_property(
-    event_target_ctor_func,
-    prototype_key,
-    ctor_link_desc(Value::Object(event_target_proto)),
-  )?;
-  scope.define_property(
-    event_target_proto,
-    constructor_key,
-    ctor_link_desc(Value::Object(event_target_ctor_func)),
-  )?;
-  let event_target_key = alloc_key(&mut scope, "EventTarget")?;
-  scope.define_property(
-    global,
-    event_target_key,
-    data_desc(Value::Object(event_target_ctor_func)),
-  )?;
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    let event_target_ctor_call_id = vm.register_native_call(event_target_constructor_native)?;
+    let event_target_ctor_construct_id =
+      vm.register_native_construct(event_target_constructor_construct_native)?;
+    let event_target_ctor_name = scope.alloc_string("EventTarget")?;
+    scope.push_root(Value::String(event_target_ctor_name))?;
+    let event_target_ctor_func = scope.alloc_native_function(
+      event_target_ctor_call_id,
+      Some(event_target_ctor_construct_id),
+      event_target_ctor_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      event_target_ctor_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(event_target_ctor_func))?;
+    scope.define_property(
+      event_target_ctor_func,
+      prototype_key,
+      ctor_link_desc(Value::Object(event_target_proto)),
+    )?;
+    scope.define_property(
+      event_target_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(event_target_ctor_func)),
+    )?;
+    let event_target_key = alloc_key(&mut scope, "EventTarget")?;
+    scope.define_property(
+      global,
+      event_target_key,
+      data_desc(Value::Object(event_target_ctor_func)),
+    )?;
+  }
 
   // EventHandler (on*) attributes.
   //
@@ -29881,36 +29918,38 @@ fn init_window_globals(
     };
 
     // Node constructor + constants.
-    let node_ctor = make_illegal_ctor(&mut scope, "Node")?;
-    scope.push_root(Value::Object(node_ctor))?;
-    scope.define_property(
-      node_ctor,
-      prototype_key,
-      ctor_link_desc(Value::Object(node_proto)),
-    )?;
-    scope.define_property(
-      node_proto,
-      constructor_key,
-      ctor_link_desc(Value::Object(node_ctor)),
-    )?;
-    let node_key = alloc_key(&mut scope, "Node")?;
-    scope.define_property(global, node_key, data_desc(Value::Object(node_ctor)))?;
+    if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      let node_ctor = make_illegal_ctor(&mut scope, "Node")?;
+      scope.push_root(Value::Object(node_ctor))?;
+      scope.define_property(
+        node_ctor,
+        prototype_key,
+        ctor_link_desc(Value::Object(node_proto)),
+      )?;
+      scope.define_property(
+        node_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(node_ctor)),
+      )?;
+      let node_key = alloc_key(&mut scope, "Node")?;
+      scope.define_property(global, node_key, data_desc(Value::Object(node_ctor)))?;
 
-    for (name, value) in [
-      ("ELEMENT_NODE", 1.0),
-      ("ATTRIBUTE_NODE", 2.0),
-      ("TEXT_NODE", 3.0),
-      ("CDATA_SECTION_NODE", 4.0),
-      ("PROCESSING_INSTRUCTION_NODE", 7.0),
-      ("COMMENT_NODE", 8.0),
-      ("DOCUMENT_NODE", 9.0),
-      ("DOCUMENT_TYPE_NODE", 10.0),
-      ("DOCUMENT_FRAGMENT_NODE", 11.0),
-    ] {
-      let key = alloc_key(&mut scope, name)?;
-      let desc = const_desc(Value::Number(value));
-      scope.define_property(node_ctor, key, desc.clone())?;
-      scope.define_property(node_proto, key, desc)?;
+      for (name, value) in [
+        ("ELEMENT_NODE", 1.0),
+        ("ATTRIBUTE_NODE", 2.0),
+        ("TEXT_NODE", 3.0),
+        ("CDATA_SECTION_NODE", 4.0),
+        ("PROCESSING_INSTRUCTION_NODE", 7.0),
+        ("COMMENT_NODE", 8.0),
+        ("DOCUMENT_NODE", 9.0),
+        ("DOCUMENT_TYPE_NODE", 10.0),
+        ("DOCUMENT_FRAGMENT_NODE", 11.0),
+      ] {
+        let key = alloc_key(&mut scope, name)?;
+        let desc = const_desc(Value::Number(value));
+        scope.define_property(node_ctor, key, desc.clone())?;
+        scope.define_property(node_proto, key, desc)?;
+      }
     }
 
     let document_type_ctor = make_illegal_ctor(&mut scope, "DocumentType")?;
@@ -30393,6 +30432,8 @@ fn init_window_globals(
     )?;
 
     // Node prototype accessors and methods used by WPT DOM tests.
+    if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      // Node prototype accessors and methods used by WPT DOM tests.
     let node_type_get_call_id = vm.register_native_call(node_node_type_get_native)?;
     let node_type_get_name = scope.alloc_string("get nodeType")?;
     scope.push_root(Value::String(node_type_get_name))?;
@@ -30620,6 +30661,7 @@ fn init_window_globals(
       get_root_node_key,
       data_desc(Value::Object(get_root_node_func)),
     )?;
+    }
 
     // Element.tagName
     let tag_name_get_call_id = vm.register_native_call(element_tag_name_get_native)?;

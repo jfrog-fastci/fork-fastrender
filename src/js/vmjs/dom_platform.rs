@@ -573,6 +573,207 @@ impl DomPlatform {
     })
   }
 
+  /// Construct a [`DomPlatform`] by reusing prototype objects already installed on the realm's
+  /// global object.
+  ///
+  /// This is used by the WebIDL-first DOM bindings backend so that native DOM wrappers created by
+  /// the host (e.g. `document.createElement(..)`) inherit from the same `EventTarget.prototype` /
+  /// `Node.prototype` objects as WebIDL-generated constructors.
+  pub fn new_from_global_prototypes(scope: &mut Scope<'_>, realm: &Realm) -> Result<Self, VmError> {
+    fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
+      let s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(s))?;
+      Ok(PropertyKey::from_string(s))
+    }
+
+    fn proto_from_global_ctor(
+      scope: &mut Scope<'_>,
+      global: GcObject,
+      ctor: &str,
+    ) -> Result<GcObject, VmError> {
+      fn msg(ctor: &str, kind: &str) -> &'static str {
+        match (ctor, kind) {
+          ("EventTarget", "missing_ctor") => {
+            "DomPlatform global prototype lookup missing EventTarget constructor"
+          }
+          ("EventTarget", "ctor_not_object") => {
+            "DomPlatform global EventTarget constructor is not an object"
+          }
+          ("EventTarget", "missing_proto") => {
+            "DomPlatform global EventTarget constructor missing prototype"
+          }
+          ("EventTarget", "proto_not_object") => {
+            "DomPlatform global EventTarget constructor prototype is not an object"
+          }
+          ("Node", "missing_ctor") => "DomPlatform global prototype lookup missing Node constructor",
+          ("Node", "ctor_not_object") => "DomPlatform global Node constructor is not an object",
+          ("Node", "missing_proto") => "DomPlatform global Node constructor missing prototype",
+          ("Node", "proto_not_object") => "DomPlatform global Node constructor prototype is not an object",
+          _ => "DomPlatform global prototype lookup failed",
+        }
+      }
+
+      scope.push_root(Value::Object(global))?;
+
+      let ctor_key = alloc_key(scope, ctor)?;
+      let Some(ctor_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+      else {
+        return Err(VmError::InvariantViolation(msg(ctor, "missing_ctor")));
+      };
+      let Value::Object(ctor_obj) = ctor_val else {
+        return Err(VmError::InvariantViolation(msg(ctor, "ctor_not_object")));
+      };
+      scope.push_root(Value::Object(ctor_obj))?;
+
+      let proto_key = alloc_key(scope, "prototype")?;
+      let Some(proto_val) = scope
+        .heap()
+        .object_get_own_data_property_value(ctor_obj, &proto_key)?
+      else {
+        return Err(VmError::InvariantViolation(msg(ctor, "missing_proto")));
+      };
+      let Value::Object(proto_obj) = proto_val else {
+        return Err(VmError::InvariantViolation(msg(ctor, "proto_not_object")));
+      };
+      Ok(proto_obj)
+    }
+
+    let realm_id = realm.id();
+    let global = realm.global_object();
+
+    // Root prototypes: `DomPlatform` lives on the host side and is not traced by GC.
+    //
+    // Root each object immediately after allocation. Under a tight heap limit, subsequent
+    // allocations can trigger GC, and unrooted prototypes would be collected (turning their
+    // handles into stale values).
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(18);
+
+    // Reuse WebIDL-installed prototypes for the base interfaces we want to share across bindings
+    // backends.
+    let proto_event_target = proto_from_global_ctor(scope, global, "EventTarget")?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_event_target))?);
+    let proto_node = proto_from_global_ctor(scope, global, "Node")?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_node))?);
+
+    // Allocate remaining prototype objects in this realm, inheriting from the shared base
+    // prototypes so `instanceof Node` works for wrappers created by the host.
+    let proto_document_type = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document_type))?);
+    let proto_text = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_text))?);
+    let proto_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_element))?);
+    let proto_html_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_element))?);
+    let proto_html_input_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_input_element))?);
+    let proto_html_select_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_select_element))?);
+    let proto_html_text_area_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_text_area_element))?);
+    let proto_html_option_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_option_element))?);
+    let proto_html_form_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_form_element))?);
+    let proto_html_div_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_div_element))?);
+    let proto_html_span_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_span_element))?);
+    let proto_html_paragraph_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_paragraph_element))?);
+    let proto_html_anchor_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_anchor_element))?);
+    let proto_html_image_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_image_element))?);
+    let proto_html_link_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_link_element))?);
+    let proto_document = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document))?);
+    let proto_document_fragment = scope.alloc_object()?;
+    prototype_roots.push(
+      scope
+        .heap_mut()
+        .add_root(Value::Object(proto_document_fragment))?,
+    );
+
+    // WebIDL / WHATWG DOM inheritance chain:
+    //   EventTarget -> Object
+    //   Node -> EventTarget
+    //   DocumentType -> Node
+    //   Text -> Node
+    //   Element -> Node
+    //   HTMLElement -> Element
+    //   HTML*Element -> HTMLElement
+    //   Document -> Node
+    //   DocumentFragment -> Node
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_document_type, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_text, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_element, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_element, Some(proto_element))?;
+    for proto in [
+      proto_html_input_element,
+      proto_html_select_element,
+      proto_html_text_area_element,
+      proto_html_option_element,
+      proto_html_form_element,
+      proto_html_div_element,
+      proto_html_span_element,
+      proto_html_paragraph_element,
+      proto_html_anchor_element,
+      proto_html_image_element,
+      proto_html_link_element,
+    ] {
+      scope
+        .heap_mut()
+        .object_set_prototype(proto, Some(proto_html_element))?;
+    }
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_document, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_document_fragment, Some(proto_node))?;
+
+    Ok(Self {
+      realm_id,
+      prototypes: DomPrototypes {
+        event_target: proto_event_target,
+        node: proto_node,
+        document_type: proto_document_type,
+        text: proto_text,
+        element: proto_element,
+        html_element: proto_html_element,
+        html_input_element: proto_html_input_element,
+        html_select_element: proto_html_select_element,
+        html_text_area_element: proto_html_text_area_element,
+        html_option_element: proto_html_option_element,
+        html_form_element: proto_html_form_element,
+        html_div_element: proto_html_div_element,
+        html_span_element: proto_html_span_element,
+        html_paragraph_element: proto_html_paragraph_element,
+        html_anchor_element: proto_html_anchor_element,
+        html_image_element: proto_html_image_element,
+        html_link_element: proto_html_link_element,
+        document: proto_document,
+        document_fragment: proto_document_fragment,
+      },
+      prototype_roots,
+      wrappers_by_node: HashMap::new(),
+      meta_by_wrapper: HashMap::new(),
+      last_gc_runs: scope.heap().gc_runs(),
+    })
+  }
+
   pub fn teardown(&mut self, heap: &mut Heap) {
     for root in self.prototype_roots.drain(..) {
       heap.remove_root(root);
