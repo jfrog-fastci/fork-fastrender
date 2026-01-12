@@ -3,7 +3,6 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize
 
 use crate::abi::{LegacyPromiseRef, PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
-use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::promise_reactions::{
   decode_waiters_ptr, enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable,
@@ -598,35 +597,6 @@ pub(crate) fn promise_new() -> PromiseRef {
   )
 }
 
-pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
-  let payload = if layout.size == 0 {
-    core::ptr::null_mut()
-  } else {
-    let align = layout.align.max(1);
-    if !align.is_power_of_two() {
-      crate::trap::rt_trap_invalid_arg("promise payload align must be a power of two");
-    }
-    // Zero the payload buffer for determinism and to avoid exposing uninitialized
-    // bytes if the producer doesn't fully write the output struct.
-    crate::alloc::alloc_bytes_zeroed(layout.size, align, "promise payload")
-  };
-
-  let promise = Box::new(RtPromise::new_pending());
-  // Store the payload pointer even while pending; this allows worker threads to obtain the buffer
-  // without settling the promise.
-  promise.value.store(payload as usize, Ordering::Relaxed);
-  promise
-    .header
-    .flags
-    // Publish the payload pointer before setting the "has payload" flag so that a thread reading
-    // `flags` with `Acquire` will also observe the `value` store.
-    .store(
-      PROMISE_FLAG_HAS_PAYLOAD | PROMISE_FLAG_LEGACY_RT_PROMISE,
-      Ordering::Release,
-    );
-  PromiseRef(Box::into_raw(promise) as *mut runtime_native_abi::PromiseHeader)
-}
-
 pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
   match classify_promise(p) {
     PromiseClass::Payload(payload) => {
@@ -634,83 +604,6 @@ pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
     }
     _ => core::ptr::null_mut(),
   }
-}
-
-/// Attempt to fulfill a payload promise created by `rt_parallel_spawn_promise`.
-///
-/// Unlike [`promise_resolve`], this does **not** overwrite the promise's `value` field: for payload
-/// promises `value` stores the out-of-line payload pointer returned by `rt_promise_payload_ptr`.
-pub(crate) fn promise_try_fulfill_payload(p: PromiseRef) -> bool {
-  let PromiseClass::Payload(payload) = classify_promise(p) else {
-    return false;
-  };
-
-  let header = payload.cast::<PromiseHeader>();
-  let state = unsafe { &(*header).state };
-  if state
-    .compare_exchange(
-      PromiseHeader::PENDING,
-      STATE_FULFILLING,
-      Ordering::AcqRel,
-      Ordering::Acquire,
-    )
-    .is_err()
-  {
-    // Best-effort: if this was an external-pending payload promise, ensure the count is not left
-    // stuck in the presence of duplicate settles.
-    maybe_clear_external_pending(header);
-    return false;
-  }
-
-  state.store(PromiseHeader::FULFILLED, Ordering::Release);
-
-  drain_reactions_generic(header);
-  maybe_clear_external_pending(header);
-  true
-}
-
-pub(crate) fn promise_fulfill_payload(p: PromiseRef) {
-  let _ = promise_try_fulfill_payload(p);
-}
-
-/// Attempt to reject a payload promise created by `rt_parallel_spawn_promise`.
-///
-/// The promise's payload buffer is still accessible via `rt_promise_payload_ptr`. For legacy
-/// awaiters, we report the payload pointer as the rejection reason (`await_error`).
-pub(crate) fn promise_try_reject_payload(p: PromiseRef) -> bool {
-  let PromiseClass::Payload(payload) = classify_promise(p) else {
-    return false;
-  };
-
-  let header = payload.cast::<PromiseHeader>();
-  let state = unsafe { &(*header).state };
-  if state
-    .compare_exchange(
-      PromiseHeader::PENDING,
-      STATE_REJECTING,
-      Ordering::AcqRel,
-      Ordering::Acquire,
-    )
-    .is_err()
-  {
-    maybe_clear_external_pending(header);
-    return false;
-  }
-
-  state.store(PromiseHeader::REJECTED, Ordering::Release);
-
-  // If no one attached a handler yet, schedule unhandled-rejection tracking.
-  if !promise_is_handled(p) {
-    crate::unhandled_rejection::on_reject(p);
-  }
-
-  drain_reactions_generic(header);
-  maybe_clear_external_pending(header);
-  true
-}
-
-pub(crate) fn promise_reject_payload(p: PromiseRef) {
-  let _ = promise_try_reject_payload(p);
 }
 #[repr(C)]
 struct CallbackReaction {
