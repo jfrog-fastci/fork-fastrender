@@ -4,7 +4,7 @@
 //! This module keeps the image comparison configuration and artifact writing
 //! logic in one place so visual regression tests can reuse the same behavior.
 
-use crate::r#ref::compare::{compare_images, load_png_from_bytes, CompareConfig, ImageDiff};
+use super::compare::{compare_images, load_png_from_bytes, CompareConfig, ImageDiff};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
