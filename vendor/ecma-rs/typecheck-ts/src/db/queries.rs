@@ -2064,7 +2064,14 @@ pub mod body_check {
                 cached_def_types.insert(def, ty);
                 ty
               };
-              expr_value_overrides.insert(expr.span, ty);
+              // Do not override with `unknown`: the body checker can still compute
+              // function expression types directly from the AST (including return
+              // type inference from the function body). Overriding with `unknown`
+              // would erase that information and break downstream return-type
+              // inference for enclosing functions.
+              if ty != prim.unknown {
+                expr_value_overrides.insert(expr.span, ty);
+              }
             }
             hir_js::ExprKind::ClassExpr { def, .. } => {
               let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
@@ -2128,7 +2135,12 @@ pub mod body_check {
                 cached_def_types.insert(value_def, ty);
                 ty
               };
-              expr_value_overrides.insert(expr.span, ty);
+              // Similar to function expressions, avoid overriding with `unknown`
+              // so the base checker can fall back to its own inference when a
+              // class expression's value-side type isn't available.
+              if ty != prim.unknown {
+                expr_value_overrides.insert(expr.span, ty);
+              }
             }
             _ => {}
           }
@@ -2320,33 +2332,54 @@ pub mod body_check {
           caches.relation.clone(),
         );
         let mut expr_def_types: HashMap<DefId, TypeId> = HashMap::new();
-        for expr in body.exprs.iter() {
+        for (idx, expr) in body.exprs.iter().enumerate() {
           match expr.kind {
             hir_js::ExprKind::FunctionExpr { def, .. } => {
               if expr_def_types.contains_key(&def) {
                 continue;
               }
-              let ty = ctx
-                .interned_def_types
-                .get(&def)
+              // Prefer the base checker output for this expression when available
+              // so flow checking can still propagate function expression types
+              // even if we have not interned a stable `type_of_def` yet.
+              let ty = result
+                .expr_types
+                .get(idx)
                 .copied()
-                .filter(|ty| ctx.store.contains_type_id(*ty))
+                .filter(|ty| *ty != prim.unknown)
                 .map(|ty| ctx.store.canon(ty))
-                .unwrap_or(prim.unknown);
+                .unwrap_or_else(|| {
+                  ctx
+                    .interned_def_types
+                    .get(&def)
+                    .copied()
+                    .filter(|ty| ctx.store.contains_type_id(*ty))
+                    .map(|ty| ctx.store.canon(ty))
+                    .unwrap_or(prim.unknown)
+                });
               expr_def_types.insert(def, ty);
             }
             hir_js::ExprKind::ClassExpr { def, .. } => {
               if expr_def_types.contains_key(&def) {
                 continue;
               }
-              let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
-              let ty = ctx
-                .interned_def_types
-                .get(&value_def)
+              // Like function expressions, prefer the base checker output when it
+              // already computed a concrete class value type for this expression.
+              let ty = result
+                .expr_types
+                .get(idx)
                 .copied()
-                .filter(|ty| ctx.store.contains_type_id(*ty))
+                .filter(|ty| *ty != prim.unknown)
                 .map(|ty| ctx.store.canon(ty))
-                .unwrap_or(prim.unknown);
+                .unwrap_or_else(|| {
+                  let value_def = ctx.value_defs.get(&def).copied().unwrap_or(def);
+                  ctx
+                    .interned_def_types
+                    .get(&value_def)
+                    .copied()
+                    .filter(|ty| ctx.store.contains_type_id(*ty))
+                    .map(|ty| ctx.store.canon(ty))
+                    .unwrap_or(prim.unknown)
+                });
               expr_def_types.insert(def, ty);
             }
             _ => {}

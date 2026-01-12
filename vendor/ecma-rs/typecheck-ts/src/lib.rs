@@ -324,11 +324,138 @@ impl Host for MemoryHost {
   }
 
   fn file_kind(&self, file: &FileKey) -> lib_support::FileKind {
-    if self.libs.iter().any(|lib| &lib.key == file) {
-      lib_support::FileKind::Dts
-    } else {
-      lib_support::FileKind::Ts
+    if let Some(lib) = self.libs.iter().find(|lib| &lib.key == file) {
+      return lib.kind;
     }
+
+    let name = file.as_str().to_ascii_lowercase();
+    if name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts") {
+      return lib_support::FileKind::Dts;
+    }
+    if name.ends_with(".tsx") {
+      return lib_support::FileKind::Tsx;
+    }
+    if name.ends_with(".ts") || name.ends_with(".mts") || name.ends_with(".cts") {
+      return lib_support::FileKind::Ts;
+    }
+    if name.ends_with(".jsx") {
+      return lib_support::FileKind::Jsx;
+    }
+    if name.ends_with(".js") || name.ends_with(".mjs") || name.ends_with(".cjs") {
+      return lib_support::FileKind::Js;
+    }
+
+    lib_support::FileKind::Ts
+  }
+}
+
+#[cfg(test)]
+mod memory_host_tests {
+  use super::*;
+
+  #[test]
+  fn file_kind_infers_from_extension() {
+    let host = MemoryHost::new();
+
+    let cases = [
+      ("foo.ts", lib_support::FileKind::Ts),
+      ("foo.tsx", lib_support::FileKind::Tsx),
+      ("foo.d.ts", lib_support::FileKind::Dts),
+      ("foo.d.mts", lib_support::FileKind::Dts),
+      ("foo.d.cts", lib_support::FileKind::Dts),
+      ("foo.mts", lib_support::FileKind::Ts),
+      ("foo.cts", lib_support::FileKind::Ts),
+      ("foo.js", lib_support::FileKind::Js),
+      ("foo.jsx", lib_support::FileKind::Jsx),
+      ("foo.mjs", lib_support::FileKind::Js),
+      ("foo.cjs", lib_support::FileKind::Js),
+      ("foo", lib_support::FileKind::Ts),
+    ];
+
+    for (key, expected) in cases {
+      assert_eq!(
+        host.file_kind(&FileKey::new(key)),
+        expected,
+        "unexpected kind for {key}"
+      );
+    }
+  }
+
+  #[test]
+  fn file_kind_prefers_explicit_lib_entries() {
+    let mut host = MemoryHost::new();
+    let key = FileKey::new("lib_without_extension");
+    host.add_lib(lib_support::LibFile {
+      key: key.clone(),
+      name: Arc::from("lib_without_extension"),
+      kind: lib_support::FileKind::Dts,
+      text: Arc::from("declare const x: number;"),
+    });
+
+    assert_eq!(host.file_kind(&key), lib_support::FileKind::Dts);
+  }
+
+  #[test]
+  fn file_kind_preserves_non_dts_lib_entries() {
+    let mut host = MemoryHost::new();
+    let key = FileKey::new("custom.js");
+    host.add_lib(lib_support::LibFile {
+      key: key.clone(),
+      name: Arc::from("custom.js"),
+      kind: lib_support::FileKind::Js,
+      text: Arc::from("var Provided = 1;"),
+    });
+
+    assert_eq!(host.file_kind(&key), lib_support::FileKind::Js);
+  }
+}
+
+#[cfg(test)]
+mod regression_tests {
+  use super::*;
+
+  #[test]
+  fn function_expression_return_types_are_not_overridden_by_unknown() {
+    let mut host = MemoryHost::new();
+    let entry = FileKey::new("main.ts");
+    host.insert(
+      entry.clone(),
+      "export function outer() { return () => 1; }\nexport const inner = outer();",
+    );
+
+    let program = Program::new(host, vec![entry.clone()]);
+    let diagnostics = program.check();
+    assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+
+    let file_id = program.file_id(&entry).expect("file id");
+    let exports = program.exports_of(file_id);
+    let outer_def = exports
+      .get("outer")
+      .and_then(|entry| entry.def)
+      .expect("exported outer def");
+
+    let outer_ty = program.type_of_def(outer_def);
+    let outer_sigs = program.call_signatures(outer_ty);
+    assert_eq!(
+      outer_sigs.len(),
+      1,
+      "expected outer to have exactly one call signature, got: {outer_sigs:?}"
+    );
+
+    let inner_ty = outer_sigs[0].signature.ret;
+    assert_ne!(
+      program.type_kind(inner_ty),
+      TypeKindSummary::Unknown,
+      "expected outer() return type to be inferred, got {}",
+      program.display_type(inner_ty)
+    );
+
+    let inner_sigs = program.call_signatures(inner_ty);
+    assert!(
+      !inner_sigs.is_empty(),
+      "expected outer() to return a callable, got {}",
+      program.display_type(inner_ty)
+    );
   }
 }
 
