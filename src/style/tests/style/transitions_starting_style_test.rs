@@ -1,6 +1,7 @@
 use fastrender::animation;
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::css::types::{BoxShadow, TextShadow};
+use fastrender::FontConfig;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::computed::Visibility;
 use fastrender::style::types::{
@@ -10,7 +11,6 @@ use fastrender::style::types::{
 use fastrender::style::values::CustomPropertyTypedValue;
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
-use fastrender::FontConfig;
 use std::fs;
 use std::path::PathBuf;
 use svgtypes::{PathParser, PathSegment};

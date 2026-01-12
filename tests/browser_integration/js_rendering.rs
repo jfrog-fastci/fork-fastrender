@@ -9,7 +9,6 @@ use fastrender::js::{
   VirtualClock, WindowHostState,
 };
 use fastrender::resource::ResourceFetcher;
-use fastrender::text::font_db::FontConfig;
 use fastrender::{FastRender, RenderOptions, ResourcePolicy};
 use selectors::context::QuirksMode;
 use std::cell::Cell;
@@ -22,8 +21,7 @@ use url::Url;
 use super::support::FileResourceFetcher;
 
 fn offline_renderer() -> Result<FastRender> {
-  FastRender::builder()
-    .font_sources(FontConfig::bundled_only())
+  super::support::deterministic_renderer_builder()
     .resource_policy(
       ResourcePolicy::default()
         .allow_http(false)

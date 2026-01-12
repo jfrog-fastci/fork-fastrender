@@ -1,6 +1,7 @@
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{FastRender, FontConfig};
 use std::sync::Once;
+
+use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::{BrowserDocument, FastRender, FontConfig, RenderOptions, Result};
 
 static INIT: Once = Once::new();
 
@@ -28,8 +29,13 @@ pub fn create_test_renderer() -> FastRender {
     .expect("renderer")
 }
 
+// Some existing tests use this older helper name.
 pub fn test_renderer() -> FastRender {
   create_test_renderer()
+}
+
+pub fn create_test_document(html: &str, options: RenderOptions) -> Result<BrowserDocument> {
+  BrowserDocument::new(create_test_renderer(), html, options)
 }
 
 pub fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {

@@ -1,12 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
-use fastrender::api::{FastRenderFactory, FastRenderPoolConfig};
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
-use fastrender::text::font_db::FontConfig;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_browser_worker_with_factory;
-use fastrender::{Error, FastRenderConfig, Result};
+use fastrender::{Error, Result};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -101,7 +99,7 @@ fn recv_nav_committed(
 fn per_tab_back_forward_state_machine() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
-  let fetcher = Arc::new(
+  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(
     StaticHtmlFetcher::default()
       .with_html(
         "https://example.test/a",
@@ -112,12 +110,7 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
         "<!doctype html><title>B</title><body>B</body>",
       ),
   );
-  let renderer_config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
-  let factory = FastRenderFactory::with_config(
-    FastRenderPoolConfig::default()
-      .with_renderer_config(renderer_config)
-      .with_fetcher(fetcher),
-  )?;
+  let factory = super::support::deterministic_factory_with_fetcher(fetcher)?;
   let worker = spawn_browser_worker_with_factory(factory)?;
   let (worker_tx, worker_rx, join) = (worker.tx, worker.rx, worker.join);
 
@@ -198,7 +191,7 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
 fn redirects_commit_final_url_into_history_entry() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
-  let fetcher = Arc::new(
+  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(
     StaticHtmlFetcher::default()
       .with_html(
         "https://example.test/a",
@@ -214,12 +207,7 @@ fn redirects_commit_final_url_into_history_entry() -> Result<()> {
         "<!doctype html><title>Final</title><body>final</body>",
       ),
   );
-  let renderer_config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
-  let factory = FastRenderFactory::with_config(
-    FastRenderPoolConfig::default()
-      .with_renderer_config(renderer_config)
-      .with_fetcher(fetcher),
-  )?;
+  let factory = super::support::deterministic_factory_with_fetcher(fetcher)?;
   let worker = spawn_browser_worker_with_factory(factory)?;
   let (worker_tx, worker_rx, join) = (worker.tx, worker.rx, worker.join);
 

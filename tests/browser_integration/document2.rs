@@ -1,7 +1,5 @@
 use fastrender::render_control::{push_stage_listener, StageHeartbeat};
-use fastrender::{
-  BrowserDocument2, BrowserDocumentDom2, FastRender, FontConfig, RenderOptions, Result,
-};
+use fastrender::{BrowserDocument2, BrowserDocumentDom2, RenderOptions, Result};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -108,9 +106,7 @@ fn browser_document_dom2_rerenders_after_js_dom_mutation() -> Result<()> {
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
 
-  let renderer = FastRender::builder()
-    .font_sources(FontConfig::bundled_only())
-    .build()?;
+  let renderer = support::deterministic_renderer();
 
   let doc = BrowserDocumentDom2::new(
     renderer,
@@ -176,9 +172,7 @@ fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() 
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
-  let renderer = FastRender::builder()
-    .font_sources(FontConfig::bundled_only())
-    .build()?;
+  let renderer = support::deterministic_renderer();
   let mut doc = BrowserDocumentDom2::new(
     renderer,
     "<!doctype html><html><body><div id=\"box\" class=\"a b\">Hello</div></body></html>",

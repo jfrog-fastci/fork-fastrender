@@ -158,8 +158,8 @@ pub(crate) fn ensure_bundled_fonts_loaded() {
 
 /// Create a deterministic `FastRender` instance for UI integration tests.
 ///
-/// The browser UI worker tests should not depend on system-installed fonts, so always use the
-/// a deterministic fixture font set.
+/// The browser UI worker tests should not depend on system-installed fonts, so always use a
+/// deterministic fixture font set.
 fn deterministic_font_config() -> fastrender::text::font_db::FontConfig {
   // Loading the full bundled fallback set is expensive; for browser integration tests we only need
   // a small, stable subset. Copy a few fixture fonts into a temporary directory and point the font
@@ -189,9 +189,13 @@ fn deterministic_font_config() -> fastrender::text::font_db::FontConfig {
     .with_font_dirs([dir.path().to_path_buf()])
 }
 
+/// Create a `FastRenderBuilder` preconfigured with deterministic fixture fonts.
+pub fn deterministic_renderer_builder() -> fastrender::FastRenderBuilder {
+  fastrender::FastRender::builder().font_sources(deterministic_font_config())
+}
+
 pub fn deterministic_renderer() -> fastrender::FastRender {
-  fastrender::FastRender::builder()
-    .font_sources(deterministic_font_config())
+  deterministic_renderer_builder()
     .build()
     .expect("build deterministic renderer")
 }
@@ -207,6 +211,18 @@ pub fn deterministic_factory() -> fastrender::api::FastRenderFactory {
     fastrender::api::FastRenderPoolConfig::new().with_renderer_config(renderer_config),
   )
   .expect("build deterministic factory")
+}
+
+pub fn deterministic_factory_with_fetcher(
+  fetcher: std::sync::Arc<dyn fastrender::resource::ResourceFetcher>,
+) -> Result<fastrender::api::FastRenderFactory> {
+  let renderer_config =
+    fastrender::api::FastRenderConfig::default().with_font_sources(deterministic_font_config());
+  fastrender::api::FastRenderFactory::with_config(
+    fastrender::api::FastRenderPoolConfig::new()
+      .with_renderer_config(renderer_config)
+      .with_fetcher(fetcher),
+  )
 }
 
 #[test]
@@ -922,5 +938,21 @@ mod tests {
       }
       other => panic!("expected UiToWorker::CreateTab, got {other:?}"),
     }
+  }
+  #[test]
+  fn browser_integration_tests_use_deterministic_font_config() {
+    let config = deterministic_font_config();
+    assert!(
+      !config.use_system_fonts,
+      "deterministic browser integration tests must not depend on system font discovery"
+    );
+    assert!(
+      !config.use_bundled_fonts,
+      "deterministic browser integration tests should use the fixture font subset"
+    );
+    assert!(
+      !config.font_dirs.is_empty(),
+      "deterministic font config should load fonts from a fixture directory"
+    );
   }
 }
