@@ -1,0 +1,62 @@
+# Web Storage APIs (localStorage / sessionStorage) that are available as Node.js globals.
+#
+# These entries are duplicated from `web/storage.yaml` so that `TargetEnv::Node` lookups can resolve
+# them without matching all browser-only storage APIs.
+#
+# Node notes:
+# - Node's web storage globals are relatively new and may require runtime flags in some versions.
+#   We conservatively gate these to Node 25+.
+
+- name: Storage.prototype.getItem
+  kind: function
+  since: "v25.0.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+
+- name: Storage.prototype.setItem
+  kind: function
+  since: "v25.0.0"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: Impure
+
+- name: Storage.prototype.removeItem
+  kind: function
+  since: "v25.0.0"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: Storage.prototype.clear
+  kind: function
+  since: "v25.0.0"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: Storage.prototype.key
+  kind: function
+  since: "v25.0.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+
+- name: Storage.prototype.length
+  kind: getter
+  since: "v25.0.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Maybe
+  purity: ReadOnly

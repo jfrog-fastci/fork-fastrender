@@ -2874,6 +2874,15 @@ properties:
       Some("node/web_url.yaml")
     );
 
+    let storage_get_item = kb
+      .api_for_target("localStorage.getItem", &node_25)
+      .expect("localStorage.getItem should resolve for Node 25+");
+    assert_eq!(storage_get_item.name, "Storage.prototype.getItem");
+    assert_eq!(
+      kb.source_for_target("localStorage.getItem", &node_25),
+      Some("node/web_storage.yaml")
+    );
+
     let node_20 = TargetEnv::Node {
       version: Version::parse("20.0.0").unwrap(),
     };
@@ -2888,6 +2897,10 @@ properties:
     assert!(
       kb.api_for_target("URLPattern", &node_20).is_none(),
       "URLPattern should not resolve for Node < 21"
+    );
+    assert!(
+      kb.api_for_target("localStorage.getItem", &node_20).is_none(),
+      "localStorage.getItem should not resolve for Node < 25"
     );
   }
 
