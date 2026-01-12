@@ -5,6 +5,12 @@ use clap::ValueEnum;
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Separator marker inserted by [`assemble_source`] for `Variant::Module`.
+///
+/// Module tests need the harness prelude to run as a classic script to populate the global object
+/// before the test body is evaluated as an ECMAScript module.
+pub(crate) const MODULE_SEPARATOR_MARKER: &str = "\n/* test262-semantic:module */\n";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum HarnessMode {
@@ -34,6 +40,9 @@ pub fn assemble_source(
 
   // In `none` mode, do not touch the filesystem at all.
   if harness_mode == HarnessMode::None {
+    if variant == Variant::Module {
+      out.push_str(MODULE_SEPARATOR_MARKER);
+    }
     out.push_str(body);
     return Ok(out);
   }
@@ -81,6 +90,9 @@ pub fn assemble_source(
     out.push('\n');
   }
 
+  if variant == Variant::Module {
+    out.push_str(MODULE_SEPARATOR_MARKER);
+  }
   out.push_str(body);
   Ok(out)
 }
@@ -273,5 +285,39 @@ mod tests {
       err.to_string().contains("test262 harness directory not found"),
       "expected missing harness directory error, got: {err:#}"
     );
+  }
+
+  #[test]
+  fn module_variant_inserts_separator_marker_between_harness_and_body() {
+    let temp = setup_test262_dir();
+    let body = "/*body*/\n";
+    let src = assemble_source(
+      temp.path(),
+      &Frontmatter::default(),
+      Variant::Module,
+      body,
+      HarnessMode::Test262,
+    )
+    .unwrap();
+    let (harness, module) = src
+      .split_once(MODULE_SEPARATOR_MARKER)
+      .expect("module source should contain separator marker");
+    assert!(harness.contains("/*assert*/"));
+    assert!(harness.contains("/*sta*/"));
+    assert_eq!(module, body);
+  }
+
+  #[test]
+  fn module_variant_in_none_mode_still_inserts_separator_marker_without_fs_access() {
+    let dir = tempdir().unwrap();
+    let src = assemble_source(
+      dir.path(),
+      &Frontmatter::default(),
+      Variant::Module,
+      "body();",
+      HarnessMode::None,
+    )
+    .unwrap();
+    assert_eq!(src, format!("{MODULE_SEPARATOR_MARKER}body();"));
   }
 }
