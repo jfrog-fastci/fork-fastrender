@@ -228,6 +228,36 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.parse_float())),
       )?;
 
+      let encode_uri_key = PropertyKey::from_string(scope.alloc_string("encodeURI")?);
+      scope.define_property(
+        global_object,
+        encode_uri_key,
+        global_data_desc(Value::Object(intrinsics.encode_uri())),
+      )?;
+
+      let encode_uri_component_key =
+        PropertyKey::from_string(scope.alloc_string("encodeURIComponent")?);
+      scope.define_property(
+        global_object,
+        encode_uri_component_key,
+        global_data_desc(Value::Object(intrinsics.encode_uri_component())),
+      )?;
+
+      let decode_uri_key = PropertyKey::from_string(scope.alloc_string("decodeURI")?);
+      scope.define_property(
+        global_object,
+        decode_uri_key,
+        global_data_desc(Value::Object(intrinsics.decode_uri())),
+      )?;
+
+      let decode_uri_component_key =
+        PropertyKey::from_string(scope.alloc_string("decodeURIComponent")?);
+      scope.define_property(
+        global_object,
+        decode_uri_component_key,
+        global_data_desc(Value::Object(intrinsics.decode_uri_component())),
+      )?;
+
       let math_key = PropertyKey::from_string(scope.alloc_string("Math")?);
       scope.define_property(
         global_object,

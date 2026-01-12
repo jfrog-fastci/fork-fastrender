@@ -56,6 +56,10 @@ pub struct Intrinsics {
   is_finite: GcObject,
   parse_int: GcObject,
   parse_float: GcObject,
+  encode_uri: GcObject,
+  encode_uri_component: GcObject,
+  decode_uri: GcObject,
+  decode_uri_component: GcObject,
   math: GcObject,
   json: GcObject,
 
@@ -523,6 +527,10 @@ impl Intrinsics {
     let is_finite_call = vm.register_native_call(builtins::global_is_finite)?;
     let parse_int_call = vm.register_native_call(builtins::global_parse_int)?;
     let parse_float_call = vm.register_native_call(builtins::global_parse_float)?;
+    let encode_uri_call = vm.register_native_call(builtins::global_encode_uri)?;
+    let encode_uri_component_call = vm.register_native_call(builtins::global_encode_uri_component)?;
+    let decode_uri_call = vm.register_native_call(builtins::global_decode_uri)?;
+    let decode_uri_component_call = vm.register_native_call(builtins::global_decode_uri_component)?;
 
     // --- Baseline constructors ---
     // `%Object%`
@@ -1761,6 +1769,50 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(parse_float, Some(function_prototype))?;
 
+    // `%encodeURI%` (global function)
+    let encode_uri_name = scope.alloc_string("encodeURI")?;
+    let encode_uri =
+      alloc_rooted_native_function(scope, roots, encode_uri_call, None, encode_uri_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(encode_uri, Some(function_prototype))?;
+
+    // `%encodeURIComponent%` (global function)
+    let encode_uri_component_name = scope.alloc_string("encodeURIComponent")?;
+    let encode_uri_component = alloc_rooted_native_function(
+      scope,
+      roots,
+      encode_uri_component_call,
+      None,
+      encode_uri_component_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(encode_uri_component, Some(function_prototype))?;
+
+    // `%decodeURI%` (global function)
+    let decode_uri_name = scope.alloc_string("decodeURI")?;
+    let decode_uri =
+      alloc_rooted_native_function(scope, roots, decode_uri_call, None, decode_uri_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(decode_uri, Some(function_prototype))?;
+
+    // `%decodeURIComponent%` (global function)
+    let decode_uri_component_name = scope.alloc_string("decodeURIComponent")?;
+    let decode_uri_component = alloc_rooted_native_function(
+      scope,
+      roots,
+      decode_uri_component_call,
+      None,
+      decode_uri_component_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(decode_uri_component, Some(function_prototype))?;
+
     // `%Symbol%`
     let symbol_call = vm.register_native_call(builtins::symbol_constructor_call)?;
     let symbol_name = scope.alloc_string("Symbol")?;
@@ -2670,6 +2722,10 @@ impl Intrinsics {
       is_finite,
       parse_int,
       parse_float,
+      encode_uri,
+      encode_uri_component,
+      decode_uri,
+      decode_uri_component,
       math,
       json,
       error,
@@ -2809,6 +2865,22 @@ impl Intrinsics {
 
   pub fn parse_float(&self) -> GcObject {
     self.parse_float
+  }
+
+  pub fn encode_uri(&self) -> GcObject {
+    self.encode_uri
+  }
+
+  pub fn encode_uri_component(&self) -> GcObject {
+    self.encode_uri_component
+  }
+
+  pub fn decode_uri(&self) -> GcObject {
+    self.decode_uri
+  }
+
+  pub fn decode_uri_component(&self) -> GcObject {
+    self.decode_uri_component
   }
 
   pub fn math(&self) -> GcObject {

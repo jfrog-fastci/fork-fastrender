@@ -7825,7 +7825,36 @@ pub fn global_is_finite(
   Ok(Value::Bool(n.is_finite()))
 }
 
-/// Global `parseInt(string, radix)` (minimal).
+fn to_int32(n: f64) -> i32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  // ECMA-262 `ToInt32`: truncate then compute modulo 2^32.
+  let int = n.trunc();
+  const TWO_32: f64 = 4_294_967_296.0;
+  const TWO_31: f64 = 2_147_483_648.0;
+
+  let mut int = int % TWO_32;
+  if int < 0.0 {
+    int += TWO_32;
+  }
+  if int >= TWO_31 {
+    (int - TWO_32) as i32
+  } else {
+    int as i32
+  }
+}
+
+fn radix_digit_value(unit: u16) -> Option<u8> {
+  match unit {
+    0x0030..=0x0039 => Some((unit - 0x0030) as u8),
+    0x0061..=0x007A => Some((unit - 0x0061 + 10) as u8),
+    0x0041..=0x005A => Some((unit - 0x0041 + 10) as u8),
+    _ => None,
+  }
+}
+
+/// Global `parseInt(string, radix)` (ECMA-262).
 pub fn global_parse_int(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -7838,97 +7867,304 @@ pub fn global_parse_int(
   let mut scope = scope.reborrow();
 
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
-  let radix_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let radix_arg = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let mut radix: i32 = 0;
-  if !matches!(radix_val, Value::Undefined) {
-    let r = scope.to_number(vm, host, hooks, radix_val)?;
-    if !r.is_finite() || r == 0.0 {
-      radix = 0;
-    } else {
-      radix = r.trunc() as i32;
-    }
-  }
-  if radix != 0 && !(2..=36).contains(&radix) {
-    return Ok(Value::Number(f64::NAN));
-  }
+  // 1. Let inputString be ? ToString(string).
+  let input_string = scope.to_string(vm, host, hooks, input)?;
+  scope.push_root(Value::String(input_string))?;
 
-  let s = scope.to_string(vm, host, hooks, input)?;
-  scope.push_root(Value::String(s))?;
-  let units = scope.heap().get_string(s)?.as_code_units();
+  // 6. Let R be ℝ(? ToInt32(radix)).
+  //
+  // Compute this before borrowing `input_string`'s code units from the heap to avoid holding an
+  // immutable heap borrow across `ToNumber`/`ToInt32` (which need mutable access to `scope`).
+  let mut r: i32 = if matches!(radix_arg, Value::Undefined) {
+    0
+  } else {
+    let r_num = scope.to_number(vm, host, hooks, radix_arg)?;
+    to_int32(r_num)
+  };
 
-  let mut i = 0usize;
-  while i < units.len() && is_trim_whitespace_unit(units[i]) {
-    if i % 1024 == 0 {
+  // 2. Let S be ! TrimString(inputString, ~start~).
+  let units = scope.heap().get_string(input_string)?.as_code_units();
+  let mut trim_start = 0usize;
+  while trim_start < units.len() && is_trim_whitespace_unit(units[trim_start]) {
+    if trim_start % 1024 == 0 {
       vm.tick()?;
     }
-    i += 1;
-  }
-  if i >= units.len() {
-    return Ok(Value::Number(f64::NAN));
+    trim_start += 1;
   }
 
-  let mut sign = 1.0;
-  if units[i] == b'+' as u16 {
-    i += 1;
-  } else if units[i] == b'-' as u16 {
-    sign = -1.0;
-    i += 1;
+  // Work over `S` by keeping a moving slice offset instead of allocating.
+  let mut s_start = trim_start;
+
+  // 3. Let sign be 1.
+  // 4. If S is not empty and first code unit is '-', sign = -1.
+  let mut sign: i32 = 1;
+  if s_start < units.len() && units[s_start] == b'-' as u16 {
+    sign = -1;
   }
 
-  if radix == 0 {
-    if i + 1 < units.len()
-      && units[i] == b'0' as u16
-      && (units[i + 1] == b'x' as u16 || units[i + 1] == b'X' as u16)
-    {
-      radix = 16;
-      i += 2;
-    } else {
-      radix = 10;
+  // 5. If S is not empty and first code unit is '+' or '-', drop it.
+  if s_start < units.len() && (units[s_start] == b'+' as u16 || units[s_start] == b'-' as u16) {
+    s_start += 1;
+  }
+
+  // 7. Let stripPrefix be true.
+  let mut strip_prefix = true;
+  // 8. If R ≠ 0...
+  if r != 0 {
+    if !(2..=36).contains(&r) {
+      return Ok(Value::Number(f64::NAN));
     }
-  } else if radix == 16 {
-    if i + 1 < units.len()
-      && units[i] == b'0' as u16
-      && (units[i + 1] == b'x' as u16 || units[i + 1] == b'X' as u16)
+    if r != 16 {
+      strip_prefix = false;
+    }
+  } else {
+    // 9. Else, set R to 10.
+    r = 10;
+  }
+
+  // 10. If stripPrefix, and S starts with "0x"/"0X", drop it and set R=16.
+  if strip_prefix {
+    if s_start + 1 < units.len()
+      && units[s_start] == b'0' as u16
+      && (units[s_start + 1] == b'x' as u16 || units[s_start + 1] == b'X' as u16)
     {
-      i += 2;
+      s_start += 2;
+      r = 16;
     }
   }
 
-  let radix_f64 = radix as f64;
-  let radix_u32 = radix as u32;
-  let mut value: f64 = 0.0;
-  let mut any = false;
-
-  while i < units.len() {
-    if i % 1024 == 0 {
+  // 11. Find `end`: the first code unit that is not a radix-R digit.
+  let radix_u8 = u8::try_from(r).unwrap_or(10);
+  let mut end = s_start;
+  while end < units.len() {
+    if end % 1024 == 0 {
       vm.tick()?;
     }
-    let u = units[i];
-    let digit: u32 = if (b'0' as u16..=b'9' as u16).contains(&u) {
-      (u - b'0' as u16) as u32
-    } else if (b'a' as u16..=b'z' as u16).contains(&u) {
-      10 + (u - b'a' as u16) as u32
-    } else if (b'A' as u16..=b'Z' as u16).contains(&u) {
-      10 + (u - b'A' as u16) as u32
-    } else {
+    let Some(digit) = radix_digit_value(units[end]) else {
       break;
     };
-    if digit >= radix_u32 {
+    if digit >= radix_u8 {
       break;
     }
-    any = true;
-    value = value * radix_f64 + (digit as f64);
+    end += 1;
+  }
+
+  // 12. Let Z be the substring of S from 0..end. If empty, return NaN.
+  if end == s_start {
+    return Ok(Value::Number(f64::NAN));
+  }
+
+  // 13. Let mathInt be the integer value represented by Z in radix-R.
+  // We accumulate in IEEE-754 f64, matching the spec's implementation-defined approximations.
+  let mut math_int: f64 = 0.0;
+  let radix_f64 = r as f64;
+  for (i, &unit) in units[s_start..end].iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let digit = radix_digit_value(unit).unwrap() as f64;
+    math_int = math_int * radix_f64 + digit;
+  }
+
+  // 14. Handle -0.
+  if math_int == 0.0 {
+    if sign == -1 {
+      return Ok(Value::Number(-0.0));
+    }
+    return Ok(Value::Number(0.0));
+  }
+
+  Ok(Value::Number((sign as f64) * math_int))
+}
+
+fn is_ascii_digit_unit(unit: u16) -> bool {
+  (b'0' as u16..=b'9' as u16).contains(&unit)
+}
+
+fn parse_ascii_digits_to_i64_with_limit(units: &[u16], max: i64) -> i64 {
+  let mut v: i64 = 0;
+  for &u in units {
+    let d = (u - b'0' as u16) as i64;
+    if v > max {
+      return max;
+    }
+    v = v.saturating_mul(10).saturating_add(d);
+    if v > max {
+      return max;
+    }
+  }
+  v
+}
+
+fn parse_float_from_str_decimal_literal_prefix(
+  prefix_units: &[u16],
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<f64, VmError> {
+  // `prefix_units` must satisfy `StrDecimalLiteral`.
+  //
+  // Spec: https://tc39.es/ecma262/#sec-parsefloat-string
+  // This implementation avoids allocating a Rust `String` proportional to the prefix length.
+  //
+  // Approach:
+  // - Parse digits/decimal/exponent into (trimmed digits, frac_len, exp_part).
+  // - Build a small scientific-notation ASCII buffer from at most MAX_SIG_DIGITS digits.
+  // - Use `fast_float` to do the final correct rounding to f64.
+  //
+  // Note: This intentionally preserves the "prefix" semantics (junk after the literal is ignored),
+  // but the numeric conversion may be approximated when there are more than MAX_SIG_DIGITS
+  // significant digits (bounded memory).
+
+  const INFINITY_UNITS: [u16; 8] = [73, 110, 102, 105, 110, 105, 116, 121]; // "Infinity"
+  const MAX_SIG_DIGITS: usize = 128;
+  const MAX_EXP_ABS: i64 = 1_000_000_000;
+
+  let mut i = 0usize;
+  let mut sign: i32 = 1;
+  if prefix_units.get(0) == Some(&(b'+' as u16)) {
+    i += 1;
+  } else if prefix_units.get(0) == Some(&(b'-' as u16)) {
+    sign = -1;
     i += 1;
   }
 
-  if !any {
-    return Ok(Value::Number(f64::NAN));
+  // Infinity.
+  if i + INFINITY_UNITS.len() <= prefix_units.len()
+    && &prefix_units[i..i + INFINITY_UNITS.len()] == INFINITY_UNITS
+  {
+    return Ok((sign as f64) * f64::INFINITY);
   }
-  Ok(Value::Number(sign * value))
+
+  // Collect significant digits (trim leading zeros).
+  let mut digits: [u8; MAX_SIG_DIGITS] = [0; MAX_SIG_DIGITS];
+  let mut digits_len: usize = 0;
+  let mut sig_len_total: i64 = 0; // total digits after first non-zero (incl zeros)
+  let mut saw_nonzero = false;
+  let mut after_decimal = false;
+  let mut frac_len: i64 = 0;
+
+  // Parse the significand (digits + optional dot + digits), stopping at exponent.
+  while i < prefix_units.len() {
+    if i % 1024 == 0 {
+      tick()?;
+    }
+    let u = prefix_units[i];
+    if u == b'.' as u16 {
+      after_decimal = true;
+      i += 1;
+      continue;
+    }
+    if u == b'e' as u16 || u == b'E' as u16 {
+      break;
+    }
+    debug_assert!(is_ascii_digit_unit(u), "invalid StrDecimalLiteral prefix");
+    let d = (u - b'0' as u16) as u8;
+    if after_decimal {
+      frac_len = frac_len.saturating_add(1);
+    }
+    if !saw_nonzero {
+      if d == 0 {
+        i += 1;
+        continue;
+      }
+      saw_nonzero = true;
+    }
+    sig_len_total = sig_len_total.saturating_add(1);
+    if digits_len < MAX_SIG_DIGITS {
+      digits[digits_len] = d;
+      digits_len += 1;
+    }
+    i += 1;
+  }
+
+  if !saw_nonzero {
+    // The prefix is some decimal literal representing zero.
+    // Preserve -0.
+    return Ok(if sign == -1 { -0.0 } else { 0.0 });
+  }
+
+  // Parse exponent (if present).
+  let mut exp_part: i64 = 0;
+  if i < prefix_units.len() && (prefix_units[i] == b'e' as u16 || prefix_units[i] == b'E' as u16) {
+    i += 1;
+    let mut exp_sign: i32 = 1;
+    if prefix_units.get(i) == Some(&(b'+' as u16)) {
+      i += 1;
+    } else if prefix_units.get(i) == Some(&(b'-' as u16)) {
+      exp_sign = -1;
+      i += 1;
+    }
+    // Remaining units are digits (prefix validation guarantees at least one).
+    exp_part = parse_ascii_digits_to_i64_with_limit(&prefix_units[i..], MAX_EXP_ABS);
+    if exp_sign == -1 {
+      exp_part = -exp_part;
+    }
+  }
+
+  // Compute scientific notation exponent: exp_e = (exp_part - frac_len) + sig_len_total - 1.
+  let exp_e = exp_part
+    .saturating_sub(frac_len)
+    .saturating_add(sig_len_total.saturating_sub(1));
+
+  // Build a bounded ASCII buffer: "-d.dddde+NNN".
+  let mut buf: [u8; 256] = [0; 256];
+  let mut out_len: usize = 0;
+
+  let mut push_byte = |b: u8| -> Result<(), VmError> {
+    if out_len >= buf.len() {
+      return Err(VmError::OutOfMemory);
+    }
+    buf[out_len] = b;
+    out_len += 1;
+    Ok(())
+  };
+
+  if sign == -1 {
+    push_byte(b'-')?;
+  }
+  push_byte(b'0' + digits[0])?;
+  if digits_len > 1 {
+    push_byte(b'.')?;
+    for &d in &digits[1..digits_len] {
+      push_byte(b'0' + d)?;
+    }
+  }
+  push_byte(b'e')?;
+
+  // Exponent sign.
+  let mut exp_abs: i64 = exp_e;
+  if exp_abs < 0 {
+    push_byte(b'-')?;
+    exp_abs = -exp_abs;
+  } else {
+    push_byte(b'+')?;
+  }
+
+  // Write exponent digits without allocating.
+  let mut tmp: [u8; 32] = [0; 32];
+  let mut tmp_len = 0usize;
+  let mut n = exp_abs as u64;
+  if n == 0 {
+    tmp[0] = b'0';
+    tmp_len = 1;
+  } else {
+    while n > 0 {
+      tmp[tmp_len] = b'0' + (n % 10) as u8;
+      tmp_len += 1;
+      n /= 10;
+    }
+    tmp[..tmp_len].reverse();
+  }
+  for &b in &tmp[..tmp_len] {
+    push_byte(b)?;
+  }
+
+  let s = std::str::from_utf8(&buf[..out_len]).map_err(|_| VmError::InvariantViolation("parseFloat buffer not UTF-8"))?;
+  Ok(fast_float::parse(s).unwrap_or(f64::NAN))
 }
 
-/// Global `parseFloat(string)` (minimal).
+/// Global `parseFloat(string)` (ECMA-262, budgeted).
 pub fn global_parse_float(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -7944,6 +8180,7 @@ pub fn global_parse_float(
   scope.push_root(Value::String(s))?;
   let units = scope.heap().get_string(s)?.as_code_units();
 
+  // 1. Trim leading whitespace.
   let mut i = 0usize;
   while i < units.len() && is_trim_whitespace_unit(units[i]) {
     if i % 1024 == 0 {
@@ -7955,28 +8192,23 @@ pub fn global_parse_float(
     return Ok(Value::Number(f64::NAN));
   }
 
+  // 2. Find the longest prefix satisfying `StrDecimalLiteral`.
   let start = i;
-  let mut sign = 1.0;
-  if units[i] == b'+' as u16 {
-    i += 1;
-  } else if units[i] == b'-' as u16 {
-    sign = -1.0;
+  // Optional sign.
+  if units[i] == b'+' as u16 || units[i] == b'-' as u16 {
     i += 1;
   }
 
-  // Infinity / NaN tokens.
   const INFINITY_UNITS: [u16; 8] = [73, 110, 102, 105, 110, 105, 116, 121]; // "Infinity"
-  const NAN_UNITS: [u16; 3] = [78, 97, 78]; // "NaN"
   if i + INFINITY_UNITS.len() <= units.len() && &units[i..i + INFINITY_UNITS.len()] == INFINITY_UNITS {
-    return Ok(Value::Number(sign * f64::INFINITY));
-  }
-  if i + NAN_UNITS.len() <= units.len() && &units[i..i + NAN_UNITS.len()] == NAN_UNITS {
-    return Ok(Value::Number(f64::NAN));
+    let end = i + INFINITY_UNITS.len();
+    let n = parse_float_from_str_decimal_literal_prefix(&units[start..end], || vm.tick())?;
+    return Ok(Value::Number(n));
   }
 
   let mut j = i;
   let mut saw_digit = false;
-  while j < units.len() && (b'0' as u16..=b'9' as u16).contains(&units[j]) {
+  while j < units.len() && is_ascii_digit_unit(units[j]) {
     saw_digit = true;
     j += 1;
     if j % 1024 == 0 {
@@ -7985,7 +8217,7 @@ pub fn global_parse_float(
   }
   if j < units.len() && units[j] == b'.' as u16 {
     j += 1;
-    while j < units.len() && (b'0' as u16..=b'9' as u16).contains(&units[j]) {
+    while j < units.len() && is_ascii_digit_unit(units[j]) {
       saw_digit = true;
       j += 1;
       if j % 1024 == 0 {
@@ -7993,7 +8225,6 @@ pub fn global_parse_float(
       }
     }
   }
-
   if !saw_digit {
     return Ok(Value::Number(f64::NAN));
   }
@@ -8005,7 +8236,7 @@ pub fn global_parse_float(
       k += 1;
     }
     let mut exp_digit = false;
-    while k < units.len() && (b'0' as u16..=b'9' as u16).contains(&units[k]) {
+    while k < units.len() && is_ascii_digit_unit(units[k]) {
       exp_digit = true;
       k += 1;
       if k % 1024 == 0 {
@@ -8019,16 +8250,395 @@ pub fn global_parse_float(
     }
   }
 
-  let mut buf = String::with_capacity(j.saturating_sub(start));
-  for &u in &units[start..j] {
-    if u > 0x7F {
-      return Ok(Value::Number(f64::NAN));
+  // 3. Convert the decimal literal substring to a Number value.
+  let prefix = &units[start..j];
+  let n = parse_float_from_str_decimal_literal_prefix(prefix, || vm.tick())?;
+  Ok(Value::Number(n))
+}
+
+fn create_uri_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHostHooks,
+  message: &str,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let ctor = intr.uri_error();
+
+  let msg = scope.alloc_string(message)?;
+  scope.push_root(Value::String(msg))?;
+
+  let mut host_state = ();
+  error_constructor_construct(
+    vm,
+    scope,
+    &mut host_state,
+    host,
+    ctor,
+    &[Value::String(msg)],
+    Value::Object(ctor),
+  )
+}
+
+fn throw_uri_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHostHooks,
+  message: &str,
+) -> Result<Value, VmError> {
+  let err = create_uri_error(vm, scope, host, message)?;
+  Err(VmError::Throw(err))
+}
+
+fn is_encode_uri_unescaped(unit: u16, extra_unescaped: &[u16]) -> bool {
+  // `alwaysUnescaped` is "A-Z a-z 0-9 _" + "-.!~*'()".
+  matches!(unit, 0x0041..=0x005A) // A-Z
+    || matches!(unit, 0x0061..=0x007A) // a-z
+    || matches!(unit, 0x0030..=0x0039) // 0-9
+    || unit == 0x005F // '_'
+    || matches!(unit, 0x002D | 0x002E | 0x0021 | 0x007E | 0x002A | 0x0027 | 0x0028 | 0x0029)
+    || extra_unescaped.contains(&unit)
+}
+
+fn utf16_code_point_at(units: &[u16], k: usize) -> (u32, usize, bool) {
+  // Returns (code_point, code_unit_count, is_unpaired_surrogate)
+  let u = units[k];
+  if (0xD800..=0xDBFF).contains(&u) {
+    if k + 1 < units.len() {
+      let u2 = units[k + 1];
+      if (0xDC00..=0xDFFF).contains(&u2) {
+        let high = (u - 0xD800) as u32;
+        let low = (u2 - 0xDC00) as u32;
+        let cp = 0x10000 + ((high << 10) | low);
+        return (cp, 2, false);
+      }
     }
-    buf.push((u as u8) as char);
+    return (u as u32, 1, true);
+  }
+  if (0xDC00..=0xDFFF).contains(&u) {
+    return (u as u32, 1, true);
+  }
+  (u as u32, 1, false)
+}
+
+fn utf8_encode_code_point(cp: u32) -> [u8; 4] {
+  let mut out = [0u8; 4];
+  if cp <= 0x7F {
+    out[0] = cp as u8;
+  } else if cp <= 0x7FF {
+    out[0] = 0xC0 | ((cp >> 6) as u8);
+    out[1] = 0x80 | ((cp & 0x3F) as u8);
+  } else if cp <= 0xFFFF {
+    out[0] = 0xE0 | ((cp >> 12) as u8);
+    out[1] = 0x80 | (((cp >> 6) & 0x3F) as u8);
+    out[2] = 0x80 | ((cp & 0x3F) as u8);
+  } else {
+    out[0] = 0xF0 | ((cp >> 18) as u8);
+    out[1] = 0x80 | (((cp >> 12) & 0x3F) as u8);
+    out[2] = 0x80 | (((cp >> 6) & 0x3F) as u8);
+    out[3] = 0x80 | ((cp & 0x3F) as u8);
+  }
+  out
+}
+
+fn percent_encode_byte_to_units(byte: u8, out: &mut Vec<u16>) -> Result<(), VmError> {
+  const HEX: &[u8; 16] = b"0123456789ABCDEF";
+  out.try_reserve(3).map_err(|_| VmError::OutOfMemory)?;
+  out.push(b'%' as u16);
+  out.push(HEX[(byte >> 4) as usize] as u16);
+  out.push(HEX[(byte & 0x0F) as usize] as u16);
+  Ok(())
+}
+
+fn encode_uri_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  input: Value,
+  extra_unescaped: &[u16],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-encode
+  let s = scope.to_string(vm, host, hooks, input)?;
+  scope.push_root(Value::String(s))?;
+  let units = scope.heap().get_string(s)?.as_code_units();
+
+  let mut out: Vec<u16> = Vec::new();
+  // Heuristic: most inputs are predominantly ASCII and do not grow much.
+  out
+    .try_reserve(units.len().min(1024))
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut k = 0usize;
+  while k < units.len() {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+    let c = units[k];
+    if is_encode_uri_unescaped(c, extra_unescaped) {
+      out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      out.push(c);
+      k += 1;
+      continue;
+    }
+
+    let (cp, count, is_unpaired) = utf16_code_point_at(units, k);
+    if is_unpaired {
+      return throw_uri_error(vm, scope, hooks, "URI malformed");
+    }
+    k += count;
+
+    let bytes = utf8_encode_code_point(cp);
+    let byte_len = if cp <= 0x7F { 1 } else if cp <= 0x7FF { 2 } else if cp <= 0xFFFF { 3 } else { 4 };
+    for &b in &bytes[..byte_len] {
+      percent_encode_byte_to_units(b, &mut out)?;
+    }
   }
 
-  let n = buf.parse::<f64>().unwrap_or(f64::NAN);
-  Ok(Value::Number(n))
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
+}
+
+fn parse_hex_digit(unit: u16) -> Option<u8> {
+  match unit {
+    0x0030..=0x0039 => Some((unit - 0x0030) as u8),
+    0x0061..=0x0066 => Some((unit - 0x0061 + 10) as u8),
+    0x0041..=0x0046 => Some((unit - 0x0041 + 10) as u8),
+    _ => None,
+  }
+}
+
+fn parse_hex_octet(units: &[u16], pos: usize) -> Option<u8> {
+  let hi = parse_hex_digit(*units.get(pos)?)?;
+  let lo = parse_hex_digit(*units.get(pos + 1)?)?;
+  Some((hi << 4) | lo)
+}
+
+fn decode_uri_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  input: Value,
+  preserve_escape_set: &[u16],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-decode
+  let s = scope.to_string(vm, host, hooks, input)?;
+  scope.push_root(Value::String(s))?;
+  let units = scope.heap().get_string(s)?.as_code_units();
+
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut k = 0usize;
+  while k < units.len() {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+    let c = units[k];
+    if c != b'%' as u16 {
+      out.push(c);
+      k += 1;
+      continue;
+    }
+
+    // Percent escape.
+    if k + 3 > units.len() {
+      return throw_uri_error(vm, scope, hooks, "URI malformed");
+    }
+    let escape = &units[k..k + 3];
+    let Some(b0) = parse_hex_octet(units, k + 1) else {
+      return throw_uri_error(vm, scope, hooks, "URI malformed");
+    };
+
+    let leading_ones = (b0 as u8).leading_ones() as usize;
+    if leading_ones == 0 {
+      let ascii = b0 as u16;
+      if preserve_escape_set.contains(&ascii) {
+        out.extend_from_slice(escape);
+      } else {
+        out.push(ascii);
+      }
+      k += 3;
+      continue;
+    }
+
+    if leading_ones == 1 || leading_ones > 4 {
+      return throw_uri_error(vm, scope, hooks, "URI malformed");
+    }
+
+    // Collect continuation bytes.
+    let n = leading_ones;
+    let mut octets: [u8; 4] = [0; 4];
+    octets[0] = b0;
+    let mut idx = k + 3;
+    for j in 1..n {
+      if idx + 3 > units.len() {
+        return throw_uri_error(vm, scope, hooks, "URI malformed");
+      }
+      if units[idx] != b'%' as u16 {
+        return throw_uri_error(vm, scope, hooks, "URI malformed");
+      }
+      let Some(b) = parse_hex_octet(units, idx + 1) else {
+        return throw_uri_error(vm, scope, hooks, "URI malformed");
+      };
+      octets[j] = b;
+      idx += 3;
+    }
+
+    // Validate UTF-8 sequence and decode code point.
+    let cp: u32 = match n {
+      2 => {
+        let b1 = octets[1];
+        if !(0xC2..=0xDF).contains(&b0) || !(0x80..=0xBF).contains(&b1) {
+          return throw_uri_error(vm, scope, hooks, "URI malformed");
+        }
+        (((b0 & 0x1F) as u32) << 6) | ((b1 & 0x3F) as u32)
+      }
+      3 => {
+        let b1 = octets[1];
+        let b2 = octets[2];
+        let second_ok = match b0 {
+          0xE0 => (0xA0..=0xBF).contains(&b1),
+          0xED => (0x80..=0x9F).contains(&b1), // exclude surrogate range
+          _ => (0x80..=0xBF).contains(&b1),
+        };
+        if !(0xE0..=0xEF).contains(&b0) || !second_ok || !(0x80..=0xBF).contains(&b2) {
+          return throw_uri_error(vm, scope, hooks, "URI malformed");
+        }
+        (((b0 & 0x0F) as u32) << 12) | (((b1 & 0x3F) as u32) << 6) | ((b2 & 0x3F) as u32)
+      }
+      4 => {
+        let b1 = octets[1];
+        let b2 = octets[2];
+        let b3 = octets[3];
+        let second_ok = match b0 {
+          0xF0 => (0x90..=0xBF).contains(&b1),
+          0xF4 => (0x80..=0x8F).contains(&b1),
+          _ => (0x80..=0xBF).contains(&b1),
+        };
+        if !(0xF0..=0xF4).contains(&b0)
+          || !second_ok
+          || !(0x80..=0xBF).contains(&b2)
+          || !(0x80..=0xBF).contains(&b3)
+        {
+          return throw_uri_error(vm, scope, hooks, "URI malformed");
+        }
+        (((b0 & 0x07) as u32) << 18)
+          | (((b1 & 0x3F) as u32) << 12)
+          | (((b2 & 0x3F) as u32) << 6)
+          | ((b3 & 0x3F) as u32)
+      }
+      _ => unreachable!(),
+    };
+
+    // Reject surrogate code points and out-of-range values.
+    if cp > 0x10FFFF || (0xD800..=0xDFFF).contains(&cp) {
+      return throw_uri_error(vm, scope, hooks, "URI malformed");
+    }
+
+    // UTF16EncodeCodePoint
+    if cp <= 0xFFFF {
+      out.push(cp as u16);
+    } else {
+      let cp = cp - 0x10000;
+      let high = 0xD800 + ((cp >> 10) as u16);
+      let low = 0xDC00 + ((cp & 0x3FF) as u16);
+      out.push(high);
+      out.push(low);
+    }
+
+    k = idx;
+  }
+
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
+}
+
+/// Global `encodeURI(uri)` (ECMA-262).
+pub fn global_encode_uri(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // extraUnescaped = ";/?:@&=+$,#"
+  const EXTRA: [u16; 11] = [
+    b';' as u16,
+    b'/' as u16,
+    b'?' as u16,
+    b':' as u16,
+    b'@' as u16,
+    b'&' as u16,
+    b'=' as u16,
+    b'+' as u16,
+    b'$' as u16,
+    b',' as u16,
+    b'#' as u16,
+  ];
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  encode_uri_string(vm, scope, host, hooks, input, &EXTRA)
+}
+
+/// Global `encodeURIComponent(uriComponent)` (ECMA-262).
+pub fn global_encode_uri_component(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  encode_uri_string(vm, scope, host, hooks, input, &[])
+}
+
+/// Global `decodeURI(encodedURI)` (ECMA-262).
+pub fn global_decode_uri(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // preserveEscapeSet = ";/?:@&=+$,#"
+  const PRESERVE: [u16; 11] = [
+    b';' as u16,
+    b'/' as u16,
+    b'?' as u16,
+    b':' as u16,
+    b'@' as u16,
+    b'&' as u16,
+    b'=' as u16,
+    b'+' as u16,
+    b'$' as u16,
+    b',' as u16,
+    b'#' as u16,
+  ];
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  decode_uri_string(vm, scope, host, hooks, input, &PRESERVE)
+}
+
+/// Global `decodeURIComponent(encodedURIComponent)` (ECMA-262).
+pub fn global_decode_uri_component(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  decode_uri_string(vm, scope, host, hooks, input, &[])
 }
 
 static MATH_RANDOM_STATE: AtomicU64 = AtomicU64::new(0x243F_6A88_85A3_08D3);
