@@ -12,6 +12,7 @@ use parse_js::ast::func::FuncBody;
 use parse_js::ast::node::ParenthesizedExpr;
 use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 fn data_desc(
@@ -6461,6 +6462,125 @@ pub fn function_prototype_to_string(
       Ok(Value::String(s))
     }
   }
+}
+
+/// `Function.prototype[@@hasInstance]`.
+///
+/// Spec: <https://tc39.es/ecma262/#sec-function.prototype-@@hasinstance>
+///
+/// This is the default `@@hasInstance` implementation used by the `instanceof` operator.
+pub fn function_prototype_symbol_has_instance(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // 1. Let F be the this value.
+  // 2. Return OrdinaryHasInstance(F, V).
+  //
+  // Spec: https://tc39.es/ecma262/#sec-ordinaryhasinstance
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[this, v])?;
+
+  // 1. If IsCallable(C) is false, return false.
+  if !scope.heap().is_callable(this)? {
+    return Ok(Value::Bool(false));
+  }
+  let Value::Object(mut constructor) = this else {
+    // `IsCallable` returning true for a non-object would be an internal bug.
+    return Err(VmError::InvariantViolation(
+      "Function.prototype[@@hasInstance]: IsCallable returned true for non-object",
+    ));
+  };
+
+  // 2. Bound functions delegate `instanceof` checks to their target.
+  let mut bound_steps = 0usize;
+  while let Ok(func) = scope.heap().get_function(constructor) {
+    let Some(bound_target) = func.bound_target else {
+      break;
+    };
+
+    // Budget extremely deep bound chains, and prevent hangs if an invariant is violated.
+    const TICK_EVERY: usize = 32;
+    if bound_steps != 0 && bound_steps % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    if bound_steps >= crate::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+    bound_steps += 1;
+    constructor = bound_target;
+  }
+
+  // 3. If Type(O) is not Object, return false.
+  let Value::Object(object) = v else {
+    return Ok(Value::Bool(false));
+  };
+
+  // 4. Let P be Get(C, "prototype").
+  let prototype_s = scope.alloc_string("prototype")?;
+  scope.push_root(Value::String(prototype_s))?;
+  let prototype = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    constructor,
+    PropertyKey::from_string(prototype_s),
+    Value::Object(constructor),
+  )?;
+
+  // 5. If Type(P) is not Object, throw a TypeError exception.
+  let Value::Object(prototype) = prototype else {
+    return Err(VmError::TypeError(
+      "Function has non-object prototype in instanceof check",
+    ));
+  };
+
+  // 6. Repeat
+  //   a. Let O be O.[[GetPrototypeOf]]().
+  //   b. ReturnIfAbrupt(O).
+  //   c. If O is null, return false.
+  //   d. If SameValue(P, O) is true, return true.
+  //
+  // vm-js note: we currently approximate `[[GetPrototypeOf]]` via the stored `[[Prototype]]`
+  // pointer and do not yet implement Proxy `getPrototypeOf` traps here.
+  let mut current = scope.heap().object_prototype(object)?;
+  let mut steps = 0usize;
+  let mut visited: HashSet<GcObject> = HashSet::new();
+  while let Some(obj) = current {
+    // Budget the prototype traversal: hostile inputs can synthesize extremely deep chains.
+    //
+    // Note: avoid ticking on the first iteration so shallow checks don't double-charge fuel (the
+    // surrounding expression/call already ticks).
+    const TICK_EVERY: usize = 32;
+    if steps != 0 && steps % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    if steps >= crate::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+    steps += 1;
+
+    if visited.try_reserve(1).is_err() {
+      return Err(VmError::OutOfMemory);
+    }
+    if !visited.insert(obj) {
+      return Err(VmError::PrototypeCycle);
+    }
+
+    if obj == prototype {
+      return Ok(Value::Bool(true));
+    }
+    current = scope.heap().object_prototype(obj)?;
+  }
+
+  Ok(Value::Bool(false))
 }
 
 /// `Object.prototype.toString` (partial).

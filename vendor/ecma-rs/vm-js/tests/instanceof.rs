@@ -63,7 +63,10 @@ fn has_instance_override_is_called() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#"function C(){}; C[Symbol.hasInstance] = function(){ return true; }; ({} instanceof C) === true"#,
+      // `Function.prototype[@@hasInstance]` is non-writable, so overriding it on a function requires
+      // avoiding the inherited property. For now, test a custom `@@hasInstance` by rebasing the
+      // function object's `[[Prototype]]` away from `%Function.prototype%` first.
+      r#"function C(){}; Object.setPrototypeOf(C, Object.prototype); C[Symbol.hasInstance] = function(){ return true; }; ({} instanceof C) === true"#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
@@ -97,7 +100,7 @@ fn instanceof_throws_type_error_when_has_instance_is_not_callable() {
   let mut rt = new_runtime();
   assert_throws_type_error(
     &mut rt,
-    r#"function C(){}; C[Symbol.hasInstance] = 1; ({} instanceof C)"#,
+    r#"var C = {}; C[Symbol.hasInstance] = 1; ({} instanceof C)"#,
   );
 }
 
@@ -130,6 +133,30 @@ fn bound_function_instanceof_does_not_use_bound_target_has_instance() {
       ({} instanceof Bound) === false
     "#,
     )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn instanceof_uses_inherited_function_prototype_has_instance_on_non_callable_object() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var C = {};
+      Object.setPrototypeOf(C, Function.prototype);
+      ({} instanceof C) === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn function_prototype_has_instance_returns_false_for_non_callable_this() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"Function.prototype[Symbol.hasInstance].call({}) === false"#)
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }

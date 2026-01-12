@@ -614,6 +614,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::function_prototype_bind)?;
     let function_prototype_to_string_method =
       vm.register_native_call(builtins::function_prototype_to_string)?;
+    let function_prototype_symbol_has_instance =
+      vm.register_native_call(builtins::function_prototype_symbol_has_instance)?;
     let throw_type_error_intrinsic_call =
       vm.register_native_call(builtins::throw_type_error_intrinsic)?;
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
@@ -1006,6 +1008,31 @@ impl Intrinsics {
         function_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Function.prototype[@@hasInstance]
+    //
+    // Spec: https://tc39.es/ecma262/#sec-function.prototype-@@hasinstance
+    {
+      let has_instance_s = scope.alloc_string("[Symbol.hasInstance]")?;
+      scope.push_root(Value::String(has_instance_s))?;
+      let func = scope.alloc_native_function(
+        function_prototype_symbol_has_instance,
+        None,
+        has_instance_s,
+        1,
+      )?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        function_prototype,
+        PropertyKey::Symbol(well_known_symbols.has_instance),
+        // ECMA-262: Function.prototype[@@hasInstance] is non-writable, non-enumerable,
+        // non-configurable.
+        data_desc(Value::Object(func), false, false, false),
       )?;
     }
 
