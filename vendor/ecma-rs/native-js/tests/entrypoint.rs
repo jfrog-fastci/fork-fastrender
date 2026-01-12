@@ -1,9 +1,39 @@
 use diagnostics::Severity;
 use native_js::{compile_program, CompilerOptions, EmitKind};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tempfile::tempdir;
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
+
+const MAX_CONCURRENT_NATIVE_JS_ENTRYPOINT_TESTS: usize = 4;
+static NATIVE_JS_ENTRYPOINT_TESTS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+struct CodegenPermit;
+
+impl CodegenPermit {
+  fn acquire() -> Self {
+    loop {
+      let current = NATIVE_JS_ENTRYPOINT_TESTS_IN_FLIGHT.load(Ordering::Acquire);
+      if current < MAX_CONCURRENT_NATIVE_JS_ENTRYPOINT_TESTS {
+        if NATIVE_JS_ENTRYPOINT_TESTS_IN_FLIGHT
+          .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+          .is_ok()
+        {
+          return Self;
+        }
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+  }
+}
+
+impl Drop for CodegenPermit {
+  fn drop(&mut self) {
+    NATIVE_JS_ENTRYPOINT_TESTS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
+  }
+}
 
 fn es5_host() -> MemoryHost {
   MemoryHost::with_options(TsCompilerOptions {
@@ -82,6 +112,7 @@ fn entrypoint_number_returns_exit_code() {
     return;
   }
 
+  let _permit = CodegenPermit::acquire();
   let out = compile_and_run("export function main(): number { return 42; }");
   assert_eq!(out.status.code(), Some(42));
   assert!(out.stdout.is_empty());
@@ -93,6 +124,7 @@ fn entrypoint_boolean_returns_exit_code() {
     return;
   }
 
+  let _permit = CodegenPermit::acquire();
   let out = compile_and_run("export function main(): boolean { return true; }");
   assert_eq!(out.status.code(), Some(1));
   assert!(out.stdout.is_empty());
@@ -104,6 +136,7 @@ fn entrypoint_void_returns_exit_code() {
     return;
   }
 
+  let _permit = CodegenPermit::acquire();
   let out = compile_and_run("export function main(): void {}");
   assert_eq!(out.status.code(), Some(0));
   assert!(out.stdout.is_empty());
@@ -111,15 +144,11 @@ fn entrypoint_void_returns_exit_code() {
 
 #[test]
 fn entrypoint_reexported_main_returns_exit_code() {
-  if !cfg!(target_os = "linux") {
-    eprintln!("skipping native-js entrypoint test: executable emission is linux-only");
-    return;
-  }
-  if !clang_available() {
-    eprintln!("skipping native-js entrypoint test: clang not found");
+  if !require_executable_emission_or_skip() {
     return;
   }
 
+  let _permit = CodegenPermit::acquire();
   let mut host = es5_host();
   let entry = FileKey::new("entry.ts");
   let impl_file = FileKey::new("impl.ts");
@@ -152,6 +181,7 @@ fn entrypoint_export_all_reexported_main_returns_exit_code() {
     return;
   }
 
+  let _permit = CodegenPermit::acquire();
   let mut host = es5_host();
   let entry = FileKey::new("entry.ts");
   let impl_file = FileKey::new("impl.ts");
@@ -184,6 +214,7 @@ fn entrypoint_local_reexported_main_returns_exit_code() {
     return;
   }
 
+  let _permit = CodegenPermit::acquire();
   let mut host = es5_host();
   let entry = FileKey::new("entry.ts");
   let impl_file = FileKey::new("impl.ts");
@@ -221,6 +252,7 @@ fn entrypoint_renamed_local_reexported_main_returns_exit_code() {
     return;
   }
 
+  let _permit = CodegenPermit::acquire();
   let mut host = es5_host();
   let entry = FileKey::new("entry.ts");
   let impl_file = FileKey::new("impl.ts");
