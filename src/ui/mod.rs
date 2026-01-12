@@ -25,6 +25,7 @@ pub mod render_worker;
 pub mod scrollbars;
 pub mod shortcuts;
 pub mod find_in_page;
+pub mod repaint_scheduler;
 pub mod url;
 pub mod url_display;
 pub mod security_indicator;

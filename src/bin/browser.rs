@@ -763,7 +763,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
-    // tick deadline when needed.
+    // pending deadline (worker ticks, viewport throttling, egui repaint scheduling).
     app.drive_periodic_tasks_and_update_control_flow(control_flow);
   });
 }
@@ -1303,6 +1303,16 @@ struct App {
   debug_log_filter: String,
   hud: Option<BrowserHud>,
 
+  /// Deadline for the next egui-driven repaint (derived from `egui::FullOutput::repaint_after`).
+  ///
+  /// Stored as an `Instant` so the winit event loop can sleep in `ControlFlow::WaitUntil` even when
+  /// no OS events are arriving (e.g. focus changes, spinners).
+  next_egui_repaint: Option<std::time::Instant>,
+  /// Last time we requested a redraw due to egui's repaint scheduling.
+  ///
+  /// Used to rate-limit "immediate" (`Duration::ZERO`) repaint requests so we don't busy loop.
+  last_egui_redraw_request: Option<std::time::Instant>,
+
   /// Periodic tick driver state for animated documents.
   ///
   /// The render worker only advances CSS animation/transition sampling time when the UI sends
@@ -1627,6 +1637,8 @@ error: {err}",
       } else {
         None
       },
+      next_egui_repaint: None,
+      last_egui_redraw_request: None,
       animation_tick_tab: None,
       next_animation_tick: None,
     })
@@ -1706,6 +1718,7 @@ error: {err}",
     // - the global `ControlFlow::WaitUntil` deadline accounts for the earliest wakeup across all windows.
     self.drive_animation_tick();
     self.drive_viewport_throttle();
+    self.drive_egui_repaint();
     self.update_control_flow_for_animation_ticks(control_flow);
   }
 
@@ -1728,6 +1741,46 @@ error: {err}",
     if now >= deadline {
       self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
       self.next_animation_tick = Some(now + Self::ANIMATION_TICK_INTERVAL);
+    }
+  }
+
+  fn schedule_egui_repaint(&mut self, repaint_after: std::time::Duration) {
+    if self.window_occluded || self.window_minimized {
+      self.next_egui_repaint = None;
+      return;
+    }
+
+    let now = std::time::Instant::now();
+    let plan = fastrender::ui::repaint_scheduler::plan_egui_repaint(
+      now,
+      repaint_after,
+      self.last_egui_redraw_request,
+    );
+
+    if plan.request_redraw_now {
+      self.next_egui_repaint = None;
+      self.last_egui_redraw_request = Some(now);
+      self.window.request_redraw();
+    } else {
+      self.next_egui_repaint = plan.next_deadline;
+    }
+  }
+
+  fn drive_egui_repaint(&mut self) {
+    if self.window_occluded || self.window_minimized {
+      self.next_egui_repaint = None;
+      return;
+    }
+
+    let Some(deadline) = self.next_egui_repaint else {
+      return;
+    };
+
+    let now = std::time::Instant::now();
+    if now >= deadline {
+      self.next_egui_repaint = None;
+      self.last_egui_redraw_request = Some(now);
+      self.window.request_redraw();
     }
   }
 
@@ -1769,6 +1822,14 @@ error: {err}",
     } else {
       self.animation_tick_tab = None;
       self.next_animation_tick = None;
+    }
+
+    // Egui repaint scheduling (focus changes, animated widgets like spinners, etc).
+    if let Some(egui_deadline) = self.next_egui_repaint {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(egui_deadline),
+        None => egui_deadline,
+      });
     }
 
     // UI-only timers (e.g. overlay scrollbar fade).
@@ -5010,6 +5071,7 @@ error: {err}",
     self.flush_pending_pointer_move();
 
     let mut full_output = self.egui_ctx.end_frame();
+    let repaint_after = full_output.repaint_after;
     if let Some(text) = self.pending_clipboard_text.take() {
       full_output.platform_output.copied_text = text;
     }
@@ -5021,6 +5083,10 @@ error: {err}",
     // Egui sets cursor icons as part of platform output. Override it for page content hover
     // semantics (links, text inputs) when the cursor is inside the rendered page image.
     self.apply_page_cursor_icon();
+
+    // Honor egui's repaint scheduling. Focus changes and animated widgets often require follow-up
+    // frames even when no OS events are incoming.
+    self.schedule_egui_repaint(repaint_after);
 
     let paint_jobs = self.egui_ctx.tessellate(full_output.shapes);
 
