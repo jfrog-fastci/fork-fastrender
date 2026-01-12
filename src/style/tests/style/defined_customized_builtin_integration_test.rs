@@ -1,10 +1,10 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::dom;
-use fastrender::style::cascade::{
+use crate::css::parser::parse_stylesheet;
+use crate::dom;
+use crate::style::cascade::{
   apply_styles_with_media_target_and_imports_with_options, CascadeOptions, StyledNode,
 };
-use fastrender::style::media::MediaContext;
-use fastrender::Rgba;
+use crate::style::color::Rgba;
+use crate::style::media::MediaContext;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node.node.get_attribute_ref("id") == Some(id) {
@@ -100,4 +100,3 @@ fn defined_customized_builtin_integration_test() {
   let d_spec = find_by_id(&styled_spec, "d").expect("node #d");
   assert_eq!(d_spec.styles.color, Rgba::rgb(0, 128, 0));
 }
-

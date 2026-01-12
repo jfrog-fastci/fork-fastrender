@@ -1,7 +1,5 @@
-use fastrender::api::{DiagnosticsLevel, FastRender, RenderOptions};
-use fastrender::style::cascade::{
-  cascade_profile_enabled, reset_cascade_profile, set_cascade_profile_enabled,
-};
+use crate::style::cascade::{cascade_profile_enabled, reset_cascade_profile, set_cascade_profile_enabled};
+use crate::{DiagnosticsLevel, FastRender, RenderOptions};
 
 struct CascadeProfileGuard {
   previous: bool,
@@ -62,4 +60,3 @@ fn cascade_profile_env_populates_cascade_diagnostics() {
     "expected cascade.selector_time_ms when cascade profiling is enabled"
   );
 }
-

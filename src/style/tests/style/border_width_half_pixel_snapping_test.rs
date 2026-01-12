@@ -1,6 +1,6 @@
-use fastrender::style::types::BorderStyle;
-use fastrender::style::values::Length;
-use fastrender::style::ComputedStyle;
+use crate::style::types::BorderStyle;
+use crate::style::values::Length;
+use crate::style::ComputedStyle;
 
 #[test]
 fn used_border_width_snaps_common_half_pixel_values_to_whole_pixels() {
@@ -17,4 +17,3 @@ fn used_border_width_snaps_common_half_pixel_values_to_whole_pixels() {
   style.border_left_width = Length::px(0.5);
   assert_eq!(style.used_border_left_width(), Length::px(0.5));
 }
-

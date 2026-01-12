@@ -1,8 +1,8 @@
-use fastrender::css::parser::parse_stylesheet;
-use fastrender::geometry::Size;
-use fastrender::style::media::MediaContext;
-use fastrender::style::page::{resolve_page_style, PageSide};
-use fastrender::style::values::Length;
+use crate::css::parser::parse_stylesheet;
+use crate::geometry::Size;
+use crate::style::media::MediaContext;
+use crate::style::page::{resolve_page_style, PageSide};
+use crate::style::values::Length;
 
 #[test]
 fn page_footnote_rule_sets_max_height() {
