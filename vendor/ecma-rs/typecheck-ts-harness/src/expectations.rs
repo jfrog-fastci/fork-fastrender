@@ -239,6 +239,11 @@ impl RawEntry {
           "invalid id '{id}': ids must be relative to the suite root (no leading slash)"
         )));
       }
+      if id.is_empty() {
+        return Err(HarnessError::Manifest(
+          "invalid id: ids must be non-empty".to_string(),
+        ));
+      }
       if id.contains('\\') {
         return Err(HarnessError::Manifest(format!(
           "invalid id '{id}': ids must use forward slashes"
@@ -249,7 +254,7 @@ impl RawEntry {
           "invalid id '{id}': ids must be relative to the suite root (no drive letter)"
         )));
       }
-      if id.contains("//") {
+      if id.split('/').any(|seg| seg.is_empty()) {
         return Err(HarnessError::Manifest(format!(
           "invalid id '{id}': ids must be normalized (no empty path segments)"
         )));
@@ -268,6 +273,11 @@ impl RawEntry {
           "invalid glob '{glob}': globs must be relative to the suite root (no leading slash)"
         )));
       }
+      if glob.is_empty() {
+        return Err(HarnessError::Manifest(
+          "invalid glob: globs must be non-empty".to_string(),
+        ));
+      }
       if glob.contains('\\') {
         return Err(HarnessError::Manifest(format!(
           "invalid glob '{glob}': globs must use forward slashes"
@@ -278,7 +288,7 @@ impl RawEntry {
           "invalid glob '{glob}': globs must be relative to the suite root (no drive letter)"
         )));
       }
-      if glob.contains("//") {
+      if glob.split('/').any(|seg| seg.is_empty()) {
         return Err(HarnessError::Manifest(format!(
           "invalid glob '{glob}': globs must be normalized (no empty path segments)"
         )));
@@ -497,6 +507,58 @@ status = "xfail"
     .unwrap_err();
     assert!(
       err.to_string().contains("empty path segments"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+id = "a/"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("empty path segments"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+glob = "a/"
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("empty path segments"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+id = ""
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("non-empty"),
+      "unexpected error: {err}"
+    );
+
+    let err = Expectations::from_str(
+      r#"
+[[expectations]]
+glob = ""
+status = "xfail"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+      err.to_string().contains("non-empty"),
       "unexpected error: {err}"
     );
 
