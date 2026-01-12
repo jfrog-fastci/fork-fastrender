@@ -163,7 +163,10 @@ type U = { a: number } | { b: boolean };
   for (idx, variant) in variants.iter().enumerate() {
     assert_eq!(variant.ty, members[idx]);
     assert_eq!(variant.discriminant, idx as u32);
-    assert_eq!(variant.payload_offset, payload_offset);
+    // `types-ts-interned` stores per-variant payload offsets *relative* to the
+    // union's `payload_offset`, which is shared by all variants in the current
+    // layout model.
+    assert_eq!(variant.payload_offset, 0);
     assert!(matches!(
       store.layout(variant.layout),
       Layout::Ptr {
@@ -172,4 +175,3 @@ type U = { a: number } | { b: boolean };
     ));
   }
 }
-
