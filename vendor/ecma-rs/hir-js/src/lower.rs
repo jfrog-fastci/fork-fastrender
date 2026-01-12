@@ -2326,6 +2326,23 @@ fn lower_call_expr(
 
   #[cfg(feature = "semantic-ops")]
   {
+    fn semantic_ops_strip_transparent_wrappers(builder: &BodyBuilder<'_>, mut expr: ExprId) -> ExprId {
+      loop {
+        match &builder.exprs[expr.0 as usize].kind {
+          // These TypeScript-only wrappers are erased at runtime. Treat them as
+          // transparent for semantic-op pattern matching so expressions like:
+          //   Promise.all([p] as const)
+          //   (arr.map(f) as any).filter(g)
+          // still lower into dedicated semantic nodes.
+          ExprKind::TypeAssertion { expr: inner, .. }
+          | ExprKind::Instantiation { expr: inner, .. }
+          | ExprKind::NonNull { expr: inner }
+          | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+          _ => return expr,
+        }
+      }
+    }
+
     fn semantic_ops_member_property_name<'a>(
       builder: &'a BodyBuilder<'_>,
       key: &'a ObjectKey,
@@ -2346,6 +2363,7 @@ fn lower_call_expr(
       builder: &BodyBuilder<'_>,
       expr: ExprId,
     ) -> Option<(ExprId, Vec<ArrayChainOp>)> {
+      let expr = semantic_ops_strip_transparent_wrappers(builder, expr);
       match &builder.exprs[expr.0 as usize].kind {
         ExprKind::ArrayMap { array, callback } => Some((*array, vec![ArrayChainOp::Map(*callback)])),
         ExprKind::ArrayFilter { array, callback } => {
@@ -2360,18 +2378,10 @@ fn lower_call_expr(
     }
 
     if !is_new && !call.stx.optional_chaining {
-      // TypeScript instantiation expressions (`callee<T>`) are erased at runtime.
-      // Treat them as transparent wrappers for semantic-ops pattern matching while
-      // keeping the original callee expression in the lowered HIR.
-      let semantic_callee = {
-        let mut current = callee;
-        loop {
-          match &builder.exprs[current.0 as usize].kind {
-            ExprKind::Instantiation { expr, .. } => current = *expr,
-            _ => break current,
-          }
-        }
-      };
+      // TypeScript-only wrappers (instantiation/type assertion/etc.) are erased
+      // at runtime. Treat them as transparent wrappers for semantic-ops pattern
+      // matching while keeping the original callee expression in the lowered HIR.
+      let semantic_callee = semantic_ops_strip_transparent_wrappers(builder, callee);
 
       // Internal hook for producing `ExprKind::KnownApiCall` nodes while the
       // knowledge-base integration is still evolving.
@@ -2404,12 +2414,14 @@ fn lower_call_expr(
           if !member.optional {
             if let Some(prop) = semantic_ops_member_property_name(builder, &member.property) {
               if prop == "all" || prop == "race" {
-                if let ExprKind::Ident(obj) = &builder.exprs[member.object.0 as usize].kind {
+                let object = semantic_ops_strip_transparent_wrappers(builder, member.object);
+                if let ExprKind::Ident(obj) = &builder.exprs[object.0 as usize].kind {
                   if builder.names.resolve(*obj) == Some("Promise")
                     && args.len() == 1
                     && !args[0].spread
                   {
-                    if let ExprKind::Array(arr) = &builder.exprs[args[0].expr.0 as usize].kind {
+                    let input = semantic_ops_strip_transparent_wrappers(builder, args[0].expr);
+                    if let ExprKind::Array(arr) = &builder.exprs[input.0 as usize].kind {
                       let mut promises = Vec::new();
                       let mut ok = true;
                       for element in arr.elements.iter() {

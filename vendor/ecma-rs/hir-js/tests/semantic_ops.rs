@@ -268,3 +268,49 @@ fn semantic_ops_lowering_unwraps_instantiation_in_array_pipeline() {
     "expected arr.map<T>(...) to lower as a semantic op"
   );
 }
+
+#[test]
+fn semantic_ops_lowering_unwraps_type_assertion_promise_object() {
+  let lowered = lower_from_source_with_kind(FileKind::Ts, "(Promise as any).all([p]);").unwrap();
+  let (body, expr) = first_stmt_expr(&lowered);
+  let body_ref = lowered.body(body).expect("body");
+  assert!(
+    matches!(
+      &body_ref.exprs[expr.0 as usize].kind,
+      ExprKind::PromiseAll { promises } if promises.len() == 1
+    ),
+    "expected (Promise as any).all([...]) to lower as a semantic op"
+  );
+}
+
+#[test]
+fn semantic_ops_lowering_unwraps_type_assertion_promise_array_arg() {
+  let lowered = lower_from_source_with_kind(FileKind::Ts, "Promise.all([p] as const);").unwrap();
+  let (body, expr) = first_stmt_expr(&lowered);
+  let body_ref = lowered.body(body).expect("body");
+  assert!(
+    matches!(
+      &body_ref.exprs[expr.0 as usize].kind,
+      ExprKind::PromiseAll { promises } if promises.len() == 1
+    ),
+    "expected Promise.all([..] as const) to lower as a semantic op"
+  );
+}
+
+#[test]
+fn semantic_ops_lowering_unwraps_wrapped_array_chain_receivers() {
+  let lowered = lower_from_source_with_kind(
+    FileKind::Ts,
+    "(arr.map(x => x + 1) as any).filter(x => x > 0);",
+  )
+  .unwrap();
+  let (body, expr) = first_stmt_expr(&lowered);
+  let body_ref = lowered.body(body).expect("body");
+  assert!(
+    matches!(
+      &body_ref.exprs[expr.0 as usize].kind,
+      ExprKind::ArrayChain { ops, .. } if matches!(ops.as_slice(), [ArrayChainOp::Map(_), ArrayChainOp::Filter(_)])
+    ),
+    "expected wrapped array chain receiver to still lower as a semantic op"
+  );
+}
