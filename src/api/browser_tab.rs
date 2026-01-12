@@ -530,7 +530,6 @@ impl BrowserTabHost {
     let mut webidl_bindings_host =
       Box::new(VmJsWebIdlBindingsHostDispatch::<BrowserTabHost>::new_without_global());
     executor.set_webidl_bindings_host(webidl_bindings_host.as_mut());
-    document.set_webidl_bindings_host(webidl_bindings_host.as_mut());
     let event_invoker = executor
       .event_listener_invoker()
       .unwrap_or_else(|| Box::new(NoopEventInvoker));
@@ -9179,14 +9178,7 @@ mod tests {
       ) -> Result<ModuleScriptExecutionStatus> {
         self
           .inner
-          .execute_module_script(
-            script_id,
-            script_text,
-            spec,
-            current_script,
-            document,
-            event_loop,
-          )
+          .execute_module_script(script_id, script_text, spec, current_script, document, event_loop)
       }
 
       fn supports_module_graph_fetch(&self) -> bool {
