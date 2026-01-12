@@ -726,18 +726,6 @@ impl Heap {
       for sym in internal_syms.into_iter().flatten() {
         tracer.trace_value(Value::Symbol(sym));
       }
-      if let Some(s) = self.common_key_name {
-        tracer.trace_value(Value::String(s));
-      }
-      if let Some(s) = self.common_key_length {
-        tracer.trace_value(Value::String(s));
-      }
-      if let Some(s) = self.common_key_constructor {
-        tracer.trace_value(Value::String(s));
-      }
-      if let Some(s) = self.common_key_prototype {
-        tracer.trace_value(Value::String(s));
-      }
 
       while let Some(id) = tracer.pop_work() {
         let Some(idx) = tracer.validate(id) else {
@@ -7385,7 +7373,9 @@ impl<'a> Scope<'a> {
 
   pub(crate) fn common_key_name(&mut self) -> Result<GcString, VmError> {
     if let Some(s) = self.heap.common_key_name {
-      return Ok(s);
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
     }
     let s = self.alloc_string("name")?;
     self.heap.common_key_name = Some(s);
@@ -7394,7 +7384,9 @@ impl<'a> Scope<'a> {
 
   pub(crate) fn common_key_length(&mut self) -> Result<GcString, VmError> {
     if let Some(s) = self.heap.common_key_length {
-      return Ok(s);
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
     }
     let s = self.alloc_string("length")?;
     self.heap.common_key_length = Some(s);
@@ -7403,7 +7395,9 @@ impl<'a> Scope<'a> {
 
   pub(crate) fn common_key_constructor(&mut self) -> Result<GcString, VmError> {
     if let Some(s) = self.heap.common_key_constructor {
-      return Ok(s);
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
     }
     let s = self.alloc_string("constructor")?;
     self.heap.common_key_constructor = Some(s);
@@ -7412,7 +7406,9 @@ impl<'a> Scope<'a> {
 
   pub(crate) fn common_key_prototype(&mut self) -> Result<GcString, VmError> {
     if let Some(s) = self.heap.common_key_prototype {
-      return Ok(s);
+      if self.heap.is_valid_string(s) {
+        return Ok(s);
+      }
     }
     let s = self.alloc_string("prototype")?;
     self.heap.common_key_prototype = Some(s);
