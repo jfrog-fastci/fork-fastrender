@@ -13053,6 +13053,70 @@ mod tests {
   }
 
   #[test]
+  fn response_array_buffer_accepts_js_created_byte_stream_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      "(function(){\
+         const stream = new ReadableStream({\
+           start(c) {\
+             c.enqueue(new Uint8Array([1, 2, 3]));\
+             c.close();\
+           }\
+         });\
+         return new Response(stream).arrayBuffer();\
+       })()",
+    )?;
+    let promise_root = host.window.heap_mut().add_root(promise)?;
+
+    // Stream-backed body consumers resolve asynchronously via Promise jobs.
+    host.window.perform_microtask_checkpoint()?;
+
+    let promise_val = host
+      .window
+      .heap()
+      .get_root(promise_root)
+      .unwrap_or(Value::Undefined);
+    let Value::Object(promise_obj) = promise_val else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer must return a Promise object",
+      ));
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = host.window.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer promise missing result",
+      ));
+    };
+    let Value::Object(ab_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer must resolve to an ArrayBuffer object",
+      ));
+    };
+
+    {
+      let (_vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(ab_obj))?;
+      assert!(scope.heap().is_array_buffer_object(ab_obj));
+      assert_eq!(scope.heap().array_buffer_data(ab_obj)?, &[1, 2, 3]);
+    }
+
+    host.window.heap_mut().remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
   fn response_ctor_accepts_readable_stream_body_and_text_consumes_it() -> Result<(), VmError> {
     let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
 

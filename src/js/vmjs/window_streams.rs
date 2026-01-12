@@ -63,6 +63,12 @@ const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 /// unbounded host allocations when scripts enqueue attacker-controlled strings.
 const MAX_READABLE_STREAM_STRING_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 
+/// Upper bound for a single byte chunk enqueued via a `ReadableStream` controller.
+///
+/// This mirrors `MAX_READABLE_STREAM_STRING_CHUNK_BYTES`; scripts can enqueue attacker-controlled
+/// `Uint8Array` / `ArrayBuffer` chunks, so we cap the per-chunk host allocation.
+const MAX_READABLE_STREAM_BYTE_CHUNK_BYTES: usize = 32 * 1024 * 1024;
+
 // --- Hidden, internal property keys -----------------------------------------------------------
 
 const READABLE_STREAM_READER_PENDING_RESOLVE_KEY: &str =
@@ -168,6 +174,12 @@ enum StreamLifecycleState {
 enum StreamKind {
   Bytes,
   Strings,
+  /// Stream kind is determined by the first controller `enqueue` call.
+  ///
+  /// This is used for JS-constructed streams created via `new ReadableStream({ start(...) { ... } })`
+  /// so they can become either a byte stream (`Uint8Array`/`ArrayBuffer` chunks) or a string stream
+  /// (string/`undefined` chunks).
+  Uninitialized,
 }
 
 type LazyInit = Box<dyn FnOnce() -> Result<Vec<u8>, VmError> + Send + 'static>;
@@ -238,6 +250,23 @@ impl StreamState {
       pending_reader: None,
       pending_read_roots: None,
       kind: StreamKind::Strings,
+    }
+  }
+
+  fn new_empty_uninitialized() -> Self {
+    Self {
+      locked: false,
+      state: StreamLifecycleState::Readable,
+      close_requested: false,
+      error_message: None,
+      bytes: Vec::new(),
+      queue: VecDeque::new(),
+      strings: VecDeque::new(),
+      init: None,
+      offset: 0,
+      pending_reader: None,
+      pending_read_roots: None,
+      kind: StreamKind::Uninitialized,
     }
   }
 
@@ -502,7 +531,7 @@ fn readable_stream_ctor_construct(
     state.streams.insert(
       WeakGcObject::from(obj),
       if has_start {
-        StreamState::new_empty_strings()
+        StreamState::new_empty_uninitialized()
       } else {
         StreamState::new_empty()
       },
@@ -2371,24 +2400,46 @@ fn readable_stream_controller_enqueue_native(
   let stream_obj = readable_stream_controller_stream(scope, controller_obj)?;
 
   let chunk = args.get(0).copied().unwrap_or(Value::Undefined);
-  let chunk_string = match chunk {
-    Value::Undefined => String::new(),
-    Value::String(s) => {
-      let code_units = scope.heap().get_string(s)?.as_code_units();
-      let byte_len = utf8_len_from_utf16_units(code_units)?;
-      if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
+  let pending = match chunk {
+    Value::Undefined | Value::String(_) => {
+      // `undefined` chunks are treated as empty strings (matches `TextEncoder.encode(undefined)`).
+      let chunk_string = match chunk {
+        Value::Undefined => String::new(),
+        Value::String(s) => {
+          let code_units = scope.heap().get_string(s)?.as_code_units();
+          let byte_len = utf8_len_from_utf16_units(code_units)?;
+          if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
+            return Err(VmError::TypeError("ReadableStream chunk too large"));
+          }
+          utf16_units_to_utf8_string_lossy(code_units, byte_len)?
+        }
+        _ => unreachable!(),
+      };
+      enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?
+    }
+    Value::Object(chunk_obj) if scope.heap().is_uint8_array_object(chunk_obj) => {
+      let data = scope.heap().uint8_array_data(chunk_obj)?;
+      if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
         return Err(VmError::TypeError("ReadableStream chunk too large"));
       }
-      utf16_units_to_utf8_string_lossy(code_units, byte_len)?
+      let bytes = data.to_vec();
+      enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
+    }
+    Value::Object(chunk_obj) if scope.heap().is_array_buffer_object(chunk_obj) => {
+      let data = scope.heap().array_buffer_data(chunk_obj)?;
+      if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+        return Err(VmError::TypeError("ReadableStream chunk too large"));
+      }
+      let bytes = data.to_vec();
+      enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
     }
     _ => {
       return Err(VmError::TypeError(
-        "ReadableStreamDefaultController.enqueue expects a string",
+        "ReadableStreamDefaultController.enqueue expects a string, Uint8Array, or ArrayBuffer",
       ))
     }
   };
 
-  let pending = enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?;
   if let Some(pending) = pending {
     settle_pending_read(
       vm,
@@ -2834,6 +2885,21 @@ fn reader_read_native(
 
         Ok((ReadOutcome::Chunk(ReadChunk::String(chunk)), None))
       }
+      StreamKind::Uninitialized => {
+        // Streams created by the JS `ReadableStream` constructor with an underlying source `start`
+        // callback can be either string streams or byte streams, depending on the first enqueued
+        // chunk.
+        //
+        // If a read happens before the first `enqueue`, keep it pending until we know the stream
+        // kind and have data (or the stream closes/errors).
+        if stream_state.close_requested {
+          stream_state.state = StreamLifecycleState::Closed;
+          return Ok((ReadOutcome::Done, None));
+        }
+
+        stream_state.pending_reader = Some(WeakGcObject::from(reader_obj));
+        Ok((ReadOutcome::Pending, Some(stream_weak)))
+      }
     }
   })?;
 
@@ -3098,6 +3164,18 @@ fn enqueue_bytes_into_readable_stream(
       .get_mut(&WeakGcObject::from(stream_obj))
       .ok_or(VmError::TypeError("ReadableStream enqueue: invalid stream"))?;
 
+    match stream_state.kind {
+      StreamKind::Bytes => {}
+      StreamKind::Uninitialized => {
+        stream_state.kind = StreamKind::Bytes;
+      }
+      StreamKind::Strings => {
+        return Err(VmError::TypeError(
+          "ReadableStream enqueue expects byte streams",
+        ));
+      }
+    }
+
     if stream_state.kind != StreamKind::Bytes {
       return Err(VmError::TypeError(
         "ReadableStream enqueue expects byte streams",
@@ -3163,6 +3241,18 @@ fn enqueue_string_into_readable_stream(
       .get_mut(&WeakGcObject::from(stream_obj))
       .ok_or(VmError::TypeError("ReadableStream enqueue: invalid stream"))?;
 
+    match stream_state.kind {
+      StreamKind::Strings => {}
+      StreamKind::Uninitialized => {
+        stream_state.kind = StreamKind::Strings;
+      }
+      StreamKind::Bytes => {
+        return Err(VmError::TypeError(
+          "ReadableStream enqueue expects string streams",
+        ));
+      }
+    }
+
     if stream_state.kind != StreamKind::Strings {
       return Err(VmError::TypeError(
         "ReadableStream enqueue expects string streams",
@@ -3217,6 +3307,7 @@ fn close_readable_stream(
     let queue_is_empty = match stream_state.kind {
       StreamKind::Bytes => stream_state.queue.is_empty(),
       StreamKind::Strings => stream_state.strings.is_empty(),
+      StreamKind::Uninitialized => true,
     };
     if queue_is_empty {
       stream_state.state = StreamLifecycleState::Closed;
@@ -3910,7 +4001,11 @@ fn transform_controller_enqueue_native(
     ));
   }
 
-  let bytes = scope.heap().uint8_array_data(chunk_obj)?.to_vec();
+  let data = scope.heap().uint8_array_data(chunk_obj)?;
+  if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+    return Err(VmError::TypeError("ReadableStream chunk too large"));
+  }
+  let bytes = data.to_vec();
   let pending = enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?;
   if let Some(pending) = pending {
     settle_pending_read(
@@ -4055,7 +4150,11 @@ fn transform_sink_write_native(
   // Default transform is pass-through: `controller.enqueue(chunk)`.
   let pending = match chunk {
     Value::Object(obj) if scope.heap().is_uint8_array_object(obj) => {
-      let bytes = scope.heap().uint8_array_data(obj)?.to_vec();
+      let data = scope.heap().uint8_array_data(obj)?;
+      if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+        return Err(VmError::TypeError("ReadableStream chunk too large"));
+      }
+      let bytes = data.to_vec();
       enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
     }
     _ => {
@@ -5536,6 +5635,87 @@ mod tests {
     let enqueue_after_close_threw =
       realm.exec_script("(() => { try { controller.enqueue('x'); return false; } catch (e) { return e instanceof TypeError; } })()")?;
     assert_eq!(enqueue_after_close_threw, Value::Bool(true));
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_controller_can_enqueue_uint8array() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1, 2, 3]));
+            controller.close();
+          }
+        });
+        globalThis.reader = stream.getReader();
+        globalThis.readPromise1 = reader.read();
+      "#,
+    )?;
+
+    let read_p1 = realm.exec_script("readPromise1")?;
+    let Value::Object(read_p1_obj) = read_p1 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    assert_eq!(
+      realm.heap().promise_state(read_p1_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result1_val) = realm.heap().promise_result(read_p1_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Value::Object(result1_obj) = result1_val else {
+      return Err(VmError::InvariantViolation(
+        "read() must resolve to an object",
+      ));
+    };
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+      let done = read_result_prop(&mut scope, result1_obj, "done")?;
+      assert_eq!(done, Value::Bool(false));
+      let value = read_result_prop(&mut scope, result1_obj, "value")?;
+      let Value::Object(value_obj) = value else {
+        return Err(VmError::InvariantViolation(
+          "read() result.value must be an object",
+        ));
+      };
+      assert!(scope.heap().is_uint8_array_object(value_obj));
+      assert_eq!(scope.heap().uint8_array_data(value_obj)?, &[1, 2, 3]);
+    }
+
+    let read_p2 = realm.exec_script("globalThis.readPromise2 = reader.read();")?;
+    let Value::Object(read_p2_obj) = read_p2 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    assert_eq!(
+      realm.heap().promise_state(read_p2_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result2_val) = realm.heap().promise_result(read_p2_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Value::Object(result2_obj) = result2_val else {
+      return Err(VmError::InvariantViolation(
+        "read() must resolve to an object",
+      ));
+    };
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+      let done = read_result_prop(&mut scope, result2_obj, "done")?;
+      assert_eq!(done, Value::Bool(true));
+      let value = read_result_prop(&mut scope, result2_obj, "value")?;
+      assert!(matches!(value, Value::Undefined));
+    }
 
     realm.teardown();
     Ok(())
