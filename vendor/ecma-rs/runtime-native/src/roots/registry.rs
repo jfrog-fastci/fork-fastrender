@@ -68,6 +68,44 @@ impl RootRegistry {
     if (slot as usize) % core::mem::align_of::<*mut u8>() != 0 {
       std::process::abort();
     }
+
+    // If the current thread is registered, temporarily root the slot's *current* pointer value in
+    // the thread's shadow stack while acquiring the registry lock.
+    //
+    // Lock acquisition is GC-aware: if contended it can enter a GC-safe ("NativeSafe") region while
+    // blocked, allowing a moving GC to run. The slot is not discoverable by the GC until it is
+    // registered, so if it already contains a movable pointer we must ensure the value is kept
+    // alive and relocatable across this window.
+    //
+    // After acquiring the lock, write the (possibly relocated) pointer value back into the caller's
+    // slot before registering it as a root.
+    let ts = registry::current_thread_state_ptr();
+    if !ts.is_null() {
+      // SAFETY: non-null pointer returned only for registered threads.
+      let ts = unsafe { &*ts };
+      // SAFETY: `slot` is a valid, aligned pointer to a `*mut u8` slot (checked above).
+      let ptr = unsafe { slot.read() };
+      let scope = crate::gc::shadow_stack::RootScope::new(ts);
+      let rooted = scope.root(ptr);
+
+      let mut inner = self.inner.lock();
+
+      // Ensure the caller's slot reflects any relocation that might have happened while contending
+      // on the lock (or while the thread was in a GC-safe region).
+      //
+      // SAFETY: `slot` is valid and writable for `*mut u8`.
+      unsafe {
+        slot.write(rooted.get());
+      }
+
+      let handle = inner.alloc(Entry::Borrowed(slot));
+      self.live_count.fetch_add(1, Ordering::Release);
+      return handle;
+    }
+
+    // Unregistered threads do not participate in stop-the-world GC coordination. We still allow
+    // registration (useful for initialization-time embeddings), but provide no moving-GC safety if
+    // `slot` contains a movable GC pointer.
     let mut inner = self.inner.lock();
     let handle = inner.alloc(Entry::Borrowed(slot));
     self.live_count.fetch_add(1, Ordering::Release);
