@@ -98,6 +98,34 @@ The GC is a **precise**, **generational** collector with multiple spaces:
 The exact collection policy can evolve, but the **object representation is stable** and is the
 source of truth for all GC subsystems and for native codegen.
 
+## Process-global GC configuration (`rt_alloc*` / `rt_gc_collect`)
+
+The exported allocator/collector (`rt_alloc`, `rt_alloc_array`, `rt_gc_collect`, etc.) operate on a
+single **process-global** GC heap.
+
+Embedders (and tests) can tune GC policy and sizing before first use:
+
+- `rt_gc_set_config(&cfg)` sets collection policy / thresholds.
+- `rt_gc_set_limits(&limits)` sets hard caps (`max_heap_bytes`, `max_total_bytes`).
+
+**Important:** these setters must be called **before** the heap is initialized (i.e. before
+`rt_thread_init`, any `rt_alloc*`, `rt_gc_collect`, etc.). If called after initialization, they
+return `false` and have no effect.
+
+For debugging, `rt_gc_get_config` / `rt_gc_get_limits` snapshot the current effective settings.
+
+### Environment variable overrides
+
+The process-global heap reads these environment variables **once** at heap initialization time
+(integer MiB values):
+
+- `ECMA_RS_GC_NURSERY_MB`
+- `ECMA_RS_GC_MAX_HEAP_MB`
+- `ECMA_RS_GC_MAX_TOTAL_MB`
+
+Env overrides apply only when the corresponding `rt_gc_set_*` setter was not called (i.e. they
+override defaults, not explicit embedder-provided config).
+
 ## GC object representation (authoritative)
 
 ### Object pointer convention
