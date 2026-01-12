@@ -739,6 +739,18 @@ fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
 }
 
 #[test]
+fn location_stringification_matches_href() -> Result<()> {
+  let url = "https://example.com/path?query#hash";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script("String(location) === location.href && (location + '') === location.href && location.toString() === location.href")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn history_push_state_updates_location_without_navigation() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
@@ -755,6 +767,49 @@ fn history_push_state_updates_location_without_navigation() -> Result<()> {
     realm.take_pending_navigation_request().is_none(),
     "history.pushState should not schedule navigation"
   );
+  Ok(())
+}
+
+#[test]
+fn history_go_zero_requests_reload_and_interrupts() -> Result<()> {
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("https://example.com/"),
+    js_opts_for_test(),
+  )
+  .map_err(|e| Error::Other(e.to_string()))?;
+
+  // Ensure we reload the *current* document URL (which can be updated by pushState).
+  realm
+    .exec_script("history.pushState(null, '', '/next')")
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let err = realm
+    .exec_script("history.go(0)")
+    .expect_err("expected history.go(0) to interrupt execution");
+  assert!(
+    matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+    "unexpected error: {err:?}"
+  );
+  realm.reset_interrupt();
+  let req = realm
+    .take_pending_navigation_request()
+    .expect("expected pending navigation request");
+  assert_eq!(req.url, "https://example.com/next");
+  assert!(req.replace);
+
+  let err = realm
+    .exec_script("history.go()")
+    .expect_err("expected history.go() to interrupt execution");
+  assert!(
+    matches!(err, VmError::Termination(ref term) if term.reason == TerminationReason::Interrupted),
+    "unexpected error: {err:?}"
+  );
+  realm.reset_interrupt();
+  let req = realm
+    .take_pending_navigation_request()
+    .expect("expected pending navigation request");
+  assert_eq!(req.url, "https://example.com/next");
+  assert!(req.replace);
   Ok(())
 }
 

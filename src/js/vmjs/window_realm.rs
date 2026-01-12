@@ -2334,6 +2334,56 @@ fn location_href_get_native(
   )
 }
 
+fn location_to_string_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // `Location#toString` is defined to return the same value as `location.href`.
+  //
+  // Real browsers use a real Location prototype; FastRender models `location` as a plain object,
+  // so keep the canonical URL in a private data property (`__fastrender_location_url`).
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let key = alloc_key(scope, LOCATION_URL_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(location_obj, &key)?
+      .unwrap_or(Value::Undefined),
+  )
+}
+
+fn location_to_primitive_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // `Location[@@toPrimitive]` should stringify to the current `href`.
+  //
+  // Ignore the hint argument: returning the URL string for all hints keeps common operations like
+  // `location + ''` and `String(location)` aligned with browser expectations.
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let key = alloc_key(scope, LOCATION_URL_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(location_obj, &key)?
+      .unwrap_or(Value::Undefined),
+  )
+}
+
 fn window_location_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2688,6 +2738,48 @@ fn history_noop_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
+fn history_go_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Per web platform behavior:
+  // - history.go() / history.go(0) reloads the current document.
+  // - Non-zero deltas perform a session history traversal (FastRender may implement this later).
+  let delta_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut delta = scope.heap_mut().to_number(delta_value)?;
+  if !delta.is_finite() || delta.is_nan() {
+    delta = 0.0;
+  }
+  let delta = delta.trunc();
+  if delta == 0.0 {
+    let current_url = {
+      let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation("window realm missing user data"));
+      };
+      data.document_url.clone()
+    };
+    {
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation("window realm missing user data"));
+      };
+      data.pending_navigation = Some(LocationNavigationRequest {
+        url: current_url,
+        replace: true,
+      });
+    }
+
+    vm.interrupt_handle().interrupt();
+    vm.tick()?;
+  }
+
   Ok(Value::Undefined)
 }
 
@@ -13905,6 +13997,60 @@ fn init_window_globals(
   let location_url_key = alloc_key(&mut scope, LOCATION_URL_KEY)?;
   scope.define_property(location_obj, location_url_key, data_desc(url_v))?;
 
+  // Location stringification.
+  //
+  // Real pages often do `String(location)` or `location + ''` expecting the current URL; provide
+  // native stringifier methods that return the internal `href` string.
+  let location_to_string_call_id = vm.register_native_call(location_to_string_native)?;
+  let to_string_key = alloc_key(&mut scope, "toString")?;
+  let to_string_name = scope.alloc_string("toString")?;
+  scope.push_root(Value::String(to_string_name))?;
+  let to_string_func =
+    scope.alloc_native_function(location_to_string_call_id, None, to_string_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    to_string_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(to_string_func))?;
+  scope.define_property(
+    location_obj,
+    to_string_key,
+    data_desc(Value::Object(to_string_func)),
+  )?;
+
+  let value_of_key = alloc_key(&mut scope, "valueOf")?;
+  let value_of_name = scope.alloc_string("valueOf")?;
+  scope.push_root(Value::String(value_of_name))?;
+  let value_of_func =
+    scope.alloc_native_function(location_to_string_call_id, None, value_of_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    value_of_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(value_of_func))?;
+  scope.define_property(
+    location_obj,
+    value_of_key,
+    data_desc(Value::Object(value_of_func)),
+  )?;
+
+  let location_to_primitive_call_id = vm.register_native_call(location_to_primitive_native)?;
+  let to_primitive_key = PropertyKey::from_symbol(realm.well_known_symbols().to_primitive);
+  let to_primitive_name = scope.alloc_string("[Symbol.toPrimitive]")?;
+  scope.push_root(Value::String(to_primitive_name))?;
+  let to_primitive_func =
+    scope.alloc_native_function(location_to_primitive_call_id, None, to_primitive_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    to_primitive_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(to_primitive_func))?;
+  scope.define_property(
+    location_obj,
+    to_primitive_key,
+    data_desc(Value::Object(to_primitive_func)),
+  )?;
+
   let href_get_call_id = vm.register_native_call(location_href_get_native)?;
   let href_get_name = scope.alloc_string("get href")?;
   scope.push_root(Value::String(href_get_name))?;
@@ -17103,6 +17249,7 @@ fn init_window_globals(
   )?;
 
   let history_state_call_id = vm.register_native_call(history_state_change_native)?;
+  let history_go_call_id = vm.register_native_call(history_go_native)?;
   let history_noop_call_id = vm.register_native_call(history_noop_native)?;
 
   let push_state_key = alloc_key(&mut scope, "pushState")?;
@@ -17186,7 +17333,7 @@ fn init_window_globals(
   let go_key = alloc_key(&mut scope, "go")?;
   let go_name = scope.alloc_string("go")?;
   scope.push_root(Value::String(go_name))?;
-  let go_func = scope.alloc_native_function(history_noop_call_id, None, go_name, 1)?;
+  let go_func = scope.alloc_native_function(history_go_call_id, None, go_name, 1)?;
   scope
     .heap_mut()
     .object_set_prototype(go_func, Some(realm.intrinsics().function_prototype()))?;
