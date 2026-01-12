@@ -838,7 +838,7 @@ mod tests {
   }
 
   #[test]
-  fn browser_integration_tests_force_bundled_fonts() {
+  fn browser_integration_forces_bundled_fonts() {
     assert_eq!(
       std::env::var("FASTR_USE_BUNDLED_FONTS").as_deref(),
       Ok("1"),
