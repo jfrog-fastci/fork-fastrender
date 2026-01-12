@@ -1737,7 +1737,7 @@ impl DisplayListBuilder {
       breakdown.record_stacking_tree(start.elapsed());
     }
     for context in &mut contexts {
-      context.compute_bounds(self.viewport, Some(&mut svg_filters));
+      context.compute_bounds(self.viewport, Some(&mut svg_filters))?;
     }
     let visibility = self.root_visibility();
     for context in &contexts {
@@ -1810,7 +1810,7 @@ impl DisplayListBuilder {
       vec![root],
       image_cache.as_ref(),
     );
-    stacking.compute_bounds(self.viewport, Some(&mut svg_filters));
+    stacking.compute_bounds(self.viewport, Some(&mut svg_filters))?;
     let _ = self.build_stacking_context(
       &stacking,
       Point::ZERO,
@@ -1860,7 +1860,7 @@ impl DisplayListBuilder {
       vec![root],
       image_cache.as_ref(),
     );
-    stacking.compute_bounds(self.viewport, Some(&mut svg_filters));
+    stacking.compute_bounds(self.viewport, Some(&mut svg_filters))?;
     let _ = self.build_stacking_context(
       &stacking,
       offset,
@@ -17370,7 +17370,7 @@ mod tests {
     root.add_child(neg);
     root.add_child(pos);
     root.sort_children();
-    root.compute_bounds(None, None);
+    root.compute_bounds(None, None).unwrap();
 
     let list = DisplayListBuilder::new().build_from_stacking(&root);
     let origins: Vec<f32> = list

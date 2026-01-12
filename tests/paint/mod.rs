@@ -181,6 +181,7 @@ mod stacking_context_layer_bounds_paint_overflow;
 mod stacking_context_outline_bounds;
 mod stacking_context_text_shadow_bounds;
 mod stacking_context_transform_viewport_culling;
+mod stacking_context_deep_nesting;
 mod stacking_test;
 mod svg_background_auto_size_viewbox_only;
 mod svg_background_intrinsic_ratio_test;

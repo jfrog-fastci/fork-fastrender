@@ -534,12 +534,20 @@ impl StackingContext {
 
   /// Sorts all child stacking contexts by z-index (for paint order)
   pub fn sort_children(&mut self) {
-    self.layer6_positioned.sort_by_key(|frag| frag.tree_order);
-    self.children.sort_by(Self::compare_children_for_paint);
+    // Recursive sorting is vulnerable to stack overflow for deeply nested stacking context trees.
+    // Use an explicit stack to ensure stack safety.
+    let mut stack: Vec<*mut StackingContext> = vec![self as *mut StackingContext];
+    while let Some(ctx_ptr) = stack.pop() {
+      // SAFETY: The stacking-context tree is a true tree owned by `self`. Pointers are pushed only
+      // after the corresponding `children` vec has been sorted, and no mutations of that vec occur
+      // until after its children have been processed.
+      let ctx = unsafe { &mut *ctx_ptr };
+      ctx.layer6_positioned.sort_by_key(|frag| frag.tree_order);
+      ctx.children.sort_by(Self::compare_children_for_paint);
 
-    // Recursively sort grandchildren
-    for child in &mut self.children {
-      child.sort_children();
+      for child in ctx.children.iter_mut() {
+        stack.push(child as *mut StackingContext);
+      }
     }
   }
 
@@ -548,19 +556,13 @@ impl StackingContext {
     &mut self,
     viewport: Option<(f32, f32)>,
     mut svg_filters: Option<&mut SvgFilterResolver>,
-  ) {
-    // Compute child bounds first so they contribute accurately.
-    for child in &mut self.children {
-      child.compute_bounds(viewport, svg_filters.as_deref_mut());
-    }
+  ) -> Result<()> {
+    // Like `sort_children`, bounds computation used to recurse over children, making it vulnerable
+    // to stack overflow for deeply nested stacking context trees. Compute bounds bottom-up using an
+    // explicit post-order traversal.
+    let mut deadline_counter = 0usize;
 
-    let mut bounds: Option<Rect> = None;
-    let accumulate = |rect: Rect, current: &mut Option<Rect>| match current {
-      Some(existing) => *existing = existing.union(rect),
-      None => *current = Some(rect),
-    };
-    let translate = |rect: Rect| rect.translate(self.offset_from_parent_context);
-    let map_rect_with_transform = |rect: Rect, transform: &Transform3D| -> Option<Rect> {
+    fn map_rect_with_transform(rect: Rect, transform: &Transform3D) -> Option<Rect> {
       if transform.is_identity() {
         return Some(rect);
       }
@@ -599,153 +601,193 @@ impl StackingContext {
         return None;
       }
       Some(Rect::from_xywh(min_x, min_y, width, height))
-    };
-    let resolve_self_transform = |context: &StackingContext| -> Option<Transform3D> {
+    }
+
+    fn resolve_self_transform(
+      context: &StackingContext,
+      viewport: Option<(f32, f32)>,
+    ) -> Option<Transform3D> {
       let root_fragment = context.fragments.first()?;
       let style = root_fragment.style.as_deref()?;
       if !style.has_transform() {
         return None;
       }
-      let transform_bounds = Rect::new(
-        context.offset_from_parent_context,
-        root_fragment.bounds.size,
-      );
+      let transform_bounds =
+        Rect::new(context.offset_from_parent_context, root_fragment.bounds.size);
       crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, viewport)
         .self_transform
-    };
-    let resolve_child_perspective = || -> Option<Transform3D> {
-      let root_fragment = self.fragments.first()?;
-      let style = root_fragment.style.as_deref()?;
-      if style.perspective.is_none() {
-        return None;
-      }
-      // Perspective is applied to this context's children in the stacking context's local
-      // coordinate space (i.e. relative to the root fragment at (0,0)).
-      let transform_bounds = Rect::new(Point::ZERO, root_fragment.bounds.size);
-      crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, viewport)
-        .child_perspective
-    };
-    let child_perspective = resolve_child_perspective();
-    let map_with_transform = |rect: Rect, transform: &Transform3D| -> Rect {
-      match map_rect_with_transform(rect, transform) {
-        Some(mapped) => rect.union(mapped),
-        None => rect,
-      }
-    };
-
-    // Union fragment paint bounds from all layers in the parent stacking context's coordinate
-    // space.
-    //
-    // The stacking tree only stores the top-level fragments for each paint layer; many descendants
-    // (e.g. wrappers that don't create stacking contexts) are painted via fragment-tree recursion.
-    // We must therefore traverse those descendant fragments here, otherwise paint-only effects like
-    // box-shadow/outline can be clipped when a stacking context is rendered into a bounded layer
-    // surface.
-    let mut include_fragment = |frag: &FragmentNode, origin: Point| {
-      let border_rect = Rect::new(origin, frag.bounds.size);
-      let mut fragment_bounds =
-        paint_bounds::fragment_paint_bounds(frag, border_rect, frag.style.as_deref(), viewport);
-      fragment_bounds = fragment_bounds.union(frag.scroll_overflow.translate(origin));
-      accumulate(translate(fragment_bounds), &mut bounds);
-    };
-
-    let mut stack: Vec<(&FragmentNode, Point, bool)> = Vec::new();
-    for (idx, fragment) in self.fragments.iter().enumerate() {
-      let origin = if idx == 0 {
-        Point::ZERO
-      } else {
-        fragment.bounds.origin
-      };
-      // Root fragments are painted without descending into children (layered paint handles them),
-      // so treat them as shallow for bounds collection too.
-      stack.push((fragment, origin, false));
-    }
-    for fragment in &self.layer3_blocks {
-      stack.push((fragment, fragment.bounds.origin, true));
-    }
-    for fragment in &self.layer4_floats {
-      stack.push((fragment, fragment.bounds.origin, true));
-    }
-    for fragment in &self.layer5_inlines {
-      stack.push((fragment, fragment.bounds.origin, true));
-    }
-    for fragment in &self.layer6_positioned {
-      stack.push((&fragment.fragment, fragment.fragment.bounds.origin, true));
     }
 
-    while let Some((fragment, origin, recurse_children)) = stack.pop() {
-      include_fragment(fragment, origin);
+    let mut stack: Vec<(*mut StackingContext, bool)> = Vec::new();
+    stack.push((self as *mut StackingContext, false));
 
-      if !recurse_children {
+    while let Some((ctx_ptr, ready)) = stack.pop() {
+      check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+        .map_err(Error::Render)?;
+
+      // SAFETY: The stacking context tree is owned by `self`. We push pointers to children only
+      // while holding a mutable borrow to their parent, and we process each node only after its
+      // descendants have been processed.
+      let ctx = unsafe { &mut *ctx_ptr };
+
+      if !ready {
+        stack.push((ctx_ptr, true));
+        for child in ctx.children.iter_mut().rev() {
+          stack.push((child as *mut StackingContext, false));
+        }
         continue;
       }
 
-      let parent_style = fragment.style.as_deref();
-      for child in fragment.children.iter() {
-        if let Some(child_style) = child.style.as_deref() {
-          if creates_stacking_context(child_style, parent_style, false) {
-            continue;
+      let mut bounds: Option<Rect> = None;
+      let accumulate = |rect: Rect, current: &mut Option<Rect>| match current {
+        Some(existing) => *existing = existing.union(rect),
+        None => *current = Some(rect),
+      };
+      let translate = |rect: Rect| rect.translate(ctx.offset_from_parent_context);
+      let map_with_transform = |rect: Rect, transform: &Transform3D| -> Rect {
+        match map_rect_with_transform(rect, transform) {
+          Some(mapped) => rect.union(mapped),
+          None => rect,
+        }
+      };
+
+      let child_perspective = {
+        let root_fragment = ctx.fragments.first();
+        root_fragment
+          .and_then(|fragment| fragment.style.as_deref())
+          .and_then(|style| {
+            if style.perspective.is_none() {
+              return None;
+            }
+            // Perspective is applied to this context's children in the stacking context's local
+            // coordinate space (i.e. relative to the root fragment at (0,0)).
+            let transform_bounds = Rect::new(Point::ZERO, root_fragment?.bounds.size);
+            crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, viewport)
+              .child_perspective
+          })
+      };
+
+      // Union fragment paint bounds from all layers in the parent stacking context's coordinate
+      // space.
+      //
+      // The stacking tree only stores the top-level fragments for each paint layer; many descendants
+      // (e.g. wrappers that don't create stacking contexts) are painted via fragment-tree recursion.
+      // We must therefore traverse those descendant fragments here, otherwise paint-only effects like
+      // box-shadow/outline can be clipped when a stacking context is rendered into a bounded layer
+      // surface.
+      let mut include_fragment = |frag: &FragmentNode, origin: Point| {
+        let border_rect = Rect::new(origin, frag.bounds.size);
+        let mut fragment_bounds =
+          paint_bounds::fragment_paint_bounds(frag, border_rect, frag.style.as_deref(), viewport);
+        fragment_bounds = fragment_bounds.union(frag.scroll_overflow.translate(origin));
+        accumulate(translate(fragment_bounds), &mut bounds);
+      };
+
+      let mut frag_stack: Vec<(&FragmentNode, Point, bool)> = Vec::new();
+      for (idx, fragment) in ctx.fragments.iter().enumerate() {
+        let origin = if idx == 0 {
+          Point::ZERO
+        } else {
+          fragment.bounds.origin
+        };
+        // Root fragments are painted without descending into children (layered paint handles them),
+        // so treat them as shallow for bounds collection too.
+        frag_stack.push((fragment, origin, false));
+      }
+      for fragment in &ctx.layer3_blocks {
+        frag_stack.push((fragment, fragment.bounds.origin, true));
+      }
+      for fragment in &ctx.layer4_floats {
+        frag_stack.push((fragment, fragment.bounds.origin, true));
+      }
+      for fragment in &ctx.layer5_inlines {
+        frag_stack.push((fragment, fragment.bounds.origin, true));
+      }
+      for fragment in &ctx.layer6_positioned {
+        frag_stack.push((&fragment.fragment, fragment.fragment.bounds.origin, true));
+      }
+
+      while let Some((fragment, origin, recurse_children)) = frag_stack.pop() {
+        check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+          .map_err(Error::Render)?;
+        include_fragment(fragment, origin);
+
+        if !recurse_children {
+          continue;
+        }
+
+        let parent_style = fragment.style.as_deref();
+        for child in fragment.children.iter() {
+          if let Some(child_style) = child.style.as_deref() {
+            if creates_stacking_context(child_style, parent_style, false) {
+              continue;
+            }
+            if !matches!(child_style.position, Position::Static)
+              && !creates_stacking_context(child_style, None, false)
+            {
+              continue;
+            }
           }
-          if !matches!(child_style.position, Position::Static)
-            && !creates_stacking_context(child_style, None, false)
-          {
-            continue;
+
+          let child_origin = Point::new(
+            origin.x + child.bounds.origin.x,
+            origin.y + child.bounds.origin.y,
+          );
+          frag_stack.push((child, child_origin, true));
+        }
+      }
+
+      // Union child stacking context bounds
+      for child in &ctx.children {
+        check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+          .map_err(Error::Render)?;
+
+        let mut rect = child.bounds;
+        let child_filter_outset = child
+          .fragments
+          .first()
+          .and_then(|fragment| fragment.style.as_deref())
+          .and_then(|style| {
+            resolve_filter_outset_for_bounds(style, rect, viewport, svg_filters.as_deref_mut())
+          });
+        let child_transform = resolve_self_transform(child, viewport);
+        match (child_perspective.as_ref(), child_transform.as_ref()) {
+          (None, None) => {}
+          (Some(perspective), None) => {
+            rect = map_with_transform(rect, perspective);
+          }
+          (None, Some(self_transform)) => {
+            rect = map_with_transform(rect, self_transform);
+          }
+          (Some(perspective), Some(self_transform)) => {
+            let combined = perspective.multiply(self_transform);
+            rect = map_with_transform(rect, &combined);
           }
         }
 
-        let child_origin = Point::new(
-          origin.x + child.bounds.origin.x,
-          origin.y + child.bounds.origin.y,
-        );
-        stack.push((child, child_origin, true));
+        if let Some(outset) = child_filter_outset {
+          rect = Rect::from_xywh(
+            rect.x() - outset.left,
+            rect.y() - outset.top,
+            rect.width() + outset.left + outset.right,
+            rect.height() + outset.top + outset.bottom,
+          );
+        }
+
+        accumulate(translate(rect), &mut bounds);
       }
+
+      ctx.bounds = bounds.unwrap_or_else(|| {
+        Rect::from_xywh(
+          ctx.offset_from_parent_context.x,
+          ctx.offset_from_parent_context.y,
+          0.0,
+          0.0,
+        )
+      });
     }
 
-    // Union child stacking context bounds
-    for child in &self.children {
-      let mut rect = child.bounds;
-      let child_filter_outset = child
-        .fragments
-        .first()
-        .and_then(|fragment| fragment.style.as_deref())
-        .and_then(|style| {
-          resolve_filter_outset_for_bounds(style, rect, viewport, svg_filters.as_deref_mut())
-        });
-      let child_transform = resolve_self_transform(child);
-      match (child_perspective.as_ref(), child_transform.as_ref()) {
-        (None, None) => {}
-        (Some(perspective), None) => {
-          rect = map_with_transform(rect, perspective);
-        }
-        (None, Some(self_transform)) => {
-          rect = map_with_transform(rect, self_transform);
-        }
-        (Some(perspective), Some(self_transform)) => {
-          let combined = perspective.multiply(self_transform);
-          rect = map_with_transform(rect, &combined);
-        }
-      }
-
-      if let Some(outset) = child_filter_outset {
-        rect = Rect::from_xywh(
-          rect.x() - outset.left,
-          rect.y() - outset.top,
-          rect.width() + outset.left + outset.right,
-          rect.height() + outset.top + outset.bottom,
-        );
-      }
-
-      accumulate(translate(rect), &mut bounds);
-    }
-
-    self.bounds = bounds.unwrap_or_else(|| {
-      Rect::from_xywh(
-        self.offset_from_parent_context.x,
-        self.offset_from_parent_context.y,
-        0.0,
-        0.0,
-      )
-    });
+    Ok(())
   }
 
   /// Returns total fragment count across all layers
@@ -1146,7 +1188,7 @@ pub fn build_stacking_tree(
   context.sort_children();
 
   // Compute bounds
-  context.compute_bounds(Some((root.bounds.width(), root.bounds.height())), None);
+  let _ = context.compute_bounds(Some((root.bounds.width(), root.bounds.height())), None);
 
   context
 }
@@ -1371,7 +1413,7 @@ where
   );
 
   context.sort_children();
-  context.compute_bounds(viewport, None);
+  let _ = context.compute_bounds(viewport, None);
   context
 }
 
@@ -1408,7 +1450,7 @@ where
   )?;
 
   context.sort_children();
-  context.compute_bounds(viewport, None);
+  context.compute_bounds(viewport, None)?;
   Ok(context)
 }
 
@@ -3086,7 +3128,7 @@ mod tests {
     sc.layer3_blocks
       .push(create_block_fragment(40.0, 40.0, 60.0, 60.0));
 
-    sc.compute_bounds(None, None);
+    sc.compute_bounds(None, None).unwrap();
 
     // Should encompass both fragments: (0,0) to (100, 100)
     assert_eq!(sc.bounds.min_x(), 0.0);
@@ -3130,7 +3172,7 @@ mod tests {
     );
     sc.layer3_blocks.push(wrapper);
 
-    sc.compute_bounds(None, None);
+    sc.compute_bounds(None, None).unwrap();
 
     // Inner box-shadow spreads 10px in all directions, so bounds should cover 30..70 in both axes
     // after applying the stacking context offset.
@@ -3190,7 +3232,7 @@ mod tests {
     sc.layer6_positioned
       .push(OrderedFragment::new(translated, 0));
 
-    sc.compute_bounds(None, None);
+    sc.compute_bounds(None, None).unwrap();
 
     assert_eq!(sc.bounds, Rect::from_xywh(35.0, 35.0, 40.0, 40.0));
   }
@@ -3204,7 +3246,7 @@ mod tests {
       .push(create_block_fragment(0.0, 0.0, 5.0, 5.0));
 
     parent.children.push(child);
-    parent.compute_bounds(None, None);
+    parent.compute_bounds(None, None).unwrap();
 
     assert_eq!(parent.bounds, Rect::from_xywh(0.0, 0.0, 5.0, 5.0));
   }
@@ -3219,7 +3261,7 @@ mod tests {
       .push(create_block_fragment(0.0, 0.0, 10.0, 10.0));
 
     parent.children.push(child);
-    parent.compute_bounds(None, None);
+    parent.compute_bounds(None, None).unwrap();
 
     assert_eq!(parent.bounds, Rect::from_xywh(5.0, 5.0, 10.0, 10.0));
   }
@@ -3239,7 +3281,7 @@ mod tests {
       .push(create_block_fragment(0.0, 0.0, 100.0, 10.0));
 
     parent.children.push(child);
-    parent.compute_bounds(None, None);
+    parent.compute_bounds(None, None).unwrap();
 
     assert_eq!(parent.bounds, Rect::from_xywh(50.0, 50.0, 110.0, 20.0));
   }
@@ -3274,7 +3316,7 @@ mod tests {
     child.fragments.push(child_fragment);
 
     parent.children.push(child);
-    parent.compute_bounds(None, None);
+    parent.compute_bounds(None, None).unwrap();
 
     assert_eq!(parent.bounds, Rect::from_xywh(0.0, 0.0, 200.0, 40.0));
   }
