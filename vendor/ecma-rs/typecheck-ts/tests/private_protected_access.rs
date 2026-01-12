@@ -349,3 +349,26 @@ const y = new Base()["x"];
     diagnostics
   );
 }
+
+#[test]
+fn hash_prefixed_string_property_is_not_treated_as_private() {
+  let mut host = MemoryHost::with_options(CompilerOptions {
+    no_default_lib: true,
+    ..CompilerOptions::default()
+  });
+  host.add_lib(common::core_globals_lib());
+
+  let source = r##"class C { "#x": number = 1; }
+const y = new C()["#x"];
+"##;
+  let file = FileKey::new("entry.ts");
+  host.insert(file.clone(), Arc::from(source.to_string()));
+
+  let program = Program::new(host, vec![file]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.iter().all(|d| d.severity != Severity::Error),
+    "diagnostics: {:?}",
+    diagnostics
+  );
+}
