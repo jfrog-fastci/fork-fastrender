@@ -11,6 +11,10 @@ pub mod runner;
 #[cfg(test)]
 mod validate_manifest;
 
+fn init_rayon_for_wpt_tests() {
+  crate::common::init_rayon_for_tests(1);
+}
+
 pub(crate) fn create_test_renderer() -> fastrender::FastRender {
   crate::common::init_rayon_for_tests(1);
   let config = fastrender::FastRenderConfig::default()
