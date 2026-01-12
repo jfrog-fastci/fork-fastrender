@@ -47,7 +47,7 @@ tests/wpt_dom/
   tests/                   # Served as /... in WPT
     smoke/                 # Tiny synthetic tests for harness bring-up
       *.html
-    dom/                   # Curated DOM primitives (Node/Element/DocumentFragment)
+    dom/                   # Curated DOM primitives (Node/Element/DocumentFragment, collections/traversal)
       *.window.js
     domparsing/            # Curated DOMParsing tests (innerHTML/outerHTML)
       *.window.js

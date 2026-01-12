@@ -39,6 +39,11 @@ status = "xfail"
 reason = "Intentional infinite loop; runner should terminate it deterministically as a timeout."
 
 [[expectations]]
+id = "smoke/dom_collections_prototype_shape.window.js"
+status = "xfail"
+reason = "NodeList/HTMLCollection constructors are not exposed globally yet (collections exist but prototype/constructor shape is incomplete)."
+
+[[expectations]]
 id = "vmjs/time_determinism.window.js"
 backend = "quickjs"
 status = "skip"
@@ -49,6 +54,41 @@ id = "vmjs/time_determinism_baseline.window.js"
 backend = "quickjs"
 status = "skip"
 reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."
+
+[[expectations]]
+id = "dom/collections/nodelist-childnodes-live.window.js"
+status = "xfail"
+reason = "NodeList.item() is not implemented yet (childNodes returns an iterable NodeList, but the WebIDL method + live semantics are incomplete)."
+
+[[expectations]]
+id = "dom/collections/nodelist-queryselectorall-static.window.js"
+status = "xfail"
+reason = "NodeList.item() is not implemented yet (querySelectorAll returns an iterable NodeList, but the WebIDL method + snapshot semantics are incomplete)."
+
+[[expectations]]
+id = "dom/collections/htmlcollection-children.window.js"
+status = "xfail"
+reason = "Element.children/childElementCount/firstElementChild/lastElementChild (HTMLCollection + element traversal) are not implemented yet."
+
+[[expectations]]
+id = "dom/collections/getelementsbytagname-live.window.js"
+status = "xfail"
+reason = "Document/Element.getElementsByTagName is not implemented yet (including live HTMLCollection semantics and template inert-subtree behavior)."
+
+[[expectations]]
+id = "dom/collections/getelementsbyclassname-live.window.js"
+status = "xfail"
+reason = "Document/Element.getElementsByClassName is not implemented yet (including live HTMLCollection semantics and template inert-subtree behavior)."
+
+[[expectations]]
+id = "dom/collections/getelementsbyname-live.window.js"
+status = "xfail"
+reason = "Document.getElementsByName is not implemented yet (including live NodeList semantics and template inert-subtree behavior)."
+
+[[expectations]]
+id = "dom/collections/getelementsbytagnamens.window.js"
+status = "xfail"
+reason = "Document/Element.getElementsByTagNameNS is not implemented yet (including live HTMLCollection semantics and template inert-subtree behavior)."
 
 [[expectations]]
 id = "dom/document_createElement_invalid_qualified_name.window.js"
