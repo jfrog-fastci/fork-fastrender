@@ -45,9 +45,22 @@ pub(crate) fn ensure_global_pool() -> Result<(), String> {
       // on hosts where `available_parallelism()` sees dozens/hundreds of CPUs.
       let cpu_budget = crate::system::cpu_budget().max(1);
       let env_value = std::env::var(RAYON_NUM_THREADS_ENV).ok();
-      let mut threads = desired_global_pool_threads(cpu_budget, env_value.as_deref()).max(1);
+      let desired_threads = desired_global_pool_threads(cpu_budget, env_value.as_deref()).max(1);
 
+      // `ThreadPoolBuildError` does not currently expose its internal kind publicly. The only
+      // non-fatal error case is when another crate has already initialised the global pool.
+      //
+      // Avoid calling `rayon::current_num_threads()` on every failure: that can trigger Rayon's
+      // lazy global init (with the default, potentially huge thread count) and can panic under the
+      // same OS limits we're trying to work around.
+      //
+      // Instead, retry with fewer threads until we either succeed or have exhausted all fallbacks
+      // (down to 1). Only then, if we still can't install a pool, check whether a pool exists
+      // already (meaning we can treat the init as a no-op success).
+      let mut attempted_threads: Vec<usize> = Vec::new();
+      let mut threads = desired_threads;
       loop {
+        attempted_threads.push(threads);
         match ThreadPoolBuilder::new()
           .num_threads(threads)
           .thread_name(|idx| format!("fastr-rayon-{idx}"))
@@ -55,21 +68,18 @@ pub(crate) fn ensure_global_pool() -> Result<(), String> {
         {
           Ok(()) => return Ok(()),
           Err(err) => {
-            // `ThreadPoolBuildError` does not currently expose its internal kind publicly. The only
-            // non-fatal error case is when another crate has already initialised the global pool.
-            //
-            // Detect that by checking whether querying the current pool succeeds without panicking.
-            let already_initialized =
-              std::panic::catch_unwind(|| rayon::current_num_threads()).is_ok();
-            if already_initialized {
-              return Ok(());
-            }
-
             // If initialization fails due to OS thread-spawn limits (EAGAIN/WouldBlock), retry with
             // fewer threads. If we still cannot initialize a 1-thread pool, surface the failure to
             // the caller so they can fall back to sequential code paths.
             if threads <= 1 {
-              return Err(format!("failed to initialize Rayon global thread pool: {err}"));
+              let already_initialized =
+                std::panic::catch_unwind(|| rayon::current_num_threads()).is_ok();
+              if already_initialized {
+                return Ok(());
+              }
+              return Err(format!(
+                "failed to initialize Rayon global thread pool after trying {attempted_threads:?}: {err}"
+              ));
             }
             threads = (threads / 2).max(1);
           }
