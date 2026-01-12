@@ -160,3 +160,4 @@ fn intersection_observer_take_records_drains_queue() -> Result<()> {
   );
   Ok(())
 }
+
