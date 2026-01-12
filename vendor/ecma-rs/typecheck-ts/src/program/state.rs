@@ -134,6 +134,13 @@ struct ProgramState {
   analysis_revision: Option<salsa::Revision>,
   dirty_files: AHashSet<FileId>,
   snapshot_loaded: bool,
+  /// When set, forces `ensure_interned_types` to rebuild interned tables and
+  /// program-level diagnostics even if the declaration fingerprint is unchanged.
+  ///
+  /// This is required for incremental edits: analysis-level diagnostics (e.g.
+  /// unresolved type packages) are stored outside salsa and must be recomputed
+  /// after edits without unnecessarily invalidating cached `BodyCheckResult`s.
+  interned_dirty: bool,
   cancelled: Arc<AtomicBool>,
   host: Arc<dyn Host>,
   lib_manager: Arc<LibManager>,
@@ -254,6 +261,7 @@ impl ProgramState {
       analysis_revision: None,
       dirty_files: AHashSet::new(),
       snapshot_loaded: false,
+      interned_dirty: false,
       cancelled,
       host,
       lib_manager,
@@ -371,6 +379,10 @@ impl ProgramState {
   /// inference (return types, initializer types) and expression spans can change
   /// even when the declaration surface and its fingerprint remain stable.
   pub(super) fn invalidate_on_file_text_change(&mut self, file: FileId) {
+    self.snapshot_loaded = false;
+    // Force `ensure_interned_types` (and thus program-level diagnostics) to run
+    // even if the declaration fingerprint is unchanged.
+    self.interned_dirty = true;
     self.file_text_revision = self.file_text_revision.wrapping_add(1);
     self.mark_file_dirty(file);
 

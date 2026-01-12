@@ -56,14 +56,15 @@ impl ProgramState {
     body_id: BodyId,
   ) -> Result<Arc<BodyCheckResult>, FatalError> {
     self.check_cancelled()?;
+    // Inference checks are often triggered while building the shared body-check
+    // context (e.g. to infer function return types). Reuse any cached
+    // `BodyCheckResult` when available so incremental edits do not force
+    // unaffected bodies to be re-checked purely for type inference.
+    if let Some(cached) = self.cached_body_result(body_id) {
+      return Ok(cached);
+    }
     if self.snapshot_loaded {
-      return Ok(
-        self
-          .body_results
-          .get(&body_id)
-          .cloned()
-          .unwrap_or_else(|| BodyCheckResult::empty(body_id)),
-      );
+      return Ok(BodyCheckResult::empty(body_id));
     }
 
     let context = Arc::new(self.build_body_check_context_snapshot());

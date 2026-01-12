@@ -16,18 +16,21 @@ impl ProgramState {
       .set_type_store(crate::db::types::SharedTypeStore(Arc::clone(&store)));
     let prim = store.primitive_ids();
     let fingerprint = db::decl_types_fingerprint(&*self.typecheck_db.lock());
-    if self.decl_types_fingerprint == Some(fingerprint) {
+    let previous_fingerprint = self.decl_types_fingerprint;
+    if previous_fingerprint == Some(fingerprint) && !self.interned_dirty {
       return Ok(());
     }
-    // Declared types influence how bodies are checked (e.g. exports/imports,
-    // contextual typing, `typeof` queries). When the declaration-type fingerprint
-    // changes, previously cached body results may be inconsistent with the new
-    // tables, so conservatively drop all cached body results.
-    self.body_results.clear();
-    if !self.snapshot_loaded {
-      self.typecheck_db.lock().clear_body_results();
+    if previous_fingerprint.is_some() && previous_fingerprint != Some(fingerprint) {
+      // Declared types influence how bodies are checked (e.g. exports/imports,
+      // contextual typing, `typeof` queries). When the declaration-type fingerprint
+      // changes, previously cached body results may be inconsistent with the new
+      // tables, so conservatively drop all cached body results.
+      self.body_results.clear();
+      if !self.snapshot_loaded {
+        self.typecheck_db.lock().clear_body_results();
+      }
+      self.cached_body_context = None;
     }
-    self.cached_body_context = None;
     self.module_namespace_types.clear();
     self.module_namespace_in_progress.clear();
     // The interned type tables are rebuilt as a batch; invalidate any shared
@@ -912,6 +915,7 @@ impl ProgramState {
     }
     codes::normalize_diagnostics(&mut self.diagnostics);
     self.decl_types_fingerprint = Some(fingerprint);
+    self.interned_dirty = false;
     Ok(())
   }
 }

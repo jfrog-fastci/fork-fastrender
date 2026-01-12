@@ -204,7 +204,6 @@ impl ProgramState {
     } else {
       body_ids
     };
-
     Ok(ProgramDiagnosticsWork::Check(ProgramDiagnosticsPlan {
       body_ids,
       shared_context,
