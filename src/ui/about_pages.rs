@@ -13,6 +13,8 @@ pub const ABOUT_TEST_FORM: &str = "about:test-form";
 use std::sync::{OnceLock, RwLock};
 use std::time::SystemTime;
 
+use crate::ui::GlobalHistoryStore;
+
 #[derive(Debug, Clone, Default)]
 pub struct AboutPageSnapshot {
   pub bookmarks: Vec<BookmarkSnapshot>,
@@ -59,50 +61,75 @@ pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
   *guard = snapshot;
 }
 
-pub fn record_global_history_visit(url: &str, title: Option<&str>) {
-  const MAX_ENTRIES: usize = 500;
-  let url = url.trim();
-  if url.is_empty() {
-    return;
-  }
-  // Avoid recording internal pages in global history.
-  if is_about_url(url) {
-    return;
-  }
-
-  let title = title
-    .map(|t| t.trim())
-    .filter(|t| !t.is_empty())
-    .map(str::to_string);
-  let now = SystemTime::now();
-
+pub fn sync_about_page_snapshot_history_from_global_history_store(store: &GlobalHistoryStore) {
+  let history = history_snapshots_from_global_history_store(store);
   let mut guard = about_page_snapshot_lock()
     .write()
     .unwrap_or_else(|poisoned| poisoned.into_inner());
+  guard.history = history;
+}
 
-  if let Some(pos) = guard.history.iter().position(|entry| entry.url == url) {
-    let mut existing = guard.history.remove(pos);
-    existing.visit_count = existing.visit_count.saturating_add(1);
-    existing.last_visited = Some(now);
-    if title.is_some() {
-      existing.title = title;
+fn history_snapshots_from_global_history_store(store: &GlobalHistoryStore) -> Vec<HistorySnapshot> {
+  use std::time::{Duration, UNIX_EPOCH};
+
+  const MAX_HISTORY: usize = 500;
+
+  #[derive(Default)]
+  struct HistoryAgg {
+    title: Option<String>,
+    last_ms: Option<u64>,
+    visit_count: u64,
+  }
+
+  let mut by_url: std::collections::HashMap<String, HistoryAgg> = std::collections::HashMap::new();
+  for entry in &store.entries {
+    let url = entry.url.trim();
+    if url.is_empty() || is_about_url(url) {
+      continue;
     }
-    guard.history.insert(0, existing);
-  } else {
-    guard.history.insert(
-      0,
-      HistorySnapshot {
-        title,
-        url: url.to_string(),
-        last_visited: Some(now),
-        visit_count: 1,
-      },
-    );
+    let agg = by_url.entry(url.to_string()).or_default();
+
+    // `GlobalHistoryStore` guarantees visit_count >= 1, but keep this robust for callers that
+    // construct stores manually.
+    agg.visit_count = agg
+      .visit_count
+      .saturating_add(entry.visit_count.max(1));
+
+    let title = entry
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty())
+      .map(str::to_string);
+
+    // Prefer the title of the most recent visit, but don't throw away a known title just because
+    // the latest history entry is missing one.
+    if entry.visited_at_ms > agg.last_ms {
+      agg.last_ms = entry.visited_at_ms;
+      if title.is_some() {
+        agg.title = title;
+      }
+    } else if agg.title.is_none() && title.is_some() {
+      agg.title = title;
+    }
   }
 
-  if guard.history.len() > MAX_ENTRIES {
-    guard.history.truncate(MAX_ENTRIES);
-  }
+  let mut history_items: Vec<(Option<u64>, String, HistoryAgg)> = by_url
+    .into_iter()
+    .map(|(url, agg)| (agg.last_ms, url, agg))
+    .collect();
+  history_items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+  history_items.truncate(MAX_HISTORY);
+
+  history_items
+    .into_iter()
+    .map(|(last_ms, url, agg)| HistorySnapshot {
+      title: agg.title,
+      url,
+      last_visited: last_ms.and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms))),
+      visit_count: agg.visit_count,
+    })
+    .collect()
 }
 
 pub fn clear_global_history_snapshot() {
@@ -1303,6 +1330,98 @@ mod tests {
     assert!(html.contains("New title"));
     assert!(!html.contains("Old title"));
     assert!(html.contains("Visited &amp; &lt;Site&gt;"));
+
+    set_about_page_snapshot(before);
+  }
+
+  #[test]
+  fn sync_history_from_global_history_store_updates_snapshot_and_newtab() {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    let mut store = GlobalHistoryStore::default();
+    store.record(
+      "https://example.test/a#one".to_string(),
+      Some("A1".to_string()),
+    );
+    store.record("https://example.test/b".to_string(), Some("B".to_string()));
+    store.record(
+      "https://example.test/a#two".to_string(),
+      Some("A2".to_string()),
+    );
+
+    for entry in store.entries.iter_mut() {
+      match entry.url.as_str() {
+        "https://example.test/a" => entry.visited_at_ms = Some(2000),
+        "https://example.test/b" => entry.visited_at_ms = Some(1000),
+        _ => {}
+      }
+    }
+
+    set_about_page_snapshot(AboutPageSnapshot::default());
+    sync_about_page_snapshot_history_from_global_history_store(&store);
+
+    let snapshot = about_page_snapshot();
+    assert_eq!(snapshot.history.len(), 2);
+
+    let a = &snapshot.history[0];
+    assert_eq!(a.url, "https://example.test/a");
+    assert_eq!(a.title.as_deref(), Some("A2"));
+    assert_eq!(a.visit_count, 2);
+    assert_eq!(
+      a.last_visited,
+      UNIX_EPOCH.checked_add(Duration::from_millis(2000))
+    );
+
+    let b = &snapshot.history[1];
+    assert_eq!(b.url, "https://example.test/b");
+    assert_eq!(b.title.as_deref(), Some("B"));
+    assert_eq!(b.visit_count, 1);
+    assert_eq!(
+      b.last_visited,
+      UNIX_EPOCH.checked_add(Duration::from_millis(1000))
+    );
+
+    assert!(
+      snapshot.history.iter().all(|e| !e.url.contains('#')),
+      "expected fragments to be stripped in about-page history snapshot"
+    );
+
+    let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
+    for needle in ["https://example.test/a", "A2", "https://example.test/b", "B"] {
+      assert!(html.contains(needle), "expected about:newtab to contain {needle}");
+    }
+
+    set_about_page_snapshot(before);
+  }
+
+  #[test]
+  fn sync_history_from_global_history_store_preserves_fragment_stripping() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    let mut store = GlobalHistoryStore::default();
+    store.record("https://example.test/frag#section".to_string(), None);
+    if let Some(entry) = store.entries.first_mut() {
+      entry.visited_at_ms = Some(1);
+    }
+
+    set_about_page_snapshot(AboutPageSnapshot::default());
+    sync_about_page_snapshot_history_from_global_history_store(&store);
+
+    let snapshot = about_page_snapshot();
+    assert_eq!(snapshot.history.len(), 1);
+    assert_eq!(snapshot.history[0].url, "https://example.test/frag");
+    assert!(
+      !snapshot.history[0].url.contains('#'),
+      "expected fragment to be stripped"
+    );
 
     set_about_page_snapshot(before);
   }
