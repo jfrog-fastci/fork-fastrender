@@ -1,12 +1,12 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use fastrender::image_compare::{compare_images, CompareConfig};
 use image::{Rgba, RgbaImage};
-use std::time::Duration;
 
 mod common;
 
-const WIDTH: u32 = 1024;
-const HEIGHT: u32 = 768;
+/// Keep sizes modest but non-trivial so this bench catches accidental O(N^2) scaling in the
+/// perceptual distance implementation (e.g. if a downsampled/windowed SSIM path regresses).
+const SIZES: &[(u32, u32)] = &[(512, 512), (1024, 768)];
 
 fn patterned_image(width: u32, height: u32) -> RgbaImage {
   // Deterministic structured pattern with non-trivial per-channel variation so SSIM has
@@ -61,59 +61,86 @@ fn invert_image(img: &RgbaImage) -> RgbaImage {
   out
 }
 
+struct ImageCases {
+  width: u32,
+  height: u32,
+  base: RgbaImage,
+  few_pixels: RgbaImage,
+  inverted: RgbaImage,
+  mismatch: RgbaImage,
+}
+
 fn bench_compare_images(c: &mut Criterion) {
-  common::bench_print_config_once(
-    "image_compare_bench",
-    &[("image", format!("{}x{}", WIDTH, HEIGHT))],
-  );
+  common::bench_print_config_once("image_compare_bench", &[]);
 
-  let base = patterned_image(WIDTH, HEIGHT);
+  let cases: Vec<ImageCases> = SIZES
+    .iter()
+    .copied()
+    .map(|(width, height)| {
+      let base = patterned_image(width, height);
+      let mut few_pixels = base.clone();
+      flip_some_pixels(&mut few_pixels, 128);
+      let inverted = invert_image(&base);
+      let mismatch = patterned_image(width + 1, height);
 
-  let mut few_pixels = base.clone();
-  flip_some_pixels(&mut few_pixels, 128);
-
-  let inverted = invert_image(&base);
+      ImageCases {
+        width,
+        height,
+        base,
+        few_pixels,
+        inverted,
+        mismatch,
+      }
+    })
+    .collect();
 
   // Measure metric computation only; avoid diff image generation / PNG encoding.
   let config = CompareConfig::strict().with_generate_diff_image(false);
 
   let mut group = c.benchmark_group("compare_images");
-  // These benchmarks are intentionally "moderately large" and can take tens of milliseconds per
-  // iteration. Use a smaller sample size so `cargo bench --bench image_compare_bench` runs quickly
-  // while still surfacing obvious performance regressions (e.g. accidental quadratic behavior).
-  group.sample_size(20);
-  group.warm_up_time(Duration::from_secs(1));
-  group.measurement_time(Duration::from_secs(3));
+  for case in &cases {
+    let size_label = format!("{}x{}", case.width, case.height);
+    let pixels = u64::from(case.width) * u64::from(case.height);
+    group.throughput(Throughput::Elements(pixels));
 
-  group.bench_function(BenchmarkId::new("identical", format!("{}x{}", WIDTH, HEIGHT)), |b| {
-    b.iter(|| {
-      let diff = compare_images(black_box(&base), black_box(&base), black_box(&config));
-      black_box(diff.statistics.perceptual_distance);
-    })
-  });
-
-  group.bench_function(
-    BenchmarkId::new("few_pixels", format!("{}x{}", WIDTH, HEIGHT)),
-    |b| {
+    group.bench_function(BenchmarkId::new("identical", &size_label), |b| {
       b.iter(|| {
-        let diff = compare_images(black_box(&few_pixels), black_box(&base), black_box(&config));
+        let diff = compare_images(black_box(&case.base), black_box(&case.base), black_box(&config));
         black_box(diff.statistics.perceptual_distance);
       })
-    },
-  );
+    });
 
-  group.bench_function(
-    BenchmarkId::new("inverted", format!("{}x{}", WIDTH, HEIGHT)),
-    |b| {
+    group.bench_function(BenchmarkId::new("few_pixels", &size_label), |b| {
       b.iter(|| {
-        let diff = compare_images(black_box(&inverted), black_box(&base), black_box(&config));
+        let diff =
+          compare_images(black_box(&case.few_pixels), black_box(&case.base), black_box(&config));
         black_box(diff.statistics.perceptual_distance);
       })
-    },
-  );
+    });
+
+    group.bench_function(BenchmarkId::new("inverted", &size_label), |b| {
+      b.iter(|| {
+        let diff =
+          compare_images(black_box(&case.inverted), black_box(&case.base), black_box(&config));
+        black_box(diff.statistics.perceptual_distance);
+      })
+    });
+
+    group.bench_function(BenchmarkId::new("dimension_mismatch", &size_label), |b| {
+      b.iter(|| {
+        let diff =
+          compare_images(black_box(&case.mismatch), black_box(&case.base), black_box(&config));
+        black_box(diff.dimensions_match);
+      })
+    });
+  }
 
   group.finish();
 }
 
-criterion_group!(image_compare_benches, bench_compare_images);
+criterion_group!(
+  name = image_compare_benches;
+  config = common::perf_criterion();
+  targets = bench_compare_images
+);
 criterion_main!(image_compare_benches);
