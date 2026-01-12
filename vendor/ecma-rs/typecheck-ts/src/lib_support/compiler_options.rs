@@ -346,11 +346,30 @@ impl LibSet {
       return LibSet::empty();
     }
 
-    let mut libs = vec![es_lib_for_target(options.target)];
-
-    libs.push(lib_name("dom"));
-    if matches!(options.target, ScriptTarget::EsNext) {
-      libs.push(lib_name("esnext.disposable"));
+    // TypeScript's defaults are derived from the `lib.*.d.ts` wrapper files (for
+    // example, `lib.es2020.full.d.ts`). Keep our selection in sync with tsc so
+    // difftsc comparisons remain meaningful when no explicit `@lib:` directive
+    // is present.
+    let mut libs = vec![
+      es_lib_for_target(options.target),
+      lib_name("dom"),
+      lib_name("webworker.importscripts"),
+      lib_name("scripthost"),
+    ];
+    match options.target {
+      ScriptTarget::Es3 | ScriptTarget::Es5 => {}
+      ScriptTarget::Es2015 | ScriptTarget::Es2016 | ScriptTarget::Es2017 => {
+        libs.push(lib_name("dom.iterable"));
+      }
+      ScriptTarget::Es2018
+      | ScriptTarget::Es2019
+      | ScriptTarget::Es2020
+      | ScriptTarget::Es2021
+      | ScriptTarget::Es2022
+      | ScriptTarget::EsNext => {
+        libs.push(lib_name("dom.iterable"));
+        libs.push(lib_name("dom.asynciterable"));
+      }
     }
     LibSet::from(libs)
   }
@@ -408,6 +427,8 @@ mod tests {
       ("lib.es2020.ts", "es2020"),
       ("dom.iterable", "dom.iterable"),
       ("LIB.DOM.ITERABLE.D.TS", "dom.iterable"),
+      ("webworker.importscripts", "webworker.importscripts"),
+      ("scripthost", "scripthost"),
       ("esnext.disposable", "esnext.disposable"),
       ("lib.esnext.disposable.d.ts", "esnext.disposable"),
       ("es6", "es2015"),
@@ -433,14 +454,57 @@ mod tests {
     let libs = LibSet::for_options(&options);
     assert_eq!(
       libs.libs(),
-      &[lib_name("dom"), lib_name("es2020")],
-      "default libs should include target ES lib plus dom"
+      &[
+        lib_name("dom"),
+        lib_name("dom.asynciterable"),
+        lib_name("dom.iterable"),
+        lib_name("es2020"),
+        lib_name("scripthost"),
+        lib_name("webworker.importscripts")
+      ],
+      "default libs should match tsc wrapper libs for the target"
     );
 
     let mut options = CompilerOptions::default();
     options.target = ScriptTarget::Es3;
     let libs = LibSet::for_options(&options);
-    assert_eq!(libs.libs(), &[lib_name("dom"), lib_name("es5")]);
+    assert_eq!(
+      libs.libs(),
+      &[
+        lib_name("dom"),
+        lib_name("es5"),
+        lib_name("scripthost"),
+        lib_name("webworker.importscripts")
+      ]
+    );
+
+    let mut options = CompilerOptions::default();
+    options.target = ScriptTarget::Es2015;
+    let libs = LibSet::for_options(&options);
+    assert_eq!(
+      libs.libs(),
+      &[
+        lib_name("dom"),
+        lib_name("dom.iterable"),
+        lib_name("es2015"),
+        lib_name("scripthost"),
+        lib_name("webworker.importscripts")
+      ]
+    );
+
+    let mut options = CompilerOptions::default();
+    options.target = ScriptTarget::Es2017;
+    let libs = LibSet::for_options(&options);
+    assert_eq!(
+      libs.libs(),
+      &[
+        lib_name("dom"),
+        lib_name("dom.iterable"),
+        lib_name("es2017"),
+        lib_name("scripthost"),
+        lib_name("webworker.importscripts")
+      ]
+    );
 
     let mut options = CompilerOptions::default();
     options.target = ScriptTarget::Es2015;
@@ -465,10 +529,13 @@ mod tests {
       libs.libs(),
       &[
         lib_name("dom"),
+        lib_name("dom.asynciterable"),
+        lib_name("dom.iterable"),
         lib_name("esnext"),
-        lib_name("esnext.disposable")
+        lib_name("scripthost"),
+        lib_name("webworker.importscripts")
       ],
-      "esnext defaults should include esnext.disposable for using/await using support"
+      "esnext defaults should match lib.esnext.full.d.ts"
     );
 
     let mut options = CompilerOptions::default();

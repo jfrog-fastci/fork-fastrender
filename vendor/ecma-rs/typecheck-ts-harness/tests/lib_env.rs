@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use typecheck_ts::lib_support::CompilerOptions;
 use typecheck_ts::{FileKey, Host, HostError, Program};
+use typecheck_ts_harness::diagnostic_norm::normalize_type_string;
 use typecheck_ts_harness::VirtualFile;
 
 #[cfg(feature = "with-node")]
@@ -14,7 +15,7 @@ use serde_json::Value;
 #[cfg(feature = "with-node")]
 use std::collections::HashMap;
 #[cfg(feature = "with-node")]
-use typecheck_ts_harness::tsc::{TscDiagnostics, TscRequest, TscRunner};
+use typecheck_ts_harness::tsc::{TscDiagnostics, TscRequest, TscRunner, TypeQuery};
 
 #[derive(Clone)]
 struct SimpleHost {
@@ -78,6 +79,10 @@ fn promise_fixture() -> VirtualFile {
 
 fn global_types_fixture() -> VirtualFile {
   lib_env_fixture("a.ts")
+}
+
+fn scripthost_fixture() -> VirtualFile {
+  lib_env_fixture("scripthost.ts")
 }
 
 fn run_rust(files: Vec<VirtualFile>, options: CompilerOptions) -> Vec<typecheck_ts::Diagnostic> {
@@ -218,6 +223,74 @@ fn tsc_accepts_promise_with_libs_when_available() {
       tsc.diagnostics.is_empty(),
       "expected no diagnostics with libs, got {:?}",
       tsc.diagnostics
+    );
+  }
+}
+
+#[test]
+fn default_libs_match_tsc_for_scripthost_globals() {
+  let fixture = scripthost_fixture();
+  let source = fixture.content.as_ref();
+  let offset = source
+    .find("ctor")
+    .expect("expected ctor binding") as u32;
+
+  let host = SimpleHost::new(vec![fixture.clone()], CompilerOptions::default());
+  let roots = host.roots();
+  let program = Program::new(host, roots);
+  let rust_diags = program.check();
+  assert!(
+    rust_diags.is_empty(),
+    "expected no diagnostics with default libs, got {rust_diags:?}"
+  );
+  let file_id = program
+    .file_id(&FileKey::new(fixture.name.clone()))
+    .expect("file id for fixture");
+  let rust_ty = program
+    .type_at(file_id, offset)
+    .expect("type of ctor binding");
+  let rust_ty_str = normalize_type_string(&program.display_type(rust_ty).to_string());
+
+  #[cfg(feature = "with-node")]
+  {
+    let mut runner = match runner_or_skip() {
+      Some(runner) => runner,
+      None => return,
+    };
+
+    let mut options = Map::new();
+    options.insert("target".to_string(), Value::String("ES2015".to_string()));
+
+    let name: Arc<str> = fixture.name.clone().into();
+    let mut files = HashMap::new();
+    files.insert(Arc::clone(&name), Arc::clone(&fixture.content));
+
+    let request = TscRequest {
+      root_names: vec![Arc::clone(&name)],
+      files,
+      options,
+      diagnostics_only: false,
+      type_queries: vec![TypeQuery {
+        file: fixture.name.clone(),
+        offset,
+        line: None,
+        column: None,
+      }],
+    };
+
+    let tsc = runner.check(request).expect("tsc output");
+    assert!(
+      tsc.diagnostics.is_empty(),
+      "expected no tsc diagnostics with default libs, got {:?}",
+      tsc.diagnostics
+    );
+    let facts = tsc.type_facts.expect("expected type facts");
+    assert_eq!(facts.markers.len(), 1, "expected one marker type");
+    let tsc_ty_str = normalize_type_string(&facts.markers[0].type_str);
+
+    assert_eq!(
+      rust_ty_str, tsc_ty_str,
+      "expected Rust and tsc to agree on the default scripthost types"
     );
   }
 }

@@ -118,6 +118,27 @@ fn bundled_lib_manager_loads_official_ts_libs() {
     loaded
       .files
       .iter()
+      .any(|lib| lib.name.as_ref() == "lib.dom.iterable.d.ts"),
+    "default libs should include lib.dom.iterable.d.ts"
+  );
+  assert!(
+    loaded
+      .files
+      .iter()
+      .any(|lib| lib.name.as_ref() == "lib.webworker.importscripts.d.ts"),
+    "default libs should include lib.webworker.importscripts.d.ts"
+  );
+  assert!(
+    loaded
+      .files
+      .iter()
+      .any(|lib| lib.name.as_ref() == "lib.scripthost.d.ts"),
+    "default libs should include lib.scripthost.d.ts"
+  );
+  assert!(
+    loaded
+      .files
+      .iter()
       .any(|lib| lib.name.as_ref() == "lib.es2015.promise.d.ts"),
     "default libs should include lib.es2015.promise.d.ts"
   );
