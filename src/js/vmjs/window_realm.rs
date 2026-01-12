@@ -8950,10 +8950,6 @@ fn parse_add_event_listener_options(
 ) -> Result<web_events::AddEventListenerOptions, VmError> {
   let mut opts = web_events::AddEventListenerOptions::default();
   match value {
-    Value::Bool(b) => {
-      opts.capture = b;
-      Ok(opts)
-    }
     Value::Object(obj) => {
       let capture_key = alloc_key(scope, "capture")?;
       let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, capture_key)?;
@@ -8969,7 +8965,11 @@ fn parse_add_event_listener_options(
 
       Ok(opts)
     }
-    _ => Ok(opts),
+    Value::Undefined => Ok(opts),
+    other => {
+      opts.capture = scope.heap().to_boolean(other)?;
+      Ok(opts)
+    }
   }
 }
 
@@ -8980,15 +8980,19 @@ fn parse_event_listener_capture(
   hooks: &mut dyn VmHostHooks,
   value: Value,
 ) -> Result<bool, VmError> {
-  Ok(match value {
-    Value::Bool(b) => b,
+  match value {
     Value::Object(obj) => {
-      let capture_key = alloc_key(scope, "capture")?;
-      let v = vm.get_with_host_and_hooks(host, scope, hooks, obj, capture_key)?;
-      scope.heap().to_boolean(v)?
+      // Root the object during key allocation: `alloc_key` allocates a string which can trigger a
+      // GC cycle.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(obj))?;
+
+      let capture_key = alloc_key(&mut scope, "capture")?;
+      let v = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, capture_key)?;
+      scope.heap().to_boolean(v)
     }
-    _ => false,
-  })
+    other => scope.heap().to_boolean(other),
+  }
 }
 
 fn get_or_create_event_listener_roots(
@@ -22711,6 +22715,50 @@ mod tests {
         return count;\n\
       })()",
     )?;
+    assert_eq!(removed, Value::Number(0.0));
+    Ok(())
+  }
+
+  #[test]
+  fn event_target_add_event_listener_options_union_treats_number_as_capture_bool() -> Result<(), VmError>
+  {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let order = realm.exec_script(
+      "(() => {\n\
+        const t = new EventTarget();\n\
+        let log = '';\n\
+        const push = (s) => { log = log === '' ? s : log + ',' + s; };\n\
+        // If `1` is treated as the legacy boolean `capture` argument, this listener must run\n\
+        // before the bubble listener even though it is registered second.\n\
+        t.addEventListener('x', () => push('b'));\n\
+        t.addEventListener('x', () => push('c'), 1);\n\
+        t.dispatchEvent(new Event('x'));\n\
+        return log;\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), order), "c,b");
+    Ok(())
+  }
+
+  #[test]
+  fn event_target_remove_event_listener_options_union_treats_number_as_capture_bool() -> Result<(), VmError>
+  {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let removed = realm.exec_script(
+      "(() => {\n\
+        const t = new EventTarget();\n\
+        let count = 0;\n\
+        const cb = () => { count++; };\n\
+        t.addEventListener('x', cb, 1);\n\
+        t.removeEventListener('x', cb, 1);\n\
+        t.dispatchEvent(new Event('x'));\n\
+        return count;\n\
+      })()",
+    )?;
+
     assert_eq!(removed, Value::Number(0.0));
     Ok(())
   }

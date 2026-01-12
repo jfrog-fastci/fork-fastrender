@@ -3148,7 +3148,6 @@ mod tests {
     let global = realm.global_object();
     let hdr = get_prop(&mut scope, global, "__hdr");
     assert_eq!(get_string(scope.heap(), hdr), "value");
-
     let multi = get_prop(&mut scope, global, "__multi");
     assert_eq!(get_string(scope.heap(), multi), "a, b");
     assert_eq!(get_prop(&mut scope, global, "__cookie"), Value::Null);
