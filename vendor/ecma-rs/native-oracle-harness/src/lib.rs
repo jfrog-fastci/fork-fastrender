@@ -23,16 +23,18 @@
 pub mod fixtures;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::{collections::HashMap, mem};
 
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use emit_js::{emit_top_level_diagnostic, EmitOptions};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use vm_js::{
-  format_stack_trace, format_termination, GcObject, Heap, HeapLimits, JsRuntime, MicrotaskQueue,
-  PromiseState, RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
-  VmOptions,
+  finish_loading_imported_module, format_stack_trace, format_termination, load_requested_modules,
+  GcObject, Heap, HeapLimits, HostDefined, Job, JsRuntime, MicrotaskQueue, ModuleGraph, ModuleId,
+  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, Scope, SourceText,
+  SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
@@ -155,7 +157,7 @@ impl std::error::Error for TsToJsError {}
 ///   heavier).
 pub fn erase_typescript_to_js_with_source_type(
   source: &str,
-  source_type: parse_js::SourceType,
+  source_type: SourceType,
 ) -> Result<String, TsToJsError> {
   let file = FileId(0);
 
@@ -182,7 +184,7 @@ pub fn erase_typescript_to_js_with_source_type(
   };
 
   if let Err(diags) = ts_erase::erase_types_strict_native(file, source_type, &mut top_level) {
-    return Err(TsToJsError::Erase(diags));
+    return erase_with_optimize_js_fallback(source, source_type, TsToJsError::Erase(diags));
   }
 
   match emit_top_level_diagnostic(file, &top_level, EmitOptions::minified()) {
@@ -660,7 +662,22 @@ fn diagnostics_to_one(mut diags: Vec<Diagnostic>) -> Diagnostic {
 
 fn ts_to_js(ts: &str) -> Result<String, Diagnostic> {
   let file = FileId(0);
-  erase_typescript_to_js(ts).map_err(|err| match err {
+  erase_typescript_to_js_with_source_type(ts, SourceType::Script).map_err(|err| match err {
+    TsToJsError::Parse(err) => err.to_diagnostic(file),
+    TsToJsError::Erase(diags) => diagnostics_to_one(diags),
+    TsToJsError::Emit(diag) => diag,
+    #[cfg(feature = "optimize-js-fallback")]
+    TsToJsError::Optimize(diags) => diagnostics_to_one(diags),
+    #[cfg(feature = "optimize-js-fallback")]
+    TsToJsError::OptimizeEmit(err) => {
+      harness_error(format!("optimize-js TS→JS fallback failed: {err:?}"))
+    }
+  })
+}
+
+fn ts_to_js_with_source_type(ts: &str, source_type: SourceType) -> Result<String, Diagnostic> {
+  let file = FileId(0);
+  erase_typescript_to_js_with_source_type(ts, source_type).map_err(|err| match err {
     TsToJsError::Parse(err) => err.to_diagnostic(file),
     TsToJsError::Erase(diags) => diagnostics_to_one(diags),
     TsToJsError::Emit(diag) => diag,
@@ -683,15 +700,14 @@ fn new_runtime_with_options(options: &OracleHarnessOptions) -> Result<JsRuntime,
   Ok(rt)
 }
 
-fn value_to_string(rt: &JsRuntime, value: Value) -> String {
+fn value_to_string_in_heap(heap: &Heap, value: Value) -> String {
   match value {
     Value::Undefined => "undefined".to_string(),
     Value::Null => "null".to_string(),
     Value::Bool(b) => b.to_string(),
     Value::Number(n) => n.to_string(),
     Value::BigInt(b) => b.to_decimal_string(),
-    Value::String(s) => rt
-      .heap()
+    Value::String(s) => heap
       .get_string(s)
       .map(|s| s.to_utf8_lossy())
       .unwrap_or_else(|_| "<invalid string>".to_string()),
@@ -701,18 +717,26 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 }
 
 fn vm_error_to_diagnostic(rt: &JsRuntime, err: VmError) -> Diagnostic {
+  vm_error_to_diagnostic_with_heap(rt.heap(), err)
+}
+
+fn vm_error_to_diagnostic_with_heap(heap: &Heap, err: VmError) -> Diagnostic {
   match err {
     VmError::Syntax(diags) => diagnostics_to_one(diags),
     VmError::ThrowWithStack { value, stack } => {
-      let mut diag = harness_error(format!("uncaught exception: {}", value_to_string(rt, value)));
+      let mut diag = harness_error(format!(
+        "uncaught exception: {}",
+        value_to_string_in_heap(heap, value)
+      ));
       if !stack.is_empty() {
         diag.push_note(format_stack_trace(&stack));
       }
       diag
     }
-    VmError::Throw(value) => {
-      harness_error(format!("uncaught exception: {}", value_to_string(rt, value)))
-    }
+    VmError::Throw(value) => harness_error(format!(
+      "uncaught exception: {}",
+      value_to_string_in_heap(heap, value)
+    )),
     VmError::Termination(term) => harness_error(format_termination(&term)),
     other => harness_error(other.to_string()),
   }
@@ -785,6 +809,601 @@ pub fn run_fixture_ts_with_name_and_options(
 
   if let Err(err) = rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
     let diag = vm_error_to_diagnostic(&rt, err);
+    teardown_microtasks(&mut rt);
+    return Err(diag);
+  }
+
+  let value = match rt.exec_script_source(Arc::new(SourceText::new(
+    OBSERVE_SOURCE_NAME,
+    OBSERVE_SCRIPT,
+  ))) {
+    Ok(v) => v,
+    Err(err) => {
+      let diag = vm_error_to_diagnostic(&rt, err);
+      teardown_microtasks(&mut rt);
+      return Err(diag);
+    }
+  };
+
+  let Value::String(s) = value else {
+    let diag = harness_error(format!(
+      "observe script returned non-string value: {value:?}"
+    ));
+    teardown_microtasks(&mut rt);
+    return Err(diag);
+  };
+
+  let out = rt
+    .heap()
+    .get_string(s)
+    .map_err(|err| harness_error(format!("invalid string handle: {err}")))?
+    .to_utf8_lossy();
+
+  teardown_microtasks(&mut rt);
+  Ok(out)
+}
+
+fn path_to_forward_slash_string(path: &Path) -> String {
+  // Create a stable source name for stack traces regardless of platform path separators.
+  path
+    .components()
+    .map(|c| c.as_os_str().to_string_lossy())
+    .collect::<Vec<_>>()
+    .join("/")
+}
+
+fn stringify_value_with_vm_and_heap(vm: &mut Vm, heap: &mut Heap, value: Value, depth: usize) -> String {
+  const MAX_DEPTH: usize = 8;
+  if depth >= MAX_DEPTH {
+    return format!("{value:?}");
+  }
+
+  let res = {
+    let mut host = ();
+    let mut hooks = MicrotaskQueue::new();
+    let mut scope = heap.scope();
+    let res = scope.to_string(vm, &mut host, &mut hooks, value);
+
+    // `ToString` can run user code which may queue Promise jobs that hold persistent roots. Ensure
+    // we always discard those jobs so we don't leak roots during diagnostic formatting.
+    struct TeardownCtx<'a> {
+      heap: &'a mut Heap,
+    }
+
+    impl VmJobContext for TeardownCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("TeardownCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("TeardownCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut teardown_ctx = TeardownCtx {
+      heap: scope.heap_mut(),
+    };
+    hooks.teardown(&mut teardown_ctx);
+    res
+  };
+
+  match res {
+    Ok(s) => heap
+      .get_string(s)
+      .map(|js| js.to_utf8_lossy())
+      .unwrap_or_else(|_| "<invalid string>".to_string()),
+    Err(VmError::Throw(v) | VmError::ThrowWithStack { value: v, .. }) => {
+      stringify_value_with_vm_and_heap(vm, heap, v, depth + 1)
+    }
+    Err(_) => format!("{value:?}"),
+  }
+}
+
+struct FixtureModuleLoader {
+  root_dir: PathBuf,
+  module_ids_by_path: HashMap<PathBuf, ModuleId>,
+  module_paths_by_id: HashMap<ModuleId, PathBuf>,
+  microtasks: MicrotaskQueue,
+}
+
+impl FixtureModuleLoader {
+  fn new(root_dir: PathBuf) -> Self {
+    Self {
+      root_dir,
+      module_ids_by_path: HashMap::new(),
+      module_paths_by_id: HashMap::new(),
+      microtasks: MicrotaskQueue::new(),
+    }
+  }
+
+  fn register_module_path(&mut self, module: ModuleId, canonical_path: PathBuf) {
+    self.module_ids_by_path.insert(canonical_path.clone(), module);
+    self.module_paths_by_id.insert(module, canonical_path);
+  }
+
+  fn stable_source_name(&self, canonical_path: &Path) -> Result<Arc<str>, VmError> {
+    let rel = canonical_path.strip_prefix(&self.root_dir).map_err(|_| {
+      VmError::InvariantViolation("module path is not under the fixture root directory")
+    })?;
+    Ok(Arc::<str>::from(path_to_forward_slash_string(rel)))
+  }
+
+  fn base_dir_for_referrer(&self, referrer: ModuleReferrer) -> Result<PathBuf, VmError> {
+    match referrer {
+      ModuleReferrer::Module(module_id) => {
+        let path = self
+          .module_paths_by_id
+          .get(&module_id)
+          .ok_or(VmError::InvariantViolation(
+            "module loader missing referrer module path",
+          ))?;
+        Ok(path.parent().unwrap_or(&self.root_dir).to_path_buf())
+      }
+      // The harness only supports fixture-relative module specifiers.
+      ModuleReferrer::Script(_) | ModuleReferrer::Realm(_) => Ok(self.root_dir.clone()),
+    }
+  }
+
+  fn teardown(&mut self, heap: &mut Heap) {
+    struct TeardownCtx<'a> {
+      heap: &'a mut Heap,
+    }
+
+    impl VmJobContext for TeardownCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("TeardownCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("TeardownCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut ctx = TeardownCtx { heap };
+    self.microtasks.teardown(&mut ctx);
+  }
+
+  fn finish_with_error(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    payload: ModuleLoadPayload,
+    err_value: Value,
+  ) -> Result<(), VmError> {
+    // Root the thrown value for the duration of `FinishLoadingImportedModule`: it can allocate/GC.
+    let mut finish_scope = scope.reborrow();
+    finish_scope.push_root(err_value)?;
+    finish_loading_imported_module(
+      vm,
+      &mut finish_scope,
+      modules,
+      self,
+      referrer,
+      module_request,
+      payload,
+      Err(VmError::Throw(err_value)),
+    )
+  }
+}
+
+impl VmHostHooks for FixtureModuleLoader {
+  fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
+    self.microtasks.enqueue_promise_job(job, realm);
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    host_defined: HostDefined,
+    payload: ModuleLoadPayload,
+  ) -> Result<(), VmError> {
+    let _ = host_defined;
+
+    let base_dir = self.base_dir_for_referrer(referrer)?;
+    let specifier = module_request.specifier.as_str();
+
+    let spec_path = Path::new(specifier);
+    if spec_path.is_absolute() {
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+      let err =
+        vm_js::new_type_error_object(scope, &intr, "module specifier must be a relative path")?;
+      return self.finish_with_error(vm, scope, modules, referrer, module_request, payload, err);
+    }
+    if spec_path.extension().is_none() {
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+      let err =
+        vm_js::new_type_error_object(scope, &intr, "module specifier must include a file extension")?;
+      return self.finish_with_error(vm, scope, modules, referrer, module_request, payload, err);
+    }
+
+    let joined = base_dir.join(spec_path);
+    let canonical = match fs::canonicalize(&joined) {
+      Ok(p) => p,
+      Err(err) => {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+        let msg = format!("failed to resolve module {specifier:?}: {err}");
+        let err_value = vm_js::new_error(scope, intr.error_prototype(), "Error", &msg)?;
+        return self.finish_with_error(
+          vm,
+          scope,
+          modules,
+          referrer,
+          module_request,
+          payload,
+          err_value,
+        );
+      }
+    };
+
+    if !canonical.starts_with(&self.root_dir) {
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+      let msg = "module specifier resolved outside fixture directory";
+      let err = vm_js::new_type_error_object(scope, &intr, msg)?;
+      return self.finish_with_error(vm, scope, modules, referrer, module_request, payload, err);
+    }
+
+    if let Some(id) = self.module_ids_by_path.get(&canonical).copied() {
+      return finish_loading_imported_module(
+        vm,
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Ok(id),
+      );
+    }
+
+    let source = match fs::read_to_string(&canonical) {
+      Ok(s) => s,
+      Err(err) => {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+        let msg = format!("failed to read module {}: {err}", canonical.display());
+        let err_value = vm_js::new_error(scope, intr.error_prototype(), "Error", &msg)?;
+        return self.finish_with_error(
+          vm,
+          scope,
+          modules,
+          referrer,
+          module_request,
+          payload,
+          err_value,
+        );
+      }
+    };
+
+    let ext = canonical.extension().and_then(|ext| ext.to_str());
+    let js = if matches!(ext, Some("ts") | Some("tsx")) {
+      match erase_typescript_to_js_with_source_type(&source, SourceType::Module) {
+        Ok(js) => js,
+        Err(err) => {
+          let intr = vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+          let msg = format!("TS→JS erasure failed for {}: {err}", canonical.display());
+          let err_value = vm_js::new_syntax_error_object(scope, &intr, &msg)?;
+          return self.finish_with_error(
+            vm,
+            scope,
+            modules,
+            referrer,
+            module_request,
+            payload,
+            err_value,
+          );
+        }
+      }
+    } else {
+      source
+    };
+
+    let name = self.stable_source_name(&canonical)?;
+    let source_text = Arc::new(SourceText::new(name, js));
+
+    let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source_text) {
+      Ok(record) => record,
+      Err(VmError::Syntax(diags)) => {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
+        let diag = diagnostics_to_one(diags);
+        let msg = format!("{}: {}", diag.code, diag.message);
+        let err_value = vm_js::new_syntax_error_object(scope, &intr, &msg)?;
+        return self.finish_with_error(
+          vm,
+          scope,
+          modules,
+          referrer,
+          module_request,
+          payload,
+          err_value,
+        );
+      }
+      Err(other) => return Err(other),
+    };
+
+    let id = modules.add_module(record);
+    self.register_module_path(id, canonical);
+
+    finish_loading_imported_module(
+      vm,
+      scope,
+      modules,
+      self,
+      referrer,
+      module_request,
+      payload,
+      Ok(id),
+    )
+  }
+}
+
+/// Run a directory-based TypeScript fixture as an ECMAScript module graph.
+///
+/// The fixture directory must contain an entry module named `entry.ts` (or `entry.tsx` / `entry.js`).
+/// Other modules are loaded on-demand from the same directory via relative `import` specifiers.
+pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagnostic> {
+  let dir = dir.as_ref();
+  let root_dir = fs::canonicalize(dir)
+    .map_err(|err| harness_error(format!("failed to canonicalize fixture dir {}: {err}", dir.display())))?;
+
+  let entry_path = ["entry.ts", "entry.tsx", "entry.js"]
+    .into_iter()
+    .map(|name| root_dir.join(name))
+    .find(|p| p.is_file())
+    .ok_or_else(|| {
+      harness_error(format!(
+        "fixture dir {} is missing entry.ts (or entry.tsx / entry.js)",
+        root_dir.display()
+      ))
+    })?;
+
+  let entry_path = fs::canonicalize(&entry_path).map_err(|err| {
+    harness_error(format!(
+      "failed to canonicalize entry module path {}: {err}",
+      entry_path.display()
+    ))
+  })?;
+
+  if !entry_path.starts_with(&root_dir) {
+    return Err(harness_error(format!(
+      "entry module {} is outside fixture dir {}",
+      entry_path.display(),
+      root_dir.display()
+    )));
+  }
+
+  let entry_name = Arc::<str>::from(path_to_forward_slash_string(
+    entry_path
+      .strip_prefix(&root_dir)
+      .expect("already checked starts_with"),
+  ));
+
+  let options = OracleHarnessOptions::default();
+  let mut rt = new_runtime_with_options(&options)
+    .map_err(|err| harness_error(format!("failed to init vm-js: {err}")))?;
+  let realm_id = rt.realm().id();
+  let global_object = rt.realm().global_object();
+
+  let mut loader = FixtureModuleLoader::new(root_dir);
+
+  let exec_result = (|| -> Result<(), Diagnostic> {
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+
+    // Load + parse the entry module.
+    let entry_src = fs::read_to_string(&entry_path)
+      .map_err(|err| harness_error(format!("failed to read entry module {}: {err}", entry_path.display())))?;
+    let entry_ext = entry_path.extension().and_then(|ext| ext.to_str());
+    let entry_js = if matches!(entry_ext, Some("ts") | Some("tsx")) {
+      ts_to_js_with_source_type(&entry_src, SourceType::Module)?
+    } else {
+      entry_src
+    };
+    let entry_source_text = Arc::new(SourceText::new(entry_name, entry_js));
+    let entry_record = SourceTextModuleRecord::parse_source_with_vm(vm, entry_source_text)
+      .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
+    let entry_id = modules.add_module(entry_record);
+    loader.register_module_path(entry_id, entry_path.clone());
+
+    // Load the static module graph.
+    let load_promise_value = {
+      let mut scope = heap.scope();
+      load_requested_modules(vm, &mut scope, modules, &mut loader, entry_id, HostDefined::default())
+        .map_err(|err| vm_error_to_diagnostic_with_heap(scope.heap(), err))?
+    };
+
+    let Value::Object(load_promise) = load_promise_value else {
+      return Err(harness_error("module graph loading returned a non-object value"));
+    };
+    if !heap.is_promise(load_promise) {
+      return Err(harness_error("module graph loading returned a non-promise object"));
+    }
+
+    match heap
+      .promise_state(load_promise)
+      .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?
+    {
+      PromiseState::Fulfilled => {}
+      PromiseState::Rejected => {
+        let reason = heap
+          .promise_result(load_promise)
+          .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?
+          .unwrap_or(Value::Undefined);
+        let reason_str = stringify_value_with_vm_and_heap(vm, heap, reason, 0);
+        return Err(harness_error(format!(
+          "module graph loading promise rejected: {reason_str}"
+        )));
+      }
+      PromiseState::Pending => {
+        return Err(harness_error(
+          "module graph loading promise did not settle (host loader must be synchronous)",
+        ));
+      }
+    }
+
+    // Evaluate the entry module.
+    let eval_promise_value = {
+      // `ModuleGraph::evaluate` needs an explicit `&mut dyn VmHostHooks`, but we also need `&mut Vm`.
+      // Temporarily move out the VM-owned microtask queue so it can serve as the host hooks.
+      let mut hooks = mem::take(vm.microtask_queue_mut());
+      let mut dummy_host = ();
+      let res = modules.evaluate(
+        vm,
+        heap,
+        global_object,
+        realm_id,
+        entry_id,
+        &mut dummy_host,
+        &mut hooks,
+      );
+
+      // Merge any jobs that were queued directly onto `vm.microtask_queue_mut()` while the queue was
+      // temporarily moved out.
+      while let Some((realm, job)) = vm.microtask_queue_mut().pop_front() {
+        hooks.enqueue_promise_job(job, realm);
+      }
+      *vm.microtask_queue_mut() = hooks;
+
+      match res {
+        Ok(v) => v,
+        Err(err) => {
+          // `ModuleGraph::evaluate` can return an abrupt completion after starting top-level await
+          // evaluation (e.g. if scheduling the resume callbacks fails). Ensure we don't drop the
+          // runtime with a pending TLA state holding persistent roots.
+          modules.abort_tla_evaluation(vm, heap, entry_id);
+          return Err(vm_error_to_diagnostic_with_heap(&*heap, err));
+        }
+      }
+    };
+
+    let Value::Object(eval_promise) = eval_promise_value else {
+      return Err(harness_error("module evaluation did not return a promise object"));
+    };
+    if !heap.is_promise(eval_promise) {
+      return Err(harness_error("module evaluation returned a non-promise object"));
+    }
+
+    // Root the evaluation promise while running microtasks; it may otherwise be collected.
+    let eval_root = heap
+      .add_root(Value::Object(eval_promise))
+      .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
+
+    // Wait for the evaluation promise to settle, with explicit bounds for determinism.
+    let max_checkpoints = OracleHarnessOptions::default().max_microtask_checkpoints;
+    let mut checkpoints = 0usize;
+    let outcome = loop {
+      let state = heap
+        .promise_state(eval_promise)
+        .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
+
+      match state {
+        PromiseState::Pending => {
+          if checkpoints >= max_checkpoints {
+            modules.abort_tla_evaluation(vm, heap, entry_id);
+            break Err(harness_error(format!(
+              "module evaluation promise did not settle after {checkpoints} microtask checkpoints"
+            )));
+          }
+
+          if vm.microtask_queue().is_empty() {
+            modules.abort_tla_evaluation(vm, heap, entry_id);
+            break Err(harness_error("module evaluation promise did not settle"));
+          }
+
+          vm.perform_microtask_checkpoint(heap)
+            .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
+          checkpoints += 1;
+        }
+        PromiseState::Fulfilled => break Ok(()),
+        PromiseState::Rejected => {
+          let reason = heap
+            .promise_result(eval_promise)
+            .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?
+            .unwrap_or(Value::Undefined);
+          let reason_str = stringify_value_with_vm_and_heap(vm, heap, reason, 0);
+          break Err(harness_error(format!(
+            "module evaluation promise rejected: {reason_str}"
+          )));
+        }
+      }
+    };
+
+    // Always remove the root, regardless of success or failure.
+    heap.remove_root(eval_root);
+
+    // One final checkpoint (even on rejection) so `.then(...)` / `.catch(...)` callbacks can run and
+    // we don't drop queued jobs with persistent roots.
+    vm.perform_microtask_checkpoint(heap)
+      .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
+
+    outcome?;
+
+    Ok(())
+  })();
+
+  // Discard any Promise jobs queued during module graph loading. These jobs can hold persistent
+  // roots; dropping them without teardown would leak (and trip debug assertions).
+  loader.teardown(&mut rt.heap);
+
+  if let Err(diag) = exec_result {
     teardown_microtasks(&mut rt);
     return Err(diag);
   }
