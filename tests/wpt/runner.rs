@@ -57,8 +57,6 @@ use fastrender::text::font_loader::FontContext;
 use fastrender::ResourcePolicy;
 use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
-use image::codecs::png::PngEncoder;
-use image::{ColorType, ImageEncoder, Rgba, RgbaImage};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use rayon::prelude::*;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -69,7 +67,6 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 use url::Url;
@@ -450,6 +447,23 @@ impl WptRunner {
   fn record_result(&mut self, result: &TestResult) {
     self.stats.record(result);
     self.save_artifact(result);
+  }
+
+  fn artifacts_enabled(&self) -> bool {
+    self.config.save_rendered || self.config.save_diffs
+  }
+
+  fn should_save_artifacts_for_result(&self, result: &TestResult) -> bool {
+    if !self.artifacts_enabled() {
+      return false;
+    }
+
+    // Default policy: keep output bounded by only emitting artifacts for failures.
+    //
+    // If the HTML report gains embedded thumbnails in the future, we may need to also save
+    // artifacts for passing tests. The current report only links to artifacts opportunistically,
+    // so we do not write images for PASS/SKIP results.
+    result.status.is_failure()
   }
 
   fn run_tests_sequential(&mut self, tests: Vec<TestMetadata>) -> Vec<TestResult> {
@@ -1626,6 +1640,11 @@ impl WptRunner {
     let passed = counts(TestStatus::Pass);
     let failed = results.iter().filter(|r| r.status.is_failure()).count();
     let skipped = counts(TestStatus::Skip);
+    let artifacts_status = if !self.artifacts_enabled() {
+      "disabled (save_rendered=false, save_diffs=false)"
+    } else {
+      "saved for failing tests only"
+    };
     let suite_name = self
       .config
       .test_dir
@@ -1636,9 +1655,60 @@ impl WptRunner {
     let mut rows = String::new();
     for result in results {
       let paths = Self::artifact_paths(&self.config, &result.metadata);
-      let expected_link = self.link_from_output(&paths.expected);
-      let actual_link = self.link_from_output(&paths.actual);
-      let diff_link = self.link_from_output(&paths.diff);
+      let saving_for_result = self.should_save_artifacts_for_result(result);
+
+      let expected_saved = paths.expected.exists();
+      let expected_source = Self::get_expected_image_path(&self.config, &result.metadata);
+      let expected_path = if expected_saved {
+        Some(paths.expected.as_path())
+      } else if expected_source.exists() {
+        Some(expected_source.as_path())
+      } else {
+        None
+      };
+
+      let expected_link = expected_path.map(|p| {
+        format!(
+          "<a href=\"{}\">expected</a>",
+          Self::escape_html(&self.link_from_output(p))
+        )
+      });
+
+      let actual_link = if !self.config.save_rendered {
+        Some("<span class=\"missing\">actual (disabled)</span>".to_string())
+      } else if paths.actual.exists() {
+        Some(format!(
+          "<a href=\"{}\">actual</a>",
+          Self::escape_html(&self.link_from_output(&paths.actual))
+        ))
+      } else if saving_for_result {
+        Some("<span class=\"missing\">actual (missing)</span>".to_string())
+      } else {
+        Some("<span class=\"missing\">actual (not saved)</span>".to_string())
+      };
+
+      let diff_meaningful = result.pixel_diff.unwrap_or(0) > 0;
+      let diff_link = if !self.config.save_diffs {
+        Some("<span class=\"missing\">diff (disabled)</span>".to_string())
+      } else if paths.diff.exists() {
+        Some(format!(
+          "<a href=\"{}\">diff</a>",
+          Self::escape_html(&self.link_from_output(&paths.diff))
+        ))
+      } else if !diff_meaningful && saving_for_result {
+        Some("<span class=\"missing\">diff (n/a)</span>".to_string())
+      } else if saving_for_result {
+        Some("<span class=\"missing\">diff (missing)</span>".to_string())
+      } else {
+        Some("<span class=\"missing\">diff (not saved)</span>".to_string())
+      };
+
+      let links = [
+        expected_link.unwrap_or_else(|| "<span class=\"missing\">expected (n/a)</span>".to_string()),
+        actual_link.unwrap_or_else(|| "<span class=\"missing\">actual (n/a)</span>".to_string()),
+        diff_link.unwrap_or_else(|| "<span class=\"missing\">diff (n/a)</span>".to_string()),
+      ]
+      .join(" | ");
       let diff_pct = result.diff_percentage.unwrap_or(0.0);
       let max_diff = result.max_channel_diff.unwrap_or(0);
       let perceptual = result.perceptual_distance.unwrap_or(0.0);
@@ -1657,7 +1727,7 @@ impl WptRunner {
            <td>{:.3}</td>\
            <td>{}</td>\
            <td>{:.4}</td>\
-           <td><a href=\"{}\">expected</a> | <a href=\"{}\">actual</a> | <a href=\"{}\">diff</a></td>\
+           <td>{}</td>\
            <td>{}</td>\
          </tr>",
         result.status,
@@ -1668,9 +1738,7 @@ impl WptRunner {
         diff_pct,
         max_diff,
         perceptual,
-        expected_link,
-        actual_link,
-        diff_link,
+        links,
         message,
       );
     }
@@ -1687,11 +1755,13 @@ impl WptRunner {
     th, td {{ border: 1px solid #ccc; padding: 6px; font-size: 14px; }}
     thead {{ background: #f6f6f6; position: sticky; top: 0; }}
     .controls label {{ margin-right: 12px; }}
+    .missing {{ color: #777; }}
   </style>
 </head>
 <body>
   <h1>WPT run summary</h1>
   <p>Suite: {suite_name}. Total: {total}. Passed: {passed}. Failed/Error: {failed}. Skipped: {skipped}.</p>
+  <p>Artifacts: {artifacts_status}.</p>
   <div class="controls">
     <label><input type="checkbox" name="status" value="PASS" checked>Pass</label>
     <label><input type="checkbox" name="status" value="FAIL" checked>Fail</label>
@@ -1751,6 +1821,24 @@ impl WptRunner {
       .iter()
       .map(|result| {
         let paths = Self::artifact_paths(&self.config, &result.metadata);
+        let expected_source = Self::get_expected_image_path(&self.config, &result.metadata);
+        let expected_artifact = if paths.expected.exists() {
+          Some(self.link_from_output(&paths.expected))
+        } else if expected_source.exists() {
+          Some(self.link_from_output(&expected_source))
+        } else {
+          None
+        };
+        let actual_artifact = if self.config.save_rendered && paths.actual.exists() {
+          Some(self.link_from_output(&paths.actual))
+        } else {
+          None
+        };
+        let diff_artifact = if self.config.save_diffs && paths.diff.exists() {
+          Some(self.link_from_output(&paths.diff))
+        } else {
+          None
+        };
         WptJsonReportTest {
           id: result.metadata.id.clone(),
           path: self.link_from_test_root(&result.metadata.path),
@@ -1765,12 +1853,12 @@ impl WptRunner {
           diff: WptJsonReportDiff {
             different_percent: result.diff_percentage,
             max_channel_diff: result.max_channel_diff,
-            perceptual_distance: None,
+            perceptual_distance: result.perceptual_distance,
           },
           artifacts: WptJsonReportArtifacts {
-            expected: Some(self.link_from_output(&paths.expected)),
-            actual: Some(self.link_from_output(&paths.actual)),
-            diff: Some(self.link_from_output(&paths.diff)),
+            expected: expected_artifact,
+            actual: actual_artifact,
+            diff: diff_artifact,
           },
           message: result.message.clone(),
         }
@@ -1813,65 +1901,79 @@ impl WptRunner {
 
   /// Saves test artifacts (rendered images, diffs)
   fn save_artifact(&self, result: &TestResult) {
+    if !self.should_save_artifacts_for_result(result) {
+      return;
+    }
+
     let paths = Self::artifact_paths(&self.config, &result.metadata);
+
+    let expected_owned = if result.expected_image.is_some() {
+      None
+    } else {
+      self.load_expected_bytes(&result.metadata)
+    };
+    let expected = result
+      .expected_image
+      .as_deref()
+      .or(expected_owned.as_deref());
+    let actual = result.rendered_image.as_deref();
+
+    let mut writes = Vec::new();
+
+    if let Some(expected) = expected {
+      writes.push((&paths.expected, expected));
+    }
+
+    if self.config.save_rendered {
+      if let Some(actual) = actual {
+        writes.push((&paths.actual, actual));
+      }
+    }
+
+    let diff_meaningful = self.config.save_diffs && result.pixel_diff.unwrap_or(0) > 0;
+    let diff = if diff_meaningful {
+      if let (Some(actual), Some(expected)) = (actual, expected) {
+        let diff_config = self.config.compare_config_from_env().unwrap_or_else(|err| {
+          eprintln!("Failed to parse comparison config from env for diff output: {err}");
+          fastrender::image_compare::CompareConfig::strict()
+            .with_channel_tolerance(self.config.pixel_tolerance)
+            .with_max_different_percent(self.config.max_diff_percentage)
+            .with_compare_alpha(self.config.compare_alpha)
+            .with_max_perceptual_distance(self.config.max_perceptual_distance)
+        });
+        generate_diff_image(actual, expected, &diff_config).ok()
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    if writes.is_empty() && diff.is_none() {
+      return;
+    }
 
     if let Err(e) = fs::create_dir_all(&paths.base) {
       eprintln!("Failed to create output directory: {}", e);
       return;
     }
 
-    let actual = result
-      .rendered_image
-      .clone()
-      .unwrap_or_else(Self::placeholder_png);
-    if let Err(e) = fs::write(&paths.actual, &actual) {
-      eprintln!("Failed to save rendered image: {}", e);
+    for (path, bytes) in writes {
+      if let Err(e) = fs::write(path, bytes) {
+        eprintln!("Failed to save artifact image {:?}: {}", path, e);
+      }
     }
 
-    let expected = result
-      .expected_image
-      .clone()
-      .or_else(|| self.load_expected_bytes(&result.metadata))
-      .unwrap_or_else(Self::placeholder_png);
-    if let Err(e) = fs::write(&paths.expected, &expected) {
-      eprintln!("Failed to save expected image: {}", e);
-    }
-
-    let diff_config = self.config.compare_config_from_env().unwrap_or_else(|err| {
-      eprintln!("Failed to parse comparison config from env for diff output: {err}");
-      fastrender::image_compare::CompareConfig::strict()
-        .with_channel_tolerance(self.config.pixel_tolerance)
-        .with_max_different_percent(self.config.max_diff_percentage)
-        .with_compare_alpha(self.config.compare_alpha)
-        .with_max_perceptual_distance(self.config.max_perceptual_distance)
-    });
-    let diff =
-      generate_diff_image(&actual, &expected, &diff_config).unwrap_or_else(|_| Self::placeholder_png());
-    if let Err(e) = fs::write(&paths.diff, diff) {
-      eprintln!("Failed to save diff image: {}", e);
+    if let Some(diff) = diff {
+      if let Err(e) = fs::write(&paths.diff, diff) {
+        eprintln!("Failed to save diff image: {}", e);
+      }
     }
   }
 
   fn load_expected_bytes(&self, metadata: &TestMetadata) -> Option<Vec<u8>> {
     let path = Self::get_expected_image_path(&self.config, metadata);
     fs::read(path).ok()
-  }
-
-  fn placeholder_png() -> Vec<u8> {
-    static EMPTY: OnceLock<Vec<u8>> = OnceLock::new();
-    EMPTY
-      .get_or_init(|| {
-        let image = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 0]));
-        let mut buffer = Vec::new();
-        let _ = PngEncoder::new(&mut buffer).write_image(
-          image.as_raw(),
-          image.width(),
-          image.height(),
-          ColorType::Rgba8.into(),
-        );
-        buffer
-      })
-      .clone()
   }
 
   fn escape_html(input: &str) -> String {

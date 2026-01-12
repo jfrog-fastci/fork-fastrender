@@ -93,12 +93,15 @@ mod wpt_runner_tests {
   use super::wpt::TestType;
   use super::wpt::WptRunner;
   use super::wpt::WptRunnerBuilder;
+  use image::codecs::png::PngEncoder;
+  use image::{ColorType, ImageEncoder, Rgba, RgbaImage};
   use serde_json::Value as JsonValue;
   use std::collections::HashMap;
   use std::path::Path;
   use std::path::PathBuf;
   use std::time::Duration;
   use tempfile::TempDir;
+  use walkdir::WalkDir;
 
   // =========================================================================
   // WptRunner Tests
@@ -254,22 +257,39 @@ mod wpt_runner_tests {
 
     std::fs::write(
       suite_dir.join("sample.html"),
-      "<!doctype html><html><body>ok</body></html>",
+      r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: rgb(0, 255, 0); }
+    </style>
+  </head>
+  <body></body>
+</html>"#,
     )
     .unwrap();
+    std::fs::write(suite_dir.join("sample.ini"), "viewport: 10x10\n").unwrap();
+
+    let expected_dir = suite_dir.join("expected");
+    write_solid_png(&expected_dir.join("sample.png"), 10, 10, [255, 0, 0, 255]);
+
     std::fs::write(
-      suite_dir.join("sample-ref.html"),
-      "<!doctype html><html><body>ok</body></html>",
+      expected_dir.join("README.txt"),
+      "Expected images live in this directory.",
     )
     .unwrap();
 
     let out_dir = temp.path().join("out");
-    let mut config = HarnessConfig::with_test_dir(&suite_dir);
+    let mut config = HarnessConfig::default();
+    config.test_dir = suite_dir.clone();
+    config.expected_dir = expected_dir;
     config.output_dir = out_dir.clone();
+    config.discovery_mode = DiscoveryMode::MetadataOnly;
 
     let mut runner = WptRunner::with_config(renderer, config);
     let results = runner.run_suite(&suite_dir);
     assert_eq!(results.len(), 1);
+    assert_eq!(results[0].status, TestStatus::Fail);
 
     let report_json_path = out_dir.join("report.json");
     assert!(report_json_path.exists());
@@ -282,7 +302,7 @@ mod wpt_runner_tests {
     assert!(report["suite"]["duration_ms"].as_u64().is_some());
 
     assert_eq!(report["summary"]["total"].as_u64(), Some(1));
-    assert_eq!(report["summary"]["pass"].as_u64(), Some(1));
+    assert_eq!(report["summary"]["fail"].as_u64(), Some(1));
 
     let tests = report["tests"].as_array().unwrap();
     assert_eq!(tests.len(), 1);
@@ -290,9 +310,9 @@ mod wpt_runner_tests {
 
     assert_eq!(test["id"].as_str(), Some("sample"));
     assert_eq!(test["path"].as_str(), Some("sample.html"));
-    assert_eq!(test["test_type"].as_str(), Some("reftest"));
-    assert_eq!(test["reference"].as_str(), Some("sample-ref.html"));
-    assert_eq!(test["status"].as_str(), Some("PASS"));
+    assert_eq!(test["test_type"].as_str(), Some("visual"));
+    assert!(test["reference"].is_null());
+    assert_eq!(test["status"].as_str(), Some("FAIL"));
 
     assert_eq!(
       test["artifacts"]["expected"].as_str(),
@@ -303,6 +323,10 @@ mod wpt_runner_tests {
       Some("sample/actual.png")
     );
     assert_eq!(test["artifacts"]["diff"].as_str(), Some("sample/diff.png"));
+
+    assert!(out_dir.join("sample").join("expected.png").exists());
+    assert!(out_dir.join("sample").join("actual.png").exists());
+    assert!(out_dir.join("sample").join("diff.png").exists());
   }
 
   #[test]
@@ -1056,5 +1080,108 @@ mod wpt_runner_tests {
     assert_eq!(format!("{}", AssertionResult::Pass), "PASS");
     assert!(format!("{}", AssertionResult::Fail("msg".to_string())).contains("FAIL"));
     assert!(format!("{}", AssertionResult::Error("msg".to_string())).contains("ERROR"));
+  }
+
+  fn write_solid_png(path: &Path, width: u32, height: u32, color: [u8; 4]) {
+    let image = RgbaImage::from_pixel(width, height, Rgba(color));
+    let mut buffer = Vec::new();
+    PngEncoder::new(&mut buffer)
+      .write_image(image.as_raw(), width, height, ColorType::Rgba8.into())
+      .unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, buffer).unwrap();
+  }
+
+  #[test]
+  fn wpt_report_writes_without_artifact_pngs_when_disabled() {
+    super::ensure_bundled_fonts();
+    let temp = TempDir::new().unwrap();
+    let suite_dir = temp.path();
+
+    std::fs::write(
+      suite_dir.join("crashtest.html"),
+      "<!doctype html><html><body>ok</body></html>",
+    )
+    .unwrap();
+
+    let output_dir = suite_dir.join("out");
+    let renderer = super::create_test_renderer();
+    let mut config = HarnessConfig::default();
+    config.test_dir = suite_dir.to_path_buf();
+    config.expected_dir = suite_dir.join("expected");
+    config.output_dir = output_dir.clone();
+    config.save_rendered = false;
+    config.save_diffs = false;
+    config.write_report = true;
+    config.discovery_mode = DiscoveryMode::MetadataOnly;
+
+    let mut runner = WptRunner::with_config(renderer, config);
+    let results = runner.run_suite(suite_dir);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].status, TestStatus::Pass);
+
+    assert!(output_dir.join("report.html").exists());
+
+    let mut saw_artifact_png = false;
+    for entry in WalkDir::new(&output_dir).into_iter().flatten() {
+      if entry.file_type().is_file() {
+        let name = entry.file_name().to_string_lossy();
+        if name == "actual.png" || name == "diff.png" {
+          saw_artifact_png = true;
+          break;
+        }
+      }
+    }
+    assert!(
+      !saw_artifact_png,
+      "expected no actual.png/diff.png artifacts, found some under {:?}",
+      output_dir
+    );
+  }
+
+  #[test]
+  fn wpt_writes_artifacts_for_failures_when_enabled() {
+    super::ensure_bundled_fonts();
+    let temp = TempDir::new().unwrap();
+    let suite_dir = temp.path();
+
+    std::fs::write(
+      suite_dir.join("test.html"),
+      r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: rgb(0, 255, 0); }
+    </style>
+  </head>
+  <body></body>
+</html>"#,
+    )
+    .unwrap();
+    std::fs::write(suite_dir.join("test.ini"), "viewport: 10x10\n").unwrap();
+
+    let expected_dir = suite_dir.join("expected");
+    write_solid_png(&expected_dir.join("test.png"), 10, 10, [255, 0, 0, 255]);
+
+    let output_dir = suite_dir.join("out");
+    let renderer = super::create_test_renderer();
+    let mut config = HarnessConfig::default();
+    config.test_dir = suite_dir.to_path_buf();
+    config.expected_dir = expected_dir;
+    config.output_dir = output_dir.clone();
+    config.save_rendered = true;
+    config.save_diffs = true;
+    config.write_report = true;
+    config.discovery_mode = DiscoveryMode::MetadataOnly;
+
+    let mut runner = WptRunner::with_config(renderer, config);
+    let results = runner.run_suite(suite_dir);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].status, TestStatus::Fail);
+
+    let base = output_dir.join("test");
+    assert!(base.join("expected.png").exists());
+    assert!(base.join("actual.png").exists());
+    assert!(base.join("diff.png").exists());
   }
 }
