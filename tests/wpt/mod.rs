@@ -18,7 +18,7 @@ pub(crate) fn init_rayon_for_wpt_tests() {
 }
 
 pub(crate) fn create_test_renderer() -> fastrender::FastRender {
-  crate::common::init_rayon_for_tests(1);
+  init_rayon_for_wpt_tests();
   let config = fastrender::FastRenderConfig::default()
     .with_font_sources(fastrender::FontConfig::bundled_only())
     .with_resource_policy(
