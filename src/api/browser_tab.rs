@@ -27,6 +27,7 @@ use crate::resource::ResourceFetcher;
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
 use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
+use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 use crate::web::dom::DocumentVisibilityState;
 use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 use crate::ui::{PointerButton, PointerModifiers};
@@ -5268,7 +5269,6 @@ impl BrowserTab {
       PointerButton::None | PointerButton::Other(_) => (-1i16, 0u16),
     };
     let mouse = MouseEvent {
-      detail: 1,
       client_x: pos_css.0 as f64,
       client_y: pos_css.1 as f64,
       button: dom_button,
@@ -5897,7 +5897,10 @@ mod tests {
   use tempfile::tempdir;
   use url::Url;
 
-  use crate::web::events::{AddEventListenerOptions, DomError, EventListenerInvoker, ListenerId};
+  use crate::web::events::{
+    AddEventListenerOptions, DomError, Event, EventInit, EventListenerInvoker, EventTargetId,
+    ListenerId,
+  };
   use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
   use base64::Engine;
   use sha2::{Digest, Sha256};
