@@ -30,6 +30,7 @@ section in sync with `ls tests/*.rs`.
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
 | `tests/allocation_failure.rs` | special | keep | Contains `#[global_allocator]` (via `tests/allocation_failure/mod.rs`); must remain separate. | DONE |
+| `tests/image_integration_tests.rs` | delete | delete | Compatibility shim so `cargo test --test image_integration_tests` keeps working; suite also runs via `tests/integration.rs::image_integration`. | TODO |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
 ### Completed (top-level crate removed)
 
@@ -112,7 +113,7 @@ migrations.
 | `tests/bundled/` | bundled font fixture tests | `tests/integration.rs::bundled` | Integration-style fixture assertions. |
 | `tests/common/` | shared helpers for integration tests | keep (not a binary) | Replaces the old `tests/test_support/**` helpers. |
 | `tests/css_integration/` | css loader/import/url rewrite tests | `src/css/loader.rs` (+ friends) | Despite name, these are mostly unit tests. |
-| `tests/fuzz_corpus/` | checked-in corpus inputs for smoke testing | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Exercised by `tests/tooling/fuzz_corpus_smoke.rs`. |
+| `tests/fuzz_corpus/` | checked-in corpus inputs for smoke testing | `tests/integration.rs::tooling::fuzz_corpus_smoke` | Exercised by `tests/tooling/fuzz_corpus_smoke.rs` (via `tests/integration.rs`). |
 | `tests/dom_integration/` | DOM parsing/query integration tests | `src/dom/**` + `src/dom2/**` | Unit tests. |
 | `tests/fixtures/` | HTML + golden-image fixtures | `tests/integration.rs::fixtures` | Stays in `tests/` (data-driven integration). |
 | `tests/guards/` | repo invariants / consolidation guards | `tests/integration.rs::guards` | Integration-style checks for repo structure. |
