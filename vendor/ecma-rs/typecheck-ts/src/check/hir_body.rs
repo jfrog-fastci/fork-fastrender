@@ -3449,17 +3449,24 @@ impl<'a> Checker<'a> {
         );
 
         let inner_ty = if let AstExpr::LitStr(str_lit) = import.stx.module.stx.as_ref() {
-          self
-            .type_resolver
-            .as_ref()
-            .and_then(|resolver| resolver.resolve_import_typeof(str_lit.stx.value.as_str(), None))
-            .map(|def| {
-              self.store.canon(self.store.intern_type(TypeKind::Ref {
+          if let Some(resolver) = self.type_resolver.as_ref() {
+            let specifier = str_lit.stx.value.as_str();
+            match resolver.resolve_import_typeof(specifier, None) {
+              Some(def) => self.store.canon(self.store.intern_type(TypeKind::Ref {
                 def,
                 args: Vec::new(),
-              }))
-            })
-            .unwrap_or(prim.unknown)
+              })),
+              None => {
+                self.diagnostics.push(codes::UNRESOLVED_MODULE.error(
+                  format!("unresolved module specifier \"{specifier}\""),
+                  Span::new(self.file, loc_to_range(self.file, import.stx.module.loc)),
+                ));
+                prim.unknown
+              }
+            }
+          } else {
+            prim.unknown
+          }
         } else {
           prim.unknown
         };

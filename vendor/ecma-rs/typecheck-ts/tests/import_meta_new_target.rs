@@ -50,22 +50,39 @@ export const x = import(missing);
 
 #[test]
 fn import_expr_returns_promise_unknown_when_promise_exists() {
-  let program = program_with_source(
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+
+  let mut host = MemoryHost::with_options(options);
+  host.add_lib(common::core_globals_lib());
+  host.add_lib(lib_file(
+    "promise.d.ts",
     r#"
+interface Promise<out T> {}
+declare var Promise: any;
+"#,
+  ));
+
+  let entry = FileKey::new("entry.ts");
+  host.insert(
+    entry.clone(),
+    Arc::from(
+      r#"
 declare function takesPromise(x: Promise<unknown>): void;
 
 export function f() {
   takesPromise(import("x"));
 }
-"#,
-    vec![lib_file(
-      "promise.d.ts",
-      r#"
-interface Promise<T> {}
-declare var Promise: any;
-"#,
-    )],
+"#
+      .to_string(),
+    ),
   );
+
+  let dep = FileKey::new("x.ts");
+  host.insert(dep.clone(), "export {};\n");
+  host.link(entry.clone(), "x", dep);
+
+  let program = Program::new(host, vec![entry]);
 
   let diagnostics = program.check();
   assert!(
@@ -116,4 +133,3 @@ export function f() {
     "unexpected diagnostics when new.target is passed to Function: {diagnostics:?}"
   );
 }
-
