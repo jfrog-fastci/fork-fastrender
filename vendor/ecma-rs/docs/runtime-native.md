@@ -296,6 +296,10 @@ pub fn rt_write_barrier_range(obj: *mut u8, start: *mut u8, len_bytes: usize);
 pub fn rt_root_push(slot: GcHandle);
 pub fn rt_root_pop(slot: GcHandle);
 
+// Global/static roots (always-scanned root slots for module globals, etc.)
+pub fn rt_global_root_register(slot: *mut usize);
+pub fn rt_global_root_unregister(slot: *mut usize);
+
 pub fn rt_gc_collect();
 
 // Strings
@@ -362,6 +366,8 @@ around `MayGC` calls (the runtime may safepoint/collect and relocate nursery obj
 | `rt_gc_safepoint_relocate_h` | MayGC | Handle-based helper: safepoint + reload `*slot` for moving-GC safe runtime calls. |
 | `rt_root_push` | NoGC | Register an addressable root slot on the current thread's shadow stack. |
 | `rt_root_pop` | NoGC | Pop a root slot (must be called in strict LIFO order). |
+| `rt_global_root_register` | MayGC | Register a global/static root slot (may block on GC-aware locks; treat as statepoint). |
+| `rt_global_root_unregister` | MayGC | Unregister a global/static root slot (may block on GC-aware locks; treat as statepoint). |
 | `rt_keep_alive_gc_ref` | NoGC | Extends liveness of a GC reference until a specific program point (prevents UAF for derived raw pointers like backing-store `uint8_t*`). |
 | `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
 | `rt_write_barrier_range` | NoGC | Conservative post-bulk-write barrier; must not allocate or safepoint. |
