@@ -9969,6 +9969,7 @@ pub fn array_prototype_join(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
@@ -10026,6 +10027,50 @@ pub fn array_prototype_join(
 
   let s = scope.alloc_string_from_u16_vec(out)?;
   Ok(Value::String(s))
+}
+
+/// `Array.prototype.toString` (minimal).
+///
+/// Spec: https://tc39.es/ecma262/#sec-array.prototype.tostring
+pub fn array_prototype_to_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-array.prototype.tostring
+  //
+  // 1. Let array be ? ToObject(this value).
+  // 2. Let func be ? Get(array, "join").
+  // 3. If IsCallable(func) is false, set func to %Object.prototype.toString%.
+  // 4. Return ? Call(func, array).
+  //
+  // Note: we don't currently store a direct handle to the intrinsic `%Object.prototype.toString%`
+  // function object, so we call the builtin implementation directly when `join` is not callable.
+  let mut scope = scope.reborrow();
+
+  let array = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(array))?;
+
+  let join_key = string_key(&mut scope, "join")?;
+  let func = scope.ordinary_get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    array,
+    join_key,
+    Value::Object(array),
+  )?;
+  scope.push_root(func)?;
+
+  if scope.heap().is_callable(func)? {
+    vm.call_with_host_and_hooks(host, &mut scope, hooks, func, Value::Object(array), &[])
+  } else {
+    object_prototype_to_string(vm, &mut scope, host, hooks, callee, Value::Object(array), &[])
+  }
 }
 
 /// `Array.prototype.slice` (minimal).

@@ -6189,6 +6189,10 @@ impl<'a> Evaluator<'a> {
         ObjMemberType::Valued { key, val } => {
           let key_loc_start = match key {
             ClassOrObjKey::Direct(direct) => direct.loc.start_u32(),
+            // `ClassOrObjKey::Computed` stores the loc of the *expression inside* the brackets, not
+            // the `[` token itself. When we later slice source text for lazy method parsing we need
+            // to include the full member prefix (e.g. `[` / `get [` / `set [`), otherwise the
+            // reparsed wrapper `({ <snippet> })` becomes invalid (`Symbol.toPrimitive]...`).
             ClassOrObjKey::Computed(_) => member_loc_start,
           };
           let key = match key {
@@ -8169,6 +8173,29 @@ impl<'a> Evaluator<'a> {
       return Ok(Some(ord == Ordering::Less));
     }
 
+    // 2.b. BigInt/string => parse the string as a BigInt (StringToBigInt).
+    //
+    // This matches test262 semantics like:
+    // - `'9007199254740993' > 9007199254740992n` (string must not round via Number)
+    // - `'0.' < 1n` (invalid BigInt parse => undefined => false)
+    match (px, py) {
+      (Value::BigInt(a), Value::String(bs)) => {
+        let mut tick = || self.tick();
+        let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
+          return Ok(None);
+        };
+        return Ok(Some(a < bi));
+      }
+      (Value::String(as_), Value::BigInt(b)) => {
+        let mut tick = || self.tick();
+        let Some(ai) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
+          return Ok(None);
+        };
+        return Ok(Some(ai < b));
+      }
+      _ => {}
+    }
+
     // 3. Otherwise => ToNumeric then numeric comparison.
     let nx = self.to_numeric(&mut scope, px)?;
     let ny = self.to_numeric(&mut scope, py)?;
@@ -8345,7 +8372,8 @@ fn string_to_bigint(
 
   let trimmed = &units[start..end];
   if trimmed.is_empty() {
-    return Ok(None);
+    // ECMA-262 `StringToBigInt` parses the empty string (after trimming) as `0n`.
+    return Ok(Some(JsBigInt::zero()));
   }
 
   let mut negative = false;

@@ -273,3 +273,62 @@ fn tonumber_rejects_signed_radix_prefixes() {
   let value = rt.exec_script(r#"+'-0o10' !== +'-0o10'"#).unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn plus_operator_concatenates_objects_when_toprimitive_returns_string() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      "(() => {\n\
+        const o = {\n\
+          valueOf() { return {}; },\n\
+          toString() { return 'x'; },\n\
+        };\n\
+        return o + 1 === 'x1';\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_tostring_uses_join_for_common_coercions() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"(() => new Array(2, 4, 8) + "" === "2,4,8")()"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn bigint_and_string_relational_comparisons_use_stringtobigint() {
+  let mut rt = new_runtime();
+
+  // Empty string (after trimming) parses as 0n.
+  let value = rt.exec_script(r#"0n == """#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  // String comparisons must not round through Number for BigInt relational operations.
+  let value = rt
+    .exec_script(r#""9007199254740993" > 9007199254740992n"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  // Invalid BigInt parses yield "undefined" from Abstract Relational Comparison => false.
+  let value = rt.exec_script(r#""0." < 1n"#).unwrap();
+  assert_eq!(value, Value::Bool(false));
+}
+
+#[test]
+fn symbol_to_primitive_computed_method_is_parsed_and_receives_default_hint() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      "(() => {\n\
+        const o = { [Symbol.toPrimitive](hint) { return hint; } };\n\
+        return o == 'default';\n\
+      })()",
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

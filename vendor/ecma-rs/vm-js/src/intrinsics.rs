@@ -822,6 +822,7 @@ impl Intrinsics {
     let array_prototype_reverse = vm.register_native_call(builtins::array_prototype_reverse)?;
     let array_prototype_sort = vm.register_native_call(builtins::array_prototype_sort)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
+    let array_prototype_to_string = vm.register_native_call(builtins::array_prototype_to_string)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
     let array_prototype_push = vm.register_native_call(builtins::array_prototype_push)?;
     let array_prototype_pop = vm.register_native_call(builtins::array_prototype_pop)?;
@@ -1917,6 +1918,21 @@ impl Intrinsics {
           array_prototype,
           sort_key,
           data_desc(Value::Object(sort_fn), true, false, true),
+        )?;
+
+        let to_string_s = scope.alloc_string("toString")?;
+        scope.push_root(Value::String(to_string_s))?;
+        let to_string_key = PropertyKey::from_string(to_string_s);
+        let to_string_fn =
+          scope.alloc_native_function(array_prototype_to_string, None, to_string_s, 0)?;
+        scope.push_root(Value::Object(to_string_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(to_string_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          to_string_key,
+          data_desc(Value::Object(to_string_fn), true, false, true),
         )?;
 
         let join_s = scope.alloc_string("join")?;

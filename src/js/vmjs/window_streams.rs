@@ -413,13 +413,11 @@ fn reader_read_native(
         "ReadableStreamDefaultReader has no stream (lock released)".to_string(),
       ));
     };
-
-    let stream_state = state
-      .streams
-      .get_mut(&stream_weak)
-      .ok_or(VmError::TypeError(
-        "ReadableStreamDefaultReader has an invalid stream",
-      ))?;
+    let Some(stream_state) = state.streams.get_mut(&stream_weak) else {
+      return Ok(ReadOutcome::Error(
+        "ReadableStreamDefaultReader has an invalid stream".to_string(),
+      ));
+    };
 
     match stream_state.state {
       StreamLifecycleState::Readable => {}
@@ -561,7 +559,6 @@ fn reader_release_lock_native(
     let Some(stream_weak) = reader_state.stream.take() else {
       return Ok(Value::Undefined);
     };
-
     if let Some(stream_state) = state.streams.get_mut(&stream_weak) {
       stream_state.locked = false;
     }

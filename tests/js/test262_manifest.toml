@@ -168,6 +168,16 @@ glob = "built-ins/Math/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
 
+[[expectations]]
+glob = "built-ins/Function/**"
+status = "xfail"
+reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+
+[[expectations]]
+id = "staging/sm/Function/15.3.4.3-01.js"
+status = "xfail"
+reason = "vm-js: staging tests depend on more complete Function.prototype.apply semantics; tracked via curated test262 progress."
+
 # --- Known-passing tests (keep regressions unexpected) ---
 [[expectations]]
 id = "language/expressions/addition/S11.6.1_A1.js"
@@ -378,6 +388,10 @@ id = "language/expressions/concatenation/S9.8_A4_T2.js"
 status = "pass"
 
 [[expectations]]
+id = "language/expressions/concatenation/S9.8_A5_T2.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/division/S11.5.2_A2.1_T1.js"
 status = "pass"
 
@@ -470,6 +484,10 @@ id = "language/expressions/does-not-equals/S11.9.2_A6.2_T1.js"
 status = "pass"
 
 [[expectations]]
+id = "language/expressions/does-not-equals/bigint-and-string.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/equals/S11.9.1_A2.1_T1.js"
 status = "pass"
 
@@ -518,6 +536,14 @@ id = "language/expressions/equals/S11.9.1_A6.2_T1.js"
 status = "pass"
 
 [[expectations]]
+id = "language/expressions/equals/bigint-and-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/to-prim-hint.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/greater-than-or-equal/S11.8.4_A2.1_T1.js"
 status = "pass"
 
@@ -543,6 +569,10 @@ status = "pass"
 
 [[expectations]]
 id = "language/expressions/greater-than-or-equal/S11.8.4_A4.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than-or-equal/bigint-and-incomparable-string.js"
 status = "pass"
 
 [[expectations]]
@@ -575,6 +605,14 @@ status = "pass"
 
 [[expectations]]
 id = "language/expressions/greater-than/S11.8.2_A4.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/bigint-and-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/bigint-and-incomparable-string.js"
 status = "pass"
 
 [[expectations]]
@@ -618,6 +656,14 @@ id = "language/expressions/less-than-or-equal/S11.8.3_A4.4.js"
 status = "pass"
 
 [[expectations]]
+id = "language/expressions/less-than-or-equal/bigint-and-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than-or-equal/bigint-and-incomparable-string.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/less-than/S11.8.1_A2.1_T1.js"
 status = "pass"
 
@@ -647,6 +693,10 @@ status = "pass"
 
 [[expectations]]
 id = "language/expressions/less-than/S11.8.1_A4.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/bigint-and-incomparable-string.js"
 status = "pass"
 
 [[expectations]]
