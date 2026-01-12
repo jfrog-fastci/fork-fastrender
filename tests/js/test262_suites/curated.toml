@@ -219,4 +219,7 @@ exclude = [
   "language/statements/labeled/value-await-module*.js",
   "language/statements/for-of/head-await-using-bound-names-in-stmt.js",
   "language/statements/for-of/head-await-using-fresh-binding-per-iteration.js",
+
+  # Requires ResizableArrayBuffer + class inheritance.
+  "built-ins/Function/prototype/apply/resizable-buffer.js",
 ]

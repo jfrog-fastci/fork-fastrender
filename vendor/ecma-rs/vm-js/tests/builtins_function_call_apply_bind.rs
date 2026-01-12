@@ -127,6 +127,8 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
     let call_id = vm.register_native_call(native_add)?;
     let add_name = scope.alloc_string("add")?;
     let add = scope.alloc_native_function(call_id, None, add_name, 2)?;
+    // Root the test function across subsequent allocations/GC.
+    scope.push_root(Value::Object(add))?;
 
     // add.call(undefined, 1, 2) === 3
     let result = vm.call_without_host(
@@ -155,29 +157,40 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
     )?;
     assert_eq!(result, Value::Number(3.0));
 
-    // apply should accept any arraylike arguments (primitives are boxed via ToObject).
+    // apply must throw TypeError if argArray is not an Object.
     let args_len_id = vm.register_native_call(native_args_len)?;
     let args_len_name = scope.alloc_string("args_len")?;
     let args_len = scope.alloc_native_function(args_len_id, None, args_len_name, 0)?;
+    scope.push_root(Value::Object(args_len))?;
 
-    // args_len.apply(undefined, "ab") === 2 (String object is array-like)
+    // args_len.apply(undefined, "ab") throws TypeError
     let s = scope.alloc_string("ab")?;
-    let result = vm.call_without_host(
+    let err = vm
+      .call_without_host(
       &mut scope,
       apply_builtin,
       Value::Object(args_len),
       &[Value::Undefined, Value::String(s)],
-    )?;
-    assert_eq!(result, Value::Number(2.0));
+    )
+      .unwrap_err();
+    assert!(
+      matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }),
+      "expected apply to throw, got {err:?}"
+    );
 
-    // args_len.apply(undefined, 1) === 0 (Number object has no length)
-    let result = vm.call_without_host(
-      &mut scope,
-      apply_builtin,
-      Value::Object(args_len),
-      &[Value::Undefined, Value::Number(1.0)],
-    )?;
-    assert_eq!(result, Value::Number(0.0));
+    // args_len.apply(undefined, 1) throws TypeError
+    let err = vm
+      .call_without_host(
+        &mut scope,
+        apply_builtin,
+        Value::Object(args_len),
+        &[Value::Undefined, Value::Number(1.0)],
+      )
+      .unwrap_err();
+    assert!(
+      matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }),
+      "expected apply to throw, got {err:?}"
+    );
 
     // apply must perform ordinary Get (accessor-supported) for length and elements.
     let args_with_accessors = scope.alloc_object()?;
@@ -192,6 +205,8 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
     let ret_two_name = scope.alloc_string("ret_two")?;
     let ret_one = scope.alloc_native_function(ret_one_id, None, ret_one_name, 0)?;
     let ret_two = scope.alloc_native_function(ret_two_id, None, ret_two_name, 0)?;
+    // Root accessor getter functions across subsequent allocations.
+    scope.push_roots(&[Value::Object(ret_one), Value::Object(ret_two)])?;
 
     scope.define_property(
       args_with_accessors,
@@ -272,6 +287,7 @@ fn function_prototype_call_apply_bind() -> Result<(), VmError> {
     let get_x_id = vm.register_native_call(native_get_x)?;
     let get_x_name = scope.alloc_string("get_x")?;
     let get_x = scope.alloc_native_function(get_x_id, None, get_x_name, 0)?;
+    scope.push_root(Value::Object(get_x))?;
 
     let bound_this = scope.alloc_object()?;
     scope.push_root(Value::Object(bound_this))?;

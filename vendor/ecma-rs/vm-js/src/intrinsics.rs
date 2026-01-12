@@ -2184,12 +2184,30 @@ impl Intrinsics {
         scope
           .heap_mut()
           .object_set_prototype(func, Some(function_prototype))?;
-      scope.define_property(
-        string_prototype,
-        key,
-        data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.valueOf
+      {
+        let value_of_s = scope.alloc_string("valueOf")?;
+        scope.push_root(Value::String(value_of_s))?;
+        let key = PropertyKey::from_string(value_of_s);
+        let func =
+          scope.alloc_native_function(string_prototype_value_of, None, value_of_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
 
       // String.prototype.valueOf
       {

@@ -8000,7 +8000,9 @@ pub fn function_prototype_apply(
   let mut scope = scope.reborrow();
   scope.push_roots(&[this, this_arg, arg_array])?;
 
-  let arg_obj = scope.to_object(vm, host, hooks, arg_array)?;
+  // Per spec, `argArray` is passed directly to `CreateListFromArrayLike` (which requires an
+  // Object). Primitives must throw TypeError.
+  let arg_obj = require_object(arg_array)?;
   let list = crate::spec_ops::create_list_from_array_like_with_host_and_hooks(
     vm,
     &mut scope,
@@ -12835,7 +12837,6 @@ pub fn string_prototype_to_primitive(
   )?;
   Ok(Value::String(s))
 }
-
 fn this_string_value(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -12855,10 +12856,7 @@ fn this_string_value(
         }
       };
       let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope
-        .heap()
-        .object_get_own_data_property_value(obj, &marker_key)?
-      {
+      match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
         Some(Value::String(s)) => Ok(s),
         _ => Err(VmError::TypeError(method)),
       }

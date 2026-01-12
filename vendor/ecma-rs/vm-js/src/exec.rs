@@ -14,8 +14,7 @@ use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{ClassMember, ClassOrObjKey, ClassOrObjVal, ObjMemberType};
 use parse_js::ast::expr::lit::{
   LitArrElem, LitArrExpr, LitBigIntExpr, LitBoolExpr, LitNumExpr, LitObjExpr, LitRegexExpr,
-  LitStrExpr,
-  LitTemplateExpr, LitTemplatePart,
+  LitStrExpr, LitTemplateExpr, LitTemplatePart,
 };
 use parse_js::ast::expr::pat::{ArrPat, IdPat, ObjPat, Pat};
 use parse_js::ast::expr::{
@@ -7010,8 +7009,15 @@ impl<'a> Evaluator<'a> {
       }
       OperatorName::New => {
         // `parse-js` represents `new f()` as a `UnaryExpr` whose argument is a `CallExpr`.
+        //
+        // Important: `new (f())` must *not* use `f` as the constructor. It must first evaluate the
+        // parenthesized call expression and then construct the *result* with no arguments.
+        //
+        // `parse-js` stores parentheses via the `ParenthesizedExpr` assoc marker, so treat
+        // parenthesized call expressions as the `new (expr)` form (no argument list for `new`).
+        let is_parenthesized = expr.argument.assoc.get::<ParenthesizedExpr>().is_some();
         let (callee_expr, call_args) = match &*expr.argument.stx {
-          Expr::Call(call) => (&call.stx.callee, Some(&call.stx.arguments)),
+          Expr::Call(call) if !is_parenthesized => (&call.stx.callee, Some(&call.stx.arguments)),
           _ => (&expr.argument, None),
         };
 

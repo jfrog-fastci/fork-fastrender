@@ -3198,7 +3198,18 @@ impl Vm {
           Some(global) => Value::Object(global),
           None => this,
         },
-        other => other,
+        Value::Object(_) => this,
+        other => {
+          // Sloppy-mode `this` binding: primitives are boxed via `ToObject`.
+          //
+          // This matches ECMA-262 `ThisMode::Global` semantics (ES5 `thisArg` conversion):
+          // - `null`/`undefined` become the Realm's global object
+          // - primitives become their wrapper objects (Number/String/Boolean/Symbol/BigInt)
+          let boxed = scope.to_object(self, host, hooks, other)?;
+          let boxed = Value::Object(boxed);
+          scope.push_root(boxed)?;
+          boxed
+        }
       },
     };
 
@@ -3312,7 +3323,14 @@ impl Vm {
       ThisMode::Strict => this,
       ThisMode::Global => match this {
         Value::Undefined | Value::Null => Value::Object(global_object),
-        other => other,
+        Value::Object(_) => this,
+        other => {
+          // Sloppy-mode `this` binding: primitives are boxed via `ToObject`.
+          let boxed = scope.to_object(self, host, hooks, other)?;
+          let boxed = Value::Object(boxed);
+          scope.push_root(boxed)?;
+          boxed
+        }
       },
     };
 
