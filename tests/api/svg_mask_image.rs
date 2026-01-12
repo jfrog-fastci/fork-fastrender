@@ -204,4 +204,3 @@ fn mask_image_url_fragment_resolves_use_targets_outside_defs() {
   assert_eq!(pixel(&pixmap, 10, 10), [255, 0, 0, 255]);
   assert_eq!(pixel(&pixmap, 40, 10), [255, 255, 255, 255]);
 }
-
