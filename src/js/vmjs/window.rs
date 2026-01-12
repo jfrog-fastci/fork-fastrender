@@ -402,18 +402,19 @@ impl WindowHost {
 
       let (vm_host, window) = host_state.vm_host_and_window_realm()?;
       let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
-      let vm_result = {
-        let mut scope = heap.scope();
-        crate::js::window_env::process_match_media_mql_update_for_env(
-          vm,
-          &mut scope,
-          vm_host,
-          &mut hooks,
-          env_id,
-        )
+      let result: Result<()> = {
+        let vm_result = {
+          let mut scope = heap.scope();
+          crate::js::window_env::process_match_media_mql_update_for_env(
+            vm,
+            &mut scope,
+            vm_host,
+            &mut hooks,
+            env_id,
+          )
+        };
+        vm_result.map_err(|err| vm_error_format::vm_error_to_error(heap, err))
       };
-      let result: Result<()> =
-        vm_result.map_err(|err| vm_error_format::vm_error_to_error(heap, err));
 
       // Ensure any queued Promise jobs are properly discarded even if dispatch fails.
       if let Some(err) = hooks.finish(heap) {

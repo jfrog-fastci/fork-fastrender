@@ -3905,6 +3905,36 @@ fn window_scroll_by_native(
   Ok(Value::Undefined)
 }
 
+fn window_scroll_x_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    return Ok(Value::Number(document.viewport_scroll_offset().x as f64));
+  }
+  Ok(Value::Number(0.0))
+}
+
+fn window_scroll_y_get_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+    return Ok(Value::Number(document.viewport_scroll_offset().y as f64));
+  }
+  Ok(Value::Number(0.0))
+}
+
 fn serialized_origin_for_document_url(url: &str) -> String {
   let Ok(url) = Url::parse(url) else {
     return "null".to_string();
