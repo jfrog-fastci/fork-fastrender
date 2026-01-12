@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use vm_js::{
   GcObject, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const SLOT_ENV_ID: usize = 0;
@@ -55,6 +55,19 @@ const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
 // Hidden per-instance properties for stream wrappers.
 const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 const RESPONSE_BODY_STREAM_KEY: &str = "__fastrender_response_body_stream";
+
+// Hidden per-stream properties for external (user-provided) ReadableStream bodies.
+//
+// Note: Fetch's `bodyUsed` is derived from the ReadableStream disturbed state, which becomes true
+// after the first read/cancel. Since VM-JS ReadableStreams do not currently expose disturbed, track
+// it on the stream object itself (so multiple Requests/Responses sharing the same stream observe
+// the same `bodyUsed` behavior).
+const BODY_STREAM_USED_KEY: &str = "__fastrender_body_stream_used";
+const BODY_STREAM_ORIG_GET_READER_KEY: &str = "__fastrender_body_stream_orig_get_reader";
+const BODY_STREAM_ORIG_CANCEL_KEY: &str = "__fastrender_body_stream_orig_cancel";
+const BODY_STREAM_READER_STREAM_KEY: &str = "__fastrender_body_stream_reader_stream";
+const BODY_STREAM_READER_ORIG_READ_KEY: &str = "__fastrender_body_stream_reader_orig_read";
+const BODY_STREAM_READER_ORIG_CANCEL_KEY: &str = "__fastrender_body_stream_reader_orig_cancel";
 
 // Internal helper keys for Promise capability construction via `new Promise(executor)`.
 const PROMISE_CAP_RESOLVE_KEY: &str = "__fastrender_promise_cap_resolve";
@@ -106,9 +119,35 @@ impl WindowFetchEnv {
   }
 }
 
+enum StreamConsumeKind {
+  Text,
+  ArrayBuffer,
+  Json,
+  Blob { blob_type: String },
+  FormData { content_type: Option<String> },
+}
+
+struct StreamConsumeState {
+  stream_root: RootId,
+  reader_root: RootId,
+  resolve_root: RootId,
+  reject_root: RootId,
+  on_fulfilled_root: RootId,
+  on_rejected_root: RootId,
+  bytes: Vec<u8>,
+  max_bytes: usize,
+  kind: StreamConsumeKind,
+}
+
 struct EnvState {
   env: WindowFetchEnv,
   promise_executor_call: NativeFunctionId,
+  body_stream_get_reader_wrapper_call: NativeFunctionId,
+  body_stream_cancel_wrapper_call: NativeFunctionId,
+  body_stream_reader_read_wrapper_call: NativeFunctionId,
+  body_stream_reader_cancel_wrapper_call: NativeFunctionId,
+  stream_consume_fulfilled_call: NativeFunctionId,
+  stream_consume_rejected_call: NativeFunctionId,
   next_id: u64,
   multipart_boundary_counter: u64,
   owned_headers: HashMap<u64, CoreHeaders>,
@@ -121,6 +160,7 @@ struct EnvState {
   request_wrappers: HashMap<u64, RequestWrapperState>,
   response_wrappers: HashMap<u64, ResponseWrapperState>,
   headers_iterators_wrappers: HashMap<u64, WeakGcObject>,
+  stream_consumptions: HashMap<u64, StreamConsumeState>,
   last_gc_runs: u64,
 }
 
@@ -142,10 +182,26 @@ struct ResponseWrapperState {
 }
 
 impl EnvState {
-  fn new(env: WindowFetchEnv, promise_executor_call: NativeFunctionId, last_gc_runs: u64) -> Self {
+  fn new(
+    env: WindowFetchEnv,
+    promise_executor_call: NativeFunctionId,
+    body_stream_get_reader_wrapper_call: NativeFunctionId,
+    body_stream_cancel_wrapper_call: NativeFunctionId,
+    body_stream_reader_read_wrapper_call: NativeFunctionId,
+    body_stream_reader_cancel_wrapper_call: NativeFunctionId,
+    stream_consume_fulfilled_call: NativeFunctionId,
+    stream_consume_rejected_call: NativeFunctionId,
+    last_gc_runs: u64,
+  ) -> Self {
     Self {
       env,
       promise_executor_call,
+      body_stream_get_reader_wrapper_call,
+      body_stream_cancel_wrapper_call,
+      body_stream_reader_read_wrapper_call,
+      body_stream_reader_cancel_wrapper_call,
+      stream_consume_fulfilled_call,
+      stream_consume_rejected_call,
       next_id: 1,
       multipart_boundary_counter: 1,
       owned_headers: HashMap::new(),
@@ -158,6 +214,7 @@ impl EnvState {
       request_wrappers: HashMap::new(),
       response_wrappers: HashMap::new(),
       headers_iterators_wrappers: HashMap::new(),
+      stream_consumptions: HashMap::new(),
       last_gc_runs,
     }
   }
@@ -510,8 +567,8 @@ fn set_data_prop(
 fn request_wrapper_cached_body_stream_is_locked(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _host_hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   request: GcObject,
 ) -> Result<bool, VmError> {
   // Task 85 stores the `Request.body` stream on the instance (so future reads return the same
@@ -523,18 +580,14 @@ fn request_wrapper_cached_body_stream_is_locked(
   let Value::Object(body_stream_obj) = body_stream else {
     return Ok(false);
   };
-  Ok(window_streams::readable_stream_is_locked(
-    vm,
-    scope.heap(),
-    body_stream_obj,
-  ))
+  readable_stream_is_locked(vm, &mut scope, host, host_hooks, body_stream_obj)
 }
 
 fn response_wrapper_cached_body_stream_is_locked(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _host_hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   response: GcObject,
 ) -> Result<bool, VmError> {
   // Like `Request.body`, `Response.body` caches the returned stream object on the instance.
@@ -546,24 +599,958 @@ fn response_wrapper_cached_body_stream_is_locked(
   let Value::Object(body_stream_obj) = body_stream else {
     return Ok(false);
   };
-  Ok(window_streams::readable_stream_is_locked(
-    vm,
-    scope.heap(),
-    body_stream_obj,
+  readable_stream_is_locked(vm, &mut scope, host, host_hooks, body_stream_obj)
+}
+
+fn body_stream_is_used(scope: &mut Scope<'_>, stream: GcObject) -> Result<bool, VmError> {
+  Ok(matches!(
+    get_data_prop(scope, stream, BODY_STREAM_USED_KEY)?,
+    Value::Bool(true)
   ))
 }
 
-fn request_body_stream_locked(vm: &Vm, env_id: u64, request_id: u64, heap: &Heap) -> Result<bool, VmError> {
-  with_env_state(env_id, heap, |state| {
-    let Some(stream) = state
-      .request_body_stream_wrappers
-      .get(&request_id)
-      .and_then(|weak| weak.upgrade(heap))
-    else {
-      return Ok(false);
+fn body_stream_set_used(scope: &mut Scope<'_>, stream: GcObject, used: bool) -> Result<(), VmError> {
+  set_data_prop(scope, stream, BODY_STREAM_USED_KEY, Value::Bool(used), /* writable */ true)
+}
+
+fn is_readable_stream_like_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+) -> Result<bool, VmError> {
+  if window_streams::is_readable_stream_object(vm, scope.heap(), obj) {
+    return Ok(true);
+  }
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let get_reader_key = alloc_key(&mut scope, "getReader")?;
+  let get_reader = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, obj, get_reader_key)?;
+  if !scope.heap().is_callable(get_reader).unwrap_or(false) {
+    return Ok(false);
+  }
+
+  let cancel_key = alloc_key(&mut scope, "cancel")?;
+  let cancel = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, obj, cancel_key)?;
+  if !scope.heap().is_callable(cancel).unwrap_or(false) {
+    return Ok(false);
+  }
+
+  Ok(true)
+}
+
+fn readable_stream_is_locked(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  stream: GcObject,
+) -> Result<bool, VmError> {
+  // `window_streams::readable_stream_is_locked` only works for streams created by
+  // `crate::js::window_streams`. For user-created streams, fall back to reading the `.locked`
+  // getter.
+  if window_streams::is_readable_stream_object(vm, scope.heap(), stream) {
+    return Ok(window_streams::readable_stream_is_locked(vm, scope.heap(), stream));
+  }
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(stream))?;
+
+  let locked_key = alloc_key(&mut scope, "locked")?;
+  let locked_val = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, stream, locked_key)?;
+  Ok(scope.heap().to_boolean(locked_val)?)
+}
+
+fn ensure_body_stream_wrappers_installed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  env_id: u64,
+  stream: GcObject,
+) -> Result<(), VmError> {
+  // Initialize the used flag if absent.
+  if matches!(
+    get_data_prop(scope, stream, BODY_STREAM_USED_KEY)?,
+    Value::Undefined
+  ) {
+    body_stream_set_used(scope, stream, false)?;
+  }
+
+  let already_wrapped = !matches!(
+    get_data_prop(scope, stream, BODY_STREAM_ORIG_GET_READER_KEY)?,
+    Value::Undefined
+  );
+  if already_wrapped {
+    return Ok(());
+  }
+
+  // Load original methods (from the prototype) and replace with wrappers that mark disturbed state.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(stream))?;
+
+  let get_reader_key = alloc_key(&mut scope, "getReader")?;
+  let get_reader = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, stream, get_reader_key)?;
+  if !scope.heap().is_callable(get_reader).unwrap_or(false) {
+    return Err(VmError::TypeError("ReadableStream.getReader is not callable"));
+  }
+  set_data_prop(&mut scope, stream, BODY_STREAM_ORIG_GET_READER_KEY, get_reader, false)?;
+
+  let cancel_key = alloc_key(&mut scope, "cancel")?;
+  let cancel = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, stream, cancel_key)?;
+  if !scope.heap().is_callable(cancel).unwrap_or(false) {
+    return Err(VmError::TypeError("ReadableStream.cancel is not callable"));
+  }
+  set_data_prop(&mut scope, stream, BODY_STREAM_ORIG_CANCEL_KEY, cancel, false)?;
+
+  let (
+    get_reader_call,
+    cancel_call,
+  ) = with_env_state(env_id, scope.heap(), |state| {
+    Ok((
+      state.body_stream_get_reader_wrapper_call,
+      state.body_stream_cancel_wrapper_call,
+    ))
+  })?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let func_proto = intr.function_prototype();
+
+  let get_reader_name = scope.alloc_string("getReader")?;
+  scope.push_root(Value::String(get_reader_name))?;
+  let get_reader_wrapper = scope.alloc_native_function_with_slots(
+    get_reader_call,
+    None,
+    get_reader_name,
+    0,
+    &[Value::Number(env_id as f64)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(get_reader_wrapper, Some(func_proto))?;
+  set_data_prop(
+    &mut scope,
+    stream,
+    "getReader",
+    Value::Object(get_reader_wrapper),
+    true,
+  )?;
+
+  let cancel_name = scope.alloc_string("cancel")?;
+  scope.push_root(Value::String(cancel_name))?;
+  let cancel_wrapper = scope.alloc_native_function_with_slots(
+    cancel_call,
+    None,
+    cancel_name,
+    1,
+    &[Value::Number(env_id as f64)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(cancel_wrapper, Some(func_proto))?;
+  set_data_prop(
+    &mut scope,
+    stream,
+    "cancel",
+    Value::Object(cancel_wrapper),
+    true,
+  )?;
+
+  Ok(())
+}
+
+fn ensure_body_stream_reader_wrappers_installed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  env_id: u64,
+  stream: GcObject,
+  reader: GcObject,
+) -> Result<(), VmError> {
+  let already_wrapped = !matches!(
+    get_data_prop(scope, reader, BODY_STREAM_READER_ORIG_READ_KEY)?,
+    Value::Undefined
+  );
+  if already_wrapped {
+    return Ok(());
+  }
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(reader))?;
+  scope.push_root(Value::Object(stream))?;
+
+  set_data_prop(&mut scope, reader, BODY_STREAM_READER_STREAM_KEY, Value::Object(stream), false)?;
+
+  let read_key = alloc_key(&mut scope, "read")?;
+  let read = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, reader, read_key)?;
+  if scope.heap().is_callable(read).unwrap_or(false) {
+    set_data_prop(&mut scope, reader, BODY_STREAM_READER_ORIG_READ_KEY, read, false)?;
+
+    let read_call = with_env_state(env_id, scope.heap(), |state| Ok(state.body_stream_reader_read_wrapper_call))?;
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let func_proto = intr.function_prototype();
+    let name = scope.alloc_string("read")?;
+    scope.push_root(Value::String(name))?;
+    let wrapper = scope.alloc_native_function_with_slots(read_call, None, name, 0, &[Value::Number(env_id as f64)])?;
+    scope
+      .heap_mut()
+      .object_set_prototype(wrapper, Some(func_proto))?;
+    set_data_prop(&mut scope, reader, "read", Value::Object(wrapper), true)?;
+  }
+
+  let cancel_key = alloc_key(&mut scope, "cancel")?;
+  let cancel = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, reader, cancel_key)?;
+  if scope.heap().is_callable(cancel).unwrap_or(false) {
+    set_data_prop(&mut scope, reader, BODY_STREAM_READER_ORIG_CANCEL_KEY, cancel, false)?;
+
+    let cancel_call =
+      with_env_state(env_id, scope.heap(), |state| Ok(state.body_stream_reader_cancel_wrapper_call))?;
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let func_proto = intr.function_prototype();
+    let name = scope.alloc_string("cancel")?;
+    scope.push_root(Value::String(name))?;
+    let wrapper = scope.alloc_native_function_with_slots(cancel_call, None, name, 1, &[Value::Number(env_id as f64)])?;
+    scope
+      .heap_mut()
+      .object_set_prototype(wrapper, Some(func_proto))?;
+    set_data_prop(&mut scope, reader, "cancel", Value::Object(wrapper), true)?;
+  }
+
+  Ok(())
+}
+
+fn readable_stream_tee(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  stream: GcObject,
+) -> Result<(GcObject, GcObject), VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(stream))?;
+
+  let tee_key = alloc_key(&mut scope, "tee")?;
+  let tee = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, stream, tee_key)?;
+  if !scope.heap().is_callable(tee).unwrap_or(false) {
+    return Err(VmError::TypeError(
+      "Cannot clone a streaming body (not implemented)",
+    ));
+  }
+
+  let result = vm.call_with_host_and_hooks(host, &mut scope, host_hooks, tee, Value::Object(stream), &[])?;
+  let Value::Object(arr_obj) = result else {
+    return Err(VmError::TypeError(
+      "ReadableStream.tee() must return an array-like object",
+    ));
+  };
+  scope.push_root(Value::Object(arr_obj))?;
+
+  let s0_key = alloc_key(&mut scope, "0")?;
+  let s1_key = alloc_key(&mut scope, "1")?;
+  let s0 = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, arr_obj, s0_key)?;
+  let s1 = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, arr_obj, s1_key)?;
+  match (s0, s1) {
+    (Value::Object(a), Value::Object(b)) => Ok((a, b)),
+    _ => Err(VmError::TypeError(
+      "ReadableStream.tee() must return two ReadableStream objects",
+    )),
+  }
+}
+
+fn start_consuming_body_stream(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  env_id: u64,
+  stream: GcObject,
+  max_bytes: usize,
+  kind: StreamConsumeKind,
+) -> Result<Value, VmError> {
+  let cap = new_promise_capability_for_env(vm, scope, host, host_hooks, env_id)?;
+  let promise = cap.promise;
+
+  // Root resolve/reject and stream for the duration of consumption.
+  let resolve_root = scope.heap_mut().add_root(cap.resolve)?;
+  let reject_root = scope.heap_mut().add_root(cap.reject)?;
+  let stream_root = scope.heap_mut().add_root(Value::Object(stream))?;
+
+  // Install wrappers for `getReader()`/`cancel()` and reader methods.
+  ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, stream)?;
+
+  // Acquire a reader and kick off the first read.
+  let reader = (|| -> Result<GcObject, VmError> {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(stream))?;
+    let get_reader_key = alloc_key(&mut scope, "getReader")?;
+    let get_reader =
+      vm.get_with_host_and_hooks(host, &mut scope, host_hooks, stream, get_reader_key)?;
+    let reader = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      host_hooks,
+      get_reader,
+      Value::Object(stream),
+      &[],
+    )?;
+    match reader {
+      Value::Object(reader_obj) => Ok(reader_obj),
+      _ => Err(VmError::TypeError("ReadableStream.getReader must return an object")),
+    }
+  })();
+
+  let reader = match reader {
+    Ok(reader) => reader,
+    Err(err) => {
+      // Reject the returned Promise rather than throwing synchronously.
+      let err_value = match err {
+        VmError::Throw(thrown) => thrown,
+        other => create_type_error(vm, scope, host, host_hooks, &other.to_string())?,
+      };
+      vm.call_with_host_and_hooks(
+        host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
+      scope.heap_mut().remove_root(resolve_root);
+      scope.heap_mut().remove_root(reject_root);
+      scope.heap_mut().remove_root(stream_root);
+      return Ok(promise);
+    }
+  };
+
+  ensure_body_stream_reader_wrappers_installed(vm, scope, host, host_hooks, env_id, stream, reader)?;
+
+  let reader_root = scope.heap_mut().add_root(Value::Object(reader))?;
+
+  // Allocate a consumption id and callback function objects.
+  let (consume_id, on_fulfilled_call, on_rejected_call) =
+    with_env_state_mut(env_id, scope.heap(), |state| {
+      let id = state.alloc_id();
+      Ok((id, state.stream_consume_fulfilled_call, state.stream_consume_rejected_call))
+    })?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let func_proto = intr.function_prototype();
+
+  let on_fulfilled_name = scope.alloc_string("onStreamRead")?;
+  scope.push_root(Value::String(on_fulfilled_name))?;
+  let on_fulfilled = scope.alloc_native_function_with_slots(
+    on_fulfilled_call,
+    None,
+    on_fulfilled_name,
+    1,
+    &[Value::Number(env_id as f64), Value::Number(consume_id as f64)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(on_fulfilled, Some(func_proto))?;
+
+  let on_rejected_name = scope.alloc_string("onStreamReadRejected")?;
+  scope.push_root(Value::String(on_rejected_name))?;
+  let on_rejected = scope.alloc_native_function_with_slots(
+    on_rejected_call,
+    None,
+    on_rejected_name,
+    1,
+    &[Value::Number(env_id as f64), Value::Number(consume_id as f64)],
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(on_rejected, Some(func_proto))?;
+
+  let on_fulfilled_root = scope.heap_mut().add_root(Value::Object(on_fulfilled))?;
+  let on_rejected_root = scope.heap_mut().add_root(Value::Object(on_rejected))?;
+
+  with_env_state_mut(env_id, scope.heap(), |state| {
+    state.stream_consumptions.insert(
+      consume_id,
+      StreamConsumeState {
+        stream_root,
+        reader_root,
+        resolve_root,
+        reject_root,
+        on_fulfilled_root,
+        on_rejected_root,
+        bytes: Vec::new(),
+        max_bytes,
+        kind,
+      },
+    );
+    Ok(())
+  })?;
+
+  // reader.read().then(on_fulfilled, on_rejected)
+  let start_result: Result<(), VmError> = (|| {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(reader))?;
+    scope.push_root(Value::Object(on_fulfilled))?;
+    scope.push_root(Value::Object(on_rejected))?;
+
+    let read_key = alloc_key(&mut scope, "read")?;
+    let read_fn = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, reader, read_key)?;
+    let promise_val = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      host_hooks,
+      read_fn,
+      Value::Object(reader),
+      &[],
+    )?;
+    let Value::Object(promise_obj) = promise_val else {
+      return Err(VmError::TypeError("ReadableStream reader.read must return a Promise"));
     };
-    Ok(window_streams::readable_stream_is_locked(vm, heap, stream))
-  })
+    scope.push_root(Value::Object(promise_obj))?;
+
+    let then_key = alloc_key(&mut scope, "then")?;
+    let then_fn = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, promise_obj, then_key)?;
+    vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      host_hooks,
+      then_fn,
+      Value::Object(promise_obj),
+      &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+    )?;
+    Ok(())
+  })();
+
+  if let Err(err) = start_result {
+    // Fail fast: remove the consumption state and reject the Promise.
+    let removed = with_env_state_mut(env_id, scope.heap(), |state| {
+      Ok(state.stream_consumptions.remove(&consume_id))
+    })?;
+    if let Some(state) = removed {
+      scope.heap_mut().remove_root(state.stream_root);
+      scope.heap_mut().remove_root(state.reader_root);
+      scope.heap_mut().remove_root(state.resolve_root);
+      scope.heap_mut().remove_root(state.reject_root);
+      scope.heap_mut().remove_root(state.on_fulfilled_root);
+      scope.heap_mut().remove_root(state.on_rejected_root);
+    }
+
+    let err_value = match err {
+      VmError::Throw(thrown) => thrown,
+      other => create_type_error(vm, scope, host, host_hooks, &other.to_string())?,
+    };
+    vm.call_with_host_and_hooks(
+      host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+  }
+
+  Ok(promise)
+}
+
+fn body_stream_get_reader_wrapper_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_callee(scope, callee)?;
+  let Value::Object(stream) = this else {
+    return Err(VmError::TypeError("ReadableStream.getReader: illegal invocation"));
+  };
+
+  let original = get_data_prop(scope, stream, BODY_STREAM_ORIG_GET_READER_KEY)?;
+  if !scope.heap().is_callable(original).unwrap_or(false) {
+    return Err(VmError::TypeError("ReadableStream.getReader: missing original getReader"));
+  }
+
+  let reader_val = vm.call_with_host_and_hooks(host, scope, host_hooks, original, this, args)?;
+  if let Value::Object(reader) = reader_val {
+    ensure_body_stream_reader_wrappers_installed(vm, scope, host, host_hooks, env_id, stream, reader)?;
+  }
+  Ok(reader_val)
+}
+
+fn body_stream_cancel_wrapper_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(stream) = this else {
+    return Err(VmError::TypeError("ReadableStream.cancel: illegal invocation"));
+  };
+
+  let original = get_data_prop(scope, stream, BODY_STREAM_ORIG_CANCEL_KEY)?;
+  if !scope.heap().is_callable(original).unwrap_or(false) {
+    return Err(VmError::TypeError("ReadableStream.cancel: missing original cancel"));
+  }
+
+  let result = vm.call_with_host_and_hooks(host, scope, host_hooks, original, this, args)?;
+  body_stream_set_used(scope, stream, true)?;
+  Ok(result)
+}
+
+fn body_stream_reader_read_wrapper_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(reader) = this else {
+    return Err(VmError::TypeError("ReadableStreamDefaultReader.read: illegal invocation"));
+  };
+
+  let Value::Object(stream) = get_data_prop(scope, reader, BODY_STREAM_READER_STREAM_KEY)? else {
+    return Err(VmError::TypeError(
+      "ReadableStreamDefaultReader.read: missing backing stream",
+    ));
+  };
+
+  let original = get_data_prop(scope, reader, BODY_STREAM_READER_ORIG_READ_KEY)?;
+  if !scope.heap().is_callable(original).unwrap_or(false) {
+    return Err(VmError::TypeError(
+      "ReadableStreamDefaultReader.read: missing original read",
+    ));
+  }
+
+  let result = vm.call_with_host_and_hooks(host, scope, host_hooks, original, this, args)?;
+  body_stream_set_used(scope, stream, true)?;
+  Ok(result)
+}
+
+fn body_stream_reader_cancel_wrapper_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(reader) = this else {
+    return Err(VmError::TypeError(
+      "ReadableStreamDefaultReader.cancel: illegal invocation",
+    ));
+  };
+
+  let Value::Object(stream) = get_data_prop(scope, reader, BODY_STREAM_READER_STREAM_KEY)? else {
+    return Err(VmError::TypeError(
+      "ReadableStreamDefaultReader.cancel: missing backing stream",
+    ));
+  };
+
+  let original = get_data_prop(scope, reader, BODY_STREAM_READER_ORIG_CANCEL_KEY)?;
+  if !scope.heap().is_callable(original).unwrap_or(false) {
+    return Err(VmError::TypeError(
+      "ReadableStreamDefaultReader.cancel: missing original cancel",
+    ));
+  }
+
+  let result = vm.call_with_host_and_hooks(host, scope, host_hooks, original, this, args)?;
+  body_stream_set_used(scope, stream, true)?;
+  Ok(result)
+}
+
+fn stream_consume_info_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<(u64, u64), VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let env_id = slots
+    .get(0)
+    .copied()
+    .ok_or(VmError::InvariantViolation(
+      "stream consume callback missing env id slot",
+    ))?;
+  let consume_id = slots
+    .get(1)
+    .copied()
+    .ok_or(VmError::InvariantViolation(
+      "stream consume callback missing consume id slot",
+    ))?;
+  let env_id = number_to_u64(env_id).map_err(|_| VmError::InvariantViolation("invalid env id slot"))?;
+  let consume_id =
+    number_to_u64(consume_id).map_err(|_| VmError::InvariantViolation("invalid consume id slot"))?;
+  Ok((env_id, consume_id))
+}
+
+fn stream_consume_cleanup(scope: &mut Scope<'_>, env_id: u64, consume_id: u64) -> Result<Option<StreamConsumeState>, VmError> {
+  with_env_state_mut(env_id, scope.heap(), |state| Ok(state.stream_consumptions.remove(&consume_id)))
+}
+
+fn stream_consume_release_lock_best_effort(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  reader: GcObject,
+) {
+  let mut scope = scope.reborrow();
+  if scope.push_root(Value::Object(reader)).is_err() {
+    return;
+  }
+  let release_key = match alloc_key(&mut scope, "releaseLock") {
+    Ok(k) => k,
+    Err(_) => return,
+  };
+  let release = match vm.get_with_host_and_hooks(host, &mut scope, host_hooks, reader, release_key) {
+    Ok(v) => v,
+    Err(_) => return,
+  };
+  if !scope.heap().is_callable(release).unwrap_or(false) {
+    return;
+  }
+  let _ = vm.call_with_host_and_hooks(host, &mut scope, host_hooks, release, Value::Object(reader), &[]);
+}
+
+fn stream_consume_resolve_reject_and_cleanup(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  mut state: StreamConsumeState,
+  outcome: Result<Value, Value>,
+) -> Result<(), VmError> {
+  // Best-effort unlock so subsequent calls see BodyUsed instead of locked.
+  let reader_val = scope
+    .heap()
+    .get_root(state.reader_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  if let Value::Object(reader_obj) = reader_val {
+    stream_consume_release_lock_best_effort(vm, scope, host, host_hooks, reader_obj);
+  }
+
+  let resolve = scope
+    .heap()
+    .get_root(state.resolve_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let reject = scope
+    .heap()
+    .get_root(state.reject_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+
+  match outcome {
+    Ok(value) => {
+      vm.call_with_host_and_hooks(host, scope, host_hooks, resolve, Value::Undefined, &[value])?;
+    }
+    Err(reason) => {
+      vm.call_with_host_and_hooks(host, scope, host_hooks, reject, Value::Undefined, &[reason])?;
+    }
+  }
+
+  scope.heap_mut().remove_root(state.stream_root);
+  scope.heap_mut().remove_root(state.reader_root);
+  scope.heap_mut().remove_root(state.resolve_root);
+  scope.heap_mut().remove_root(state.reject_root);
+  scope.heap_mut().remove_root(state.on_fulfilled_root);
+  scope.heap_mut().remove_root(state.on_rejected_root);
+  // Drop buffers eagerly.
+  state.bytes.clear();
+  Ok(())
+}
+
+fn stream_consume_fulfilled_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, consume_id) = stream_consume_info_from_callee(scope, callee)?;
+
+  let result_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(result_obj) = result_val else {
+    if let Some(state) = stream_consume_cleanup(scope, env_id, consume_id)? {
+      let err = create_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "ReadableStream reader.read() must resolve to an object",
+      )?;
+      stream_consume_resolve_reject_and_cleanup(vm, scope, host, host_hooks, state, Err(err))?;
+    }
+    return Ok(Value::Undefined);
+  };
+
+  scope.push_root(Value::Object(result_obj))?;
+  let done_key = alloc_key(scope, "done")?;
+  let value_key = alloc_key(scope, "value")?;
+  let done_val = vm.get_with_host_and_hooks(host, scope, host_hooks, result_obj, done_key)?;
+  let done = scope.heap().to_boolean(done_val)?;
+
+  if done {
+    let Some(mut state) = stream_consume_cleanup(scope, env_id, consume_id)? else {
+      return Ok(Value::Undefined);
+    };
+
+    let outcome: Result<Value, Value> = match &state.kind {
+      StreamConsumeKind::Text => {
+        let mut bytes = std::mem::take(&mut state.bytes);
+        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+          bytes.drain(..3);
+        }
+        let text = match String::from_utf8(bytes) {
+          Ok(s) => s,
+          Err(err) => String::from_utf8_lossy(&err.into_bytes()).into_owned(),
+        };
+        let s = scope.alloc_string(&text)?;
+        Ok(Value::String(s))
+      }
+      StreamConsumeKind::ArrayBuffer => {
+        let bytes = std::mem::take(&mut state.bytes);
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+        scope
+          .heap_mut()
+          .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+        Ok(Value::Object(ab))
+      }
+      StreamConsumeKind::Json => {
+        let bytes = std::mem::take(&mut state.bytes);
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+          Ok(v) => Ok(json_to_js(vm, scope, &v)?),
+          Err(err) => Err(create_syntax_error(vm, scope, host, host_hooks, &err.to_string())?),
+        }
+      }
+      StreamConsumeKind::Blob { blob_type } => {
+        let bytes = std::mem::take(&mut state.bytes);
+        let realm_id = vm.current_realm().ok_or(VmError::Unimplemented(
+          "Blob creation requires an active realm",
+        ))?;
+        let proto = window_blob::blob_prototype_for_realm(realm_id)
+          .ok_or(VmError::Unimplemented("Blob bindings not installed"))?;
+        let blob_obj = window_blob::create_blob_with_proto(
+          vm,
+          scope,
+          callee,
+          proto,
+          window_blob::BlobData {
+            bytes,
+            r#type: blob_type.clone(),
+          },
+        )?;
+        Ok(Value::Object(blob_obj))
+      }
+      StreamConsumeKind::FormData { content_type } => {
+        let bytes = std::mem::take(&mut state.bytes);
+        let file_last_modified_ms =
+          if content_type
+            .as_deref()
+            .is_some_and(|ct| normalize_content_type_for_blob(ct) == "multipart/form-data")
+          {
+            crate::js::time::date_now_ms(scope)?
+          } else {
+            0
+          };
+        match parse_form_data_entries_from_body(content_type.as_deref(), &bytes, file_last_modified_ms) {
+          Ok(entries) => {
+            let fd_obj = window_form_data::create_form_data_with_entries(vm, scope, callee, entries)?;
+            Ok(Value::Object(fd_obj))
+          }
+          Err(msg) => Err(create_type_error(vm, scope, host, host_hooks, msg)?),
+        }
+      }
+    };
+
+    match outcome {
+      Ok(val) => stream_consume_resolve_reject_and_cleanup(vm, scope, host, host_hooks, state, Ok(val))?,
+      Err(err) => stream_consume_resolve_reject_and_cleanup(vm, scope, host, host_hooks, state, Err(err))?,
+    }
+    return Ok(Value::Undefined);
+  }
+
+  let chunk_val = vm.get_with_host_and_hooks(host, scope, host_hooks, result_obj, value_key)?;
+  let bytes: Vec<u8> = match chunk_val {
+    Value::Object(obj) => {
+      if scope.heap().is_uint8_array_object(obj) {
+        scope.heap().uint8_array_data(obj)?.to_vec()
+      } else if scope.heap().is_array_buffer_object(obj) {
+        scope.heap().array_buffer_data(obj)?.to_vec()
+      } else {
+        let Some(state) = stream_consume_cleanup(scope, env_id, consume_id)? else {
+          return Ok(Value::Undefined);
+        };
+        let err = create_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "ReadableStream chunk must be a Uint8Array or ArrayBuffer",
+        )?;
+        stream_consume_resolve_reject_and_cleanup(vm, scope, host, host_hooks, state, Err(err))?;
+        return Ok(Value::Undefined);
+      }
+    }
+    _ => {
+      let Some(state) = stream_consume_cleanup(scope, env_id, consume_id)? else {
+        return Ok(Value::Undefined);
+      };
+      let err = create_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "ReadableStream chunk must be a Uint8Array or ArrayBuffer",
+      )?;
+      stream_consume_resolve_reject_and_cleanup(vm, scope, host, host_hooks, state, Err(err))?;
+      return Ok(Value::Undefined);
+    }
+  };
+
+  enum AppendOutcome {
+    Continue {
+      reader_root: RootId,
+      on_fulfilled_root: RootId,
+      on_rejected_root: RootId,
+    },
+    TooLong(StreamConsumeState),
+  }
+
+  let append_outcome: AppendOutcome = with_env_state_mut(env_id, scope.heap(), |state| {
+    let too_long = {
+      let consume_state = state
+        .stream_consumptions
+        .get(&consume_id)
+        .ok_or(VmError::TypeError("stream consume state missing"))?;
+      let next_len = consume_state
+        .bytes
+        .len()
+        .checked_add(bytes.len())
+        .unwrap_or(usize::MAX);
+      next_len > consume_state.max_bytes
+    };
+
+    if too_long {
+      let removed = state
+        .stream_consumptions
+        .remove(&consume_id)
+        .ok_or(VmError::TypeError("stream consume state missing"))?;
+      return Ok(AppendOutcome::TooLong(removed));
+    }
+
+    let consume_state = state
+      .stream_consumptions
+      .get_mut(&consume_id)
+      .ok_or(VmError::TypeError("stream consume state missing"))?;
+    consume_state.bytes.extend_from_slice(&bytes);
+    Ok(AppendOutcome::Continue {
+      reader_root: consume_state.reader_root,
+      on_fulfilled_root: consume_state.on_fulfilled_root,
+      on_rejected_root: consume_state.on_rejected_root,
+    })
+  })?;
+
+  let (reader_root, on_fulfilled_root, on_rejected_root) = match append_outcome {
+    AppendOutcome::Continue {
+      reader_root,
+      on_fulfilled_root,
+      on_rejected_root,
+    } => (reader_root, on_fulfilled_root, on_rejected_root),
+    AppendOutcome::TooLong(state) => {
+      let err_value = create_type_error(vm, scope, host, host_hooks, FETCH_BODY_TOO_LONG_ERROR)?;
+      stream_consume_resolve_reject_and_cleanup(vm, scope, host, host_hooks, state, Err(err_value))?;
+      return Ok(Value::Undefined);
+    }
+  };
+
+  // Continue reading: reader.read().then(on_fulfilled, on_rejected)
+  let reader_val = scope
+    .heap()
+    .get_root(reader_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let on_fulfilled_val = scope
+    .heap()
+    .get_root(on_fulfilled_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let on_rejected_val = scope
+    .heap()
+    .get_root(on_rejected_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let (Value::Object(reader_obj), Value::Object(on_fulfilled_obj), Value::Object(on_rejected_obj)) =
+    (reader_val, on_fulfilled_val, on_rejected_val)
+  else {
+    return Ok(Value::Undefined);
+  };
+
+  let _ = (|| -> Result<(), VmError> {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(reader_obj))?;
+    scope.push_root(Value::Object(on_fulfilled_obj))?;
+    scope.push_root(Value::Object(on_rejected_obj))?;
+
+    let read_key = alloc_key(&mut scope, "read")?;
+    let read_fn = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, reader_obj, read_key)?;
+    let promise_val = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      host_hooks,
+      read_fn,
+      Value::Object(reader_obj),
+      &[],
+    )?;
+    let Value::Object(promise_obj) = promise_val else {
+      return Err(VmError::TypeError("ReadableStream reader.read must return a Promise"));
+    };
+    scope.push_root(Value::Object(promise_obj))?;
+
+    let then_key = alloc_key(&mut scope, "then")?;
+    let then_fn =
+      vm.get_with_host_and_hooks(host, &mut scope, host_hooks, promise_obj, then_key)?;
+    vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      host_hooks,
+      then_fn,
+      Value::Object(promise_obj),
+      &[Value::Object(on_fulfilled_obj), Value::Object(on_rejected_obj)],
+    )?;
+    Ok(())
+  })();
+
+  Ok(Value::Undefined)
+}
+
+fn stream_consume_rejected_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, consume_id) = stream_consume_info_from_callee(scope, callee)?;
+  let Some(state) = stream_consume_cleanup(scope, env_id, consume_id)? else {
+    return Ok(Value::Undefined);
+  };
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  stream_consume_resolve_reject_and_cleanup(vm, scope, host, host_hooks, state, Err(reason))?;
+  Ok(Value::Undefined)
 }
 
 const FETCH_URL_TOO_LONG_ERROR: &str = "fetch URL exceeds maximum length";
@@ -2279,6 +3266,7 @@ fn apply_request_init(
   env_id: u64,
   limits: &WebFetchLimits,
   request: &mut CoreRequest,
+  body_stream_out: &mut Option<GcObject>,
   init: Value,
 ) -> Result<bool, VmError> {
   if matches!(init, Value::Undefined | Value::Null) {
@@ -2289,6 +3277,7 @@ fn apply_request_init(
     return Err(VmError::TypeError("Request init must be an object"));
   };
 
+  *body_stream_out = None;
   let mut init_body_provided = false;
 
   // `mode` must be applied before headers so the correct guard is enforced when filling.
@@ -2452,104 +3441,105 @@ fn apply_request_init(
     let max_body_bytes = request.headers.limits().max_request_body_bytes;
     let mut inferred_content_type: Option<String> = None;
 
-    let bytes: Vec<u8> = match body_val {
+    match body_val {
       Value::Object(obj) => {
-        if window_streams::is_readable_stream_object(vm, scope.heap(), obj) {
-          return Err(throw_type_error(
-            vm,
-            scope,
-            host,
-            host_hooks,
-            "Request body ReadableStream is not supported yet",
-          ));
-        }
-        if scope.heap().is_array_buffer_object(obj) {
-          let data = scope.heap().array_buffer_data(obj)?;
-          if data.len() > max_body_bytes {
-            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
-          }
-          data.to_vec()
-        } else if scope.heap().is_uint8_array_object(obj) {
-          let data = scope.heap().uint8_array_data(obj)?;
-          if data.len() > max_body_bytes {
-            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
-          }
-          data.to_vec()
-        } else if let Some(serialized) =
-          window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
-        {
-          if serialized.as_bytes().len() > max_body_bytes {
-            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
-          }
-          inferred_content_type =
-            Some("application/x-www-form-urlencoded;charset=UTF-8".to_string());
-          serialized.into_bytes()
-        } else if let Some(blob) =
-          window_blob::clone_blob_data_for_fetch(vm, scope.heap(), body_val)?
-        {
-          if blob.bytes.len() > max_body_bytes {
-            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
-          }
-          if !blob.r#type.is_empty() {
-            inferred_content_type = Some(blob.r#type.clone());
-          }
-          blob.bytes
-        } else if let Some(entries) =
-          window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body_val)?
-        {
-          let boundary_id = with_env_state_mut(env_id, scope.heap(), |state| {
-            let id = state.multipart_boundary_counter;
-            state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
-            Ok(id)
-          })?;
-          let boundary = format!("----fastrenderformdata{boundary_id}");
-          let multipart = encode_form_data_as_multipart(&entries, &boundary, max_body_bytes)?;
-          inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
-          multipart
+        if is_readable_stream_like_object(vm, scope, host, host_hooks, obj)? {
+          *body_stream_out = Some(obj);
+          request.body = None;
+          ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, obj)?;
         } else {
-          let s = scope.to_string(vm, host, host_hooks, body_val)?;
-          js_string_to_rust_string_limited(
-            scope.heap(),
-            s,
-            max_body_bytes,
-            FETCH_BODY_TOO_LONG_ERROR,
-          )?
-          .into_bytes()
+          let bytes: Vec<u8> = if scope.heap().is_array_buffer_object(obj) {
+            let data = scope.heap().array_buffer_data(obj)?;
+            if data.len() > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            data.to_vec()
+          } else if scope.heap().is_uint8_array_object(obj) {
+            let data = scope.heap().uint8_array_data(obj)?;
+            if data.len() > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            data.to_vec()
+          } else if let Some(serialized) =
+            window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
+          {
+            if serialized.as_bytes().len() > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            inferred_content_type =
+              Some("application/x-www-form-urlencoded;charset=UTF-8".to_string());
+            serialized.into_bytes()
+          } else if let Some(blob) =
+            window_blob::clone_blob_data_for_fetch(vm, scope.heap(), body_val)?
+          {
+            if blob.bytes.len() > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            if !blob.r#type.is_empty() {
+              inferred_content_type = Some(blob.r#type.clone());
+            }
+            blob.bytes
+          } else if let Some(entries) =
+            window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body_val)?
+          {
+            let boundary_id = with_env_state_mut(env_id, scope.heap(), |state| {
+              let id = state.multipart_boundary_counter;
+              state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
+              Ok(id)
+            })?;
+            let boundary = format!("----fastrenderformdata{boundary_id}");
+            let multipart = encode_form_data_as_multipart(&entries, &boundary, max_body_bytes)?;
+            inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
+            multipart
+          } else {
+            let s = scope.to_string(vm, host, host_hooks, body_val)?;
+            js_string_to_rust_string_limited(
+              scope.heap(),
+              s,
+              max_body_bytes,
+              FETCH_BODY_TOO_LONG_ERROR,
+            )?
+            .into_bytes()
+          };
+
+          if let Some(content_type) = inferred_content_type {
+            let has_content_type = request
+              .headers
+              .has("Content-Type")
+              .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+            if !has_content_type {
+              request
+                .headers
+                .set("Content-Type", &content_type)
+                .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+            }
+          }
+
+          let body = Body::new_with_limits(bytes, request.headers.limits())
+            .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+          request.body = Some(body);
         }
       }
       other => {
         let s = scope.to_string(vm, host, host_hooks, other)?;
-        js_string_to_rust_string_limited(
+        let bytes = js_string_to_rust_string_limited(
           scope.heap(),
           s,
           max_body_bytes,
           FETCH_BODY_TOO_LONG_ERROR,
         )?
-        .into_bytes()
+        .into_bytes();
+
+        let body = Body::new_with_limits(bytes, request.headers.limits())
+          .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+        request.body = Some(body);
       }
     };
-
-    if let Some(content_type) = inferred_content_type {
-      let has_content_type = request
-        .headers
-        .has("Content-Type")
-        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
-      if !has_content_type {
-        request
-          .headers
-          .set("Content-Type", &content_type)
-          .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
-      }
-    }
-
-    let body = Body::new_with_limits(bytes, request.headers.limits())
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
-    request.body = Some(body);
   }
 
   // Fetch invariants.
   if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
-    if request.body.is_some() {
+    if request.body.is_some() || body_stream_out.is_some() {
       return Err(throw_type_error(
         vm,
         scope,
@@ -2667,6 +3657,7 @@ fn request_ctor_construct(
   let mut signal: Option<Value> = None;
   let mut init_specified_signal = false;
 
+  let mut body_stream: Option<GcObject> = None;
   let init_body_provided = apply_request_init(
     vm,
     scope,
@@ -2675,6 +3666,7 @@ fn request_ctor_construct(
     env_id,
     &limits,
     &mut request,
+    &mut body_stream,
     init,
   )?;
 
@@ -2682,7 +3674,7 @@ fn request_ctor_construct(
   request.method =
     normalize_and_validate_method(vm, scope, host, host_hooks, request.method.as_str())?;
   if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
-    if request.body.is_some() {
+    if request.body.is_some() || body_stream.is_some() {
       return Err(throw_type_error(
         vm,
         scope,
@@ -2726,6 +3718,34 @@ fn request_ctor_construct(
           host_hooks,
           "Request body is locked",
         ));
+      }
+
+      // If the input Request was backed by an external stream (i.e. no in-memory body), clone it by
+      // teeing the stream (or throw if tee is unavailable).
+      if request.body.is_none() && body_stream.is_none() {
+        let cached = get_data_prop(scope, input_obj, REQUEST_BODY_STREAM_KEY)?;
+        if let Value::Object(input_stream) = cached {
+          if body_stream_is_used(scope, input_stream)? {
+            return Err(throw_type_error(
+              vm,
+              scope,
+              host,
+              host_hooks,
+              "Request body is already used",
+            ));
+          }
+          let (s1, s2) = readable_stream_tee(vm, scope, host, host_hooks, input_stream)?;
+          ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, s1)?;
+          ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, s2)?;
+          set_data_prop(
+            scope,
+            input_obj,
+            REQUEST_BODY_STREAM_KEY,
+            Value::Object(s1),
+            false,
+          )?;
+          body_stream = Some(s2);
+        }
       }
     }
   }
@@ -2797,6 +3817,16 @@ fn request_ctor_construct(
     signal.unwrap_or(Value::Null),
     /* writable */ false,
   )?;
+
+  if let Some(stream_obj) = body_stream {
+    set_data_prop(
+      scope,
+      obj,
+      REQUEST_BODY_STREAM_KEY,
+      Value::Object(stream_obj),
+      false,
+    )?;
+  }
   Ok(Value::Object(obj))
 }
 
@@ -2818,7 +3848,7 @@ fn request_clone_native(
     Value::Undefined => Value::Null,
     other => other,
   };
-  if request_wrapper_cached_body_stream_is_locked(vm, scope, &mut *host, host_hooks, original_obj)? {
+  if request_wrapper_cached_body_stream_is_locked(vm, scope, host, host_hooks, original_obj)? {
     return Err(throw_type_error(
       vm,
       scope,
@@ -2828,66 +3858,16 @@ fn request_clone_native(
     ));
   }
 
-  if request_body_stream_locked(vm, env_id, request_id, scope.heap())? {
-    return Err(throw_type_error(
-      vm,
-      scope,
-      &mut *host,
-      host_hooks,
-      "Request body is locked",
-    ));
-  }
-
-  if request_body_stream_locked(env_id, request_id, scope.heap())? {
-    return Err(throw_type_error(
-      vm,
-      scope,
-      &mut *host,
-      host_hooks,
-      "Request body is locked",
-    ));
-  }
-
-  let locked = with_env_state(env_id, scope.heap(), |state| {
-    let _req = state
-      .requests
-      .get(&request_id)
-      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
-    Ok(state
-      .request_body_streams
-      .get(&request_id)
-      .and_then(|id| state.readable_streams.get(id))
-      .is_some_and(|s| s.locked))
-  })?;
-  if locked {
-    return Err(throw_type_error(
-      vm,
-      scope,
-      &mut *host,
-      host_hooks,
-      "Request body is locked",
-    ));
-  }
-
-  if request_body_stream_locked(env_id, request_id, scope.heap())? {
-    return Err(throw_type_error(
-      vm,
-      scope,
-      &mut *host,
-      host_hooks,
-      "Request body is locked",
-    ));
-  }
-
-  let cloned: Option<CoreRequest> = with_env_state(env_id, scope.heap(), |state| {
+  let (cloned, has_core_body) = with_env_state(env_id, scope.heap(), |state| {
     let req = state
       .requests
       .get(&request_id)
       .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    let has_core_body = req.body.is_some();
     if req.body.as_ref().map_or(false, |b| b.body_used()) {
-      Ok(None)
+      Ok((None, has_core_body))
     } else {
-      Ok(Some(req.clone()))
+      Ok((Some(req.clone()), has_core_body))
     }
   })?;
   let Some(cloned) = cloned else {
@@ -2899,6 +3879,34 @@ fn request_clone_native(
       "Request body is already used",
     ));
   };
+
+  // Streaming body: tee the stream so the clone and original can be consumed independently.
+  let mut cloned_body_stream: Option<GcObject> = None;
+  if !has_core_body {
+    let cached = get_data_prop(scope, original_obj, REQUEST_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if body_stream_is_used(scope, stream_obj)? {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Request body is already used",
+        ));
+      }
+      let (s1, s2) = readable_stream_tee(vm, scope, host, host_hooks, stream_obj)?;
+      ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, s1)?;
+      ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, s2)?;
+      set_data_prop(
+        scope,
+        original_obj,
+        REQUEST_BODY_STREAM_KEY,
+        Value::Object(s1),
+        false,
+      )?;
+      cloned_body_stream = Some(s2);
+    }
+  }
 
   let new_request_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
@@ -2914,6 +3922,16 @@ fn request_clone_native(
     ))?;
   let obj = make_request_wrapper(scope, env_id, headers_proto, proto, new_request_id)?;
   set_data_prop(scope, obj, "signal", signal, /* writable */ false)?;
+
+  if let Some(stream_obj) = cloned_body_stream {
+    set_data_prop(
+      scope,
+      obj,
+      REQUEST_BODY_STREAM_KEY,
+      Value::Object(stream_obj),
+      false,
+    )?;
+  }
   Ok(Value::Object(obj))
 }
 
@@ -2930,6 +3948,71 @@ fn request_text_native(
     return Err(VmError::TypeError("Request: illegal invocation"));
   };
   let (env_id, request_id) = request_info_from_this(scope, Value::Object(req_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    Ok(req.body.is_some())
+  })?;
+
+  if !has_core_body {
+    let cached = get_data_prop(scope, req_obj, REQUEST_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Request body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Request body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      let max_bytes = with_env_state(env_id, scope.heap(), |state| {
+        let req = state
+          .requests
+          .get(&request_id)
+          .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+        Ok(req.headers.limits().max_request_body_bytes)
+      })?;
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::Text,
+      );
+    }
+  }
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
@@ -3000,6 +4083,70 @@ fn request_array_buffer_native(
     return Err(VmError::TypeError("Request: illegal invocation"));
   };
   let (env_id, request_id) = request_info_from_this(scope, Value::Object(req_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    Ok(req.body.is_some())
+  })?;
+  if !has_core_body {
+    let cached = get_data_prop(scope, req_obj, REQUEST_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Request body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Request body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      let max_bytes = with_env_state(env_id, scope.heap(), |state| {
+        let req = state
+          .requests
+          .get(&request_id)
+          .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+        Ok(req.headers.limits().max_request_body_bytes)
+      })?;
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::ArrayBuffer,
+      );
+    }
+  }
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
@@ -3076,6 +4223,94 @@ fn request_blob_native(
     return Err(VmError::TypeError("Request: illegal invocation"));
   };
   let (env_id, request_id) = request_info_from_this(scope, Value::Object(req_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    Ok(req.body.is_some())
+  })?;
+  if !has_core_body {
+    let cached = get_data_prop(scope, req_obj, REQUEST_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Request body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Request body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+
+      let (max_bytes, blob_type) = with_env_state(env_id, scope.heap(), |state| {
+        let req = state
+          .requests
+          .get(&request_id)
+          .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+        let max_bytes = req.headers.limits().max_request_body_bytes;
+        let ct = req.headers.get("Content-Type");
+        Ok((max_bytes, ct))
+      })?;
+
+      let blob_type = match blob_type {
+        Ok(v) => v,
+        Err(err) => {
+          let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+          let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.reject,
+            Value::Undefined,
+            &[err_value],
+          )?;
+          return Ok(cap.promise);
+        }
+      }
+        .as_deref()
+        .map(normalize_content_type_for_blob)
+        .unwrap_or_default();
+
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::Blob { blob_type },
+      );
+    }
+  }
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
@@ -3187,6 +4422,91 @@ fn request_form_data_native(
     return Err(VmError::TypeError("Request: illegal invocation"));
   };
   let (env_id, request_id) = request_info_from_this(scope, Value::Object(req_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    Ok(req.body.is_some())
+  })?;
+  if !has_core_body {
+    let cached = get_data_prop(scope, req_obj, REQUEST_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Request body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Request body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+
+      let (max_bytes, content_type_result) = with_env_state(env_id, scope.heap(), |state| {
+        let req = state
+          .requests
+          .get(&request_id)
+          .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+        let max_bytes = req.headers.limits().max_request_body_bytes;
+        let ct = req.headers.get("Content-Type");
+        Ok((max_bytes, ct))
+      })?;
+
+      let content_type = match content_type_result {
+        Ok(v) => v,
+        Err(err) => {
+          let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+          let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.reject,
+            Value::Undefined,
+            &[err_value],
+          )?;
+          return Ok(cap.promise);
+        }
+      };
+
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::FormData { content_type },
+      );
+    }
+  }
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
@@ -3311,6 +4631,70 @@ fn request_json_native(
   };
   let (env_id, request_id) = request_info_from_this(scope, Value::Object(req_obj))?;
 
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    Ok(req.body.is_some())
+  })?;
+  if !has_core_body {
+    let cached = get_data_prop(scope, req_obj, REQUEST_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Request body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Request body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      let max_bytes = with_env_state(env_id, scope.heap(), |state| {
+        let req = state
+          .requests
+          .get(&request_id)
+          .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+        Ok(req.headers.limits().max_request_body_bytes)
+      })?;
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::Json,
+      );
+    }
+  }
+
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   if request_wrapper_cached_body_stream_is_locked(vm, scope, &mut *host, host_hooks, req_obj)? {
@@ -3397,15 +4781,26 @@ fn request_body_used_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (env_id, request_id) = request_info_from_this(scope, this)?;
-  let used = with_env_state(env_id, scope.heap(), |state| {
+  let Value::Object(req_obj) = this else {
+    return Err(VmError::TypeError("Request: illegal invocation"));
+  };
+  let (env_id, request_id) = request_info_from_this(scope, Value::Object(req_obj))?;
+  let core_used = with_env_state(env_id, scope.heap(), |state| {
     let req = state
       .requests
       .get(&request_id)
       .ok_or(VmError::TypeError("Request: invalid backing request"))?;
     Ok(req.body.as_ref().map_or(false, |b| b.body_used()))
   })?;
-  Ok(Value::Bool(used))
+  if core_used {
+    return Ok(Value::Bool(true));
+  }
+
+  let cached = get_data_prop(scope, req_obj, REQUEST_BODY_STREAM_KEY)?;
+  let Value::Object(stream_obj) = cached else {
+    return Ok(Value::Bool(false));
+  };
+  Ok(Value::Bool(body_stream_is_used(scope, stream_obj)?))
 }
 
 fn request_body_get_native(
@@ -3780,6 +5175,71 @@ fn response_text_native(
   };
   let (env_id, response_id) = response_info_from_this(scope, Value::Object(resp_obj))?;
 
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    Ok(res.body.is_some())
+  })?;
+
+  if !has_core_body {
+    let cached = get_data_prop(scope, resp_obj, RESPONSE_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Response body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      let max_bytes = with_env_state(env_id, scope.heap(), |state| {
+        let res = state
+          .responses
+          .get(&response_id)
+          .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+        Ok(res.headers.limits().max_response_body_bytes)
+      })?;
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::Text,
+      );
+    }
+  }
+
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   if response_wrapper_cached_body_stream_is_locked(vm, scope, &mut *host, host_hooks, resp_obj)? {
@@ -3848,6 +5308,71 @@ fn response_array_buffer_native(
     return Err(VmError::TypeError("Response: illegal invocation"));
   };
   let (env_id, response_id) = response_info_from_this(scope, Value::Object(resp_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    Ok(res.body.is_some())
+  })?;
+
+  if !has_core_body {
+    let cached = get_data_prop(scope, resp_obj, RESPONSE_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Response body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      let max_bytes = with_env_state(env_id, scope.heap(), |state| {
+        let res = state
+          .responses
+          .get(&response_id)
+          .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+        Ok(res.headers.limits().max_response_body_bytes)
+      })?;
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::ArrayBuffer,
+      );
+    }
+  }
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
@@ -3923,6 +5448,96 @@ fn response_blob_native(
     return Err(VmError::TypeError("Response: illegal invocation"));
   };
   let (env_id, response_id) = response_info_from_this(scope, Value::Object(resp_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    Ok(res.body.is_some())
+  })?;
+
+  if !has_core_body {
+    let cached = get_data_prop(scope, resp_obj, RESPONSE_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Response body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+
+      let (max_bytes, content_type_result) = with_env_state(env_id, scope.heap(), |state| {
+        let res = state
+          .responses
+          .get(&response_id)
+          .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+        Ok((
+          res.headers.limits().max_response_body_bytes,
+          res.headers.get("Content-Type"),
+        ))
+      })?;
+      let content_type = match content_type_result {
+        Ok(v) => v,
+        Err(err) => {
+          let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+          let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.reject,
+            Value::Undefined,
+            &[err_value],
+          )?;
+          return Ok(cap.promise);
+        }
+      };
+      let blob_type = content_type
+        .as_deref()
+        .map(normalize_content_type_for_blob)
+        .unwrap_or_default();
+
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::Blob { blob_type },
+      );
+    }
+  }
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
@@ -4034,6 +5649,92 @@ fn response_form_data_native(
     return Err(VmError::TypeError("Response: illegal invocation"));
   };
   let (env_id, response_id) = response_info_from_this(scope, Value::Object(resp_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    Ok(res.body.is_some())
+  })?;
+
+  if !has_core_body {
+    let cached = get_data_prop(scope, resp_obj, RESPONSE_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Response body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+
+      let (max_bytes, content_type_result) = with_env_state(env_id, scope.heap(), |state| {
+        let res = state
+          .responses
+          .get(&response_id)
+          .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+        Ok((
+          res.headers.limits().max_response_body_bytes,
+          res.headers.get("Content-Type"),
+        ))
+      })?;
+      let content_type = match content_type_result {
+        Ok(v) => v,
+        Err(err) => {
+          let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+          let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+          vm.call_with_host_and_hooks(
+            &mut *host,
+            scope,
+            host_hooks,
+            cap.reject,
+            Value::Undefined,
+            &[err_value],
+          )?;
+          return Ok(cap.promise);
+        }
+      };
+
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::FormData { content_type },
+      );
+    }
+  }
 
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
@@ -4200,6 +5901,71 @@ fn response_json_native(
   };
   let (env_id, response_id) = response_info_from_this(scope, Value::Object(resp_obj))?;
 
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    Ok(res.body.is_some())
+  })?;
+
+  if !has_core_body {
+    let cached = get_data_prop(scope, resp_obj, RESPONSE_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Response body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      let max_bytes = with_env_state(env_id, scope.heap(), |state| {
+        let res = state
+          .responses
+          .get(&response_id)
+          .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+        Ok(res.headers.limits().max_response_body_bytes)
+      })?;
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        max_bytes,
+        StreamConsumeKind::Json,
+      );
+    }
+  }
+
   let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   if response_wrapper_cached_body_stream_is_locked(vm, scope, &mut *host, host_hooks, resp_obj)? {
@@ -4303,15 +6069,16 @@ fn response_clone_native(
     ));
   }
 
-  let cloned: Option<CoreResponse> = with_env_state(env_id, scope.heap(), |state| {
+  let (cloned, has_core_body) = with_env_state(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get(&response_id)
       .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    let has_core_body = res.body.is_some();
     if res.body.as_ref().map_or(false, |b| b.body_used()) {
-      Ok(None)
+      Ok((None, has_core_body))
     } else {
-      Ok(Some(res.clone()))
+      Ok((Some(res.clone()), has_core_body))
     }
   })?;
 
@@ -4324,6 +6091,33 @@ fn response_clone_native(
       "Response body is already used",
     ));
   };
+
+  let mut cloned_body_stream: Option<GcObject> = None;
+  if !has_core_body {
+    let cached = get_data_prop(scope, obj, RESPONSE_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if body_stream_is_used(scope, stream_obj)? {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Response body is already used",
+        ));
+      }
+      let (s1, s2) = readable_stream_tee(vm, scope, host, host_hooks, stream_obj)?;
+      ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, s1)?;
+      ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, s2)?;
+      set_data_prop(
+        scope,
+        obj,
+        RESPONSE_BODY_STREAM_KEY,
+        Value::Object(s1),
+        false,
+      )?;
+      cloned_body_stream = Some(s2);
+    }
+  }
 
   let new_response_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
@@ -4338,6 +6132,16 @@ fn response_clone_native(
       "Response.prototype missing on instance",
     ))?;
   let resp_obj = make_response_wrapper(scope, env_id, headers_proto, proto, new_response_id)?;
+
+  if let Some(stream_obj) = cloned_body_stream {
+    set_data_prop(
+      scope,
+      resp_obj,
+      RESPONSE_BODY_STREAM_KEY,
+      Value::Object(stream_obj),
+      false,
+    )?;
+  }
   Ok(Value::Object(resp_obj))
 }
 
@@ -4422,15 +6226,26 @@ fn response_body_used_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (env_id, response_id) = response_info_from_this(scope, this)?;
-  let used = with_env_state(env_id, scope.heap(), |state| {
+  let Value::Object(resp_obj) = this else {
+    return Err(VmError::TypeError("Response: illegal invocation"));
+  };
+  let (env_id, response_id) = response_info_from_this(scope, Value::Object(resp_obj))?;
+  let core_used = with_env_state(env_id, scope.heap(), |state| {
     let res = state
       .responses
       .get(&response_id)
       .ok_or(VmError::TypeError("Response: invalid backing response"))?;
     Ok(res.body.as_ref().map_or(false, |b| b.body_used()))
   })?;
-  Ok(Value::Bool(used))
+  if core_used {
+    return Ok(Value::Bool(true));
+  }
+
+  let cached = get_data_prop(scope, resp_obj, RESPONSE_BODY_STREAM_KEY)?;
+  let Value::Object(stream_obj) = cached else {
+    return Ok(Value::Bool(false));
+  };
+  Ok(Value::Bool(body_stream_is_used(scope, stream_obj)?))
 }
 
 fn make_headers_wrapper(
@@ -4656,84 +6471,85 @@ fn response_ctor_construct(
 
   let body = args.get(0).copied().unwrap_or(Value::Undefined);
   let mut body_bytes: Option<Vec<u8>> = None;
+  let mut body_stream: Option<GcObject> = None;
   let mut inferred_content_type: Option<String> = None;
   if !matches!(body, Value::Undefined | Value::Null) {
     let max_body_bytes = headers.limits().max_response_body_bytes;
-    let bytes: Vec<u8> = match body {
+    match body {
       Value::Object(obj) => {
-        if window_streams::is_readable_stream_object(vm, scope.heap(), obj) {
-          return Err(throw_type_error(
-            vm,
-            scope,
-            host,
-            host_hooks,
-            "Response body ReadableStream is not supported yet",
-          ));
-        }
-        if scope.heap().is_array_buffer_object(obj) {
-          let data = scope.heap().array_buffer_data(obj)?;
-          if data.len() > max_body_bytes {
-            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
-          }
-          data.to_vec()
-        } else if scope.heap().is_uint8_array_object(obj) {
-          let data = scope.heap().uint8_array_data(obj)?;
-          if data.len() > max_body_bytes {
-            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
-          }
-          data.to_vec()
-        } else if let Some(serialized) =
-          window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
-        {
-          if serialized.as_bytes().len() > max_body_bytes {
-            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
-          }
-          inferred_content_type =
-            Some("application/x-www-form-urlencoded;charset=UTF-8".to_string());
-          serialized.into_bytes()
-        } else if let Some(blob) = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), body)? {
-          if blob.bytes.len() > max_body_bytes {
-            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
-          }
-          if !blob.r#type.is_empty() {
-            inferred_content_type = Some(blob.r#type.clone());
-          }
-          blob.bytes
-        } else if let Some(entries) =
-          window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body)?
-        {
-          let boundary_id = with_env_state_mut(env_id, scope.heap(), |state| {
-            let id = state.multipart_boundary_counter;
-            state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
-            Ok(id)
-          })?;
-          let boundary = format!("----fastrenderformdata{boundary_id}");
-          let multipart = encode_form_data_as_multipart(&entries, &boundary, max_body_bytes)?;
-          inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
-          multipart
+        if is_readable_stream_like_object(vm, scope, host, host_hooks, obj)? {
+          body_stream = Some(obj);
+          ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, obj)?;
         } else {
-          let s = scope.to_string(vm, host, host_hooks, body)?;
+          let bytes: Vec<u8> = if scope.heap().is_array_buffer_object(obj) {
+            let data = scope.heap().array_buffer_data(obj)?;
+            if data.len() > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            data.to_vec()
+          } else if scope.heap().is_uint8_array_object(obj) {
+            let data = scope.heap().uint8_array_data(obj)?;
+            if data.len() > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            data.to_vec()
+          } else if let Some(serialized) =
+            window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
+          {
+            if serialized.as_bytes().len() > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            inferred_content_type =
+              Some("application/x-www-form-urlencoded;charset=UTF-8".to_string());
+            serialized.into_bytes()
+          } else if let Some(blob) =
+            window_blob::clone_blob_data_for_fetch(vm, scope.heap(), body)?
+          {
+            if blob.bytes.len() > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            if !blob.r#type.is_empty() {
+              inferred_content_type = Some(blob.r#type.clone());
+            }
+            blob.bytes
+          } else if let Some(entries) =
+            window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body)?
+          {
+            let boundary_id = with_env_state_mut(env_id, scope.heap(), |state| {
+              let id = state.multipart_boundary_counter;
+              state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
+              Ok(id)
+            })?;
+            let boundary = format!("----fastrenderformdata{boundary_id}");
+            let multipart = encode_form_data_as_multipart(&entries, &boundary, max_body_bytes)?;
+            inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
+            multipart
+          } else {
+            let s = scope.to_string(vm, host, host_hooks, body)?;
+            js_string_to_rust_string_limited(
+              scope.heap(),
+              s,
+              max_body_bytes,
+              FETCH_BODY_TOO_LONG_ERROR,
+            )?
+            .into_bytes()
+          };
+          body_bytes = Some(bytes);
+        }
+      }
+      other => {
+        let s = scope.to_string(vm, host, host_hooks, other)?;
+        body_bytes = Some(
           js_string_to_rust_string_limited(
             scope.heap(),
             s,
             max_body_bytes,
             FETCH_BODY_TOO_LONG_ERROR,
           )?
-          .into_bytes()
-        }
+          .into_bytes(),
+        );
       }
-      other => {
-        let s = scope.to_string(vm, host, host_hooks, other)?;
-        js_string_to_rust_string_limited(
-          scope.heap(),
-          s,
-          max_body_bytes,
-          FETCH_BODY_TOO_LONG_ERROR,
-        )?
-        .into_bytes()
-      }
-    };
-    body_bytes = Some(bytes);
+    }
   }
 
   if !matches!(init, Value::Undefined | Value::Null) {
@@ -4789,7 +6605,7 @@ fn response_ctor_construct(
       "Response statusText must be a valid reason phrase",
     ));
   }
-  if body_bytes.is_some() && matches!(status, 101 | 103 | 204 | 205 | 304) {
+  if (body_bytes.is_some() || body_stream.is_some()) && matches!(status, 101 | 103 | 204 | 205 | 304) {
     return Err(throw_type_error(
       vm,
       scope,
@@ -4838,6 +6654,16 @@ fn response_ctor_construct(
     }
   };
   let obj = make_response_wrapper(scope, env_id, headers_proto, proto, response_id)?;
+
+  if let Some(stream_obj) = body_stream {
+    set_data_prop(
+      scope,
+      obj,
+      RESPONSE_BODY_STREAM_KEY,
+      Value::Object(stream_obj),
+      false,
+    )?;
+  }
   Ok(Value::Object(obj))
 }
 
@@ -4901,6 +6727,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     CoreRequest::new_with_limits("GET", url, &limits)
   };
 
+  let mut body_stream: Option<GcObject> = None;
   let init_body_provided = apply_request_init(
     vm,
     scope,
@@ -4909,6 +6736,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     env_id,
     &limits,
     &mut request,
+    &mut body_stream,
     init,
   )?;
 
@@ -4916,7 +6744,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   request.method =
     normalize_and_validate_method(vm, scope, host, host_hooks, request.method.as_str())?;
   if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
-    if request.body.is_some() {
+    if request.body.is_some() || body_stream.is_some() {
       return Err(throw_type_error(
         vm,
         scope,
@@ -4961,7 +6789,42 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           "Request body is locked",
         ));
       }
+
+      // Fetch cannot currently stream request bodies. Avoid silently dropping external streams when
+      // `fetch(existingRequest)` is used.
+      if request.body.is_none() && body_stream.is_none() {
+        let cached = get_data_prop(scope, input_obj, REQUEST_BODY_STREAM_KEY)?;
+        if let Value::Object(input_stream) = cached {
+          if body_stream_is_used(scope, input_stream)? {
+            return Err(throw_type_error(
+              vm,
+              scope,
+              host,
+              host_hooks,
+              "Request body is already used",
+            ));
+          }
+          return Err(throw_type_error(
+            vm,
+            scope,
+            host,
+            host_hooks,
+            "Request body ReadableStream is not supported yet",
+          ));
+        }
+      }
     }
+  }
+
+  if body_stream.is_some() {
+    // FastRender's networking layer only supports in-memory request bodies for now.
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host,
+      host_hooks,
+      "Request body ReadableStream is not supported yet",
+    ));
   }
 
   // Resolve the associated AbortSignal, if any.
@@ -5640,9 +7503,28 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
 ) -> Result<WindowFetchBindings, VmError> {
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
   let promise_executor_call = vm.register_native_call(promise_capability_executor_call)?;
+  let body_stream_get_reader_wrapper_call = vm.register_native_call(body_stream_get_reader_wrapper_native)?;
+  let body_stream_cancel_wrapper_call = vm.register_native_call(body_stream_cancel_wrapper_native)?;
+  let body_stream_reader_read_wrapper_call = vm.register_native_call(body_stream_reader_read_wrapper_native)?;
+  let body_stream_reader_cancel_wrapper_call = vm.register_native_call(body_stream_reader_cancel_wrapper_native)?;
+  let stream_consume_fulfilled_call = vm.register_native_call(stream_consume_fulfilled_native)?;
+  let stream_consume_rejected_call = vm.register_native_call(stream_consume_rejected_native)?;
   {
     let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    lock.insert(env_id, EnvState::new(env, promise_executor_call, heap.gc_runs()));
+    lock.insert(
+      env_id,
+      EnvState::new(
+        env,
+        promise_executor_call,
+        body_stream_get_reader_wrapper_call,
+        body_stream_cancel_wrapper_call,
+        body_stream_reader_read_wrapper_call,
+        body_stream_reader_cancel_wrapper_call,
+        stream_consume_fulfilled_call,
+        stream_consume_rejected_call,
+        heap.gc_runs(),
+      ),
+    );
   }
 
   let bindings = WindowFetchBindings::new(env_id);
@@ -11199,6 +13081,148 @@ mod tests {
     assert!(scope.heap().is_array_buffer_object(ab_obj));
     assert_eq!(scope.heap().array_buffer_data(ab_obj)?, &[65, 66]);
 
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_accepts_readable_stream_body_and_text_consumes_it() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_value = host.window.exec_script(
+      "(function(){\
+         const upstream = new Response('hi');\
+         const stream = upstream.body;\
+         const resp = new Response(stream);\
+         return { same: resp.body === stream, promise: resp.text() };\
+       })()",
+    )?;
+    let result_root = host.window.heap_mut().add_root(result_value)?;
+
+    // Stream-backed body consumers resolve asynchronously via Promise jobs.
+    host.window.perform_microtask_checkpoint()?;
+
+    let result_value = host
+      .window
+      .heap()
+      .get_root(result_root)
+      .unwrap_or(Value::Undefined);
+    let Value::Object(result_obj) = result_value else {
+      return Err(VmError::InvariantViolation(
+        "expected response stream body test script to return an object",
+      ));
+    };
+
+    {
+      let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(result_obj))?;
+
+      let same_key = alloc_key(&mut scope, "same")?;
+      assert_eq!(vm.get(&mut scope, result_obj, same_key)?, Value::Bool(true));
+
+      let promise_key = alloc_key(&mut scope, "promise")?;
+      let promise_val = vm.get(&mut scope, result_obj, promise_key)?;
+      let Value::Object(promise_obj) = promise_val else {
+        return Err(VmError::InvariantViolation(
+          "expected response stream body test script to return a promise object",
+        ));
+      };
+      assert_eq!(
+        scope.heap().promise_state(promise_obj)?,
+        PromiseState::Fulfilled
+      );
+      let Some(result) = scope.heap().promise_result(promise_obj)? else {
+        return Err(VmError::InvariantViolation(
+          "Response.text promise missing result",
+        ));
+      };
+      let Value::String(text_s) = result else {
+        return Err(VmError::InvariantViolation(
+          "Response.text must resolve to a string",
+        ));
+      };
+      assert_eq!(scope.heap().get_string(text_s)?.to_utf8_lossy(), "hi");
+    }
+
+    host.window.heap_mut().remove_root(result_root);
+    Ok(())
+  }
+
+  #[test]
+  fn request_ctor_rejects_stringify_of_readable_stream_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_value = host.window.exec_script(
+      "(function(){\
+         const upstream = new Response('hi');\
+         const stream = upstream.body;\
+         const req = new Request('https://example.invalid/', { method: 'POST', body: stream });\
+         return { same: req.body === stream, promise: req.text() };\
+       })()",
+    )?;
+    let result_root = host.window.heap_mut().add_root(result_value)?;
+
+    // Stream-backed body consumers resolve asynchronously via Promise jobs.
+    host.window.perform_microtask_checkpoint()?;
+
+    let result_value = host
+      .window
+      .heap()
+      .get_root(result_root)
+      .unwrap_or(Value::Undefined);
+    let Value::Object(result_obj) = result_value else {
+      return Err(VmError::InvariantViolation(
+        "expected request stream body test script to return an object",
+      ));
+    };
+
+    {
+      let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(result_obj))?;
+
+      let same_key = alloc_key(&mut scope, "same")?;
+      assert_eq!(vm.get(&mut scope, result_obj, same_key)?, Value::Bool(true));
+
+      let promise_key = alloc_key(&mut scope, "promise")?;
+      let promise_val = vm.get(&mut scope, result_obj, promise_key)?;
+      let Value::Object(promise_obj) = promise_val else {
+        return Err(VmError::InvariantViolation(
+          "expected request stream body test script to return a promise object",
+        ));
+      };
+      assert_eq!(
+        scope.heap().promise_state(promise_obj)?,
+        PromiseState::Fulfilled
+      );
+      let Some(result) = scope.heap().promise_result(promise_obj)? else {
+        return Err(VmError::InvariantViolation(
+          "Request.text promise missing result",
+        ));
+      };
+      let Value::String(text_s) = result else {
+        return Err(VmError::InvariantViolation(
+          "Request.text must resolve to a string",
+        ));
+      };
+      assert_eq!(scope.heap().get_string(text_s)?.to_utf8_lossy(), "hi");
+    }
+
+    host.window.heap_mut().remove_root(result_root);
     Ok(())
   }
 
