@@ -38,6 +38,7 @@ section in sync with `ls tests/*.rs`.
 |---|---|---|---|---|
 | `tests/accessibility_tests.rs` | integration | `tests/integration.rs::accessibility` | Top-level harness removed; suite now lives under `tests/accessibility/**` and uses `tests/common/accessibility`. | DONE |
 | `tests/bin_tests.rs` | integration | `tests/integration.rs::bin` | Top-level harness removed; suite now lives under `tests/bin/**`. | DONE |
+| `tests/crates_directory_guard.rs` | delete | delete | Redundant `#[path]` shim removed; guard runs via `tests/integration.rs::guards::crates_directory_guard`. | DONE |
 | `tests/browser_integration_tests.rs` | integration | `tests/integration.rs::browser_integration` | Compatibility shim deleted; run via `cargo test --features browser_ui --test integration browser_integration::...`. Tests needing serialization use `stage_listener_test_lock()` / `common::global_test_lock()`. | DONE |
 | `tests/browser_tab_render_interleaving.rs` | integration | `tests/integration.rs::browser_integration::browser_tab_render_interleaving` | Moved into `tests/browser_integration/browser_tab_render_interleaving.rs`. | DONE |
 | `tests/` `image_integration` `_tests.rs` | delete | delete | Backwards-compat harness for `tests/` `image_integration/**`; redundant with `tests/integration.rs::image_integration`. | DONE |
