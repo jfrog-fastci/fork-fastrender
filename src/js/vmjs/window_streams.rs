@@ -1096,7 +1096,7 @@ fn readable_stream_pipe_through_native(
     ))
   })?;
 
-  let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
+  let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
   let realm_slot = Value::Number(realm_id.to_raw() as f64);
 
   // Root reader, writer, and promise across callback allocation.
@@ -2706,7 +2706,7 @@ fn transform_sink_close_native(
       ))
     })?;
 
-  let realm_id = realm_id_for_binding_call(vm, scope, callee)?;
+  let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
   let realm_slot = Value::Number(realm_id.to_raw() as f64);
 
   // Root stream and promise across callback allocation.

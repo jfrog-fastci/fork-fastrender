@@ -7211,7 +7211,7 @@ fn maybe_adopt_node_into_document(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   dest_document_obj: GcObject,
-  dest_dom_ptr: NonNull<dom2::Document>,
+  mut dest_dom_ptr: NonNull<dom2::Document>,
   node: DomNodeKey,
 ) -> Result<DomNodeKey, VmError> {
   if node.node_id.index() == 0 {
