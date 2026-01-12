@@ -49,10 +49,10 @@ env:
   # Adjust `UPSTREAM_CONFORMANCE_SHARD_TOTAL` to change the full run size.
   UPSTREAM_CONFORMANCE_SHARD_TOTAL: "16"
   # For workflow_dispatch only: override the shard count without editing the workflow.
-  UPSTREAM_CONFORMANCE_SHARD_TOTAL_INPUT: ${{ github.event.inputs.shard_total }}
+  UPSTREAM_CONFORMANCE_SHARD_TOTAL_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.shard_total || '' }}
   UPSTREAM_CONFORMANCE_PR_SHARDS: "0"
   # For workflow_dispatch only: override which shards run (comma-separated indices).
-  UPSTREAM_CONFORMANCE_SHARDS_INPUT: ${{ github.event.inputs.shards }}
+  UPSTREAM_CONFORMANCE_SHARDS_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.shards || '' }}
 
 jobs:
   upstream-conformance-matrix:
