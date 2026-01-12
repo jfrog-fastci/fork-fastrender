@@ -125,14 +125,16 @@ impl SessionAutosave {
       });
       match join_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(Ok(())) => {}
-        Ok(Err(_)) => return Err("session autosave thread panicked".to_string()),
+        Ok(Err(_)) => {
+          eprintln!("session autosave thread panicked during shutdown");
+        }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-          return Err(format!(
-            "timed out after {timeout:?} waiting for session autosave thread to exit"
-          ));
+          eprintln!(
+            "timed out after {timeout:?} waiting for session autosave thread to exit; shutting down anyway"
+          );
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-          return Err("session autosave join helper thread disconnected".to_string());
+          eprintln!("session autosave join helper thread disconnected during shutdown");
         }
       }
     }
@@ -226,6 +228,15 @@ fn session_writer_thread(
           }
           last_write_result.clone()
         } else {
+          // If the last write failed (e.g. due to a transient filesystem issue), allow `flush()` to
+          // retry persisting the current session even when there is no pending update.
+          if last_write_result.is_err() {
+            current_session.did_exit_cleanly = false;
+            last_write_result = save_session_atomic(&path, &current_session);
+            if last_write_result.is_ok() {
+              write_count.fetch_add(1, Ordering::Relaxed);
+            }
+          }
           last_write_result.clone()
         };
         let _ = done_tx.send(result);
