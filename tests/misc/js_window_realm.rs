@@ -1676,6 +1676,138 @@ document.body.dispatchEvent(new Event('x'));
 }
 
 #[test]
+fn dispatch_event_rejects_non_event_objects() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__threw = false;
+globalThis.__name = '';
+globalThis.__msg = '';
+try {
+  document.body.dispatchEvent({});
+} catch (e) {
+  globalThis.__threw = true;
+  globalThis.__name = e.name;
+  globalThis.__msg = e.message;
+}
+"#,
+  )?;
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let (threw, name, msg) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    (
+      get_data_prop(&mut scope, global, "__threw"),
+      get_string(scope.heap(), get_data_prop(&mut scope, global, "__name")),
+      get_string(scope.heap(), get_data_prop(&mut scope, global, "__msg")),
+    )
+  };
+
+  assert_eq!(threw, Value::Bool(true));
+  assert_eq!(name, "TypeError");
+  assert_eq!(msg, "EventTarget.dispatchEvent: event is not an Event");
+  Ok(())
+}
+
+#[test]
+fn custom_event_dispatch_preserves_detail() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__detail_before = null;
+globalThis.__detail_after = null;
+globalThis.__detail_in_listener = null;
+globalThis.__is_custom = false;
+globalThis.__dispatch_ret = false;
+
+document.body.addEventListener('x', (e) => {
+  globalThis.__detail_in_listener = e.detail;
+  globalThis.__is_custom = (e instanceof CustomEvent);
+});
+
+const ev = new CustomEvent('x', { detail: 1 });
+globalThis.__detail_before = ev.detail;
+globalThis.__dispatch_ret = document.body.dispatchEvent(ev);
+globalThis.__detail_after = ev.detail;
+"#,
+  )?;
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let (detail_before, detail_after, detail_in_listener, is_custom, dispatch_ret) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    (
+      get_data_prop(&mut scope, global, "__detail_before"),
+      get_data_prop(&mut scope, global, "__detail_after"),
+      get_data_prop(&mut scope, global, "__detail_in_listener"),
+      get_data_prop(&mut scope, global, "__is_custom"),
+      get_data_prop(&mut scope, global, "__dispatch_ret"),
+    )
+  };
+
+  assert_eq!(detail_before, Value::Number(1.0));
+  assert_eq!(detail_after, Value::Number(1.0));
+  assert_eq!(detail_in_listener, Value::Number(1.0));
+  assert_eq!(is_custom, Value::Bool(true));
+  assert_eq!(dispatch_ret, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn event_brand_is_non_enumerable() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+const ev = new Event('x');
+globalThis.__has_brand = (ev.__fastrender_event === true);
+globalThis.__brand_in_keys = (Object.keys(ev).indexOf('__fastrender_event') !== -1);
+globalThis.__kind_in_keys = (Object.keys(ev).indexOf('__fastrender_event_kind') !== -1);
+globalThis.__kind = ev.__fastrender_event_kind;
+"#,
+  )?;
+
+  let (has_brand, brand_in_keys, kind_in_keys, kind) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    (
+      get_data_prop(&mut scope, global, "__has_brand"),
+      get_data_prop(&mut scope, global, "__brand_in_keys"),
+      get_data_prop(&mut scope, global, "__kind_in_keys"),
+      get_data_prop(&mut scope, global, "__kind"),
+    )
+  };
+
+  assert_eq!(has_brand, Value::Bool(true));
+  assert_eq!(brand_in_keys, Value::Bool(false));
+  assert_eq!(kind_in_keys, Value::Bool(false));
+  // `BrandedEventKind::Event` must map to 0 (stable for downstream decoding).
+  assert_eq!(kind, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
 fn event_composed_path_includes_dom_ancestors() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;

@@ -11295,6 +11295,8 @@ fn mouse_event_constructor_native(
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
 
+  brand_event_object(scope, obj, BrandedEventKind::CustomEvent)?;
+
   let type_key = alloc_key(scope, "type")?;
   scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
 
@@ -15386,14 +15388,6 @@ fn is_branded_event_target(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool,
   ))
 }
 
-fn is_branded_abort_signal(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
-  let key = alloc_key(scope, ABORT_SIGNAL_BRAND_KEY)?;
-  Ok(matches!(
-    scope.heap().object_get_own_data_property_value(obj, &key)?,
-    Some(Value::Bool(true))
-  ))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 enum BrandedEventKind {
@@ -15403,6 +15397,11 @@ enum BrandedEventKind {
   StorageEvent = 3,
   PopStateEvent = 4,
   HashChangeEvent = 5,
+  UIEvent = 6,
+  MouseEvent = 7,
+  KeyboardEvent = 8,
+  FocusEvent = 9,
+  InputEvent = 10,
 }
 
 impl BrandedEventKind {
@@ -15415,6 +15414,11 @@ impl BrandedEventKind {
         3 => Some(Self::StorageEvent),
         4 => Some(Self::PopStateEvent),
         5 => Some(Self::HashChangeEvent),
+        6 => Some(Self::UIEvent),
+        7 => Some(Self::MouseEvent),
+        8 => Some(Self::KeyboardEvent),
+        9 => Some(Self::FocusEvent),
+        10 => Some(Self::InputEvent),
         _ => None,
       },
       _ => None,
@@ -15427,37 +15431,21 @@ fn brand_event_object(
   obj: GcObject,
   kind: BrandedEventKind,
 ) -> Result<(), VmError> {
+  scope.push_root(Value::Object(obj))?;
   let brand_key = alloc_key(scope, EVENT_BRAND_KEY)?;
-  scope.define_property(
-    obj,
-    brand_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Bool(true),
-        writable: false,
-      },
-    },
-  )?;
+  scope.define_property(obj, brand_key, non_configurable_read_only_data_desc(Value::Bool(true)))?;
 
   let kind_key = alloc_key(scope, EVENT_KIND_KEY)?;
   scope.define_property(
     obj,
     kind_key,
-    PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Number(kind as u8 as f64),
-        writable: false,
-      },
-    },
+    non_configurable_read_only_data_desc(Value::Number(kind as u8 as f64)),
   )?;
   Ok(())
 }
 
 fn branded_event_kind(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<BrandedEventKind>, VmError> {
+  scope.push_root(Value::Object(obj))?;
   let brand_key = alloc_key(scope, EVENT_BRAND_KEY)?;
   if !matches!(
     scope.heap().object_get_own_data_property_value(obj, &brand_key)?,
@@ -15475,6 +15463,14 @@ fn branded_event_kind(scope: &mut Scope<'_>, obj: GcObject) -> Result<Option<Bra
 
 fn is_branded_event(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
   Ok(branded_event_kind(scope, obj)?.is_some())
+}
+
+fn is_branded_abort_signal(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  let key = alloc_key(scope, ABORT_SIGNAL_BRAND_KEY)?;
+  Ok(matches!(
+    scope.heap().object_get_own_data_property_value(obj, &key)?,
+    Some(Value::Bool(true))
+  ))
 }
 
 fn abort_signal_is_aborted(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
@@ -16789,10 +16785,10 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     let (kind, proto_key_name) = match interface {
       EventInterface::StorageEvent => (BrandedEventKind::StorageEvent, STORAGE_EVENT_PROTOTYPE_KEY),
       EventInterface::CustomEvent => (BrandedEventKind::CustomEvent, CUSTOM_EVENT_PROTOTYPE_KEY),
-      EventInterface::MouseEvent => (BrandedEventKind::Event, MOUSE_EVENT_PROTOTYPE_KEY),
-      EventInterface::KeyboardEvent => (BrandedEventKind::Event, KEYBOARD_EVENT_PROTOTYPE_KEY),
-      EventInterface::FocusEvent => (BrandedEventKind::Event, FOCUS_EVENT_PROTOTYPE_KEY),
-      EventInterface::InputEvent => (BrandedEventKind::Event, INPUT_EVENT_PROTOTYPE_KEY),
+      EventInterface::MouseEvent => (BrandedEventKind::MouseEvent, MOUSE_EVENT_PROTOTYPE_KEY),
+      EventInterface::KeyboardEvent => (BrandedEventKind::KeyboardEvent, KEYBOARD_EVENT_PROTOTYPE_KEY),
+      EventInterface::FocusEvent => (BrandedEventKind::FocusEvent, FOCUS_EVENT_PROTOTYPE_KEY),
+      EventInterface::InputEvent => (BrandedEventKind::InputEvent, INPUT_EVENT_PROTOTYPE_KEY),
       EventInterface::Event => (BrandedEventKind::Event, EVENT_PROTOTYPE_KEY),
     };
     let proto_key = alloc_key(scope, proto_key_name)?;
@@ -19267,7 +19263,7 @@ fn document_create_event_native(
   let branded_kind = match kind {
     Kind::Event => BrandedEventKind::Event,
     Kind::CustomEvent => BrandedEventKind::CustomEvent,
-    Kind::MouseEvent => BrandedEventKind::Event,
+    Kind::MouseEvent => BrandedEventKind::MouseEvent,
     Kind::PopStateEvent => BrandedEventKind::PopStateEvent,
     Kind::HashChangeEvent => BrandedEventKind::HashChangeEvent,
     Kind::StorageEvent => BrandedEventKind::StorageEvent,
@@ -36830,6 +36826,36 @@ mod tests {
       get_string(realm.heap(), result),
       "TypeError|EventTarget.dispatchEvent: event is not an Event"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn custom_event_dispatch_preserves_detail() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\n\
+        let got = null;\n\
+        document.addEventListener('x', (e) => { got = e.detail; });\n\
+        const ev = new CustomEvent('x', { detail: 1 });\n\
+        document.dispatchEvent(ev);\n\
+        return got === 1 && ev.detail === 1;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn event_brand_is_non_enumerable() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const ev = new Event('x');\n\
+        if (ev.__fastrender_event !== true) return false;\n\
+        return Object.keys(ev).indexOf('__fastrender_event') === -1;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
