@@ -108,7 +108,7 @@ fn layout_of_interned_for_ref_is_gc_object_with_deterministic_fields() {
 }
 
 #[test]
-fn union_members_and_layout_of_interned_match_tagged_union_ordering() {
+fn union_members_and_layout_of_interned_for_object_union_collapses_to_gc_any_ptr() {
   let mut host = aot_host();
   let file = FileKey::new("main.ts");
   host.insert(
@@ -142,38 +142,12 @@ type U = { a: number } | { b: boolean };
 
   let layout_id = program.layout_of_interned(union_ref);
   let layout = store.layout(layout_id);
-  let Layout::TaggedUnion {
-    tag,
-    payload_offset,
-    variants,
-    size,
-    align,
-  } = layout
-  else {
-    panic!("expected tagged union layout, got {layout:?}");
-  };
-
-  assert_eq!(tag.abi, AbiScalar::U8);
-  assert_eq!(tag.offset, 0);
-  assert_eq!(payload_offset, 8);
-  assert_eq!(size, 16);
-  assert_eq!(align, 8);
-  assert_eq!(variants.len(), 2);
-
-  for (idx, variant) in variants.iter().enumerate() {
-    assert_eq!(variant.ty, members[idx]);
-    assert_eq!(variant.discriminant, idx as u32);
-    // `types-ts-interned` stores per-variant payload offsets *relative* to the
-    // union's `payload_offset`, which is shared by all variants in the current
-    // layout model.
-    assert_eq!(variant.payload_offset, 0);
-    assert!(matches!(
-      store.layout(variant.layout),
-      Layout::Ptr {
-        to: PtrKind::GcObject { .. }
-      }
-    ));
-  }
+  // Native AOT layout optimization: pointer-only unions of GC-managed pointers
+  // are represented as a single pointer word. Because the member pointer kinds
+  // differ (`{a}` vs `{b}` have different object shapes), the union becomes an
+  // untyped GC pointer.
+  assert_eq!(layout, Layout::Ptr { to: PtrKind::GcAny });
+  assert_eq!(store.gc_ptr_offsets(layout_id), vec![0]);
 }
 
 
