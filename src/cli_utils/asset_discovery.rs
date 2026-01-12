@@ -155,6 +155,7 @@ pub fn parse_srcset_urls(srcset: &str, max_candidates: usize) -> Vec<String> {
 /// This walks `cssparser` tokens (including nested blocks) and collects:
 /// - `url(...)` / `url` tokens
 /// - `@import` targets
+/// - string URL candidates inside `image-set()` / `-webkit-image-set()`
 ///
 /// URLs are resolved against `base_url` using [`resolve_href`].
 pub fn discover_css_urls(css: &str, base_url: &str) -> Vec<String> {
@@ -500,5 +501,25 @@ mod tests {
     let mut urls = discover_css_urls(css, base);
     urls.sort();
     assert_eq!(urls, vec!["https://example.com/styles/foo.png"]);
+  }
+
+  #[test]
+  fn discovers_css_urls_including_image_set_string_candidates() {
+    let base = "https://example.com/styles/main.css";
+    let css = r#"
+      .a { background-image: image-set("a.png" 1x, "b.png" 2x); }
+      .b { background-image: -webkit-image-set("c.png" 1x); }
+    "#;
+
+    let mut urls = discover_css_urls(css, base);
+    urls.sort();
+    assert_eq!(
+      urls,
+      vec![
+        "https://example.com/styles/a.png",
+        "https://example.com/styles/b.png",
+        "https://example.com/styles/c.png",
+      ]
+    );
   }
 }
