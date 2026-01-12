@@ -1,4 +1,5 @@
 use crate::error::{Error, ParseError, Result};
+use crate::dom::HTML_NAMESPACE;
 use crate::xml::{markup_for_roxmltree_with_doctypes, ExtractedDoctype};
 use roxmltree::Document as RoDocument;
 
@@ -29,11 +30,11 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
         None => (None, tag.name().to_string()),
       };
       let namespace = match tag.namespace() {
-        None => super::NULL_NAMESPACE.to_string(),
-        Some(ns) if ns == crate::dom::HTML_NAMESPACE => String::new(),
+        None => NULL_NAMESPACE.to_string(),
+        Some(ns) if ns == HTML_NAMESPACE => String::new(),
         Some(ns) => ns.to_string(),
       };
-      if namespace == super::NULL_NAMESPACE {
+      if namespace == NULL_NAMESPACE {
         prefix = None;
       }
       let mut attributes: Vec<(String, String)> = Vec::new();
@@ -41,13 +42,22 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
       for attr in node.attributes() {
         attributes.push((attr.name().to_string(), attr.value().to_string()));
       }
-      let id = doc.push_node(
+      let kind = if namespace.is_empty() && local_name.eq_ignore_ascii_case("slot") && prefix.is_none() {
+        NodeKind::Slot {
+          namespace: namespace.clone(),
+          attributes,
+          assigned: false,
+        }
+      } else {
         NodeKind::Element {
           tag_name: local_name,
           namespace,
           prefix,
           attributes,
-        },
+        }
+      };
+      let id = doc.push_node(
+        kind,
         Some(parent),
         /* inert_subtree */ false,
       );
