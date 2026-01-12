@@ -227,6 +227,7 @@ const DOM_SHIM: &str = r##"
   function DocumentFragment() { illegal(); }
   function Element() { illegal(); }
   function HTMLElement() { illegal(); }
+  function HTMLDivElement() { illegal(); }
   function HTMLInputElement() { illegal(); }
   function HTMLTextAreaElement() { illegal(); }
   function HTMLSelectElement() { illegal(); }
@@ -243,6 +244,7 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(DocumentFragment.prototype, Node.prototype);
   Object.setPrototypeOf(Element.prototype, Node.prototype);
   Object.setPrototypeOf(HTMLElement.prototype, Element.prototype);
+  Object.setPrototypeOf(HTMLDivElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(HTMLInputElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(HTMLTextAreaElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(HTMLSelectElement.prototype, HTMLElement.prototype);
@@ -342,6 +344,8 @@ const DOM_SHIM: &str = r##"
     // The shim only needs a small subset of element interfaces for WPT and common scripts.
     // Default to `HTMLElement` for all HTML tags.
     switch (String(tagNameLower).toLowerCase()) {
+      case "div":
+        return HTMLDivElement.prototype;
       case "input":
         return HTMLInputElement.prototype;
       case "textarea":
@@ -1685,6 +1689,7 @@ const DOM_SHIM: &str = r##"
   Object.defineProperty(g, "DocumentFragment", { value: DocumentFragment, configurable: true, writable: true });
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLElement", { value: HTMLElement, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLDivElement", { value: HTMLDivElement, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLInputElement", { value: HTMLInputElement, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLTextAreaElement", { value: HTMLTextAreaElement, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLSelectElement", { value: HTMLSelectElement, configurable: true, writable: true });
@@ -3433,8 +3438,10 @@ mod tests {
 
           return JSON.stringify({
             divIsHTMLElement: div instanceof HTMLElement,
+            divIsHTMLDivElement: div instanceof HTMLDivElement,
             divIsElement: div instanceof Element,
             divIsNode: div instanceof Node,
+            divProtoIsHTMLDiv: Object.getPrototypeOf(div) === HTMLDivElement.prototype,
 
             inputIsHTMLElement: input instanceof HTMLElement,
             inputIsHTMLInputElement: input instanceof HTMLInputElement,
@@ -3472,6 +3479,7 @@ mod tests {
 
             ctorIllegal: {
               HTMLElement: throwsIllegalConstructor(HTMLElement),
+              HTMLDivElement: throwsIllegalConstructor(HTMLDivElement),
               HTMLInputElement: throwsIllegalConstructor(HTMLInputElement),
               HTMLTextAreaElement: throwsIllegalConstructor(HTMLTextAreaElement),
               HTMLSelectElement: throwsIllegalConstructor(HTMLSelectElement),
@@ -3484,8 +3492,10 @@ mod tests {
       );
 
       assert_eq!(v["divIsHTMLElement"], true);
+      assert_eq!(v["divIsHTMLDivElement"], true);
       assert_eq!(v["divIsElement"], true);
       assert_eq!(v["divIsNode"], true);
+      assert_eq!(v["divProtoIsHTMLDiv"], true);
 
       assert_eq!(v["inputIsHTMLInputElement"], true);
       assert_eq!(v["inputIsHTMLElement"], true);
@@ -3522,6 +3532,7 @@ mod tests {
       assert_eq!(v["documentElementIsHTMLElement"], true);
 
       assert_eq!(v["ctorIllegal"]["HTMLElement"], true);
+      assert_eq!(v["ctorIllegal"]["HTMLDivElement"], true);
       assert_eq!(v["ctorIllegal"]["HTMLInputElement"], true);
       assert_eq!(v["ctorIllegal"]["HTMLTextAreaElement"], true);
       assert_eq!(v["ctorIllegal"]["HTMLSelectElement"], true);
