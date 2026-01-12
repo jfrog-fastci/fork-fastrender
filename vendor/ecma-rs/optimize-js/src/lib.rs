@@ -792,16 +792,31 @@ fn annotate_ssa_cfg_escape_and_ownership(
 }
 
 fn annotate_program_ssa_metadata(program: &mut Program) {
+  // Escape/ownership inference can be prohibitively expensive on the top-level CFG when compiling
+  // in non-module modes (e.g. `TopLevelMode::Global`), because global bindings are lowered through
+  // `UnknownLoad`/`UnknownStore` and the resulting coercion/state-machine IR can explode.
+  //
+  // This metadata is primarily used by typed/native backends (which compile in module mode), so we
+  // skip annotating the top-level CFG in global/script modes to keep compilation time bounded.
+  // Nested function CFGs are still annotated because they remain useful regardless of top-level
+  // mode.
+  let annotate_top_level = matches!(program.top_level_mode, TopLevelMode::Module);
+  if !annotate_top_level && program.functions.is_empty() {
+    return;
+  }
+
   let call_summaries = analysis::call_summary::summarize_program(program);
   let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
 
-  if let Some(cfg) = program.top_level.ssa_body.as_mut() {
-    annotate_ssa_cfg_escape_and_ownership(
-      cfg,
-      &program.top_level.params,
-      &summaries,
-      &call_summaries,
-    );
+  if annotate_top_level {
+    if let Some(cfg) = program.top_level.ssa_body.as_mut() {
+      annotate_ssa_cfg_escape_and_ownership(
+        cfg,
+        &program.top_level.params,
+        &summaries,
+        &call_summaries,
+      );
+    }
   }
   for func in program.functions.iter_mut() {
     if let Some(cfg) = func.ssa_body.as_mut() {

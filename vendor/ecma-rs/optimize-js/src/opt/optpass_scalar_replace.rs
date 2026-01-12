@@ -103,11 +103,11 @@ fn build_alias_set(cfg: &Cfg, alloc_var: u32) -> HashSet<u32> {
   aliases
 }
  
-fn parse_object_literal_initializers(inst: &Inst) -> Option<BTreeMap<String, Arg>> {
+fn parse_object_literal_initializers(inst: &Inst) -> Option<Vec<(String, Arg)>> {
   if !is_object_literal_alloc(inst) {
     return None;
   }
- 
+
   let (_tgt, _callee, _this, args, _spreads) = inst.as_call();
   // `__optimize_js_object` encodes each property as a triple:
   //   marker, key, value
@@ -115,7 +115,12 @@ fn parse_object_literal_initializers(inst: &Inst) -> Option<BTreeMap<String, Arg
   //   - __optimize_js_object_prop
   //   - __optimize_js_object_prop_computed
   //   - __optimize_js_object_spread
-  let mut out: BTreeMap<String, Arg> = BTreeMap::new();
+  // Preserve property order from the literal. This isn't currently observable in our IR encoding
+  // because initializer expressions are evaluated before the allocation call is emitted, but
+  // keeping the literal order makes the scalar replacement semantics easier to reason about and
+  // matches JS source semantics.
+  let mut out: Vec<(String, Arg)> = Vec::new();
+  let mut seen: BTreeSet<String> = BTreeSet::new();
   for chunk in args.chunks(3) {
     if chunk.len() != 3 {
       return None;
@@ -134,12 +139,12 @@ fn parse_object_literal_initializers(inst: &Inst) -> Option<BTreeMap<String, Arg
     if key == "__proto__" {
       return None;
     }
-    if out.contains_key(key) {
+    if !seen.insert(key.clone()) {
       // Duplicate keys are legal in JS but introduce subtle ordering/overwrite
       // semantics; keep the initial scalar replacement conservative.
       return None;
     }
-    out.insert(key.clone(), value.clone());
+    out.push((key.clone(), value.clone()));
   }
   Some(out)
 }
@@ -158,7 +163,7 @@ struct ScalarReplacePlan {
   // Field keys in deterministic order.
   fields: Vec<String>,
   // Field initializers from the literal allocation site.
-  init: BTreeMap<String, Arg>,
+  init: Vec<(String, Arg)>,
   // Def blocks per field (for phi insertion), including the allocation block.
   def_blocks: BTreeMap<String, BTreeSet<u32>>,
 }
@@ -170,9 +175,9 @@ fn build_plan(cfg: &Cfg, alloc_block: u32, alloc_inst: &Inst, alloc_var: u32) ->
  
   let init = parse_object_literal_initializers(alloc_inst)?;
   let aliases = build_alias_set(cfg, alloc_var);
- 
+
   // Collect all accessed field names + definition blocks for stores.
-  let mut fields: BTreeSet<String> = init.keys().cloned().collect();
+  let mut fields: BTreeSet<String> = init.iter().map(|(k, _)| k.clone()).collect();
   let mut def_blocks: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
  
   // The allocation block is the implicit "initial definition point" for all
@@ -499,28 +504,44 @@ fn scalar_replace_object(
           // Remove the allocation itself.
           bblock.remove(i);
  
-          // Insert deterministic per-field initializations. This keeps all literal initializer
-          // expressions (evaluated before the original allocation call) in their original order.
+          // Insert per-field initializations.
+          //
+          // Keep the initialized properties in source order, then initialize any remaining
+          // scalar-replaced fields to `undefined` in a deterministic order.
           let mut init_insts = Vec::new();
-          for field in plan.fields.iter() {
-            let value = plan
-              .init
-              .get(field)
-              .cloned()
-              .unwrap_or_else(|| Arg::Const(Const::Undefined));
+          let mut initialized: BTreeSet<String> = BTreeSet::new();
+          for (field, value) in plan.init.iter() {
             let tgt = *next_temp;
             *next_temp = next_temp
               .checked_add(1)
               .expect("temp id overflow while creating scalar replacement init temps");
- 
-            init_insts.push(Inst::var_assign(tgt, value));
+
+            init_insts.push(Inst::var_assign(tgt, value.clone()));
+            stacks
+              .get_mut(field)
+              .expect("field stack should exist")
+              .push(tgt);
+            *to_pop.entry(field.clone()).or_default() += 1;
+            initialized.insert(field.clone());
+          }
+
+          for field in plan.fields.iter() {
+            if initialized.contains(field) {
+              continue;
+            }
+            let tgt = *next_temp;
+            *next_temp = next_temp
+              .checked_add(1)
+              .expect("temp id overflow while creating scalar replacement init temps");
+
+            init_insts.push(Inst::var_assign(tgt, Arg::Const(Const::Undefined)));
             stacks
               .get_mut(field)
               .expect("field stack should exist")
               .push(tgt);
             *to_pop.entry(field.clone()).or_default() += 1;
           }
- 
+
           if !init_insts.is_empty() {
             bblock.splice(i..i, init_insts);
             i += plan.fields.len();
