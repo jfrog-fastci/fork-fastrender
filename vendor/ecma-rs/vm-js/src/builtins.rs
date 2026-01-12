@@ -8848,7 +8848,7 @@ pub fn object_prototype_to_locale_string(
   scope.push_root(Value::Object(obj))?;
 
   let to_string_key = string_key(&mut scope, "toString")?;
-  let func = scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, to_string_key, receiver)?;
+  let func = scope.get_with_host_and_hooks(vm, host, hooks, obj, to_string_key, receiver)?;
   if !scope.heap().is_callable(func)? {
     return Err(VmError::TypeError("toString is not callable"));
   }
@@ -8923,11 +8923,10 @@ pub fn array_prototype_map(
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
 
-    if !iter_scope.ordinary_has_property(obj, key)? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     // callback(value, index, array)
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
@@ -8973,11 +8972,10 @@ pub fn array_prototype_for_each(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
     let _ =
@@ -9023,11 +9021,10 @@ pub fn array_prototype_index_of(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let equal = match (search, value) {
       (Value::Undefined, Value::Undefined) => true,
@@ -9089,8 +9086,7 @@ pub fn array_prototype_includes(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let equal = match (search, value) {
       (Value::Undefined, Value::Undefined) => true,
@@ -9158,12 +9154,11 @@ pub fn array_prototype_filter(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
 
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
     let selected_val =
       vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, callback, this_arg, &call_args)?;
@@ -9236,9 +9231,9 @@ pub fn array_prototype_reduce(
       let mut iter_scope = scope.reborrow();
       let key_s = iter_scope.alloc_string(&k.to_string())?;
       let key = PropertyKey::from_string(key_s);
-      if iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+      if crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
         accumulator =
-          iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+          iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
         k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
         break;
       }
@@ -9262,12 +9257,11 @@ pub fn array_prototype_reduce(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&idx.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
 
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
     let call_args = [accumulator, value, Value::Number(idx as f64), Value::Object(obj)];
     accumulator = vm.call_with_host_and_hooks(
       host,
@@ -9329,11 +9323,10 @@ pub fn array_prototype_some(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
     let selected_val =
@@ -9380,11 +9373,10 @@ pub fn array_prototype_every(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
     let selected_val =
@@ -9431,11 +9423,10 @@ pub fn array_prototype_find(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
     let selected_val =
@@ -9482,11 +9473,10 @@ pub fn array_prototype_find_index(
     let mut iter_scope = scope.reborrow();
     let key_s = iter_scope.alloc_string(&k.to_string())?;
     let key = PropertyKey::from_string(key_s);
-    if !iter_scope.ordinary_has_property_with_tick(obj, key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key)? {
       continue;
     }
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
     let selected_val =
@@ -10050,7 +10040,7 @@ pub fn array_prototype_to_string(
   scope.push_root(Value::Object(array))?;
 
   let join_key = string_key(&mut scope, "join")?;
-  let func = scope.ordinary_get_with_host_and_hooks(
+  let func = scope.get_with_host_and_hooks(
     vm,
     host,
     hooks,
@@ -10115,12 +10105,18 @@ pub fn array_prototype_slice(
     let from_key = PropertyKey::from_string(from_s);
     let to_key = PropertyKey::from_string(to_s);
 
-    if !iter_scope.ordinary_has_property_with_tick(obj, from_key, || vm.tick())? {
+    if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+      vm,
+      &mut iter_scope,
+      host,
+      hooks,
+      obj,
+      from_key,
+    )? {
       continue;
     }
 
-    let value =
-      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
     iter_scope.create_data_property_or_throw(out, to_key, value)?;
   }
 
