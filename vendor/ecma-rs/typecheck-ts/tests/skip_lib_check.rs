@@ -3,7 +3,7 @@ use std::sync::Arc;
 mod common;
 
 use typecheck_ts::codes;
-use typecheck_ts::lib_support::{CompilerOptions, FileKind, LibFile};
+use typecheck_ts::lib_support::{CompilerOptions, FileKind, JsxMode, LibFile};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 #[test]
@@ -46,6 +46,68 @@ fn skip_lib_check_suppresses_dts_type_diagnostics() {
   assert!(
     diagnostics.is_empty(),
     "expected .d.ts diagnostics to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn skip_lib_check_suppresses_jsx_container_type_diagnostics_from_dts() {
+  let lib_key = FileKey::new("jsx.d.ts");
+  let entry_key = FileKey::new("entry.tsx");
+  let lib_source = r#"
+declare namespace JSX {
+  interface Element {}
+  interface ElementAttributesProperty {
+    a: {};
+    b: {};
+  }
+}
+
+declare const React: any;
+"#;
+  let entry_source = r#"
+// @jsx: react
+
+declare const Foo: { new (): {} };
+
+const el = <Foo />;
+"#;
+
+  let build_program = |skip_lib_check: bool| {
+    let mut options = CompilerOptions::default();
+    options.no_default_lib = true;
+    options.skip_lib_check = skip_lib_check;
+    options.jsx = Some(JsxMode::React);
+    let mut host = MemoryHost::with_options(options);
+    host.add_lib(common::core_globals_lib());
+    host.add_lib(LibFile {
+      key: lib_key.clone(),
+      name: Arc::from("jsx.d.ts"),
+      kind: FileKind::Dts,
+      text: Arc::from(lib_source),
+    });
+    host.insert(entry_key.clone(), entry_source);
+    Program::new(host, vec![entry_key.clone()])
+  };
+
+  let program = build_program(false);
+  let lib_id = program
+    .file_id(&lib_key)
+    .expect("jsx .d.ts file should be loaded");
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.primary.file == lib_id
+        && diag.code.as_str()
+          == codes::JSX_GLOBAL_TYPE_MAY_NOT_HAVE_MORE_THAN_ONE_PROPERTY.as_str()
+    }),
+    "expected TS2608 diagnostic from .d.ts when skip_lib_check is disabled, got {diagnostics:?}"
+  );
+
+  let program = build_program(true);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "expected JSX container type diagnostics from .d.ts to be suppressed when skip_lib_check is enabled, got {diagnostics:?}"
   );
 }
 
