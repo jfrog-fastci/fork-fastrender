@@ -4732,18 +4732,14 @@ impl App {
     use fastrender::ui::ChromeAction;
 
     match profile_shortcut_action(self.modifiers, key) {
-      Some(ProfileShortcutAction::ToggleBookmarkForActiveTab) => {
-        self.handle_chrome_actions(vec![ChromeAction::ToggleBookmarkForActiveTab]);
-        true
-      }
-      Some(ProfileShortcutAction::ToggleHistoryPanel) => {
-        self.handle_chrome_actions(vec![ChromeAction::ToggleHistoryPanel]);
-        true
-      }
-      Some(ProfileShortcutAction::ToggleBookmarksManager) => {
-        self.handle_chrome_actions(vec![ChromeAction::ToggleBookmarksManager]);
-        true
-      }
+      // Most chrome/profile shortcuts are handled inside the egui frame (`ui::chrome_ui`) so we can
+      // apply egui focus rules consistently. Avoid handling those shortcuts here to prevent double
+      // execution (winit handler + egui handler).
+      Some(
+        ProfileShortcutAction::ToggleBookmarkForActiveTab
+        | ProfileShortcutAction::ToggleHistoryPanel
+        | ProfileShortcutAction::ToggleBookmarksManager,
+      ) => false,
       Some(ProfileShortcutAction::ClearHistory) => {
         // Match canonical browser UX: Ctrl/Cmd+Shift+Delete opens a "Clear browsing data" dialog
         // rather than immediately wiping data.
@@ -5430,7 +5426,9 @@ impl App {
           return;
         };
 
-        // Profile-level shortcuts (bookmarks/history) should never reach page input.
+        // Profile-level shortcuts that are *not* handled by `ui::chrome_ui` should never reach page
+        // input (currently just "clear browsing data"). Most chrome shortcuts are handled in the
+        // egui frame so we can respect egui focus rules.
         if self.handle_profile_shortcuts(key) {
           self.window.request_redraw();
           return;
