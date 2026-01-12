@@ -6627,11 +6627,21 @@ fn custom_event_constructor_impl(
 
 fn storage_event_constructor_native(
   _vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "StorageEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn storage_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -6733,7 +6743,7 @@ fn storage_event_constructor_native(
   let prototype_key = alloc_key(scope, "prototype")?;
   let proto = scope
     .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
+    .object_get_own_data_property_value(ctor, &prototype_key)?
     .and_then(|v| match v {
       Value::Object(obj) => Some(obj),
       _ => None,
@@ -6886,11 +6896,21 @@ fn promise_rejection_event_constructor_impl(
 
 fn error_event_constructor_native(
   _vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "ErrorEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn error_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -6992,7 +7012,7 @@ fn error_event_constructor_native(
   let prototype_key = alloc_key(scope, "prototype")?;
   let proto = scope
     .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
+    .object_get_own_data_property_value(ctor, &prototype_key)?
     .and_then(|v| match v {
       Value::Object(obj) => Some(obj),
       _ => None,
@@ -7046,11 +7066,21 @@ fn error_event_constructor_native(
 
 fn before_unload_event_constructor_native(
   _vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "BeforeUnloadEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn before_unload_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -7094,7 +7124,7 @@ fn before_unload_event_constructor_native(
   let prototype_key = alloc_key(scope, "prototype")?;
   let proto = scope
     .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
+    .object_get_own_data_property_value(ctor, &prototype_key)?
     .and_then(|v| match v {
       Value::Object(obj) => Some(obj),
       _ => None,
@@ -7132,11 +7162,21 @@ fn before_unload_event_constructor_native(
 
 fn page_transition_event_constructor_native(
   _vm: &mut Vm,
-  scope: &mut Scope<'_>,
+  _scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _callee: GcObject,
   _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "PageTransitionEvent constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn page_transition_event_constructor_impl(
+  scope: &mut Scope<'_>,
+  ctor: GcObject,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -7186,7 +7226,7 @@ fn page_transition_event_constructor_native(
   let prototype_key = alloc_key(scope, "prototype")?;
   let proto = scope
     .heap()
-    .object_get_own_data_property_value(callee, &prototype_key)?
+    .object_get_own_data_property_value(ctor, &prototype_key)?
     .and_then(|v| match v {
       Value::Object(obj) => Some(obj),
       _ => None,
@@ -7255,10 +7295,10 @@ fn custom_event_constructor_construct_native(
 }
 
 fn storage_event_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -7267,7 +7307,7 @@ fn storage_event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  storage_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+  storage_event_constructor_impl(scope, ctor, args)
 }
 
 fn promise_rejection_event_constructor_construct_native(
@@ -7287,10 +7327,10 @@ fn promise_rejection_event_constructor_construct_native(
 }
 
 fn error_event_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -7299,14 +7339,14 @@ fn error_event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  error_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+  error_event_constructor_impl(scope, ctor, args)
 }
 
 fn before_unload_event_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -7315,14 +7355,14 @@ fn before_unload_event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  before_unload_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+  before_unload_event_constructor_impl(scope, ctor, args)
 }
 
 fn page_transition_event_constructor_construct_native(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   new_target: Value,
@@ -7331,7 +7371,7 @@ fn page_transition_event_constructor_construct_native(
     Value::Object(obj) => obj,
     _ => callee,
   };
-  page_transition_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+  page_transition_event_constructor_impl(scope, ctor, args)
 }
 
 fn event_init_event_native(
@@ -22142,6 +22182,29 @@ mod tests {
           }\n\
           return ok1 && ok2 && ok3 && illegal;\n\
         })()",
+      )?,
+      Value::Bool(true)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn event_constructors_require_new() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(
+      realm.exec_script(
+        "(() => {\n\
+           function illegal(f) {\n\
+             try { f(); return false; } catch (e) {\n\
+               return e && e.name === 'TypeError' && String(e.message).includes(\"without 'new'\");\n\
+             }\n\
+           }\n\
+           const ok1 = illegal(() => Event('x'));\n\
+           const ok2 = illegal(() => CustomEvent('x'));\n\
+           const ok3 = illegal(() => PromiseRejectionEvent('x', { promise: Promise.resolve(), reason: 1 }));\n\
+           return ok1 && ok2 && ok3;\n\
+         })()",
       )?,
       Value::Bool(true)
     );

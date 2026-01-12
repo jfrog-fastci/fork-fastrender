@@ -1130,13 +1130,8 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
           )
         } else {
           let event_ctor_key = alloc_key(&mut scope, "Event")?;
-          let event_ctor = vm.get_with_host_and_hooks(
-            vm_host,
-            &mut scope,
-            &mut hooks,
-            global_obj,
-            event_ctor_key,
-          )?;
+          let event_ctor =
+            vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, event_ctor_key)?;
           scope.push_root(event_ctor)?;
           (
             vm.construct_with_host_and_hooks(
