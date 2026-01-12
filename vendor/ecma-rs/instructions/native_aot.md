@@ -3804,6 +3804,10 @@ pub struct HandleId(pub u64);
 #[repr(transparent)]
 pub struct CoroutineId(pub u64);
 
+/// FFI-friendly UTF-8 byte string reference.
+///
+/// Note: `StringRef` bytes returned by `rt_string_concat` are currently allocated **outside** the
+/// GC heap and are leak-only (valid for process lifetime).
 #[repr(C)]
 pub struct StringRef {
   pub ptr: *const u8,
