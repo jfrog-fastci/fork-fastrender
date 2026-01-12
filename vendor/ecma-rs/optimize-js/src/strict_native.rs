@@ -11,6 +11,8 @@ use crate::{Diagnostic, Program, ProgramScopeKind, Span, TextRange};
 use crate::{ScopeId, SymbolId};
 use ahash::HashMap;
 use ahash::HashMapExt;
+#[cfg(feature = "semantic-ops")]
+use once_cell::sync::Lazy;
 
 const CODE_UNKNOWN_MEMORY: &str = "OPTN0001";
 const CODE_FOREIGN_GLOBAL: &str = "OPTN0002";
@@ -248,6 +250,32 @@ fn is_banned_constructor(path: &str) -> bool {
   matches!(path, "Function" | "Proxy" | "globalThis.Function" | "globalThis.Proxy")
 }
 
+#[cfg(feature = "semantic-ops")]
+fn banned_known_api_call(api: hir_js::ApiId) -> Option<&'static str> {
+  // NOTE: Keep in sync with `is_banned_builtin_call` / `is_banned_constructor`.
+  //
+  // `KnownApiCall` bypasses builtin-path reconstruction (there is no callee
+  // `Arg::Builtin`), so strict-native must explicitly reject known APIs that are
+  // otherwise banned (e.g. `eval`).
+  static BANNED: Lazy<Vec<(hir_js::ApiId, &'static str)>> = Lazy::new(|| {
+    [
+      "eval",
+      "Function",
+      "Proxy",
+      "Reflect.setPrototypeOf",
+      "Object.setPrototypeOf",
+      "globalThis.eval",
+      "globalThis.Function",
+      "globalThis.Proxy",
+    ]
+    .into_iter()
+    .map(|name| (hir_js::ApiId::from_name(name), name))
+    .collect()
+  });
+
+  BANNED.iter().find(|(id, _)| *id == api).map(|(_, name)| *name)
+}
+
 fn span_for_inst(program: &Program, inst: &Inst) -> Span {
   let range = inst
     .meta
@@ -379,6 +407,26 @@ fn validate_cfg(program: &Program, cfg: &Cfg, scopes: &SymbolScopes, opts: Stric
                 format!("strict-native forbids calling `{path}`"),
               ));
             }
+          }
+        }
+        #[cfg(feature = "semantic-ops")]
+        InstTyp::KnownApiCall { api } => {
+          if !opts.allow_spread_calls && !inst.spreads.is_empty() {
+            diagnostics.push(diag(
+              program,
+              inst,
+              CODE_SPREAD_CALL,
+              "strict-native forbids spread arguments in calls",
+            ));
+          }
+
+          if let Some(name) = banned_known_api_call(api) {
+            diagnostics.push(diag(
+              program,
+              inst,
+              CODE_BANNED_BUILTIN,
+              format!("strict-native forbids calling `{name}`"),
+            ));
           }
         }
         InstTyp::Bin if inst.bin_op == BinOp::GetProp => {

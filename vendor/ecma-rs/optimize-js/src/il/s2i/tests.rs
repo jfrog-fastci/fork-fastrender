@@ -603,3 +603,50 @@ fn known_api_call_lowers_to_structured_il_inst() {
     inst_types(&program.top_level)
   );
 }
+
+#[cfg(feature = "semantic-ops")]
+#[test]
+fn strict_native_rejects_banned_known_api_call() {
+  use hir_js::{lower_from_source_with_kind, ExprKind, FileKind, StmtKind};
+  use std::sync::Arc;
+
+  // Use a source program with no unknown/global identifiers so strict-native
+  // validation fails *specifically* on the banned known API call.
+  let src = r#"(function () { return 0; })("x");"#;
+  let lowered = lower_from_source_with_kind(FileKind::Js, src).expect("lower");
+
+  let body_id = lowered.root_body();
+  let body = lowered.body(body_id).expect("root body");
+  let stmt_id = *body.root_stmts.first().expect("root stmt");
+  let stmt = &body.stmts[stmt_id.0 as usize];
+  let expr_id = match stmt.kind {
+    StmtKind::Expr(expr) => expr,
+    _ => panic!("expected expression statement"),
+  };
+
+  let ExprKind::Call(call) = &body.exprs[expr_id.0 as usize].kind else {
+    panic!("expected Call expression");
+  };
+  let args = call.args.iter().map(|arg| arg.expr).collect();
+
+  // Force the call to be treated as a known API call to a strict-native banned builtin.
+  let api = hir_js::ApiId::from_name("eval");
+
+  let mut rewritten = lowered.clone();
+  let body_idx = *rewritten.body_index.get(&body_id).expect("root body index");
+  let mut new_body = rewritten.bodies[body_idx].as_ref().clone();
+  new_body.exprs[expr_id.0 as usize].kind = ExprKind::KnownApiCall { api, args };
+  rewritten.bodies[body_idx] = Arc::new(new_body);
+
+  let program =
+    Program::compile_lowered(src, rewritten, TopLevelMode::Module, false).expect("compile lowered");
+
+  let err = crate::strict_native::validate_program(&program, crate::strict_native::StrictNativeOpts::default())
+    .expect_err("banned KnownApiCall should be rejected by strict-native verifier");
+
+  assert!(
+    err.iter()
+      .any(|diag| diag.code == "OPTN0005" && diag.message.contains("eval")),
+    "expected OPTN0005 diagnostic mentioning eval, got {err:?}"
+  );
+}
