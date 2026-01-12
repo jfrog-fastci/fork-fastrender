@@ -120,6 +120,8 @@ pub fn safepoint_poll() {
 pub fn register_current_thread(kind: ThreadKind) -> ThreadId {
   let id = registry::register_current_thread(kind);
   crate::rt_alloc::on_thread_registered(id);
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_thread_init();
   id
 }
 
@@ -128,6 +130,8 @@ pub fn register_current_thread(kind: ThreadKind) -> ThreadId {
 /// This wrapper also tears down thread-local allocator bookkeeping used by `rt_alloc`.
 pub fn unregister_current_thread() {
   if let Some(id) = registry::current_thread_id() {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_thread_deinit();
     crate::rt_alloc::on_thread_unregistered(id);
   }
   registry::unregister_current_thread();

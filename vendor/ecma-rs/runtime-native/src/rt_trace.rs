@@ -68,42 +68,42 @@ mod imp {
 
   #[inline(always)]
   pub(crate) fn steals_attempted_inc() {
-    TLS_COUNTERS.with(|c| {
+    let _ = TLS_COUNTERS.try_with(|c| {
       c.steals_attempted.fetch_add(1, Ordering::Relaxed);
     });
   }
 
   #[inline(always)]
   pub(crate) fn steals_succeeded_inc() {
-    TLS_COUNTERS.with(|c| {
+    let _ = TLS_COUNTERS.try_with(|c| {
       c.steals_succeeded.fetch_add(1, Ordering::Relaxed);
     });
   }
 
   #[inline(always)]
   pub(crate) fn tasks_executed_inc() {
-    TLS_COUNTERS.with(|c| {
+    let _ = TLS_COUNTERS.try_with(|c| {
       c.tasks_executed.fetch_add(1, Ordering::Relaxed);
     });
   }
 
   #[inline(always)]
   pub(crate) fn worker_park_inc() {
-    TLS_COUNTERS.with(|c| {
+    let _ = TLS_COUNTERS.try_with(|c| {
       c.worker_park_count.fetch_add(1, Ordering::Relaxed);
     });
   }
 
   #[inline(always)]
   pub(crate) fn worker_unpark_inc() {
-    TLS_COUNTERS.with(|c| {
+    let _ = TLS_COUNTERS.try_with(|c| {
       c.worker_unpark_count.fetch_add(1, Ordering::Relaxed);
     });
   }
 
   #[inline(always)]
   pub(crate) fn epoll_wakeups_inc() {
-    TLS_COUNTERS.with(|c| {
+    let _ = TLS_COUNTERS.try_with(|c| {
       c.epoll_wakeups.fetch_add(1, Ordering::Relaxed);
     });
   }

@@ -1478,9 +1478,10 @@ mod tests {
           assert_eq!((*(root as *mut Obj)).value, idx);
         }
         completed.fetch_add(1, Ordering::Release);
-        // Unregistering the thread may contend on GC-aware locks, which can temporarily transition
-        // into a GC-safe region. Ensure the per-thread handle stack is empty before that happens:
-        // GC-safe regions must not have live raw GC pointers in local stack slots.
+        // Unregistering the thread may contend on GC-aware locks, which can temporarily enter a
+        // GC-safe region. That transition is only valid when no raw GC pointers are live in
+        // locals/registers (see `GcSafeGuard` contract). Drop the handle-stack root before
+        // unregistering to keep this test deterministic under contention.
         drop(scope);
         threading::unregister_current_thread();
       }));

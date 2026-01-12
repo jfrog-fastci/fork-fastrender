@@ -1,9 +1,6 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use crate::abi::RtGcStatsSnapshot;
-
-use crate::sync::GcAwareMutex;
-use std::sync::OnceLock;
 
 // NOTE: This module is only compiled when the `gc_stats` Cargo feature is enabled (see `lib.rs`).
 //
@@ -54,20 +51,45 @@ impl ThreadCounters {
   }
 }
 
-static THREAD_COUNTERS: OnceLock<GcAwareMutex<Vec<&'static ThreadCounters>>> = OnceLock::new();
-
-#[inline]
-fn registry() -> &'static GcAwareMutex<Vec<&'static ThreadCounters>> {
-  THREAD_COUNTERS.get_or_init(|| GcAwareMutex::new(Vec::new()))
+// -----------------------------------------------------------------------------
+// Registry
+// -----------------------------------------------------------------------------
+//
+// `record_*` can be called from hot paths like `rt_gc_safepoint`'s slow path. Those callsites may
+// already hold handle-stack roots (shadow-stack slots) and must not block on contended GC-aware locks
+// that enter GC-safe regions (see `gc_safe::enter_gc_safe_region` contract).
+//
+// To keep recording fast and avoid GC-safe transitions, we store per-thread counters in a lock-free
+// append-only list. Nodes are leaked and never removed, which is fine for a debugging/telemetry
+// feature and matches the existing behavior of leaking `ThreadCounters`.
+struct RegistryNode {
+  counters: &'static ThreadCounters,
+  next: *mut RegistryNode,
 }
 
+// Head of a lock-free stack of `RegistryNode`s.
+static REGISTRY_HEAD: AtomicPtr<RegistryNode> = AtomicPtr::new(core::ptr::null_mut());
+
 fn register_thread_counters(counters: &'static ThreadCounters) {
-  let mut reg = registry().lock();
-  // Avoid duplicates (should be impossible since TLS init is one-shot, but keep it defensive).
-  if reg.iter().any(|&c| core::ptr::eq(c, counters)) {
-    return;
+  let node = Box::leak(Box::new(RegistryNode {
+    counters,
+    next: core::ptr::null_mut(),
+  })) as *mut RegistryNode;
+
+  // Lock-free push onto the list.
+  loop {
+    let head = REGISTRY_HEAD.load(Ordering::Acquire);
+    // Safety: `node` is leaked and owned by this thread during registration.
+    unsafe {
+      (*node).next = head;
+    }
+    if REGISTRY_HEAD
+      .compare_exchange(head, node, Ordering::Release, Ordering::Relaxed)
+      .is_ok()
+    {
+      break;
+    }
   }
-  reg.push(counters);
 }
 
 thread_local! {
@@ -79,7 +101,11 @@ thread_local! {
 }
 
 pub fn record_alloc(size: usize) {
-  TLS_COUNTERS.with(|c| {
+  // GC stats recording may occur during thread teardown (e.g. other TLS destructors invoking runtime
+  // entrypoints). If this TLS key has already been destroyed, `LocalKey::with` would panic with
+  // `AccessError` and abort the process (`abort_on_dtor_unwind`). Treat it as best-effort and skip
+  // recording in that case.
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.alloc_calls.fetch_add(1, Ordering::Relaxed);
     c.alloc_bytes.fetch_add(size as u64, Ordering::Relaxed);
   });
@@ -87,68 +113,68 @@ pub fn record_alloc(size: usize) {
 
 pub fn record_alloc_array(len: usize, elem_size: usize) {
   let bytes = (len as u64).saturating_mul(elem_size as u64);
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.alloc_array_calls.fetch_add(1, Ordering::Relaxed);
     c.alloc_array_bytes.fetch_add(bytes, Ordering::Relaxed);
   });
 }
 
 pub fn record_gc_collect() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.gc_collect_calls.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_safepoint() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.safepoint_calls.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_write_barrier() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.write_barrier_calls_total.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_write_barrier_range() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.write_barrier_range_calls.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_write_barrier_old_young_hit() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.write_barrier_old_young_hits.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_set_young_range() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.set_young_range_calls.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_thread_init() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.thread_init_calls.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_thread_deinit() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.thread_deinit_calls.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_remembered_object_added() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.remembered_objects_added.fetch_add(1, Ordering::Relaxed);
   });
 }
 
 pub fn record_remembered_object_scanned_minor() {
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.remembered_objects_scanned_minor.fetch_add(1, Ordering::Relaxed);
   });
 }
@@ -157,7 +183,7 @@ pub fn record_card_marks(count: u64) {
   if count == 0 {
     return;
   }
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.card_marks_total.fetch_add(count, Ordering::Relaxed);
   });
 }
@@ -166,7 +192,7 @@ pub fn record_cards_scanned_minor(count: u64) {
   if count == 0 {
     return;
   }
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.cards_scanned_minor.fetch_add(count, Ordering::Relaxed);
   });
 }
@@ -179,7 +205,7 @@ pub fn record_cards_kept_after_rebuild(count: u64) {
   if count == 0 {
     return;
   }
-  TLS_COUNTERS.with(|c| {
+  let _ = TLS_COUNTERS.try_with(|c| {
     c.cards_kept_after_rebuild.fetch_add(count, Ordering::Relaxed);
   });
 }
@@ -187,8 +213,11 @@ pub fn record_cards_kept_after_rebuild(count: u64) {
 pub fn snapshot() -> RtGcStatsSnapshot {
   let mut snap = RtGcStatsSnapshot::default();
 
-  let reg = registry().lock();
-  for c in reg.iter() {
+  let mut node = REGISTRY_HEAD.load(Ordering::Acquire);
+  while !node.is_null() {
+    // Safety: registry nodes and their counters are leaked and never removed.
+    let n = unsafe { &*node };
+    let c = n.counters;
     snap.alloc_calls = snap.alloc_calls.wrapping_add(c.alloc_calls.load(Ordering::Relaxed));
     snap.alloc_bytes = snap.alloc_bytes.wrapping_add(c.alloc_bytes.load(Ordering::Relaxed));
     snap.alloc_array_calls =
@@ -220,130 +249,19 @@ pub fn snapshot() -> RtGcStatsSnapshot {
       snap.cards_scanned_minor.wrapping_add(c.cards_scanned_minor.load(Ordering::Relaxed));
     snap.cards_kept_after_rebuild =
       snap.cards_kept_after_rebuild.wrapping_add(c.cards_kept_after_rebuild.load(Ordering::Relaxed));
+
+    node = n.next;
   }
 
   snap
 }
 
-#[cfg(test)]
-mod tls_registration_tests {
-  use super::*;
-  use crate::threading;
-  use crate::threading::ThreadKind;
-  use std::sync::mpsc;
-  use std::time::Duration;
-  use std::time::Instant;
-
-  #[test]
-  fn gc_stats_registry_lock_tls_registration_is_gc_aware() {
-    let _rt = crate::test_util::TestRuntimeGuard::new();
-
-    // Stop-the-world handshakes can take much longer in debug builds (especially
-    // under parallel test execution on multi-agent hosts). Keep release builds
-    // strict, but give debug builds enough slack to avoid flaky timeouts.
-    const TIMEOUT: Duration = if cfg!(debug_assertions) {
-      Duration::from_secs(30)
-    } else {
-      Duration::from_secs(2)
-    };
-
-    std::thread::scope(|scope| {
-      // Thread A holds the stats registry lock.
-      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
-      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
-
-      // Thread C attempts to register TLS counters while the lock is held.
-      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
-      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
-      let (c_done_tx, c_done_rx) = mpsc::channel::<()>();
-
-      scope.spawn(move || {
-        threading::register_current_thread(ThreadKind::Worker);
-        let guard = registry().lock();
-        a_locked_tx.send(()).unwrap();
-        a_release_rx.recv().unwrap();
-        drop(guard);
-
-        // Cooperatively stop at the safepoint request.
-        crate::rt_gc_safepoint();
-        threading::unregister_current_thread();
-      });
-
-      a_locked_rx
-        .recv_timeout(TIMEOUT)
-        .expect("thread A should acquire the stats registry lock");
-
-      scope.spawn(move || {
-        let id = threading::register_current_thread(ThreadKind::Worker);
-        c_registered_tx.send(id).unwrap();
-        c_start_rx.recv().unwrap();
-
-        // Touch the TLS counters to force registration under the mutex.
-        record_alloc(1);
-        c_done_tx.send(()).unwrap();
-
-        threading::unregister_current_thread();
-      });
-
-      let c_id = c_registered_rx
-        .recv_timeout(TIMEOUT)
-        .expect("thread C should register with the thread registry");
-
-      // Ensure thread C is actively contending on the stats registry lock before starting STW.
-      c_start_tx.send(()).unwrap();
-
-      // Wait until thread C is marked NativeSafe (this is what prevents STW deadlocks).
-      let start = Instant::now();
-      loop {
-        let mut native_safe = false;
-        threading::registry::for_each_thread(|t| {
-          if t.id() == c_id {
-            native_safe = t.is_native_safe();
-          }
-        });
-
-        if native_safe {
-          break;
-        }
-        if start.elapsed() > TIMEOUT {
-          panic!("thread C did not enter a GC-safe region while blocked on the stats registry lock");
-        }
-        std::thread::yield_now();
-      }
-
-      // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
-      let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
-        .expect("stop-the-world should not already be active");
-      assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
-      struct ResumeOnDrop;
-      impl Drop for ResumeOnDrop {
-        fn drop(&mut self) {
-          crate::threading::safepoint::rt_gc_resume_world();
-        }
-      }
-      let _resume = ResumeOnDrop;
-
-      // Let thread A release the lock and reach the safepoint.
-      a_release_tx.send(()).unwrap();
-
-      assert!(
-        crate::threading::safepoint::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
-        "world failed to stop within timeout; stats registry lock contention must not block STW"
-      );
-
-      // Resume the world so the contending TLS registration can complete.
-      crate::threading::safepoint::rt_gc_resume_world();
-
-      c_done_rx
-        .recv_timeout(TIMEOUT)
-        .expect("TLS counter registration should complete after world is resumed");
-    });
-  }
-}
-
 pub fn reset() {
-  let reg = registry().lock();
-  for c in reg.iter() {
+  let mut node = REGISTRY_HEAD.load(Ordering::Acquire);
+  while !node.is_null() {
+    // Safety: registry nodes and their counters are leaked and never removed.
+    let n = unsafe { &*node };
+    let c = n.counters;
     c.alloc_calls.store(0, Ordering::Relaxed);
     c.alloc_bytes.store(0, Ordering::Relaxed);
     c.alloc_array_calls.store(0, Ordering::Relaxed);
@@ -361,112 +279,47 @@ pub fn reset() {
     c.card_marks_total.store(0, Ordering::Relaxed);
     c.cards_scanned_minor.store(0, Ordering::Relaxed);
     c.cards_kept_after_rebuild.store(0, Ordering::Relaxed);
+
+    node = n.next;
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::threading;
-  use crate::threading::ThreadKind;
-  use std::sync::mpsc;
-  use std::time::Duration;
-  use std::time::Instant;
 
   #[test]
-  fn gc_stats_registry_lock_snapshot_is_gc_aware() {
+  fn snapshot_includes_recorded_events() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
-    const TIMEOUT: Duration = Duration::from_secs(2);
+    crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
 
-    std::thread::scope(|scope| {
-      // Thread A holds the registry lock.
-      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
-      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+    let before = snapshot();
+    record_alloc(123);
+    record_alloc_array(3, 5);
+    record_gc_collect();
+    let after = snapshot();
 
-      // Thread C attempts to snapshot while the lock is held.
-      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
-      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
-      let (c_done_tx, c_done_rx) = mpsc::channel::<()>();
+    assert!(
+      after.alloc_calls.wrapping_sub(before.alloc_calls) >= 1,
+      "alloc_calls should increase"
+    );
+    assert!(
+      after.alloc_bytes.wrapping_sub(before.alloc_bytes) >= 123,
+      "alloc_bytes should increase"
+    );
+    assert!(
+      after.alloc_array_calls.wrapping_sub(before.alloc_array_calls) >= 1,
+      "alloc_array_calls should increase"
+    );
+    assert!(
+      after.alloc_array_bytes.wrapping_sub(before.alloc_array_bytes) >= 15,
+      "alloc_array_bytes should increase"
+    );
+    assert!(
+      after.gc_collect_calls.wrapping_sub(before.gc_collect_calls) >= 1,
+      "gc_collect_calls should increase"
+    );
 
-      scope.spawn(move || {
-        threading::register_current_thread(ThreadKind::Worker);
-        let guard = registry().lock();
-        a_locked_tx.send(()).unwrap();
-        a_release_rx.recv().unwrap();
-        drop(guard);
-
-        // Cooperatively stop at the safepoint request.
-        crate::rt_gc_safepoint();
-        threading::unregister_current_thread();
-      });
-
-      a_locked_rx
-        .recv_timeout(TIMEOUT)
-        .expect("thread A should acquire the gc_stats registry lock");
-
-      scope.spawn(move || {
-        let id = threading::register_current_thread(ThreadKind::Worker);
-        c_registered_tx.send(id).unwrap();
-        c_start_rx.recv().unwrap();
-
-        let _ = snapshot();
-        c_done_tx.send(()).unwrap();
-
-        threading::unregister_current_thread();
-      });
-
-      let c_id = c_registered_rx
-        .recv_timeout(TIMEOUT)
-        .expect("thread C should register with the thread registry");
-
-      // Ensure thread C is actively contending on the lock before starting STW.
-      c_start_tx.send(()).unwrap();
-
-      // Wait until thread C is marked NativeSafe (this is what prevents STW deadlocks).
-      let start = Instant::now();
-      loop {
-        let mut native_safe = false;
-        threading::registry::for_each_thread(|t| {
-          if t.id() == c_id {
-            native_safe = t.is_native_safe();
-          }
-        });
-
-        if native_safe {
-          break;
-        }
-        if start.elapsed() > TIMEOUT {
-          panic!("thread C did not enter a GC-safe region while blocked on the gc_stats registry lock");
-        }
-        std::thread::yield_now();
-      }
-
-      // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
-      let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
-        .expect("stop-the-world should not already be active");
-      assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
-      struct ResumeOnDrop;
-      impl Drop for ResumeOnDrop {
-        fn drop(&mut self) {
-          crate::threading::safepoint::rt_gc_resume_world();
-        }
-      }
-      let _resume = ResumeOnDrop;
-
-      // Let thread A release the lock and reach the safepoint.
-      a_release_tx.send(()).unwrap();
-
-      assert!(
-        crate::threading::safepoint::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
-        "world failed to stop within timeout; gc_stats registry lock contention must not block STW"
-      );
-
-      // Resume the world so the contending snapshot can complete.
-      crate::threading::safepoint::rt_gc_resume_world();
-
-      c_done_rx
-        .recv_timeout(TIMEOUT)
-        .expect("snapshot should complete after world is resumed");
-    });
+    crate::threading::unregister_current_thread();
   }
 }
