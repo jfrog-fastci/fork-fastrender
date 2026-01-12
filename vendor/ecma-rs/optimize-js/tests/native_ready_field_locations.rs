@@ -1,5 +1,6 @@
 #![cfg(feature = "typed")]
 
+use optimize_js::analysis::alias::AbstractLoc;
 use optimize_js::il::inst::{EffectLocation, InstTyp};
 use optimize_js::{compile_file_native_ready, NativeReadyOptions, TopLevelMode};
 use std::sync::Arc;
@@ -69,7 +70,7 @@ fn native_ready_strict_native_populates_field_locations() {
   let effects = collect_prop_assign_effects(&native.program);
   assert_eq!(effects.len(), 2, "expected two PropAssign instructions");
 
-  let mut fields: Vec<(optimize_js::analysis::alias::AbstractLoc, String)> = Vec::new();
+  let mut fields: Vec<(AbstractLoc, String)> = Vec::new();
   for effects in effects {
     assert!(
       !effects.writes.contains(&EffectLocation::Heap),
@@ -91,7 +92,7 @@ fn native_ready_strict_native_populates_field_locations() {
 
   assert_eq!(
     fields[0].0, fields[1].0,
-    "expected both writes to use the same allocation site"
+    "expected both writes to target the same allocation site"
   );
   assert_ne!(
     fields[0].1, fields[1].1,
@@ -123,8 +124,8 @@ fn native_ready_non_strict_native_falls_back_to_heap() {
     !effects
       .writes
       .iter()
-      .any(|loc| matches!(loc, EffectLocation::Field { .. })),
-    "expected no Field locations in non-strict-native mode but got {:?}",
+      .any(|loc| matches!(loc, EffectLocation::AllocField { .. } | EffectLocation::Field { .. })),
+    "expected no field-sensitive locations in non-strict-native mode but got {:?}",
     effects.writes
   );
 }
