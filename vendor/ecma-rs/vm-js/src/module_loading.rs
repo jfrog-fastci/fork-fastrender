@@ -385,14 +385,15 @@ impl GraphLoadingState {
           .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
         eval_scope.push_root(Value::Object(on_rejected))?;
  
-        crate::promise_ops::perform_promise_then_with_host_and_hooks(
+        crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
           vm,
           &mut eval_scope,
           host_ctx,
           hooks,
           eval_promise,
-          Some(Value::Object(on_fulfilled)),
-          Some(Value::Object(on_rejected)),
+          Value::Object(on_fulfilled),
+          Value::Object(on_rejected),
+          None,
         )?;
         Ok(())
       })();

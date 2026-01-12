@@ -1919,7 +1919,7 @@ impl ModuleGraph {
       scope.heap_mut().set_function_job_realm(on_rejected, realm)?;
     }
     scope.push_roots(&[Value::Object(on_rejected), awaited_promise])?;
-    crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
+    crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
       vm,
       scope,
       host,
@@ -1927,6 +1927,7 @@ impl ModuleGraph {
       awaited_promise,
       Value::Object(on_fulfilled),
       Value::Object(on_rejected),
+      None,
     )?;
     Ok(())
   }

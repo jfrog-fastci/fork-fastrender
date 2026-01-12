@@ -3542,9 +3542,11 @@ mod tests {
   #[test]
   fn for_await_of_does_not_register_native_calls_per_iteration() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
-    // Keep this small to exercise GC paths, but allow enough headroom for the intrinsic graph and
-    // Promise/async iterator allocations performed by the test.
-    let heap = Heap::new(crate::HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    // `for await...of` allocates and runs a fair amount of Promise/job machinery (async-from-sync
+    // iterator wrappers, `PromiseResolve`, and `PerformPromiseThen` reaction wiring). Keep this
+    // small to exercise GC paths, but allow enough headroom to avoid spurious `VmError::OutOfMemory`
+    // failures as vm-js evolves.
+    let heap = Heap::new(crate::HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
     let mut rt = crate::JsRuntime::new(vm, heap)?;
 
     rt.exec_script(

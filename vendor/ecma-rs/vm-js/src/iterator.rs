@@ -742,7 +742,7 @@ fn async_from_sync_iterator_continuation(
     Value::Object(close)
   };
 
-  crate::promise_ops::perform_promise_then_with_capability_with_host_and_hooks(
+  let promise = crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
     vm,
     &mut scope,
     host,
@@ -750,8 +750,12 @@ fn async_from_sync_iterator_continuation(
     value_wrapper,
     Value::Object(unwrap),
     on_rejected,
-    promise_capability,
-  )
+    Some(promise_capability),
+  )?
+  .ok_or(VmError::InvariantViolation(
+    "PerformPromiseThen with capability returned undefined",
+  ))?;
+  Ok(promise)
 }
 
 fn create_async_from_sync_iterator(
@@ -1271,15 +1275,28 @@ pub fn async_iterator_close(
   let on_rejected = scope.alloc_native_function(on_rejected_call_id, None, on_rejected_name, 1)?;
   scope.push_root(Value::Object(on_rejected))?;
 
-  crate::promise_ops::perform_promise_then_with_host_and_hooks(
+  let promise_capability =
+    crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+  scope.push_roots(&[
+    promise_capability.promise,
+    promise_capability.resolve,
+    promise_capability.reject,
+  ])?;
+
+  let promise = crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
     vm,
     &mut scope,
     host,
     hooks,
     awaited,
-    Some(Value::Object(on_fulfilled)),
-    Some(Value::Object(on_rejected)),
-  )
+    Value::Object(on_fulfilled),
+    Value::Object(on_rejected),
+    Some(promise_capability),
+  )?
+  .ok_or(VmError::InvariantViolation(
+    "PerformPromiseThen with capability returned undefined",
+  ))?;
+  Ok(promise)
 }
 
 pub(crate) fn async_iterator_close_on_fulfilled_call(

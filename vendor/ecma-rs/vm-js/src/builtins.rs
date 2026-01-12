@@ -5027,6 +5027,36 @@ pub(crate) fn new_promise_capability_with_host_and_hooks(
   // Promise.
   scope.push_root(constructor)?;
 
+  // Fast path for the intrinsic `%Promise%` constructor.
+  //
+  // `NewPromiseCapability(%Promise%)` is extremely common in engine-internal algorithms
+  // (async/await continuations, async iterator wrappers, module loading). The spec expresses it as
+  // `Construct(%Promise%, « executor »)`, but for the intrinsic Promise constructor the executor is
+  // a built-in function that is not observable by user code. Avoid allocating the capability
+  // executor + closure environment and calling into the Promise constructor; instead, create the
+  // Promise and its resolving functions directly.
+  //
+  // This keeps Promise-heavy workloads (and small-heap unit tests) from regressing due to
+  // `NewPromiseCapability` overhead while preserving observable `GetPrototypeFromConstructor`
+  // semantics (i.e. `Promise.prototype` accessors still run).
+  if constructor == Value::Object(intr.promise()) {
+    let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+      vm,
+      scope,
+      host,
+      hooks,
+      constructor,
+      intr.promise_prototype(),
+    )?;
+    let promise = scope.alloc_promise_with_prototype(Some(proto))?;
+    let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
+    return Ok(PromiseCapability {
+      promise: Value::Object(promise),
+      resolve,
+      reject,
+    });
+  }
+
   // --- NewPromiseCapability(C) ---
   // Spec: https://tc39.es/ecma262/#sec-newpromisecapability
 

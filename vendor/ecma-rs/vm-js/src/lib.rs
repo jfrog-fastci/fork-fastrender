@@ -303,6 +303,8 @@ pub use crate::promise_ops::new_promise_capability;
 pub use crate::promise_ops::new_promise_capability_with_host_and_hooks;
 pub use crate::promise_ops::perform_promise_then;
 pub use crate::promise_ops::perform_promise_then_with_host_and_hooks;
+pub use crate::promise_ops::perform_promise_then_with_result_capability;
+pub use crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks;
 pub use crate::promise_ops::promise_resolve;
 pub use crate::promise_ops::promise_resolve_with_host_and_hooks;
 pub use crate::promise_rejection_tracker::AboutToBeNotifiedBatch;
