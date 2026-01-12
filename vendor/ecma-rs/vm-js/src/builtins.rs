@@ -2358,7 +2358,6 @@ pub fn array_constructor_construct(
 ) -> Result<Value, VmError> {
   array_constructor_impl(vm, scope, args)
 }
-
 fn proxy_constructor_impl(
   scope: &mut Scope<'_>,
   target: Value,
@@ -2375,7 +2374,6 @@ fn proxy_constructor_impl(
   let proxy = proxy_scope.alloc_proxy(Some(target), Some(handler))?;
   Ok(Value::Object(proxy))
 }
-
 /// `Proxy` constructor (ECMA-262).
 ///
 /// Proxy must be called with `new`; calling it as a normal function throws a TypeError.
