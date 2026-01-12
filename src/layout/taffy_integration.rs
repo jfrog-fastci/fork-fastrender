@@ -1464,7 +1464,7 @@ fn parse_taffy_cache_limit(toggles: &runtime::RuntimeToggles, var: &str) -> Opti
 
 fn taffy_cache_limit_overrides() -> TaffyTemplateCacheLimitOverrides {
   let toggles = runtime::runtime_toggles();
-  TaffyTemplateCacheLimitOverrides::from_runtime_toggles(&toggles)
+  TaffyTemplateCacheLimitOverrides::from_runtime_toggles(toggles.as_ref())
 }
 
 fn taffy_template_cache_limit_override(adapter: TaffyAdapterKind) -> Option<usize> {
@@ -1623,6 +1623,43 @@ mod tests {
       root_style: Arc::new(SendSyncStyle(TaffyStyle::default())),
       child_styles: Vec::new(),
     })
+  }
+
+  #[test]
+  fn taffy_template_cache_limit_respects_scoped_runtime_toggles() {
+    use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
+    use std::collections::HashMap;
+
+    let limit_one = with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_TAFFY_CACHE_LIMIT".to_string(),
+        "1".to_string(),
+      )]))),
+      || taffy_template_cache_limit(TaffyAdapterKind::Flex),
+    );
+    assert_eq!(limit_one, 1);
+
+    // Ensure the cache limit is recomputed when runtime toggles change (no one-time snapshot).
+    let limit_two = with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_TAFFY_CACHE_LIMIT".to_string(),
+        "2".to_string(),
+      )]))),
+      || taffy_template_cache_limit(TaffyAdapterKind::Flex),
+    );
+    assert_eq!(limit_two, 2);
+
+    // Adapter-specific overrides should take precedence over the global default.
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_TAFFY_CACHE_LIMIT".to_string(), "3".to_string()),
+      ("FASTR_TAFFY_FLEX_CACHE_LIMIT".to_string(), "4".to_string()),
+    ])));
+    let flex = with_runtime_toggles(toggles.clone(), || {
+      taffy_template_cache_limit(TaffyAdapterKind::Flex)
+    });
+    let grid = with_runtime_toggles(toggles, || taffy_template_cache_limit(TaffyAdapterKind::Grid));
+    assert_eq!(flex, 4);
+    assert_eq!(grid, 3);
   }
 
   #[test]
