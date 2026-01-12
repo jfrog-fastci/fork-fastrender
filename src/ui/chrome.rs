@@ -2001,6 +2001,9 @@ pub fn chrome_ui_with_bookmarks(
           let case_toggle = ui
             .toggle_value(&mut tab.find.case_sensitive, "Aa")
             .on_hover_text("Case sensitive");
+          case_toggle.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Case sensitive")
+          });
           let case_changed = case_toggle.changed();
 
           if response.changed() || case_changed {
