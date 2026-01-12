@@ -2,7 +2,10 @@ use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // These tests exercise async/await control flow and therefore allocate multiple Promises and
+  // microtask jobs. Keep the heap limit large enough to avoid spurious `VmError::OutOfMemory`
+  // failures as vm-js builtin coverage grows.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -115,6 +118,45 @@ fn await_in_for_of_rhs_and_body() -> Result<(), VmError> {
 
   let value = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, value), "ab");
+  Ok(())
+}
+
+#[test]
+fn await_in_for_of_break_close_throw_overrides_break() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        const iterable = {};
+        iterable[Symbol.iterator] = function () {
+          return {
+            next() { return { value: 1, done: false }; },
+            return() { throw "close"; },
+          };
+        };
+
+        try {
+          for (const x of iterable) {
+            await 0;
+            break;
+          }
+          out = "bad";
+        } catch (e) {
+          out = e;
+        }
+      }
+      f();
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "close");
   Ok(())
 }
 

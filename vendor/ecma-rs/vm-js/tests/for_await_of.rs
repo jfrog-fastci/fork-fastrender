@@ -863,6 +863,59 @@ fn for_await_of_throw_suppresses_getmethod_abrupt_when_iterator_return_getter_th
 
   let return_gets = rt.exec_script("returnGets")?;
   assert_eq!(return_gets, Value::Number(1.0));
+  Ok(())
+}
 
+#[test]
+fn for_await_over_sync_iterator_rejected_value_preserves_reason_and_closes_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.iterator] = function () {
+        let i = 0;
+        return {
+          next() {
+            i++;
+            if (i === 1) return { value: Promise.reject("boom"), done: false };
+            return { value: undefined, done: true };
+          },
+          return() {
+            returnCalls++;
+            throw "close";
+          },
+        };
+      };
+
+      async function f() {
+        for await (const x of iterable) {
+          // Never reached: awaiting the `value` promise rejects.
+          out = "bad";
+        }
+      }
+
+      f().then(function () { out = "bad"; }, function (e) { out = e; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "boom");
+
+  let value = rt.exec_script("returnCalls")?;
+  let Value::Number(return_calls) = value else {
+    panic!("expected number, got {value:?}");
+  };
+  assert!(
+    return_calls >= 1.0,
+    "expected iterator.return to be called at least once, got {return_calls}"
+  );
   Ok(())
 }

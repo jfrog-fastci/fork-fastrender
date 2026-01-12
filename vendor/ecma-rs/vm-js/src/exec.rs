@@ -14364,12 +14364,12 @@ fn async_for_await_of_close(
       if completion_is_throw && err.is_throw_completion() {
         return Ok(AsyncEval::Complete(completion));
       }
-      match err {
-        VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
-          return Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?));
-        }
-        other => return Err(other),
-      };
+        match err {
+          VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+           return Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?));
+          }
+          other => return Err(other),
+        };
     }
   };
 
