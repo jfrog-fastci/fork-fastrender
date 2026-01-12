@@ -7824,29 +7824,24 @@ impl<'a> Evaluator<'a> {
       .well_known_symbols()
       .has_instance;
     let has_instance_key = PropertyKey::from_symbol(has_instance_sym);
-    let method = {
-      let value = scope.get_with_host_and_hooks(
-        self.vm,
-        &mut *self.host,
-        &mut *self.hooks,
-        constructor_obj,
-        has_instance_key,
-        Value::Object(constructor_obj),
-      )?;
-      if matches!(value, Value::Undefined | Value::Null) {
-        None
-      } else if !scope.heap().is_callable(value)? {
-        return Err(throw_type_error(
-          self.vm,
-          &mut scope,
-          "@@hasInstance is not callable",
-        )?);
-      } else {
-        Some(value)
-      }
+    let method = match crate::spec_ops::get_method_with_host_and_hooks(
+      self.vm,
+      &mut scope,
+      &mut *self.host,
+      &mut *self.hooks,
+      Value::Object(constructor_obj),
+      has_instance_key,
+    ) {
+      Ok(m) => m,
+      Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+      Err(err) => return Err(err),
     };
 
     if let Some(method) = method {
+      // Root `method` across the call. When `C` is a Proxy, `GetMethod(C, @@hasInstance)` can
+      // return a function that is not reachable from any rooted object (it can be synthesized by
+      // the Proxy's `get` trap), and we must keep it alive until the call begins.
+      scope.push_root(method)?;
       let result = self.call(
         &mut scope,
         method,
@@ -7903,14 +7898,18 @@ impl<'a> Evaluator<'a> {
     // P = Get(C, "prototype").
     let prototype_s = scope.alloc_string("prototype")?;
     scope.push_root(Value::String(prototype_s))?;
-    let prototype = scope.get_with_host_and_hooks(
+    let prototype = match scope.get_with_host_and_hooks(
       self.vm,
       &mut *self.host,
       &mut *self.hooks,
       constructor,
       PropertyKey::from_string(prototype_s),
       Value::Object(constructor),
-    )?;
+    ) {
+      Ok(v) => v,
+      Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, scope, msg)?),
+      Err(err) => return Err(err),
+    };
 
     let Value::Object(prototype) = prototype else {
       return Err(throw_type_error(
@@ -7919,7 +7918,12 @@ impl<'a> Evaluator<'a> {
         "Function has non-object prototype in instanceof check",
       )?);
     };
- 
+
+    // Root `prototype` for the duration of the algorithm. For Proxy constructors, `Get(C,
+    // "prototype")` can return an object that is not reachable from the constructor/target, and we
+    // must keep it alive across the prototype-chain walk.
+    scope.push_root(Value::Object(prototype))?;
+
     // Walk `object`'s prototype chain until we find `prototype` or reach the end.
     let mut current = scope.get_prototype_of_with_host_and_hooks(
       self.vm,
@@ -7952,6 +7956,11 @@ impl<'a> Evaluator<'a> {
       if !visited.insert(obj) {
         return Err(VmError::PrototypeCycle);
       }
+
+      // Root this prototype step. A Proxy `getPrototypeOf` trap can return an arbitrary object that
+      // is not necessarily reachable from the original LHS, and the VM must keep it alive until
+      // the algorithm completes.
+      scope.push_root(Value::Object(obj))?;
 
       if obj == prototype {
         return Ok(true);

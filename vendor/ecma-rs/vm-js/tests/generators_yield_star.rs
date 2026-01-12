@@ -36,11 +36,11 @@ fn yield_star_over_array_delegates_values() -> Result<(), VmError> {
       | "generator function call"
       | "async generator function call"
       | "yield*"
+      | "GeneratorResume"
+      | "GeneratorResumeAbrupt"
       | "Generator.prototype.next"
       | "Generator.prototype.return"
-      | "Generator.prototype.throw"
-      | "GeneratorResume"
-      | "GeneratorResumeAbrupt",
+      | "Generator.prototype.throw",
     )) => Ok(()),
     Err(err) => Err(err),
   }
