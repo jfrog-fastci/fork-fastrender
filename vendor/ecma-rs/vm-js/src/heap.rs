@@ -1294,7 +1294,7 @@ impl Heap {
   /// # Errors
   ///
   /// Returns an error if `obj` is not a live `Uint8Array` object or if its backing `ArrayBuffer` is
-  /// detached.
+  /// detached or if the view is out of bounds.
   pub fn uint8_array_write(&mut self, obj: GcObject, index: usize, bytes: &[u8]) -> Result<usize, VmError> {
     // Extract view fields without holding a mutable borrow across ArrayBuffer access.
     let (buffer, byte_offset, length) = {
