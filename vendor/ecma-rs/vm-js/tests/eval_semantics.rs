@@ -28,6 +28,18 @@ fn indirect_eval_does_not_see_local_lexical_bindings() {
 }
 
 #[test]
+fn parenthesized_eval_is_indirect() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"function f(){ let x = 1; return (eval)("typeof x"); } f()"#)
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string from typeof");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "undefined");
+}
+
+#[test]
 fn direct_eval_inherits_strictness_from_caller() {
   let mut rt = new_runtime();
 

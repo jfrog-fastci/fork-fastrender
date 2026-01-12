@@ -6529,6 +6529,7 @@ impl<'a> Evaluator<'a> {
     //
     // Otherwise this is an indirect eval (or just an ordinary call if `eval` was shadowed).
     let direct_eval_syntax = !expr.optional_chaining
+      && expr.callee.assoc.get::<ParenthesizedExpr>().is_none()
       && match &*expr.callee.stx {
         Expr::Id(id) => id.stx.name == "eval",
         Expr::IdPat(id) => id.stx.name == "eval",
@@ -14566,6 +14567,7 @@ fn async_call_continue_args(
   // This matters in the async evaluator because calls that contain `await` do not go through
   // `Evaluator::eval_call` and instead arrive here after resuming argument evaluation.
   let direct_eval_syntax = !call.optional_chaining
+    && call.callee.assoc.get::<ParenthesizedExpr>().is_none()
     && match &*call.callee.stx {
       Expr::Id(id) => id.stx.name == "eval",
       Expr::IdPat(id) => id.stx.name == "eval",
