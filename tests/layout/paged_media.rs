@@ -6265,6 +6265,66 @@ fn footnote_area_orders_multicol_footnotes_in_reading_order() {
 }
 
 #[test]
+fn footnote_body_snapshots_use_footnote_area_content_width() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 0;
+            @footnote { padding-left: 50px; padding-right: 50px; }
+          }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; display: block; }
+        </style>
+      </head>
+      <body>
+        <p>
+          Alpha<span class="note">
+            Footnote body with enough words to wrap across lines when constrained by the footnote
+            area's padding.
+          </span>
+        </p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+
+  let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(
+    wrapper.children.len(),
+    2,
+    "page with footnote should have content + footnote area"
+  );
+
+  let page_width = page_content(page1).bounds.width();
+
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
+  assert!(
+    footnote_area.children.len() >= 2,
+    "expected footnote area to include separator + footnote body"
+  );
+  let footnote_body = footnote_area.children.get(1).expect("footnote body");
+
+  let expected = (page_width - 100.0).max(0.0);
+  assert!(
+    (footnote_body.bounds.width() - expected).abs() < 0.1,
+    "expected footnote body width to match footnote content width (expected={expected}, actual={})",
+    footnote_body.bounds.width()
+  );
+}
+
+#[test]
 fn footnote_overflow_defers_later_calls_to_next_page() {
   let html = r#"
     <html>

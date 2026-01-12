@@ -12,7 +12,8 @@ use crate::layout::axis::{FragmentAxes, PhysicalAxis};
 use crate::layout::engine::{LayoutConfig, LayoutEngine};
 use crate::layout::formatting_context::{
   layout_style_fingerprint, set_fragmentainer_axes_hint, set_fragmentainer_block_offset_hint,
-  set_fragmentainer_block_size_hint, IntrinsicSizingMode, LayoutError,
+  set_fragmentainer_block_size_hint, set_footnote_area_inline_size_hint, IntrinsicSizingMode,
+  LayoutError,
 };
 use crate::layout::fragmentation::{
   apply_flex_parallel_flow_forced_break_shifts, apply_float_parallel_flow_forced_break_shifts,
@@ -1102,6 +1103,7 @@ impl PageBreakPlanner {
 struct PageLayoutKey {
   width_bits: u64,
   height_bits: u64,
+  footnote_inline_bits: u64,
   style_hash: u64,
   font_generation: u64,
 }
@@ -1115,11 +1117,91 @@ fn f32_to_canonical_bits(value: f32) -> u32 {
   }
 }
 
+pub(crate) fn footnote_area_content_inline_size(style: &ResolvedPageStyle) -> Option<f32> {
+  let inline_is_horizontal = inline_axis_is_horizontal(style.page_style.writing_mode);
+  let page_inline = if inline_is_horizontal {
+    style.content_size.width
+  } else {
+    style.content_size.height
+  };
+  let footnote_style = &style.footnote_style;
+  let (padding_start, padding_end, border_start, border_end) = if inline_is_horizontal {
+    (
+      resolve_len(
+        footnote_style,
+        footnote_style.padding_left,
+        Some(page_inline),
+        style.total_size,
+      )
+      .max(0.0),
+      resolve_len(
+        footnote_style,
+        footnote_style.padding_right,
+        Some(page_inline),
+        style.total_size,
+      )
+      .max(0.0),
+      resolve_len(
+        footnote_style,
+        footnote_style.used_border_left_width(),
+        Some(page_inline),
+        style.total_size,
+      )
+      .max(0.0),
+      resolve_len(
+        footnote_style,
+        footnote_style.used_border_right_width(),
+        Some(page_inline),
+        style.total_size,
+      )
+      .max(0.0),
+    )
+  } else {
+    (
+      resolve_len(
+        footnote_style,
+        footnote_style.padding_top,
+        Some(page_inline),
+        style.total_size,
+      )
+      .max(0.0),
+      resolve_len(
+        footnote_style,
+        footnote_style.padding_bottom,
+        Some(page_inline),
+        style.total_size,
+      )
+      .max(0.0),
+      resolve_len(
+        footnote_style,
+        footnote_style.used_border_top_width(),
+        Some(page_inline),
+        style.total_size,
+      )
+      .max(0.0),
+      resolve_len(
+        footnote_style,
+        footnote_style.used_border_bottom_width(),
+        Some(page_inline),
+        style.total_size,
+      )
+      .max(0.0),
+    )
+  };
+  let edges = padding_start + padding_end + border_start + border_end;
+  let footnote_content_inline = (page_inline - edges).max(0.0);
+  footnote_content_inline
+    .is_finite()
+    .then_some(footnote_content_inline.max(0.0))
+}
+
 impl PageLayoutKey {
   fn new(style: &ResolvedPageStyle, style_hash: u64, font_generation: u64) -> Self {
+    let footnote_inline = footnote_area_content_inline_size(style).unwrap_or(0.0);
     Self {
       width_bits: f32_to_canonical_bits(style.content_size.width) as u64,
       height_bits: f32_to_canonical_bits(style.content_size.height) as u64,
+      footnote_inline_bits: f32_to_canonical_bits(footnote_inline) as u64,
       style_hash,
       font_generation,
     }
@@ -3082,6 +3164,8 @@ fn layout_for_style<'a>(
     let _hint = set_fragmentainer_block_size_hint(Some(block_size_hint));
     let _axes_hint = set_fragmentainer_axes_hint(Some(root_axes));
     let _offset_hint = set_fragmentainer_block_offset_hint(0.0);
+    let _footnote_hint =
+      set_footnote_area_inline_size_hint(footnote_area_content_inline_size(style));
     let layout_tree = engine.layout_tree(box_tree)?;
     let layout = CachedLayout::from_root(
       layout_tree.root,

@@ -241,6 +241,10 @@ thread_local! {
 }
 
 thread_local! {
+  static FOOTNOTE_AREA_INLINE_SIZE_HINT: Cell<Option<f32>> = Cell::new(None);
+}
+
+thread_local! {
   /// Per-thread fast path for intrinsic sizing lookups.
   ///
   /// The global intrinsic caches are shared across rayon workers, but every lookup still requires
@@ -1771,6 +1775,33 @@ pub(crate) fn set_fragmentainer_axes_hint(
     previous
   });
   FragmentainerAxesHintGuard { previous }
+}
+
+pub(crate) struct FootnoteAreaInlineSizeHintGuard {
+  previous: Option<f32>,
+}
+
+impl Drop for FootnoteAreaInlineSizeHintGuard {
+  fn drop(&mut self) {
+    FOOTNOTE_AREA_INLINE_SIZE_HINT.with(|hint| {
+      hint.set(self.previous);
+    });
+  }
+}
+
+pub(crate) fn footnote_area_inline_size_hint() -> Option<f32> {
+  FOOTNOTE_AREA_INLINE_SIZE_HINT.with(|hint| hint.get())
+}
+
+pub(crate) fn set_footnote_area_inline_size_hint(
+  hint: Option<f32>,
+) -> FootnoteAreaInlineSizeHintGuard {
+  let previous = FOOTNOTE_AREA_INLINE_SIZE_HINT.with(|cell| {
+    let previous = cell.get();
+    cell.set(hint);
+    previous
+  });
+  FootnoteAreaInlineSizeHintGuard { previous }
 }
 
 /// Common trait for all formatting contexts

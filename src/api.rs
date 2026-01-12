@@ -123,13 +123,15 @@ use crate::layout::formatting_context::intrinsic_cache_stats;
 use crate::layout::formatting_context::LayoutError as FormattingLayoutError;
 use crate::layout::formatting_context::{
   set_fragmentainer_axes_hint, set_fragmentainer_block_offset_hint,
-  set_fragmentainer_block_size_hint,
+  set_fragmentainer_block_size_hint, set_footnote_area_inline_size_hint,
 };
 use crate::layout::fragment_clone_profile::{
   fragment_clone_profile_enabled, log_fragment_clone_profile, reset_fragment_clone_profile,
 };
 use crate::layout::fragmentation::FragmentationOptions;
-use crate::layout::pagination::{paginate_fragment_tree_with_options, PaginateOptions};
+use crate::layout::pagination::{
+  footnote_area_content_inline_size, paginate_fragment_tree_with_options, PaginateOptions,
+};
 use crate::layout::profile::layout_profile_enabled;
 use crate::layout::profile::layout_profile_snapshot;
 use crate::layout::profile::log_layout_profile;
@@ -12950,6 +12952,13 @@ impl FastRender {
     };
     let _fragmentainer_offset_hint =
       (!page_rules.is_empty()).then(|| set_fragmentainer_block_offset_hint(0.0));
+    let _footnote_area_inline_size_hint = (!page_rules.is_empty()).then(|| {
+      set_footnote_area_inline_size_hint(
+        first_page_style
+          .as_ref()
+          .and_then(footnote_area_content_inline_size),
+      )
+    });
     let layout_timer = stats.as_deref().and_then(|rec| rec.timer());
     let _layout_span = trace.span("layout_tree", "layout");
     let mut fragment_tree = self

@@ -59,6 +59,7 @@ use crate::layout::float_context::ClearSide;
 use crate::layout::float_context::FloatContext;
 use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_inline_intrinsic_call;
+use crate::layout::formatting_context::footnote_area_inline_size_hint;
 use crate::layout::formatting_context::intrinsic_cache_epoch;
 use crate::layout::formatting_context::layout_cache_lookup;
 use crate::layout::formatting_context::layout_cache_store;
@@ -1271,12 +1272,20 @@ impl InlineFormattingContext {
     // The call site may live inside a narrower fragmentainer (e.g. a multicol column), so using the
     // call site's available inline size would snapshot the body at column width and then reuse that
     // narrow layout in the page footnote area. Prefer the page viewport's inline size instead.
+    //
+    // When the footnote area itself has padding/border, snapshot at the footnote area's *content*
+    // inline size so wrapping matches the available space.
+    let hinted_inline_size = footnote_area_inline_size_hint()
+      .filter(|size| size.is_finite())
+      .map(|size| size.max(0.0));
     let viewport_inline_size = if crate::style::inline_axis_is_horizontal(body.style.writing_mode) {
       self.viewport_size.width
     } else {
       self.viewport_size.height
     };
-    let inline_size = if viewport_inline_size.is_finite() {
+    let inline_size = if let Some(size) = hinted_inline_size {
+      size
+    } else if viewport_inline_size.is_finite() {
       viewport_inline_size.max(0.0)
     } else if available_width.is_finite() {
       available_width.max(0.0)
