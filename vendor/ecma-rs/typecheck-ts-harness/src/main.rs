@@ -197,6 +197,9 @@ enum Commands {
     #[arg(long, default_value_t = default_jobs())]
     jobs: usize,
   },
+
+  /// Lint committed JSON baseline artifacts under `typecheck-ts-harness/baselines/**`.
+  LintBaselines,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -496,6 +499,11 @@ fn main() -> ExitCode {
         Err(err) => print_error(err),
       }
     }
+
+    Commands::LintBaselines => match typecheck_ts_harness::lint_baselines() {
+      Ok(()) => ExitCode::SUCCESS,
+      Err(err) => print_error(err),
+    },
   }
 }
 

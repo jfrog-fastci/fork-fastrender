@@ -2,6 +2,7 @@ use std::io;
 use std::path::Path;
 use thiserror::Error;
 
+pub mod baseline_lint;
 pub mod diagnostic_norm;
 pub mod difftsc;
 pub mod directives;
@@ -47,6 +48,7 @@ pub enum HarnessError {
   Manifest(String),
 }
 
+pub use baseline_lint::lint_baselines;
 pub use directives::HarnessDirective;
 pub use directives::HarnessOptions;
 pub use discover::build_filter;

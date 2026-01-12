@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use typecheck_ts::lib_support::{LibName, ScriptTarget};
 use typecheck_ts::Program;
 
-const STRICT_NATIVE_BASELINE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const STRICT_NATIVE_BASELINE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_TIMEOUT_SECS: u64 = 20;
 
 fn default_jobs() -> usize {
@@ -132,11 +132,11 @@ struct JsonReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StrictNativeBaseline {
+pub(crate) struct StrictNativeBaseline {
   #[serde(default)]
-  schema_version: u32,
+  pub(crate) schema_version: u32,
   #[serde(default)]
-  diagnostics: Vec<NormalizedDiagnostic>,
+  pub(crate) diagnostics: Vec<NormalizedDiagnostic>,
 }
 
 impl StrictNativeBaseline {
