@@ -19811,3 +19811,57 @@ mod date_tests {
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod proxy_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn proxy_constructor_is_not_callable() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        let threw = false;
+        try { Proxy({}, {}); } catch (e) { threw = true; }
+        threw
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn proxy_revocable_returns_proxy_and_revoke() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const r = Proxy.revocable({}, {});
+        typeof r.proxy === "object" && typeof r.revoke === "function"
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn proxy_revocable_revoke_revokes_proxy() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const r = Proxy.revocable({}, {});
+        r.revoke();
+        let threw = false;
+        try { Reflect.ownKeys(r.proxy); } catch (e) { threw = true; }
+        threw
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
