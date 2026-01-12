@@ -137,8 +137,8 @@ impl MutationObserverAgent {
   ///
   /// This helper updates those references so subsequent deliveries return the correct JS nodes.
   ///
-  /// Entries absent from `mapping` are left unchanged. Observed target lists are deduplicated after
-  /// remapping (preserving order).
+  /// Entries absent from `mapping` are left unchanged. Node lists are deduplicated after remapping
+  /// (preserving order).
   pub(crate) fn remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
     for state in self.observers.values_mut() {
       if !state.node_list.is_empty() {
@@ -274,24 +274,40 @@ impl Document {
     std::mem::take(&mut agent.microtask_needs_queueing)
   }
 
+  /// Remap internal mutation-observer [`NodeId`] references after a DOM operation replaces node IDs
+  /// but wants to preserve wrapper identity.
+  ///
+  /// This updates:
+  /// - each observer's node list, and
+  /// - all queued mutation records.
+  ///
+  /// Entries absent from `mapping` are left unchanged.
   pub(crate) fn mutation_observer_remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
     self.mutation_observer_agent.borrow_mut().remap_node_ids(mapping);
   }
 
+  /// Move mutation observer registrations stored on `old` to `new`.
+  ///
+  /// This is intended for clone+mapping style operations (e.g. adoption/import approximations) that
+  /// preserve wrapper identity by updating wrapper objects to point at a different `NodeId`.
+  ///
+  /// If either node is missing, this is a no-op.
   pub(crate) fn mutation_observer_move_registrations(&mut self, old: NodeId, new: NodeId) {
     if old == new {
       return;
     }
-    if old.index() >= self.nodes.len() || new.index() >= self.nodes.len() {
+    let old_idx = old.index();
+    let new_idx = new.index();
+    if old_idx >= self.nodes.len() || new_idx >= self.nodes.len() {
       return;
     }
 
-    let moved = std::mem::take(&mut self.nodes[old.index()].registered_observers);
+    let moved = std::mem::take(&mut self.nodes[old_idx].registered_observers);
     if moved.is_empty() {
       return;
     }
 
-    let new_list = &mut self.nodes[new.index()].registered_observers;
+    let new_list = &mut self.nodes[new_idx].registered_observers;
     for reg in moved {
       new_list.retain(|r| r.observer != reg.observer);
       new_list.push(reg);
