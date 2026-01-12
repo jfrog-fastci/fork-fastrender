@@ -320,7 +320,7 @@ pub const CANNOT_FIND_GLOBAL_TYPE: Code = Code::new(
   &[],
 );
 
-/// TS5053: Conflicting `--noLib` and `--lib` options.
+/// TS5053: Option 'lib' cannot be specified with option 'noLib'.
 ///
 /// TypeScript reports this diagnostic when `--noLib` is enabled while an
 /// explicit `--lib` list is also provided. The checker mirrors `tsc` by emitting
