@@ -30,17 +30,17 @@ section in sync with `ls tests/*.rs`.
 
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
-| `tests/allocation_failure.rs` | special | keep | Contains `#[global_allocator]` (via `tests/allocation_failure/mod.rs`); must remain separate. | DONE |
+| `tests/allocation_failure.rs` | special | keep | Contains `#[global_allocator]` (via `tests/allocation_failure_tests/mod.rs`); must remain separate. | DONE |
 | `tests/integration.rs` | integration | keep | Unified integration test binary. Should become the default home for remaining integration suites. | DONE |
 
 ### Completed (top-level crate removed)
 
 | File | Type | Destination (new architecture) | Notes | Status |
 |---|---|---|---|---|
+| `tests/browser_integration_tests.rs` | integration (shim) | delete | Compatibility shim for `--test browser_integration_tests` (extra binary). Suite runs via `tests/integration.rs::browser_integration` (`--features browser_ui`). Removed to satisfy the [end-state invariant](#end-state-invariants-to-verify) <code>ls tests/*.rs &#124; wc -l == 2</code>. | DONE |
 | `tests/accessibility_tests.rs` | integration | `tests/integration.rs::accessibility` | Top-level harness removed; suite now lives under `tests/accessibility/**` and uses `tests/common/accessibility`. | DONE |
 | `tests/bin_tests.rs` | integration | `tests/integration.rs::bin` | Top-level harness removed; suite now lives under `tests/bin/**`. | DONE |
 | `tests/crates_directory_guard.rs` | delete | delete | Redundant `#[path]` shim removed; guard runs via `tests/integration.rs::guards::crates_directory_guard`. | DONE |
-| `tests/browser_integration_tests.rs` | integration | `tests/integration.rs::browser_integration` | Compatibility shim deleted; run via `cargo test --features browser_ui --test integration browser_integration::...`. Tests needing serialization use `stage_listener_test_lock()` / `common::global_test_lock()`. | DONE |
 | `tests/browser_tab_render_interleaving.rs` | integration | `tests/integration.rs::browser_integration::browser_tab_render_interleaving` | Moved into `tests/browser_integration/browser_tab_render_interleaving.rs`. | DONE |
 | `tests/` `image_integration` `_tests.rs` | delete | delete | Backwards-compat harness for `tests/` `image_integration/**`; redundant with `tests/integration.rs::image_integration`. | DONE |
 | `tests/session_autosave.rs` | integration | `tests/integration.rs::ui::session_autosave` | Moved into `tests/ui/session_autosave.rs` (feature-gated: `browser_ui`). | DONE |
@@ -79,6 +79,7 @@ section in sync with `ls tests/*.rs`.
 | `tests/text_tests.rs` | delete | `src/text/tests/` | Top-level harness removed; suite moved out of `tests/` into `src/text/tests/**` unit tests. | DONE |
 | `tests/tree_tests.rs` | delete | delete | Top-level harness removed; tree/box generation tests migrated to unit tests under `src/tree/**`. | DONE |
 | `tests/ui_tests.rs` | delete | delete | Top-level harness removed; suite now lives under `tests/ui/**` and is pulled into `tests/integration.rs`. | DONE |
+| `tests/image_set_intrinsic_sizing.rs` | unit | `src/paint/tests/paint/image_set_intrinsic_sizing.rs` | Migrated to paint unit tests to avoid an extra top-level integration-test binary. | DONE |
 | `tests/var_tests.rs` | delete | `src/style/tests/var/` | Top-level harness removed; suite moved out of `tests/` into lib unit tests. | DONE |
 | `tests/weibo_web_font_relative_url_test.rs` | unit | `src/text/tests/weibo_web_font_relative_url_test.rs` | Migrated to unit tests under `src/text/tests/**`. | DONE |
 | `tests/flex_nowrap_negative_margins_do_not_trigger_monotonic_fallback.rs` | delete | delete | Pure `#[path]` shim removed; test remains under `tests/layout/**`. | DONE |
@@ -112,7 +113,7 @@ migrations.
 |---|---|---|---|
 | `tests/api/` | public API integration tests | `tests/integration.rs::api` | Must only use public API. |
 | `tests/accessibility/` | accessibility/accname fixtures + assertions | `tests/integration.rs::accessibility` | Public API + fixture-driven; stays in integration. |
-| `tests/allocation_failure/` | OOM + custom allocator harness | `tests/allocation_failure.rs` | Must stay separate due to `#[global_allocator]`. |
+| `tests/allocation_failure_tests/` | OOM + custom allocator harness | `tests/allocation_failure.rs` | Must stay separate due to `#[global_allocator]`. |
 | `tests/animation/` | animation engine tests | `src/animation/` | Runs in the shared integration binary via `tests/integration.rs` today; long-term goal is to migrate unit-level animation tests into `src/animation/**`. Former top-level `tests/animation_tests.rs` is now `tests/animation/animation_tests.rs`. |
 | `tests/bin/` | CLI/binary tests | `tests/integration.rs::bin` | Keep as integration tests; share net/fs helpers via `tests/common/`. |
 | `tests/browser_integration/` | browser/UI worker integration suite | `tests/integration.rs::browser_integration` | Runs in the shared integration binary; avoid process-init env mutation. Tests that touch global state should serialize via `stage_listener_test_lock()` / `common::global_test_lock()`. |

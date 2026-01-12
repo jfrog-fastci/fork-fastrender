@@ -12,15 +12,15 @@ use crate::tree::fragment_tree::FragmentNode;
 use crate::{ComputedStyle, DisplayItem};
 
 fn solid_png_data_url(width: u32, height: u32, rgba: [u8; 4]) -> String {
+  let mut buf = Vec::new();
   let pixels: Vec<u8> = std::iter::repeat(rgba)
     .take((width * height) as usize)
     .flatten()
     .collect();
-  let mut buf = Vec::new();
   PngEncoder::new(&mut buf)
     .write_image(&pixels, width, height, ExtendedColorType::Rgba8)
     .expect("encode png");
-  format!("data:image/png;base64,{}", BASE64_STANDARD.encode(buf))
+  format!("data:image/png;base64,{}", BASE64_STANDARD.encode(&buf))
 }
 
 fn assert_background_image_set_tile_size(css_function: &str) {
@@ -92,4 +92,3 @@ fn background_image_set_preserves_density_for_intrinsic_sizing() {
 fn background_webkit_image_set_preserves_density_for_intrinsic_sizing() {
   assert_background_image_set_tile_size("-webkit-image-set");
 }
-

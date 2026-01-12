@@ -9,6 +9,4 @@
 //! file (`tests/allocation_failure.rs`) and the module directory (`tests/allocation_failure/`),
 //! without reintroducing forbidden `#[path = "..."]` shims.
 
-mod allocation_failure {
-  include!("allocation_failure/mod.rs");
-}
+mod allocation_failure_tests;
