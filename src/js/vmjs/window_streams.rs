@@ -34,6 +34,7 @@ use vm_js::{
 };
 
 const STREAM_REALM_ID_SLOT: usize = 0;
+const READER_STREAM_REF_KEY: &str = "__fastrender_readable_stream_reader_stream_ref";
 
 /// Maximum bytes returned by a single `reader.read()` call.
 ///
@@ -528,6 +529,16 @@ fn readable_stream_get_reader_native(
     .heap_mut()
     .object_set_prototype(reader_obj, Some(reader_proto))?;
 
+  // Keep the stream alive as long as the reader is alive (the spec stores this as an internal
+  // slot, which should be a strong reference).
+  scope.push_root(Value::Object(stream_obj))?;
+  let stream_ref_key = alloc_key(scope, READER_STREAM_REF_KEY)?;
+  scope.define_property(
+    reader_obj,
+    stream_ref_key,
+    data_desc(Value::Object(stream_obj), false),
+  )?;
+
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state.readers.insert(
       WeakGcObject::from(reader_obj),
@@ -568,6 +579,13 @@ fn readable_stream_cancel_native(
       .ok_or(VmError::TypeError("ReadableStream.cancel: illegal invocation"))?;
     if stream_state.locked {
       return Err(VmError::TypeError("ReadableStream is locked"));
+    }
+
+    // Lazy streams created by host APIs (e.g. Fetch `Response.body`) may need to run their init
+    // closure on cancel so host-side resources are released and the stream is considered
+    // "disturbed" even if no reader ever consumes it.
+    if let Some(init) = stream_state.init.take() {
+      let _ = init();
     }
 
     stream_state.state = StreamLifecycleState::Closed;
@@ -1590,6 +1608,13 @@ fn reader_release_lock_native(
     settle_pending_read(vm, scope, host, hooks, pending.reader, pending.outcome)?;
   }
 
+  // Drop the strong reference from the reader to the stream so the stream can be collected once
+  // there are no other references.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(reader_obj))?;
+  let stream_ref_key = alloc_key(&mut scope, READER_STREAM_REF_KEY)?;
+  scope.define_property(reader_obj, stream_ref_key, data_desc(Value::Undefined, false))?;
+
   Ok(Value::Undefined)
 }
 
@@ -1630,6 +1655,10 @@ fn reader_cancel_native(
     let Some(stream_state) = state.streams.get_mut(&stream_weak) else {
       return Ok((ReadOutcome::Done, None));
     };
+
+    if let Some(init) = stream_state.init.take() {
+      let _ = init();
+    }
 
     stream_state.state = StreamLifecycleState::Closed;
     stream_state.close_requested = true;
@@ -2839,6 +2868,42 @@ fn transform_stream_ctor_construct(
   scope.define_property(ts_obj, writable_key, read_only_data_desc(Value::Object(writable)))?;
 
   Ok(Value::Object(ts_obj))
+}
+
+pub(crate) fn readable_stream_is_locked(vm: &Vm, heap: &Heap, obj: GcObject) -> bool {
+  let mut registry = registry()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+
+  let key = WeakGcObject::from(obj);
+  let gc_runs = heap.gc_runs();
+
+  if let Some(realm_id) = vm.current_realm() {
+    let Some(state) = registry.realms.get_mut(&realm_id) else {
+      return false;
+    };
+    if gc_runs != state.last_gc_runs {
+      state.last_gc_runs = gc_runs;
+      state.streams.retain(|k, _| k.upgrade(heap).is_some());
+      state.readers.retain(|k, _| k.upgrade(heap).is_some());
+    }
+    return state.streams.get(&key).map_or(false, |s| s.locked);
+  }
+
+  // If we don't have a current realm (e.g. tests calling native handlers directly), fall back to
+  // scanning all installed realm states. The number of realms is expected to be small.
+  for state in registry.realms.values_mut() {
+    if gc_runs != state.last_gc_runs {
+      state.last_gc_runs = gc_runs;
+      state.streams.retain(|k, _| k.upgrade(heap).is_some());
+      state.readers.retain(|k, _| k.upgrade(heap).is_some());
+    }
+    if let Some(stream_state) = state.streams.get(&key) {
+      return stream_state.locked;
+    }
+  }
+
+  false
 }
 
 pub fn install_window_streams_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) -> Result<(), VmError> {

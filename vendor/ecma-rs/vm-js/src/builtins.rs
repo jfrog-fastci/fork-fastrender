@@ -2420,6 +2420,7 @@ pub fn array_constructor_construct(
 ) -> Result<Value, VmError> {
   array_constructor_impl(vm, scope, args)
 }
+
 fn proxy_constructor_impl(
   scope: &mut Scope<'_>,
   target: Value,
