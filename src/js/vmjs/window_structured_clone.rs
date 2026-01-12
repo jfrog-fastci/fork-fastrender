@@ -299,8 +299,9 @@ enum Node {
   Error {
     kind: ErrorTag,
     name: ErrorTag,
-    message: String,
-    props: Vec<(GcString, EncodedValue)>,
+    /// `Some` if the serialized message is a string, `None` if the serialized message is
+    /// `undefined`.
+    message: Option<Vec<u16>>,
   },
   ArrayBuffer {
     source: GcObject,
@@ -670,6 +671,16 @@ fn gc_string_eq_str(scope: &Scope<'_>, s: GcString, expected: &str) -> Result<bo
   Ok(utf16_units_eq_str(units, expected))
 }
 
+fn copy_gc_string_utf16(scope: &Scope<'_>, s: GcString) -> Result<Vec<u16>, VmError> {
+  let units = scope.heap().get_string(s)?.as_code_units();
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  out.extend_from_slice(units);
+  Ok(out)
+}
+
 fn error_tag_from_utf16(units: &[u16]) -> Option<ErrorTag> {
   if utf16_units_eq_str(units, "Error") {
     Some(ErrorTag::Error)
@@ -784,8 +795,7 @@ fn serialize_enumerable_own_string_keys_into_node(
       | Node::BooleanObject { props, .. }
       | Node::NumberObject { props, .. }
       | Node::StringObject { props, .. }
-      | Node::BigIntObject { props, .. }
-      | Node::Error { props, .. }) => props.push((key_s, encoded)),
+      | Node::BigIntObject { props, .. }) => props.push((key_s, encoded)),
       _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
     }
   }
@@ -822,7 +832,10 @@ fn serialize_object(
   }
 
   // Reject platform objects branded via `HostSlots` (e.g. DOM helper interface objects).
-  if scope.heap().object_host_slots(obj)?.is_some() {
+  //
+  // Note: `object_host_slots` is only implemented for a subset of heap object kinds (notably not
+  // `RegExp`), so use a defensive wrapper.
+  if is_platform_object(scope, obj)? {
     // `Blob` is a platform object but structured-cloneable; allow it even if `HostSlots`-branded.
     if let Some(encoded) = try_serialize_blob_object(vm, scope, state, obj)? {
       return Ok(encoded);
@@ -850,16 +863,6 @@ fn serialize_object(
       scope,
       state.global,
       "structuredClone: cannot clone Promise",
-    ));
-  }
-
-  // Reject platform objects (FastRender host slots).
-  if is_platform_object(scope, obj)? {
-    return Err(throw_data_clone_error(
-      vm,
-      scope,
-      state.global,
-      "structuredClone: cannot clone platform object",
     ));
   }
 
@@ -1127,28 +1130,25 @@ fn serialize_object(
     if let Some(kind) = error_kind_for_object(vm, scope, intr, obj)? {
       let name_value = vm.get_with_host_and_hooks(host, scope, hooks, obj, state.error_name_key)?;
       let name = match name_value {
-        Value::Undefined | Value::Null => ErrorTag::Error,
         Value::String(s) => error_tag_from_utf16(scope.heap().get_string(s)?.as_code_units())
           .unwrap_or(ErrorTag::Error),
-        other => {
-          let s = scope.to_string(vm, host, hooks, other)?;
-          scope.push_root(Value::String(s))?;
-          error_tag_from_utf16(scope.heap().get_string(s)?.as_code_units()).unwrap_or(ErrorTag::Error)
-        }
+        _ => ErrorTag::Error,
       };
 
-      // HTML structured clone reads the message from the *own* `message` data property.
-      // When absent, use the empty string (matching default `Error` instances).
-      let message_value =
-        scope.heap().object_get_own_data_property_value(obj, &state.error_message_key)?;
-      let message = match message_value {
-        Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
-        Some(other) => {
-          let s = scope.to_string(vm, host, hooks, other)?;
-          scope.push_root(Value::String(s))?;
-          scope.heap().get_string(s)?.to_utf8_lossy()
+      // HTML structured clone reads the message from the *own* "message" data property descriptor,
+      // and does not invoke an accessor.
+      let message_desc = scope
+        .heap()
+        .object_get_own_property(obj, &state.error_message_key)?;
+      let message = match message_desc {
+        Some(PropertyDescriptor {
+          kind: PropertyKind::Data { value, .. },
+          ..
+        }) => {
+          let s = scope.to_string(vm, host, hooks, value)?;
+          Some(copy_gc_string_utf16(scope, s)?)
         }
-        None => String::new(),
+        _ => None,
       };
 
       let id = state.push_node(
@@ -1156,13 +1156,11 @@ fn serialize_object(
           kind,
           name,
           message,
-          props: Vec::new(),
         },
         vm,
         scope,
       )?;
       state.object_to_id.insert(obj, id);
-      serialize_enumerable_own_string_keys_into_node(vm, scope, host, hooks, state, obj, depth, id, true)?;
       return Ok(EncodedValue::Object(id));
     }
   }
@@ -1742,45 +1740,39 @@ fn deserialize_node(
     }
     11 => {
       // Error object.
-      let (kind, name, message, props) = match state.nodes.get_mut(id) {
+      let (kind, name, message) = match state.nodes.get_mut(id) {
         Some(Node::Error {
           kind,
           name,
           message,
-          props,
-        }) => (*kind, *name, std::mem::take(message), std::mem::take(props)),
+        }) => (*kind, *name, message.take()),
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
 
-      let proto = kind.prototype(intr);
-      let err = vm_js::new_error(scope, proto, name.as_str(), &message)?;
-      let Value::Object(obj) = err else {
-        return Err(VmError::InvariantViolation(
-          "structuredClone Error node did not allocate an object",
-        ));
-      };
+      let obj = scope.alloc_object()?;
       scope.push_root(Value::Object(obj))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(obj, Some(kind.prototype(intr)))?;
       state.clones.insert(id, obj);
 
-      for (i, (key_s, val)) in props.into_iter().enumerate() {
-        if i % 1024 == 0 {
-          vm.tick()?;
+      // HTML structured clone defines own non-enumerable `name` and `message` properties and does
+      // not copy any additional own properties.
+      let name_s = scope.alloc_string(name.as_str())?;
+      scope.push_root(Value::String(name_s))?;
+      let name_key = alloc_key(scope, "name")?;
+      scope.define_property(obj, name_key, data_desc(Value::String(name_s)))?;
+
+      let message_value = match message {
+        Some(units) => {
+          let s = scope.alloc_string_from_u16_vec(units)?;
+          scope.push_root(Value::String(s))?;
+          Value::String(s)
         }
-        let cloned_val = deserialize_value(vm, scope, state, callee, val, depth + 1)?;
-        let key = PropertyKey::from_string(key_s);
-        scope.define_property(
-          obj,
-          key,
-          PropertyDescriptor {
-            enumerable: true,
-            configurable: true,
-            kind: PropertyKind::Data {
-              value: cloned_val,
-              writable: true,
-            },
-          },
-        )?;
-      }
+        None => Value::Undefined,
+      };
+      let message_key = alloc_key(scope, "message")?;
+      scope.define_property(obj, message_key, data_desc(message_value))?;
 
       obj
     }
@@ -2149,11 +2141,11 @@ mod tests {
          if (!(c instanceof TypeError)) return false;\
          if (c.name !== 'TypeError') return false;\
          if (c.message !== 'boom') return false;\
-         if (c.extra !== 1) return false;\
+         if (c.extra !== undefined) return false;\
          const cyc = new Error('x');\
          cyc.self = cyc;\
          const cyc2 = structuredClone(cyc);\
-         return cyc2 !== cyc && cyc2.self === cyc2 && cyc2.name === 'Error' && cyc2.message === 'x';\
+         return cyc2 !== cyc && cyc2.name === 'Error' && cyc2.message === 'x' && cyc2.self === undefined;\
        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
@@ -2275,6 +2267,51 @@ mod tests {
       let v = realm.exec_script(&script)?;
       assert_eq!(get_string(&realm, v), "DataCloneError", "structuredClone({expr})");
     }
+
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_clones_ecmascript_error_objects() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let type_error_ok = realm.exec_script(
+      "(() => {\
+         const e = structuredClone(new TypeError('x'));\
+         if (!(e instanceof TypeError)) return false;\
+         if (e.name !== 'TypeError') return false;\
+         return e.message === 'x';\
+       })()",
+    )?;
+    assert_eq!(type_error_ok, Value::Bool(true));
+
+    let accessor_message_ok = realm.exec_script(
+      "(() => {\
+         const e = new Error('x');\
+         Object.defineProperty(e, 'message', { get() { throw 1 }, enumerable: false });\
+         const c = structuredClone(e);\
+         return c.message === undefined;\
+       })()",
+    )?;
+    assert_eq!(accessor_message_ok, Value::Bool(true));
+
+    let custom_props_ignored_ok = realm.exec_script(
+      "(() => {\
+         const e = new Error('x');\
+         e.foo = 1;\
+         const c = structuredClone(e);\
+         return c.foo === undefined;\
+       })()",
+    )?;
+    assert_eq!(custom_props_ignored_ok, Value::Bool(true));
+
+    let dom_exception_name = realm.exec_script(
+      "(() => {\
+         try { structuredClone(new DOMException('x', 'NotSupportedError')); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(&realm, dom_exception_name), "DataCloneError");
 
     Ok(())
   }

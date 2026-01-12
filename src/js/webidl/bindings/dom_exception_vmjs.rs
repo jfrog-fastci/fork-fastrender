@@ -1,8 +1,11 @@
 use crate::web::dom::DomException;
 use vm_js::{
-  new_error, GcObject, Intrinsics, NativeConstructId, NativeFunctionId, PropertyDescriptor,
+  new_error, GcObject, HostSlots, Intrinsics, NativeConstructId, NativeFunctionId,
+  PropertyDescriptor,
   PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
+
+const DOM_EXCEPTION_HOST_SLOTS_TAG: u64 = u64::from_le_bytes(*b"DOMExcpt");
 
 #[derive(Debug, Clone, Copy)]
 pub struct DomExceptionClassVmJs {
@@ -134,6 +137,13 @@ impl DomExceptionClassVmJs {
 
     let obj = scope.alloc_object()?;
     scope.push_root(Value::Object(obj))?;
+    scope.heap_mut().object_set_host_slots(
+      obj,
+      HostSlots {
+        a: DOM_EXCEPTION_HOST_SLOTS_TAG,
+        b: 0,
+      },
+    )?;
     scope
       .heap_mut()
       .object_set_prototype(obj, Some(self.prototype))?;
@@ -242,6 +252,13 @@ fn dom_exception_create_instance(
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: DOM_EXCEPTION_HOST_SLOTS_TAG,
+      b: 0,
+    },
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(obj, Some(prototype))?;
