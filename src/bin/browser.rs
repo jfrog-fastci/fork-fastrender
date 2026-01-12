@@ -305,7 +305,8 @@ struct DecodedRgbaIcon {
 
 #[cfg(any(test, feature = "browser_ui"))]
 fn decode_rgba_icon(png_bytes: &[u8]) -> Result<DecodedRgbaIcon, String> {
-  let image = image::load_from_memory(png_bytes).map_err(|err| format!("image decode error: {err}"))?;
+  let image =
+    image::load_from_memory(png_bytes).map_err(|err| format!("image decode error: {err}"))?;
   let rgba = image.to_rgba8();
   let (width, height) = rgba.dimensions();
   let rgba = rgba.into_raw();
@@ -1024,12 +1025,14 @@ fn run_headless_smoke_mode(
   let expected_pixmap_w = ((VIEWPORT_CSS.0 as f32) * DPR).round().max(1.0) as u32;
   let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
 
+  let active_window_idx = session.active_window_index;
+  let active_window = &session.windows[active_window_idx];
+
   let (ui_to_worker_tx, worker_to_ui_rx, join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
 
-  let window = &session.windows[session.active_window_index];
-  let mut tab_ids = Vec::with_capacity(window.tabs.len());
-  for tab in &window.tabs {
+  let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
+  for tab in &active_window.tabs {
     let tab_id = TabId::new();
     tab_ids.push(tab_id);
     ui_to_worker_tx.send(UiToWorker::CreateTab {
@@ -1039,7 +1042,7 @@ fn run_headless_smoke_mode(
     })?;
   }
 
-  let active_idx = window
+  let active_idx = active_window
     .active_tab_index
     .min(tab_ids.len().saturating_sub(1));
   let active_tab_id = tab_ids[active_idx];
@@ -1152,7 +1155,7 @@ fn run_headless_smoke_mode(
     );
   }
 
-  let active_url = window
+  let active_url = active_window
     .tabs
     .get(active_idx)
     .map(|t| t.url.as_str())
@@ -1671,14 +1674,15 @@ impl App {
   fn cursor_near_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
     const HOVER_INFLATE_POINTS: f32 = 10.0;
     let pos = fastrender::Point::new(pos_points.x, pos_points.y);
-    self
-      .overlay_scrollbars
-      .vertical
-      .is_some_and(|sb| sb.track_rect_points.inflate(HOVER_INFLATE_POINTS).contains_point(pos))
-      || self
-        .overlay_scrollbars
-        .horizontal
-        .is_some_and(|sb| sb.track_rect_points.inflate(HOVER_INFLATE_POINTS).contains_point(pos))
+    self.overlay_scrollbars.vertical.is_some_and(|sb| {
+      sb.track_rect_points
+        .inflate(HOVER_INFLATE_POINTS)
+        .contains_point(pos)
+    }) || self.overlay_scrollbars.horizontal.is_some_and(|sb| {
+      sb.track_rect_points
+        .inflate(HOVER_INFLATE_POINTS)
+        .contains_point(pos)
+    })
   }
 
   fn overlay_scrollbars_force_visible(&self) -> bool {
@@ -1816,7 +1820,8 @@ impl App {
       page_input_mapping: None,
       page_loading_overlay_blocks_input: false,
       overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars::default(),
-      overlay_scrollbar_visibility: fastrender::ui::scrollbars::OverlayScrollbarVisibilityState::default(),
+      overlay_scrollbar_visibility:
+        fastrender::ui::scrollbars::OverlayScrollbarVisibilityState::default(),
       scrollbar_drag: None,
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
@@ -1862,10 +1867,15 @@ impl App {
     use fastrender::ui::UiToWorker;
 
     let session = session.sanitized();
-    let window = session
+    let active_window_index = session.active_window_index;
+    let fastrender::ui::BrowserSessionWindow {
+      tabs,
+      active_tab_index,
+      ..
+    } = session
       .windows
       .into_iter()
-      .nth(session.active_window_index)
+      .nth(active_window_index)
       .unwrap_or_else(|| fastrender::ui::BrowserSessionWindow {
         tabs: vec![fastrender::ui::BrowserSessionTab {
           url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
@@ -1875,9 +1885,10 @@ impl App {
         active_tab_index: 0,
         window_state: None,
       });
-    let mut tab_ids = Vec::with_capacity(window.tabs.len());
 
-    for tab in window.tabs {
+    let mut tab_ids = Vec::with_capacity(tabs.len());
+
+    for tab in tabs {
       let tab_id = fastrender::ui::TabId::new();
       tab_ids.push(tab_id);
 
@@ -1900,9 +1911,7 @@ impl App {
       });
     }
 
-    let active_idx = window
-      .active_tab_index
-      .min(tab_ids.len().saturating_sub(1));
+    let active_idx = active_tab_index.min(tab_ids.len().saturating_sub(1));
     let active_tab_id = tab_ids[active_idx];
     self.browser_state.set_active_tab(active_tab_id);
     self.send_worker_msg(UiToWorker::SetActiveTab {
@@ -2066,9 +2075,10 @@ impl App {
     // UI-only timers (e.g. overlay scrollbar fade).
     let cfg = fastrender::ui::scrollbars::OverlayScrollbarVisibilityConfig::default();
     let force_visible = self.overlay_scrollbars_force_visible();
-    if let Some(sb_deadline) = self
-      .overlay_scrollbar_visibility
-      .next_wakeup(now, cfg, force_visible)
+    if let Some(sb_deadline) =
+      self
+        .overlay_scrollbar_visibility
+        .next_wakeup(now, cfg, force_visible)
     {
       deadline = Some(match deadline {
         Some(existing) => existing.min(sb_deadline),
@@ -2104,7 +2114,10 @@ impl App {
 
     // Keep overlay scrollbars visible when a scroll is initiated via any input path (wheel, track
     // click, thumb drag, keyboard shortcuts that synthesize `ScrollTo`, etc).
-    if matches!(&msg, UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. }) {
+    if matches!(
+      &msg,
+      UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. }
+    ) {
       self
         .overlay_scrollbar_visibility
         .register_interaction(std::time::Instant::now());
@@ -2820,7 +2833,9 @@ impl App {
     }
 
     // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
-    let clamp = self.browser_limits.clamp_viewport_and_dpr(viewport_css, dpr);
+    let clamp = self
+      .browser_limits
+      .clamp_viewport_and_dpr(viewport_css, dpr);
     let viewport_css = clamp.viewport_css;
     let dpr = clamp.dpr;
 
@@ -2896,13 +2911,13 @@ impl App {
     let warning = tab.and_then(|t| t.warning.as_deref());
     let viewport_clamped = warning.is_some_and(|w| w.starts_with("Viewport clamped:"));
 
-    let (viewport_css, dpr) =
-      if self.viewport_cache_tab == self.browser_state.active_tab_id() && self.viewport_cache_dpr > 0.0
-      {
-        (Some(self.viewport_cache_css), Some(self.viewport_cache_dpr))
-      } else {
-        (None, None)
-      };
+    let (viewport_css, dpr) = if self.viewport_cache_tab == self.browser_state.active_tab_id()
+      && self.viewport_cache_dpr > 0.0
+    {
+      (Some(self.viewport_cache_css), Some(self.viewport_cache_dpr))
+    } else {
+      (None, None)
+    };
 
     use std::fmt::Write;
     hud.text_buf.clear();
@@ -3112,19 +3127,20 @@ impl App {
       PageContextMenuBuildInput, PageContextMenuEntry,
     };
 
-    let (tab_id, pos_css, anchor_points, link_url, selected_idx) = match self.open_context_menu.as_ref() {
-      Some(menu) => (
-        menu.tab_id,
-        menu.pos_css,
-        menu.anchor_points,
-        menu.link_url.clone(),
-        menu.selected_idx,
-      ),
-      None => {
-        self.open_context_menu_rect = None;
-        return;
-      }
-    };
+    let (tab_id, pos_css, anchor_points, link_url, selected_idx) =
+      match self.open_context_menu.as_ref() {
+        Some(menu) => (
+          menu.tab_id,
+          menu.pos_css,
+          menu.anchor_points,
+          menu.link_url.clone(),
+          menu.selected_idx,
+        ),
+        None => {
+          self.open_context_menu_rect = None;
+          return;
+        }
+      };
 
     if self.browser_state.active_tab_id() != Some(tab_id) {
       self.close_context_menu();
@@ -5300,8 +5316,11 @@ impl App {
       // directly under the buttons.
       const TRAFFIC_LIGHTS_LEFT_INSET_POINTS: f32 = 72.0;
       let mut style = original_style.clone();
-      style.spacing.window_margin.left =
-        style.spacing.window_margin.left.max(TRAFFIC_LIGHTS_LEFT_INSET_POINTS);
+      style.spacing.window_margin.left = style
+        .spacing
+        .window_margin
+        .left
+        .max(TRAFFIC_LIGHTS_LEFT_INSET_POINTS);
       ctx.set_style(style);
     }
 
@@ -5640,7 +5659,9 @@ impl App {
             let alpha = if dragging_any {
               1.0
             } else {
-              self.overlay_scrollbar_visibility.alpha(now, cfg, force_visible)
+              self
+                .overlay_scrollbar_visibility
+                .alpha(now, cfg, force_visible)
             };
             if alpha > 0.0 {
               let painter = ui.painter();
@@ -5662,11 +5683,7 @@ impl App {
                 }
               };
 
-              let clamp_alpha = |base: u8| {
-                ((base as f32) * alpha)
-                  .round()
-                  .clamp(0.0, 255.0) as u8
-              };
+              let clamp_alpha = |base: u8| ((base as f32) * alpha).round().clamp(0.0, 255.0) as u8;
 
               let visuals = ui.visuals();
               // Use theme-aware colors (dark mode uses light thumbs, light mode uses dark thumbs)
@@ -5689,7 +5706,13 @@ impl App {
                 let mut thumb = to_egui_rect(scrollbar.thumb_rect_points);
 
                 // Modern overlay scrollbars are typically narrower by default, widening on hover.
-                let cross_inset = if dragging { 0.5 } else if hovered { 1.0 } else { 2.0 };
+                let cross_inset = if dragging {
+                  0.5
+                } else if hovered {
+                  1.0
+                } else {
+                  2.0
+                };
                 let length_inset = 1.0;
                 thumb = match scrollbar.axis {
                   fastrender::ui::scrollbars::ScrollbarAxis::Vertical => {
@@ -5706,7 +5729,13 @@ impl App {
                 };
                 let rounding = egui::Rounding::same((thickness * 0.5).max(0.0));
 
-                let track_alpha = if dragging { 60 } else if hovered { 40 } else { 0 };
+                let track_alpha = if dragging {
+                  60
+                } else if hovered {
+                  40
+                } else {
+                  0
+                };
                 if track_alpha > 0 {
                   painter.rect_filled(
                     track,
@@ -5720,7 +5749,13 @@ impl App {
                   );
                 }
 
-                let thumb_alpha = if dragging { 220 } else if hovered { 180 } else { 140 };
+                let thumb_alpha = if dragging {
+                  220
+                } else if hovered {
+                  180
+                } else {
+                  140
+                };
                 painter.rect_filled(
                   thumb,
                   rounding,

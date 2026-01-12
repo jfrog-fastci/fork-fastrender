@@ -4738,9 +4738,6 @@ impl<'a> Scope<'a> {
     // Root inputs during allocation in case root-stack growth, `ensure_can_allocate`, or slot-table
     // growth triggers GC.
     //
-    // NOTE: Root both `target` and `handler` together so a GC triggered while pushing roots for
-    // `target` cannot collect `handler` before it is pushed.
-    let mut scope = self.reborrow();
     let mut roots = [Value::Undefined; 2];
     let mut root_count: usize = 0;
     if let Some(target) = target {
@@ -4751,6 +4748,10 @@ impl<'a> Scope<'a> {
       roots[root_count] = Value::Object(handler);
       root_count += 1;
     }
+
+    // Push all roots in one `push_roots` call so root-stack growth can't trigger a GC between them
+    // (which could collect e.g. `handler` before it is rooted).
+    let mut scope = self.reborrow();
     scope.push_roots(&roots[..root_count])?;
 
     // Proxies have no heap-owned payload allocations today; they store only GC handles inline.

@@ -152,3 +152,49 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   assert_eq!(session.windows[0].active_tab_index, 0);
   assert_eq!(session.windows[0].tabs[0].url, "about:newtab");
 }
+
+#[test]
+fn browser_restores_legacy_v1_session_file_and_upgrades_to_v2() {
+  let _lock = super::stage_listener_test_lock();
+
+  let dir = tempfile::tempdir().expect("temp dir");
+  let session_path = dir.path().join("session.json");
+
+  // Legacy v1 session format (pre multi-window):
+  //   { "tabs": [...], "active_tab_index": ... }
+  let legacy_v1 = serde_json::json!({
+    "tabs": [
+      { "url": "about:blank", "zoom": 1.25 },
+      { "url": "about:error", "zoom": 0.8 },
+    ],
+    "active_tab_index": 1,
+  });
+  std::fs::write(
+    &session_path,
+    serde_json::to_vec(&legacy_v1).expect("serialize v1"),
+  )
+  .expect("write legacy session");
+
+  // Run once with no args so restore is attempted.
+  let (status, stderr, stdout) = run_browser_headless_smoke(&[], &session_path, &[]);
+  assert_browser_succeeded(status, &stderr, &stdout);
+
+  let (source, restored) = parse_headless_session(&stdout);
+  assert_eq!(source, "restored");
+  assert_eq!(restored.version, 2);
+  assert_eq!(restored.active_window_index, 0);
+  assert_eq!(restored.windows.len(), 1);
+  assert_eq!(restored.windows[0].active_tab_index, 1);
+  assert_eq!(restored.windows[0].tabs.len(), 2);
+  assert_eq!(restored.windows[0].tabs[0].url, "about:blank");
+  assert_eq!(restored.windows[0].tabs[0].zoom, Some(1.25));
+  assert_eq!(restored.windows[0].tabs[1].url, "about:error");
+  assert_eq!(restored.windows[0].tabs[1].zoom, Some(0.8));
+
+  // The browser should rewrite the session file in the new v2 format.
+  let disk_json = std::fs::read_to_string(&session_path).expect("read upgraded session file");
+  let disk_session: fastrender::ui::BrowserSession =
+    serde_json::from_str(&disk_json).expect("parse upgraded session JSON");
+  assert_eq!(disk_session.version, 2);
+  assert_eq!(disk_session, restored);
+}
