@@ -693,6 +693,7 @@ impl Intrinsics {
     )?;
     install_to_string_tag(scope, array_prototype, well_known_symbols.to_string_tag, "Array")?;
     install_to_string_tag(scope, string_prototype, well_known_symbols.to_string_tag, "String")?;
+    install_to_string_tag(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;
     install_to_string_tag(scope, number_prototype, well_known_symbols.to_string_tag, "Number")?;
     install_to_string_tag(
       scope,

@@ -117,6 +117,27 @@ fn object_prototype_to_string_tags_promise_prototype_via_symbol_to_string_tag() 
 }
 
 #[test]
+fn object_prototype_to_string_tags_regexps_and_uses_builtin_tag_when_to_string_tag_is_deleted() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var toString = Object.prototype.toString;
+         var r = /a/;
+         // RegExp.prototype[@@toStringTag] should tag both real RegExp objects and objects that
+         // inherit from RegExp.prototype.
+         toString.call(r) === "[object RegExp]" &&
+         toString.call(Object.create(RegExp.prototype)) === "[object RegExp]" &&
+         // Deleting @@toStringTag should still tag real RegExp objects via builtinTag but fall back
+         // to Object for ordinary objects without RegExp internal slots.
+         (delete RegExp.prototype[Symbol.toStringTag], true) &&
+         toString.call(r) === "[object RegExp]" &&
+         toString.call(Object.create(RegExp.prototype)) === "[object Object]""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_prototype_to_string_tags_generator_objects() {
   let mut rt = new_runtime();
   let value = rt
