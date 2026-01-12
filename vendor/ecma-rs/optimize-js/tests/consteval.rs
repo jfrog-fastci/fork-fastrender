@@ -255,6 +255,73 @@ fn math_max_min_preserve_signed_zero_and_reject_bigint() {
 }
 
 #[test]
+fn math_hyperbolic_and_exp_builtins_coerce_to_number_and_reject_bigint() {
+  let eval_unary =
+    |func: &str, arg: optimize_js::il::inst::Const| match maybe_eval_const_builtin_call(func, &[arg]) {
+      Some(ConstNum(JN(v))) => v,
+      other => panic!("unexpected eval result for {func}: {other:?}"),
+    };
+
+  assert_eq!(eval_unary("Math.exp", ConstNum(JN(0.0))), 1.0);
+  assert_eq!(eval_unary("Math.exp", ConstStr("0".into())), 1.0);
+  assert_eq!(eval_unary("Math.expm1", ConstNum(JN(0.0))), 0.0);
+
+  assert_eq!(eval_unary("Math.cosh", ConstNum(JN(0.0))), 1.0);
+
+  let sinh_neg_zero = eval_unary("Math.sinh", ConstNum(JN(-0.0)));
+  assert_eq!(sinh_neg_zero, 0.0);
+  assert!(
+    sinh_neg_zero.is_sign_negative(),
+    "Math.sinh(-0) should preserve -0"
+  );
+
+  let tanh_neg_zero = eval_unary("Math.tanh", ConstNum(JN(-0.0)));
+  assert_eq!(tanh_neg_zero, 0.0);
+  assert!(
+    tanh_neg_zero.is_sign_negative(),
+    "Math.tanh(-0) should preserve -0"
+  );
+
+  assert_eq!(eval_unary("Math.acosh", ConstNum(JN(1.0))), 0.0);
+
+  let asinh_neg_zero = eval_unary("Math.asinh", ConstNum(JN(-0.0)));
+  assert_eq!(asinh_neg_zero, 0.0);
+  assert!(
+    asinh_neg_zero.is_sign_negative(),
+    "Math.asinh(-0) should preserve -0"
+  );
+
+  let atanh_neg_zero = eval_unary("Math.atanh", ConstNum(JN(-0.0)));
+  assert_eq!(atanh_neg_zero, 0.0);
+  assert!(
+    atanh_neg_zero.is_sign_negative(),
+    "Math.atanh(-0) should preserve -0"
+  );
+
+  assert_eq!(eval_unary("Math.cbrt", ConstNum(JN(8.0))), 2.0);
+  assert_eq!(eval_unary("Math.cbrt", ConstNum(JN(-8.0))), -2.0);
+  assert_eq!(eval_unary("Math.cbrt", ConstStr("8".into())), 2.0);
+
+  // BigInt cannot be coerced to Number for Math.* builtins.
+  for func in [
+    "Math.acosh",
+    "Math.asinh",
+    "Math.atanh",
+    "Math.cbrt",
+    "Math.cosh",
+    "Math.exp",
+    "Math.expm1",
+    "Math.sinh",
+    "Math.tanh",
+  ] {
+    assert_eq!(
+      maybe_eval_const_builtin_call(func, &[ConstBigInt(BigInt::from(1))]),
+      None
+    );
+  }
+}
+
+#[test]
 fn bigint_and_string_loose_equality_follows_string_to_bigint() {
   assert!(js_loose_eq(
     &ConstBigInt(BigInt::from(1)),

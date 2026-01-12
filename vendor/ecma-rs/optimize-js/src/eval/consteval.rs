@@ -854,10 +854,17 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("BigInt", Str(v)) => BigInt(parse_bigint(v)?),
       ("Math.abs", BigInt(_))
       | ("Math.acos", BigInt(_))
+      | ("Math.acosh", BigInt(_))
       | ("Math.asin", BigInt(_))
+      | ("Math.asinh", BigInt(_))
       | ("Math.atan", BigInt(_))
+      | ("Math.atanh", BigInt(_))
+      | ("Math.cbrt", BigInt(_))
       | ("Math.ceil", BigInt(_))
       | ("Math.cos", BigInt(_))
+      | ("Math.cosh", BigInt(_))
+      | ("Math.exp", BigInt(_))
+      | ("Math.expm1", BigInt(_))
       | ("Math.max", BigInt(_))
       | ("Math.min", BigInt(_))
       | ("Math.floor", BigInt(_))
@@ -869,16 +876,25 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       | ("Math.round", BigInt(_))
       | ("Math.sign", BigInt(_))
       | ("Math.sin", BigInt(_))
+      | ("Math.sinh", BigInt(_))
       | ("Math.sqrt", BigInt(_))
       | ("Math.tan", BigInt(_))
+      | ("Math.tanh", BigInt(_))
       | ("Math.trunc", BigInt(_)) => return None,
       ("Math.abs", a) => Num(JN(coerce_to_num(a).abs())),
       ("Math.acos", a) => Num(JN(coerce_to_num(a).acos())),
+      ("Math.acosh", a) => Num(JN(coerce_to_num(a).acosh())),
       ("Math.asin", a) => Num(JN(coerce_to_num(a).asin())),
+      ("Math.asinh", a) => Num(JN(coerce_to_num(a).asinh())),
       ("Math.atan", a) => Num(JN(coerce_to_num(a).atan())),
+      ("Math.atanh", a) => Num(JN(coerce_to_num(a).atanh())),
+      ("Math.cbrt", a) => Num(JN(coerce_to_num(a).cbrt())),
       ("Math.ceil", a) => Num(JN(coerce_to_num(a).ceil())),
       ("Math.clz32", a) => Num(JN((coerce_to_uint32(a)?).leading_zeros() as f64)),
       ("Math.cos", a) => Num(JN(coerce_to_num(a).cos())),
+      ("Math.cosh", a) => Num(JN(coerce_to_num(a).cosh())),
+      ("Math.exp", a) => Num(JN(coerce_to_num(a).exp())),
+      ("Math.expm1", a) => Num(JN(coerce_to_num(a).exp_m1())),
       ("Math.floor", a) => Num(JN(coerce_to_num(a).floor())),
       ("Math.fround", a) => Num(JN(js_fround(coerce_to_num(a)))),
       ("Math.log", a) => Num(JN(coerce_to_num(a).ln())),
@@ -890,8 +906,10 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.round", a) => Num(JN(js_round(coerce_to_num(a)))),
       ("Math.sign", a) => Num(JN(js_sign(coerce_to_num(a)))),
       ("Math.sin", a) => Num(JN(coerce_to_num(a).sin())),
+      ("Math.sinh", a) => Num(JN(coerce_to_num(a).sinh())),
       ("Math.sqrt", a) => Num(JN(coerce_to_num(a).sqrt())),
       ("Math.tan", a) => Num(JN(coerce_to_num(a).tan())),
+      ("Math.tanh", a) => Num(JN(coerce_to_num(a).tanh())),
       ("Math.trunc", a) => Num(JN(coerce_to_num(a).trunc())),
       ("Number", BigInt(_)) => return None,
       ("Number", a) => Num(JN(coerce_to_num(a))),
