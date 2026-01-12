@@ -1,19 +1,92 @@
+//! Legacy expression-only HIR → LLVM backend.
+//!
+//! This backend predates the checked `native_js::codegen` pipeline and is kept only for debugging
+//! and bisecting old behavior. It is intentionally feature-gated to avoid accidental dependency
+//! creep in tests and tooling.
+//!
+//! Prefer the checked backend (`native_js::codegen`) for all new development.
+#![cfg(feature = "legacy-expr-backend")]
+
 use crate::codes;
-use crate::llvm::{LlvmBackend, ValueKind};
+use crate::llvm::LlvmBackend;
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
-  BinaryOp, Body, BodyId, CallExpr, ExprId, ExprKind, FunctionBody, Literal, NameId, PatId,
-  PatKind, StmtId, StmtKind, UnaryOp, VarDecl,
+  BinaryOp, Body, BodyId, CallExpr, ExprId, ExprKind, FunctionBody, Literal, NameId, PatId, PatKind, StmtId,
+  StmtKind, UnaryOp, VarDecl,
 };
-use inkwell::types::BasicTypeEnum;
+use inkwell::types::{BasicTypeEnum, FloatType, IntType};
 use inkwell::values::{
-  BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, IntValue,
-  PointerValue,
+  BasicMetadataValueEnum, BasicValue, BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue,
 };
 use inkwell::{FloatPredicate, IntPredicate};
 use parse_js::num::JsNumber;
 use std::collections::HashMap;
-use typecheck_ts::{BodyCheckResult, Program};
+use typecheck_ts::{BodyCheckResult, Program, TypeKindSummary};
+
+/// Minimal set of primitive kinds supported by the legacy expression backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueKind {
+  Number,
+  Boolean,
+  Void,
+}
+
+impl ValueKind {
+  pub fn from_type_kind(kind: &TypeKindSummary) -> Option<Self> {
+    match kind {
+      TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_) => Some(ValueKind::Number),
+      TypeKindSummary::Boolean | TypeKindSummary::BooleanLiteral(_) => Some(ValueKind::Boolean),
+      TypeKindSummary::Void | TypeKindSummary::Undefined => Some(ValueKind::Void),
+      _ => None,
+    }
+  }
+
+  pub fn as_str(self) -> &'static str {
+    match self {
+      ValueKind::Number => "number",
+      ValueKind::Boolean => "boolean",
+      ValueKind::Void => "void",
+    }
+  }
+}
+
+impl<'ctx> LlvmBackend<'ctx> {
+  pub fn f64_type(&self) -> FloatType<'ctx> {
+    self.context.f64_type()
+  }
+
+  pub fn bool_type(&self) -> IntType<'ctx> {
+    self.context.bool_type()
+  }
+
+  pub fn llvm_type(&self, kind: ValueKind) -> BasicTypeEnum<'ctx> {
+    match kind {
+      ValueKind::Number => self.f64_type().into(),
+      ValueKind::Boolean => self.bool_type().into(),
+      ValueKind::Void => panic!("ValueKind::Void has no LLVM BasicTypeEnum representation"),
+    }
+  }
+
+  /// Create an `alloca` in the entry block of `function`.
+  ///
+  /// Note: With opaque pointers, we must keep track of the pointee type separately.
+  pub fn build_entry_alloca(
+    &self,
+    function: FunctionValue<'ctx>,
+    ty: BasicTypeEnum<'ctx>,
+    name: &str,
+  ) -> PointerValue<'ctx> {
+    let entry = function
+      .get_first_basic_block()
+      .expect("function must have an entry block before allocating locals");
+    let builder = self.context.create_builder();
+    match entry.get_first_instruction() {
+      Some(inst) => builder.position_before(&inst),
+      None => builder.position_at_end(entry),
+    }
+    builder.build_alloca(ty, name).expect("alloca should succeed")
+  }
+}
 
 #[derive(Clone, Copy)]
 pub struct LocalSlot<'ctx> {
@@ -43,7 +116,8 @@ impl<'ctx> LocalMap<'ctx> {
   }
 
   pub fn insert(&mut self, name: NameId, slot: LocalSlot<'ctx>) {
-    self.scopes
+    self
+      .scopes
       .last_mut()
       .expect("LocalMap must have at least one scope")
       .insert(name, slot);
@@ -79,6 +153,7 @@ pub struct FunctionCodegen<'a, 'ctx> {
 }
 
 impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
+  #[allow(clippy::too_many_arguments)]
   pub fn new(
     backend: &'a mut LlvmBackend<'ctx>,
     program: &'a Program,
@@ -196,35 +271,32 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
 
   pub fn codegen_function_body(&mut self, func: &hir_js::FunctionData, ret_kind: ValueKind) -> bool {
     match &func.body {
-      FunctionBody::Expr(expr) => {
-        match ret_kind {
-          ValueKind::Void => {
-            // Evaluate the expression for side effects (even if we don't support
-            // many side effects yet), then return `void`.
-            let _ = self.codegen_expr(*expr);
-            let _ = self.backend.builder.build_return(None);
-            true
-          }
-          ValueKind::Number | ValueKind::Boolean => {
-            let Some(value) = self.codegen_expr(*expr) else {
-              return false;
-            };
-            let llvm_ret: BasicValueEnum<'ctx> = match ret_kind {
-              ValueKind::Number => match self.as_f64(value, *expr) {
-                Some(v) => v.as_basic_value_enum(),
-                None => return false,
-              },
-              ValueKind::Boolean => match self.as_bool(value, *expr) {
-                Some(v) => v.as_basic_value_enum(),
-                None => return false,
-              },
-              ValueKind::Void => unreachable!(),
-            };
-            let _ = self.backend.builder.build_return(Some(&llvm_ret));
-            true
-          }
+      FunctionBody::Expr(expr) => match ret_kind {
+        ValueKind::Void => {
+          // Evaluate the expression for side effects, then return `void`.
+          let _ = self.codegen_expr(*expr);
+          let _ = self.backend.builder.build_return(None);
+          true
         }
-      }
+        ValueKind::Number | ValueKind::Boolean => {
+          let Some(value) = self.codegen_expr(*expr) else {
+            return false;
+          };
+          let llvm_ret: BasicValueEnum<'ctx> = match ret_kind {
+            ValueKind::Number => match self.as_f64(value, *expr) {
+              Some(v) => v.as_basic_value_enum(),
+              None => return false,
+            },
+            ValueKind::Boolean => match self.as_bool(value, *expr) {
+              Some(v) => v.as_basic_value_enum(),
+              None => return false,
+            },
+            ValueKind::Void => unreachable!(),
+          };
+          let _ = self.backend.builder.build_return(Some(&llvm_ret));
+          true
+        }
+      },
       FunctionBody::Block(stmts) => self.codegen_block(stmts, ret_kind),
     }
   }
@@ -246,48 +318,45 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
       return false;
     };
     match &stmt.kind {
-      StmtKind::Return(expr) => {
-        match (ret_kind, expr) {
-          (ValueKind::Void, None) => {
-            let _ = self.backend.builder.build_return(None);
-            true
-          }
-          (ValueKind::Void, Some(expr)) => {
-            // Evaluate the expression for side effects, but ignore its value.
-            let _ = self.codegen_expr(*expr);
-            let _ = self.backend.builder.build_return(None);
-            true
-          }
-          (_, None) => {
-            self.diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
-              "return without value not supported",
-              Span {
-                file: self.body_id.file(),
-                range: stmt.span,
-              },
-            ));
-            false
-          }
-          (_, Some(expr)) => {
-            let Some(value) = self.codegen_expr(*expr) else {
-              return false;
-            };
-            let llvm_ret = match ret_kind {
-              ValueKind::Number => match self.as_f64(value, *expr) {
-                Some(v) => v.as_basic_value_enum(),
-                None => return false,
-              },
-              ValueKind::Boolean => match self.as_bool(value, *expr) {
-                Some(v) => v.as_basic_value_enum(),
-                None => return false,
-              },
-              ValueKind::Void => unreachable!(),
-            };
-            let _ = self.backend.builder.build_return(Some(&llvm_ret));
-            true
-          }
+      StmtKind::Return(expr) => match (ret_kind, expr) {
+        (ValueKind::Void, None) => {
+          let _ = self.backend.builder.build_return(None);
+          true
         }
-      }
+        (ValueKind::Void, Some(expr)) => {
+          let _ = self.codegen_expr(*expr);
+          let _ = self.backend.builder.build_return(None);
+          true
+        }
+        (_, None) => {
+          self.diagnostics.push(codes::UNSUPPORTED_NATIVE_TYPE.error(
+            "return without value not supported",
+            Span {
+              file: self.body_id.file(),
+              range: stmt.span,
+            },
+          ));
+          false
+        }
+        (_, Some(expr)) => {
+          let Some(value) = self.codegen_expr(*expr) else {
+            return false;
+          };
+          let llvm_ret = match ret_kind {
+            ValueKind::Number => match self.as_f64(value, *expr) {
+              Some(v) => v.as_basic_value_enum(),
+              None => return false,
+            },
+            ValueKind::Boolean => match self.as_bool(value, *expr) {
+              Some(v) => v.as_basic_value_enum(),
+              None => return false,
+            },
+            ValueKind::Void => unreachable!(),
+          };
+          let _ = self.backend.builder.build_return(Some(&llvm_ret));
+          true
+        }
+      },
       StmtKind::Expr(expr) => {
         self.codegen_expr(*expr);
         false
@@ -298,7 +367,6 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
         false
       }
       _ => {
-        // Other statements are not supported yet.
         self.diagnostics.push(codes::UNSUPPORTED_EXPR.error(
           "unsupported statement",
           Span {
@@ -319,7 +387,6 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
         None => continue,
       };
       let PatKind::Ident(name) = pat.kind else {
-        // Only simple identifiers for now.
         self.diagnostics.push(codes::UNSUPPORTED_EXPR.error(
           "unsupported variable binding pattern",
           Span {
@@ -479,19 +546,11 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     }
   }
 
-  fn codegen_binary(
-    &mut self,
-    expr: ExprId,
-    op: BinaryOp,
-    left: ExprId,
-    right: ExprId,
-  ) -> Option<BasicValueEnum<'ctx>> {
+  fn codegen_binary(&mut self, expr: ExprId, op: BinaryOp, left: ExprId, right: ExprId) -> Option<BasicValueEnum<'ctx>> {
     match op {
-      BinaryOp::Add
-      | BinaryOp::Subtract
-      | BinaryOp::Multiply
-      | BinaryOp::Divide
-      | BinaryOp::Remainder => self.codegen_numeric_binary(expr, op, left, right),
+      BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => {
+        self.codegen_numeric_binary(expr, op, left, right)
+      }
       BinaryOp::LessThan
       | BinaryOp::LessEqual
       | BinaryOp::GreaterThan
@@ -509,13 +568,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     }
   }
 
-  fn codegen_numeric_binary(
-    &mut self,
-    expr: ExprId,
-    op: BinaryOp,
-    left: ExprId,
-    right: ExprId,
-  ) -> Option<BasicValueEnum<'ctx>> {
+  fn codegen_numeric_binary(&mut self, expr: ExprId, op: BinaryOp, left: ExprId, right: ExprId) -> Option<BasicValueEnum<'ctx>> {
     self.expect_kind(left, ValueKind::Number)?;
     self.expect_kind(right, ValueKind::Number)?;
     let left_raw = self.codegen_expr(left)?;
@@ -556,13 +609,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     Some(value.into())
   }
 
-  fn codegen_compare(
-    &mut self,
-    expr: ExprId,
-    op: BinaryOp,
-    left: ExprId,
-    right: ExprId,
-  ) -> Option<BasicValueEnum<'ctx>> {
+  fn codegen_compare(&mut self, expr: ExprId, op: BinaryOp, left: ExprId, right: ExprId) -> Option<BasicValueEnum<'ctx>> {
     let operand_kind = self.expect_same_kind(left, right)?;
     let pred_float = match op {
       BinaryOp::LessThan => FloatPredicate::OLT,
@@ -769,3 +816,4 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     callsite.try_as_basic_value().left()
   }
 }
+

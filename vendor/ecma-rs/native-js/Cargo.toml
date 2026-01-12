@@ -16,6 +16,11 @@ gc-lint = []
 # Enable post-`rewrite-statepoints-for-gc` callsite verification in non-debug builds.
 # Debug builds/tests always run it.
 gc-callsite-verify = []
+# Legacy HIR→LLVM "expression-only" backend (deprecated).
+#
+# This older backend is intentionally kept behind a feature to avoid accidental tests/tools
+# depending on it instead of the checked `codegen` backend.
+legacy-expr-backend = []
 
 [dependencies]
 anyhow = { workspace = true }
