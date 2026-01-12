@@ -13951,6 +13951,9 @@ mod tests {
           "#,
         )
         .unwrap();
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
     }
 
     assert_eq!(
@@ -14001,6 +14004,9 @@ mod tests {
           "#,
         )
         .unwrap();
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
     }
 
     assert_eq!(

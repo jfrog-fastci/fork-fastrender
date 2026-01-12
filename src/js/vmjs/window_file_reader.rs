@@ -1219,8 +1219,10 @@ mod tests {
     let _ = host.run_until_idle(RunLimits::unbounded())?;
 
     let events = host.exec_script("events.join(',')")?;
-    let heap = host.host_mut().window_realm()?.heap();
-    assert_eq!(get_string(heap, events), "abort,loadend");
+    {
+      let heap = host.host_mut().window_realm()?.heap();
+      assert_eq!(get_string(heap, events), "abort,loadend");
+    }
     assert_eq!(host.exec_script("reader.result")?, Value::Null);
     Ok(())
   }
