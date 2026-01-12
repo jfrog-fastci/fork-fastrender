@@ -47,3 +47,40 @@ fn proxy_heap_object_traces_target_and_handler_until_revoked() -> Result<(), VmE
   Ok(())
 }
 
+#[test]
+fn proxy_heap_object_alloc_proxy_roots_inputs_across_gc() -> Result<(), VmError> {
+  // Force GC at every possible opportunity.
+  //
+  // This test ensures `alloc_proxy` roots both `target` and `handler` at the same time, so a GC
+  // during root-stack growth cannot collect `handler` before it is pushed.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+
+  let target = {
+    let mut scope = heap.scope();
+    scope.alloc_object()?
+  };
+
+  // Keep `target` alive while we allocate `handler` (allocations can trigger GC).
+  let target_root = heap.add_root(Value::Object(target))?;
+
+  let handler = {
+    let mut scope = heap.scope();
+    scope.alloc_object()?
+  };
+
+  let proxy = {
+    let mut scope = heap.scope();
+    scope.alloc_proxy(target, handler)?
+  };
+
+  assert!(
+    heap.is_valid_object(handler),
+    "alloc_proxy should root `handler` across any GC while pushing roots"
+  );
+  assert!(heap.is_valid_object(proxy));
+  assert_eq!(heap.proxy_target(proxy)?, Some(target));
+  assert_eq!(heap.proxy_handler(proxy)?, Some(handler));
+
+  heap.remove_root(target_root);
+  Ok(())
+}

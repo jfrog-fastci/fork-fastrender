@@ -3966,8 +3966,8 @@ impl<'a> Scope<'a> {
 
     // Root inputs during allocation in case `ensure_can_allocate` or slot-table growth triggers GC.
     let mut scope = self.reborrow();
-    scope.push_root(Value::Object(target))?;
-    scope.push_root(Value::Object(handler))?;
+    let roots = [Value::Object(target), Value::Object(handler)];
+    scope.push_roots(&roots)?;
 
     // Proxies have no heap-owned payload allocations (their internal slots are stored inline in the
     // heap slot table).
