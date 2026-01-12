@@ -648,7 +648,7 @@ impl DomPlatform {
     // Root each object immediately after allocation. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(18);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(22);
 
     // Reuse WebIDL-installed prototypes for the base interfaces we want to share across bindings
     // backends.
@@ -663,6 +663,10 @@ impl DomPlatform {
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document_type))?);
     let proto_text = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_text))?);
+    let proto_comment = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_comment))?);
+    let proto_processing_instruction = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_processing_instruction))?);
     let proto_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_element))?);
     let proto_html_element = scope.alloc_object()?;
@@ -689,6 +693,8 @@ impl DomPlatform {
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_image_element))?);
     let proto_html_link_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_link_element))?);
+    let proto_html_script_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_script_element))?);
     let proto_document = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document))?);
     let proto_document_fragment = scope.alloc_object()?;
@@ -703,6 +709,8 @@ impl DomPlatform {
     //   Node -> EventTarget
     //   DocumentType -> Node
     //   Text -> Node
+    //   Comment -> Node
+    //   ProcessingInstruction -> Node
     //   Element -> Node
     //   HTMLElement -> Element
     //   HTML*Element -> HTMLElement
@@ -714,6 +722,12 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(proto_text, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_comment, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_processing_instruction, Some(proto_node))?;
     scope
       .heap_mut()
       .object_set_prototype(proto_element, Some(proto_node))?;
@@ -732,6 +746,7 @@ impl DomPlatform {
       proto_html_anchor_element,
       proto_html_image_element,
       proto_html_link_element,
+      proto_html_script_element,
     ] {
       scope
         .heap_mut()
@@ -746,11 +761,13 @@ impl DomPlatform {
 
     Ok(Self {
       realm_id,
-      prototypes: DomPrototypes {
+      prototypes: DomPlatformPrototypes {
         event_target: proto_event_target,
         node: proto_node,
         document_type: proto_document_type,
         text: proto_text,
+        comment: proto_comment,
+        processing_instruction: proto_processing_instruction,
         element: proto_element,
         html_element: proto_html_element,
         html_input_element: proto_html_input_element,
@@ -764,6 +781,7 @@ impl DomPlatform {
         html_anchor_element: proto_html_anchor_element,
         html_image_element: proto_html_image_element,
         html_link_element: proto_html_link_element,
+        html_script_element: proto_html_script_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
       },

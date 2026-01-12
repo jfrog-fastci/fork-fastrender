@@ -5520,7 +5520,8 @@ fn history_state_change_native(
       state_key,
       read_only_data_desc(cloned_state_value),
     )?;
-
+  }
+ 
   // Keep `history.length` in sync with the per-realm session history.
   {
     // Root the receiver while allocating the property key: `alloc_key` can trigger GC.
@@ -29634,7 +29635,7 @@ fn init_window_globals(
     data_desc(Value::Object(dispatch_event_global_func)),
   )?;
 
-  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+  let event_target_ctor_func = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
     let event_target_ctor_call_id = vm.register_native_call(event_target_constructor_native)?;
     let event_target_ctor_construct_id =
       vm.register_native_construct(event_target_constructor_construct_native)?;
@@ -29667,7 +29668,25 @@ fn init_window_globals(
       event_target_key,
       data_desc(Value::Object(event_target_ctor_func)),
     )?;
-  }
+    event_target_ctor_func
+  } else {
+    let event_target_key = alloc_key(&mut scope, "EventTarget")?;
+    let Some(event_target_val) = scope
+      .heap()
+      .object_get_own_data_property_value(global, &event_target_key)?
+    else {
+      return Err(VmError::InvariantViolation(
+        "WindowRealm expected globalThis.EventTarget to be installed by WebIDL bindings",
+      ));
+    };
+    let Value::Object(event_target_ctor_func) = event_target_val else {
+      return Err(VmError::InvariantViolation(
+        "WindowRealm expected globalThis.EventTarget to be an object",
+      ));
+    };
+    scope.push_root(Value::Object(event_target_ctor_func))?;
+    event_target_ctor_func
+  };
 
   // EventHandler (on*) attributes.
   //
@@ -29816,7 +29835,7 @@ fn init_window_globals(
     };
 
     // Node constructor + constants.
-    if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    let node_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
       let node_ctor = make_illegal_ctor(&mut scope, "Node")?;
       scope.push_root(Value::Object(node_ctor))?;
       scope.define_property(
@@ -29848,7 +29867,25 @@ fn init_window_globals(
         scope.define_property(node_ctor, key, desc.clone())?;
         scope.define_property(node_proto, key, desc)?;
       }
-    }
+      node_ctor
+    } else {
+      let node_key = alloc_key(&mut scope, "Node")?;
+      let Some(node_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &node_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Node to be installed by WebIDL bindings",
+        ));
+      };
+      let Value::Object(node_ctor) = node_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.Node to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(node_ctor))?;
+      node_ctor
+    };
 
     let document_type_ctor = make_illegal_ctor(&mut scope, "DocumentType")?;
     scope.push_root(Value::Object(document_type_ctor))?;
