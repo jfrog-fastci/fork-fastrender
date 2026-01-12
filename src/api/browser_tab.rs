@@ -29,6 +29,8 @@ use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
 use crate::web::dom::DocumentVisibilityState;
 use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
+use crate::ui::{PointerButton, PointerModifiers};
+use crate::web::events::{Event, EventInit, EventTargetId, MouseEvent};
 
 use encoding_rs::{Encoding, UTF_8};
 
@@ -5229,6 +5231,48 @@ impl BrowserTab {
       EventTargetId::Node(node_id).normalize(),
       event,
       event_loop,
+    )
+  }
+
+  /// Dispatch a trusted `click` DOM event to `node_id`, including pointer coordinates/buttons.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_click_event_with_pointer(
+    &mut self,
+    node_id: NodeId,
+    pos_css: (f32, f32),
+    button: PointerButton,
+    modifiers: PointerModifiers,
+  ) -> Result<bool> {
+    let (dom_button, dom_buttons) = match button {
+      PointerButton::Primary => (0i16, 1u16),
+      PointerButton::Secondary => (2i16, 2u16),
+      PointerButton::Middle => (1i16, 4u16),
+      PointerButton::Back => (3i16, 8u16),
+      PointerButton::Forward => (4i16, 16u16),
+      PointerButton::None | PointerButton::Other(_) => (-1i16, 0u16),
+    };
+    let mouse = MouseEvent {
+      client_x: pos_css.0 as f64,
+      client_y: pos_css.1 as f64,
+      button: dom_button,
+      buttons: dom_buttons,
+      ctrl_key: modifiers.ctrl(),
+      shift_key: modifiers.shift(),
+      alt_key: modifiers.alt(),
+      meta_key: modifiers.meta(),
+      related_target: None,
+    };
+
+    self.dispatch_mouse_event(
+      node_id,
+      "click",
+      EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+      mouse,
     )
   }
 

@@ -348,6 +348,8 @@ impl Event {
     self.target = None;
     self.current_target = None;
     self.event_phase = EventPhase::None;
+    self.storage = None;
+    self.mouse = None;
   }
 
   /// Legacy CustomEvent initializer (`CustomEvent.prototype.initCustomEvent`).

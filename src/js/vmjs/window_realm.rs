@@ -15647,6 +15647,18 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
         client_y_key,
         data_desc(Value::Number(mouse.client_y)),
       )?;
+      let screen_x_key = alloc_key(scope, "screenX")?;
+      scope.define_property(
+        event_obj,
+        screen_x_key,
+        data_desc(Value::Number(mouse.client_x)),
+      )?;
+      let screen_y_key = alloc_key(scope, "screenY")?;
+      scope.define_property(
+        event_obj,
+        screen_y_key,
+        data_desc(Value::Number(mouse.client_y)),
+      )?;
       let button_key = alloc_key(scope, "button")?;
       scope.define_property(
         event_obj,
@@ -32830,7 +32842,7 @@ mod tests {
            storageAreaIsNull: (e.storageArea === null),\n\
            isInstance: __has_storage_event_ctor ? (e instanceof StorageEvent) : null,\n\
          });\n\
-       });",
+        });",
     )?;
 
     struct DummyHost;
@@ -32926,9 +32938,9 @@ mod tests {
       &mut realm,
       &mut host,
        "globalThis.__log = [];\n\
-        const target = document.getElementById('target');\n\
-        function cap(e) {\n\
-          __log.push([\n\
+         const target = document.getElementById('target');\n\
+         function cap(e) {\n\
+           __log.push([\n\
             e.type,\n\
             e instanceof MouseEvent,\n\
             e.clientX,\n\
@@ -32937,26 +32949,26 @@ mod tests {
             e.buttons,\n\
             e.ctrlKey,\n\
             e.shiftKey,\n\
-            e.altKey,\n\
-            e.metaKey,\n\
-          ].join('|'));\n\
-        }\n\
-        function capRelated(e) {\n\
-          __log.push([\n\
-            e.type,\n\
-            e instanceof MouseEvent,\n\
-            e.relatedTarget && e.relatedTarget.id,\n\
-          ].join('|'));\n\
-        }\n\
-        target.addEventListener('mousedown', cap);\n\
-        target.addEventListener('mousemove', cap);\n\
-        target.addEventListener('mouseup', cap);\n\
-        target.onmouseover = capRelated;\n\
-        target.onmouseout = capRelated;\n\
-        target.onmouseenter = capRelated;\n\
-        target.onmouseleave = capRelated;\n\
-        target.onclick = cap;\n\
-        target.oncontextmenu = cap;",
+             e.altKey,\n\
+             e.metaKey,\n\
+           ].join('|'));\n\
+         }\n\
+         function capRelated(e) {\n\
+           __log.push([\n\
+             e.type,\n\
+             e instanceof MouseEvent,\n\
+             e.relatedTarget && e.relatedTarget.id,\n\
+           ].join('|'));\n\
+         }\n\
+         target.addEventListener('mousedown', cap);\n\
+         target.addEventListener('mousemove', cap);\n\
+         target.addEventListener('mouseup', cap);\n\
+         target.onmouseover = capRelated;\n\
+         target.onmouseout = capRelated;\n\
+         target.onmouseenter = capRelated;\n\
+         target.onmouseleave = capRelated;\n\
+         target.onclick = cap;\n\
+         target.oncontextmenu = cap;",
     )?;
 
     struct DummyHost;
@@ -33260,6 +33272,111 @@ mod tests {
         })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn host_click_event_exposes_mouse_coordinates_buttons_and_modifiers() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><button id=t></button></body></html>")
+        .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let click_target = host
+      .dom()
+      .get_element_by_id("t")
+      .expect("expected #t in DOM");
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__is_mouse = null;\n\
+       globalThis.__cx = null;\n\
+       globalThis.__cy = null;\n\
+       globalThis.__button = null;\n\
+       globalThis.__buttons = null;\n\
+       globalThis.__ctrl = null;\n\
+       globalThis.__shift = null;\n\
+       globalThis.__alt = null;\n\
+       globalThis.__meta = null;\n\
+       document.getElementById('t').addEventListener('click', (e) => {\n\
+         globalThis.__is_mouse = (e instanceof MouseEvent);\n\
+         globalThis.__cx = e.clientX;\n\
+         globalThis.__cy = e.clientY;\n\
+         globalThis.__button = e.button;\n\
+         globalThis.__buttons = e.buttons;\n\
+         globalThis.__ctrl = e.ctrlKey;\n\
+         globalThis.__shift = e.shiftKey;\n\
+         globalThis.__alt = e.altKey;\n\
+         globalThis.__meta = e.metaKey;\n\
+       });",
+    )?;
+
+    struct DummyHost;
+    impl WindowRealmHost for DummyHost {
+      fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
+        unreachable!("DummyHost is only used as a type parameter for VmJsEventLoopHooks");
+      }
+    }
+
+    let mut realm_slot = Some(realm);
+    let mut vm_host_ctx = ();
+    let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
+      Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
+    let mut invoker = WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+      &mut realm_slot,
+      &mut vm_host_slot,
+      &mut webidl_bindings_host_slot,
+    );
+
+    let mut event = web_events::Event::new(
+      "click",
+      web_events::EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    event.mouse = Some(web_events::MouseEvent {
+      client_x: 12.5,
+      client_y: 34.0,
+      button: 0,
+      buttons: 1,
+      ctrl_key: true,
+      shift_key: false,
+      alt_key: true,
+      meta_key: false,
+      related_target: None,
+    });
+
+    web_events::dispatch_event(
+      web_events::EventTargetId::Node(click_target).normalize(),
+      &mut event,
+      host.dom(),
+      host.dom().events(),
+      &mut invoker,
+    )
+    .expect("expected host click dispatch to succeed");
+
+    let realm = realm_slot.as_mut().expect("expected realm slot");
+    assert_eq!(realm.exec_script("globalThis.__is_mouse")?, Value::Bool(true));
+    assert!(matches!(
+      realm.exec_script("globalThis.__cx")?,
+      Value::Number(v) if (v - 12.5).abs() < f64::EPSILON
+    ));
+    assert!(matches!(
+      realm.exec_script("globalThis.__cy")?,
+      Value::Number(v) if (v - 34.0).abs() < f64::EPSILON
+    ));
+    assert_eq!(realm.exec_script("globalThis.__button")?, Value::Number(0.0));
+    assert_eq!(realm.exec_script("globalThis.__buttons")?, Value::Number(1.0));
+    assert_eq!(realm.exec_script("globalThis.__ctrl")?, Value::Bool(true));
+    assert_eq!(realm.exec_script("globalThis.__shift")?, Value::Bool(false));
+    assert_eq!(realm.exec_script("globalThis.__alt")?, Value::Bool(true));
+    assert_eq!(realm.exec_script("globalThis.__meta")?, Value::Bool(false));
+
     Ok(())
   }
 
