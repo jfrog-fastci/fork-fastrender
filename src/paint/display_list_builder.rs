@@ -6128,7 +6128,11 @@ impl DisplayListBuilder {
     }
   }
 
-  fn svg_intrinsic_dimensions_for_css(svg_markup: &str) -> (Option<f32>, Option<f32>) {
+  fn svg_intrinsic_dimensions_for_css(
+    svg_markup: &str,
+    font_size: f32,
+    root_font_size: f32,
+  ) -> crate::svg::SvgIntrinsicDimensions {
     // Use the same SVG intrinsic-size rules as `ImageCache` probing/rendering: resolve `<svg>`
     // width/height when they are absolute lengths, ignore percentages, and keep viewBox-only SVGs
     // as having no intrinsic size (only an intrinsic ratio).
@@ -6144,14 +6148,19 @@ impl DisplayListBuilder {
         root.attribute("height"),
         root.attribute("viewBox"),
         root.attribute("preserveAspectRatio"),
-        16.0,
-        16.0,
+        font_size,
+        root_font_size,
       );
-      Some((intrinsic.width, intrinsic.height))
+      Some(intrinsic)
     }))
     .ok()
     .flatten()
-    .unwrap_or((None, None))
+    .unwrap_or(crate::svg::SvgIntrinsicDimensions {
+      width: None,
+      height: None,
+      aspect_ratio: None,
+      aspect_ratio_none: false,
+    })
   }
 
   fn resolve_background_offset(
@@ -9575,18 +9584,33 @@ impl DisplayListBuilder {
           };
 
           let orientation = style.image_orientation.resolve(cached.orientation, true);
-          let intrinsic_ratio = cached.intrinsic_ratio(orientation);
-          let (img_w, img_h) = if cached.is_vector {
+          let (img_w, img_h, intrinsic_ratio) = if cached.is_vector {
             let Some(svg_markup) = cached.svg_content.as_deref() else {
               break 'paint_url;
             };
-            let (mut w, mut h) = Self::svg_intrinsic_dimensions_for_css(svg_markup);
+
+            let intrinsic = Self::svg_intrinsic_dimensions_for_css(
+              svg_markup,
+              style.font_size,
+              style.root_font_size,
+            );
+            let mut w = intrinsic.width;
+            let mut h = intrinsic.height;
+            let mut ratio = intrinsic.aspect_ratio;
             if orientation.quarter_turns % 2 == 1 {
               std::mem::swap(&mut w, &mut h);
+              if let Some(r) = ratio {
+                if r.is_finite() && r != 0.0 {
+                  ratio = Some(1.0 / r);
+                } else {
+                  ratio = None;
+                }
+              }
             }
             (
               w.filter(|v| v.is_finite() && *v > 0.0).unwrap_or(0.0),
               h.filter(|v| v.is_finite() && *v > 0.0).unwrap_or(0.0),
+              ratio,
             )
           } else {
             let Some((w, h)) = cached.css_dimensions(
@@ -9600,7 +9624,7 @@ impl DisplayListBuilder {
             if w <= 0.0 || h <= 0.0 {
               break 'paint_url;
             }
-            (w, h)
+            (w, h, cached.intrinsic_ratio(orientation))
           };
 
           let (mut tile_w, mut tile_h) = Self::compute_background_size(
@@ -15992,6 +16016,37 @@ mod tests {
       slotted_node_ids: Vec::new(),
       children: vec![],
     }
+  }
+
+  #[test]
+  fn svg_viewbox_only_background_auto_size_behaves_like_contain() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 450 175"></svg>"#;
+    let intrinsic = DisplayListBuilder::svg_intrinsic_dimensions_for_css(svg, 16.0, 16.0);
+    assert_eq!(intrinsic.width, None);
+    assert_eq!(intrinsic.height, None);
+    let ratio = intrinsic.aspect_ratio.expect("expected viewBox ratio");
+    assert!((ratio - (450.0 / 175.0)).abs() < 1e-6, "unexpected ratio {ratio}");
+
+    let layer = BackgroundLayer::default();
+    let (tile_w, tile_h) = DisplayListBuilder::compute_background_size(
+      &layer,
+      16.0,
+      16.0,
+      None,
+      450.0,
+      175.0,
+      intrinsic.width.unwrap_or(0.0),
+      intrinsic.height.unwrap_or(0.0),
+      intrinsic.aspect_ratio,
+    );
+    assert!(
+      (tile_w - 450.0).abs() < 1e-3,
+      "expected tile width to match background area; got {tile_w}"
+    );
+    assert!(
+      (tile_h - 175.0).abs() < 1e-3,
+      "expected tile height to match background area; got {tile_h}"
+    );
   }
 
   #[test]
