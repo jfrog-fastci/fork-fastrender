@@ -11,3 +11,9 @@ mod fixtures;
 // Keep the reference image comparison helpers available for fixture-style tests.
 #[allow(dead_code)]
 mod r#ref;
+mod tooling;
+
+#[test]
+fn llvm18_statepoint_fixture_emits_verified_stackmaps() {
+  tooling::llvm_stackmaps::llvm18_statepoint_fixture_emits_verified_stackmaps();
+}

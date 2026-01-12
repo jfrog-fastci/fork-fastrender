@@ -131,8 +131,7 @@ fn parse_call_return_offset_from_objdump(objdump: &str, fn_name: &str) -> Option
   None
 }
 
-#[test]
-fn llvm18_statepoint_fixture_emits_verified_stackmaps() {
+pub(crate) fn llvm18_statepoint_fixture_emits_verified_stackmaps() {
   // This is an LLVM18-specific test; if the tools are missing, treat as a skip.
   for tool in ["llvm-as-18", "llc-18", "llvm-readobj-18", "llvm-objdump-18"] {
     if !tool_available(tool) {
