@@ -3862,7 +3862,7 @@ fn is_single_function_call(trimmed: &str, name: &str) -> bool {
   false
 }
 
-fn unescape_css_string_fragment(value: &str) -> String {
+pub(crate) fn unescape_css_string_fragment(value: &str) -> String {
   if !value.as_bytes().contains(&b'\\') {
     return value.to_string();
   }

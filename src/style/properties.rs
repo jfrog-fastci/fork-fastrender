@@ -676,7 +676,10 @@ fn parse_position_try_fallbacks_list(raw: &str) -> Option<Vec<String>> {
 
 fn parse_background_image_value(value: &PropertyValue) -> Option<BackgroundImage> {
   match value {
-    PropertyValue::Keyword(kw) if starts_with_ignore_ascii_case(kw, "image-set(") => {
+    PropertyValue::Keyword(kw)
+      if starts_with_ignore_ascii_case(kw, "image-set(")
+        || starts_with_ignore_ascii_case(kw, "-webkit-image-set(") =>
+    {
       parse_image_set(kw)
     }
     PropertyValue::Url(url) => {
@@ -901,23 +904,45 @@ fn split_image_set_candidates(inner: &str) -> Vec<String> {
 
 pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
   let trimmed = trim_ascii_whitespace(text);
-  if !starts_with_ignore_ascii_case(trimmed, "image-set(") {
+  if !(starts_with_ignore_ascii_case(trimmed, "image-set(")
+    || starts_with_ignore_ascii_case(trimmed, "-webkit-image-set("))
+  {
     return None;
   }
 
   let start = trimmed.find('(')?;
-  let mut depth = 0usize;
+  let bytes = trimmed.as_bytes();
+  let mut depth: i32 = 0;
   let mut end = None;
-  for (idx, ch) in trimmed.char_indices().skip(start) {
-    match ch {
-      '(' => depth += 1,
-      ')' => {
-        if depth > 0 {
-          depth -= 1;
-          if depth == 0 {
-            end = Some(idx);
-            break;
-          }
+  let mut in_string: Option<u8> = None;
+  let mut escape = false;
+  for idx in start..bytes.len() {
+    let b = bytes[idx];
+    if escape {
+      escape = false;
+      continue;
+    }
+    if b == b'\\' {
+      escape = true;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if b == q {
+        in_string = None;
+      }
+      continue;
+    }
+    match b {
+      b'"' | b'\'' => in_string = Some(b),
+      b'(' => depth += 1,
+      b')' => {
+        depth -= 1;
+        if depth == 0 {
+          end = Some(idx);
+          break;
+        }
+        if depth < 0 {
+          return None;
         }
       }
       _ => {}
@@ -946,8 +971,19 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
           .get(open + 1..image_token.len() - 1)
           .unwrap_or(""),
       )
-      .trim_matches(|c| c == '"' || c == '\'')
       .to_string();
+      let inner = if inner.len() >= 2 {
+        let first = inner.as_bytes()[0];
+        let last = inner.as_bytes()[inner.len() - 1];
+        if (first == b'"' || first == b'\'') && last == first {
+          inner.get(1..inner.len() - 1).unwrap_or("").to_string()
+        } else {
+          inner
+        }
+      } else {
+        inner
+      };
+      let inner = crate::css::properties::unescape_css_string_fragment(&inner);
       if trim_ascii_whitespace(&inner).is_empty() {
         None
       } else {
@@ -957,9 +993,8 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
       || (image_token.starts_with('\'') && image_token.ends_with('\''))
     {
       // `image-set()` accepts string URL literals in addition to `url(...)`.
-      let inner = image_token
-        .trim_matches(|c| c == '"' || c == '\'')
-        .to_string();
+      let inner = image_token.get(1..image_token.len() - 1).unwrap_or("");
+      let inner = crate::css::properties::unescape_css_string_fragment(inner);
       if trim_ascii_whitespace(&inner).is_empty() {
         None
       } else {
@@ -972,11 +1007,17 @@ pub(crate) fn parse_image_set(text: &str) -> Option<BackgroundImage> {
     let Some(image) = image else { continue };
 
     let mut density = 1.0;
+    let mut density_specified = false;
     let mut mime_type: Option<String> = None;
     let mut valid = true;
     for token in tokens.iter().skip(1) {
       if let Some(res) = parse_image_set_resolution(token) {
+        if density_specified {
+          valid = false;
+          break;
+        }
         density = res;
+        density_specified = true;
         continue;
       }
       if starts_with_ignore_ascii_case(trim_ascii_whitespace(token), "type(")
@@ -23783,7 +23824,10 @@ fn parse_list_style_position(value: &PropertyValue) -> Option<ListStylePosition>
 fn parse_list_style_image(value: &PropertyValue) -> Option<ListStyleImage> {
   match value {
     PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(ListStyleImage::None),
-    PropertyValue::Keyword(kw) if starts_with_ignore_ascii_case(kw, "image-set(") => {
+    PropertyValue::Keyword(kw)
+      if starts_with_ignore_ascii_case(kw, "image-set(")
+        || starts_with_ignore_ascii_case(kw, "-webkit-image-set(") =>
+    {
       parse_image_set(kw).and_then(|img| match img {
         BackgroundImage::Url(url) => {
           if trim_ascii_whitespace(&url).is_empty() {
@@ -33772,6 +33816,28 @@ mod tests {
     assert_eq!(style.cursor_images.len(), 1);
     assert_eq!(style.cursor_images[0].url, "hi.cur");
     assert_eq!(style.cursor_images[0].hotspot, Some((4.0, 12.0)));
+  }
+
+  #[test]
+  fn image_set_parses_url_with_close_paren_in_string() {
+    let parsed = parse_image_set("image-set(url(\"foo).png\") 1x, url(\"bar.png\") 2x)")
+      .expect("image-set");
+    assert_eq!(parsed, BackgroundImage::Url("foo).png".to_string()));
+  }
+
+  #[test]
+  fn image_set_unescapes_string_url_literals() {
+    let parsed = parse_image_set("image-set(\"foo\\20 bar.png\" 1x)").expect("image-set");
+    assert_eq!(parsed, BackgroundImage::Url("foo bar.png".to_string()));
+  }
+
+  #[test]
+  fn image_set_rejects_multiple_resolution_descriptors_per_candidate() {
+    with_image_set_dpr(2.0, || {
+      let parsed = parse_image_set("image-set(url(\"bad.png\") 2x 2x, url(\"good.png\") 3x)")
+        .expect("image-set");
+      assert_eq!(parsed, BackgroundImage::Url("good.png".to_string()));
+    });
   }
 
   #[test]
