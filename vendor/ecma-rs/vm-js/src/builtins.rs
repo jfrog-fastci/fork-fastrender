@@ -8650,7 +8650,10 @@ pub fn object_prototype___define_getter__(
   }
   scope.push_root(getter)?;
 
-  let ok = scope.define_own_property_with_tick(
+  scope.define_property_or_throw_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
     obj,
     key,
     PropertyDescriptorPatch {
@@ -8659,11 +8662,7 @@ pub fn object_prototype___define_getter__(
       get: Some(getter),
       ..Default::default()
     },
-    || vm.tick(),
   )?;
-  if !ok {
-    return Err(VmError::TypeError("DefineOwnProperty rejected"));
-  }
   Ok(Value::Undefined)
 }
 
@@ -8694,7 +8693,10 @@ pub fn object_prototype___define_setter__(
   }
   scope.push_root(setter)?;
 
-  let ok = scope.define_own_property_with_tick(
+  scope.define_property_or_throw_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
     obj,
     key,
     PropertyDescriptorPatch {
@@ -8703,11 +8705,7 @@ pub fn object_prototype___define_setter__(
       set: Some(setter),
       ..Default::default()
     },
-    || vm.tick(),
   )?;
-  if !ok {
-    return Err(VmError::TypeError("DefineOwnProperty rejected"));
-  }
   Ok(Value::Undefined)
 }
 

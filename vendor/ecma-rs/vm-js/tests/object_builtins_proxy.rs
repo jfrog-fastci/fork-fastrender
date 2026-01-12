@@ -320,3 +320,25 @@ fn object_freeze_is_proxy_aware() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn object_prototype_define_getter_invokes_proxy_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var called = false;
+      var target = {};
+      var p = new Proxy(target, {
+        defineProperty: function (t, k, desc) {
+          called = true;
+          return Reflect.defineProperty(t, k, desc);
+        }
+      });
+      p.__defineGetter__("x", function () { return 1; });
+      var d = Object.getOwnPropertyDescriptor(target, "x");
+      called && typeof d.get === "function"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
