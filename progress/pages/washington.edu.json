@@ -14,7 +14,7 @@
     "layout": 19.011294361198736,
     "paint": 441.26214806782326
   },
-  "notes": "",
+  "notes": "Visually good. The high pixel diff at tolerance=0 is dominated by tiny per-channel differences in the large hero image (background-size: cover) from image decode/resampling/color-space rounding vs Chrome; overall perceptual distance remains very low. Remaining diffs outside the hero image are mostly minor text/AA and blur/shadow rounding noise (no missing layout primitives identified).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 233685,
