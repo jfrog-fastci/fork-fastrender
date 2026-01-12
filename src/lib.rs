@@ -222,6 +222,7 @@ pub mod resource;
 pub mod select_dropdown;
 pub mod svg;
 pub(crate) mod svg_path;
+pub(crate) mod xml;
 pub mod system;
 pub(crate) mod thread_pool_cache;
 pub(crate) mod url_normalize;
