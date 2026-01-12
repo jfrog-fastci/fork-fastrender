@@ -101,10 +101,21 @@ pub enum PtrKind {
   /// Heap-managed pointer whose pointee layout is not known at compile time.
   ///
   /// This is still a GC-managed pointer (i.e. a precise GC root slot) but does
-  /// not encode a layout identity.
+  /// not encode a layout identity. It is used for native/AOT "pointer-only"
+  /// unions where a union tag is unnecessary: the runtime can inspect the
+  /// pointed-to header/shape metadata to distinguish concrete variants.
   GcAny,
   /// Opaque pointer-like value.
   Opaque,
+}
+
+impl PtrKind {
+  pub fn is_gc_tracable(&self) -> bool {
+    matches!(
+      self,
+      PtrKind::GcObject { .. } | PtrKind::GcArray { .. } | PtrKind::GcString | PtrKind::GcAny
+    )
+  }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -690,6 +701,65 @@ impl LayoutStore {
       payload_size = payload_size.max(l.size());
       payload_align = payload_align.max(l.align());
       variant_layouts.push((*ty, layout));
+    }
+
+    // Phase 4.5 (native AOT) layout optimization:
+    // - Collapsing pointer-only unions into a single pointer word avoids
+    //   allocating inline tagged unions that sometimes contain pointers, which
+    //   is hazardous for conservative/statically-described GC tracing.
+    // - Collapsing `T | null` / `T | undefined` into a pointer word uses the
+    //   null pointer sentinel for the nullish case. This is only sound under
+    //   *strict-native* assumptions where types are trusted (e.g. `x === null`
+    //   can be folded away if `x`'s type excludes `null`).
+    let primitives = store.primitive_ids();
+
+    // Case 1: pointer-only unions of GC-traceable pointer kinds.
+    // (Never collapse `Opaque` pointers: could be non-GC pointers.)
+    let mut ptr_kinds: Vec<PtrKind> = Vec::with_capacity(variant_layouts.len());
+    for (_, layout) in &variant_layouts {
+      let Layout::Ptr { to } = self.layout(*layout) else {
+        ptr_kinds.clear();
+        break;
+      };
+      if !to.is_gc_tracable() {
+        ptr_kinds.clear();
+        break;
+      }
+      ptr_kinds.push(to);
+    }
+    if ptr_kinds.len() == variant_layouts.len() && !ptr_kinds.is_empty() {
+      let first = ptr_kinds.first().expect("checked non-empty");
+      let to = if ptr_kinds.iter().all(|k| k == first) {
+        first.clone()
+      } else {
+        PtrKind::GcAny
+      };
+      return Layout::Ptr { to };
+    }
+
+    // Case 2: `{ Ptr(GC-managed), Null }` or `{ Ptr(GC-managed), Undefined }`.
+    if variant_layouts.len() == 2 {
+      let (ty_a, layout_a) = variant_layouts[0];
+      let (ty_b, layout_b) = variant_layouts[1];
+
+      let is_nullish_a = ty_a == primitives.null || ty_a == primitives.undefined;
+      let is_nullish_b = ty_b == primitives.null || ty_b == primitives.undefined;
+
+      let ptr_kind = match (is_nullish_a, is_nullish_b) {
+        (true, false) => match self.layout(layout_b) {
+          Layout::Ptr { to } if to.is_gc_tracable() => Some(to),
+          _ => None,
+        },
+        (false, true) => match self.layout(layout_a) {
+          Layout::Ptr { to } if to.is_gc_tracable() => Some(to),
+          _ => None,
+        },
+        _ => None,
+      };
+
+      if let Some(to) = ptr_kind {
+        return Layout::Ptr { to };
+      }
     }
 
     let tag = TagLayout {

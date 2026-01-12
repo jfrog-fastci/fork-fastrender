@@ -598,14 +598,15 @@ fn gc_ptr_offsets_include_pointers_common_to_all_union_variants() {
   let obj_id = store.intern_object(ObjectType { shape: shape_id });
   let obj_ty = store.intern_type(TypeKind::Object(obj_id));
 
-  // Both members are GC pointers, so the union layout always contains a GC
-  // pointer in its payload regardless of the discriminant.
+  // Both members are GC pointers, so the union collapses to a single GC pointer
+  // word.
   let ptr_union = store.intern_type(TypeKind::Union(vec![primitives.string, obj_ty]));
   let ptr_union_layout = store.layout_of(ptr_union);
-  let Layout::TaggedUnion { payload_offset, .. } = store.layout(ptr_union_layout) else {
-    panic!("expected union to lower to TaggedUnion layout");
+  let Layout::Ptr { to } = store.layout(ptr_union_layout) else {
+    panic!("expected GC pointer-only union to lower to Ptr layout");
   };
-  assert_eq!(store.gc_ptr_offsets(ptr_union_layout), vec![payload_offset]);
+  assert_eq!(to, types_ts_interned::PtrKind::GcAny);
+  assert_eq!(store.gc_ptr_offsets(ptr_union_layout), vec![0]);
 
   // Mixed pointer/scalar union has no unconditional GC pointer slots.
   let mixed_union = store.intern_type(TypeKind::Union(vec![primitives.string, primitives.number]));
@@ -756,4 +757,101 @@ fn layout_classification_tagged_union_requires_tag_dispatch() {
     GcTraceKind::RequiresTagDispatch
   );
   assert_eq!(store.array_elem_repr(union_layout), ArrayElemRepr::NeedsBoxing);
+}
+
+fn object_with_prop(
+  store: &TypeStore,
+  name: &str,
+  ty: types_ts_interned::TypeId,
+) -> types_ts_interned::TypeId {
+  let name = store.intern_name_ref(name);
+  let mut shape = Shape::new();
+  shape.properties.push(Property {
+    key: PropKey::String(name),
+    data: PropData {
+      ty,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  });
+  let shape = store.intern_shape(shape);
+  let obj = store.intern_object(ObjectType { shape });
+  store.intern_type(TypeKind::Object(obj))
+}
+
+#[test]
+fn union_of_objects_is_pointer() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let a = object_with_prop(store.as_ref(), "a", primitives.number);
+  let b = object_with_prop(store.as_ref(), "b", primitives.boolean);
+
+  let union = store.intern_type(TypeKind::Union(vec![a, b]));
+  let id = store.layout_of(union);
+
+  let Layout::Ptr { to } = store.layout(id) else {
+    panic!("expected object union to lower to Ptr layout");
+  };
+  assert_eq!(to, types_ts_interned::PtrKind::GcAny);
+}
+
+#[test]
+fn union_object_or_null_is_pointer() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let obj = object_with_prop(store.as_ref(), "a", primitives.number);
+  let union = store.intern_type(TypeKind::Union(vec![obj, primitives.null]));
+  let id = store.layout_of(union);
+
+  let Layout::Ptr { .. } = store.layout(id) else {
+    panic!("expected object|null union to lower to Ptr layout");
+  };
+}
+
+#[test]
+fn union_object_or_undefined_is_pointer() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let obj = object_with_prop(store.as_ref(), "a", primitives.number);
+  let union = store.intern_type(TypeKind::Union(vec![obj, primitives.undefined]));
+  let id = store.layout_of(union);
+
+  let Layout::Ptr { .. } = store.layout(id) else {
+    panic!("expected object|undefined union to lower to Ptr layout");
+  };
+}
+
+#[test]
+fn union_with_scalar_stays_tagged_union() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let obj = object_with_prop(store.as_ref(), "a", primitives.number);
+  let union = store.intern_type(TypeKind::Union(vec![obj, primitives.number]));
+  let id = store.layout_of(union);
+
+  let Layout::TaggedUnion { .. } = store.layout(id) else {
+    panic!("expected object|number union to remain TaggedUnion");
+  };
+}
+
+#[test]
+fn union_with_opaque_stays_tagged_union() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let obj = object_with_prop(store.as_ref(), "a", primitives.number);
+  let union = store.intern_type(TypeKind::Union(vec![obj, primitives.bigint]));
+  let id = store.layout_of(union);
+
+  let Layout::TaggedUnion { .. } = store.layout(id) else {
+    panic!("expected union containing Opaque pointer to remain TaggedUnion");
+  };
 }
