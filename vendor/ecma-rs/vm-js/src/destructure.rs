@@ -273,8 +273,13 @@ fn bind_object_pattern(
   strict: bool,
   this: Value,
 ) -> Result<(), VmError> {
-  let Value::Object(obj) = value else {
-    return Err(throw_type_error(vm, scope, "object destructuring requires object")?);
+  // Object destructuring follows `GetV` semantics: property lookup uses `ToObject(value)`, but
+  // accessors must observe `this = value` (the original RHS value), not the boxed object.
+  let src_value = value;
+  let obj = match scope.to_object(vm, host, hooks, src_value) {
+    Ok(obj) => obj,
+    Err(VmError::TypeError(msg)) => return Err(throw_type_error(vm, scope, msg)?),
+    Err(err) => return Err(err),
   };
   scope.push_root(Value::Object(obj))?;
 
@@ -301,7 +306,7 @@ fn bind_object_pattern(
     excluded.push(key);
 
     let mut prop_value =
-      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, src_value)?;
     if matches!(prop_value, Value::Undefined) {
       if let Some(default_expr) = &prop.stx.default_value {
         prop_value = eval_expr(vm, host, hooks, env, strict, this, scope, default_expr)?;

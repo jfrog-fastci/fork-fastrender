@@ -163,3 +163,25 @@ fn object_destructuring_string_key_preserves_unpaired_surrogate() {
     .unwrap();
   assert_eq!(value, Value::Number(1.0));
 }
+
+#[test]
+fn object_destructuring_uses_getv_receiver_for_accessors_on_primitives() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        Object.defineProperty(Number.prototype, "x", {
+          configurable: true,
+          get: function() {
+            'use strict';
+            return typeof this;
+          },
+        });
+        var key = "x";
+        var {x, [key]: y} = 1;
+        x === "number" && y === "number"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
