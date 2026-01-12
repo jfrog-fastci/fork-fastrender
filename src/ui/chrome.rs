@@ -1566,7 +1566,7 @@ pub fn chrome_ui_with_bookmarks(
                 ui,
                 BrowserIcon::WarningInsecure,
                 ui.spacing().icon_width,
-                ui.visuals().text_color(),
+                ui.visuals().warn_fg_color,
               )
               .on_hover_text(label);
               resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
