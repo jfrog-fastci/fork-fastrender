@@ -70,8 +70,8 @@ use crate::layout::taffy_integration::{
   record_taffy_compute, record_taffy_invocation, record_taffy_measure_call,
   record_taffy_node_cache_hit, record_taffy_node_cache_miss, record_taffy_style_cache_hit,
   record_taffy_style_cache_miss, taffy_counters_enabled, taffy_flex_style_fingerprint,
-  taffy_template_cache_limit, CachedTaffyTemplate, SendSyncStyle, TaffyAdapterKind, TaffyNodeCache,
-  TaffyNodeCacheKey, TAFFY_ABORT_CHECK_STRIDE,
+  taffy_template_cache_limit, CachedTaffyTemplate, CachedTaffyTree, SendSyncStyle, TaffyAdapterKind,
+  TaffyNodeCache, TaffyNodeCacheKey, TAFFY_ABORT_CHECK_STRIDE,
 };
 use crate::layout::utils::border_size_from_box_sizing;
 use crate::layout::utils::content_size_from_box_sizing;
@@ -1008,11 +1008,12 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
 
-      // Create a fresh Taffy tree for this layout.
+      // Create (or reuse) a per-box cached Taffy tree for this layout.
       //
-      // Use a pooled instance to avoid repeatedly allocating slotmap backing storage on pages with
-      // many nested flex/grid containers.
-      let mut taffy_tree = crate::layout::taffy_integration::PooledTaffyTree::new();
+      // Real pages often trigger repeated flex layouts for the same container during a render (e.g.
+      // intrinsic sizing probes). Reusing the same `TaffyTree` lets Taffy keep its internal
+      // measurement caches between passes.
+      let mut taffy_tree = CachedTaffyTree::new(TaffyAdapterKind::Flex, box_node.id, true);
 
       // Partition children: out-of-flow abs/fixed are handled after flex layout per CSS positioning.
       let mut in_flow_children: Vec<(usize, &BoxNode)> = Vec::new();
@@ -1071,7 +1072,7 @@ impl FormattingContext for FlexFormattingContext {
         in_flow_children.len().saturating_add(1),
         Default::default(),
       );
-      let root_node = self.build_taffy_tree_children(
+      let root_node = self.build_or_update_taffy_tree_children_cached(
         &mut taffy_tree,
         box_node,
         style,
@@ -6756,6 +6757,218 @@ fn flex_child_fingerprint(
 }
 
 impl FlexFormattingContext {
+  /// Builds or updates a cached per-box Taffy tree.
+  ///
+  /// When a cached tree is available and its root children still match the current in-flow child
+  /// list, we update styles in-place (only calling `set_style` when values actually change) so
+  /// Taffy can reuse its internal per-node caches across repeated layout passes.
+  ///
+  /// If the cached tree structure no longer matches (e.g. child order/count changed), we clear and
+  /// rebuild from scratch.
+  fn build_or_update_taffy_tree_children_cached(
+    &self,
+    taffy_tree: &mut CachedTaffyTree,
+    box_node: &BoxNode,
+    root_style: &ComputedStyle,
+    root_children: &[&BoxNode],
+    constraints: &LayoutConstraints,
+    node_map: &mut FxHashMap<*const BoxNode, NodeId>,
+  ) -> Result<NodeId, LayoutError> {
+    if let Some(root_id) = taffy_tree.cached_root() {
+      let existing_children = taffy_tree
+        .children(root_id)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      let structure_matches = existing_children.len() == root_children.len()
+        && existing_children.iter().zip(root_children.iter()).all(|(node_id, child)| {
+          taffy_tree
+            .get_node_context(*node_id)
+            .is_some_and(|ctx| *ctx == (*child as *const BoxNode))
+        });
+
+      if structure_matches {
+        let mut deadline_counter = 0usize;
+        let child_fingerprint = flex_child_fingerprint(root_children, &mut deadline_counter)?;
+        let root_style_fingerprint = taffy_flex_style_fingerprint(root_style);
+        let cache_key = TaffyNodeCacheKey::new(
+          TaffyAdapterKind::Flex,
+          root_style_fingerprint,
+          child_fingerprint,
+          self.viewport_size,
+        );
+        let cached = self.taffy_cache.get(&cache_key);
+        let template: std::sync::Arc<CachedTaffyTemplate> = if let Some(template) = cached {
+          record_taffy_node_cache_hit(TaffyAdapterKind::Flex, template.node_count());
+          record_taffy_style_cache_hit(TaffyAdapterKind::Flex, template.node_count());
+          template
+        } else {
+          let mut child_styles = Vec::with_capacity(root_children.len());
+          for child in root_children {
+            check_layout_deadline(&mut deadline_counter)?;
+            let mut style =
+              self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(root_style))?;
+            style.item_is_replaced = child.is_replaced();
+            child_styles.push(std::sync::Arc::new(SendSyncStyle(style)));
+          }
+          let mut root_converted = self.computed_style_to_taffy_base(root_style, true, None)?;
+          root_converted.item_is_replaced = box_node.is_replaced();
+          let root_style = std::sync::Arc::new(SendSyncStyle(root_converted));
+          let template = std::sync::Arc::new(CachedTaffyTemplate {
+            root_style,
+            child_styles,
+          });
+          self.taffy_cache.insert(cache_key, template.clone());
+          record_taffy_node_cache_miss(TaffyAdapterKind::Flex, template.node_count());
+          record_taffy_style_cache_miss(TaffyAdapterKind::Flex, template.node_count());
+          template
+        };
+
+        let auto_unskipped_empty: FxHashSet<*const BoxNode> = FxHashSet::default();
+        let container_inner_size = self.flex_container_inner_size(root_style, constraints);
+        let main_axis_is_row = matches!(
+          root_style.flex_direction,
+          FlexDirection::Row | FlexDirection::RowReverse
+        );
+        let inline_is_horizontal = matches!(root_style.writing_mode, WritingMode::HorizontalTb);
+        let main_axis_is_horizontal = if main_axis_is_row {
+          inline_is_horizontal
+        } else {
+          !inline_is_horizontal
+        };
+        let container_inner_main_size = if main_axis_is_horizontal {
+          container_inner_size.width
+        } else {
+          container_inner_size.height
+        };
+        let container_inner_cross_size = if main_axis_is_horizontal {
+          container_inner_size.height
+        } else {
+          container_inner_size.width
+        };
+        let root_percentage_base = constraints
+          .inline_percentage_base
+          .or_else(|| constraints.width())
+          .filter(|b| b.is_finite());
+
+        for ((child_style, child), node_id) in template
+          .child_styles
+          .iter()
+          .zip(root_children.iter())
+          .zip(existing_children.iter())
+        {
+          check_layout_deadline(&mut deadline_counter)?;
+          let child = *child;
+          let mut resolved_style = child_style.0.clone();
+          self.apply_flex_intrinsic_size_keywords(
+            child,
+            false,
+            Some(root_style),
+            Some(constraints),
+            &mut resolved_style,
+          )?;
+          let skip_contents = self.flex_item_should_skip_contents(child, &auto_unskipped_empty);
+          self.apply_flex_auto_min_size(
+            child,
+            false,
+            Some(root_style),
+            container_inner_main_size,
+            container_inner_cross_size,
+            skip_contents,
+            &mut resolved_style,
+          )?;
+          self.apply_flex_fit_content_keywords(
+            child,
+            false,
+            Some(root_style),
+            constraints,
+            &mut resolved_style,
+          )?;
+          self.apply_calc_percentage_padding_and_margin(
+            child.style.as_ref(),
+            container_inner_size.width,
+            &mut resolved_style,
+          );
+          self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
+          if container_inner_main_size.is_none()
+            && resolved_style.flex_basis.tag() == taffy::style::CompactLength::PERCENT_TAG
+          {
+            resolved_style.flex_basis = Dimension::auto();
+          }
+          self.apply_calc_sizing_properties(
+            child.style.as_ref(),
+            Some(container_inner_size),
+            None,
+            &mut resolved_style,
+          );
+          if container_inner_size.width.is_none()
+            && resolved_style.size.width.tag() == taffy::style::CompactLength::PERCENT_TAG
+          {
+            resolved_style.size.width = Dimension::auto();
+          }
+          if container_inner_size.width.is_none()
+            && resolved_style.max_size.width.tag() == taffy::style::CompactLength::PERCENT_TAG
+          {
+            resolved_style.max_size.width = Dimension::auto();
+          }
+          if container_inner_size.height.is_none()
+            && resolved_style.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG
+          {
+            resolved_style.size.height = Dimension::auto();
+          }
+
+          let needs_update = match taffy_tree.style(*node_id) {
+            Ok(existing) => existing != &resolved_style,
+            Err(_) => true,
+          };
+          if needs_update {
+            taffy_tree
+              .set_style(*node_id, resolved_style)
+              .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+          }
+          node_map.insert(child as *const BoxNode, *node_id);
+        }
+
+        let mut root_taffy_style = template.root_style.0.clone();
+        self.apply_calc_sizing_properties(root_style, None, Some(constraints), &mut root_taffy_style);
+        self.apply_calc_percentage_padding_and_margin(
+          root_style,
+          root_percentage_base,
+          &mut root_taffy_style,
+        );
+        self.apply_calc_percentage_gaps(root_style, container_inner_size, &mut root_taffy_style);
+
+        let needs_root_update = match taffy_tree.style(root_id) {
+          Ok(existing) => existing != &root_taffy_style,
+          Err(_) => true,
+        };
+        if needs_root_update {
+          taffy_tree
+            .set_style(root_id, root_taffy_style)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
+
+        node_map.insert(box_node as *const BoxNode, root_id);
+        taffy_tree.set_root(root_id);
+        taffy_tree.set_fingerprints(root_style_fingerprint, child_fingerprint);
+        return Ok(root_id);
+      }
+
+      // Structure mismatch: clear so we can safely rebuild.
+      taffy_tree.clear_and_invalidate();
+    }
+
+    // Build a fresh tree (either on first use or after a mismatch).
+    let root_id = self.build_taffy_tree_children(
+      taffy_tree,
+      box_node,
+      root_style,
+      root_children,
+      constraints,
+      node_map,
+    )?;
+    taffy_tree.set_root(root_id);
+    Ok(root_id)
+  }
+
   /// Builds a Taffy tree from a BoxNode tree
   ///
   /// Returns the root NodeId and populates the node_map for later lookups.
@@ -15263,6 +15476,96 @@ mod tests {
       .layout(&container, &constraints_a)
       .expect("layout A-second");
     assert_eq!(fragment_a.bounds.width(), 5000.0);
+  }
+
+  #[test]
+  fn flex_taffy_tree_cache_hits_on_repeat_layout() {
+    let _epoch_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let epoch = crate::layout::formatting_context::intrinsic_cache_epoch().saturating_add(1);
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(epoch, true);
+    crate::layout::taffy_integration::taffy_style_fingerprint_cache_use_epoch(epoch);
+
+    crate::layout::taffy_integration::reset_taffy_tree_cache_counters();
+    let _taffy_guard = crate::layout::taffy_integration::enable_taffy_counters(true);
+
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let children: Vec<BoxNode> = (0..8)
+      .map(|idx| {
+        let mut node = BoxNode::new_block(
+          create_item_style(10.0, 10.0),
+          FormattingContextType::Block,
+          vec![],
+        );
+        node.id = 10_000 + idx;
+        node
+      })
+      .collect();
+    let mut container = BoxNode::new_block(create_flex_style(), FormattingContextType::Flex, children);
+    container.id = 42_4242;
+    let constraints = LayoutConstraints::definite(100.0, 100.0);
+
+    fc.layout(&container, &constraints).expect("first layout");
+    fc.layout(&container, &constraints).expect("second layout");
+
+    let (hits, misses) = crate::layout::taffy_integration::taffy_tree_cache_counters();
+    assert_eq!(misses, 1, "first layout should miss the per-box tree cache");
+    assert_eq!(hits, 1, "second layout should reuse the cached Taffy tree");
+  }
+
+  #[test]
+  fn flex_taffy_tree_cache_avoids_deadline_abort_by_reducing_measure_calls() {
+    use crate::render_control::{DeadlineGuard, RenderDeadline};
+    use std::sync::Arc;
+
+    let _epoch_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let epoch = crate::layout::formatting_context::intrinsic_cache_epoch().saturating_add(1);
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(epoch, true);
+    crate::layout::taffy_integration::taffy_style_fingerprint_cache_use_epoch(epoch);
+
+    let _taffy_guard = crate::layout::taffy_integration::enable_taffy_counters(true);
+    let _perf_guard = crate::layout::taffy_integration::TaffyPerfCountersGuard::new();
+
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let children: Vec<BoxNode> = (0..256)
+      .map(|idx| {
+        let mut node = BoxNode::new_block(
+          create_item_style(10.0, 10.0),
+          FormattingContextType::Block,
+          vec![],
+        );
+        node.id = 20_000 + idx;
+        node
+      })
+      .collect();
+    let mut container = BoxNode::new_block(create_flex_style(), FormattingContextType::Flex, children);
+    container.id = 84_8484;
+    let constraints = LayoutConstraints::definite(500.0, 200.0);
+
+    let before_first = crate::layout::taffy_integration::taffy_perf_counters().flex_measure_calls;
+    fc.layout(&container, &constraints).expect("warm layout");
+    let after_first = crate::layout::taffy_integration::taffy_perf_counters().flex_measure_calls;
+    let first_calls = after_first.saturating_sub(before_first);
+    assert!(first_calls > 0, "expected at least one Taffy measure call");
+
+    let before_second = crate::layout::taffy_integration::taffy_perf_counters().flex_measure_calls;
+    let threshold = (first_calls / 4).max(1);
+    let limit = before_second + threshold;
+    let deadline = RenderDeadline::new(
+      None,
+      Some(Arc::new(move || {
+        crate::layout::taffy_integration::taffy_perf_counters().flex_measure_calls > limit
+      })),
+    );
+    let _guard = DeadlineGuard::install(Some(&deadline));
+
+    fc.layout(&container, &constraints)
+      .expect("cached layout should complete under strict measure-call deadline");
+    let after_second = crate::layout::taffy_integration::taffy_perf_counters().flex_measure_calls;
+    let second_calls = after_second.saturating_sub(before_second);
+    assert!(
+      second_calls <= threshold,
+      "expected cached layout to use <= {threshold} measure calls, got {second_calls}"
+    );
   }
 
   #[test]

@@ -23,6 +23,7 @@
 
 use crate::debug::runtime;
 use crate::geometry::Size;
+use crate::layout::formatting_context::intrinsic_cache_epoch;
 use crate::style::types::{AspectRatio, FlexBasis, GridTrack, IntrinsicSizeKeyword};
 use crate::style::values::{CalcLength, Length};
 use crate::style::ComputedStyle;
@@ -672,6 +673,18 @@ impl PooledTaffyTree {
     tree.disable_rounding();
     Self { tree: Some(tree) }
   }
+
+  /// Consumes the wrapper without returning the tree to the pool.
+  ///
+  /// This is used by higher-level caches (e.g. per-box Taffy tree reuse) which want to keep
+  /// the internal node caches alive across layout passes. The caller becomes responsible for
+  /// either returning the tree to the pool (after clearing) or storing it elsewhere.
+  pub(crate) fn into_inner(mut self) -> TaffyTree<*const BoxNode> {
+    self
+      .tree
+      .take()
+      .expect("PooledTaffyTree missing inner tree")
+  }
 }
 
 impl Deref for PooledTaffyTree {
@@ -706,6 +719,287 @@ impl Drop for PooledTaffyTree {
         pool.push(tree);
       }
     });
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Per-box Taffy tree reuse
+// -----------------------------------------------------------------------------
+//
+// `PooledTaffyTree` avoids repeated allocations by reusing the underlying slotmap storage, but it
+// always clears the tree (dropping node measurement caches) on drop.
+//
+// Real pages frequently lay out the *same* flex/grid container multiple times within a single render
+// (e.g. intrinsic sizing probes, scrollbars retries, nested formatting-context measurements). When
+// we rebuild a fresh `TaffyTree` for each pass, Taffy cannot reuse its internal per-node caches and
+// ends up repeatedly invoking the measure callback for identical inputs ("measure amplification").
+//
+// To reduce this, we keep a small, strictly-bounded per-thread cache of recently-used `TaffyTree`
+// instances keyed by (adapter, box id). Entries preserve node storage and cached measure/layout
+// results, allowing subsequent layout passes for the same box tree to short-circuit inside Taffy.
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct CachedTaffyTreeKey {
+  adapter: TaffyAdapterKind,
+  box_id: usize,
+}
+
+struct CachedTaffyTreeEntry {
+  /// Root node id for the cached tree.
+  root: taffy::tree::NodeId,
+  /// Style/template fingerprints for the root node and its immediate children as last prepared.
+  ///
+  /// These allow callers to cheaply detect "structurally identical but style-divergent" reuse
+  /// scenarios and avoid resetting styles unnecessarily (which would mark the entire tree dirty and
+  /// erase the benefit of caching).
+  root_style_fingerprint: u64,
+  child_fingerprint: u64,
+  tree: TaffyTree<*const BoxNode>,
+}
+
+#[derive(Default)]
+struct CachedTaffyTreeCache {
+  entries: FxHashMap<CachedTaffyTreeKey, CachedTaffyTreeEntry>,
+  order: VecDeque<CachedTaffyTreeKey>,
+  total_nodes: usize,
+}
+
+/// Maximum number of cached per-box trees retained per thread.
+const TAFFY_TREE_CACHE_MAX_ENTRIES: usize = 32;
+
+/// Approximate upper bound on total nodes retained across cached trees, per thread.
+///
+/// This bounds memory usage while still allowing large flex/grid containers (the ones most likely to
+/// cause layout timeouts) to benefit from cache reuse.
+const TAFFY_TREE_CACHE_MAX_TOTAL_NODES: usize = 131_072;
+
+thread_local! {
+  static TAFFY_TREE_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
+  static TAFFY_TREE_CACHE: RefCell<CachedTaffyTreeCache> = RefCell::new(CachedTaffyTreeCache::default());
+}
+
+#[cfg(test)]
+thread_local! {
+  static TAFFY_TREE_CACHE_HITS: Cell<usize> = const { Cell::new(0) };
+  static TAFFY_TREE_CACHE_MISSES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_taffy_tree_cache_counters() {
+  TAFFY_TREE_CACHE_HITS.with(|cell| cell.set(0));
+  TAFFY_TREE_CACHE_MISSES.with(|cell| cell.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn taffy_tree_cache_counters() -> (usize, usize) {
+  (
+    TAFFY_TREE_CACHE_HITS.with(|cell| cell.get()),
+    TAFFY_TREE_CACHE_MISSES.with(|cell| cell.get()),
+  )
+}
+
+#[inline]
+fn ensure_taffy_tree_cache_epoch() {
+  let epoch = intrinsic_cache_epoch().max(1);
+  TAFFY_TREE_CACHE_EPOCH.with(|cell| {
+    if cell.get() == epoch {
+      return;
+    }
+    cell.set(epoch);
+    TAFFY_TREE_CACHE.with(|cache| {
+      let mut cache = cache.borrow_mut();
+      cache.entries.clear();
+      cache.order.clear();
+      cache.total_nodes = 0;
+    });
+  });
+}
+
+fn cache_take(key: CachedTaffyTreeKey) -> Option<CachedTaffyTreeEntry> {
+  ensure_taffy_tree_cache_epoch();
+  TAFFY_TREE_CACHE.with(|cache| {
+    let mut cache = cache.borrow_mut();
+    let entry = cache.entries.remove(&key)?;
+    if let Some(pos) = cache.order.iter().position(|existing| existing == &key) {
+      cache.order.remove(pos);
+    }
+    cache.total_nodes = cache.total_nodes.saturating_sub(entry.tree.total_node_count());
+    Some(entry)
+  })
+}
+
+fn cache_put(key: CachedTaffyTreeKey, entry: CachedTaffyTreeEntry) {
+  ensure_taffy_tree_cache_epoch();
+  TAFFY_TREE_CACHE.with(|cache| {
+    let mut cache = cache.borrow_mut();
+    if let Some(pos) = cache.order.iter().position(|existing| existing == &key) {
+      cache.order.remove(pos);
+    }
+    cache.order.push_back(key);
+    if let Some(mut previous) = cache.entries.insert(key, entry) {
+      cache.total_nodes = cache.total_nodes.saturating_sub(previous.tree.total_node_count());
+      previous.tree.clear();
+      TAFFY_TREE_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < TAFFY_TREE_POOL_MAX {
+          pool.push(previous.tree);
+        }
+      });
+    }
+    if let Some(entry) = cache.entries.get(&key) {
+      cache.total_nodes += entry.tree.total_node_count();
+    }
+
+    while cache.order.len() > TAFFY_TREE_CACHE_MAX_ENTRIES || cache.total_nodes > TAFFY_TREE_CACHE_MAX_TOTAL_NODES
+    {
+      let Some(evicted_key) = cache.order.pop_front() else {
+        break;
+      };
+      if let Some(mut evicted) = cache.entries.remove(&evicted_key) {
+        cache.total_nodes = cache.total_nodes.saturating_sub(evicted.tree.total_node_count());
+        // Return evicted trees to the cleared pool when possible so we keep allocation churn low.
+        evicted.tree.clear();
+        TAFFY_TREE_POOL.with(|pool| {
+          let mut pool = pool.borrow_mut();
+          if pool.len() < TAFFY_TREE_POOL_MAX {
+            pool.push(evicted.tree);
+          }
+        });
+      }
+    }
+  });
+}
+
+/// A `TaffyTree` wrapper that either:
+/// - reuses a previously cached per-box tree (preserving Taffy's internal caches), or
+/// - falls back to a pooled empty tree when caching is disabled/unavailable.
+///
+/// The tree is returned to the appropriate cache/pool on drop.
+pub(crate) struct CachedTaffyTree {
+  key: Option<CachedTaffyTreeKey>,
+  root: Option<taffy::tree::NodeId>,
+  root_style_fingerprint: u64,
+  child_fingerprint: u64,
+  tree: Option<TaffyTree<*const BoxNode>>,
+}
+
+impl CachedTaffyTree {
+  pub(crate) fn new(adapter: TaffyAdapterKind, box_id: usize, cacheable: bool) -> Self {
+    let key = (cacheable && box_id != 0).then_some(CachedTaffyTreeKey { adapter, box_id });
+    if let Some(key) = key {
+      if let Some(entry) = cache_take(key) {
+        #[cfg(test)]
+        TAFFY_TREE_CACHE_HITS.with(|cell| cell.set(cell.get() + 1));
+        let mut tree = entry.tree;
+        tree.disable_rounding();
+        return Self {
+          key: Some(key),
+          root: Some(entry.root),
+          root_style_fingerprint: entry.root_style_fingerprint,
+          child_fingerprint: entry.child_fingerprint,
+          tree: Some(tree),
+        };
+      }
+      #[cfg(test)]
+      TAFFY_TREE_CACHE_MISSES.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    let mut pooled = PooledTaffyTree::new().into_inner();
+    pooled.disable_rounding();
+    Self {
+      key,
+      root: None,
+      root_style_fingerprint: 0,
+      child_fingerprint: 0,
+      tree: Some(pooled),
+    }
+  }
+
+  pub(crate) fn cached_root(&self) -> Option<taffy::tree::NodeId> {
+    self.root
+  }
+
+  pub(crate) fn set_root(&mut self, root: taffy::tree::NodeId) {
+    self.root = Some(root);
+  }
+
+  pub(crate) fn cached_fingerprints(&self) -> Option<(u64, u64)> {
+    self.root.map(|_| (self.root_style_fingerprint, self.child_fingerprint))
+  }
+
+  pub(crate) fn set_fingerprints(&mut self, root_style_fingerprint: u64, child_fingerprint: u64) {
+    self.root_style_fingerprint = root_style_fingerprint;
+    self.child_fingerprint = child_fingerprint;
+  }
+
+  /// Clears the underlying `TaffyTree` and forgets the cached root metadata.
+  ///
+  /// This is used when callers detect that a cached tree's structure no longer matches the current
+  /// box subtree (e.g. child count/order mismatch). Clearing ensures we don't leak nodes across
+  /// rebuilds, and forgetting the root prevents `Drop` from caching an invalid entry if the rebuild
+  /// subsequently fails.
+  pub(crate) fn clear_and_invalidate(&mut self) {
+    if let Some(tree) = self.tree.as_mut() {
+      tree.clear();
+    }
+    self.root = None;
+    self.root_style_fingerprint = 0;
+    self.child_fingerprint = 0;
+  }
+}
+
+impl Deref for CachedTaffyTree {
+  type Target = TaffyTree<*const BoxNode>;
+
+  fn deref(&self) -> &Self::Target {
+    self.tree.as_ref().expect("CachedTaffyTree missing tree")
+  }
+}
+
+impl DerefMut for CachedTaffyTree {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    self.tree.as_mut().expect("CachedTaffyTree missing tree")
+  }
+}
+
+impl Drop for CachedTaffyTree {
+  fn drop(&mut self) {
+    let Some(mut tree) = self.tree.take() else {
+      return;
+    };
+
+    let Some(key) = self.key else {
+      tree.clear();
+      TAFFY_TREE_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < TAFFY_TREE_POOL_MAX {
+          pool.push(tree);
+        }
+      });
+      return;
+    };
+
+    let Some(root) = self.root else {
+      // Tree was never successfully built; return it to the cleared pool.
+      tree.clear();
+      TAFFY_TREE_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < TAFFY_TREE_POOL_MAX {
+          pool.push(tree);
+        }
+      });
+      return;
+    };
+
+    cache_put(
+      key,
+      CachedTaffyTreeEntry {
+        root,
+        root_style_fingerprint: self.root_style_fingerprint,
+        child_fingerprint: self.child_fingerprint,
+        tree,
+      },
+    );
   }
 }
 

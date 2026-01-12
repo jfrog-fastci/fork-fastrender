@@ -66,7 +66,7 @@ use crate::layout::taffy_integration::{
   record_taffy_compute, record_taffy_invocation, record_taffy_measure_call,
   record_taffy_node_cache_hit, record_taffy_node_cache_miss, record_taffy_style_cache_hit,
   record_taffy_style_cache_miss, taffy_counters_enabled, taffy_grid_container_style_fingerprint,
-  taffy_grid_item_style_fingerprint, taffy_template_cache_limit, CachedTaffyTemplate,
+  taffy_grid_item_style_fingerprint, taffy_template_cache_limit, CachedTaffyTemplate, CachedTaffyTree,
   SendSyncStyle, TaffyAdapterKind, TaffyNodeCache, TaffyNodeCacheKey, TAFFY_ABORT_CHECK_STRIDE,
 };
 use crate::layout::utils::border_size_from_box_sizing;
@@ -167,6 +167,72 @@ fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
 }
 
 type FingerprintHasher = FxHasher;
+
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
+fn hash_available_space(space: CrateAvailableSpace, hasher: &mut FingerprintHasher) {
+  use std::hash::Hash;
+  match space {
+    CrateAvailableSpace::Definite(value) => {
+      0u8.hash(hasher);
+      f32_to_canonical_bits(value).hash(hasher);
+    }
+    CrateAvailableSpace::Indefinite => {
+      1u8.hash(hasher);
+    }
+    CrateAvailableSpace::MinContent => {
+      2u8.hash(hasher);
+    }
+    CrateAvailableSpace::MaxContent => {
+      3u8.hash(hasher);
+    }
+  }
+}
+
+fn hash_opt_f32(value: Option<f32>, hasher: &mut FingerprintHasher) {
+  use std::hash::Hash;
+  match value.filter(|v| v.is_finite() && *v >= 0.0) {
+    Some(v) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(v).hash(hasher);
+    }
+    None => {
+      0u8.hash(hasher);
+    }
+  }
+}
+
+fn grid_constraints_fingerprint(constraints: &LayoutConstraints) -> u64 {
+  use std::hash::Hash;
+  use std::hash::Hasher;
+  let mut h = FingerprintHasher::default();
+  hash_available_space(constraints.available_width, &mut h);
+  hash_available_space(constraints.available_height, &mut h);
+  hash_opt_f32(constraints.used_border_box_width, &mut h);
+  hash_opt_f32(constraints.used_border_box_height, &mut h);
+  constraints
+    .used_border_box_size_forces_block_percentage_base
+    .hash(&mut h);
+  hash_opt_f32(constraints.inline_percentage_base, &mut h);
+  hash_opt_f32(constraints.block_percentage_base, &mut h);
+  h.finish()
+}
+
+fn combine_fingerprints(a: u64, b: u64) -> u64 {
+  use std::hash::Hash;
+  use std::hash::Hasher;
+  let mut h = FingerprintHasher::default();
+  a.hash(&mut h);
+  b.hash(&mut h);
+  h.finish()
+}
 
 #[derive(Clone, Copy)]
 enum Axis {
@@ -3156,6 +3222,262 @@ impl GridFormattingContext {
     )
   }
 
+  /// Builds or updates a cached per-box Taffy tree for this grid container.
+  ///
+  /// When a cached tree is available and its root children still match the current in-flow child
+  /// list, we avoid rebuilding nodes and only touch styles if the computed-style fingerprints have
+  /// changed (e.g. because a style override is active for intrinsic sizing probes). This preserves
+  /// Taffy's internal caches across repeated layout passes for the same box.
+  fn build_or_update_taffy_tree_children_cached(
+    &self,
+    taffy: &mut CachedTaffyTree,
+    box_node: &BoxNode,
+    root_style: &ComputedStyle,
+    root_children: &[&BoxNode],
+    constraints: &LayoutConstraints,
+    positioned_children: &mut FxHashMap<TaffyNodeId, Vec<*const BoxNode>>,
+  ) -> Result<TaffyNodeId, LayoutError> {
+    let has_subgrid = root_style.grid_row_subgrid || root_style.grid_column_subgrid;
+    let child_has_subgrid = root_children
+      .iter()
+      .any(|child| child.style.grid_row_subgrid || child.style.grid_column_subgrid);
+    let can_use_template_cache = !has_subgrid && !child_has_subgrid;
+
+    if let Some(root_id) = taffy.cached_root() {
+      let root_matches = taffy
+        .get_node_context(root_id)
+        .is_some_and(|ctx| *ctx == (box_node as *const BoxNode));
+      let existing_children = taffy
+        .children(root_id)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      let structure_matches = root_matches
+        && existing_children.len() == root_children.len()
+        && existing_children
+          .iter()
+          .zip(root_children.iter())
+          .all(|(node_id, child)| {
+            taffy
+              .get_node_context(*node_id)
+              .is_some_and(|ctx| *ctx == (*child as *const BoxNode))
+          });
+
+      if structure_matches {
+        let mut deadline_counter = 0usize;
+        let has_positioned_children = box_node.children.iter().any(|child| {
+          matches!(
+            child.style.position,
+            crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+          )
+        });
+        let child_fingerprint =
+          grid_child_fingerprint(root_children, has_positioned_children, &mut deadline_counter)?;
+        let root_style_fingerprint = taffy_grid_container_style_fingerprint(root_style);
+        let constraints_fingerprint = grid_constraints_fingerprint(constraints);
+        let root_layout_fingerprint = combine_fingerprints(root_style_fingerprint, constraints_fingerprint);
+        let fingerprints_match = taffy
+          .cached_fingerprints()
+          .is_some_and(|(prev_root, prev_child)| {
+            prev_root == root_layout_fingerprint && prev_child == child_fingerprint
+          });
+
+        if !fingerprints_match {
+          let root_axis_style = GridAxisStyle::from_style(root_style);
+          let cache_key = TaffyNodeCacheKey::new(
+            TaffyAdapterKind::Grid,
+            root_style_fingerprint,
+            child_fingerprint,
+            self.viewport_size,
+          );
+          let cached = self.taffy_cache.get(&cache_key);
+          let template: std::sync::Arc<CachedTaffyTemplate> = if let Some(template) = cached {
+            record_taffy_node_cache_hit(TaffyAdapterKind::Grid, template.node_count());
+            record_taffy_style_cache_hit(TaffyAdapterKind::Grid, template.node_count());
+            template
+          } else {
+            let mut child_styles = Vec::with_capacity(root_children.len());
+            for child in root_children.iter() {
+              check_layout_deadline(&mut deadline_counter)?;
+              let child_style_override = style_override_for(child.id);
+              let child_style: &ComputedStyle = child_style_override
+                .as_deref()
+                .unwrap_or_else(|| child.style.as_ref());
+              child_styles.push(std::sync::Arc::new(SendSyncStyle(self.convert_style(
+                child_style,
+                Some(root_style),
+                Some(root_axis_style),
+                false,
+                false,
+                child.is_replaced(),
+              ))));
+            }
+            let simple_grid = !has_positioned_children
+              && self.is_simple_grid(root_style, root_children, &mut deadline_counter)?;
+            let root_style = std::sync::Arc::new(SendSyncStyle(self.convert_style(
+              root_style,
+              None,
+              None,
+              simple_grid,
+              true,
+              box_node.is_replaced(),
+            )));
+            let template = std::sync::Arc::new(CachedTaffyTemplate {
+              root_style,
+              child_styles,
+            });
+            self.taffy_cache.insert(cache_key, template.clone());
+            record_taffy_node_cache_miss(TaffyAdapterKind::Grid, template.node_count());
+            record_taffy_style_cache_miss(TaffyAdapterKind::Grid, template.node_count());
+            template
+          };
+
+          for ((child_style, child), node_id) in template
+            .child_styles
+            .iter()
+            .zip(root_children.iter())
+            .zip(existing_children.iter())
+          {
+            check_layout_deadline(&mut deadline_counter)?;
+            let child = *child;
+            let mut resolved_style = child_style.0.clone();
+            self.apply_grid_intrinsic_size_keywords(child, false, &mut resolved_style)?;
+            let needs_update = match taffy.style(*node_id) {
+              Ok(existing) => existing != &resolved_style,
+              Err(_) => true,
+            };
+            if needs_update {
+              taffy
+                .set_style(*node_id, resolved_style)
+                .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+            }
+          }
+
+          let root_style = template.root_style.0.clone();
+          let needs_root_update = match taffy.style(root_id) {
+            Ok(existing) => existing != &root_style,
+            Err(_) => true,
+          };
+          if needs_root_update {
+            taffy
+              .set_style(root_id, root_style)
+              .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+          }
+        }
+
+        taffy.set_root(root_id);
+        taffy.set_fingerprints(root_layout_fingerprint, child_fingerprint);
+        return Ok(root_id);
+      }
+
+      // Structure mismatch: clear so we can safely rebuild.
+      taffy.clear_and_invalidate();
+    }
+
+    if !can_use_template_cache {
+      let root_id = self.build_taffy_tree_children(
+        taffy,
+        box_node,
+        root_style,
+        root_children,
+        constraints,
+        positioned_children,
+      )?;
+      taffy.set_root(root_id);
+      return Ok(root_id);
+    }
+
+    let mut deadline_counter = 0usize;
+    let has_positioned_children = box_node.children.iter().any(|child| {
+      matches!(
+        child.style.position,
+        crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+      )
+    });
+    let child_fingerprint =
+      grid_child_fingerprint(root_children, has_positioned_children, &mut deadline_counter)?;
+    let root_style_fingerprint = taffy_grid_container_style_fingerprint(root_style);
+    let constraints_fingerprint = grid_constraints_fingerprint(constraints);
+    let root_layout_fingerprint = combine_fingerprints(root_style_fingerprint, constraints_fingerprint);
+
+    let root_axis_style = GridAxisStyle::from_style(root_style);
+    let cache_key = TaffyNodeCacheKey::new(
+      TaffyAdapterKind::Grid,
+      root_style_fingerprint,
+      child_fingerprint,
+      self.viewport_size,
+    );
+    let cached = self.taffy_cache.get(&cache_key);
+    let template: std::sync::Arc<CachedTaffyTemplate> = if let Some(template) = cached {
+      record_taffy_node_cache_hit(TaffyAdapterKind::Grid, template.node_count());
+      record_taffy_style_cache_hit(TaffyAdapterKind::Grid, template.node_count());
+      template
+    } else {
+      let mut child_styles = Vec::with_capacity(root_children.len());
+      for child in root_children.iter() {
+        check_layout_deadline(&mut deadline_counter)?;
+        let child_style_override = style_override_for(child.id);
+        let child_style: &ComputedStyle = child_style_override
+          .as_deref()
+          .unwrap_or_else(|| child.style.as_ref());
+        child_styles.push(std::sync::Arc::new(SendSyncStyle(self.convert_style(
+          child_style,
+          Some(root_style),
+          Some(root_axis_style),
+          false,
+          false,
+          child.is_replaced(),
+        ))));
+      }
+      let simple_grid =
+        !has_positioned_children && self.is_simple_grid(root_style, root_children, &mut deadline_counter)?;
+      let root_style = std::sync::Arc::new(SendSyncStyle(self.convert_style(
+        root_style,
+        None,
+        None,
+        simple_grid,
+        true,
+        box_node.is_replaced(),
+      )));
+      let template = std::sync::Arc::new(CachedTaffyTemplate {
+        root_style,
+        child_styles,
+      });
+      self.taffy_cache.insert(cache_key, template.clone());
+      record_taffy_node_cache_miss(TaffyAdapterKind::Grid, template.node_count());
+      record_taffy_style_cache_miss(TaffyAdapterKind::Grid, template.node_count());
+      template
+    };
+
+    let mut taffy_children = Vec::with_capacity(root_children.len());
+    for (child_style, child) in template.child_styles.iter().zip(root_children.iter()) {
+      check_layout_deadline(&mut deadline_counter)?;
+      let child = *child;
+      let mut resolved_style = child_style.0.clone();
+      self.apply_grid_intrinsic_size_keywords(child, false, &mut resolved_style)?;
+      let node = taffy
+        .new_leaf_with_context(resolved_style, child as *const BoxNode)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      taffy_children.push(node);
+    }
+
+    let node_id = if taffy_children.is_empty() {
+      taffy
+        .new_leaf_with_context(template.root_style.0.clone(), box_node as *const BoxNode)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?
+    } else {
+      let node_id = taffy
+        .new_with_children(template.root_style.0.clone(), &taffy_children)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      taffy
+        .set_node_context(node_id, Some(box_node as *const BoxNode))
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      node_id
+    };
+
+    taffy.set_root(node_id);
+    taffy.set_fingerprints(root_layout_fingerprint, child_fingerprint);
+    Ok(node_id)
+  }
+
   /// Builds a Taffy tree using an explicit slice of root children (used to exclude out-of-flow boxes).
   fn build_taffy_tree_children(
     &self,
@@ -4700,8 +5022,11 @@ impl GridFormattingContext {
     let mut patch_edge = |len: Length, base: Option<f32>, slot: &mut LengthPercentage| {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
         let px = resolve(len, base).unwrap_or(0.0).max(0.0);
-        *slot = LengthPercentage::length(px);
-        changed = true;
+        let next = LengthPercentage::length(px);
+        if *slot != next {
+          *slot = next;
+          changed = true;
+        }
       }
     };
     patch_edge(style.padding_left, cb_width, &mut updated.padding.left);
@@ -4735,8 +5060,11 @@ impl GridFormattingContext {
         let Some(len) = len else { return };
         if len.unit == LengthUnit::Calc && len.has_percentage() {
           let px = resolve(len, base).unwrap_or(0.0);
-          *slot = LengthPercentageAuto::length(px);
-          changed = true;
+          let next = LengthPercentageAuto::length(px);
+          if *slot != next {
+            *slot = next;
+            changed = true;
+          }
         }
       };
     patch_margin(style.margin_left, cb_width, &mut updated.margin.left);
@@ -4754,42 +5082,60 @@ impl GridFormattingContext {
     if constraints.used_border_box_width.is_none() {
       if let Some(len) = style.width.as_ref() {
         if len.unit == LengthUnit::Calc && len.has_percentage() {
-          updated.size.width = resolve_dimension(len, cb_width);
-          changed = true;
+          let next = resolve_dimension(len, cb_width);
+          if updated.size.width != next {
+            updated.size.width = next;
+            changed = true;
+          }
         }
       }
     }
     if constraints.used_border_box_height.is_none() {
       if let Some(len) = style.height.as_ref() {
         if len.unit == LengthUnit::Calc && len.has_percentage() {
-          updated.size.height = resolve_dimension(len, cb_height);
-          changed = true;
+          let next = resolve_dimension(len, cb_height);
+          if updated.size.height != next {
+            updated.size.height = next;
+            changed = true;
+          }
         }
       }
     }
 
     if let Some(len) = style.min_width.as_ref() {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
-        updated.min_size.width = resolve_dimension(len, cb_width);
-        changed = true;
+        let next = resolve_dimension(len, cb_width);
+        if updated.min_size.width != next {
+          updated.min_size.width = next;
+          changed = true;
+        }
       }
     }
     if let Some(len) = style.min_height.as_ref() {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
-        updated.min_size.height = resolve_dimension(len, cb_height);
-        changed = true;
+        let next = resolve_dimension(len, cb_height);
+        if updated.min_size.height != next {
+          updated.min_size.height = next;
+          changed = true;
+        }
       }
     }
     if let Some(len) = style.max_width.as_ref() {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
-        updated.max_size.width = resolve_dimension(len, cb_width);
-        changed = true;
+        let next = resolve_dimension(len, cb_width);
+        if updated.max_size.width != next {
+          updated.max_size.width = next;
+          changed = true;
+        }
       }
     }
     if let Some(len) = style.max_height.as_ref() {
       if len.unit == LengthUnit::Calc && len.has_percentage() {
-        updated.max_size.height = resolve_dimension(len, cb_height);
-        changed = true;
+        let next = resolve_dimension(len, cb_height);
+        if updated.max_size.height != next {
+          updated.max_size.height = next;
+          changed = true;
+        }
       }
     }
 
@@ -4852,7 +5198,7 @@ impl GridFormattingContext {
     let mut updated = existing.clone();
     let mut changed = false;
     let mut patch = |slot: &mut Dimension| {
-      *slot = match base.and_then(|base| {
+      let next = match base.and_then(|base| {
         self
           .resolve_length_px_with_base(block_len, Some(base), style)
           .filter(|v| v.is_finite())
@@ -4860,7 +5206,10 @@ impl GridFormattingContext {
         Some(px) => Dimension::length(px.max(0.0)),
         None => Dimension::auto(),
       };
-      changed = true;
+      if *slot != next {
+        *slot = next;
+        changed = true;
+      }
     };
 
     if inline_is_horizontal {
@@ -5094,62 +5443,87 @@ impl GridFormattingContext {
 
       if gap_width_len.unit == LengthUnit::Calc && gap_width_len.has_percentage() {
         let px = resolve_gap_calc(gap_width_len).unwrap_or(0.0);
-        updated.gap.width = clamp_gap(px);
-        updated.subgrid_gap.width = updated.gap.width;
-        changed = true;
+        let next = clamp_gap(px);
+        if updated.gap.width != next {
+          updated.gap.width = next;
+          updated.subgrid_gap.width = next;
+          changed = true;
+        }
       }
       if gap_height_len.unit == LengthUnit::Calc && gap_height_len.has_percentage() {
         let px = resolve_gap_calc(gap_height_len).unwrap_or(0.0);
-        updated.gap.height = clamp_gap(px);
-        updated.subgrid_gap.height = updated.gap.height;
-        changed = true;
+        let next = clamp_gap(px);
+        if updated.gap.height != next {
+          updated.gap.height = next;
+          updated.subgrid_gap.height = next;
+          changed = true;
+        }
       }
     }
 
     if has_tracks {
-      updated.grid_template_columns = self.convert_grid_template_with_percentage_base(
-        template_columns,
-        style,
-        content_width_base,
-      );
-      updated.grid_template_rows =
+      let next_cols =
+        self.convert_grid_template_with_percentage_base(template_columns, style, content_width_base);
+      if updated.grid_template_columns != next_cols {
+        updated.grid_template_columns = next_cols;
+        changed = true;
+      }
+      let next_rows =
         self.convert_grid_template_with_percentage_base(template_rows, style, content_height_base);
-      changed = true;
+      if updated.grid_template_rows != next_rows {
+        updated.grid_template_rows = next_rows;
+        changed = true;
+      }
     }
 
     if has_tracks && (!style.grid_auto_columns.is_empty() || !style.grid_auto_rows.is_empty()) {
       if swap_grid_axes {
         if !style.grid_auto_rows.is_empty() {
-          updated.grid_auto_columns = style
+          let next = style
             .grid_auto_rows
             .iter()
             .map(|t| self.convert_track_size_with_percentage_base(t, style, content_width_base))
-            .collect();
+            .collect::<Vec<_>>();
+          if updated.grid_auto_columns != next {
+            updated.grid_auto_columns = next;
+            changed = true;
+          }
         }
         if !style.grid_auto_columns.is_empty() {
-          updated.grid_auto_rows = style
+          let next = style
             .grid_auto_columns
             .iter()
             .map(|t| self.convert_track_size_with_percentage_base(t, style, content_height_base))
-            .collect();
+            .collect::<Vec<_>>();
+          if updated.grid_auto_rows != next {
+            updated.grid_auto_rows = next;
+            changed = true;
+          }
         }
       } else {
         if !style.grid_auto_columns.is_empty() {
-          updated.grid_auto_columns = style
+          let next = style
             .grid_auto_columns
             .iter()
             .map(|t| self.convert_track_size_with_percentage_base(t, style, content_width_base))
-            .collect();
+            .collect::<Vec<_>>();
+          if updated.grid_auto_columns != next {
+            updated.grid_auto_columns = next;
+            changed = true;
+          }
         }
         if !style.grid_auto_rows.is_empty() {
-          updated.grid_auto_rows = style
+          let next = style
             .grid_auto_rows
             .iter()
             .map(|t| self.convert_track_size_with_percentage_base(t, style, content_height_base))
-            .collect();
+            .collect::<Vec<_>>();
+          if updated.grid_auto_rows != next {
+            updated.grid_auto_rows = next;
+            changed = true;
+          }
         }
       }
-      changed = true;
     }
 
     if changed {
@@ -9910,8 +10284,55 @@ impl GridFormattingContext {
       return Ok(size);
     }
 
-    // Use a pooled Taffy tree to avoid repeated allocation churn during intrinsic sizing probes.
-    let mut taffy = crate::layout::taffy_integration::PooledTaffyTree::new();
+    let mut deadline_counter = 0usize;
+    let mut in_flow_children: Vec<(usize, &BoxNode)> = box_node
+      .children
+      .iter()
+      .enumerate()
+      .filter(|(_, child)| {
+        !matches!(
+          child.style.position,
+          crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+        )
+      })
+      .collect();
+    let mut in_flow_children_need_sort = false;
+    let mut last_in_flow_order: Option<i32> = None;
+    for (_, child) in in_flow_children.iter() {
+      check_layout_deadline(&mut deadline_counter)?;
+      if let Some(prev) = last_in_flow_order {
+        if child.style.order < prev {
+          in_flow_children_need_sort = true;
+          break;
+        }
+      }
+      last_in_flow_order = Some(child.style.order);
+    }
+    if in_flow_children_need_sort {
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+      in_flow_children.sort_by(|(a_idx, a), (b_idx, b)| {
+        a.style.order.cmp(&b.style.order).then_with(|| a_idx.cmp(b_idx))
+      });
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+    }
+    let in_flow_children: Vec<&BoxNode> = in_flow_children
+      .into_iter()
+      .map(|(_, child)| child)
+      .collect();
+
+    let child_has_subgrid = in_flow_children
+      .iter()
+      .any(|child| child.style.grid_row_subgrid || child.style.grid_column_subgrid);
+    let cacheable_tree =
+      !(style.grid_row_subgrid || style.grid_column_subgrid || child_has_subgrid);
+
+    // Reuse a per-box cached Taffy tree so intrinsic sizing probes can populate Taffy's internal
+    // caches and later layout passes can reuse them.
+    let mut taffy = CachedTaffyTree::new(TaffyAdapterKind::Grid, box_node.id, cacheable_tree);
     let mut positioned_children: FxHashMap<TaffyNodeId, Vec<*const BoxNode>> = FxHashMap::default();
     let intrinsic_constraints = LayoutConstraints::new(
       match mode {
@@ -9920,17 +10341,6 @@ impl GridFormattingContext {
       },
       CrateAvailableSpace::Indefinite,
     );
-
-    let in_flow_children: Vec<&BoxNode> = box_node
-      .children
-      .iter()
-      .filter(|child| {
-        !matches!(
-          child.style.position,
-          crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
-        )
-      })
-      .collect();
 
     // Resolve intrinsic sizing keywords for descendants while computing this grid container's
     // intrinsic inline sizes. Skip resolving the root itself to avoid recursion: resolving
@@ -9942,7 +10352,7 @@ impl GridFormattingContext {
       false,
     )?;
 
-    let root_id = self.build_taffy_tree_children(
+    let root_id = self.build_or_update_taffy_tree_children_cached(
       &mut taffy,
       box_node,
       style,
@@ -13297,14 +13707,6 @@ impl FormattingContext for GridFormattingContext {
         crate::debug::runtime::runtime_toggles().truthy("FASTR_TRACE_GRID_LAYOUT");
       let grid_trace_start = trace_grid_layout.then(std::time::Instant::now);
 
-      // Create a fresh Taffy tree for this layout.
-      //
-      // Use a pooled instance to reduce allocation churn when many grid containers are laid out
-      // during a single render.
-      let mut taffy = crate::layout::taffy_integration::PooledTaffyTree::new();
-      let mut positioned_children_map: FxHashMap<TaffyNodeId, Vec<*const BoxNode>> =
-        FxHashMap::default();
-
       // Partition children into running, in-flow vs. out-of-flow positioned.
       let mut in_flow_children: Vec<(usize, &BoxNode)> = Vec::new();
       let mut positioned_children: Vec<&BoxNode> = Vec::new();
@@ -13361,121 +13763,125 @@ impl FormattingContext for GridFormattingContext {
         .collect();
 
       let intrinsic_keyword_overrides = self.resolve_intrinsic_sizing_keywords_for_taffy_tree(
+      box_node,
+      &in_flow_children,
+      constraints,
+      true,
+    )?;
+
+    let style_override = style_override_for(box_node.id);
+    // Avoid short-circuiting grid layout with higher-level fragment caches when collecting Taffy
+    // usage stats; we want to observe the underlying template reuse behavior.
+    // Do not cache grid containers that contain running elements: running anchors are synthesized
+    // based on in-flow position, so reusing cached fragments can capture the wrong snapshot.
+    let disable_global_layout_cache = has_running_children || taffy_counters_enabled();
+    if !disable_global_layout_cache {
+      if let Some(cached) = layout_cache_lookup(
         box_node,
-        &in_flow_children,
+        FormattingContextType::Grid,
         constraints,
-        true,
-      )?;
-
-      let style_override = style_override_for(box_node.id);
-      // Avoid short-circuiting grid layout with higher-level fragment caches when collecting Taffy
-      // usage stats; we want to observe the underlying template reuse behavior.
-      // Do not cache grid containers that contain running elements: running anchors are synthesized
-      // based on in-flow position, so reusing cached fragments can capture the wrong snapshot.
-      let disable_global_layout_cache = has_running_children || taffy_counters_enabled();
-      if !disable_global_layout_cache {
-        if let Some(cached) = layout_cache_lookup(
-          box_node,
-          FormattingContextType::Grid,
-          constraints,
-          self.factory.viewport_scroll(),
-          self.viewport_size,
-          self.nearest_positioned_cb,
-          self.nearest_fixed_cb,
-        ) {
-          drop(intrinsic_keyword_overrides);
-          return Ok(cached);
-        }
+        self.factory.viewport_scroll(),
+        self.viewport_size,
+        self.nearest_positioned_cb,
+        self.nearest_fixed_cb,
+      ) {
+        drop(intrinsic_keyword_overrides);
+        return Ok(cached);
       }
+    }
 
-      let style: &ComputedStyle = style_override
-        .as_deref()
-        .unwrap_or_else(|| box_node.style.as_ref());
+    let style: &ComputedStyle = style_override
+      .as_deref()
+      .unwrap_or_else(|| box_node.style.as_ref());
 
-      // Grid containers that establish positioned containing blocks need to thread that containing
-      // block into the factories used for laying out descendants. Otherwise positioned descendants
-      // (especially those nested inside in-flow grid items) can incorrectly double-apply the grid
-      // item placement offset or fall back to an ancestor containing block.
-      let mut ctx = self.clone();
-      let establishes_abs_cb = style.establishes_abs_containing_block();
-      let establishes_fixed_cb = style.establishes_fixed_containing_block();
-      if establishes_abs_cb || establishes_fixed_cb {
-        let percentage_base = constraints
-          .inline_percentage_base
-          .or_else(|| constraints.width())
-          .unwrap_or(self.viewport_size.width);
-        let padding_left = ctx.resolve_length_for_width(style.padding_left, percentage_base, style);
-        let padding_right =
-          ctx.resolve_length_for_width(style.padding_right, percentage_base, style);
-        let padding_top = ctx.resolve_length_for_width(style.padding_top, percentage_base, style);
-        let padding_bottom =
-          ctx.resolve_length_for_width(style.padding_bottom, percentage_base, style);
-        let border_left =
-          ctx.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
-        let border_top =
-          ctx.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
-        let padding_origin = Point::new(border_left, border_top);
-        let content_width = constraints.width().unwrap_or(0.0).max(0.0);
-        let content_height = constraints.height().unwrap_or(0.0).max(0.0);
-        let padding_size = Size::new(
-          content_width + padding_left + padding_right,
-          content_height + padding_top + padding_bottom,
-        );
-        let padding_rect = Rect::new(padding_origin, padding_size);
-        let padding_cb =
-          crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
-            padding_rect,
-            ctx.viewport_size,
-            Some(padding_rect.size.width),
-            constraints.height().map(|_| padding_rect.size.height),
-          )
-          .with_writing_mode_and_direction(style.writing_mode, style.direction);
-        if establishes_abs_cb {
-          ctx.nearest_positioned_cb = padding_cb;
-          ctx.factory = ctx.factory.with_positioned_cb(padding_cb);
-        }
-        if establishes_fixed_cb {
-          ctx.nearest_fixed_cb = padding_cb;
-          ctx.factory = ctx.factory.with_fixed_cb(padding_cb);
-        }
+    // Grid containers that establish positioned containing blocks need to thread that containing
+    // block into the factories used for laying out descendants. Otherwise positioned descendants
+    // (especially those nested inside in-flow grid items) can incorrectly double-apply the grid
+    // item placement offset or fall back to an ancestor containing block.
+    let mut ctx = self.clone();
+    let establishes_abs_cb = style.establishes_abs_containing_block();
+    let establishes_fixed_cb = style.establishes_fixed_containing_block();
+    if establishes_abs_cb || establishes_fixed_cb {
+      let percentage_base = constraints
+        .inline_percentage_base
+        .or_else(|| constraints.width())
+        .unwrap_or(self.viewport_size.width);
+      let padding_left = ctx.resolve_length_for_width(style.padding_left, percentage_base, style);
+      let padding_right = ctx.resolve_length_for_width(style.padding_right, percentage_base, style);
+      let padding_top = ctx.resolve_length_for_width(style.padding_top, percentage_base, style);
+      let padding_bottom =
+        ctx.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+      let border_left =
+        ctx.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
+      let border_top =
+        ctx.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
+      let padding_origin = Point::new(border_left, border_top);
+      let content_width = constraints.width().unwrap_or(0.0).max(0.0);
+      let content_height = constraints.height().unwrap_or(0.0).max(0.0);
+      let padding_size = Size::new(
+        content_width + padding_left + padding_right,
+        content_height + padding_top + padding_bottom,
+      );
+      let padding_rect = Rect::new(padding_origin, padding_size);
+      let padding_cb =
+        crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
+          padding_rect,
+          ctx.viewport_size,
+          Some(padding_rect.size.width),
+          constraints.height().map(|_| padding_rect.size.height),
+        )
+        .with_writing_mode_and_direction(style.writing_mode, style.direction);
+      if establishes_abs_cb {
+        ctx.nearest_positioned_cb = padding_cb;
+        ctx.factory = ctx.factory.with_positioned_cb(padding_cb);
       }
-      let ctx = &ctx;
+      if establishes_fixed_cb {
+        ctx.nearest_fixed_cb = padding_cb;
+        ctx.factory = ctx.factory.with_fixed_cb(padding_cb);
+      }
+    }
+    let ctx = &ctx;
 
-      let has_subgrid = style.grid_row_subgrid || style.grid_column_subgrid;
+    let has_subgrid = style.grid_row_subgrid || style.grid_column_subgrid;
 
-      // Build Taffy tree from in-flow children
-      let root_id = ctx.build_taffy_tree_children(
-        &mut taffy,
-        box_node,
-        style,
-        &in_flow_children,
-        constraints,
-        &mut positioned_children_map,
-      )?;
-      if let Some(style_override) = style_override.as_deref() {
-        // Patch the root style in-place so we can avoid deep-cloning box subtrees when sizing hints
-        // are temporarily overridden (e.g. flex/grid intrinsic probes or final item sizing).
-        let mut style_deadline_counter = 0usize;
-        let simple_grid = positioned_children.is_empty()
-          && ctx.is_simple_grid(
-            style_override,
-            &in_flow_children,
-            &mut style_deadline_counter,
-          )?;
-        let override_taffy_style = self.convert_style(
+    let cacheable_tree = !(has_subgrid || child_has_subgrid);
+    let mut taffy = CachedTaffyTree::new(TaffyAdapterKind::Grid, box_node.id, cacheable_tree);
+    let mut positioned_children_map: FxHashMap<TaffyNodeId, Vec<*const BoxNode>> =
+      FxHashMap::default();
+
+    // Build Taffy tree from in-flow children
+    let root_id = ctx.build_or_update_taffy_tree_children_cached(
+      &mut taffy,
+      box_node,
+      style,
+      &in_flow_children,
+      constraints,
+      &mut positioned_children_map,
+    )?;
+    if let Some(style_override) = style_override.as_deref() {
+      // Patch the root style in-place so we can avoid deep-cloning box subtrees when sizing hints
+      // are temporarily overridden (e.g. flex/grid intrinsic probes or final item sizing).
+      let mut style_deadline_counter = 0usize;
+      let simple_grid = positioned_children.is_empty()
+        && ctx.is_simple_grid(
           style_override,
-          None,
-          None,
-          simple_grid,
-          true,
-          box_node.is_replaced(),
-        );
-        taffy
-          .set_style(root_id, override_taffy_style)
-          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
-      }
+          &in_flow_children,
+          &mut style_deadline_counter,
+        )?;
+      let override_taffy_style = self.convert_style(
+        style_override,
+        None,
+        None,
+        simple_grid,
+        true,
+        box_node.is_replaced(),
+      );
+      taffy
+        .set_style(root_id, override_taffy_style)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+    }
 
-      if trace_grid_layout {
+    if trace_grid_layout {
         let selector = box_node
           .debug_info
           .as_ref()
@@ -15530,20 +15936,54 @@ impl FormattingContext for GridFormattingContext {
       constraints
     };
 
-    // Use a pooled Taffy tree to avoid repeated allocation churn during intrinsic sizing probes.
-    let mut taffy = crate::layout::taffy_integration::PooledTaffyTree::new();
-    let mut positioned_children: FxHashMap<TaffyNodeId, Vec<*const BoxNode>> = FxHashMap::default();
-
-    let in_flow_children: Vec<&BoxNode> = box_node
+    let mut deadline_counter = 0usize;
+    let mut in_flow_children: Vec<(usize, &BoxNode)> = box_node
       .children
       .iter()
-      .filter(|child| {
+      .enumerate()
+      .filter(|(_, child)| {
         !matches!(
           child.style.position,
           crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
         )
       })
       .collect();
+    let mut in_flow_children_need_sort = false;
+    let mut last_in_flow_order: Option<i32> = None;
+    for (_, child) in in_flow_children.iter() {
+      check_layout_deadline(&mut deadline_counter)?;
+      if let Some(prev) = last_in_flow_order {
+        if child.style.order < prev {
+          in_flow_children_need_sort = true;
+          break;
+        }
+      }
+      last_in_flow_order = Some(child.style.order);
+    }
+    if in_flow_children_need_sort {
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+      in_flow_children.sort_by(|(a_idx, a), (b_idx, b)| {
+        a.style.order.cmp(&b.style.order).then_with(|| a_idx.cmp(b_idx))
+      });
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+    }
+    let in_flow_children: Vec<&BoxNode> = in_flow_children
+      .into_iter()
+      .map(|(_, child)| child)
+      .collect();
+
+    let child_has_subgrid = in_flow_children
+      .iter()
+      .any(|child| child.style.grid_row_subgrid || child.style.grid_column_subgrid);
+    let cacheable_tree =
+      !(style.grid_row_subgrid || style.grid_column_subgrid || child_has_subgrid);
+
+    let mut taffy = CachedTaffyTree::new(TaffyAdapterKind::Grid, box_node.id, cacheable_tree);
+    let mut positioned_children: FxHashMap<TaffyNodeId, Vec<*const BoxNode>> = FxHashMap::default();
 
     // Resolve intrinsic sizing keywords for descendants while computing this grid container's
     // intrinsic block sizes. Skip resolving the root itself to avoid recursion: resolving
@@ -15556,7 +15996,7 @@ impl FormattingContext for GridFormattingContext {
       false,
     )?;
 
-    let root_id = self.build_taffy_tree_children(
+    let root_id = self.build_or_update_taffy_tree_children_cached(
       &mut taffy,
       box_node,
       style,
@@ -22718,6 +23158,113 @@ mod tests {
     assert!(
       fragment.children[0].bounds.x() > fragment.children[1].bounds.x(),
       "smaller baseline item should be offset horizontally to align"
+    );
+  }
+
+  #[test]
+  fn grid_taffy_tree_cache_hits_on_repeat_layout() {
+    let _epoch_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let epoch = crate::layout::formatting_context::intrinsic_cache_epoch().saturating_add(1);
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(epoch, true);
+    crate::layout::taffy_integration::taffy_style_fingerprint_cache_use_epoch(epoch);
+
+    crate::layout::taffy_integration::reset_taffy_tree_cache_counters();
+    let _taffy_guard = crate::layout::taffy_integration::enable_taffy_counters(true);
+
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(50.0)); 4];
+    grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(50.0)); 2];
+
+    let children: Vec<BoxNode> = (0..8)
+      .map(|idx| {
+        let mut style = ComputedStyle::default();
+        style.width = Some(Length::px(10.0));
+        style.height = Some(Length::px(10.0));
+        style.width_keyword = None;
+        style.height_keyword = None;
+        let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+        node.id = 30_000 + idx;
+        node
+      })
+      .collect();
+
+    let mut container =
+      BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, children);
+    container.id = 99_0001;
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+    fc.layout(&container, &constraints).expect("first layout");
+    fc.layout(&container, &constraints).expect("second layout");
+
+    let (hits, misses) = crate::layout::taffy_integration::taffy_tree_cache_counters();
+    assert_eq!(misses, 1, "first layout should miss the per-box tree cache");
+    assert_eq!(hits, 1, "second layout should reuse the cached Taffy tree");
+  }
+
+  #[test]
+  fn grid_taffy_tree_cache_avoids_deadline_abort_by_reducing_measure_calls() {
+    use crate::render_control::{DeadlineGuard, RenderDeadline};
+    use std::sync::Arc;
+
+    let _epoch_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let epoch = crate::layout::formatting_context::intrinsic_cache_epoch().saturating_add(1);
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(epoch, true);
+    crate::layout::taffy_integration::taffy_style_fingerprint_cache_use_epoch(epoch);
+
+    let _taffy_guard = crate::layout::taffy_integration::enable_taffy_counters(true);
+    let _perf_guard = crate::layout::taffy_integration::TaffyPerfCountersGuard::new();
+
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(20.0)); 8];
+
+    let children: Vec<BoxNode> = (0..256)
+      .map(|idx| {
+        let mut style = ComputedStyle::default();
+        style.width = Some(Length::px(10.0));
+        style.height = Some(Length::px(10.0));
+        style.width_keyword = None;
+        style.height_keyword = None;
+        let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+        node.id = 40_000 + idx;
+        node
+      })
+      .collect();
+
+    let mut container =
+      BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, children);
+    container.id = 99_0002;
+    let constraints = LayoutConstraints::definite(400.0, 400.0);
+
+    let before_first = crate::layout::taffy_integration::taffy_perf_counters().grid_measure_calls;
+    fc.layout(&container, &constraints).expect("warm layout");
+    let after_first = crate::layout::taffy_integration::taffy_perf_counters().grid_measure_calls;
+    let first_calls = after_first.saturating_sub(before_first);
+    assert!(first_calls > 0, "expected at least one Taffy measure call");
+
+    let before_second = crate::layout::taffy_integration::taffy_perf_counters().grid_measure_calls;
+    let threshold = (first_calls / 4).max(1);
+    let limit = before_second + threshold;
+    let deadline = RenderDeadline::new(
+      None,
+      Some(Arc::new(move || {
+        crate::layout::taffy_integration::taffy_perf_counters().grid_measure_calls > limit
+      })),
+    );
+    let _guard = DeadlineGuard::install(Some(&deadline));
+
+    fc.layout(&container, &constraints)
+      .expect("cached layout should complete under strict measure-call deadline");
+    let after_second = crate::layout::taffy_integration::taffy_perf_counters().grid_measure_calls;
+    let second_calls = after_second.saturating_sub(before_second);
+    assert!(
+      second_calls <= threshold,
+      "expected cached layout to use <= {threshold} measure calls, got {second_calls}"
     );
   }
 
