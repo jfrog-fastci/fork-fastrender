@@ -118,3 +118,79 @@ fn dynamic_function_constructors_reject_const_decls_without_initializers() {
     .unwrap();
   assert_value_is_utf8(&rt, value, "SyntaxError");
 }
+
+#[test]
+fn dynamic_function_constructors_reject_duplicate_lexical_decls() {
+  let mut rt = new_runtime();
+
+  // %Function%
+  let value = rt
+    .exec_script(
+      r#"
+        try {
+          Function("let x; let x;");
+          "no";
+        } catch (e) {
+          e.name;
+        }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+
+  // %GeneratorFunction%
+  let value = rt
+    .exec_script(
+      r#"
+        (function () {
+          const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+          try {
+            GeneratorFunction("let x; let x;");
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+}
+
+#[test]
+fn dynamic_function_constructors_reject_lexical_var_collisions() {
+  let mut rt = new_runtime();
+
+  // %Function%
+  let value = rt
+    .exec_script(
+      r#"
+        try {
+          Function("let x; var x;");
+          "no";
+        } catch (e) {
+          e.name;
+        }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+
+  // %GeneratorFunction%
+  let value = rt
+    .exec_script(
+      r#"
+        (function () {
+          const GeneratorFunction = Object.getPrototypeOf(function*(){}).constructor;
+          try {
+            GeneratorFunction("let x; var x;");
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "SyntaxError");
+}

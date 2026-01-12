@@ -11,7 +11,7 @@ use parse_js::ast::expr::{
 };
 use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::{Node, ParenthesizedExpr};
-use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, ParamDecl, VarDecl, VarDeclMode};
+use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, ParamDecl, PatDecl, VarDecl, VarDeclMode};
 use parse_js::ast::stmt::{
   BlockStmt, CatchBlock, ForBody, ForInOfLhs, ForInStmt, ForOfStmt, ForTripleStmt, ForTripleStmtInit,
   ContinueStmt, IfStmt, LabelStmt, ReturnStmt, Stmt, SwitchBranch, SwitchStmt, TryStmt, WhileStmt,
@@ -272,10 +272,362 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_stmt_list(&mut self, ctx: &mut ControlContext, stmts: &[Node<Stmt>]) -> Result<(), VmError> {
+    self.check_declaration_early_errors_in_stmt_list(ctx, stmts)?;
     for stmt in stmts {
       self.visit_stmt(ctx, stmt)?;
     }
     Ok(())
+  }
+
+  fn check_declaration_early_errors_in_stmt_list(
+    &mut self,
+    ctx: &ControlContext,
+    stmts: &[Node<Stmt>],
+  ) -> Result<(), VmError> {
+    // Mirror the minimal declaration early errors performed during instantiation:
+    // - Duplicate lexical declarations (let/const/class) in the same statement list.
+    // - Lexical declarations may not collide with var-scoped names (var + function declarations).
+    //
+    // These must be caught during `validate_top_level` so dynamic parsing contexts (`Function(...)`,
+    // `%GeneratorFunction%`) reject invalid bodies at construction time, rather than deferring until
+    // first execution (which can surface as a non-catchable `VmError::Syntax`).
+    let mut var_names = HashSet::<String>::new();
+    for stmt in stmts {
+      self.collect_var_names(&stmt.stx, &mut var_names)?;
+    }
+ 
+    if ctx.strict {
+      // Strict mode: only top-level function declarations are var-scoped; block function
+      // declarations are instantiated at block entry.
+      for stmt in stmts {
+        self.step()?;
+        let Stmt::FunctionDecl(decl) = &*stmt.stx else {
+          continue;
+        };
+        let Some(name) = &decl.stx.name else {
+          // `export default function() {}` is parsed as an anonymous function declaration with an
+          // engine-internal `*default*` binding created during module linking. It does not
+          // participate in var-scoped name collision checks.
+          if decl.stx.export_default {
+            continue;
+          }
+          self.push_error(stmt.loc, "anonymous function declaration")?;
+          continue;
+        };
+        var_names.insert(name.stx.name.clone());
+      }
+    } else {
+      // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
+      for stmt in stmts {
+        self.collect_sloppy_function_decl_names(&stmt.stx, &mut var_names)?;
+      }
+    }
+ 
+    let mut lexical_seen = HashSet::<String>::new();
+    for stmt in stmts {
+      self.step()?;
+      match &*stmt.stx {
+        Stmt::VarDecl(var)
+          if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const =>
+        {
+          for declarator in &var.stx.declarators {
+            self.step()?;
+            self.collect_lexical_decl_names_from_pat(
+              &declarator.pattern.stx.pat,
+              stmt.loc,
+              &mut lexical_seen,
+              &var_names,
+            )?;
+          }
+        }
+        Stmt::ClassDecl(class) => {
+          let Some(name) = class.stx.name.as_ref() else {
+            continue;
+          };
+          if !lexical_seen.insert(name.stx.name.clone()) {
+            self.push_error(stmt.loc, "Identifier has already been declared")?;
+          }
+          if var_names.contains(&name.stx.name) {
+            self.push_error(stmt.loc, "Identifier has already been declared")?;
+          }
+        }
+        _ => {}
+      }
+    }
+ 
+    Ok(())
+  }
+ 
+  fn collect_var_names(&mut self, stmt: &Stmt, out: &mut HashSet<String>) -> Result<(), VmError> {
+    // `VarDeclaredNames` can traverse large statement trees (e.g. nested blocks/ifs with no `var`
+    // declarations). Budget it so strict-mode scripts can't bypass fuel/interrupt checks during
+    // hoisting by forcing an `O(N)` scan that performs no statement/expression evaluation.
+    self.step()?;
+    match stmt {
+      Stmt::VarDecl(var) => {
+        if var.stx.mode != VarDeclMode::Var {
+          return Ok(());
+        }
+        for decl in &var.stx.declarators {
+          self.step()?;
+          self.collect_var_names_from_pat_decl(&decl.pattern.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Block(block) => {
+        for stmt in &block.stx.body {
+          self.collect_var_names(&stmt.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::If(stmt) => {
+        self.collect_var_names(&stmt.stx.consequent.stx, out)?;
+        if let Some(alt) = &stmt.stx.alternate {
+          self.collect_var_names(&alt.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Try(stmt) => {
+        for s in &stmt.stx.wrapped.stx.body {
+          self.collect_var_names(&s.stx, out)?;
+        }
+        if let Some(catch) = &stmt.stx.catch {
+          for s in &catch.stx.body {
+            self.collect_var_names(&s.stx, out)?;
+          }
+        }
+        if let Some(finally) = &stmt.stx.finally {
+          for s in &finally.stx.body {
+            self.collect_var_names(&s.stx, out)?;
+          }
+        }
+        Ok(())
+      }
+      Stmt::With(stmt) => self.collect_var_names(&stmt.stx.body.stx, out),
+      Stmt::While(stmt) => self.collect_var_names(&stmt.stx.body.stx, out),
+      Stmt::DoWhile(stmt) => self.collect_var_names(&stmt.stx.body.stx, out),
+      Stmt::ForTriple(stmt) => {
+        if let ForTripleStmtInit::Decl(decl) = &stmt.stx.init {
+          if decl.stx.mode == VarDeclMode::Var {
+            for d in &decl.stx.declarators {
+              self.step()?;
+              self.collect_var_names_from_pat_decl(&d.pattern.stx, out)?;
+            }
+          }
+        }
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_names(&s.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::ForIn(stmt) => {
+        if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.stx.lhs {
+          if *mode == VarDeclMode::Var {
+            self.collect_var_names_from_pat_decl(&pat_decl.stx, out)?;
+          }
+        }
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_names(&s.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::ForOf(stmt) => {
+        if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.stx.lhs {
+          if *mode == VarDeclMode::Var {
+            self.collect_var_names_from_pat_decl(&pat_decl.stx, out)?;
+          }
+        }
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_names(&s.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Label(stmt) => self.collect_var_names(&stmt.stx.statement.stx, out),
+      Stmt::Switch(stmt) => {
+        const BRANCH_STEP_EVERY: usize = 32;
+        for (i, branch) in stmt.stx.branches.iter().enumerate() {
+          if i % BRANCH_STEP_EVERY == 0 {
+            self.step()?;
+          }
+          for s in &branch.stx.body {
+            self.collect_var_names(&s.stx, out)?;
+          }
+        }
+        Ok(())
+      }
+      _ => Ok(()),
+    }
+  }
+ 
+  fn collect_var_names_from_pat_decl(
+    &mut self,
+    pat_decl: &PatDecl,
+    out: &mut HashSet<String>,
+  ) -> Result<(), VmError> {
+    self.collect_var_names_from_pat(&pat_decl.pat.stx, out)
+  }
+ 
+  fn collect_var_names_from_pat(&mut self, pat: &Pat, out: &mut HashSet<String>) -> Result<(), VmError> {
+    match pat {
+      Pat::Id(id) => {
+        out.insert(id.stx.name.clone());
+        Ok(())
+      }
+      Pat::Obj(obj) => {
+        for prop in &obj.stx.properties {
+          self.step()?;
+          self.collect_var_names_from_pat(&prop.stx.target.stx, out)?;
+        }
+        if let Some(rest) = &obj.stx.rest {
+          self.step()?;
+          self.collect_var_names_from_pat(&rest.stx, out)?;
+        }
+        Ok(())
+      }
+      Pat::Arr(arr) => {
+        for elem in &arr.stx.elements {
+          self.step()?;
+          if let Some(elem) = elem {
+            self.collect_var_names_from_pat(&elem.target.stx, out)?;
+          }
+        }
+        if let Some(rest) = &arr.stx.rest {
+          self.step()?;
+          self.collect_var_names_from_pat(&rest.stx, out)?;
+        }
+        Ok(())
+      }
+      Pat::AssignTarget(_) => Ok(()),
+    }
+  }
+ 
+  fn collect_sloppy_function_decl_names(
+    &mut self,
+    stmt: &Stmt,
+    out: &mut HashSet<String>,
+  ) -> Result<(), VmError> {
+    self.step()?;
+    match stmt {
+      Stmt::FunctionDecl(decl) => {
+        let Some(name) = &decl.stx.name else {
+          if decl.stx.export_default {
+            return Ok(());
+          }
+          self.push_error(decl.loc, "anonymous function declaration")?;
+          return Ok(());
+        };
+        out.insert(name.stx.name.clone());
+        Ok(())
+      }
+      Stmt::Block(block) => {
+        for stmt in &block.stx.body {
+          self.collect_sloppy_function_decl_names(&stmt.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::If(stmt) => {
+        self.collect_sloppy_function_decl_names(&stmt.stx.consequent.stx, out)?;
+        if let Some(alt) = &stmt.stx.alternate {
+          self.collect_sloppy_function_decl_names(&alt.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Try(stmt) => {
+        for s in &stmt.stx.wrapped.stx.body {
+          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+        }
+        if let Some(catch) = &stmt.stx.catch {
+          for s in &catch.stx.body {
+            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          }
+        }
+        if let Some(finally) = &stmt.stx.finally {
+          for s in &finally.stx.body {
+            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          }
+        }
+        Ok(())
+      }
+      Stmt::With(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
+      Stmt::While(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
+      Stmt::DoWhile(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
+      Stmt::ForTriple(stmt) => {
+        for s in &stmt.stx.body.stx.body {
+          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::ForIn(stmt) => {
+        for s in &stmt.stx.body.stx.body {
+          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::ForOf(stmt) => {
+        for s in &stmt.stx.body.stx.body {
+          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+        }
+        Ok(())
+      }
+      Stmt::Label(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.statement.stx, out),
+      Stmt::Switch(stmt) => {
+        const BRANCH_STEP_EVERY: usize = 32;
+        for (i, branch) in stmt.stx.branches.iter().enumerate() {
+          if i % BRANCH_STEP_EVERY == 0 {
+            self.step()?;
+          }
+          for s in &branch.stx.body {
+            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          }
+        }
+        Ok(())
+      }
+      _ => Ok(()),
+    }
+  }
+ 
+  fn collect_lexical_decl_names_from_pat(
+    &mut self,
+    pat: &Node<Pat>,
+    loc: Loc,
+    seen: &mut HashSet<String>,
+    var_names: &HashSet<String>,
+  ) -> Result<(), VmError> {
+    match &*pat.stx {
+      Pat::Id(id) => {
+        if !seen.insert(id.stx.name.clone()) {
+          self.push_error(loc, "Identifier has already been declared")?;
+        }
+        if var_names.contains(&id.stx.name) {
+          self.push_error(loc, "Identifier has already been declared")?;
+        }
+        Ok(())
+      }
+      Pat::Obj(obj) => {
+        for prop in &obj.stx.properties {
+          self.step()?;
+          self.collect_lexical_decl_names_from_pat(&prop.stx.target, loc, seen, var_names)?;
+        }
+        if let Some(rest) = &obj.stx.rest {
+          self.step()?;
+          self.collect_lexical_decl_names_from_pat(rest, loc, seen, var_names)?;
+        }
+        Ok(())
+      }
+      Pat::Arr(arr) => {
+        for elem in &arr.stx.elements {
+          self.step()?;
+          let Some(elem) = elem else { continue };
+          self.collect_lexical_decl_names_from_pat(&elem.target, loc, seen, var_names)?;
+        }
+        if let Some(rest) = &arr.stx.rest {
+          self.step()?;
+          self.collect_lexical_decl_names_from_pat(rest, loc, seen, var_names)?;
+        }
+        Ok(())
+      }
+      Pat::AssignTarget(_) => Ok(()),
+    }
   }
 
   fn visit_stmt(&mut self, ctx: &mut ControlContext, stmt: &Node<Stmt>) -> Result<(), VmError> {
