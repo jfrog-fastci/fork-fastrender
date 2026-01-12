@@ -3625,6 +3625,23 @@ mod tests {
           var elementsItemNeg = elements.item(-1);
           var elementsItem99 = elements.item(99);
 
+          var submitIsFunction = typeof form.submit === "function";
+          var resetIsFunction = typeof form.reset === "function";
+          var submitOk;
+          try {
+            form.submit();
+            submitOk = true;
+          } catch (e) {
+            submitOk = false;
+          }
+          var resetOk;
+          try {
+            form.reset();
+            resetOk = true;
+          } catch (e) {
+            resetOk = false;
+          }
+
           return JSON.stringify({
             inputValue: input.value,
             inputCheckedAfterTrue: inputCheckedAfterTrue,
@@ -3670,6 +3687,11 @@ mod tests {
             elementsItem0IsInput: elementsItem0IsInput,
             elementsItemNeg: elementsItemNeg,
             elementsItem99: elementsItem99,
+
+            submitIsFunction: submitIsFunction,
+            resetIsFunction: resetIsFunction,
+            submitOk: submitOk,
+            resetOk: resetOk,
           });
         })()
         "#,
@@ -3719,6 +3741,11 @@ mod tests {
       assert_eq!(v["elementsItem0IsInput"], true);
       assert!(v["elementsItemNeg"].is_null(), "elements.item(-1) should return null");
       assert!(v["elementsItem99"].is_null(), "elements.item(99) should return null");
+
+      assert_eq!(v["submitIsFunction"], true);
+      assert_eq!(v["resetIsFunction"], true);
+      assert_eq!(v["submitOk"], true);
+      assert_eq!(v["resetOk"], true);
     });
   }
 }
