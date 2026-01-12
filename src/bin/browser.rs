@@ -5375,9 +5375,9 @@ impl App {
                 DateTimeInputKind::Month => fastrender::dom::parse_input_month_value(trimmed).is_some(),
                 DateTimeInputKind::Week => fastrender::dom::parse_input_week_value(trimmed).is_some(),
                 _ => true,
-              };
+            };
             if !valid {
-              ui.colored_label(egui::Color32::RED, "Invalid value");
+              ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
             }
 
             ui.horizontal(|ui| {
