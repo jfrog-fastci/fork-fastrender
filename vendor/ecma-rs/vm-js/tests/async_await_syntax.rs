@@ -983,6 +983,32 @@ fn await_in_for_of_lhs_destructuring_default_value() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_for_of_lhs_destructuring_default_value_from_primitive() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        for (const { x = await Promise.resolve("ok") } of [ "a" ]) {
+          return x;
+        }
+        return "bad";
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
 fn await_in_for_of_lhs_destructuring_computed_key() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -1086,6 +1112,32 @@ fn await_in_for_in_lhs_object_pattern_computed_key() -> Result<(), VmError> {
 
   let value = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, value), "a");
+  Ok(())
+}
+
+#[test]
+fn await_in_for_in_lhs_destructuring_default_value_from_string_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        for (const { x = await Promise.resolve("ok") } in { a: 1 }) {
+          return x;
+        }
+        return "bad";
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
   Ok(())
 }
 

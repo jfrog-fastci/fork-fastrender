@@ -878,6 +878,73 @@ fn for_await_of_and_await_in_initializer_work_in_modules() -> Result<(), VmError
 }
 
 #[test]
+fn top_level_await_in_for_of_lhs_destructuring_default_value_executes() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = graph.add_module_with_specifier(
+    "m.js",
+    SourceTextModuleRecord::parse(
+      r#"
+        export let out = "bad";
+        for (const { x = await Promise.resolve("ok") } of [ {} ]) { out = x; }
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  // Top-level await should suspend module evaluation (promise starts pending).
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(heap.promise_state(eval_promise_obj)?, PromiseState::Pending);
+  assert_eq!(vm.async_continuation_count(), 1);
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  assert_eq!(vm.async_continuation_count(), 0);
+
+  let mut scope = heap.scope();
+  let eval_promise_value = scope
+    .heap()
+    .get_root(eval_promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(eval_promise_obj) = eval_promise_value else {
+    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+  };
+  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+  let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+  let out = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "out")?;
+  let Value::String(out_s) = out else {
+    return Err(VmError::InvariantViolation("expected module export 'out' to be a string"));
+  };
+  assert_eq!(scope.heap().get_string(out_s)?.to_utf8_lossy(), "ok");
+
+  drop(scope);
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn await_rejection_is_catchable_in_modules() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
