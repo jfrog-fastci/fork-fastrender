@@ -511,6 +511,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use winit::window::WindowBuilder;
 
   let theme_override = fastrender::ui::theme::theme_mode_override_from_env();
+  let theme_accent = fastrender::ui::theme::accent_color_override_from_env();
   let window_theme_override = match theme_override {
     Some(fastrender::ui::theme::ThemeMode::Light) => Some(Theme::Light),
     Some(fastrender::ui::theme::ThemeMode::Dark) => Some(Theme::Dark),
@@ -595,6 +596,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     worker_join,
     wgpu_init,
     theme_override,
+    theme_accent,
     bookmarks_path,
     history_path,
     bookmarks,
@@ -1288,6 +1290,7 @@ struct App {
   browser_limits: fastrender::ui::browser_limits::BrowserLimits,
   page_texture_filter_policy: PageTextureFilterPolicy,
   theme_override: Option<fastrender::ui::theme::ThemeMode>,
+  theme_accent: Option<egui::Color32>,
   theme: fastrender::ui::theme::BrowserTheme,
   clear_color: wgpu::Color,
 
@@ -1427,8 +1430,10 @@ impl App {
     }
 
     self.theme = match resolved_mode {
-      fastrender::ui::theme::ThemeMode::Dark => fastrender::ui::theme::BrowserTheme::dark(None),
-      _ => fastrender::ui::theme::BrowserTheme::light(None),
+      fastrender::ui::theme::ThemeMode::Dark => {
+        fastrender::ui::theme::BrowserTheme::dark(self.theme_accent)
+      }
+      _ => fastrender::ui::theme::BrowserTheme::light(self.theme_accent),
     };
     fastrender::ui::theme::apply_browser_theme(&self.egui_ctx, &self.theme);
 
@@ -1487,6 +1492,7 @@ impl App {
     worker_join: std::thread::JoinHandle<()>,
     wgpu_init: WgpuInitOptions,
     theme_override: Option<fastrender::ui::theme::ThemeMode>,
+    theme_accent: Option<egui::Color32>,
     bookmarks_path: std::path::PathBuf,
     history_path: std::path::PathBuf,
     bookmarks: fastrender::ui::BookmarkStore,
@@ -1504,8 +1510,10 @@ impl App {
 
     let theme_mode = fastrender::ui::theme::resolve_theme_mode(&window, theme_override);
     let theme = match theme_mode {
-      fastrender::ui::theme::ThemeMode::Dark => fastrender::ui::theme::BrowserTheme::dark(None),
-      _ => fastrender::ui::theme::BrowserTheme::light(None),
+      fastrender::ui::theme::ThemeMode::Dark => {
+        fastrender::ui::theme::BrowserTheme::dark(theme_accent)
+      }
+      _ => fastrender::ui::theme::BrowserTheme::light(theme_accent),
     };
     fastrender::ui::theme::apply_browser_theme(&egui_ctx, &theme);
     let clear_color = {
@@ -1664,6 +1672,7 @@ error: {err}",
       browser_limits: fastrender::ui::browser_limits::BrowserLimits::from_env(),
       page_texture_filter_policy: PageTextureFilterPolicy::from_env(),
       theme_override,
+      theme_accent,
       theme,
       clear_color,
       ui_to_worker_tx,
