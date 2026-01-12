@@ -882,6 +882,28 @@ fn history_go_zero_requests_reload_and_interrupts() -> Result<()> {
     .expect("expected pending navigation request");
   assert_eq!(req.url, "https://example.com/next");
   assert!(req.replace);
+
+  Ok(())
+}
+
+#[test]
+fn history_push_replace_state_null_url_does_not_change_document_url() -> Result<()> {
+  let start_url = "https://example.com/start";
+
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(start_url))
+    .map_err(|e| Error::Other(e.to_string()))?;
+  let value = realm
+    .exec_script("history.pushState({}, '', null); location.href + '|' + document.URL")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), value), format!("{start_url}|{start_url}"));
+
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(start_url))
+    .map_err(|e| Error::Other(e.to_string()))?;
+  let value = realm
+    .exec_script("history.replaceState({}, '', null); location.href + '|' + document.URL")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), value), format!("{start_url}|{start_url}"));
+
   Ok(())
 }
 
@@ -922,6 +944,19 @@ fn history_push_state_null_url_is_ignored() -> Result<()> {
     get_string(realm.heap(), value),
     "https://example.com/start|https://example.com/start|https://example.com/start"
   );
+  Ok(())
+}
+
+#[test]
+fn history_state_change_cross_origin_throws_security_error() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script("try { history.pushState({}, '', 'https://evil.com/'); } catch(e) { e && e.name; }")
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(get_string(realm.heap(), value), "SecurityError");
   Ok(())
 }
 

@@ -3247,13 +3247,11 @@ fn history_state_change_native(
     match parsed.scheme() {
       "http" | "https" | "file" | "data" | "about" => {}
       other => {
-        return Err(throw_type_error(
-          vm,
+        return Err(VmError::Throw(make_dom_exception(
           scope,
-          host,
-          hooks,
-          &format!("history state updates to {other}: URLs is not supported"),
-        ));
+          "SecurityError",
+          &format!("history state updates to {other}: URLs are not supported"),
+        )?));
       }
     }
 
@@ -3275,13 +3273,11 @@ fn history_state_change_native(
     if current_origin != new_origin
       || (current_origin == "null" && current.scheme() != parsed.scheme())
     {
-      return Err(throw_type_error(
-        vm,
+      return Err(VmError::Throw(make_dom_exception(
         scope,
-        host,
-        hooks,
+        "SecurityError",
         "history state updates may not change origin",
-      ));
+      )?));
     }
 
     // Keep the resolved URL on the location object so scripts observe updated components.
