@@ -79,10 +79,7 @@ When `appearance:none` is computed, the control stops using the native form-cont
   - `appearance_none_disables_form_control_replacement_and_generates_placeholder_text`
   - `webkit_appearance_none_disables_form_control_replacement`
   - `moz_appearance_none_disables_form_control_replacement`
-  - `button_appearance_none_preserves_dom_children`
-  - `range_appearance_none_generates_slider_track_and_thumb_boxes`
-  - `file_input_appearance_none_generates_file_selector_button_box`
-- Integration tests (run with `--test integration`) cover end-to-end behavior (box tree + paint) and are discoverable via filters like:
+- Integration tests cover end-to-end behavior (box tree + paint). After consolidation they run under `--test integration`; during migration you can still run them by name if they haven’t moved yet. They are discoverable via filters like:
   - `form_controls_appearance_none_fallback` (fallback children, slider/file pseudos)
   - `form_control_appearance_none_affordances` (spinner/dropdown affordance suppression)
   - `form_control_placeholder_opacity` (`::placeholder` opacity in both paint backends)
