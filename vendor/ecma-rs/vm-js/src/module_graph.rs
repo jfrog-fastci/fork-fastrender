@@ -7,8 +7,8 @@ use crate::module_record::ResolveExportResult;
 use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::{
-  cmp_utf16, GcObject, LoadedModuleRequest, ModuleRequest, RealmId, RootId, Scope, StackFrame, Value, Vm,
-  VmError,
+  cmp_utf16, GcEnv, GcObject, LoadedModuleRequest, ModuleRequest, RealmId, RootId, Scope, StackFrame,
+  Value, Vm, VmError,
 };
 use crate::{Heap, VmHost, VmHostHooks};
 use core::mem;
@@ -128,6 +128,7 @@ pub struct ModuleGraph {
   modules: Vec<SourceTextModuleRecord>,
   host_resolve: Vec<(ModuleRequest, ModuleId)>,
   tla_states: Vec<Option<TlaEvaluationState>>,
+  global_lexical_env: Option<GcEnv>,
   torn_down: bool,
 }
 
@@ -137,6 +138,7 @@ impl Default for ModuleGraph {
       modules: Vec::new(),
       host_resolve: Vec::new(),
       tla_states: Vec::new(),
+      global_lexical_env: None,
       // A freshly-created graph does not own any persistent roots yet, and can be dropped safely.
       torn_down: true,
     }
@@ -146,6 +148,10 @@ impl Default for ModuleGraph {
 impl ModuleGraph {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  pub fn set_global_lexical_env(&mut self, env: GcEnv) {
+    self.global_lexical_env = Some(env);
   }
 
   pub fn add_module(&mut self, record: SourceTextModuleRecord) -> ModuleId {
@@ -674,7 +680,7 @@ impl ModuleGraph {
       // Ensure the module has an environment root allocated early so cycles can create import bindings
       // to it.
       if self.modules[idx].environment.is_none() {
-        let env = scope.env_create(None)?;
+        let env = scope.env_create(self.global_lexical_env)?;
         scope.push_env_root(env)?;
         let root = scope.heap_mut().add_env_root(env)?;
         self.modules[idx].environment = Some(root);
