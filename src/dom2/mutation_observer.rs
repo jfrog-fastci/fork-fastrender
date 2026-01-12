@@ -301,6 +301,7 @@ impl Document {
     if old == new {
       return;
     }
+
     let moved = {
       let Some(old_node) = self.nodes.get_mut(old.index()) else {
         return;
@@ -311,6 +312,7 @@ impl Document {
       return;
     }
     let Some(new_node) = self.nodes.get_mut(new.index()) else {
+      // Restore registrations if the target node does not exist.
       if let Some(old_node) = self.nodes.get_mut(old.index()) {
         old_node.registered_observers = moved;
       }

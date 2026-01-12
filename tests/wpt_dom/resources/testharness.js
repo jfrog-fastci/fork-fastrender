@@ -83,12 +83,25 @@ function __schedule_script_done() {
 }
 //
 function __same_value(x, y) {
-  // Minimal SameValue: strict equality, plus NaN equality.
+  // SameValue equality (as used by upstream WPT `testharness.js`).
   //
-  // Note: This intentionally treats +0 and -0 as equal. The curated offline corpus does not
-  // currently rely on the distinction, and keeping this shim arithmetic-free makes it runnable on
-  // the minimal vm-js backend.
-  if (x === y) return true;
+  // Prefer native `Object.is` when available, but keep a small fallback for minimal JS backends.
+  try {
+    if (
+      typeof Object !== "undefined" &&
+      Object !== null &&
+      typeof Object.is === "function"
+    ) {
+      return Object.is(x, y);
+    }
+  } catch (_e) {}
+  //
+  if (x === y) {
+    // Distinguish +0 and -0.
+    if (x === 0) return 1 / x === 1 / y;
+    return true;
+  }
+  // NaN is SameValue-equal to itself.
   return x !== x && y !== y;
 }
 //
