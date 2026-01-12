@@ -3228,6 +3228,9 @@ pub fn typed_array_prototype_set(
     return Err(VmError::TypeError("TypedArray.prototype.set called on non-object"));
   };
 
+  // Brand-check the receiver, but *do not* rely on `typed_array_length()` for detached/out-of-bounds
+  // semantics. Per ECMA-262 `SetTypedArrayFromTypedArray`, `%TypedArray%.prototype.set` must throw
+  // a TypeError when either the target or source typed array is out-of-bounds (including detached).
   let target_len = scope
     .heap()
     .typed_array_length(target)
@@ -3254,6 +3257,17 @@ pub fn typed_array_prototype_set(
     }
     n as usize
   };
+
+  if scope.heap().typed_array_is_out_of_bounds(target)? {
+    return Err(VmError::TypeError(
+      "TypedArray.prototype.set target is detached or out of bounds",
+    ));
+  }
+  if scope.heap().typed_array_is_out_of_bounds(source)? {
+    return Err(VmError::TypeError(
+      "TypedArray.prototype.set source is detached or out of bounds",
+    ));
+  }
 
   if offset > target_len || source_len > target_len - offset {
     return Err(VmError::TypeError("TypedArray.prototype.set out of bounds"));
