@@ -339,7 +339,7 @@ jobs:
           # manifest entries). This should succeed even when the conformance run found uncovered
           # mismatches; in that case we still want an artifact for debugging.
           if [[ -x "target/release/typecheck-ts-harness" ]]; then
-            target/release/typecheck-ts-harness triage --input "${report_path}" --json \
+            timeout -k 10 120 target/release/typecheck-ts-harness triage --input "${report_path}" --json \
               > "${triage_path}" 2> "${triage_stderr_path}" || true
           fi
           if [[ ! -s "${triage_path}" ]]; then
