@@ -8,7 +8,7 @@ mod x86_64 {
   use super::*;
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
-  use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_SP};
+  use runtime_native::statepoints::{StatepointRecord, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP};
   use runtime_native::StackMaps;
  
   #[test]
@@ -67,12 +67,16 @@ mod x86_64 {
         let loc = &pair.base;
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
-            assert_eq!(
-              *dwarf_reg,
-              X86_64_DWARF_REG_SP,
-              "fixture roots must be [SP + off]"
-            );
-            let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
+            let base = if *dwarf_reg == X86_64_DWARF_REG_SP {
+              caller_sp
+            } else if *dwarf_reg == X86_64_DWARF_REG_FP {
+              managed_fp as u64
+            } else {
+              panic!(
+                "unexpected dwarf_reg={dwarf_reg} (expected SP={X86_64_DWARF_REG_SP} or FP={X86_64_DWARF_REG_FP})"
+              );
+            };
+            let slot_addr = add_signed_u64(base, *offset).expect("slot addr");
             expected_slots.push(slot_addr as usize);
           }
           other => panic!("unexpected root location kind in fixture: {other:?}"),
@@ -164,7 +168,7 @@ mod aarch64 {
   use super::*;
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
-  use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
+  use runtime_native::statepoints::{AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, StatepointRecord};
   use runtime_native::StackMaps;
  
   #[test]
@@ -223,12 +227,16 @@ mod aarch64 {
         let loc = &pair.base;
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
-            assert_eq!(
-              *dwarf_reg,
-              AARCH64_DWARF_REG_SP,
-              "fixture roots must be [SP + off]"
-            );
-            let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
+            let base = if *dwarf_reg == AARCH64_DWARF_REG_SP {
+              caller_sp
+            } else if *dwarf_reg == AARCH64_DWARF_REG_FP {
+              managed_fp as u64
+            } else {
+              panic!(
+                "unexpected dwarf_reg={dwarf_reg} (expected SP={AARCH64_DWARF_REG_SP} or FP={AARCH64_DWARF_REG_FP})"
+              );
+            };
+            let slot_addr = add_signed_u64(base, *offset).expect("slot addr");
             expected_slots.push(slot_addr as usize);
           }
           other => panic!("unexpected root location kind in fixture: {other:?}"),
