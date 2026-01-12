@@ -164,14 +164,15 @@ pub const UNKNOWN_IDENTIFIER: Code = Code::new(
 /// TC0006: Fresh object literal has an excess property not present in the
 /// target type.
 ///
-/// - Primary span: the object literal expression being assigned.
+/// - Primary span: the first excess property key in the object literal when
+///   available, otherwise the object literal expression being assigned.
 /// - Labels: primary only.
 /// - Notes: none.
 pub const EXCESS_PROPERTY: Code = Code::new(
   "TC0006",
   "excess property in object literal",
-  "object literal being assigned to the target type",
-  &["primary: object literal expression"],
+  "excess property key (or object literal) being assigned to the target type",
+  &["primary: excess property key (or object literal)"],
   &[],
 );
 

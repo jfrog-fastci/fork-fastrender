@@ -30,11 +30,6 @@ status = "xfail"
 reason = "Flow narrowing for typeof checks is not implemented yet."
 
 [[expectations]]
-id = "mismatch/excess_property_error.ts"
-status = "xfail"
-reason = "Excess property diagnostics differ from tsc (code/span)."
-
-[[expectations]]
 id = "mismatch/overload_no_match.ts"
 status = "xfail"
 reason = "Overload resolution diagnostics differ from tsc (code/span)."
@@ -43,11 +38,6 @@ reason = "Overload resolution diagnostics differ from tsc (code/span)."
 id = "match/literal_widening.ts"
 status = "xfail"
 reason = "Literal widening for `let` initializers does not match tsc yet."
-
-[[expectations]]
-id = "match/namespaces/namespace_value_type.ts"
-status = "xfail"
-reason = "Namespace value/type separation does not match tsc yet."
 
 [[expectations]]
 glob = "match/narrowing/**"

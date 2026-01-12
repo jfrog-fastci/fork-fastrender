@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use typecheck_ts::codes;
-use typecheck_ts::{Diagnostic, FileKey, MemoryHost, Program};
+use typecheck_ts::{Diagnostic, FileKey, MemoryHost, Program, TextRange};
 
 fn run(source: &str) -> Vec<Diagnostic> {
   let mut host = MemoryHost::default();
@@ -20,6 +20,23 @@ fn reports_excess_property_on_fresh_object_literal() {
     "unexpected diagnostic: {:?}",
     diagnostics[0]
   );
+}
+
+#[test]
+fn reports_excess_property_on_offending_key_span() {
+  let source = "let x: { foo: number } = { foo: 1, bar: 2 };";
+  let diagnostics = run(source);
+  assert_eq!(diagnostics.len(), 1);
+  assert_eq!(
+    diagnostics[0].code.as_str(),
+    codes::EXCESS_PROPERTY.as_str(),
+    "unexpected diagnostic: {:?}",
+    diagnostics[0]
+  );
+
+  let start = source.find("bar").expect("bar key") as u32;
+  let end = start + "bar".len() as u32;
+  assert_eq!(diagnostics[0].primary.range, TextRange::new(start, end));
 }
 
 #[test]

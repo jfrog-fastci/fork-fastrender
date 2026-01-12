@@ -4048,13 +4048,10 @@ impl<'a> Checker<'a> {
           TypeKind::Any | TypeKind::Unknown
         ) {
           if let AstExpr::LitObj(obj) = expr.stx.expression.stx.as_ref() {
-            if self.has_excess_properties(obj, target_ty) {
+            if let Some(range) = self.excess_property_range(obj, target_ty) {
               self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                 "excess property",
-                Span {
-                  file: self.file,
-                  range: loc_to_range(self.file, expr.stx.expression.loc),
-                },
+                Span { file: self.file, range },
               ));
               return value_ty;
             }
@@ -6355,10 +6352,10 @@ impl<'a> Checker<'a> {
                   )
                 {
                   if let AstExpr::LitObj(obj) = expr.stx.value.stx.as_ref() {
-                    if self.has_excess_properties(obj, expected_ty) {
+                    if let Some(range) = self.excess_property_range(obj, expected_ty) {
                       self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                         "excess property",
-                        Span::new(self.file, loc_to_range(self.file, obj.loc)),
+                        Span::new(self.file, range),
                       ));
                     }
                   }
@@ -6753,10 +6750,10 @@ impl<'a> Checker<'a> {
             )
           {
             if let AstExpr::LitObj(obj) = expr.stx.value.stx.as_ref() {
-              if self.has_excess_properties(obj, expected_ty) {
+              if let Some(range) = self.excess_property_range(obj, expected_ty) {
                 self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                   "excess property",
-                  Span::new(self.file, loc_to_range(self.file, obj.loc)),
+                  Span::new(self.file, range),
                 ));
               }
             }
@@ -8847,12 +8844,12 @@ impl<'a> Checker<'a> {
           };
           if expected_elem != prim.unknown {
             if let AstExpr::LitObj(obj) = expr.stx.as_ref() {
-              if self.has_excess_properties(obj, expected_elem) {
+              if let Some(range) = self.excess_property_range(obj, expected_elem) {
                 self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                   "excess property",
                   Span {
                     file: self.file,
-                    range: loc_to_range(self.file, obj.loc),
+                    range,
                   },
                 ));
               }
@@ -8878,12 +8875,12 @@ impl<'a> Checker<'a> {
           let expr_ty = self.check_expr_with_expected(expr, expected_elem);
           if expected_elem != prim.unknown {
             if let AstExpr::LitObj(obj) = expr.stx.as_ref() {
-              if self.has_excess_properties(obj, expected_elem) {
+              if let Some(range) = self.excess_property_range(obj, expected_elem) {
                 self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                   "excess property",
                   Span {
                     file: self.file,
-                    range: loc_to_range(self.file, obj.loc),
+                    range,
                   },
                 ));
               }
@@ -9228,12 +9225,12 @@ impl<'a> Checker<'a> {
               // fresh literal.
               if expected_prop != prim.unknown {
                 if let AstExpr::LitObj(nested_obj) = expr.stx.as_ref() {
-                  if self.has_excess_properties(nested_obj, expected_prop) {
+                  if let Some(range) = self.excess_property_range(nested_obj, expected_prop) {
                     self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                       "excess property",
                       Span {
                         file: self.file,
-                        range: loc_to_range(self.file, nested_obj.loc),
+                        range,
                       },
                     ));
                   }
@@ -9543,12 +9540,12 @@ impl<'a> Checker<'a> {
           };
           if matches!(op, OperatorName::Assignment) {
             if let AstExpr::LitObj(obj) = right.stx.as_ref() {
-              if self.has_excess_properties(obj, binding.ty) {
+              if let Some(range) = self.excess_property_range(obj, binding.ty) {
                 self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                   "excess property",
                   Span {
                     file: self.file,
-                    range: loc_to_range(self.file, right.loc),
+                    range,
                   },
                 ));
               }
@@ -9601,12 +9598,12 @@ impl<'a> Checker<'a> {
           };
           if matches!(op, OperatorName::Assignment) {
             if let AstExpr::LitObj(obj) = right.stx.as_ref() {
-              if self.has_excess_properties(obj, binding.ty) {
+              if let Some(range) = self.excess_property_range(obj, binding.ty) {
                 self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                   "excess property",
                   Span {
                     file: self.file,
-                    range: loc_to_range(self.file, right.loc),
+                    range,
                   },
                 ));
               }
@@ -9658,12 +9655,12 @@ impl<'a> Checker<'a> {
         if target_ty != prim.unknown {
           if matches!(op, OperatorName::Assignment) {
             if let AstExpr::LitObj(obj) = right.stx.as_ref() {
-              if self.has_excess_properties(obj, target_ty) {
+              if let Some(range) = self.excess_property_range(obj, target_ty) {
                 self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                   "excess property",
                   Span {
                     file: self.file,
-                    range: loc_to_range(self.file, right.loc),
+                    range,
                   },
                 ));
               }
@@ -9709,12 +9706,12 @@ impl<'a> Checker<'a> {
         if target_ty != prim.unknown {
           if matches!(op, OperatorName::Assignment) {
             if let AstExpr::LitObj(obj) = right.stx.as_ref() {
-              if self.has_excess_properties(obj, target_ty) {
+              if let Some(range) = self.excess_property_range(obj, target_ty) {
                 self.diagnostics.push(codes::EXCESS_PROPERTY.error(
                   "excess property",
                   Span {
                     file: self.file,
-                    range: loc_to_range(self.file, right.loc),
+                    range,
                   },
                 ));
               }
@@ -11122,6 +11119,47 @@ impl<'a> Checker<'a> {
     !self.type_accepts_props(target, &props)
   }
 
+  fn excess_property_range(
+    &self,
+    obj: &Node<parse_js::ast::expr::lit::LitObjExpr>,
+    target: TypeId,
+  ) -> Option<TextRange> {
+    let mut props = HashSet::new();
+    let mut ordered_props = Vec::new();
+    for member in obj.stx.members.iter() {
+      match &member.stx.typ {
+        ObjMemberType::Valued { key, .. } => {
+          if let ClassOrObjKey::Direct(direct) = key {
+            let name = direct.stx.key.clone();
+            props.insert(name.clone());
+            ordered_props.push((name, loc_to_range(self.file, direct.loc)));
+          }
+        }
+        ObjMemberType::Shorthand { id } => {
+          let name = id.stx.name.clone();
+          props.insert(name.clone());
+          ordered_props.push((name, loc_to_range(self.file, id.loc)));
+        }
+        ObjMemberType::Rest { .. } => return None,
+      }
+    }
+
+    if self.type_accepts_props(target, &props) {
+      return None;
+    }
+
+    let mut single = HashSet::with_capacity(1);
+    for (prop, range) in ordered_props {
+      single.clear();
+      single.insert(prop);
+      if !self.type_accepts_props(target, &single) {
+        return Some(range);
+      }
+    }
+
+    Some(loc_to_range(self.file, obj.loc))
+  }
+
   fn has_contextual_excess_properties(&mut self, expr: &Node<AstExpr>, expected: TypeId) -> bool {
     fn inner(
       checker: &mut Checker<'_>,
@@ -11548,12 +11586,12 @@ impl<'a> Checker<'a> {
       return;
     }
     if let AstExpr::LitObj(obj) = expr.stx.as_ref() {
-      if self.has_excess_properties(obj, dst) {
+      if let Some(range) = self.excess_property_range(obj, dst) {
         self.diagnostics.push(codes::EXCESS_PROPERTY.error(
           "excess property",
           Span {
             file: self.file,
-            range: loc_to_range(self.file, expr.loc),
+            range,
           },
         ));
         return;
