@@ -7,6 +7,7 @@ mod abspos_inset_padding_translation_test;
 mod avif_test;
 mod backdrop_filter_parallel_tile_bounds;
 mod backend_parity;
+mod legacy_painter_deep_fragment_nesting;
 mod backface_culling_non_stacking_context;
 mod backface_culling_test;
 mod backface_visibility_does_not_create_stacking_context;

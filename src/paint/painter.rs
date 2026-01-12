@@ -800,6 +800,41 @@ enum DisplayCommand {
   },
 }
 
+impl Drop for DisplayCommand {
+  fn drop(&mut self) {
+    // Deeply nested `DisplayCommand::StackingContext` trees can overflow the stack when dropped
+    // recursively (each context owns a `Vec<DisplayCommand>` of descendants). Drain nested command
+    // vectors iteratively to keep drops stack-safe.
+    let DisplayCommand::StackingContext { commands, .. } = self else {
+      return;
+    };
+    if commands.is_empty() {
+      return;
+    }
+
+    let mut stack = Vec::new();
+    let mut pending = std::mem::take(commands);
+    stack.append(&mut pending);
+
+    while let Some(mut cmd) = stack.pop() {
+      if let DisplayCommand::StackingContext { commands, .. } = &mut cmd {
+        if !commands.is_empty() {
+          let mut inner = std::mem::take(commands);
+          stack.append(&mut inner);
+        }
+      }
+      // `cmd` is dropped here with its nested commands already drained into `stack`.
+    }
+  }
+}
+
+/// Maximum allowed nesting depth when executing legacy display commands.
+///
+/// The legacy painter's `DisplayCommand::StackingContext` execution was historically recursive.
+/// Deeply nested stacking contexts can overflow small thread stacks, so we enforce a conservative
+/// limit and surface a structured error instead of crashing the process.
+const LEGACY_DISPLAY_COMMAND_NESTING_LIMIT: usize = 64;
+
 fn commands_have_backdrop_sensitive_descendants(commands: &[DisplayCommand]) -> bool {
   let mut stack: Vec<&[DisplayCommand]> = vec![commands];
   while let Some(cmds) = stack.pop() {
@@ -2117,137 +2152,179 @@ impl Painter {
     items: &mut Vec<DisplayCommand>,
     svg_filters: &mut SvgFilterResolver,
   ) -> RenderResult<()> {
-    check_active(RenderStage::Paint)?;
-    let debug_fragments = dump_fragments_enabled();
-    let is_root_fragment = is_root_context && parent_style.is_none();
-    let root_background = if is_root_fragment && root_paint.use_root_background {
-      Some(root_paint.extend_background_to_viewport)
-    } else {
-      None
-    };
-    if let Some(style) = fragment.style.as_deref() {
-      if !matches!(
-        style.visibility,
-        crate::style::computed::Visibility::Visible
-      ) {
-        return Ok(());
-      }
+    #[derive(Clone, Copy)]
+    enum Step {
+      Child(usize),
+      EnqueueContent,
     }
 
-    let style_ref = fragment.style.as_deref();
-    let establishes_fixed_cb =
-      style_ref.is_some_and(|style| style.establishes_fixed_containing_block());
-    let is_viewport_fixed = style_ref
-      .is_some_and(|style| matches!(style.position, Position::Fixed))
-      && !has_fixed_cb_ancestor;
-    let (offset, applied_element_scroll) = if is_viewport_fixed {
-      (
-        offset.translate(Point::new(
-          -applied_element_scroll.x,
-          -applied_element_scroll.y,
-        )),
-        Point::ZERO,
-      )
-    } else {
-      (offset, applied_element_scroll)
-    };
-    let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
-    let needs_viewport_scroll_cancel = style_ref
-      .is_some_and(|style| matches!(style.position, Position::Fixed))
-      && !skip_viewport_scroll_cancel;
-    let skip_viewport_scroll_cancel_for_children =
-      skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
-    let viewport_scroll =
-      if self.scroll_state.viewport.x.is_finite() && self.scroll_state.viewport.y.is_finite() {
-        self.scroll_state.viewport
+    struct Frame<'a> {
+      fragment: &'a FragmentNode,
+      is_root_context: bool,
+      root_paint: RootPaintOptions,
+      root_background: Option<bool>,
+      style_ref: Option<&'a ComputedStyle>,
+      abs_bounds: Rect,
+      viewport: (f32, f32),
+      establishes_context: bool,
+      child_offset: Point,
+      skip_viewport_scroll_cancel_for_children: bool,
+      applied_element_scroll_for_children: Point,
+      has_fixed_cb_ancestor_for_children: bool,
+      local_commands: Vec<DisplayCommand>,
+      steps: Vec<Step>,
+      step_index: usize,
+    }
+
+    fn init_frame<'a>(
+      painter: &Painter,
+      fragment: &'a FragmentNode,
+      offset: Point,
+      parent_style: Option<&'a ComputedStyle>,
+      is_root_context: bool,
+      skip_viewport_scroll_cancel: bool,
+      applied_element_scroll: Point,
+      has_fixed_cb_ancestor: bool,
+      root_paint: RootPaintOptions,
+    ) -> RenderResult<Option<Frame<'a>>> {
+      check_active(RenderStage::Paint)?;
+      let debug_fragments = dump_fragments_enabled();
+      let is_root_fragment = is_root_context && parent_style.is_none();
+      let root_background = if is_root_fragment && root_paint.use_root_background {
+        Some(root_paint.extend_background_to_viewport)
+      } else {
+        None
+      };
+      if let Some(style) = fragment.style.as_deref() {
+        if !matches!(
+          style.visibility,
+          crate::style::computed::Visibility::Visible
+        ) {
+          return Ok(None);
+        }
+      }
+
+      let style_ref = fragment.style.as_deref();
+      let establishes_fixed_cb =
+        style_ref.is_some_and(|style| style.establishes_fixed_containing_block());
+      let is_viewport_fixed = style_ref
+        .is_some_and(|style| matches!(style.position, Position::Fixed))
+        && !has_fixed_cb_ancestor;
+      let (offset, applied_element_scroll) = if is_viewport_fixed {
+        (
+          offset.translate(Point::new(
+            -applied_element_scroll.x,
+            -applied_element_scroll.y,
+          )),
+          Point::ZERO,
+        )
+      } else {
+        (offset, applied_element_scroll)
+      };
+      let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+      let needs_viewport_scroll_cancel = style_ref
+        .is_some_and(|style| matches!(style.position, Position::Fixed))
+        && !skip_viewport_scroll_cancel;
+      let skip_viewport_scroll_cancel_for_children =
+        skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
+      let viewport_scroll = if painter.scroll_state.viewport.x.is_finite()
+        && painter.scroll_state.viewport.y.is_finite()
+      {
+        painter.scroll_state.viewport
       } else {
         Point::ZERO
       };
-    let offset = if needs_viewport_scroll_cancel {
-      Point::new(offset.x + viewport_scroll.x, offset.y + viewport_scroll.y)
-    } else {
-      offset
-    };
+      let offset = if needs_viewport_scroll_cancel {
+        Point::new(offset.x + viewport_scroll.x, offset.y + viewport_scroll.y)
+      } else {
+        offset
+      };
 
-    let abs_bounds = Rect::from_xywh(
-      fragment.bounds.x() + offset.x,
-      fragment.bounds.y() + offset.y,
-      fragment.bounds.width(),
-      fragment.bounds.height(),
-    );
-    let viewport = (self.css_width, self.css_height);
+      let abs_bounds = Rect::from_xywh(
+        fragment.bounds.x() + offset.x,
+        fragment.bounds.y() + offset.y,
+        fragment.bounds.width(),
+        fragment.bounds.height(),
+      );
+      let viewport = (painter.css_width, painter.css_height);
 
-    if let Some(style) = fragment.style.as_deref() {
-      if matches!(style.backface_visibility, BackfaceVisibility::Hidden)
-        && (style.has_transform() || style.perspective.is_some() || style.has_motion_path())
-      {
-        if let Some(transform) = resolve_transform3d(style, abs_bounds, Some(viewport)) {
-          if backface_is_hidden(&transform) {
-            return Ok(());
+      if let Some(style) = fragment.style.as_deref() {
+        if matches!(style.backface_visibility, BackfaceVisibility::Hidden)
+          && (style.has_transform() || style.perspective.is_some() || style.has_motion_path())
+        {
+          if let Some(transform) = resolve_transform3d(style, abs_bounds, Some(viewport)) {
+            if backface_is_hidden(&transform) {
+              return Ok(None);
+            }
           }
         }
       }
-    }
 
-    if debug_fragments {
-      eprintln!(
-        "fragment {:?} bounds=({}, {}, {}, {}) children={} establishes={} display={:?} overflow=({:?},{:?}) overflow_clip_margin={:?}",
-        describe_content(&fragment.content),
-        abs_bounds.x(),
-        abs_bounds.y(),
-        abs_bounds.width(),
-        abs_bounds.height(),
-        fragment.children.len(),
-        fragment
-          .style
-          .as_deref()
+      if debug_fragments {
+        eprintln!(
+          "fragment {:?} bounds=({}, {}, {}, {}) children={} establishes={} display={:?} overflow=({:?},{:?}) overflow_clip_margin={:?}",
+          describe_content(&fragment.content),
+          abs_bounds.x(),
+          abs_bounds.y(),
+          abs_bounds.width(),
+          abs_bounds.height(),
+          fragment.children.len(),
+          fragment
+            .style
+            .as_deref()
+            .map(|s| creates_stacking_context(s, parent_style, is_root_context))
+            .unwrap_or(is_root_context),
+          fragment.style.as_deref().map(|s| s.display),
+          fragment.style.as_deref().map(|s| s.overflow_x),
+          fragment.style.as_deref().map(|s| s.overflow_y),
+          fragment.style.as_deref().map(|s| s.overflow_clip_margin),
+        );
+      }
+
+      let forced_z_index = fragment.stacking_context.forced_z_index();
+      let establishes_context = forced_z_index.is_some()
+        || style_ref
           .map(|s| creates_stacking_context(s, parent_style, is_root_context))
-          .unwrap_or(is_root_context),
-        fragment.style.as_deref().map(|s| s.display),
-        fragment.style.as_deref().map(|s| s.overflow_x),
-        fragment.style.as_deref().map(|s| s.overflow_y),
-        fragment.style.as_deref().map(|s| s.overflow_clip_margin),
+          .unwrap_or(is_root_context);
+      let element_scroll = painter.element_scroll_offset(fragment);
+      let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
+      let child_offset = Point::new(
+        abs_bounds.x() + scroll_delta.x,
+        abs_bounds.y() + scroll_delta.y,
       );
-    }
+      let applied_element_scroll_for_children = applied_element_scroll.translate(scroll_delta);
 
-    let forced_z_index = fragment.stacking_context.forced_z_index();
-    let establishes_context = forced_z_index.is_some()
-      || style_ref
-        .map(|s| creates_stacking_context(s, parent_style, is_root_context))
-        .unwrap_or(is_root_context);
-    let element_scroll = self.element_scroll_offset(fragment);
-    let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
-    let child_offset = Point::new(
-      abs_bounds.x() + scroll_delta.x,
-      abs_bounds.y() + scroll_delta.y,
-    );
-    let applied_element_scroll_for_children = applied_element_scroll.translate(scroll_delta);
+      // Collect commands for this subtree locally so we can wrap the context (opacity, etc.)
+      let mut local_commands = Vec::new();
 
-    // Collect commands for this subtree locally so we can wrap the context (opacity, etc.)
-    let mut local_commands = Vec::new();
-
-    // CSS2.1 Appendix E requires "tree order" (DOM/box-tree order), not fragment emission order.
-    // Layout can emit out-of-flow positioned fragments (e.g. `position: absolute`) after in-flow
-    // content, reordering siblings in the fragment tree. Prefer the originating `box_id` when
-    // available so layer-6 merging (positioned auto/0 + z-index:0 stacking contexts) is correct.
-    let tree_order = |child: &FragmentNode, fallback: usize| child.box_id().unwrap_or(fallback);
-
-    if !establishes_context {
-      self.enqueue_background_and_borders(
+      painter.enqueue_background_and_borders(
         fragment,
         abs_bounds,
         scroll_delta,
         root_background,
         &mut local_commands,
       );
-      self.enqueue_content(fragment, abs_bounds, &mut local_commands);
+
+      if !establishes_context {
+        painter.enqueue_content(fragment, abs_bounds, &mut local_commands);
+      }
+
+      // CSS2.1 Appendix E requires "tree order" (DOM/box-tree order), not fragment emission order.
+      // Layout can emit out-of-flow positioned fragments (e.g. `position: absolute`) after in-flow
+      // content, reordering siblings in the fragment tree. Prefer the originating `box_id` when
+      // available so layer-6 merging (positioned auto/0 + z-index:0 stacking contexts) is correct.
+      let tree_order = |child: &FragmentNode, fallback: usize| child.box_id().unwrap_or(fallback);
 
       let mut negative_contexts: Vec<(i32, usize, usize)> = Vec::new(); // (z, order, idx)
       let mut zero_contexts: Vec<(usize, usize)> = Vec::new(); // (order, idx)
       let mut positive_contexts: Vec<(i32, usize, usize)> = Vec::new(); // (z, order, idx)
-      let mut blocks = Vec::new();
-      let mut floats = Vec::new();
-      let mut inlines = Vec::new();
+      // In-flow, non-inline-level descendants (CSS2 stacking level 3).
+      let mut blocks: Vec<usize> = Vec::new();
+      // Non-positioned floats (CSS2 stacking level 4).
+      let mut floats: Vec<usize> = Vec::new();
+      // Paint in-flow inline-level content after blocks/floats (CSS2 stacking level 5)
+      let mut inlines: Vec<usize> = Vec::new();
+      // Positioned elements with auto/0 z-index but not establishing a stacking context (CSS2 level 6)
       let mut positioned_auto: Vec<(usize, usize)> = Vec::new(); // (order, idx)
 
       for (idx, child) in fragment.children.iter().enumerate() {
@@ -2287,9 +2364,7 @@ impl Painter {
             | FragmentContent::Line { .. }
         ) {
           inlines.push(idx);
-        }
-        // Children without style default to block-level when not inline-like.
-        else {
+        } else {
           blocks.push(idx);
         }
       }
@@ -2297,63 +2372,27 @@ impl Painter {
       negative_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
         z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
       });
-      for (_, _, idx) in negative_contexts {
-        self.collect_stacking_context(
-          &fragment.children[idx],
-          child_offset,
-          style_ref,
-          false,
-          skip_viewport_scroll_cancel_for_children,
-          applied_element_scroll_for_children,
-          has_fixed_cb_ancestor_for_children,
-          root_paint,
-          &mut local_commands,
-          svg_filters,
-        )?;
-      }
+      positive_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
+        z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
+      });
 
-      // Paint in-flow blocks before floats (CSS2 stacking levels 3 and 4).
+      let mut steps =
+        Vec::with_capacity(fragment.children.len() + usize::from(establishes_context));
+
+      for (_, _, idx) in negative_contexts {
+        steps.push(Step::Child(idx));
+      }
+      if establishes_context {
+        steps.push(Step::EnqueueContent);
+      }
       for idx in blocks {
-        self.collect_stacking_context(
-          &fragment.children[idx],
-          child_offset,
-          style_ref,
-          false,
-          skip_viewport_scroll_cancel_for_children,
-          applied_element_scroll_for_children,
-          has_fixed_cb_ancestor_for_children,
-          root_paint,
-          &mut local_commands,
-          svg_filters,
-        )?;
+        steps.push(Step::Child(idx));
       }
       for idx in floats {
-        self.collect_stacking_context(
-          &fragment.children[idx],
-          child_offset,
-          style_ref,
-          false,
-          skip_viewport_scroll_cancel_for_children,
-          applied_element_scroll_for_children,
-          has_fixed_cb_ancestor_for_children,
-          root_paint,
-          &mut local_commands,
-          svg_filters,
-        )?;
+        steps.push(Step::Child(idx));
       }
       for idx in inlines {
-        self.collect_stacking_context(
-          &fragment.children[idx],
-          child_offset,
-          style_ref,
-          false,
-          skip_viewport_scroll_cancel_for_children,
-          applied_element_scroll_for_children,
-          has_fixed_cb_ancestor_for_children,
-          root_paint,
-          &mut local_commands,
-          svg_filters,
-        )?;
+        steps.push(Step::Child(idx));
       }
 
       // CSS2.1 Appendix E layer 6 requires positioned `z-index:auto/0` descendants and `z-index:0`
@@ -2370,369 +2409,275 @@ impl Painter {
         o1.cmp(o2).then_with(|| k1.cmp(k2)).then_with(|| i1.cmp(i2))
       });
       for (_, _, idx) in layer6 {
-        self.collect_stacking_context(
-          &fragment.children[idx],
-          child_offset,
-          style_ref,
-          false,
-          skip_viewport_scroll_cancel_for_children,
-          applied_element_scroll_for_children,
-          has_fixed_cb_ancestor_for_children,
-          root_paint,
-          &mut local_commands,
-          svg_filters,
-        )?;
+        steps.push(Step::Child(idx));
       }
 
-      positive_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
-        z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
-      });
       for (_, _, idx) in positive_contexts {
-        self.collect_stacking_context(
-          &fragment.children[idx],
-          child_offset,
-          style_ref,
-          false,
-          skip_viewport_scroll_cancel_for_children,
-          applied_element_scroll_for_children,
-          has_fixed_cb_ancestor_for_children,
-          root_paint,
-          &mut local_commands,
-          svg_filters,
-        )?;
+        steps.push(Step::Child(idx));
       }
-      let clip = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
-      if clip.is_some() {
-        items.push(DisplayCommand::StackingContext {
-          rect: abs_bounds,
-          opacity: 1.0,
-          transform: None,
-          transform_3d: None,
-          blend_mode: MixBlendMode::Normal,
-          isolated: false,
-          mask: None,
-          mask_border: None,
-          filters: Vec::new(),
-          backdrop_filters: Vec::new(),
-          // Overflow clips (and CSS `clip`) should not impose an additional border-radius clip when
-          // compositing the layer; only the explicit `clip` should apply.
-          radii: BorderRadii::ZERO,
-          clip,
-          has_clip_path: false,
-          clip_path: None,
-          root_style: if root_background.is_some() {
-            Self::root_background_style(fragment)
-          } else {
-            fragment.style.clone()
-          },
-          commands: local_commands,
-        });
-      } else {
-        items.extend(local_commands);
-      }
+
+      Ok(Some(Frame {
+        fragment,
+        is_root_context,
+        root_paint,
+        root_background,
+        style_ref,
+        abs_bounds,
+        viewport,
+        establishes_context,
+        child_offset,
+        skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
+        local_commands,
+        steps,
+        step_index: 0,
+      }))
+    }
+
+    let mut stack: Vec<Frame> = Vec::new();
+    if let Some(frame) = init_frame(
+      self,
+      fragment,
+      offset,
+      parent_style,
+      is_root_context,
+      skip_viewport_scroll_cancel,
+      applied_element_scroll,
+      has_fixed_cb_ancestor,
+      root_paint,
+    )? {
+      stack.push(frame);
+    } else {
       return Ok(());
     }
 
-    // Stacking context: paint own background/border first
-    self.enqueue_background_and_borders(
-      fragment,
-      abs_bounds,
-      scroll_delta,
-      root_background,
-      &mut local_commands,
-    );
-
-    // Partition children into stacking-context buckets and normal flow (preserving DOM order)
-    let mut negative_contexts = Vec::new();
-    let mut zero_contexts = Vec::new();
-    let mut positive_contexts = Vec::new();
-    // In-flow, non-inline-level descendants (CSS2 stacking level 3).
-    let mut blocks = Vec::new();
-    // Non-positioned floats (CSS2 stacking level 4).
-    let mut floats = Vec::new();
-    // Paint in-flow inline-level content after blocks/floats (CSS2 stacking level 5)
-    let mut inlines = Vec::new();
-    // Positioned elements with auto/0 z-index but not establishing a stacking context (CSS2 level 6)
-    let mut positioned_auto: Vec<(usize, usize)> = Vec::new(); // (order, idx)
-
-    for (idx, child) in fragment.children.iter().enumerate() {
-      let order = tree_order(child, idx);
-      if let Some(z) = child.stacking_context.forced_z_index() {
-        match z.cmp(&0) {
-          std::cmp::Ordering::Less => negative_contexts.push((z, order, idx)),
-          std::cmp::Ordering::Equal => zero_contexts.push((order, idx)),
-          std::cmp::Ordering::Greater => positive_contexts.push((z, order, idx)),
+    while let Some(mut frame) = stack.pop() {
+      if let Some(step) = frame.steps.get(frame.step_index).copied() {
+        frame.step_index += 1;
+        match step {
+          Step::EnqueueContent => {
+            self.enqueue_content(frame.fragment, frame.abs_bounds, &mut frame.local_commands);
+            stack.push(frame);
+          }
+          Step::Child(idx) => {
+            let child = &frame.fragment.children[idx];
+            let child_frame = init_frame(
+              self,
+              child,
+              frame.child_offset,
+              frame.style_ref,
+              false,
+              frame.skip_viewport_scroll_cancel_for_children,
+              frame.applied_element_scroll_for_children,
+              frame.has_fixed_cb_ancestor_for_children,
+              frame.root_paint,
+            )?;
+            stack.push(frame);
+            if let Some(child_frame) = child_frame {
+              stack.push(child_frame);
+            }
+          }
         }
         continue;
       }
 
-      if let Some(style) = child.style.as_deref() {
-        if creates_stacking_context(style, style_ref, false) {
-          let z = style.z_index.unwrap_or(0);
-          match z.cmp(&0) {
-            std::cmp::Ordering::Less => negative_contexts.push((z, order, idx)),
-            std::cmp::Ordering::Equal => zero_contexts.push((order, idx)),
-            std::cmp::Ordering::Greater => positive_contexts.push((z, order, idx)),
-          }
-          continue;
-        }
-        if is_positioned(style) {
-          positioned_auto.push((order, idx));
-        } else if style.float.is_floating() {
-          floats.push(idx);
-        } else if is_inline_level(style, child) {
-          inlines.push(idx);
-        } else {
-          blocks.push(idx);
-        }
-      } else if matches!(
-        child.content,
-        FragmentContent::Inline { .. }
-          | FragmentContent::Text { .. }
-          | FragmentContent::Line { .. }
-      ) {
-        inlines.push(idx);
-      } else {
-        blocks.push(idx);
-      }
-    }
-
-    negative_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
-      z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
-    });
-    for (_, _, idx) in negative_contexts {
-      self.collect_stacking_context(
-        &fragment.children[idx],
-        child_offset,
-        style_ref,
-        false,
-        skip_viewport_scroll_cancel_for_children,
-        applied_element_scroll_for_children,
-        has_fixed_cb_ancestor_for_children,
-        root_paint,
-        &mut local_commands,
-        svg_filters,
-      )?;
-    }
-
-    // In-flow/non-positioned content for this context
-    self.enqueue_content(fragment, abs_bounds, &mut local_commands);
-    for idx in blocks {
-      self.collect_stacking_context(
-        &fragment.children[idx],
-        child_offset,
-        style_ref,
-        false,
-        skip_viewport_scroll_cancel_for_children,
-        applied_element_scroll_for_children,
-        has_fixed_cb_ancestor_for_children,
-        root_paint,
-        &mut local_commands,
-        svg_filters,
-      )?;
-    }
-    for idx in floats {
-      self.collect_stacking_context(
-        &fragment.children[idx],
-        child_offset,
-        style_ref,
-        false,
-        skip_viewport_scroll_cancel_for_children,
-        applied_element_scroll_for_children,
-        has_fixed_cb_ancestor_for_children,
-        root_paint,
-        &mut local_commands,
-        svg_filters,
-      )?;
-    }
-    for idx in inlines {
-      self.collect_stacking_context(
-        &fragment.children[idx],
-        child_offset,
-        style_ref,
-        false,
-        skip_viewport_scroll_cancel_for_children,
-        applied_element_scroll_for_children,
-        has_fixed_cb_ancestor_for_children,
-        root_paint,
-        &mut local_commands,
-        svg_filters,
-      )?;
-    }
-
-    // Merge positioned auto/0 descendants and z-index:0 stacking contexts in tree order (CSS2.1
-    // Appendix E layer 6).
-    let mut layer6: Vec<(usize, u8, usize)> =
-      Vec::with_capacity(positioned_auto.len() + zero_contexts.len());
-    for (order, idx) in positioned_auto {
-      layer6.push((order, 0, idx));
-    }
-    for (order, idx) in &zero_contexts {
-      layer6.push((*order, 1, *idx));
-    }
-    layer6.sort_by(|(o1, k1, i1), (o2, k2, i2)| {
-      o1.cmp(o2).then_with(|| k1.cmp(k2)).then_with(|| i1.cmp(i2))
-    });
-    for (_, _, idx) in layer6 {
-      self.collect_stacking_context(
-        &fragment.children[idx],
-        child_offset,
-        style_ref,
-        false,
-        skip_viewport_scroll_cancel_for_children,
-        applied_element_scroll_for_children,
-        has_fixed_cb_ancestor_for_children,
-        root_paint,
-        &mut local_commands,
-        svg_filters,
-      )?;
-    }
-
-    positive_contexts.sort_by(|(z1, o1, i1), (z2, o2, i2)| {
-      z1.cmp(z2).then_with(|| o1.cmp(o2)).then_with(|| i1.cmp(i2))
-    });
-    for (_, _, idx) in positive_contexts {
-      self.collect_stacking_context(
-        &fragment.children[idx],
-        child_offset,
-        style_ref,
-        false,
-        skip_viewport_scroll_cancel_for_children,
-        applied_element_scroll_for_children,
-        has_fixed_cb_ancestor_for_children,
-        root_paint,
-        &mut local_commands,
-        svg_filters,
-      )?;
-    }
-
-    // Wrap the stacking context if it applies an effect (opacity/transform); otherwise flatten
-    let opacity = style_ref.map(|s| s.opacity).unwrap_or(1.0).clamp(0.0, 1.0);
-    let transform_3d = build_transform_3d(style_ref, abs_bounds, Some(viewport));
-    let transform = transform_3d
-      .as_ref()
-      .and_then(|t| t.to_2d())
-      .map(transform2d_to_skia);
-    let blend_mode = style_ref
-      .map(|s| s.mix_blend_mode)
-      .unwrap_or(MixBlendMode::Normal);
-    let has_blend_mode_children = !is_root_context
-      && local_commands.iter().any(|cmd| match cmd {
-        DisplayCommand::StackingContext { blend_mode, .. } => {
-          !matches!(blend_mode, MixBlendMode::Normal)
-        }
-        _ => false,
-      });
-    let will_change_needs_backdrop_root_boundary = matches!(blend_mode, MixBlendMode::Normal)
-      && style_ref.is_some_and(|s| s.will_change.establishes_backdrop_root())
-      && commands_have_backdrop_sensitive_descendants(&local_commands);
-    let isolated = style_ref
-      .map(|s| matches!(s.isolation, crate::style::types::Isolation::Isolate))
-      .unwrap_or(false)
-      // `will-change` hints for Backdrop Root triggers (Filter Effects 2) must behave as if the
-      // trigger were present, scoping descendant backdrop-filter sampling. In the legacy paint
-      // path we reuse the "isolated group" layer allocation to create that boundary, but only
-      // when the subtree contains effects that actually sample the backdrop.
-      || will_change_needs_backdrop_root_boundary
-      || has_blend_mode_children;
-    let filters = style_ref
-      .map(|s| resolve_filters(&s.filter, s, viewport, &self.font_ctx, svg_filters))
-      .unwrap_or_default();
-    let has_filters = !filters.is_empty();
-    let backdrop_filters = style_ref
-      .map(|s| resolve_filters(&s.backdrop_filter, s, viewport, &self.font_ctx, svg_filters))
-      .unwrap_or_default();
-    let has_backdrop = !backdrop_filters.is_empty();
-    let clip: Option<StackingClip> =
-      style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
-    let clip_path = match style_ref {
-      Some(style) => match &style.clip_path {
-        crate::style::types::ClipPath::Url(src, reference_override) => {
-          let trimmed = trim_ascii_whitespace_html_css(src);
-          let reference =
-            reference_override.unwrap_or(crate::style::types::ReferenceBox::BorderBox);
-          let reference_rect = crate::paint::clip_path::resolve_clip_path_reference_box_rect(
-            style,
-            abs_bounds,
-            (self.css_width, self.css_height),
-            &self.font_ctx,
-            reference,
-          );
-
-          if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
-            Some(StackingClipPath::SvgFragment {
-              id: id.to_string(),
-              reference_rect,
-            })
-          } else if let Some((doc_url, id)) = trimmed.rsplit_once('#') {
-            if doc_url.is_empty() || id.is_empty() {
-              None
+      if !frame.establishes_context {
+        let clip = frame
+          .style_ref
+          .and_then(|style| self.stacking_clip_for_style(style, frame.abs_bounds));
+        if let Some(clip) = clip {
+          let cmd = DisplayCommand::StackingContext {
+            rect: frame.abs_bounds,
+            opacity: 1.0,
+            transform: None,
+            transform_3d: None,
+            blend_mode: MixBlendMode::Normal,
+            isolated: false,
+            mask: None,
+            mask_border: None,
+            filters: Vec::new(),
+            backdrop_filters: Vec::new(),
+            // Overflow clips (and CSS `clip`) should not impose an additional border-radius clip when
+            // compositing the layer; only the explicit `clip` should apply.
+            radii: BorderRadii::ZERO,
+            clip: Some(clip),
+            has_clip_path: false,
+            clip_path: None,
+            root_style: if frame.root_background.is_some() {
+              Self::root_background_style(frame.fragment)
             } else {
-              Some(StackingClipPath::SvgExternal {
-                doc_url: doc_url.to_string(),
+              frame.fragment.style.clone()
+            },
+            commands: frame.local_commands,
+          };
+          if let Some(parent) = stack.last_mut() {
+            parent.local_commands.push(cmd);
+          } else {
+            items.push(cmd);
+          }
+        } else if let Some(parent) = stack.last_mut() {
+          parent.local_commands.append(&mut frame.local_commands);
+        } else {
+          items.append(&mut frame.local_commands);
+        }
+        continue;
+      }
+
+      // Wrap the stacking context if it applies an effect (opacity/transform); otherwise flatten
+      let opacity = frame
+        .style_ref
+        .map(|s| s.opacity)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+      let transform_3d = build_transform_3d(frame.style_ref, frame.abs_bounds, Some(frame.viewport));
+      let transform = transform_3d
+        .as_ref()
+        .and_then(|t| t.to_2d())
+        .map(transform2d_to_skia);
+      let blend_mode = frame
+        .style_ref
+        .map(|s| s.mix_blend_mode)
+        .unwrap_or(MixBlendMode::Normal);
+      let has_blend_mode_children = !frame.is_root_context
+        && frame.local_commands.iter().any(|cmd| match cmd {
+          DisplayCommand::StackingContext { blend_mode, .. } => {
+            !matches!(blend_mode, MixBlendMode::Normal)
+          }
+          _ => false,
+        });
+      let will_change_needs_backdrop_root_boundary = matches!(blend_mode, MixBlendMode::Normal)
+        && frame
+          .style_ref
+          .is_some_and(|s| s.will_change.establishes_backdrop_root())
+        && commands_have_backdrop_sensitive_descendants(&frame.local_commands);
+      let isolated = frame
+        .style_ref
+        .map(|s| matches!(s.isolation, crate::style::types::Isolation::Isolate))
+        .unwrap_or(false)
+        // `will-change` hints for Backdrop Root triggers (Filter Effects 2) must behave as if the
+        // trigger were present, scoping descendant backdrop-filter sampling. In the legacy paint
+        // path we reuse the "isolated group" layer allocation to create that boundary, but only
+        // when the subtree contains effects that actually sample the backdrop.
+        || will_change_needs_backdrop_root_boundary
+        || has_blend_mode_children;
+      let filters = frame
+        .style_ref
+        .map(|s| resolve_filters(&s.filter, s, frame.viewport, &self.font_ctx, svg_filters))
+        .unwrap_or_default();
+      let has_filters = !filters.is_empty();
+      let backdrop_filters = frame
+        .style_ref
+        .map(|s| resolve_filters(&s.backdrop_filter, s, frame.viewport, &self.font_ctx, svg_filters))
+        .unwrap_or_default();
+      let has_backdrop = !backdrop_filters.is_empty();
+      let clip: Option<StackingClip> =
+        frame
+          .style_ref
+          .and_then(|style| self.stacking_clip_for_style(style, frame.abs_bounds));
+      let clip_path = match frame.style_ref {
+        Some(style) => match &style.clip_path {
+          crate::style::types::ClipPath::Url(src, reference_override) => {
+            let trimmed = trim_ascii_whitespace_html_css(src);
+            let reference =
+              reference_override.unwrap_or(crate::style::types::ReferenceBox::BorderBox);
+            let reference_rect = crate::paint::clip_path::resolve_clip_path_reference_box_rect(
+              style,
+              frame.abs_bounds,
+              (self.css_width, self.css_height),
+              &self.font_ctx,
+              reference,
+            );
+
+            if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+              Some(StackingClipPath::SvgFragment {
                 id: id.to_string(),
                 reference_rect,
               })
+            } else if let Some((doc_url, id)) = trimmed.rsplit_once('#') {
+              if doc_url.is_empty() || id.is_empty() {
+                None
+              } else {
+                Some(StackingClipPath::SvgExternal {
+                  doc_url: doc_url.to_string(),
+                  id: id.to_string(),
+                  reference_rect,
+                })
+              }
+            } else {
+              None
             }
-          } else {
-            None
           }
-        }
-        _ => resolve_clip_path(
-          style,
-          abs_bounds,
-          (self.css_width, self.css_height),
-          &self.font_ctx,
-        )?
-        .map(StackingClipPath::Shape),
-      },
-      None => None,
-    };
-    let style_has_clip_path = style_ref
-      .is_some_and(|style| !matches!(style.clip_path, crate::style::types::ClipPath::None));
-    let mask = fragment
-      .style
-      .clone()
-      .filter(|s| s.mask_layers.iter().any(|layer| layer.image.is_some()));
-    let mask_border = fragment.style.clone().filter(|s| s.mask_border.is_active());
-    if opacity < 1.0
-      || transform.is_some()
-      || transform_3d.is_some()
-      || !matches!(blend_mode, MixBlendMode::Normal)
-      || isolated
-      || has_filters
-      || has_backdrop
-      || clip.is_some()
-      || style_has_clip_path
-      || mask.is_some()
-      || mask_border.is_some()
-    {
-      let radii = resolve_border_radii(style_ref, abs_bounds);
-      items.push(DisplayCommand::StackingContext {
-        rect: abs_bounds,
-        opacity,
-        transform,
-        transform_3d,
-        blend_mode,
-        isolated,
-        mask,
-        mask_border,
-        filters,
-        backdrop_filters,
-        radii,
-        clip,
-        has_clip_path: style_has_clip_path,
-        clip_path,
-        root_style: if root_background.is_some() {
-          Self::root_background_style(fragment)
-        } else {
-          fragment.style.clone()
+          _ => resolve_clip_path(
+            style,
+            frame.abs_bounds,
+            (self.css_width, self.css_height),
+            &self.font_ctx,
+          )?
+          .map(StackingClipPath::Shape),
         },
-        commands: local_commands,
+        None => None,
+      };
+      let style_has_clip_path = frame.style_ref.is_some_and(|style| {
+        !matches!(style.clip_path, crate::style::types::ClipPath::None)
       });
-    } else {
-      items.extend(local_commands);
+      let mask = frame
+        .fragment
+        .style
+        .clone()
+        .filter(|s| s.mask_layers.iter().any(|layer| layer.image.is_some()));
+      let mask_border = frame
+        .fragment
+        .style
+        .clone()
+        .filter(|s| s.mask_border.is_active());
+      if opacity < 1.0
+        || transform.is_some()
+        || transform_3d.is_some()
+        || !matches!(blend_mode, MixBlendMode::Normal)
+        || isolated
+        || has_filters
+        || has_backdrop
+        || clip.is_some()
+        || style_has_clip_path
+        || mask.is_some()
+        || mask_border.is_some()
+      {
+        let radii = resolve_border_radii(frame.style_ref, frame.abs_bounds);
+        let cmd = DisplayCommand::StackingContext {
+          rect: frame.abs_bounds,
+          opacity,
+          transform,
+          transform_3d,
+          blend_mode,
+          isolated,
+          mask,
+          mask_border,
+          filters,
+          backdrop_filters,
+          radii,
+          clip,
+          has_clip_path: style_has_clip_path,
+          clip_path,
+          root_style: if frame.root_background.is_some() {
+            Self::root_background_style(frame.fragment)
+          } else {
+            frame.fragment.style.clone()
+          },
+          commands: frame.local_commands,
+        };
+        if let Some(parent) = stack.last_mut() {
+          parent.local_commands.push(cmd);
+        } else {
+          items.push(cmd);
+        }
+      } else if let Some(parent) = stack.last_mut() {
+        parent.local_commands.append(&mut frame.local_commands);
+      } else {
+        items.append(&mut frame.local_commands);
+      }
     }
+
     Ok(())
   }
 
@@ -3107,6 +3052,17 @@ impl Painter {
   }
 
   fn execute_command(&mut self, command: DisplayCommand) -> Result<()> {
+    self.execute_command_with_depth(command, 0)
+  }
+
+  fn execute_command_with_depth(&mut self, mut command: DisplayCommand, depth: usize) -> Result<()> {
+    if depth >= LEGACY_DISPLAY_COMMAND_NESTING_LIMIT {
+      return Err(Error::Render(RenderError::InvalidParameters {
+        message: format!(
+          "legacy painter display command nesting too deep (depth={depth}, limit={LEGACY_DISPLAY_COMMAND_NESTING_LIMIT})"
+        ),
+      }));
+    }
     let cmd_profile_threshold_ms = cmd_profile_threshold_ms();
     let cmd_profile_enabled = cmd_profile_threshold_ms.is_some();
     let cmd_profile_start = cmd_profile_enabled.then(Instant::now);
@@ -3164,31 +3120,44 @@ impl Painter {
         )
       }
     });
-    match command {
+    match &mut command {
       DisplayCommand::Background {
         rect,
         style,
         text_clip,
         scroll_delta,
       } => {
+        let rect = *rect;
+        let scroll_delta = *scroll_delta;
+        let style = style.as_ref();
         if let Some(text_clip) = text_clip.as_deref() {
-          self.paint_background_with_text_clip(rect, &style, text_clip, scroll_delta)?;
+          self.paint_background_with_text_clip(rect, style, text_clip, scroll_delta)?;
         } else {
           self.paint_background(
             rect.x(),
             rect.y(),
             rect.width(),
             rect.height(),
-            &style,
+            style,
             scroll_delta,
           );
         }
       }
       DisplayCommand::Border { rect, style, gap } => {
-        self.paint_borders(rect.x(), rect.y(), rect.width(), rect.height(), &style, gap);
+        let rect = *rect;
+        let gap = *gap;
+        self.paint_borders(
+          rect.x(),
+          rect.y(),
+          rect.width(),
+          rect.height(),
+          style.as_ref(),
+          gap,
+        );
       }
       DisplayCommand::Outline { rect, style } => {
-        self.paint_outline(rect.x(), rect.y(), rect.width(), rect.height(), &style);
+        let rect = *rect;
+        self.paint_outline(rect.x(), rect.y(), rect.width(), rect.height(), style.as_ref());
       }
       DisplayCommand::Text {
         rect,
@@ -3197,6 +3166,12 @@ impl Painter {
         runs,
         style,
       } => {
+        let rect = *rect;
+        let baseline_offset = *baseline_offset;
+        let style = style.as_ref();
+        let text = text.as_ref();
+        let runs = runs.clone();
+
         let text_profile_threshold_ms = text_profile_threshold_ms();
         let text_profile_enabled = text_profile_threshold_ms.is_some();
         let text_total_start = text_profile_enabled.then(Instant::now);
@@ -3205,7 +3180,7 @@ impl Painter {
         let shaped_runs: Option<Arc<Vec<ShapedRun>>> = runs.clone().or_else(|| {
           self
             .shaper
-            .shape(&text, &style, &self.font_ctx)
+            .shape(text, style, &self.font_ctx)
             .ok()
             .map(Arc::new)
         });
@@ -3232,7 +3207,7 @@ impl Painter {
               block_baseline,
               inline_start,
               color,
-              Some(&style),
+              Some(style),
               None,
             );
           } else {
@@ -3241,7 +3216,7 @@ impl Painter {
               inline_start,
               block_baseline,
               color,
-              Some(&style),
+              Some(style),
               None,
             );
           }
@@ -3249,8 +3224,8 @@ impl Painter {
           if inline_vertical {
             // Fallback: approximate vertical flow by painting horizontal text at the inline start.
             self.paint_text(
-              &text,
-              Some(&style),
+              text,
+              Some(style),
               inline_start,
               rect.y(),
               style.font_size,
@@ -3258,8 +3233,8 @@ impl Painter {
             )?;
           } else {
             self.paint_text(
-              &text,
-              Some(&style),
+              text,
+              Some(style),
               inline_start,
               block_baseline,
               style.font_size,
@@ -3268,7 +3243,7 @@ impl Painter {
           }
         }
         self.paint_text_decoration(
-          &style,
+          style,
           shaped_runs.as_deref().map(Vec::as_slice),
           inline_start,
           block_baseline,
@@ -3276,7 +3251,7 @@ impl Painter {
           inline_vertical,
         );
         self.paint_text_emphasis(
-          &style,
+          style,
           shaped_runs.as_deref().map(Vec::as_slice),
           inline_start,
           block_baseline,
@@ -3319,15 +3294,19 @@ impl Painter {
         replaced_type,
         box_id,
         style,
-      } => self.paint_replaced(
-        &replaced_type,
-        box_id,
-        Some(&style),
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
-      ),
+      } => {
+        let rect = *rect;
+        let box_id = *box_id;
+        self.paint_replaced(
+          replaced_type,
+          box_id,
+          Some(style.as_ref()),
+          rect.x(),
+          rect.y(),
+          rect.width(),
+          rect.height(),
+        );
+      }
       DisplayCommand::StackingContext {
         rect: context_rect,
         opacity,
@@ -3346,6 +3325,22 @@ impl Painter {
         root_style,
         commands,
       } => {
+        let context_rect = *context_rect;
+        let opacity = *opacity;
+        let transform_3d = *transform_3d;
+        let blend_mode = *blend_mode;
+        let isolated = *isolated;
+        let radii = *radii;
+        let clip = *clip;
+        let has_clip_path = *has_clip_path;
+        let mask = std::mem::take(mask);
+        let mask_border = std::mem::take(mask_border);
+        let filters = std::mem::take(filters);
+        let backdrop_filters = std::mem::take(backdrop_filters);
+        let clip_path = std::mem::take(clip_path);
+        let root_style = std::mem::take(root_style);
+        let commands = std::mem::take(commands);
+
         let profile_threshold_ms = stack_profile_threshold_ms();
         let profile_enabled = profile_threshold_ms.is_some();
         let total_start = profile_enabled.then(Instant::now);
@@ -3400,11 +3395,11 @@ impl Painter {
             if matches!(cmd, DisplayCommand::Outline { .. }) {
               outlines.push(cmd);
             } else {
-              self.execute_command(cmd)?;
+              self.execute_command_with_depth(cmd, depth.saturating_add(1))?;
             }
           }
           for cmd in outlines {
-            self.execute_command(cmd)?;
+            self.execute_command_with_depth(cmd, depth.saturating_add(1))?;
           }
           return Ok(());
         }
@@ -3640,7 +3635,7 @@ impl Painter {
         let device_root_rect = base_painter.device_rect(root_rect);
         let paint_unclipped_start = profile_enabled.then(Instant::now);
         for cmd in unclipped {
-          base_painter.execute_command(cmd)?;
+          base_painter.execute_command_with_depth(cmd, depth.saturating_add(1))?;
         }
         if let Some(start) = paint_unclipped_start {
           base_paint_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -3678,7 +3673,7 @@ impl Painter {
           };
           let paint_clipped_start = profile_enabled.then(Instant::now);
           for cmd in clipped {
-            clip_painter.execute_command(cmd)?;
+            clip_painter.execute_command_with_depth(cmd, depth.saturating_add(1))?;
           }
           if let Some(start) = paint_clipped_start {
             clip_paint_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -4013,7 +4008,7 @@ impl Painter {
         if !outline_commands.is_empty() {
           let outline_start = profile_enabled.then(Instant::now);
           for cmd in outline_commands {
-            base_painter.execute_command(cmd)?;
+            base_painter.execute_command_with_depth(cmd, depth.saturating_add(1))?;
           }
           if let Some(start) = outline_start {
             outline_ms = start.elapsed().as_secs_f64() * 1000.0;
