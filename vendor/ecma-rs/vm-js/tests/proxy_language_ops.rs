@@ -28,6 +28,28 @@ fn proxy_get_trap_is_used_for_property_access() {
 }
 
 #[test]
+fn proxy_get_trap_receives_proxy_as_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var p;
+      var receiverOk = false;
+      p = new Proxy({}, {
+        get: function(target, prop, receiver) {
+          receiverOk = (receiver === p);
+          return 1;
+        }
+      });
+      var v = p.foo;
+      receiverOk && v === 1
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn proxy_set_trap_is_used_for_property_assignment() {
   let mut rt = new_runtime();
   let value = rt
@@ -42,6 +64,28 @@ fn proxy_set_trap_is_used_for_property_assignment() {
       });
       p.foo = 7;
       log === "set:foo=7|"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn proxy_set_trap_receives_proxy_as_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var p;
+      var receiverOk = false;
+      p = new Proxy({}, {
+        set: function(target, prop, value, receiver) {
+          receiverOk = (receiver === p);
+          return true;
+        }
+      });
+      p.foo = 123;
+      receiverOk
     "#,
     )
     .unwrap();
