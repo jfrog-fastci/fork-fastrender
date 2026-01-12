@@ -32,9 +32,10 @@ fn iterator_close_on_err(
     return Err(err);
   }
 
-  // Per spec, errors from `IteratorClose` override a throw completion. However, vm-js also has
-  // non-catchable VM failures (termination, OOM, etc) which must never be replaced by user-code
-  // iterator closing (otherwise JS could "catch" termination and continue).
+  // `IteratorClose` suppression rules (ECMA-262):
+  // - If the original completion is a throw completion, iterator closing is best-effort and any
+  //   *catchable* closing error is suppressed.
+  // - Never allow JS-visible closing errors to replace fatal VM failures (termination, OOM, etc).
   let original_is_throw = err.is_throw_completion();
 
   // Root the pending thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -54,9 +55,14 @@ fn iterator_close_on_err(
   ) {
     Ok(()) => Err(err),
     Err(close_err) => {
-      if original_is_throw {
+      if original_is_throw && close_err.is_throw_completion() {
+        // Suppress JS-visible `IteratorClose` errors when we are already throwing.
+        Err(err)
+      } else if original_is_throw {
+        // Never suppress fatal VM errors (OOM/termination/etc).
         Err(close_err)
       } else {
+        // Preserve fatal/non-catchable original errors even if closing throws.
         Err(err)
       }
     }

@@ -6094,7 +6094,7 @@ impl<'a> Evaluator<'a> {
           )?;
           spread_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
           if let Err(err) = spread_scope.push_root(iter.next_method) {
-            return Err(self.iterator_close_on_error_force_close(&mut spread_scope, &iter, err));
+            return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
           }
 
           loop {
@@ -6107,7 +6107,7 @@ impl<'a> Evaluator<'a> {
             ) {
               Ok(v) => v,
               Err(err) => {
-                return Err(self.iterator_close_on_error_force_close(&mut spread_scope, &iter, err))
+                return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err))
               }
             };
 
@@ -6133,7 +6133,7 @@ impl<'a> Evaluator<'a> {
               Ok(())
             })();
             if let Err(err) = step_res {
-              return Err(self.iterator_close_on_error_force_close(&mut spread_scope, &iter, err));
+              return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
             }
           }
         }
@@ -6935,7 +6935,7 @@ impl<'a> Evaluator<'a> {
               )?;
               new_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
               if let Err(err) = new_scope.push_root(iter.next_method) {
-                return Err(self.iterator_close_on_error_force_close(&mut new_scope, &iter, err));
+                return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
               }
 
               loop {
@@ -6948,7 +6948,7 @@ impl<'a> Evaluator<'a> {
                 ) {
                   Ok(v) => v,
                   Err(err) => {
-                    return Err(self.iterator_close_on_error_force_close(&mut new_scope, &iter, err));
+                    return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
                   }
                 };
 
@@ -6964,7 +6964,7 @@ impl<'a> Evaluator<'a> {
                   Ok(())
                 })();
                 if let Err(err) = step_res {
-                  return Err(self.iterator_close_on_error_force_close(&mut new_scope, &iter, err));
+                  return Err(self.iterator_close_on_error(&mut new_scope, &iter, err));
                 }
               }
             } else {
@@ -7168,7 +7168,7 @@ impl<'a> Evaluator<'a> {
         )?;
         call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
         if let Err(err) = call_scope.push_root(iter.next_method) {
-          return Err(self.iterator_close_on_error_force_close(&mut call_scope, &iter, err));
+          return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
         }
 
         loop {
@@ -7181,7 +7181,7 @@ impl<'a> Evaluator<'a> {
           ) {
             Ok(v) => v,
             Err(err) => {
-              return Err(self.iterator_close_on_error_force_close(&mut call_scope, &iter, err));
+              return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
             }
           };
 
@@ -7197,7 +7197,7 @@ impl<'a> Evaluator<'a> {
             Ok(())
           })();
           if let Err(err) = step_res {
-            return Err(self.iterator_close_on_error_force_close(&mut call_scope, &iter, err));
+            return Err(self.iterator_close_on_error(&mut call_scope, &iter, err));
           }
         }
       } else {
@@ -17093,12 +17093,10 @@ fn async_iterator_close_on_error(
   }
 
   // `IteratorClose` suppression rules:
-  // - If the original error is a JS throw completion, iterator closing is best-effort and any
-  //   *catchable* closing error is suppressed (the original throw must be preserved).
-  // - Never suppress fatal VM errors (OOM/termination/etc): if iterator close fails with a fatal
-  //   error, it overrides the original throw.
-  // - For non-throw (fatal) original errors, iterator closing is best-effort and the original error
-  //   is always preserved.
+  // - If the original completion is a throw completion, iterator closing is best-effort and any
+  //   *throw completion* closing error is suppressed (the original throw must be preserved).
+  // - Never suppress fatal VM errors (OOM/termination/etc): a fatal close error overrides a throw
+  //   completion, but iterator closing must not replace a fatal original error.
   let original_is_throw = err.is_throw_completion();
 
   // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -17122,8 +17120,17 @@ fn async_iterator_close_on_error(
   match close_res {
     Ok(()) => err,
     Err(close_err) => {
-      let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
-      if original_is_throw { close_err } else { err }
+      // `IteratorClose` suppression rules:
+      // - If the original completion is a throw completion, suppress errors from
+      //   `GetMethod("return")` / `Call(return)`.
+      // - Never suppress fatal VM errors (OOM/termination/etc).
+      if original_is_throw && close_err.is_throw_completion() {
+        err
+      } else if original_is_throw {
+        close_err
+      } else {
+        err
+      }
     }
   }
 }

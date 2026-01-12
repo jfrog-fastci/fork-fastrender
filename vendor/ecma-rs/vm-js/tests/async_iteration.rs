@@ -1,9 +1,10 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use vm_js::iterator::{async_iterator_close, async_iterator_next, get_async_iterator, iterator_complete, iterator_value};
 use vm_js::{
-  perform_promise_then, promise_resolve, GcObject, Heap, HeapLimits, MicrotaskQueue, PropertyKey, Realm,
-  Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  new_promise_capability_with_host_and_hooks, perform_promise_then, promise_resolve, GcObject, Heap,
+  HeapLimits, MicrotaskQueue, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
+  VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 thread_local! {
@@ -13,6 +14,7 @@ thread_local! {
   static SYNC_RETURN_CALLED: Cell<bool> = const { Cell::new(false) };
   static CLOSE_PROMISE_FULFILLED: Cell<bool> = const { Cell::new(false) };
   static CLOSE_PROMISE_REJECTED: Cell<bool> = const { Cell::new(false) };
+  static ASYNC_FROM_SYNC_REJECTION_REASON: RefCell<Option<String>> = RefCell::new(None);
 }
 
 fn method_returns_slot0(
@@ -67,6 +69,67 @@ fn noop(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   Ok(Value::Undefined)
+}
+
+fn throw_slot0(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(v) = slots.get(0).copied() else {
+    return Err(VmError::InvariantViolation("expected 1 native slot"));
+  };
+  Err(VmError::Throw(v))
+}
+
+fn record_async_from_sync_rejection_reason(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = match reason {
+    Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy(),
+    other => format!("{other:?}"),
+  };
+  ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
+    *cell.borrow_mut() = Some(s);
+  });
+  Ok(Value::Undefined)
+}
+
+fn promise_reject(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  reason: Value,
+) -> Result<Value, VmError> {
+  // Root the reason across promise construction and the reject call.
+  let mut scope = scope.reborrow();
+  scope.push_root(reason)?;
+
+  let cap = new_promise_capability_with_host_and_hooks(vm, &mut scope, host_ctx, hooks)?;
+  scope.push_roots(&[cap.promise, cap.reject, reason])?;
+
+  let _ = vm.call_with_host_and_hooks(
+    host_ctx,
+    &mut scope,
+    hooks,
+    cap.reject,
+    Value::Undefined,
+    &[reason],
+  )?;
+  Ok(cap.promise)
 }
 
 fn check_array_next_iterator_result(
@@ -424,4 +487,381 @@ fn async_iterator_close_invokes_sync_return() -> Result<(), VmError> {
 
   realm.teardown(&mut heap);
   result
+}
+
+#[test]
+fn async_from_sync_iterator_continuation_promise_resolve_throw_suppresses_iterator_close_error(
+) -> Result<(), VmError> {
+  ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
+    cell.borrow_mut().take();
+  });
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut host_ctx = ();
+  let mut host = MicrotaskQueue::new();
+
+  let result: Result<(), VmError> = (|| {
+    let intr = realm.intrinsics();
+    {
+      let mut scope = heap.scope();
+
+      // Promise that throws when `PromiseResolve(%Promise%, value)` reads `value.constructor`.
+      let promise = promise_resolve(&mut vm, &mut scope, &mut host, Value::Number(1.0))?;
+      scope.push_root(promise)?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("expected promise object"));
+      };
+
+      // Define a throwing `constructor` getter on the promise.
+      let throw_id = vm.register_native_call(throw_slot0)?;
+      let getter_name = scope.alloc_string("")?;
+      let thrown_s = scope.alloc_string("promiseResolve")?;
+      scope.push_root(Value::String(thrown_s))?;
+      let getter_fn = scope.alloc_native_function_with_slots(
+        throw_id,
+        None,
+        getter_name,
+        0,
+        &[Value::String(thrown_s)],
+      )?;
+      scope.push_root(Value::Object(getter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(getter_fn, Some(intr.function_prototype()))?;
+
+      let ctor_key_s = scope.alloc_string("constructor")?;
+      scope.push_root(Value::String(ctor_key_s))?;
+      scope.define_property(
+        promise_obj,
+        PropertyKey::from_string(ctor_key_s),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(getter_fn),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+
+      // Build a sync iterator result object `{ value: promise, done: false }`.
+      let iter_result_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(iter_result_obj))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_result_obj, Some(intr.object_prototype()))?;
+
+      let value_key_s = scope.alloc_string("value")?;
+      scope.push_root(Value::String(value_key_s))?;
+      scope.create_data_property_or_throw(
+        iter_result_obj,
+        PropertyKey::from_string(value_key_s),
+        promise,
+      )?;
+
+      let done_key_s = scope.alloc_string("done")?;
+      scope.push_root(Value::String(done_key_s))?;
+      scope.create_data_property_or_throw(
+        iter_result_obj,
+        PropertyKey::from_string(done_key_s),
+        Value::Bool(false),
+      )?;
+
+      // Create a sync iterator object with:
+      // - `next()` returning `iter_result_obj`, and
+      // - `return()` throwing "close".
+      let sync_iter = scope.alloc_object()?;
+      scope.push_root(Value::Object(sync_iter))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(sync_iter, Some(intr.object_prototype()))?;
+
+      let returns_slot0_id = vm.register_native_call(method_returns_slot0)?;
+      let next_name = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_name))?;
+      let next_fn = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        next_name,
+        0,
+        &[Value::Object(iter_result_obj)],
+      )?;
+      scope.push_root(Value::Object(next_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(next_fn, Some(intr.function_prototype()))?;
+      scope.create_data_property_or_throw(
+        sync_iter,
+        PropertyKey::from_string(next_name),
+        Value::Object(next_fn),
+      )?;
+
+      let close_s = scope.alloc_string("close")?;
+      scope.push_root(Value::String(close_s))?;
+      let return_name = scope.alloc_string("return")?;
+      scope.push_root(Value::String(return_name))?;
+      let return_fn = scope.alloc_native_function_with_slots(
+        throw_id,
+        None,
+        return_name,
+        0,
+        &[Value::String(close_s)],
+      )?;
+      scope.push_root(Value::Object(return_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(return_fn, Some(intr.function_prototype()))?;
+      scope.create_data_property_or_throw(
+        sync_iter,
+        PropertyKey::from_string(return_name),
+        Value::Object(return_fn),
+      )?;
+
+      // Create an iterable that returns `sync_iter` from @@iterator.
+      let iterable = scope.alloc_object()?;
+      scope.push_root(Value::Object(iterable))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iterable, Some(intr.object_prototype()))?;
+
+      let iter_name = scope.alloc_string("iter")?;
+      scope.push_root(Value::String(iter_name))?;
+      let iter_fn = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        iter_name,
+        0,
+        &[Value::Object(sync_iter)],
+      )?;
+      scope.push_root(Value::Object(iter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_fn, Some(intr.function_prototype()))?;
+      let iter_key = PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+      scope.create_data_property_or_throw(iterable, iter_key, Value::Object(iter_fn))?;
+
+      // Create the async-from-sync wrapper and call `next()`.
+      let record = get_async_iterator(
+        &mut vm,
+        &mut host_ctx,
+        &mut host,
+        &mut scope,
+        Value::Object(iterable),
+      )?;
+      let next_promise =
+        async_iterator_next(&mut vm, &mut host_ctx, &mut host, &mut scope, &record)?;
+
+      // Observe the rejection reason.
+      let on_rejected_id = vm.register_native_call(record_async_from_sync_rejection_reason)?;
+      let rejected_name = scope.alloc_string("onRejected")?;
+      scope.push_root(Value::String(rejected_name))?;
+      let on_rejected_fn =
+        scope.alloc_native_function(on_rejected_id, None, rejected_name, 1)?;
+      scope.push_root(Value::Object(on_rejected_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(on_rejected_fn, Some(intr.function_prototype()))?;
+
+      let _derived = perform_promise_then(
+        &mut vm,
+        &mut scope,
+        &mut host,
+        next_promise,
+        None,
+        Some(Value::Object(on_rejected_fn)),
+      )?;
+    }
+
+    let mut ctx = TestCtx {
+      vm: &mut vm,
+      heap: &mut heap,
+    };
+    let errors = host.perform_microtask_checkpoint(&mut ctx);
+    assert!(errors.is_empty(), "microtask checkpoint errors: {errors:?}");
+
+    Ok(())
+  })();
+
+  realm.teardown(&mut heap);
+  result?;
+
+  let reason = ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| cell.borrow_mut().take());
+  assert_eq!(reason.as_deref(), Some("promiseResolve"));
+  Ok(())
+}
+
+#[test]
+fn async_from_sync_iterator_close_iterator_suppresses_iterator_close_error() -> Result<(), VmError> {
+  ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| {
+    cell.borrow_mut().take();
+  });
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut host_ctx = ();
+  let mut host = MicrotaskQueue::new();
+
+  let result: Result<(), VmError> = (|| {
+    let intr = realm.intrinsics();
+    {
+      let mut scope = heap.scope();
+
+      // Rejected promise used as the iterator result `value`.
+      let reason_s = scope.alloc_string("reason")?;
+      scope.push_root(Value::String(reason_s))?;
+      let rejected_value = Value::String(reason_s);
+      let rejected_promise =
+        promise_reject(&mut vm, &mut scope, &mut host_ctx, &mut host, rejected_value)?;
+      scope.push_root(rejected_promise)?;
+
+      // Build a sync iterator result object `{ value: rejected_promise, done: false }`.
+      let iter_result_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(iter_result_obj))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_result_obj, Some(intr.object_prototype()))?;
+
+      let value_key_s = scope.alloc_string("value")?;
+      scope.push_root(Value::String(value_key_s))?;
+      scope.create_data_property_or_throw(
+        iter_result_obj,
+        PropertyKey::from_string(value_key_s),
+        rejected_promise,
+      )?;
+
+      let done_key_s = scope.alloc_string("done")?;
+      scope.push_root(Value::String(done_key_s))?;
+      scope.create_data_property_or_throw(
+        iter_result_obj,
+        PropertyKey::from_string(done_key_s),
+        Value::Bool(false),
+      )?;
+
+      // Create a sync iterator object with:
+      // - `next()` returning `iter_result_obj`, and
+      // - `return()` throwing "close" (which must be suppressed).
+      let sync_iter = scope.alloc_object()?;
+      scope.push_root(Value::Object(sync_iter))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(sync_iter, Some(intr.object_prototype()))?;
+
+      let returns_slot0_id = vm.register_native_call(method_returns_slot0)?;
+      let next_name = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_name))?;
+      let next_fn = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        next_name,
+        0,
+        &[Value::Object(iter_result_obj)],
+      )?;
+      scope.push_root(Value::Object(next_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(next_fn, Some(intr.function_prototype()))?;
+      scope.create_data_property_or_throw(
+        sync_iter,
+        PropertyKey::from_string(next_name),
+        Value::Object(next_fn),
+      )?;
+
+      let throw_id = vm.register_native_call(throw_slot0)?;
+      let close_s = scope.alloc_string("close")?;
+      scope.push_root(Value::String(close_s))?;
+      let return_name = scope.alloc_string("return")?;
+      scope.push_root(Value::String(return_name))?;
+      let return_fn = scope.alloc_native_function_with_slots(
+        throw_id,
+        None,
+        return_name,
+        0,
+        &[Value::String(close_s)],
+      )?;
+      scope.push_root(Value::Object(return_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(return_fn, Some(intr.function_prototype()))?;
+      scope.create_data_property_or_throw(
+        sync_iter,
+        PropertyKey::from_string(return_name),
+        Value::Object(return_fn),
+      )?;
+
+      // Create an iterable that returns `sync_iter` from @@iterator.
+      let iterable = scope.alloc_object()?;
+      scope.push_root(Value::Object(iterable))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iterable, Some(intr.object_prototype()))?;
+
+      let iter_name = scope.alloc_string("iter")?;
+      scope.push_root(Value::String(iter_name))?;
+      let iter_fn = scope.alloc_native_function_with_slots(
+        returns_slot0_id,
+        None,
+        iter_name,
+        0,
+        &[Value::Object(sync_iter)],
+      )?;
+      scope.push_root(Value::Object(iter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(iter_fn, Some(intr.function_prototype()))?;
+      let iter_key = PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+      scope.create_data_property_or_throw(iterable, iter_key, Value::Object(iter_fn))?;
+
+      // Create the async-from-sync wrapper and call `next()`.
+      let record = get_async_iterator(
+        &mut vm,
+        &mut host_ctx,
+        &mut host,
+        &mut scope,
+        Value::Object(iterable),
+      )?;
+      let next_promise =
+        async_iterator_next(&mut vm, &mut host_ctx, &mut host, &mut scope, &record)?;
+
+      // Observe the rejection reason.
+      let on_rejected_id = vm.register_native_call(record_async_from_sync_rejection_reason)?;
+      let rejected_name = scope.alloc_string("onRejected")?;
+      scope.push_root(Value::String(rejected_name))?;
+      let on_rejected_fn =
+        scope.alloc_native_function(on_rejected_id, None, rejected_name, 1)?;
+      scope.push_root(Value::Object(on_rejected_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(on_rejected_fn, Some(intr.function_prototype()))?;
+
+      let _derived = perform_promise_then(
+        &mut vm,
+        &mut scope,
+        &mut host,
+        next_promise,
+        None,
+        Some(Value::Object(on_rejected_fn)),
+      )?;
+    }
+
+    let mut ctx = TestCtx {
+      vm: &mut vm,
+      heap: &mut heap,
+    };
+    let errors = host.perform_microtask_checkpoint(&mut ctx);
+    assert!(errors.is_empty(), "microtask checkpoint errors: {errors:?}");
+
+    Ok(())
+  })();
+
+  realm.teardown(&mut heap);
+  result?;
+
+  let reason = ASYNC_FROM_SYNC_REJECTION_REASON.with(|cell| cell.borrow_mut().take());
+  assert_eq!(reason.as_deref(), Some("reason"));
+  Ok(())
 }

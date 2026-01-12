@@ -460,6 +460,7 @@ pub(crate) fn async_from_sync_iterator_close_call(
     done: false,
   };
 
+  // `closeIterator` implements `IteratorClose(syncIteratorRecord, ThrowCompletion(reason))`.
   iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)?;
   Err(VmError::Throw(reason))
 }
@@ -548,13 +549,31 @@ fn async_from_sync_iterator_continuation(
     Ok(p) => p,
     Err(err) => {
       if !done {
+        let original_is_throw = err.is_throw_completion();
+        // Root the thrown value across `IteratorClose`, which can allocate and trigger GC.
+        if original_is_throw {
+          if let Some(thrown) = err.thrown_value() {
+            scope.push_root(thrown)?;
+          }
+        }
+
         let record = IteratorRecord {
           iterator: sync_iterator,
           next_method: Value::Undefined,
           done: false,
         };
-        // IteratorClose errors override the PromiseResolve error.
-        iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)?;
+
+        // `AsyncFromSyncIteratorContinuation` calls
+        // `IteratorClose(syncIteratorRecord, valueWrapper)` where `valueWrapper` is a throw
+        // completion (`PromiseResolve` failed), so close errors must be suppressed.
+        if let Err(close_err) =
+          iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)
+        {
+          // Never allow iterator-close errors (including fatal ones) to override fatal VM errors.
+          if original_is_throw {
+            return Err(close_err);
+          }
+        }
       }
       return Err(err);
     }
