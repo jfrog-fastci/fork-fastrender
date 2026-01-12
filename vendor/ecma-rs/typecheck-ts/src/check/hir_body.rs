@@ -6244,7 +6244,14 @@ impl<'a> Checker<'a> {
       return None;
     }
 
-    let expected_children_ty = expected.unwrap_or(prim.unknown);
+    // `member_type` adds `undefined` when `children` is optional. For contextual
+    // typing we want the element type itself (e.g. tuple indexing) rather than
+    // immediately collapsing to `unknown` due to union-with-undefined.
+    let expected_children_ty_raw = expected.unwrap_or(prim.unknown);
+    let expected_children_ty = match narrow_non_nullish(expected_children_ty_raw, &self.store).0 {
+      ty if ty != prim.never => ty,
+      _ => expected_children_ty_raw,
+    };
     let (expected_is_array_like, expected_is_tuple_like) = {
       let mut queue: VecDeque<TypeId> = VecDeque::from([expected_children_ty]);
       let mut seen = HashSet::new();

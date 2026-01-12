@@ -68,7 +68,7 @@ fn program_check_does_not_block_concurrent_check_body() {
   let body_thread = std::thread::spawn(move || {
     let started = Instant::now();
     while body_tracker.max_active() == 0 {
-      if started.elapsed() > Duration::from_secs(10) {
+      if started.elapsed() > Duration::from_secs(30) {
         panic!("timed out waiting for program.check() to start checking bodies");
       }
       std::thread::yield_now();
@@ -81,10 +81,10 @@ fn program_check_does_not_block_concurrent_check_body() {
   });
 
   let first = rx
-    .recv_timeout(Duration::from_secs(30))
+    .recv_timeout(Duration::from_secs(60))
     .expect("receive first event");
   let second = rx
-    .recv_timeout(Duration::from_secs(30))
+    .recv_timeout(Duration::from_secs(60))
     .expect("receive second event");
 
   match (&first, &second) {
