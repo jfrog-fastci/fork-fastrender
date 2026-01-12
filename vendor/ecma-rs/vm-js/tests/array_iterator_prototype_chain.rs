@@ -17,9 +17,11 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   // Two separately created Array iterator instances should share the same prototype object.
   let same_array_iterator_proto = rt.exec_script(
     r#"
-      const it1 = [][Symbol.iterator]();
-      const it2 = [][Symbol.iterator]();
-      Object.getPrototypeOf(it1) === Object.getPrototypeOf(it2)
+      (() => {
+        const it1 = [][Symbol.iterator]();
+        const it2 = [][Symbol.iterator]();
+        return Object.getPrototypeOf(it1) === Object.getPrototypeOf(it2);
+      })()
     "#,
   )?;
   assert_eq!(same_array_iterator_proto, Value::Bool(true));
@@ -34,12 +36,26 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
     rt.exec_script(r#"Object.prototype.toString.call([][Symbol.iterator]()) === "[object Array Iterator]""#)?;
   assert_eq!(to_string_tag, Value::Bool(true));
 
+  // `Object.getOwnPropertyDescriptor(%ArrayIteratorPrototype%, @@toStringTag).value` should be
+  // `"Array Iterator"` (matches test262-style assertions).
+  let tag_desc_value = rt.exec_script(
+    r#"
+      (() => {
+        const proto = Object.getPrototypeOf([][Symbol.iterator]());
+        return Object.getOwnPropertyDescriptor(proto, Symbol.toStringTag).value === "Array Iterator";
+      })()
+    "#,
+  )?;
+  assert_eq!(tag_desc_value, Value::Bool(true));
+
   // Per spec, `%ArrayIteratorPrototype%` should inherit `@@iterator` from `%IteratorPrototype%`
   // (i.e. it should *not* define its own `Symbol.iterator` property).
   let array_iter_proto_has_own_iterator = rt.exec_script(
     r#"
-      const proto = Object.getPrototypeOf([][Symbol.iterator]());
-      Object.prototype.hasOwnProperty.call(proto, Symbol.iterator)
+      (() => {
+        const proto = Object.getPrototypeOf([][Symbol.iterator]());
+        return Object.prototype.hasOwnProperty.call(proto, Symbol.iterator);
+      })()
     "#,
   )?;
   assert_eq!(array_iter_proto_has_own_iterator, Value::Bool(false));
@@ -47,8 +63,10 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   // Array iterator instances must be iterable (calling `@@iterator` returns the iterator itself).
   let array_iter_is_iterable = rt.exec_script(
     r#"
-      const it = [][Symbol.iterator]();
-      it[Symbol.iterator]() === it
+      (() => {
+        const it = [][Symbol.iterator]();
+        return it[Symbol.iterator]() === it;
+      })()
     "#,
   )?;
   assert_eq!(array_iter_is_iterable, Value::Bool(true));
@@ -57,10 +75,12 @@ fn array_iterator_prototype_chain_includes_iterator_prototype() -> Result<(), Vm
   // to `Object.getPrototypeOf(%GeneratorPrototype%)`.
   let generator_iterator_proto_match = rt.exec_script(
     r#"
-      const IteratorProto = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
-      function* g() {}
-      const GeneratorProto = Object.getPrototypeOf(g.prototype);
-      Object.getPrototypeOf(GeneratorProto) === IteratorProto
+      (() => {
+        const IteratorProto = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
+        function* g() {}
+        const GeneratorProto = Object.getPrototypeOf(g.prototype);
+        return Object.getPrototypeOf(GeneratorProto) === IteratorProto;
+      })()
     "#,
   )?;
   assert_eq!(generator_iterator_proto_match, Value::Bool(true));
