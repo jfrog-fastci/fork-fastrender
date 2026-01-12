@@ -219,6 +219,28 @@ jobs:
           FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
         run: bash scripts/cargo_agent.sh test -p typecheck-ts-harness --test strict_native
 
+      - name: typecheck-ts-harness (conformance-lite snapshots)
+        env:
+          # Keep cargo_agent locks within the ecma-rs workspace target dir (avoids polluting the
+          # root target/ cache used by MSRV-focused workflows).
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
+            --root typecheck-ts-harness/fixtures/conformance-lite \
+            --compare snapshot \
+            --manifest typecheck-ts-harness/fixtures/conformance-lite/manifest.toml \
+            --jobs 4 \
+            --json > typecheck-conformance-lite.json
+
+      - name: Upload conformance-lite report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-conformance-lite
+          path: typecheck-conformance-lite.json
+          if-no-files-found: warn
+
       - name: emit-js (TS erasure groundwork)
         working-directory: vendor/ecma-rs
         env:

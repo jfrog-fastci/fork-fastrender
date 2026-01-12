@@ -1,37 +1,40 @@
-# Conformance expectations for the curated `conformance-lite` snapshot suite.
-#
-# Keep this file minimal and up to date:
-# - Add `xfail` entries for known mismatches between the Rust checker and `tsc`.
-# - Remove entries when they start passing (CI treats XPASS as a failure under
-#   `--fail-on new`).
-#
-# Format:
-# [[expectations]]
-# id = "match/example.ts"
-# status = "xfail"
-# reason = "explain the missing feature / known bug"
+## Expectations manifest for the curated `conformance-lite` snapshot suite.
+##
+## Policy:
+## - Prefer keeping this empty (all cases must match their stored snapshots).
+## - If a case is flaky or blocked on missing checker support, add an `xfail`/`flaky`
+##   entry with a reason + tracking issue, and keep it narrowly scoped.
+## - Remove entries once they start passing (CI treats XPASS as a failure under
+##   `--fail-on new`).
+##
+## Format:
+## [[expectations]]
+## id = "match/example.ts"
+## status = "xfail" # pass | skip | xfail | flaky
+## reason = "explain why"
+## tracking_issue = "https://…"
 
 [[expectations]]
 id = "match/generic_defaults.ts"
 status = "xfail"
-reason = "Default type arguments for type aliases are not implemented yet"
-
-[[expectations]]
-id = "match/narrowing_typeof.ts"
-status = "xfail"
-reason = "`typeof`-based control-flow narrowing not implemented yet"
+reason = "Default type parameters are not supported by the Rust checker yet."
 
 [[expectations]]
 id = "match/narrowing_truthiness.ts"
 status = "xfail"
-reason = "Truthiness-based narrowing (`if (x)`) not implemented yet"
+reason = "Flow narrowing for truthiness checks is not implemented yet."
+
+[[expectations]]
+id = "match/narrowing_typeof.ts"
+status = "xfail"
+reason = "Flow narrowing for typeof checks is not implemented yet."
 
 [[expectations]]
 id = "mismatch/excess_property_error.ts"
 status = "xfail"
-reason = "Excess property check diagnostic span differs from tsc (tsc highlights the property name)"
+reason = "Excess property diagnostics differ from tsc (code/span)."
 
 [[expectations]]
 id = "mismatch/overload_no_match.ts"
 status = "xfail"
-reason = "Overload mismatch diagnostic span differs from tsc"
+reason = "Overload resolution diagnostics differ from tsc (code/span)."

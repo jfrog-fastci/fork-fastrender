@@ -1,4 +1,5 @@
 // @filename: main.ts
+// @moduleResolution: node10
 export const resolved: Promise<number> = Promise.resolve(1);
 
 // @filename: node_modules/pkg/index.d.ts

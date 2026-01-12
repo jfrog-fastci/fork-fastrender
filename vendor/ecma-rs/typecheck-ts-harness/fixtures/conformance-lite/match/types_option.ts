@@ -1,5 +1,6 @@
 // @lib: es5
 // @types: example
+// @moduleResolution: node10
 
 // @filename: main.ts
 export const v: string = exampleValue;

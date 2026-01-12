@@ -1,4 +1,5 @@
 // @lib: es5
+// @moduleResolution: node10
 
 // @filename: main.ts
 /// <reference types="example" />
