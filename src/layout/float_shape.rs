@@ -17,7 +17,6 @@ use crate::style::types::{BackgroundImage, BackgroundPosition, ReferenceBox, Sha
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
-use image::imageops::{self, FilterType};
 use std::f32::consts::PI;
 use tiny_skia::{Mask, PathBuilder, Pixmap, SpreadMode, Transform};
 
@@ -443,10 +442,8 @@ fn image_mask(
     BackgroundImage::Url(url) => {
       let cached = image_cache.load(url).ok()?;
       let transform = style.image_orientation.resolve(cached.orientation, true);
-      let rgba = cached.to_oriented_rgba(transform);
-      let (src_w, src_h) = rgba.dimensions();
       let (dst_w, dst_h, _) = image_size(reference_rect);
-      if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+      if dst_w == 0 || dst_h == 0 {
         return None;
       }
 
@@ -468,14 +465,102 @@ fn image_mask(
         }
       };
 
-      let scaled = if src_w == dst_w && src_h == dst_h {
-        rgba
-      } else {
-        imageops::resize(&rgba, dst_w, dst_h, FilterType::Nearest)
-      };
+      if cached.is_vector {
+        // SVG preserveAspectRatio depends on the viewport size. Rendering an SVG at its intrinsic
+        // dimensions and then resizing the raster output can distort letterboxing. Rasterize the
+        // SVG directly at the reference box size so the shape mask matches how the SVG would be
+        // painted into the reference box.
+        let svg = cached.svg_content.as_deref()?;
+        let (render_w, render_h) = if transform.swaps_axes() {
+          (dst_h, dst_w)
+        } else {
+          (dst_w, dst_h)
+        };
+        let pixmap = image_cache
+          .render_svg_pixmap_at_size(svg, render_w, render_h, url, 1.0)
+          .ok()?;
+        let w0 = pixmap.width();
+        let h0 = pixmap.height();
+        if w0 == 0 || h0 == 0 {
+          return None;
+        }
+        debug_assert_eq!(w0, render_w);
+        debug_assert_eq!(h0, render_h);
 
-      for chunk in scaled.as_raw().chunks_exact(4) {
-        alpha.push(chunk[3]);
+        let (w1, h1) = transform.oriented_dimensions(w0, h0);
+        debug_assert_eq!(w1, dst_w);
+        debug_assert_eq!(h1, dst_h);
+
+        let data = pixmap.data();
+        let w0_usize = usize::try_from(w0).ok()?;
+        let h0_usize = usize::try_from(h0).ok()?;
+        let row_stride = w0_usize.checked_mul(4)?;
+        if data.len() < row_stride.checked_mul(h0_usize)? {
+          return None;
+        }
+
+        for y in 0..dst_h {
+          for x in 0..dst_w {
+            let mut xr = x;
+            let yr = y;
+            if transform.flip_x {
+              xr = w1.saturating_sub(1).saturating_sub(xr);
+            }
+
+            let (x0, y0) = match transform.quarter_turns % 4 {
+              0 => (xr, yr),
+              1 => (yr, h0.saturating_sub(1).saturating_sub(xr)),
+              2 => (
+                w0.saturating_sub(1).saturating_sub(xr),
+                h0.saturating_sub(1).saturating_sub(yr),
+              ),
+              3 => (w0.saturating_sub(1).saturating_sub(yr), xr),
+              _ => (xr, yr),
+            };
+
+            let x0 = usize::try_from(x0).ok()?;
+            let y0 = usize::try_from(y0).ok()?;
+            let idx = y0
+              .checked_mul(row_stride)?
+              .checked_add(x0.checked_mul(4)?)?
+              .checked_add(3)?;
+            alpha.push(*data.get(idx)?);
+          }
+        }
+      } else {
+        let rgba = cached.to_oriented_rgba(transform);
+        let (src_w, src_h) = rgba.dimensions();
+        if src_w == 0 || src_h == 0 {
+          return None;
+        }
+        let raw = rgba.as_raw();
+
+        if src_w == dst_w && src_h == dst_h {
+          for chunk in raw.chunks_exact(4) {
+            alpha.push(chunk[3]);
+          }
+        } else {
+          let src_w_usize = usize::try_from(src_w).ok()?;
+          let src_h_usize = usize::try_from(src_h).ok()?;
+          let row_stride = src_w_usize.checked_mul(4)?;
+          if raw.len() < row_stride.checked_mul(src_h_usize)? {
+            return None;
+          }
+
+          let src_w_u64 = u64::from(src_w);
+          let src_h_u64 = u64::from(src_h);
+          let dst_w_u64 = u64::from(dst_w);
+          let dst_h_u64 = u64::from(dst_h);
+          for y in 0..dst_h {
+            let src_y = (u64::from(y).saturating_mul(src_h_u64) / dst_h_u64) as usize;
+            let row_start = src_y.checked_mul(row_stride)?;
+            for x in 0..dst_w {
+              let src_x = (u64::from(x).saturating_mul(src_w_u64) / dst_w_u64) as usize;
+              let idx = row_start.checked_add(src_x.checked_mul(4)?)?.checked_add(3)?;
+              alpha.push(*raw.get(idx)?);
+            }
+          }
+        }
       }
 
       Some(AlphaBitmap {
@@ -743,6 +828,48 @@ mod tests {
     assert_eq!(shape.span_at(4.0), Some((0.0, 5.0)));
     assert_eq!(shape.span_at(5.0), None);
     assert_eq!(shape.next_change_after(0.0), Some(5.0));
+  }
+
+  #[test]
+  fn shape_outside_svg_is_rasterized_at_reference_box_size() {
+    // SVG without explicit width/height uses a default intrinsic size (300x150), but shape-outside
+    // should rasterize it into the reference box so preserveAspectRatio letterboxing is resolved in
+    // the correct viewport.
+    let svg = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 1'><rect width='2' height='1' fill='black'/></svg>";
+
+    let mut style = ComputedStyle::default();
+    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(svg.to_string()));
+
+    let margin_box = Rect::from_xywh(0.0, 0.0, 8.0, 8.0);
+    let border_box = margin_box;
+    let containing_block = Size::new(8.0, 8.0);
+    let viewport = Size::new(100.0, 100.0);
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::new();
+
+    let shape = build_float_shape(
+      &style,
+      margin_box,
+      border_box,
+      containing_block,
+      viewport,
+      &font_ctx,
+      &image_cache,
+    )
+    .expect("expected shape-outside image resolution to succeed")
+    .expect("expected shape-outside image to produce a float shape");
+
+    assert_eq!(shape.top(), 0.0);
+    assert_eq!(shape.bottom(), 8.0);
+    // viewBox 2:1 rendered into 8x8 should letterbox vertically, leaving 2px padding above and
+    // below the content.
+    assert_eq!(shape.span_at(0.0), None);
+    assert_eq!(shape.span_at(1.0), None);
+    assert_eq!(shape.span_at(2.0), Some((0.0, 8.0)));
+    assert_eq!(shape.span_at(5.0), Some((0.0, 8.0)));
+    assert_eq!(shape.span_at(6.0), None);
+    assert_eq!(shape.next_change_after(0.0), Some(2.0));
+    assert_eq!(shape.next_change_after(2.0), Some(6.0));
   }
 }
 
