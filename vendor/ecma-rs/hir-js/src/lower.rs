@@ -4384,55 +4384,6 @@ fn walk_stmt_children<'a>(
   ctx: &mut LoweringContext,
 ) {
   match &*stmt.stx {
-    AstStmt::Expr(expr_stmt) => collect_expr(
-      &expr_stmt.stx.expr,
-      descriptors,
-      module_items,
-      names,
-      ambient,
-      in_global,
-      ctx,
-    ),
-    AstStmt::Return(ret) => {
-      if let Some(v) = &ret.stx.value {
-        collect_expr(v, descriptors, module_items, names, ambient, in_global, ctx);
-      }
-    }
-    AstStmt::If(if_stmt) => {
-      collect_expr(
-        &if_stmt.stx.test,
-        descriptors,
-        module_items,
-        names,
-        ambient,
-        in_global,
-        ctx,
-      );
-      collect_stmt(
-        &if_stmt.stx.consequent,
-        descriptors,
-        module_items,
-        names,
-        false,
-        false,
-        ambient,
-        in_global,
-        ctx,
-      );
-      if let Some(alt) = &if_stmt.stx.alternate {
-        collect_stmt(
-          alt,
-          descriptors,
-          module_items,
-          names,
-          false,
-          false,
-          ambient,
-          in_global,
-          ctx,
-        );
-      }
-    }
     AstStmt::Block(block) => {
       for stmt in block.stx.body.iter() {
         collect_stmt(
@@ -4448,28 +4399,9 @@ fn walk_stmt_children<'a>(
         );
       }
     }
-    AstStmt::While(wh) => {
-      collect_expr(
-        &wh.stx.condition,
-        descriptors,
-        module_items,
-        names,
-        ambient,
-        in_global,
-        ctx,
-      );
-      collect_stmt(
-        &wh.stx.body,
-        descriptors,
-        module_items,
-        names,
-        false,
-        false,
-        ambient,
-        in_global,
-        ctx,
-      );
-    }
+    AstStmt::Break(_) => {}
+    AstStmt::Continue(_) => {}
+    AstStmt::Debugger(_) => {}
     AstStmt::DoWhile(dw) => {
       collect_expr(
         &dw.stx.condition,
@@ -4492,57 +4424,20 @@ fn walk_stmt_children<'a>(
         ctx,
       );
     }
-    AstStmt::ForTriple(for_stmt) => {
-      match &for_stmt.stx.init {
-        ForTripleStmtInit::Expr(e) => {
-          collect_expr(e, descriptors, module_items, names, ambient, in_global, ctx)
-        }
-        ForTripleStmtInit::Decl(d) => collect_var_decl(
-          d,
-          descriptors,
-          module_items,
-          names,
-          false,
-          false,
-          ambient,
-          in_global,
-          ctx,
-        ),
-        ForTripleStmtInit::None => {}
-      }
-      if let Some(cond) = &for_stmt.stx.cond {
-        collect_expr(
-          cond,
-          descriptors,
-          module_items,
-          names,
-          ambient,
-          in_global,
-          ctx,
-        );
-      }
-      if let Some(post) = &for_stmt.stx.post {
-        collect_expr(
-          post,
-          descriptors,
-          module_items,
-          names,
-          ambient,
-          in_global,
-          ctx,
-        );
-      }
-      collect_for_body(
-        &for_stmt.stx.body,
-        descriptors,
-        module_items,
-        names,
-        false,
-        ambient,
-        in_global,
-        ctx,
-      );
-    }
+    AstStmt::Empty(_) => {}
+    // These statements are handled in `collect_stmt`; they should not reach this
+    // function from the `_ => walk_stmt_children(..)` fallback.
+    AstStmt::ExportDefaultExpr(_) => {}
+    AstStmt::ExportList(_) => {}
+    AstStmt::Expr(expr_stmt) => collect_expr(
+      &expr_stmt.stx.expr,
+      descriptors,
+      module_items,
+      names,
+      ambient,
+      in_global,
+      ctx,
+    ),
     AstStmt::ForIn(for_in) => {
       collect_for_lhs(
         &for_in.stx.lhs,
@@ -4603,6 +4498,11 @@ fn walk_stmt_children<'a>(
         ctx,
       );
     }
+    AstStmt::Return(ret) => {
+      if let Some(v) = &ret.stx.value {
+        collect_expr(v, descriptors, module_items, names, ambient, in_global, ctx);
+      }
+    }
     AstStmt::Switch(sw) => {
       collect_expr(
         &sw.stx.test,
@@ -4640,6 +4540,15 @@ fn walk_stmt_children<'a>(
         }
       }
     }
+    AstStmt::Throw(th) => collect_expr(
+      &th.stx.value,
+      descriptors,
+      module_items,
+      names,
+      ambient,
+      in_global,
+      ctx,
+    ),
     AstStmt::Try(tr) => {
       collect_block(
         &tr.stx.wrapped,
@@ -4731,9 +4640,9 @@ fn walk_stmt_children<'a>(
         );
       }
     }
-    AstStmt::Throw(th) => {
+    AstStmt::While(wh) => {
       collect_expr(
-        &th.stx.value,
+        &wh.stx.condition,
         descriptors,
         module_items,
         names,
@@ -4741,10 +4650,8 @@ fn walk_stmt_children<'a>(
         in_global,
         ctx,
       );
-    }
-    AstStmt::Label(label) => {
       collect_stmt(
-        &label.stx.statement,
+        &wh.stx.body,
         descriptors,
         module_items,
         names,
@@ -4777,7 +4684,128 @@ fn walk_stmt_children<'a>(
         ctx,
       );
     }
-    _ => {}
+
+    // These statements are handled in `collect_stmt`; they should not reach this
+    // function from the `_ => walk_stmt_children(..)` fallback.
+    AstStmt::ClassDecl(_) => {}
+    AstStmt::FunctionDecl(_) => {}
+    AstStmt::VarDecl(_) => {}
+    AstStmt::Import(_) => {}
+    AstStmt::InterfaceDecl(_) => {}
+    AstStmt::TypeAliasDecl(_) => {}
+    AstStmt::EnumDecl(_) => {}
+    AstStmt::NamespaceDecl(_) => {}
+    AstStmt::ModuleDecl(_) => {}
+    AstStmt::GlobalDecl(_) => {}
+    AstStmt::AmbientVarDecl(_) => {}
+    AstStmt::AmbientFunctionDecl(_) => {}
+    AstStmt::AmbientClassDecl(_) => {}
+    AstStmt::ImportTypeDecl(_) => {}
+    AstStmt::ExportTypeDecl(_) => {}
+    AstStmt::ImportEqualsDecl(_) => {}
+    AstStmt::ExportAssignmentDecl(_) => {}
+    AstStmt::ExportAsNamespaceDecl(_) => {}
+
+    // `label: stmt` is not a def itself, but does contain a nested statement.
+    AstStmt::Label(label) => {
+      collect_stmt(
+        &label.stx.statement,
+        descriptors,
+        module_items,
+        names,
+        false,
+        false,
+        ambient,
+        in_global,
+        ctx,
+      );
+    }
+    AstStmt::If(if_stmt) => {
+      collect_expr(
+        &if_stmt.stx.test,
+        descriptors,
+        module_items,
+        names,
+        ambient,
+        in_global,
+        ctx,
+      );
+      collect_stmt(
+        &if_stmt.stx.consequent,
+        descriptors,
+        module_items,
+        names,
+        false,
+        false,
+        ambient,
+        in_global,
+        ctx,
+      );
+      if let Some(alt) = &if_stmt.stx.alternate {
+        collect_stmt(
+          alt,
+          descriptors,
+          module_items,
+          names,
+          false,
+          false,
+          ambient,
+          in_global,
+          ctx,
+        );
+      }
+    }
+    AstStmt::ForTriple(for_stmt) => {
+      match &for_stmt.stx.init {
+        ForTripleStmtInit::Expr(e) => {
+          collect_expr(e, descriptors, module_items, names, ambient, in_global, ctx)
+        }
+        ForTripleStmtInit::Decl(d) => collect_var_decl(
+          d,
+          descriptors,
+          module_items,
+          names,
+          false,
+          false,
+          ambient,
+          in_global,
+          ctx,
+        ),
+        ForTripleStmtInit::None => {}
+      }
+      if let Some(cond) = &for_stmt.stx.cond {
+        collect_expr(
+          cond,
+          descriptors,
+          module_items,
+          names,
+          ambient,
+          in_global,
+          ctx,
+        );
+      }
+      if let Some(post) = &for_stmt.stx.post {
+        collect_expr(
+          post,
+          descriptors,
+          module_items,
+          names,
+          ambient,
+          in_global,
+          ctx,
+        );
+      }
+      collect_for_body(
+        &for_stmt.stx.body,
+        descriptors,
+        module_items,
+        names,
+        false,
+        ambient,
+        in_global,
+        ctx,
+      );
+    }
   }
 }
 
