@@ -106,16 +106,94 @@ pub fn callsite_info_for_args(
   let callback_may_throw = callback_effects
     .map(|e| e.contains(EffectSet::MAY_THROW) || e.contains(EffectSet::UNKNOWN_CALL));
   let associative = callback.and_then(|_| infer_associative_inline_callback(lowered, body, callback_expr));
+
+  let mut callback_uses_index = callback.map(|cb| cb.uses_index);
+  let mut callback_uses_array = callback.map(|cb| cb.uses_array);
+
+  // `analyze_inline_callback`'s index/array tracking is tuned for `(value, index, array)`
+  // callbacks (map/filter/etc). For `reduce`, the callback shape is
+  // `(acc, cur, index, array)`, so the index and array arguments are shifted.
+  //
+  // Remap index/array usage for arrow-function reduce callbacks to avoid treating
+  // the required `cur` parameter as "index usage".
+  let is_reduce = match &expr.kind {
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayReduce { .. } => true,
+    ExprKind::Call(call) => {
+      let callee = body_ref.exprs.get(call.callee.0 as usize);
+      match callee.map(|e| &e.kind) {
+        Some(ExprKind::Member(member)) if !member.optional => match &member.property {
+          ObjectKey::Ident(name) => lowered.names.resolve(*name) == Some("reduce"),
+          ObjectKey::String(s) => s == "reduce",
+          _ => false,
+        },
+        _ => false,
+      }
+    }
+    _ => false,
+  };
+  if is_reduce {
+    if let Some(cb) = callback {
+      if let Some((idx, arr)) = remap_reduce_index_array_usage(lowered, body, callback_expr, cb) {
+        callback_uses_index = Some(idx);
+        callback_uses_array = Some(arr);
+      }
+    }
+  }
   crate::db::CallSiteInfo {
     callback_purity,
     callback_effects,
     callback_may_throw,
     callback_is_pure: callback_purity.map(|p| matches!(p, Purity::Pure | Purity::Allocating)),
-    callback_uses_index: callback.map(|cb| cb.uses_index),
-    callback_uses_array: callback.map(|cb| cb.uses_array),
+    callback_uses_index,
+    callback_uses_array,
     callback_is_associative: associative,
     ..crate::db::CallSiteInfo::default()
   }
+}
+
+fn remap_reduce_index_array_usage(
+  lowered: &hir_js::LowerResult,
+  body: BodyId,
+  callback_expr: ExprId,
+  callback: CallbackInfo,
+) -> Option<(bool, bool)> {
+  let callsite_body = lowered.body(body)?;
+  let cb_expr = callsite_body.exprs.get(callback_expr.0 as usize)?;
+  let ExprKind::FunctionExpr {
+    body: cb_body,
+    is_arrow,
+    ..
+  } = &cb_expr.kind
+  else {
+    return None;
+  };
+  if !*is_arrow {
+    return None;
+  }
+
+  let cb_body_data = lowered.body(*cb_body)?;
+  let func = cb_body_data.function.as_ref()?;
+
+  // Rest params can capture the index/array arguments even when they're not
+  // declared explicitly; keep the existing conservative result.
+  if func.params.iter().any(|p| p.rest) {
+    return None;
+  }
+
+  // Reduce callback signature: `(acc, cur, index, array)`.
+  //
+  // `CallbackInfo.uses_array` (from `analyze_inline_callback`) reflects usage of the
+  // 3rd parameter (which is `index` for reduce), because the generic analyzer only
+  // tracks up to `(value, index, array)`.
+  if func.params.len() <= 2 {
+    return Some((false, false));
+  }
+
+  let uses_index = callback.uses_array;
+  // Conservatively assume the array arg may be used when it is declared.
+  let uses_array = func.params.len() > 3;
+  Some((uses_index, uses_array))
 }
 
 pub fn eval_callsite_info_for_args(

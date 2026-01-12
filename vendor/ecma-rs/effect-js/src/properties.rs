@@ -262,6 +262,9 @@ mod tests {
     let reduce = db.get("Array.prototype.reduce").unwrap();
 
     let non_associative = CallSiteInfo {
+      callback_purity: Some(Purity::Pure),
+      callback_effects: Some(EffectSet::empty()),
+      callback_may_throw: Some(false),
       callback_is_pure: Some(true),
       callback_is_associative: Some(false),
       callback_uses_index: Some(false),
@@ -271,6 +274,9 @@ mod tests {
     assert!(!is_parallelizable(reduce, &non_associative));
 
     let associative = CallSiteInfo {
+      callback_purity: Some(Purity::Pure),
+      callback_effects: Some(EffectSet::empty()),
+      callback_may_throw: Some(false),
       callback_is_pure: Some(true),
       callback_is_associative: Some(true),
       callback_uses_index: Some(false),

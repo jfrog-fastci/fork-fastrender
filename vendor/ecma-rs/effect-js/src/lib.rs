@@ -1,6 +1,7 @@
 #![deny(missing_debug_implementations)]
 
 mod api_use;
+pub mod array_pipeline;
 pub mod callback;
 pub mod encoding;
 pub mod effects;
@@ -70,6 +71,10 @@ pub use resolve::{
 #[cfg(feature = "typed")]
 pub use resolve::resolve_member;
 pub use types::TypeProvider;
+
+pub use array_pipeline::{ArrayPipelinePlan, ArrayStage, ArrayStageKind, ArrayStageMeta};
+#[cfg(feature = "typed")]
+pub use array_pipeline::plan_array_chains_typed;
 
 #[cfg(feature = "typed")]
 pub use resolve::resolve_api_call_typed;
