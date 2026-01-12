@@ -2,7 +2,7 @@
 mod x86_64 {
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
-  use runtime_native::statepoints::{RootSlot, StatepointRecord, X86_64_DWARF_REG_SP};
+  use runtime_native::statepoints::{RootSlot, StatepointRecord, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
   use runtime_native::threading::registry;
@@ -47,8 +47,8 @@ mod x86_64 {
 
       let mut expected_pairs: Vec<(usize, usize)> = Vec::new();
       for pair in statepoint.gc_pairs() {
-        let base_addr = slot_addr(caller_sp as u64, &pair.base);
-        let derived_addr = slot_addr(caller_sp as u64, &pair.derived);
+        let base_addr = slot_addr(caller_sp as u64, caller_fp as u64, &pair.base);
+        let derived_addr = slot_addr(caller_sp as u64, caller_fp as u64, &pair.derived);
         expected_pairs.push((base_addr, derived_addr));
       }
       expected_pairs.sort_unstable();
@@ -111,15 +111,17 @@ mod x86_64 {
     }
   }
 
-  fn slot_addr(sp: u64, loc: &Location) -> usize {
+  fn slot_addr(sp: u64, fp: u64, loc: &Location) -> usize {
     match loc {
       Location::Indirect { dwarf_reg, offset, .. } => {
-        assert_eq!(
-          *dwarf_reg,
-          X86_64_DWARF_REG_SP,
-          "fixture roots must be [SP + off]"
-        );
-        add_signed_u64(sp, *offset).expect("slot addr") as usize
+        let base = if *dwarf_reg == X86_64_DWARF_REG_SP {
+          sp
+        } else if *dwarf_reg == X86_64_DWARF_REG_FP {
+          fp
+        } else {
+          panic!("unexpected dwarf_reg={dwarf_reg} (expected SP={X86_64_DWARF_REG_SP} or FP={X86_64_DWARF_REG_FP})");
+        };
+        add_signed_u64(base, *offset).expect("slot addr") as usize
       }
       other => panic!("unexpected root location kind in fixture: {other:?}"),
     }
@@ -130,7 +132,7 @@ mod x86_64 {
 mod aarch64 {
   use runtime_native::arch::SafepointContext;
   use runtime_native::stackmaps::Location;
-  use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, RootSlot, StatepointRecord};
+  use runtime_native::statepoints::{AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, RootSlot, StatepointRecord};
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::threading;
   use runtime_native::threading::registry;
@@ -172,8 +174,8 @@ mod aarch64 {
 
       let mut expected_pairs: Vec<(usize, usize)> = Vec::new();
       for pair in statepoint.gc_pairs() {
-        let base_addr = slot_addr(caller_sp as u64, &pair.base);
-        let derived_addr = slot_addr(caller_sp as u64, &pair.derived);
+        let base_addr = slot_addr(caller_sp as u64, caller_fp as u64, &pair.base);
+        let derived_addr = slot_addr(caller_sp as u64, caller_fp as u64, &pair.derived);
         expected_pairs.push((base_addr, derived_addr));
       }
       expected_pairs.sort_unstable();
@@ -236,15 +238,17 @@ mod aarch64 {
     }
   }
 
-  fn slot_addr(sp: u64, loc: &Location) -> usize {
+  fn slot_addr(sp: u64, fp: u64, loc: &Location) -> usize {
     match loc {
       Location::Indirect { dwarf_reg, offset, .. } => {
-        assert_eq!(
-          *dwarf_reg,
-          AARCH64_DWARF_REG_SP,
-          "fixture roots must be [SP + off]"
-        );
-        add_signed_u64(sp, *offset).expect("slot addr") as usize
+        let base = if *dwarf_reg == AARCH64_DWARF_REG_SP {
+          sp
+        } else if *dwarf_reg == AARCH64_DWARF_REG_FP {
+          fp
+        } else {
+          panic!("unexpected dwarf_reg={dwarf_reg} (expected SP={AARCH64_DWARF_REG_SP} or FP={AARCH64_DWARF_REG_FP})");
+        };
+        add_signed_u64(base, *offset).expect("slot addr") as usize
       }
       other => panic!("unexpected root location kind in fixture: {other:?}"),
     }
