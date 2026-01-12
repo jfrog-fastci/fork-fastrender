@@ -177,12 +177,20 @@ Each `progress/pages/<stem>.json` may include accuracy metrics when computed:
     "diff_percent": 1.23,
     "perceptual": 0.42,
     "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "perceptual_metric": "ssim_windowed_v2",
     "computed_at_commit": "abcdef0"
   }
 }
 ```
 
-Track these over time to measure improvement.
+`perceptual` is a SSIM-derived perceptual distance (currently a **windowed SSIM over downsampled
+luminance**), where `0.0` means identical. The exact implementation can change over time; newer
+artifacts may include `perceptual_metric` and `computed_at_commit` to help interpret mixed
+historical values without requiring a repo-wide refresh.
+
+See [`progress/pages/README.md`](../progress/pages/README.md) for the full schema and migration
+guidance.
 
 ## What to implement (capability buildout)
 
