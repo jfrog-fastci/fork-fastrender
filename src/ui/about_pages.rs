@@ -10,7 +10,8 @@ pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
 pub const ABOUT_TEST_FORM: &str = "about:test-form";
 
-use std::sync::{OnceLock, RwLock};
+use parking_lot::RwLock;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
@@ -48,17 +49,11 @@ fn about_page_snapshot_lock() -> &'static RwLock<AboutPageSnapshot> {
 }
 
 pub fn about_page_snapshot() -> AboutPageSnapshot {
-  let guard = about_page_snapshot_lock()
-    .read()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
-  guard.clone()
+  about_page_snapshot_lock().read().clone()
 }
 
 pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
-  let mut guard = about_page_snapshot_lock()
-    .write()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
-  *guard = snapshot;
+  *about_page_snapshot_lock().write() = snapshot;
 }
 
 pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &GlobalHistoryStore) {
@@ -70,18 +65,12 @@ pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &Globa
 
 pub fn sync_about_page_snapshot_history_from_global_history_store(store: &GlobalHistoryStore) {
   let history = history_snapshots_from_global_history_store(store);
-  let mut guard = about_page_snapshot_lock()
-    .write()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
-  guard.history = history;
+  about_page_snapshot_lock().write().history = history;
 }
 
 pub fn sync_about_page_snapshot_bookmarks_from_bookmark_store(store: &BookmarkStore) {
   let bookmarks = bookmark_snapshots_from_store(store);
-  let mut guard = about_page_snapshot_lock()
-    .write()
-    .unwrap_or_else(|poisoned| poisoned.into_inner());
-  guard.bookmarks = bookmarks;
+  about_page_snapshot_lock().write().bookmarks = bookmarks;
 }
 
 fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
