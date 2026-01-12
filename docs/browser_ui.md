@@ -251,7 +251,7 @@ The browser also requests `Theme::Dark` on Linux:
 | Middle-click tab | Close tab (no-op if only one tab) |
 | Ctrl/Cmd+Click link | Open link in new tab |
 | Middle-click link | Open link in new tab |
-| Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
+| Mouse Back / Mouse Forward (buttons 4/5 on Windows/macOS, 8/9 on X11) | Back / Forward |
 | PageUp (page focus) | Scroll up |
 | PageDown (page focus) | Scroll down |
 | ArrowUp (page focus, no element focused) | Scroll up |

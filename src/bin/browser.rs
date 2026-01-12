@@ -4964,9 +4964,11 @@ fn map_mouse_button(button: winit::event::MouseButton) -> fastrender::ui::Pointe
     winit::event::MouseButton::Right => fastrender::ui::PointerButton::Secondary,
     winit::event::MouseButton::Middle => fastrender::ui::PointerButton::Middle,
     winit::event::MouseButton::Other(v) => match v {
-      // X11 typically uses buttons 8/9 for mouse back/forward.
-      8 => fastrender::ui::PointerButton::Back,
-      9 => fastrender::ui::PointerButton::Forward,
+      // Common mouse back/forward button indices:
+      // - Windows/macOS typically report 4/5.
+      // - X11 typically reports 8/9.
+      4 | 8 => fastrender::ui::PointerButton::Back,
+      5 | 9 => fastrender::ui::PointerButton::Forward,
       _ => fastrender::ui::PointerButton::Other(v),
     },
   }
@@ -5021,5 +5023,24 @@ mod debug_log_env_tests {
     assert!(!should_show_debug_log_ui(false, Some("0")));
     assert!(should_show_debug_log_ui(false, Some("1")));
     assert!(should_show_debug_log_ui(true, None));
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod mouse_button_mapping_tests {
+  use super::map_mouse_button;
+  use fastrender::ui::PointerButton;
+  use winit::event::MouseButton;
+
+  #[test]
+  fn map_mouse_button_back_forward_other() {
+    assert_eq!(map_mouse_button(MouseButton::Other(4)), PointerButton::Back);
+    assert_eq!(map_mouse_button(MouseButton::Other(5)), PointerButton::Forward);
+    assert_eq!(map_mouse_button(MouseButton::Other(8)), PointerButton::Back);
+    assert_eq!(map_mouse_button(MouseButton::Other(9)), PointerButton::Forward);
+    assert_eq!(
+      map_mouse_button(MouseButton::Other(10)),
+      PointerButton::Other(10)
+    );
   }
 }
