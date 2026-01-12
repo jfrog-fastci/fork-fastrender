@@ -51,7 +51,6 @@ const HEADERS_OWNER_KEY: &str = "__fastrender_headers_owner";
 
 const REQUEST_ID_KEY: &str = "__fastrender_request_id";
 const RESPONSE_ID_KEY: &str = "__fastrender_response_id";
-const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
 
 // Hidden per-instance properties for stream wrappers.
 const REQUEST_BODY_STREAM_KEY: &str = "__fastrender_request_body_stream";
@@ -2777,6 +2776,27 @@ fn request_clone_native(
   }
 
   if request_body_stream_locked(env_id, request_id, scope.heap())? {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "Request body is locked",
+    ));
+  }
+
+  let locked = with_env_state(env_id, scope.heap(), |state| {
+    let _req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    Ok(state
+      .request_body_streams
+      .get(&request_id)
+      .and_then(|id| state.readable_streams.get(id))
+      .is_some_and(|s| s.locked))
+  })?;
+  if locked {
     return Err(throw_type_error(
       vm,
       scope,
