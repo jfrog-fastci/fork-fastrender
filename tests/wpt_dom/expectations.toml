@@ -182,12 +182,6 @@ status = "xfail"
 reason = "NodeIterator/TreeWalker/NodeFilter not implemented yet"
 
 [[expectations]]
-id = "html/htmlelement_reflection.window.js"
-backend = "quickjs"
-status = "skip"
-reason = "QuickJS backend uses a minimal DOM shim and does not yet implement HTMLElement reflected attributes or CSSStyleDeclaration."
-
-[[expectations]]
 id = "events/document_eventtarget_path.window.js"
 backend = "quickjs"
 status = "skip"
