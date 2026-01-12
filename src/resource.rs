@@ -5340,7 +5340,10 @@ impl HttpFetcher {
     let now = Instant::now();
     let needs_method_entry = !method_is_safelisted;
     {
-      let mut cache = self.cors_preflight_cache.lock().unwrap();
+      let mut cache = self
+        .cors_preflight_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       cache.prune_expired(now);
 
       let missing_method_match = needs_method_entry
@@ -5418,7 +5421,10 @@ impl HttpFetcher {
     let max_age_secs = max_age_secs.min(CORS_PREFLIGHT_MAX_AGE_CAP_SECS);
 
     let now = Instant::now();
-    let mut cache = self.cors_preflight_cache.lock().unwrap();
+    let mut cache = self
+      .cors_preflight_cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.prune_expired(now);
     if let Some(methods) = allow_methods.as_deref() {
       for allowed in methods {
@@ -12464,6 +12470,119 @@ mod tests {
       cors_preflight_cache_url_key("https://example.com/a b#frag"),
       "https://example.com/a%20b"
     );
+  }
+
+  #[test]
+  fn cors_preflight_cache_poisoned_mutex_does_not_panic() {
+    let Some(listener) = try_bind_localhost("cors_preflight_cache_poisoned_mutex_does_not_panic")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let handle = thread::spawn(move || {
+      let start = Instant::now();
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let request = read_http_request(&mut stream)
+              .expect("read http request")
+              .expect("expected http request bytes");
+            assert!(
+              request.starts_with(b"OPTIONS "),
+              "expected OPTIONS preflight request, got: {:?}",
+              String::from_utf8_lossy(&request)
+            );
+
+            let response = concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: *\r\n",
+              "Access-Control-Allow-Methods: PUT\r\n",
+              "Access-Control-Allow-Headers: x-test\r\n",
+              "Access-Control-Max-Age: 600\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n",
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            return;
+          }
+          Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept cors_preflight_cache_poisoned_mutex_does_not_panic: {err}"),
+        }
+      }
+
+      panic!(
+        "server did not receive preflight request within {:?}",
+        start.elapsed()
+      );
+    });
+
+    let fetcher = HttpFetcher::new()
+      .with_timeout(Duration::from_secs(2))
+      .with_retry_policy(HttpRetryPolicy {
+        max_attempts: 1,
+        ..HttpRetryPolicy::default()
+      });
+
+    let poison_fetcher = fetcher.clone();
+    let poison_thread = thread::spawn(move || {
+      let _guard = poison_fetcher.cors_preflight_cache.lock().unwrap();
+      panic!("poison cors preflight cache mutex");
+    });
+    assert!(
+      poison_thread.join().is_err(),
+      "expected mutex poisoning thread to panic"
+    );
+
+    let client_origin = origin_from_url("http://client.example/").expect("origin");
+    let url = format!("http://{addr}/resource");
+    let user_headers = [("X-Test".to_string(), "1".to_string())];
+    let deadline = None;
+
+    fetcher
+      .perform_cors_preflight_if_needed(
+        FetchContextKind::Other,
+        FetchDestination::Fetch,
+        &url,
+        "PUT",
+        &user_headers,
+        None,
+        Some(&client_origin),
+        None,
+        ReferrerPolicy::default(),
+        FetchCredentialsMode::SameOrigin,
+        &deadline,
+        Instant::now(),
+      )
+      .expect("preflight should succeed even if cache mutex is poisoned");
+
+    handle.join().unwrap();
+
+    // With no server running, the only way this can succeed is if the preflight result was cached,
+    // and re-locking the poisoned mutex does not panic.
+    fetcher
+      .perform_cors_preflight_if_needed(
+        FetchContextKind::Other,
+        FetchDestination::Fetch,
+        &url,
+        "PUT",
+        &user_headers,
+        None,
+        Some(&client_origin),
+        None,
+        ReferrerPolicy::default(),
+        FetchCredentialsMode::SameOrigin,
+        &deadline,
+        Instant::now(),
+      )
+      .expect("expected cached preflight to avoid network and not panic");
   }
 
   #[test]
