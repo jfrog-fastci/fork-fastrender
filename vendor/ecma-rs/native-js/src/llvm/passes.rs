@@ -7,7 +7,7 @@ use llvm_sys::core::{
   LLVMDisposeBuilder,
   LLVMDisposeMessage, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetBasicBlockTerminator, LLVMGetConstOpcode,
   LLVMGetFirstBasicBlock, LLVMGetFirstFunction, LLVMGetFirstInstruction, LLVMGetFunctionCallConv, LLVMGetGC,
-  LLVMGetIncomingBlock,
+  LLVMGetIncomingBlock, LLVMIsGlobalConstant,
   LLVMGetIncomingValue, LLVMGetInitializer, LLVMGetInstructionOpcode, LLVMGetInstructionParent, LLVMGetIntTypeWidth,
   LLVMGetModuleContext, LLVMGetNamedFunction, LLVMGetNamedGlobal, LLVMGetNextBasicBlock, LLVMGetNextFunction,
   LLVMGetNextInstruction, LLVMGetTailCallKind,
@@ -75,6 +75,8 @@ pub enum PassError {
   SafepointPollHasBody { name: String, blocks: u32 },
   #[error("LLVM module defines `{name}` with incompatible type (expected `i64`)")]
   IncompatibleSafepointEpochType { name: String },
+  #[error("LLVM module defines `{name}` as a constant, but it must be a mutable global (AtomicU64)")]
+  SafepointEpochIsConstant { name: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void (i64)`)")]
   IncompatibleSafepointSlowSignature { name: String },
   #[error(
@@ -339,6 +341,11 @@ fn ensure_rt_gc_epoch_decl(module: &Module<'_>) -> Result<LLVMValueRef, PassErro
       let ty = LLVMGlobalGetValueType(existing);
       if LLVMGetTypeKind(ty) != LLVMTypeKind::LLVMIntegerTypeKind || LLVMGetIntTypeWidth(ty) != 64 {
         return Err(PassError::IncompatibleSafepointEpochType {
+          name: "RT_GC_EPOCH".to_string(),
+        });
+      }
+      if LLVMIsGlobalConstant(existing) != 0 {
+        return Err(PassError::SafepointEpochIsConstant {
           name: "RT_GC_EPOCH".to_string(),
         });
       }
