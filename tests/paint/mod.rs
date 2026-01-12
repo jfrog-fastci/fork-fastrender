@@ -173,6 +173,7 @@ mod sideways_text_decoration_skip_ink_test;
 mod srcset_decode_failure_no_fallback;
 mod srcset_density_object_fit_none;
 mod srcset_tie_breaking;
+mod stacking_tree_deep_nesting;
 mod stacking_context_blend_isolation_descendant_shadow_bounds;
 mod stacking_context_descendant_filter_bounds;
 mod stacking_context_descendant_shadow_bounds;

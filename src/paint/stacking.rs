@@ -1202,134 +1202,174 @@ fn build_stacking_tree_internal(
   tree_order: &mut usize,
   offset_from_parent_context: Point,
 ) -> StackingContext {
-  // Tree order for stacking must follow the element/box tree order (CSS2.1 "tree order"),
-  // not layout's fragment emission order. Layout often processes out-of-flow positioned boxes
-  // (e.g. `position: absolute`) after in-flow content, which can reorder siblings in the
-  // fragment tree and produce incorrect layer-6 paint ordering.
-  //
-  // `BoxTree` assigns `box_id` in DOM pre-order, so prefer that when available.
-  let fallback_order = *tree_order;
-  *tree_order += 1;
-  let current_order = fragment.box_id().unwrap_or(fallback_order);
+  struct Frame<'a, 's> {
+    fragment: &'a FragmentNode,
+    style: Option<&'s ComputedStyle>,
+    parent_style: Option<&'s ComputedStyle>,
+    is_root: bool,
+    offset_from_parent_context: Point,
+    base_offset: Point,
+    context: StackingContext,
+    next_child: usize,
+  }
 
-  // Check if this fragment creates a stacking context
-  let forced_z_index = fragment.stacking_context.forced_z_index();
-  let creates_context = forced_z_index.is_some()
-    || if let Some(s) = style {
-      creates_stacking_context(s, parent_style, is_root)
-    } else {
-      is_root
-    };
+  impl<'a, 's> Frame<'a, 's> {
+    fn new(
+      fragment: &'a FragmentNode,
+      style: Option<&'s ComputedStyle>,
+      parent_style: Option<&'s ComputedStyle>,
+      is_root: bool,
+      tree_order: &mut usize,
+      offset_from_parent_context: Point,
+    ) -> Self {
+      // Tree order for stacking must follow the element/box tree order (CSS2.1 "tree order"),
+      // not layout's fragment emission order. Layout often processes out-of-flow positioned boxes
+      // (e.g. `position: absolute`) after in-flow content, which can reorder siblings in the
+      // fragment tree and produce incorrect layer-6 paint ordering.
+      //
+      // `BoxTree` assigns `box_id` in DOM pre-order, so prefer that when available.
+      let fallback_order = *tree_order;
+      *tree_order += 1;
+      let current_order = fragment.box_id().unwrap_or(fallback_order);
 
-  if creates_context {
-    // Create a new stacking context
-    let z_index = forced_z_index.unwrap_or_else(|| {
-      style
-        .map(|s| {
-          if s.top_layer.is_some() {
-            i32::MAX
-          } else {
-            s.z_index.unwrap_or(0)
+      let forced_z_index = fragment.stacking_context.forced_z_index();
+      let creates_context = forced_z_index.is_some()
+        || if let Some(s) = style {
+          creates_stacking_context(s, parent_style, is_root)
+        } else {
+          is_root
+        };
+
+      if creates_context {
+        let z_index = forced_z_index.unwrap_or_else(|| {
+          style
+            .map(|s| {
+              if s.top_layer.is_some() {
+                i32::MAX
+              } else {
+                s.z_index.unwrap_or(0)
+              }
+            })
+            .unwrap_or(0)
+        });
+        let reason = if forced_z_index.is_some() {
+          StackingContextReason::Forced
+        } else {
+          style
+            .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
+            .unwrap_or(StackingContextReason::Root)
+        };
+        let mut context = StackingContext::with_reason(z_index, reason, current_order);
+        context.offset_from_parent_context = offset_from_parent_context;
+        context.fragments.push(fragment.clone());
+
+        Self {
+          fragment,
+          style,
+          parent_style,
+          is_root,
+          offset_from_parent_context,
+          base_offset: Point::ZERO,
+          context,
+          next_child: 0,
+        }
+      } else {
+        let mut context = StackingContext::new(0);
+        context.tree_order = current_order;
+        context.offset_from_parent_context = offset_from_parent_context;
+
+        if let Some(s) = style {
+          context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
+        } else {
+          match &fragment.content {
+            FragmentContent::Text { .. }
+            | FragmentContent::Inline { .. }
+            | FragmentContent::Line { .. } => {
+              context.layer5_inlines.push(fragment.clone());
+            }
+            _ => {
+              context.layer3_blocks.push(fragment.clone());
+            }
           }
-        })
-        .unwrap_or(0)
-    });
-    let reason = if forced_z_index.is_some() {
-      StackingContextReason::Forced
-    } else {
-      style
-        .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
-        .unwrap_or(StackingContextReason::Root)
+        }
+
+        Self {
+          fragment,
+          style,
+          parent_style,
+          is_root,
+          offset_from_parent_context,
+          base_offset: offset_from_parent_context,
+          context,
+          next_child: 0,
+        }
+      }
+    }
+  }
+
+  let root_frame = Frame::new(
+    fragment,
+    style,
+    parent_style,
+    is_root,
+    tree_order,
+    offset_from_parent_context,
+  );
+  let mut stack = vec![root_frame];
+
+  loop {
+    let Some(frame) = stack.last_mut() else {
+      break;
     };
 
-    let mut context = StackingContext::with_reason(z_index, reason, current_order);
-    context.offset_from_parent_context = offset_from_parent_context;
+    if frame.next_child < frame.fragment.children.len() {
+      let idx = frame.next_child;
+      frame.next_child += 1;
 
-    // Add the root fragment
-    context.fragments.push(fragment.clone());
-
-    // Process children
-    let base_offset = Point::ZERO;
-    for child in fragment.children.iter() {
+      let child = &frame.fragment.children[idx];
       let child_offset = Point::new(
-        base_offset.x + child.bounds.origin.x,
-        base_offset.y + child.bounds.origin.y,
+        frame.base_offset.x + child.bounds.origin.x,
+        frame.base_offset.y + child.bounds.origin.y,
       );
-      let child_context = build_stacking_tree_internal(
+
+      // We don't have style for children without external mapping (mirrors prior recursion).
+      let child_frame = Frame::new(
         child,
-        None, // We don't have style for children without external mapping
-        style,
+        None,
+        frame.style,
         false,
         tree_order,
         child_offset,
       );
-
-      let child_creates_context =
-        child_context.reason != StackingContextReason::Root || child_context.z_index != 0;
-
-      if child_creates_context {
-        // Child has its own stacking context structure
-        context.add_child(child_context);
-      } else {
-        // Propagate any nested child contexts upward
-        if !child_context.children.is_empty() {
-          context.children.extend(child_context.children);
-        }
-        // Keep the direct child in the appropriate layer; children will be painted via recursion
-        context.add_fragment_to_layer(child.clone(), None, child_context.tree_order);
-      }
+      stack.push(child_frame);
+      continue;
     }
 
-    context
-  } else {
-    // Don't create a new stacking context, but still process for layer classification
-    let mut context = StackingContext::new(0);
-    context.tree_order = current_order;
+    let Frame {
+      fragment: child_fragment,
+      context,
+      ..
+    } = stack.pop().expect("frame must exist");
+    let Some(parent) = stack.last_mut() else {
+      return context;
+    };
 
-    context.offset_from_parent_context = offset_from_parent_context;
-
-    // Classify this fragment into appropriate layer
-    if let Some(s) = style {
-      context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
-    } else {
-      // Classify based on fragment content
-      match &fragment.content {
-        FragmentContent::Text { .. }
-        | FragmentContent::Inline { .. }
-        | FragmentContent::Line { .. } => {
-          context.layer5_inlines.push(fragment.clone());
-        }
-        _ => {
-          context.layer3_blocks.push(fragment.clone());
-        }
-      }
+    let child_creates_context =
+      context.reason != StackingContextReason::Root || context.z_index != 0;
+    if child_creates_context {
+      parent.context.add_child(context);
+      continue;
     }
 
-    // Process children
-    let base_offset = offset_from_parent_context;
-    for child in fragment.children.iter() {
-      let child_offset = Point::new(
-        base_offset.x + child.bounds.origin.x,
-        base_offset.y + child.bounds.origin.y,
-      );
-      let child_context =
-        build_stacking_tree_internal(child, None, style, false, tree_order, child_offset);
-
-      let child_creates_context =
-        child_context.reason != StackingContextReason::Root || child_context.z_index != 0;
-
-      if child_creates_context {
-        context.add_child(child_context);
-      } else {
-        if !child_context.children.is_empty() {
-          context.children.extend(child_context.children);
-        }
-        context.add_fragment_to_layer(child.clone(), None, child_context.tree_order);
-      }
+    if !context.children.is_empty() {
+      parent.context.children.extend(context.children);
     }
-
-    context
+    parent
+      .context
+      .add_fragment_to_layer(child_fragment.clone(), None, context.tree_order);
   }
+
+  StackingContext::new(0)
 }
 
 /// Builds a stacking context tree with style information from a styled tree
@@ -1569,6 +1609,420 @@ pub fn build_stacking_tree_from_tree_checked_with_scroll(
   Ok(contexts)
 }
 
+fn build_stacking_tree_with_styles_internal_iterative<'a, F, Check>(
+  fragment: &'a FragmentNode,
+  style: Option<Arc<ComputedStyle>>,
+  parent_style: Option<&ComputedStyle>,
+  is_root: bool,
+  tree_order: &mut usize,
+  offset_from_parent_context: Point,
+  context_abs_offset: Point,
+  clip_stack: &mut Vec<ClipChainLink>,
+  backface_depth: &mut usize,
+  get_style: &F,
+  skip_viewport_scroll_cancel: bool,
+  applied_element_scroll: Point,
+  has_fixed_cb_ancestor: bool,
+  deadline_counter: &mut usize,
+  check_deadline: &mut Check,
+  scroll_state: Option<&ScrollState>,
+) -> Result<StackingContext>
+where
+  F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>>,
+  Check: FnMut(&mut usize) -> Result<()>,
+{
+  struct SavedClipState {
+    clip_stack: Vec<ClipChainLink>,
+    backface_depth: usize,
+  }
+
+  struct Frame<'a> {
+    fragment: &'a FragmentNode,
+    style: Option<Arc<ComputedStyle>>,
+    context: StackingContext,
+    next_child: usize,
+    base_offset: Point,
+    child_fragment_translation: Option<Point>,
+    applied_element_scroll_for_children: Point,
+    context_abs_offset_for_children: Point,
+    skip_viewport_scroll_cancel_for_children: bool,
+    has_fixed_cb_ancestor_for_children: bool,
+    clip_pushed: bool,
+    backface_pushed: bool,
+    saved_clip_state: Option<SavedClipState>,
+  }
+
+  impl<'a> Frame<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new<Check>(
+      fragment: &'a FragmentNode,
+      style: Option<Arc<ComputedStyle>>,
+      parent_style: Option<&ComputedStyle>,
+      is_root: bool,
+      tree_order: &mut usize,
+      offset_from_parent_context: Point,
+      context_abs_offset: Point,
+      clip_stack: &mut Vec<ClipChainLink>,
+      backface_depth: &mut usize,
+      skip_viewport_scroll_cancel: bool,
+      applied_element_scroll: Point,
+      has_fixed_cb_ancestor: bool,
+      deadline_counter: &mut usize,
+      check_deadline: &mut Check,
+      scroll_state: Option<&ScrollState>,
+    ) -> Result<Self>
+    where
+      Check: FnMut(&mut usize) -> Result<()>,
+    {
+      check_deadline(deadline_counter)?;
+
+      // See `build_stacking_tree_internal` for rationale.
+      let fallback_order = *tree_order;
+      *tree_order += 1;
+      let current_order = fragment.box_id().unwrap_or(fallback_order);
+
+      let forced_z_index = fragment.stacking_context.forced_z_index();
+      let creates_context = forced_z_index.is_some()
+        || if let Some(s) = style.as_deref() {
+          creates_stacking_context(s, parent_style, is_root)
+        } else {
+          is_root
+        };
+
+      // Treat synthetic forced stacking contexts (used by paged-media page wrappers) as fixed
+      // containing blocks. This prevents `position: fixed` descendants from cancelling fragmentainer
+      // translations and ending up stacked at the same viewport coordinates across pages.
+      //
+      // We scope this to synthetic fragments (`box_id == None`) to avoid affecting regular DOM content
+      // that might be forced into a stacking context for other reasons.
+      let establishes_fixed_cb = style
+        .as_deref()
+        .is_some_and(|style| style.establishes_fixed_containing_block())
+        || (forced_z_index.is_some() && fragment.box_id().is_none());
+      let is_viewport_fixed = style
+        .as_deref()
+        .is_some_and(|style| matches!(style.position, Position::Fixed))
+        && !has_fixed_cb_ancestor;
+      let (offset_from_parent_context, applied_element_scroll) = if is_viewport_fixed {
+        (
+          Point::new(
+            offset_from_parent_context.x - applied_element_scroll.x,
+            offset_from_parent_context.y - applied_element_scroll.y,
+          ),
+          Point::ZERO,
+        )
+      } else {
+        (offset_from_parent_context, applied_element_scroll)
+      };
+      let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+      let needs_viewport_scroll_cancel = style
+        .as_deref()
+        .is_some_and(|style| matches!(style.position, Position::Fixed))
+        && !skip_viewport_scroll_cancel;
+      let skip_viewport_scroll_cancel_for_children =
+        skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
+      let viewport_scroll = scroll_state
+        .map(|state| state.viewport)
+        .filter(|scroll| scroll.x.is_finite() && scroll.y.is_finite())
+        .unwrap_or(Point::ZERO);
+
+      if creates_context {
+        let z_index = forced_z_index.unwrap_or_else(|| {
+          style
+            .as_deref()
+            .map(|s| {
+              if s.top_layer.is_some() {
+                i32::MAX
+              } else {
+                s.z_index.unwrap_or(0)
+              }
+            })
+            .unwrap_or(0)
+        });
+        let reason = if forced_z_index.is_some() {
+          StackingContextReason::Forced
+        } else {
+          style
+            .as_deref()
+            .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
+            .unwrap_or(StackingContextReason::Root)
+        };
+
+        let mut context = StackingContext::with_reason(z_index, reason, current_order);
+        context.clip_chain = clip_stack.clone();
+        context.backface_visibility_depth = *backface_depth;
+        context.offset_from_parent_context = if needs_viewport_scroll_cancel {
+          Point::new(
+            offset_from_parent_context.x + viewport_scroll.x,
+            offset_from_parent_context.y + viewport_scroll.y,
+          )
+        } else {
+          offset_from_parent_context
+        };
+        let this_context_abs_offset = Point::new(
+          context_abs_offset.x + context.offset_from_parent_context.x,
+          context_abs_offset.y + context.offset_from_parent_context.y,
+        );
+        context.fragments.push(fragment.clone());
+
+        let element_scroll = element_scroll_offset(fragment, scroll_state);
+        let base_offset = Point::new(-element_scroll.x, -element_scroll.y);
+        let applied_element_scroll_for_children = Point::new(
+          applied_element_scroll.x + base_offset.x,
+          applied_element_scroll.y + base_offset.y,
+        );
+
+        let saved_clip_state = SavedClipState {
+          clip_stack: std::mem::take(clip_stack),
+          backface_depth: std::mem::replace(backface_depth, 0),
+        };
+
+        Ok(Self {
+          fragment,
+          style,
+          context,
+          next_child: 0,
+          base_offset,
+          child_fragment_translation: Some(base_offset),
+          applied_element_scroll_for_children,
+          context_abs_offset_for_children: this_context_abs_offset,
+          skip_viewport_scroll_cancel_for_children,
+          has_fixed_cb_ancestor_for_children,
+          clip_pushed: false,
+          backface_pushed: false,
+          saved_clip_state: Some(saved_clip_state),
+        })
+      } else {
+        let mut context = StackingContext::new(0);
+        context.tree_order = current_order;
+        context.offset_from_parent_context = offset_from_parent_context;
+
+        if let Some(s) = style.as_deref() {
+          if is_positioned(s) && !creates_stacking_context(s, None, false) {
+            let mut translated = fragment.clone();
+            translated.translate_root_in_place(Point::new(
+              offset_from_parent_context.x - translated.bounds.origin.x,
+              offset_from_parent_context.y - translated.bounds.origin.y,
+            ));
+            context
+              .layer6_positioned
+              .push(OrderedFragment::new_with_clip_chain(
+                translated,
+                current_order,
+                clip_stack.clone(),
+                *backface_depth,
+              ));
+          } else {
+            context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
+          }
+        } else {
+          match &fragment.content {
+            FragmentContent::Text { .. }
+            | FragmentContent::Inline { .. }
+            | FragmentContent::Line { .. } => {
+              context.layer5_inlines.push(fragment.clone());
+            }
+            _ => {
+              context.layer3_blocks.push(fragment.clone());
+            }
+          }
+        }
+
+        let clip_pushed = style
+          .as_ref()
+          .and_then(|style| clip_chain_link_for_fragment(fragment, style, offset_from_parent_context))
+          .map(|link| {
+            clip_stack.push(link);
+          })
+          .is_some();
+        let backface_pushed = style
+          .as_deref()
+          .is_some_and(|style| matches!(style.backface_visibility, crate::style::types::BackfaceVisibility::Hidden));
+        if backface_pushed {
+          *backface_depth += 1;
+        }
+
+        let element_scroll = element_scroll_offset(fragment, scroll_state);
+        let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
+        let base_offset = Point::new(
+          offset_from_parent_context.x + scroll_delta.x,
+          offset_from_parent_context.y + scroll_delta.y,
+        );
+        let applied_element_scroll_for_children = Point::new(
+          applied_element_scroll.x + scroll_delta.x,
+          applied_element_scroll.y + scroll_delta.y,
+        );
+
+        Ok(Self {
+          fragment,
+          style,
+          context,
+          next_child: 0,
+          base_offset,
+          child_fragment_translation: None,
+          applied_element_scroll_for_children,
+          context_abs_offset_for_children: context_abs_offset,
+          skip_viewport_scroll_cancel_for_children,
+          has_fixed_cb_ancestor_for_children,
+          clip_pushed,
+          backface_pushed,
+          saved_clip_state: None,
+        })
+      }
+    }
+
+    fn restore_clip_state(
+      &mut self,
+      clip_stack: &mut Vec<ClipChainLink>,
+      backface_depth: &mut usize,
+    ) {
+      if let Some(saved) = self.saved_clip_state.take() {
+        *clip_stack = saved.clip_stack;
+        *backface_depth = saved.backface_depth;
+        return;
+      }
+      if self.clip_pushed {
+        clip_stack.pop();
+      }
+      if self.backface_pushed {
+        *backface_depth = backface_depth.saturating_sub(1);
+      }
+    }
+  }
+
+  let root_frame = Frame::new::<Check>(
+    fragment,
+    style,
+    parent_style,
+    is_root,
+    tree_order,
+    offset_from_parent_context,
+    context_abs_offset,
+    clip_stack,
+    backface_depth,
+    skip_viewport_scroll_cancel,
+    applied_element_scroll,
+    has_fixed_cb_ancestor,
+    deadline_counter,
+    check_deadline,
+    scroll_state,
+  )?;
+
+  let mut stack = vec![root_frame];
+  loop {
+    let Some(frame) = stack.last_mut() else {
+      break;
+    };
+    if frame.next_child < frame.fragment.children.len() {
+      let child_idx = frame.next_child;
+      frame.next_child += 1;
+
+      let child = &frame.fragment.children[child_idx];
+      let child_style = get_style(child);
+
+      let child_is_viewport_fixed = !frame.has_fixed_cb_ancestor_for_children
+        && child_style
+          .as_deref()
+          .is_some_and(|style| matches!(style.position, Position::Fixed));
+
+      let child_offset = if child_is_viewport_fixed {
+        if frame.skip_viewport_scroll_cancel_for_children {
+          child.bounds.origin
+        } else {
+          Point::new(
+            child.bounds.origin.x - frame.context_abs_offset_for_children.x,
+            child.bounds.origin.y - frame.context_abs_offset_for_children.y,
+          )
+        }
+      } else {
+        Point::new(
+          frame.base_offset.x + child.bounds.origin.x,
+          frame.base_offset.y + child.bounds.origin.y,
+        )
+      };
+
+      let child_applied_element_scroll = if child_is_viewport_fixed {
+        Point::ZERO
+      } else {
+        frame.applied_element_scroll_for_children
+      };
+
+      // Clone the parent's style Arc so we can borrow it without tying its lifetime to `frame`.
+      let parent_style_arc = frame.style.clone();
+      let child_frame = Frame::new::<Check>(
+        child,
+        child_style,
+        parent_style_arc.as_deref(),
+        false,
+        tree_order,
+        child_offset,
+        frame.context_abs_offset_for_children,
+        clip_stack,
+        backface_depth,
+        frame.skip_viewport_scroll_cancel_for_children,
+        child_applied_element_scroll,
+        frame.has_fixed_cb_ancestor_for_children,
+        deadline_counter,
+        check_deadline,
+        scroll_state,
+      )?;
+
+      stack.push(child_frame);
+      continue;
+    }
+
+    let mut finished = stack.pop().expect("frame must exist");
+    finished.restore_clip_state(clip_stack, backface_depth);
+    let Frame {
+      fragment: child_fragment,
+      style: child_style,
+      context: mut child_context,
+      ..
+    } = finished;
+
+    let Some(parent) = stack.last_mut() else {
+      return Ok(child_context);
+    };
+
+    let child_creates_context =
+      child_context.reason != StackingContextReason::Root || child_context.z_index != 0;
+
+    if child_creates_context {
+      parent.context.add_child(child_context);
+      continue;
+    }
+
+    parent.context.children.append(&mut child_context.children);
+    parent
+      .context
+      .layer6_positioned
+      .append(&mut child_context.layer6_positioned);
+
+    let child_is_positioned = child_style.as_deref().is_some_and(|style| {
+      is_positioned(style) && !creates_stacking_context(style, None, false)
+    });
+    if child_is_positioned {
+      continue;
+    }
+
+    let mut to_add = child_fragment.clone();
+    if let Some(translation) = parent.child_fragment_translation {
+      if translation != Point::ZERO {
+        to_add.translate_root_in_place(translation);
+      }
+    }
+    parent.context.add_fragment_to_layer(
+      to_add,
+      child_style.as_deref(),
+      child_context.tree_order,
+    );
+  }
+
+  Err(Error::Render(crate::error::RenderError::InvalidParameters {
+    message: "stacking tree build exited without producing a root context".into(),
+  }))
+}
+
 fn build_stacking_tree_with_styles_internal_checked<F>(
   fragment: &FragmentNode,
   style: Option<Arc<ComputedStyle>>,
@@ -1589,321 +2043,32 @@ fn build_stacking_tree_with_styles_internal_checked<F>(
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>>,
 {
-  check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
-    .map_err(Error::Render)?;
-
-  // See `build_stacking_tree_internal` for rationale.
-  let fallback_order = *tree_order;
-  *tree_order += 1;
-  let current_order = fragment.box_id().unwrap_or(fallback_order);
-
-  let forced_z_index = fragment.stacking_context.forced_z_index();
-  let creates_context = forced_z_index.is_some()
-    || if let Some(s) = style.as_deref() {
-      creates_stacking_context(s, parent_style, is_root)
-    } else {
-      is_root
-    };
-  // Treat synthetic forced stacking contexts (used by paged-media page wrappers) as fixed
-  // containing blocks. This prevents `position: fixed` descendants from cancelling fragmentainer
-  // translations and ending up stacked at the same viewport coordinates across pages.
-  //
-  // We scope this to synthetic fragments (`box_id == None`) to avoid affecting regular DOM content
-  // that might be forced into a stacking context for other reasons.
-  let establishes_fixed_cb = style
-    .as_deref()
-    .is_some_and(|style| style.establishes_fixed_containing_block())
-    || (forced_z_index.is_some() && fragment.box_id().is_none());
-  let is_viewport_fixed = style
-    .as_deref()
-    .is_some_and(|style| matches!(style.position, Position::Fixed))
-    && !has_fixed_cb_ancestor;
-  let (offset_from_parent_context, applied_element_scroll) = if is_viewport_fixed {
-    (
-      Point::new(
-        offset_from_parent_context.x - applied_element_scroll.x,
-        offset_from_parent_context.y - applied_element_scroll.y,
-      ),
-      Point::ZERO,
-    )
-  } else {
-    (offset_from_parent_context, applied_element_scroll)
+  let mut check_deadline = |deadline_counter: &mut usize| {
+    check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+      .map_err(Error::Render)
   };
-  let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
-  let needs_viewport_scroll_cancel = style
-    .as_deref()
-    .is_some_and(|style| matches!(style.position, Position::Fixed))
-    && !skip_viewport_scroll_cancel;
-  let skip_viewport_scroll_cancel_for_children =
-    skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
-  let viewport_scroll = scroll_state
-    .map(|state| state.viewport)
-    .filter(|scroll| scroll.x.is_finite() && scroll.y.is_finite())
-    .unwrap_or(Point::ZERO);
 
-  if creates_context {
-    let z_index = forced_z_index.unwrap_or_else(|| {
-      style
-        .as_deref()
-        .map(|s| {
-          if s.top_layer.is_some() {
-            i32::MAX
-          } else {
-            s.z_index.unwrap_or(0)
-          }
-        })
-        .unwrap_or(0)
-    });
-    let reason = if forced_z_index.is_some() {
-      StackingContextReason::Forced
-    } else {
-      style
-        .as_deref()
-        .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
-        .unwrap_or(StackingContextReason::Root)
-    };
-
-    let mut context = StackingContext::with_reason(z_index, reason, current_order);
-    context.clip_chain = clip_stack.clone();
-    context.backface_visibility_depth = *backface_depth;
-    context.offset_from_parent_context = if needs_viewport_scroll_cancel {
-      Point::new(
-        offset_from_parent_context.x + viewport_scroll.x,
-        offset_from_parent_context.y + viewport_scroll.y,
-      )
-    } else {
-      offset_from_parent_context
-    };
-    let this_context_abs_offset = Point::new(
-      context_abs_offset.x + context.offset_from_parent_context.x,
-      context_abs_offset.y + context.offset_from_parent_context.y,
-    );
-    context.fragments.push(fragment.clone());
-
-    let element_scroll = element_scroll_offset(fragment, scroll_state);
-    let base_offset = Point::new(-element_scroll.x, -element_scroll.y);
-    let applied_element_scroll_for_children = Point::new(
-      applied_element_scroll.x + base_offset.x,
-      applied_element_scroll.y + base_offset.y,
-    );
-    let mut child_clip_stack = Vec::new();
-    let mut child_backface_depth = 0usize;
-    for child in fragment.children.iter() {
-      let child_style = get_style(child);
-      let child_is_viewport_fixed = !has_fixed_cb_ancestor_for_children
-        && child_style
-          .as_deref()
-          .is_some_and(|style| matches!(style.position, Position::Fixed));
-      let child_offset = if child_is_viewport_fixed {
-        if skip_viewport_scroll_cancel_for_children {
-          child.bounds.origin
-        } else {
-          Point::new(
-            child.bounds.origin.x - this_context_abs_offset.x,
-            child.bounds.origin.y - this_context_abs_offset.y,
-          )
-        }
-      } else {
-        Point::new(
-          base_offset.x + child.bounds.origin.x,
-          base_offset.y + child.bounds.origin.y,
-        )
-      };
-      let child_applied_element_scroll = if child_is_viewport_fixed {
-        Point::ZERO
-      } else {
-        applied_element_scroll_for_children
-      };
-      let mut child_context = build_stacking_tree_with_styles_internal_checked(
-        child,
-        child_style.clone(),
-        style.as_deref(),
-        false,
-        tree_order,
-        child_offset,
-        this_context_abs_offset,
-        &mut child_clip_stack,
-        &mut child_backface_depth,
-        get_style,
-        skip_viewport_scroll_cancel_for_children,
-        child_applied_element_scroll,
-        has_fixed_cb_ancestor_for_children,
-        deadline_counter,
-        scroll_state,
-      )?;
-
-      let child_creates_context =
-        child_context.reason != StackingContextReason::Root || child_context.z_index != 0;
-
-      if child_creates_context {
-        context.add_child(child_context);
-      } else {
-        context.children.append(&mut child_context.children);
-        context
-          .layer6_positioned
-          .append(&mut child_context.layer6_positioned);
-
-        let child_is_positioned = child_style.as_deref().is_some_and(|style| {
-          is_positioned(style) && !creates_stacking_context(style, None, false)
-        });
-        if !child_is_positioned {
-          let mut translated = child.clone();
-          if base_offset != Point::ZERO {
-            translated.translate_root_in_place(base_offset);
-          }
-          context.add_fragment_to_layer(
-            translated,
-            child_style.as_deref(),
-            child_context.tree_order,
-          );
-        }
-      }
-    }
-
-    Ok(context)
-  } else {
-    let mut context = StackingContext::new(0);
-    context.tree_order = current_order;
-    context.offset_from_parent_context = offset_from_parent_context;
-
-    if let Some(s) = style.as_deref() {
-      if is_positioned(s) && !creates_stacking_context(s, None, false) {
-        let mut translated = fragment.clone();
-        translated.translate_root_in_place(Point::new(
-          offset_from_parent_context.x - translated.bounds.origin.x,
-          offset_from_parent_context.y - translated.bounds.origin.y,
-        ));
-        context
-          .layer6_positioned
-          .push(OrderedFragment::new_with_clip_chain(
-            translated,
-            current_order,
-            clip_stack.clone(),
-            *backface_depth,
-          ));
-      } else {
-        context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
-      }
-    } else {
-      match &fragment.content {
-        FragmentContent::Text { .. }
-        | FragmentContent::Inline { .. }
-        | FragmentContent::Line { .. } => {
-          context.layer5_inlines.push(fragment.clone());
-        }
-        _ => {
-          context.layer3_blocks.push(fragment.clone());
-        }
-      }
-    }
-
-    let clip_pushed = style
-      .as_ref()
-      .and_then(|style| clip_chain_link_for_fragment(fragment, style, offset_from_parent_context))
-      .map(|link| {
-        clip_stack.push(link);
-      })
-      .is_some();
-    let backface_pushed = style.as_deref().is_some_and(|style| {
-      matches!(
-        style.backface_visibility,
-        crate::style::types::BackfaceVisibility::Hidden
-      )
-    });
-    if backface_pushed {
-      *backface_depth += 1;
-    }
-
-    let element_scroll = element_scroll_offset(fragment, scroll_state);
-    let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
-    let base_offset = Point::new(
-      offset_from_parent_context.x + scroll_delta.x,
-      offset_from_parent_context.y + scroll_delta.y,
-    );
-    let applied_element_scroll_for_children = Point::new(
-      applied_element_scroll.x + scroll_delta.x,
-      applied_element_scroll.y + scroll_delta.y,
-    );
-    for child in fragment.children.iter() {
-      let child_style = get_style(child);
-      let child_is_viewport_fixed = !has_fixed_cb_ancestor_for_children
-        && child_style
-          .as_deref()
-          .is_some_and(|style| matches!(style.position, Position::Fixed));
-      let child_offset = if child_is_viewport_fixed {
-        if skip_viewport_scroll_cancel_for_children {
-          child.bounds.origin
-        } else {
-          Point::new(
-            child.bounds.origin.x - context_abs_offset.x,
-            child.bounds.origin.y - context_abs_offset.y,
-          )
-        }
-      } else {
-        Point::new(
-          base_offset.x + child.bounds.origin.x,
-          base_offset.y + child.bounds.origin.y,
-        )
-      };
-      let child_applied_element_scroll = if child_is_viewport_fixed {
-        Point::ZERO
-      } else {
-        applied_element_scroll_for_children
-      };
-      let mut child_context = build_stacking_tree_with_styles_internal_checked(
-        child,
-        child_style.clone(),
-        style.as_deref(),
-        false,
-        tree_order,
-        child_offset,
-        context_abs_offset,
-        clip_stack,
-        backface_depth,
-        get_style,
-        skip_viewport_scroll_cancel_for_children,
-        child_applied_element_scroll,
-        has_fixed_cb_ancestor_for_children,
-        deadline_counter,
-        scroll_state,
-      )?;
-
-      let child_creates_context =
-        child_context.reason != StackingContextReason::Root || child_context.z_index != 0;
-
-      if child_creates_context {
-        context.add_child(child_context);
-      } else {
-        context.children.append(&mut child_context.children);
-        context
-          .layer6_positioned
-          .append(&mut child_context.layer6_positioned);
-
-        let child_is_positioned = child_style.as_deref().is_some_and(|style| {
-          is_positioned(style) && !creates_stacking_context(style, None, false)
-        });
-        if !child_is_positioned {
-          context.add_fragment_to_layer(
-            child.clone(),
-            child_style.as_deref(),
-            child_context.tree_order,
-          );
-        }
-      }
-    }
-
-    if clip_pushed {
-      clip_stack.pop();
-    }
-    if backface_pushed {
-      *backface_depth = backface_depth.saturating_sub(1);
-    }
-
-    Ok(context)
-  }
+  build_stacking_tree_with_styles_internal_iterative(
+    fragment,
+    style,
+    parent_style,
+    is_root,
+    tree_order,
+    offset_from_parent_context,
+    context_abs_offset,
+    clip_stack,
+    backface_depth,
+    get_style,
+    skip_viewport_scroll_cancel,
+    applied_element_scroll,
+    has_fixed_cb_ancestor,
+    deadline_counter,
+    &mut check_deadline,
+    scroll_state,
+  )
 }
 
-/// Internal recursive function to build stacking context tree with styles
+/// Internal function to build stacking context tree with styles
 fn build_stacking_tree_with_styles_internal<F>(
   fragment: &FragmentNode,
   style: Option<Arc<ComputedStyle>>,
@@ -1923,307 +2088,29 @@ fn build_stacking_tree_with_styles_internal<F>(
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>>,
 {
-  // See `build_stacking_tree_internal` for rationale.
-  let fallback_order = *tree_order;
-  *tree_order += 1;
-  let current_order = fragment.box_id().unwrap_or(fallback_order);
+  let mut deadline_counter = 0usize;
+  let mut check_deadline = |_deadline_counter: &mut usize| Ok(());
 
-  let forced_z_index = fragment.stacking_context.forced_z_index();
-  let creates_context = forced_z_index.is_some()
-    || if let Some(s) = style.as_deref() {
-      creates_stacking_context(s, parent_style, is_root)
-    } else {
-      is_root
-    };
-  // See the checked variant for rationale.
-  let establishes_fixed_cb = style
-    .as_deref()
-    .is_some_and(|style| style.establishes_fixed_containing_block())
-    || (forced_z_index.is_some() && fragment.box_id().is_none());
-  let is_viewport_fixed = style
-    .as_deref()
-    .is_some_and(|style| matches!(style.position, Position::Fixed))
-    && !has_fixed_cb_ancestor;
-  let (offset_from_parent_context, applied_element_scroll) = if is_viewport_fixed {
-    (
-      Point::new(
-        offset_from_parent_context.x - applied_element_scroll.x,
-        offset_from_parent_context.y - applied_element_scroll.y,
-      ),
-      Point::ZERO,
-    )
-  } else {
-    (offset_from_parent_context, applied_element_scroll)
-  };
-  let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
-  let needs_viewport_scroll_cancel = style
-    .as_deref()
-    .is_some_and(|style| matches!(style.position, Position::Fixed))
-    && !skip_viewport_scroll_cancel;
-  let skip_viewport_scroll_cancel_for_children =
-    skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
-  let viewport_scroll = scroll_state
-    .map(|state| state.viewport)
-    .filter(|scroll| scroll.x.is_finite() && scroll.y.is_finite())
-    .unwrap_or(Point::ZERO);
-
-  if creates_context {
-    let z_index = forced_z_index.unwrap_or_else(|| {
-      style
-        .as_deref()
-        .map(|s| {
-          if s.top_layer.is_some() {
-            i32::MAX
-          } else {
-            s.z_index.unwrap_or(0)
-          }
-        })
-        .unwrap_or(0)
-    });
-    let reason = if forced_z_index.is_some() {
-      StackingContextReason::Forced
-    } else {
-      style
-        .as_deref()
-        .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
-        .unwrap_or(StackingContextReason::Root)
-    };
-
-    let mut context = StackingContext::with_reason(z_index, reason, current_order);
-    context.clip_chain = clip_stack.clone();
-    context.backface_visibility_depth = *backface_depth;
-    context.offset_from_parent_context = if needs_viewport_scroll_cancel {
-      Point::new(
-        offset_from_parent_context.x + viewport_scroll.x,
-        offset_from_parent_context.y + viewport_scroll.y,
-      )
-    } else {
-      offset_from_parent_context
-    };
-    let this_context_abs_offset = Point::new(
-      context_abs_offset.x + context.offset_from_parent_context.x,
-      context_abs_offset.y + context.offset_from_parent_context.y,
-    );
-    context.fragments.push(fragment.clone());
-
-    let element_scroll = element_scroll_offset(fragment, scroll_state);
-    let base_offset = Point::new(-element_scroll.x, -element_scroll.y);
-    let applied_element_scroll_for_children = Point::new(
-      applied_element_scroll.x + base_offset.x,
-      applied_element_scroll.y + base_offset.y,
-    );
-    let mut child_clip_stack = Vec::new();
-    let mut child_backface_depth = 0usize;
-    for child in fragment.children.iter() {
-      let child_style = get_style(child);
-      let child_is_viewport_fixed = !has_fixed_cb_ancestor_for_children
-        && child_style
-          .as_deref()
-          .is_some_and(|style| matches!(style.position, Position::Fixed));
-      let child_offset = if child_is_viewport_fixed {
-        if skip_viewport_scroll_cancel_for_children {
-          child.bounds.origin
-        } else {
-          Point::new(
-            child.bounds.origin.x - this_context_abs_offset.x,
-            child.bounds.origin.y - this_context_abs_offset.y,
-          )
-        }
-      } else {
-        Point::new(
-          base_offset.x + child.bounds.origin.x,
-          base_offset.y + child.bounds.origin.y,
-        )
-      };
-      let child_applied_element_scroll = if child_is_viewport_fixed {
-        Point::ZERO
-      } else {
-        applied_element_scroll_for_children
-      };
-      let mut child_context = build_stacking_tree_with_styles_internal(
-        child,
-        child_style.clone(),
-        style.as_deref(),
-        false,
-        tree_order,
-        child_offset,
-        this_context_abs_offset,
-        &mut child_clip_stack,
-        &mut child_backface_depth,
-        get_style,
-        skip_viewport_scroll_cancel_for_children,
-        child_applied_element_scroll,
-        has_fixed_cb_ancestor_for_children,
-        scroll_state,
-      );
-
-      let child_creates_context =
-        child_context.reason != StackingContextReason::Root || child_context.z_index != 0;
-
-      if child_creates_context {
-        context.add_child(child_context);
-      } else {
-        context.children.append(&mut child_context.children);
-        context
-          .layer6_positioned
-          .append(&mut child_context.layer6_positioned);
-
-        let child_is_positioned = child_style.as_deref().is_some_and(|style| {
-          is_positioned(style) && !creates_stacking_context(style, None, false)
-        });
-        if !child_is_positioned {
-          let mut translated = child.clone();
-          if base_offset != Point::ZERO {
-            translated.translate_root_in_place(base_offset);
-          }
-          context.add_fragment_to_layer(
-            translated,
-            child_style.as_deref(),
-            child_context.tree_order,
-          );
-        }
-      }
-    }
-
-    context
-  } else {
-    let mut context = StackingContext::new(0);
-    context.tree_order = current_order;
-    context.offset_from_parent_context = offset_from_parent_context;
-
-    if let Some(s) = style.as_deref() {
-      if is_positioned(s) && !creates_stacking_context(s, None, false) {
-        let mut translated = fragment.clone();
-        translated.translate_root_in_place(Point::new(
-          offset_from_parent_context.x - translated.bounds.origin.x,
-          offset_from_parent_context.y - translated.bounds.origin.y,
-        ));
-        context
-          .layer6_positioned
-          .push(OrderedFragment::new_with_clip_chain(
-            translated,
-            current_order,
-            clip_stack.clone(),
-            *backface_depth,
-          ));
-      } else {
-        context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
-      }
-    } else {
-      match &fragment.content {
-        FragmentContent::Text { .. }
-        | FragmentContent::Inline { .. }
-        | FragmentContent::Line { .. } => {
-          context.layer5_inlines.push(fragment.clone());
-        }
-        _ => {
-          context.layer3_blocks.push(fragment.clone());
-        }
-      }
-    }
-
-    let clip_pushed = style
-      .as_ref()
-      .and_then(|style| clip_chain_link_for_fragment(fragment, style, offset_from_parent_context))
-      .map(|link| {
-        clip_stack.push(link);
-      })
-      .is_some();
-    let backface_pushed = style.as_deref().is_some_and(|style| {
-      matches!(
-        style.backface_visibility,
-        crate::style::types::BackfaceVisibility::Hidden
-      )
-    });
-    if backface_pushed {
-      *backface_depth += 1;
-    }
-
-    let element_scroll = element_scroll_offset(fragment, scroll_state);
-    let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
-    let base_offset = Point::new(
-      offset_from_parent_context.x + scroll_delta.x,
-      offset_from_parent_context.y + scroll_delta.y,
-    );
-    let applied_element_scroll_for_children = Point::new(
-      applied_element_scroll.x + scroll_delta.x,
-      applied_element_scroll.y + scroll_delta.y,
-    );
-    for child in fragment.children.iter() {
-      let child_style = get_style(child);
-      let child_is_viewport_fixed = !has_fixed_cb_ancestor_for_children
-        && child_style
-          .as_deref()
-          .is_some_and(|style| matches!(style.position, Position::Fixed));
-      let child_offset = if child_is_viewport_fixed {
-        if skip_viewport_scroll_cancel_for_children {
-          child.bounds.origin
-        } else {
-          Point::new(
-            child.bounds.origin.x - context_abs_offset.x,
-            child.bounds.origin.y - context_abs_offset.y,
-          )
-        }
-      } else {
-        Point::new(
-          base_offset.x + child.bounds.origin.x,
-          base_offset.y + child.bounds.origin.y,
-        )
-      };
-      let child_applied_element_scroll = if child_is_viewport_fixed {
-        Point::ZERO
-      } else {
-        applied_element_scroll_for_children
-      };
-      let mut child_context = build_stacking_tree_with_styles_internal(
-        child,
-        child_style.clone(),
-        style.as_deref(),
-        false,
-        tree_order,
-        child_offset,
-        context_abs_offset,
-        clip_stack,
-        backface_depth,
-        get_style,
-        skip_viewport_scroll_cancel_for_children,
-        child_applied_element_scroll,
-        has_fixed_cb_ancestor_for_children,
-        scroll_state,
-      );
-
-      let child_creates_context =
-        child_context.reason != StackingContextReason::Root || child_context.z_index != 0;
-
-      if child_creates_context {
-        context.add_child(child_context);
-      } else {
-        context.children.append(&mut child_context.children);
-        context
-          .layer6_positioned
-          .append(&mut child_context.layer6_positioned);
-
-        let child_is_positioned = child_style.as_deref().is_some_and(|style| {
-          is_positioned(style) && !creates_stacking_context(style, None, false)
-        });
-        if !child_is_positioned {
-          context.add_fragment_to_layer(
-            child.clone(),
-            child_style.as_deref(),
-            child_context.tree_order,
-          );
-        }
-      }
-    }
-
-    if clip_pushed {
-      clip_stack.pop();
-    }
-    if backface_pushed {
-      *backface_depth = backface_depth.saturating_sub(1);
-    }
-
-    context
+  match build_stacking_tree_with_styles_internal_iterative(
+    fragment,
+    style,
+    parent_style,
+    is_root,
+    tree_order,
+    offset_from_parent_context,
+    context_abs_offset,
+    clip_stack,
+    backface_depth,
+    get_style,
+    skip_viewport_scroll_cancel,
+    applied_element_scroll,
+    has_fixed_cb_ancestor,
+    &mut deadline_counter,
+    &mut check_deadline,
+    scroll_state,
+  ) {
+    Ok(context) => context,
+    Err(_) => StackingContext::new(0),
   }
 }
 
