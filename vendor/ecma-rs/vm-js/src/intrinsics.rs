@@ -530,6 +530,71 @@ fn install_object_static_methods(
     2,
     builtins::object_set_prototype_of,
   )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "getOwnPropertyDescriptor",
+    2,
+    builtins::object_get_own_property_descriptor,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "getOwnPropertyNames",
+    1,
+    builtins::object_get_own_property_names,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "isExtensible",
+    1,
+    builtins::object_is_extensible,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
+    "preventExtensions",
+    1,
+    builtins::object_prevent_extensions,
+  )?;
+  Ok(())
+}
+
+fn install_reflect_method(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  roots: &mut Vec<RootId>,
+  function_prototype: GcObject,
+  reflect: GcObject,
+  name: &str,
+  length: u32,
+  call: crate::vm::NativeCall,
+) -> Result<(), VmError> {
+  let call_id = vm.register_native_call(call)?;
+  let name_string = scope.alloc_string(name)?;
+  let func = alloc_rooted_native_function(scope, roots, call_id, None, name_string, length)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(function_prototype))?;
+
+  scope.define_property(
+    reflect,
+    PropertyKey::from_string(name_string),
+    data_desc(Value::Object(func), true, false, true),
+  )?;
   Ok(())
 }
 

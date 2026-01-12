@@ -6915,16 +6915,24 @@ impl<'a> Evaluator<'a> {
           del_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
 
-          let object = self.to_object_operator(&mut del_scope, base)?;
-          del_scope.push_root(Value::Object(object))?;
-          Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
-            self.vm,
-            &mut del_scope,
-            &mut *self.host,
-            &mut *self.hooks,
-            object,
-            key,
-          )?))
+           let object = self.to_object_operator(&mut del_scope, base)?;
+           del_scope.push_root(Value::Object(object))?;
+           let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
+             self.vm,
+             &mut del_scope,
+             &mut *self.host,
+             &mut *self.hooks,
+             object,
+             key,
+           )?;
+          if self.strict && !ok {
+            return Err(throw_type_error(
+              self.vm,
+              &mut del_scope,
+              "Cannot delete property",
+            )?);
+          }
+          Ok(Value::Bool(ok))
         }
         Expr::ComputedMember(member) if member.stx.optional_chaining => {
           // `delete obj?.[expr]` short-circuits to `true` when the base is nullish and does not
@@ -6945,33 +6953,49 @@ impl<'a> Evaluator<'a> {
           };
           del_scope.push_root(key_root)?;
 
-          let object = self.to_object_operator(&mut del_scope, base)?;
-          del_scope.push_root(Value::Object(object))?;
-          Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
-            self.vm,
-            &mut del_scope,
-            &mut *self.host,
-            &mut *self.hooks,
-            object,
-            key,
-          )?))
+           let object = self.to_object_operator(&mut del_scope, base)?;
+           del_scope.push_root(Value::Object(object))?;
+           let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
+             self.vm,
+             &mut del_scope,
+             &mut *self.host,
+             &mut *self.hooks,
+             object,
+             key,
+           )?;
+          if self.strict && !ok {
+            return Err(throw_type_error(
+              self.vm,
+              &mut del_scope,
+              "Cannot delete property",
+            )?);
+          }
+          Ok(Value::Bool(ok))
         }
         Expr::Member(_) | Expr::ComputedMember(_) => {
           let reference = self.eval_reference(scope, &expr.argument)?;
           match reference {
             Reference::Property { base, key } => {
-              let mut del_scope = scope.reborrow();
-              self.root_reference(&mut del_scope, &reference)?;
-              let object = self.to_object_operator(&mut del_scope, base)?;
-              del_scope.push_root(Value::Object(object))?;
-              Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
-                self.vm,
-                &mut del_scope,
-                &mut *self.host,
-                &mut *self.hooks,
-                object,
-                key,
-              )?))
+               let mut del_scope = scope.reborrow();
+               self.root_reference(&mut del_scope, &reference)?;
+               let object = self.to_object_operator(&mut del_scope, base)?;
+               del_scope.push_root(Value::Object(object))?;
+               let ok = crate::spec_ops::internal_delete_with_host_and_hooks(
+                 self.vm,
+                 &mut del_scope,
+                 &mut *self.host,
+                 &mut *self.hooks,
+                 object,
+                 key,
+               )?;
+              if self.strict && !ok {
+                return Err(throw_type_error(
+                  self.vm,
+                  &mut del_scope,
+                  "Cannot delete property",
+                )?);
+              }
+              Ok(Value::Bool(ok))
             }
             // Deleting bindings (`delete x`) is handled above.
             Reference::Binding(_) => Ok(Value::Bool(false)),

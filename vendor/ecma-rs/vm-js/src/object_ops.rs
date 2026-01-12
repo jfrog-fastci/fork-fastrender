@@ -1,4 +1,5 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
+use crate::heap::ModuleNamespaceExportValue;
 use crate::property_descriptor_ops;
 use crate::{GcObject, GcString, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::collections::{HashMap, HashSet};
@@ -417,6 +418,29 @@ impl<'a> Scope<'a> {
     }
   }
 
+  fn module_namespace_get_export_value(
+    &mut self,
+    vm: &mut Vm,
+    _obj: GcObject,
+    export: crate::heap::ModuleNamespaceExport,
+  ) -> Result<Value, VmError> {
+    match export.value {
+      ModuleNamespaceExportValue::Namespace { namespace } => Ok(Value::Object(namespace)),
+      ModuleNamespaceExportValue::Binding { env, name } => match self.heap().env_get_binding_value_by_gc_string(env, name) {
+        Ok(v) => Ok(v),
+        Err(VmError::Throw(Value::Null)) => {
+          let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+            "module namespace access requires intrinsics for ReferenceError",
+          ))?;
+          let export_name = self.heap().get_string(export.name)?.to_utf8_lossy();
+          let message = format!("Cannot access '{}' before initialization", export_name);
+          let err_obj = crate::new_reference_error(self, intr, &message)?;
+          Err(VmError::Throw(err_obj))
+        }
+        Err(err) => Err(err),
+      },
+    }
+  }
   pub fn object_get_prototype(&self, obj: GcObject) -> Result<Option<GcObject>, VmError> {
     self.heap().object_prototype(obj)
   }
@@ -545,6 +569,44 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<Option<PropertyDescriptor>, VmError> {
+    // Module Namespace Exotic Object `[[GetOwnProperty]]` (ECMA-262 §9.4.6).
+    //
+    // Note: this is implemented here (rather than in `heap.object_get_own_property_with_tick`)
+    // because it depends on module binding resolution state stored in the heap object kind.
+    if self.heap().object_is_module_namespace(obj)? {
+      let PropertyKey::String(s) = key else {
+        // Symbols use ordinary behavior.
+        return self
+          .heap()
+          .object_get_own_property_with_tick(obj, &key, &mut tick);
+      };
+
+      let Some(export) = self.heap().module_namespace_export(obj, s)? else {
+        return Ok(None);
+      };
+
+      // `[[GetOwnProperty]]` computes the value via `[[Get]]`.
+      //
+      // `ordinary_get_own_property_with_tick` does not have access to a `Vm` to translate TDZ
+      // sentinels to real `ReferenceError` objects, so we currently preserve the heap-layer TDZ
+      // sentinel (`Throw(Null)`). Entry points that need to be realm-aware should use
+      // `Scope::ordinary_get` / `Scope::ordinary_get_with_host_and_hooks`, which perform the proper
+      // translation.
+      let value = match export.value {
+        ModuleNamespaceExportValue::Namespace { namespace } => Value::Object(namespace),
+        ModuleNamespaceExportValue::Binding { env, name } => self.heap().env_get_binding_value_by_gc_string(env, name)?,
+      };
+
+      return Ok(Some(PropertyDescriptor {
+        enumerable: true,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value,
+          writable: true,
+        },
+      }));
+    }
+
     if let Some(desc) = self
       .heap()
       .object_get_own_property_with_tick(obj, &key, &mut tick)?
@@ -946,6 +1008,9 @@ impl<'a> Scope<'a> {
     desc: PropertyDescriptorPatch,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
+    if self.heap().object_is_module_namespace(obj)? {
+      return self.module_namespace_define_own_property(obj, key, desc);
+    }
     if self.heap().object_is_array(obj)? {
       self.array_define_own_property_with_tick(obj, key, desc, &mut tick)
     } else if self
@@ -1153,6 +1218,17 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
+    if self.heap().object_is_module_namespace(obj)? {
+      match key {
+        PropertyKey::Symbol(_) => {
+          // Symbols use ordinary behavior.
+        }
+        PropertyKey::String(s) => {
+          return Ok(self.heap().module_namespace_export(obj, s)?.is_some());
+        }
+      }
+    }
+
     // Integer-indexed exotic objects (typed arrays): canonical numeric index strings are handled
     // without consulting the prototype chain.
     //
@@ -2099,6 +2175,19 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
+    if self.heap().object_is_module_namespace(obj)? {
+      if let PropertyKey::String(s) = key {
+        // Root inputs for the duration of the `[[Get]]` operation: the TDZ path needs to allocate
+        // a `ReferenceError` object.
+        self.push_roots(&[Value::Object(obj), Value::String(s), receiver])?;
+
+        let Some(export) = self.heap().module_namespace_export(obj, s)? else {
+          return Ok(Value::Undefined);
+        };
+        return self.module_namespace_get_export_value(vm, obj, export);
+      }
+    }
+
     if let Some(desc) = self
       .heap()
       .object_get_own_property_with_tick(obj, &key, || vm.tick())?
@@ -2194,6 +2283,14 @@ impl<'a> Scope<'a> {
     scope.push_roots(&roots)?;
 
     let key_value = roots[1];
+    if scope.heap().object_is_module_namespace(obj)? {
+      if let PropertyKey::String(s) = key {
+        let Some(export) = scope.heap().module_namespace_export(obj, s)? else {
+          return Ok(Value::Undefined);
+        };
+        return scope.module_namespace_get_export_value(vm, obj, export);
+      }
+    }
 
     // Fast path: own property.
     if let Some(desc) = scope
@@ -2487,6 +2584,12 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
+    if self.heap().object_is_module_namespace(obj)? {
+      if matches!(key, PropertyKey::String(_)) {
+        return Ok(false);
+      }
+    }
+
     // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys use
     // TypedArray `[[Set]]` semantics.
     if self.heap().is_typed_array_object(obj) {
@@ -2656,6 +2759,12 @@ impl<'a> Scope<'a> {
       receiver,
     ];
     self.push_roots(&roots)?;
+
+    if self.heap().object_is_module_namespace(obj)? {
+      if matches!(key, PropertyKey::String(_)) {
+        return Ok(false);
+      }
+    }
 
     // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys use
     // TypedArray `[[Set]]` semantics.
@@ -2907,6 +3016,17 @@ impl<'a> Scope<'a> {
     ];
     self.push_roots(&roots)?;
 
+    if self.heap().object_is_module_namespace(obj)? {
+      match key {
+        PropertyKey::Symbol(_) => {
+          // Symbols use ordinary behavior (including non-configurable Symbol.toStringTag).
+        }
+        PropertyKey::String(s) => {
+          return Ok(self.heap().module_namespace_export(obj, s)?.is_none());
+        }
+      }
+    }
+
     if let Some(result) = hooks.host_exotic_delete(self, obj, key)? {
       return Ok(result);
     }
@@ -3087,6 +3207,28 @@ impl<'a> Scope<'a> {
     obj: GcObject,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<Vec<PropertyKey>, VmError> {
+    if self.heap().object_is_module_namespace(obj)? {
+      let exports = self.heap().module_namespace_exports(obj)?;
+      let symbol_keys = self
+        .heap()
+        .ordinary_own_property_keys_with_tick(obj, &mut tick)?
+        .into_iter()
+        .filter(|k| matches!(k, PropertyKey::Symbol(_)))
+        .collect::<Vec<_>>();
+
+      let out_len = exports
+        .len()
+        .checked_add(symbol_keys.len())
+        .ok_or(VmError::OutOfMemory)?;
+      let mut out: Vec<PropertyKey> = Vec::new();
+      out.try_reserve_exact(out_len).map_err(|_| VmError::OutOfMemory)?;
+      for export in exports {
+        out.push(PropertyKey::String(export.name));
+      }
+      out.extend(symbol_keys);
+      return Ok(out);
+    }
+
     if let Some(string_data) = self.string_object_data_with_tick(obj, &mut tick)? {
       self.push_roots(&[Value::Object(obj), Value::String(string_data)])?;
 
@@ -3629,6 +3771,51 @@ impl<'a> Scope<'a> {
     }
 
     Ok(true)
+  }
+
+  fn module_namespace_define_own_property(
+    &mut self,
+    obj: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptorPatch,
+  ) -> Result<bool, VmError> {
+    desc.validate()?;
+
+    match key {
+      PropertyKey::Symbol(_) => return self.ordinary_define_own_property(obj, key, desc),
+      PropertyKey::String(s) => {
+        let Some(export) = self.heap().module_namespace_export(obj, s)? else {
+          return Ok(false);
+        };
+
+        if matches!(desc.configurable, Some(true)) {
+          return Ok(false);
+        }
+        if matches!(desc.enumerable, Some(false)) {
+          return Ok(false);
+        }
+        if desc.is_accessor_descriptor() {
+          return Ok(false);
+        }
+        if matches!(desc.writable, Some(false)) {
+          return Ok(false);
+        }
+
+        if let Some(value) = desc.value {
+          let current = match export.value {
+            ModuleNamespaceExportValue::Namespace { namespace } => Value::Object(namespace),
+            ModuleNamespaceExportValue::Binding { env, name } => {
+              self.heap().env_get_binding_value_by_gc_string(env, name)?
+            }
+          };
+          if !value.same_value(current, self.heap()) {
+            return Ok(false);
+          }
+        }
+
+        Ok(true)
+      }
+    }
   }
 }
 

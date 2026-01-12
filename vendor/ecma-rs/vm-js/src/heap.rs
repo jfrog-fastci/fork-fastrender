@@ -10,6 +10,7 @@ use crate::regexp::{RegExpFlags, RegExpProgram};
 use crate::string::JsString;
 use crate::symbol::JsSymbol;
 use crate::CompiledFunctionRef;
+use crate::handle::GcModuleNamespaceExports;
 use crate::{
   EnvRootId, GcEnv, GcObject, GcString, GcSymbol, HeapId, RealmId, RootId, Value, Vm, VmError,
   VmHost, VmHostHooks, WeakGcObject,
@@ -2832,6 +2833,46 @@ impl Heap {
     Ok(self.get_object_base(obj)?.array_length().is_some())
   }
 
+  /// Returns whether `obj` is a Module Namespace Exotic Object (ECMA-262 §9.4.6).
+  pub(crate) fn object_is_module_namespace(&self, obj: GcObject) -> Result<bool, VmError> {
+    Ok(matches!(self.get_object_base(obj)?.kind, ObjectKind::ModuleNamespace(_)))
+  }
+
+  fn get_module_namespace_exports_data(
+    &self,
+    exports: GcModuleNamespaceExports,
+  ) -> Result<&ModuleNamespaceExportsData, VmError> {
+    match self.get_heap_object(exports.0)? {
+      HeapObject::ModuleNamespaceExports(data) => Ok(data),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub(crate) fn module_namespace_export(&self, obj: GcObject, key: GcString) -> Result<Option<ModuleNamespaceExport>, VmError> {
+    let base = self.get_object_base(obj)?;
+    let ObjectKind::ModuleNamespace(ns) = &base.kind else {
+      return Err(VmError::InvariantViolation("expected module namespace object"));
+    };
+
+    let key_units = self.get_string(key)?.as_code_units();
+    let exports = self.get_module_namespace_exports_data(ns.exports)?;
+    for export in exports.exports.iter() {
+      let export_units = self.get_string(export.name)?.as_code_units();
+      if export_units == key_units {
+        return Ok(Some(*export));
+      }
+    }
+    Ok(None)
+  }
+
+  pub(crate) fn module_namespace_exports(&self, obj: GcObject) -> Result<&[ModuleNamespaceExport], VmError> {
+    let base = self.get_object_base(obj)?;
+    let ObjectKind::ModuleNamespace(ns) = &base.kind else {
+      return Err(VmError::InvariantViolation("expected module namespace object"));
+    };
+    Ok(&self.get_module_namespace_exports_data(ns.exports)?.exports)
+  }
+
   pub(crate) fn array_length(&self, obj: GcObject) -> Result<u32, VmError> {
     self
       .get_object_base(obj)?
@@ -5558,6 +5599,22 @@ impl Drop for Scope<'_> {
       .heap
       .env_root_stack
       .truncate(self.env_root_stack_len_at_entry);
+
+    // Under small heap limits, temporary rooting scopes can cause the root stack capacity to grow
+    // and permanently contribute a significant fraction of `estimated_total_bytes`, even after all
+    // roots are popped.
+    //
+    // Reclaim root stack capacity opportunistically when exiting the outermost scope, but only when
+    // the heap is close to its memory limit (avoid thrashing on large heaps).
+    if self.root_stack_len_at_entry == 0
+      && self.heap.root_stack.is_empty()
+      && self.heap.root_stack.capacity() > 256
+    {
+      let max = self.heap.limits.max_bytes;
+      if self.heap.estimated_total_bytes() > max.saturating_mul(3) / 4 {
+        self.heap.root_stack = Vec::new();
+      }
+    }
   }
 }
 
@@ -5945,6 +6002,71 @@ impl<'a> Scope<'a> {
     prototype: Option<GcObject>,
   ) -> Result<GcObject, VmError> {
     self.alloc_object_with_properties(prototype, &[])
+  }
+
+  /// Allocates a Module Namespace Exotic Object (ECMA-262 §9.4.6 / §26.3).
+  pub(crate) fn alloc_module_namespace_object(
+    &mut self,
+    exports: Box<[ModuleNamespaceExport]>,
+  ) -> Result<GcObject, VmError> {
+    // Root all string/object handles stored in `exports` during allocation in case
+    // `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    let mut roots: Vec<Value> = Vec::new();
+    // Each export stores at least one string key. Some store an additional string or object.
+    roots
+      .try_reserve_exact(exports.len().saturating_mul(3))
+      .map_err(|_| VmError::OutOfMemory)?;
+    for export in exports.iter() {
+      roots.push(Value::String(export.name));
+      match export.value {
+        ModuleNamespaceExportValue::Binding { name, .. } => {
+          roots.push(Value::String(name));
+        }
+        ModuleNamespaceExportValue::Namespace { namespace } => {
+          roots.push(Value::Object(namespace));
+        }
+      }
+    }
+    scope.push_roots(&roots)?;
+
+    // Allocate the namespace object first (as an ordinary, non-extensible object with a null
+    // prototype), then allocate and attach the exports table.
+    //
+    // This avoids storing the exports slice inline in `ObjectKind`, which would inflate the size of
+    // every heap slot (important for unit tests that use small heap limits).
+    let obj_bytes = JsObject::heap_size_bytes_for_property_count(0);
+    scope.heap.ensure_can_allocate(obj_bytes)?;
+    let obj = GcObject(scope.heap.alloc_unchecked(
+      HeapObject::Object(JsObject {
+        base: ObjectBase {
+          prototype: None,
+          extensible: false,
+          properties: Box::default(),
+          kind: ObjectKind::Ordinary,
+        },
+      }),
+      obj_bytes,
+    )?);
+
+    // Root the object across exports allocation, since the exports heap allocation is not itself a
+    // `Value` and cannot be rooted directly.
+    scope.push_root(Value::Object(obj))?;
+
+    let exports_bytes = exports
+      .len()
+      .checked_mul(mem::size_of::<ModuleNamespaceExport>())
+      .unwrap_or(usize::MAX);
+    scope.heap.ensure_can_allocate(exports_bytes)?;
+    let exports = GcModuleNamespaceExports(scope.heap.alloc_unchecked(
+      HeapObject::ModuleNamespaceExports(ModuleNamespaceExportsData { exports }),
+      exports_bytes,
+    )?);
+
+    scope.heap.get_object_base_mut(obj)?.kind =
+      ObjectKind::ModuleNamespace(ModuleNamespaceObject { exports });
+
+    Ok(obj)
   }
 
   /// Allocates a JavaScript array exotic object on the heap.
@@ -7075,6 +7197,7 @@ enum HeapObject {
   String(JsString),
   Symbol(JsSymbol),
   Object(JsObject),
+  ModuleNamespaceExports(ModuleNamespaceExportsData),
   ArrayBuffer(JsArrayBuffer),
   TypedArray(JsTypedArray),
   DataView(JsDataView),
@@ -7094,6 +7217,7 @@ impl Trace for HeapObject {
       HeapObject::String(s) => s.trace(tracer),
       HeapObject::Symbol(s) => s.trace(tracer),
       HeapObject::Object(o) => o.trace(tracer),
+      HeapObject::ModuleNamespaceExports(ns) => ns.trace(tracer),
       HeapObject::ArrayBuffer(b) => b.trace(tracer),
       HeapObject::TypedArray(a) => a.trace(tracer),
       HeapObject::DataView(v) => v.trace(tracer),
@@ -7225,7 +7349,11 @@ impl ObjectBase {
   fn array_length(&self) -> Option<u32> {
     match &self.kind {
       ObjectKind::Array(a) => Some(a.length),
-      ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error | ObjectKind::Arguments => None,
+      ObjectKind::Ordinary
+      | ObjectKind::Date(_)
+      | ObjectKind::Error
+      | ObjectKind::Arguments
+      | ObjectKind::ModuleNamespace(_) => None,
     }
   }
 
@@ -7255,6 +7383,14 @@ impl Trace for ObjectBase {
     }
     for prop in self.properties.iter() {
       prop.trace(tracer);
+    }
+    match &self.kind {
+      ObjectKind::Ordinary
+      | ObjectKind::Array(_)
+      | ObjectKind::Date(_)
+      | ObjectKind::Error
+      | ObjectKind::Arguments => {}
+      ObjectKind::ModuleNamespace(ns) => ns.trace(tracer),
     }
   }
 }
@@ -7727,6 +7863,7 @@ enum ObjectKind {
   Date(DateObject),
   Error,
   Arguments,
+  ModuleNamespace(ModuleNamespaceObject),
 }
 
 #[derive(Debug)]
@@ -7737,6 +7874,59 @@ struct ArrayObject {
 #[derive(Debug)]
 struct DateObject {
   value: f64,
+}
+
+/// A Module Namespace Exotic Object's internal slots (ECMA-262 §9.4.6 / §26.3).
+#[derive(Debug)]
+pub(crate) struct ModuleNamespaceObject {
+  exports: GcModuleNamespaceExports,
+}
+
+/// Backing storage for a Module Namespace object's `[[Exports]]` list.
+///
+/// This is stored as a separate heap allocation (referenced by [`GcModuleNamespaceExports`]) so the
+/// `JsObject` header stays small and does not inflate the size of every heap slot.
+#[derive(Debug)]
+struct ModuleNamespaceExportsData {
+  exports: Box<[ModuleNamespaceExport]>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ModuleNamespaceExport {
+  /// The exported name (property key).
+  pub(crate) name: GcString,
+  pub(crate) value: ModuleNamespaceExportValue,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ModuleNamespaceExportValue {
+  /// A live binding backed by a module environment record.
+  Binding { env: GcEnv, name: GcString },
+  /// A re-exported namespace binding.
+  Namespace { namespace: GcObject },
+}
+
+impl Trace for ModuleNamespaceObject {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    tracer.trace_heap_id(self.exports.0);
+  }
+}
+
+impl Trace for ModuleNamespaceExportsData {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    for export in self.exports.iter() {
+      tracer.trace_value(Value::String(export.name));
+      match export.value {
+        ModuleNamespaceExportValue::Binding { env, name } => {
+          tracer.trace_env(env);
+          tracer.trace_value(Value::String(name));
+        }
+        ModuleNamespaceExportValue::Namespace { namespace } => {
+          tracer.trace_value(Value::Object(namespace));
+        }
+      }
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -14,6 +14,7 @@ use crate::module_record::PromiseCapabilityRoots;
 use crate::module_record::ResolveExportResult;
 use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
+use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
 use crate::{
   cmp_utf16, GcEnv, GcObject, LoadedModuleRequest, ModuleRequest, RealmId, RootId, Scope, StackFrame,
   Value, Vm, VmError,
@@ -973,18 +974,70 @@ impl ModuleGraph {
       .intrinsics()
       .ok_or(VmError::Unimplemented("module namespaces require intrinsics"))?;
 
-    let getter_call = vm.module_namespace_getter_call_id()?;
+    // Allocate the export list and capture binding resolution information.
+    //
+    // Root allocated strings (export names / binding names) while constructing the list: the export
+    // list itself lives in a Rust vector and is not GC-traced until it is stored in the module
+    // namespace object.
+    let mut inner = scope.reborrow();
+    let mut export_entries: Vec<ModuleNamespaceExport> = Vec::new();
+    export_entries
+      .try_reserve_exact(sorted_exports.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    for export_name in &sorted_exports {
+      let resolution =
+        match self.modules[module_index(module)].resolve_export_with_vm(vm, self, module, export_name)? {
+          ResolveExportResult::Resolved(res) => res,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "module namespace export list contains a missing/ambiguous name",
+            ))
+          }
+        };
+
+      let export_key_s = inner.alloc_string(export_name)?;
+      inner.push_root(Value::String(export_key_s))?;
+
+      let value = match resolution.binding_name {
+        crate::module_record::BindingName::Name(local_name) => {
+          let env_root = self.modules[module_index(resolution.module)]
+            .environment
+            .ok_or(VmError::Unimplemented("module namespace requires linked module environments"))?;
+          let env = inner
+            .heap()
+            .get_env_root(env_root)
+            .ok_or_else(|| VmError::invalid_handle())?;
+
+          let binding_name_s = inner.alloc_string(&local_name)?;
+          inner.push_root(Value::String(binding_name_s))?;
+
+          ModuleNamespaceExportValue::Binding {
+            env,
+            name: binding_name_s,
+          }
+        }
+        crate::module_record::BindingName::Namespace => {
+          let ns = self.get_module_namespace(resolution.module, vm, &mut inner)?;
+          inner.push_root(Value::Object(ns))?;
+          ModuleNamespaceExportValue::Namespace { namespace: ns }
+        }
+      };
+
+      export_entries.push(ModuleNamespaceExport {
+        name: export_key_s,
+        value,
+      });
+    }
+
+    let exports_boxed = export_entries.into_boxed_slice();
 
     // Allocate the namespace object.
     //
     // Root it before any further allocations (e.g. the `toStringTag` value string) in case those
     // allocations trigger a GC.
-    let mut inner = scope.reborrow();
-    let obj = inner.alloc_object_with_prototype(None)?;
+    let obj = inner.alloc_module_namespace_object(exports_boxed)?;
     inner.push_root(Value::Object(obj))?;
-
-    // prototype must be `null`.
-    inner.heap_mut().object_set_prototype(obj, None)?;
 
     // Define %Symbol.toStringTag% = "Module" (non-writable, non-enumerable, non-configurable).
     let tag_string = inner.alloc_string("Module")?;
@@ -1001,85 +1054,6 @@ impl ModuleGraph {
       PropertyKey::Symbol(intr.well_known_symbols().to_string_tag),
       desc,
     )?;
-
-    // Define accessor properties for each exported binding.
-    //
-    // A real module namespace is an exotic object with special internal methods; for now we model
-    // the export properties using ordinary accessor properties whose getters read from module
-    // environments (live bindings).
-    for export_name in &sorted_exports {
-      let resolution = match self.modules[module_index(module)].resolve_export_with_vm(vm, self, module, export_name)? {
-        ResolveExportResult::Resolved(res) => res,
-        // `GetModuleNamespace` filters out missing/ambiguous names; treat any mismatch as an
-        // internal invariant violation.
-        _ => {
-          return Err(VmError::InvariantViolation(
-            "module namespace export list contains a missing/ambiguous name",
-          ))
-        }
-      };
-
-      let getter = match resolution.binding_name {
-        crate::module_record::BindingName::Name(local_name) => {
-          let env_root = self.modules[module_index(resolution.module)]
-            .environment
-            .ok_or(VmError::Unimplemented("module namespace requires linked module environments"))?;
-          let env = inner
-            .heap()
-            .get_env_root(env_root)
-            .ok_or_else(|| VmError::invalid_handle())?;
-
-          let mut fn_scope = inner.reborrow();
-          let binding_name = fn_scope.alloc_string(&local_name)?;
-          fn_scope.push_root(Value::String(binding_name))?;
-          let name_s = fn_scope.alloc_string(export_name)?;
-          fn_scope.push_root(Value::String(name_s))?;
-
-          fn_scope.alloc_native_function_with_slots_and_env(
-            getter_call,
-            None,
-            name_s,
-            0,
-            &[Value::String(binding_name), Value::String(name_s)],
-            Some(env),
-          )?
-        }
-        crate::module_record::BindingName::Namespace => {
-          let ns = self.get_module_namespace(resolution.module, vm, &mut inner)?;
-          let mut fn_scope = inner.reborrow();
-          fn_scope.push_root(Value::Object(ns))?;
-          let name_s = fn_scope.alloc_string(export_name)?;
-          fn_scope.push_root(Value::String(name_s))?;
-
-          fn_scope.alloc_native_function_with_slots_and_env(
-            getter_call,
-            None,
-            name_s,
-            0,
-            &[Value::Object(ns), Value::String(name_s)],
-            None,
-          )?
-        }
-      };
-
-      // Root the getter while allocating the property key and descriptor.
-      let mut prop_scope = inner.reborrow();
-      prop_scope.push_root(Value::Object(getter))?;
-
-      let key = prop_scope.alloc_string(export_name)?;
-      let desc = PropertyDescriptor {
-        enumerable: true,
-        configurable: false,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(getter),
-          set: Value::Undefined,
-        },
-      };
-      prop_scope.define_property(obj, PropertyKey::String(key), desc)?;
-    }
-
-    inner.heap_mut().object_set_extensible(obj, false)?;
-
     Ok((obj, sorted_exports))
   }
 

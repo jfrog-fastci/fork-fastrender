@@ -199,6 +199,34 @@ impl GcEnv {
   }
 }
 
+/// A GC-managed Module Namespace export table.
+///
+/// Module Namespace objects store their `[[Exports]]` list off-heap to avoid inflating the size of
+/// every `JsObject` / heap slot (important for small heap limits used by unit tests).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(transparent)]
+pub(crate) struct GcModuleNamespaceExports(pub(crate) HeapId);
+
+impl GcModuleNamespaceExports {
+  /// The underlying [`HeapId`].
+  #[inline]
+  pub fn id(self) -> HeapId {
+    self.0
+  }
+
+  /// The slot index within the heap.
+  #[inline]
+  pub fn index(self) -> u32 {
+    self.0.index()
+  }
+
+  /// The slot generation within the heap.
+  #[inline]
+  pub fn generation(self) -> u32 {
+    self.0.generation()
+  }
+}
+
 /// An ID for a persistent root stored in the heap.
 ///
 /// Returned by [`Heap::add_root`](crate::Heap::add_root) and later passed to

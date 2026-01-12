@@ -977,17 +977,17 @@ fn module_record_from_top_level(
             }
           };
 
-          if let Some(default) = &import_stmt.stx.default {
-            ctx.budget_tick()?;
-            let Pat::Id(id) = &*default.stx.pat.stx else {
-              return Err(VmError::Unimplemented("default import pattern"));
-            };
-            record.import_entries.push(ImportEntry {
-              module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
-              import_name: ImportName::Name(try_string_from_str("default")?),
-              local_name: try_string_from_str(&id.stx.name)?,
-            });
-          }
+            if let Some(default) = &import_stmt.stx.default {
+              ctx.budget_tick()?;
+              let Pat::Id(id) = &*default.stx.pat.stx else {
+                return Err(VmError::Unimplemented("default import pattern"));
+              };
+              record.import_entries.push(ImportEntry {
+                module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
+                import_name: ImportName::Name(try_string_from_str("default")?),
+                local_name: try_string_from_identifier_name(&id.stx.name)?,
+              });
+            }
 
           if let Some(names) = import_stmt.stx.names.as_ref() {
             match names {
@@ -999,7 +999,7 @@ fn module_record_from_top_level(
                 record.import_entries.push(ImportEntry {
                   module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
                   import_name: ImportName::All,
-                  local_name: try_string_from_str(&id.stx.name)?,
+                  local_name: try_string_from_identifier_name(&id.stx.name)?,
                 });
               }
               ImportNames::Specific(list) => {
@@ -1013,8 +1013,8 @@ fn module_record_from_top_level(
                   };
                   record.import_entries.push(ImportEntry {
                     module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
-                    import_name: ImportName::Name(try_string_from_str(name.stx.importable.as_str())?),
-                    local_name: try_string_from_str(&id.stx.name)?,
+                    import_name: ImportName::Name(try_string_from_identifier_name(name.stx.importable.as_str())?),
+                    local_name: try_string_from_identifier_name(&id.stx.name)?,
                   });
                 }
               }
@@ -1084,7 +1084,7 @@ fn module_record_from_top_level(
               .try_reserve(1)
               .map_err(|_| VmError::OutOfMemory)?;
             record.indirect_export_entries.push(IndirectExportEntry {
-              export_name: try_string_from_str(&alias.stx.name)?,
+              export_name: try_string_from_identifier_name(&alias.stx.name)?,
               module_request: req,
               import_name: ImportName::All,
             });
@@ -1098,16 +1098,16 @@ fn module_record_from_top_level(
               for name in rest {
                 ctx.budget_tick()?;
                 record.indirect_export_entries.push(IndirectExportEntry {
-                  export_name: try_string_from_str(&name.stx.alias.stx.name)?,
+                  export_name: try_string_from_identifier_name(&name.stx.alias.stx.name)?,
                   module_request: clone_module_request(&req, &mut ctx)?,
-                  import_name: ImportName::Name(try_string_from_str(name.stx.exportable.as_str())?),
+                  import_name: ImportName::Name(try_string_from_identifier_name(name.stx.exportable.as_str())?),
                 });
               }
               ctx.budget_tick()?;
               record.indirect_export_entries.push(IndirectExportEntry {
-                export_name: try_string_from_str(&last.stx.alias.stx.name)?,
+                export_name: try_string_from_identifier_name(&last.stx.alias.stx.name)?,
                 module_request: req,
-                import_name: ImportName::Name(try_string_from_str(last.stx.exportable.as_str())?),
+                import_name: ImportName::Name(try_string_from_identifier_name(last.stx.exportable.as_str())?),
               });
             }
           }
@@ -1119,8 +1119,8 @@ fn module_record_from_top_level(
             for name in names {
               ctx.budget_tick()?;
               record.local_export_entries.push(LocalExportEntry {
-                export_name: try_string_from_str(&name.stx.alias.stx.name)?,
-                local_name: try_string_from_str(name.stx.exportable.as_str())?,
+                export_name: try_string_from_identifier_name(&name.stx.alias.stx.name)?,
+                local_name: try_string_from_identifier_name(name.stx.exportable.as_str())?,
               });
             }
           }
@@ -1150,7 +1150,7 @@ fn module_record_from_top_level(
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
         let local_name = match func.stx.name.as_ref() {
-          Some(n) => try_string_from_str(&n.stx.name)?,
+          Some(n) => try_string_from_identifier_name(&n.stx.name)?,
           None => try_string_from_str("*default*")?,
         };
         record.local_export_entries.push(LocalExportEntry {
@@ -1169,7 +1169,7 @@ fn module_record_from_top_level(
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
         let local_name = match class.stx.name.as_ref() {
-          Some(n) => try_string_from_str(&n.stx.name)?,
+          Some(n) => try_string_from_identifier_name(&n.stx.name)?,
           None => try_string_from_str("*default*")?,
         };
         record.local_export_entries.push(LocalExportEntry {
@@ -1200,7 +1200,7 @@ fn push_local_export_entries_from_binding_pat(
 
   match &*pat.stx {
     Pat::Id(id) => {
-      let local_name = try_string_from_str(&id.stx.name)?;
+      let local_name = try_string_from_identifier_name(&id.stx.name)?;
       out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       out.push(LocalExportEntry {
         export_name: try_string_from_str(&local_name)?,
@@ -2545,6 +2545,90 @@ fn try_string_from_str(value: &str) -> Result<String, VmError> {
   let mut out = String::new();
   out.try_reserve(value.len()).map_err(|_| VmError::OutOfMemory)?;
   out.push_str(value);
+  Ok(out)
+}
+
+/// Decodes `\uXXXX` and `\u{...}` escape sequences in identifier names.
+///
+/// `parse-js` preserves the original source spelling for identifiers (including Unicode escape
+/// sequences) and validates them in the lexer, but the VM needs the *cooked* identifier name for
+/// module record algorithms (`GetExportedNames`, namespace export keys, etc.).
+fn try_string_from_identifier_name(value: &str) -> Result<String, VmError> {
+  if !value.contains('\\') {
+    return try_string_from_str(value);
+  }
+
+  let mut out = String::new();
+  out.try_reserve(value.len()).map_err(|_| VmError::OutOfMemory)?;
+
+  let mut chars = value.chars().peekable();
+  while let Some(ch) = chars.next() {
+    if ch != '\\' {
+      out.push(ch);
+      continue;
+    }
+
+    match chars.next() {
+      Some('u') => {}
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "identifier escape sequence was not a Unicode escape",
+        ))
+      }
+    }
+
+    if chars.peek() == Some(&'{') {
+      // `\u{...}`
+      let _ = chars.next();
+      let mut value_u32: u32 = 0;
+      let mut saw_digit = false;
+      let mut closed = false;
+      while let Some(next) = chars.next() {
+        if next == '}' {
+          closed = true;
+          break;
+        }
+        let Some(digit) = next.to_digit(16) else {
+          return Err(VmError::InvariantViolation(
+            "invalid hex digit in identifier escape sequence",
+          ));
+        };
+        saw_digit = true;
+        value_u32 = value_u32
+          .checked_mul(16)
+          .and_then(|v| v.checked_add(digit))
+          .ok_or(VmError::InvariantViolation(
+            "identifier escape sequence value overflow",
+          ))?;
+      }
+      if !closed || !saw_digit {
+        return Err(VmError::InvariantViolation(
+          "unterminated identifier escape sequence",
+        ));
+      }
+      let decoded = char::from_u32(value_u32).ok_or(VmError::InvariantViolation(
+        "identifier escape sequence produced an invalid code point",
+      ))?;
+      out.push(decoded);
+      continue;
+    }
+
+    // `\uXXXX`
+    let mut value_u32: u32 = 0;
+    for _ in 0..4 {
+      let next = chars.next().ok_or(VmError::InvariantViolation(
+        "truncated identifier escape sequence",
+      ))?;
+      let digit = next.to_digit(16).ok_or(VmError::InvariantViolation(
+        "invalid hex digit in identifier escape sequence",
+      ))?;
+      value_u32 = (value_u32 << 4) | digit;
+    }
+    let decoded = char::from_u32(value_u32).ok_or(VmError::InvariantViolation(
+      "identifier escape sequence produced an invalid code point",
+    ))?;
+    out.push(decoded);
+  }
   Ok(out)
 }
 
