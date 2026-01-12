@@ -99,14 +99,25 @@ struct EnvState {
   env: WindowXhrEnv,
   next_xhr_id: u64,
   xhrs: HashMap<u64, XhrState>,
+  upload_add_event_listener_call: NativeFunctionId,
+  upload_remove_event_listener_call: NativeFunctionId,
+  upload_dispatch_event_call: NativeFunctionId,
 }
 
 impl EnvState {
-  fn new(env: WindowXhrEnv) -> Self {
+  fn new(
+    env: WindowXhrEnv,
+    upload_add_event_listener_call: NativeFunctionId,
+    upload_remove_event_listener_call: NativeFunctionId,
+    upload_dispatch_event_call: NativeFunctionId,
+  ) -> Self {
     Self {
       env,
       next_xhr_id: 1,
       xhrs: HashMap::new(),
+      upload_add_event_listener_call,
+      upload_remove_event_listener_call,
+      upload_dispatch_event_call,
     }
   }
 
@@ -473,7 +484,7 @@ fn xhr_constructor_call(
 }
 
 fn xhr_constructor_construct(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -519,6 +530,67 @@ fn xhr_constructor_construct(
   let listeners = scope.alloc_object()?;
   scope.push_root(Value::Object(listeners))?;
   set_data_prop(scope, obj, LISTENERS_KEY, Value::Object(listeners), false)?;
+
+  // `xhr.upload` stub for libraries that attach upload progress listeners (axios, etc). This MVP
+  // binding never fires upload events but provides the common surface area.
+  let (upload_add_event_listener_call, upload_remove_event_listener_call, upload_dispatch_event_call) =
+    with_env_state(env_id, |state| {
+      Ok((
+        state.upload_add_event_listener_call,
+        state.upload_remove_event_listener_call,
+        state.upload_dispatch_event_call,
+      ))
+    })?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let upload = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+  scope.push_root(Value::Object(upload))?;
+
+  let add_name = scope.alloc_string("addEventListener")?;
+  scope.push_root(Value::String(add_name))?;
+  let add_fn = scope.alloc_native_function(upload_add_event_listener_call, None, add_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(add_fn, Some(intr.function_prototype()))?;
+  set_data_prop(scope, upload, "addEventListener", Value::Object(add_fn), true)?;
+
+  let remove_name = scope.alloc_string("removeEventListener")?;
+  scope.push_root(Value::String(remove_name))?;
+  let remove_fn = scope.alloc_native_function(upload_remove_event_listener_call, None, remove_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(remove_fn, Some(intr.function_prototype()))?;
+  set_data_prop(
+    scope,
+    upload,
+    "removeEventListener",
+    Value::Object(remove_fn),
+    true,
+  )?;
+
+  let dispatch_name = scope.alloc_string("dispatchEvent")?;
+  scope.push_root(Value::String(dispatch_name))?;
+  let dispatch_fn = scope.alloc_native_function(upload_dispatch_event_call, None, dispatch_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(dispatch_fn, Some(intr.function_prototype()))?;
+  set_data_prop(scope, upload, "dispatchEvent", Value::Object(dispatch_fn), true)?;
+
+  for handler in [
+    "onprogress",
+    "onloadstart",
+    "onload",
+    "onerror",
+    "onabort",
+    "ontimeout",
+    "onloadend",
+  ] {
+    set_data_prop(scope, upload, handler, Value::Null, true)?;
+  }
+
+  set_data_prop(scope, obj, "upload", Value::Object(upload), false)?;
 
   Ok(Value::Object(obj))
 }
@@ -2168,6 +2240,43 @@ fn xhr_dispatch_event_native(
   Ok(Value::Bool(true))
 }
 
+fn xhr_upload_add_event_listener_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // `XMLHttpRequestUpload` is a stub in this MVP; events are never fired.
+  Ok(Value::Undefined)
+}
+
+fn xhr_upload_remove_event_listener_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
+fn xhr_upload_dispatch_event_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Bool(true))
+}
+
 fn dispatch_xhr_event(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2379,11 +2488,23 @@ pub fn install_window_xhr_bindings_with_guard<Host: WindowRealmHost + 'static>(
   env: WindowXhrEnv,
 ) -> Result<WindowXhrBindings, VmError> {
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
+  let upload_add_event_listener_call = vm.register_native_call(xhr_upload_add_event_listener_native)?;
+  let upload_remove_event_listener_call =
+    vm.register_native_call(xhr_upload_remove_event_listener_native)?;
+  let upload_dispatch_event_call = vm.register_native_call(xhr_upload_dispatch_event_native)?;
   {
     let mut lock = envs()
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    lock.insert(env_id, EnvState::new(env));
+    lock.insert(
+      env_id,
+      EnvState::new(
+        env,
+        upload_add_event_listener_call,
+        upload_remove_event_listener_call,
+        upload_dispatch_event_call,
+      ),
+    );
   }
   let bindings = WindowXhrBindings::new(env_id);
 
@@ -2970,6 +3091,53 @@ mod tests {
     assert_eq!(get_string(scope.heap(), t_val), "function");
     assert_eq!(get_prop(&mut scope, global, "__u"), Value::Number(0.0));
     assert_eq!(get_prop(&mut scope, global, "__d"), Value::Number(4.0));
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_upload_stub_exists() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm();
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "var xhr = new XMLHttpRequest();\n\
+         globalThis.__upload_type = typeof xhr.upload;\n\
+         globalThis.__upload_add = typeof xhr.upload.addEventListener;\n\
+         xhr.upload.onprogress = function(){};\n\
+         globalThis.__upload_onprogress = typeof xhr.upload.onprogress;",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    assert_eq!(
+      get_string(scope.heap(), get_prop(&mut scope, global, "__upload_type")),
+      "object"
+    );
+    assert_eq!(
+      get_string(scope.heap(), get_prop(&mut scope, global, "__upload_add")),
+      "function"
+    );
+    assert_eq!(
+      get_string(scope.heap(), get_prop(&mut scope, global, "__upload_onprogress")),
+      "function"
+    );
     Ok(())
   }
 
