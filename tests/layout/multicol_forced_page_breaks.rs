@@ -1680,3 +1680,140 @@ fn multicol_break_after_verso_on_last_child_inserts_blank_page_before_following_
     page_content_start_y(page4)
   );
 }
+
+#[test]
+fn multicol_break_after_recto_on_last_child_inserts_blank_page_before_following_content_rtl_progression() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :blank { @top-center { content: "Blank"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { height: 80px; margin: 0; }
+          #b { break-after: recto; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="blk" id="a">A</div>
+          <div class="blk" id="b">B</div>
+        </div>
+        <div id="after">AFTER</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 200, 200, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    3,
+    "break-after: recto at the end of a paged multicol flow should insert exactly one blank page (RTL progression)"
+  );
+
+  let page1 = page_roots[0];
+  let blank_page = page_roots[1];
+  let page3 = page_roots[2];
+
+  let page1_content = page_content(page1);
+  assert!(find_text_eq(page1_content, "A").is_some());
+  assert!(find_text_eq(page1_content, "B").is_some());
+  assert!(find_text_eq(page1_content, "AFTER").is_none());
+
+  assert!(margin_boxes_contain_text(blank_page, "Blank"));
+  assert!(find_text_eq(blank_page, "A").is_none());
+  assert!(find_text_eq(blank_page, "B").is_none());
+  assert!(find_text_eq(blank_page, "AFTER").is_none());
+
+  let page3_content = page_content(page3);
+  assert!(find_text_eq(page3_content, "AFTER").is_some());
+  let pos_after = find_text_position(page3, "AFTER", (0.0, 0.0)).expect("AFTER on page 3");
+  assert!(
+    pos_after.1 <= page_content_start_y(page3) + 1.0,
+    "expected AFTER to start at the top of the third page; pos={pos_after:?} content_start_y={}",
+    page_content_start_y(page3)
+  );
+}
+
+#[test]
+fn multicol_break_after_verso_on_last_child_inserts_blank_page_before_following_content_rtl_progression() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :blank { @top-center { content: "Blank"; } }
+          body { margin: 0; }
+          .pre { height: 160px; margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { height: 80px; margin: 0; }
+          #b { break-after: verso; }
+        </style>
+      </head>
+      <body>
+        <div class="pre">PRE</div>
+        <div class="multi">
+          <div class="blk" id="a">A</div>
+          <div class="blk" id="b">B</div>
+        </div>
+        <div id="after">AFTER</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 200, 200, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    4,
+    "break-after: verso at the end of a paged multicol flow should insert exactly one blank page (RTL progression)"
+  );
+
+  let page1 = page_roots[0];
+  let page2 = page_roots[1];
+  let blank_page = page_roots[2];
+  let page4 = page_roots[3];
+
+  let page1_content = page_content(page1);
+  assert!(find_text_eq(page1_content, "PRE").is_some());
+  assert!(find_text_eq(page1_content, "A").is_none());
+  assert!(find_text_eq(page1_content, "B").is_none());
+  assert!(find_text_eq(page1_content, "AFTER").is_none());
+
+  let page2_content = page_content(page2);
+  assert!(find_text_eq(page2_content, "PRE").is_none());
+  assert!(find_text_eq(page2_content, "A").is_some());
+  assert!(find_text_eq(page2_content, "B").is_some());
+  assert!(find_text_eq(page2_content, "AFTER").is_none());
+
+  assert!(margin_boxes_contain_text(blank_page, "Blank"));
+  assert!(find_text_eq(blank_page, "PRE").is_none());
+  assert!(find_text_eq(blank_page, "A").is_none());
+  assert!(find_text_eq(blank_page, "B").is_none());
+  assert!(find_text_eq(blank_page, "AFTER").is_none());
+
+  let page4_content = page_content(page4);
+  assert!(find_text_eq(page4_content, "AFTER").is_some());
+  let pos_after = find_text_position(page4, "AFTER", (0.0, 0.0)).expect("AFTER on page 4");
+  assert!(
+    pos_after.1 <= page_content_start_y(page4) + 1.0,
+    "expected AFTER to start at the top of the fourth page; pos={pos_after:?} content_start_y={}",
+    page_content_start_y(page4)
+  );
+}
