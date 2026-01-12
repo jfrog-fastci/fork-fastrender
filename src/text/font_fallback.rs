@@ -53,6 +53,7 @@ use fontdb::ID;
 use lru::LruCache;
 use parking_lot::Mutex;
 use rustc_hash::FxHasher;
+use crate::debug::runtime::runtime_toggles;
 use std::hash::BuildHasherDefault;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -74,19 +75,20 @@ const FALLBACK_DESCRIPTOR_HINT_DIVISOR: usize = 16;
 const FALLBACK_DESCRIPTOR_HINT_MIN: usize = 64;
 const FALLBACK_DESCRIPTOR_HINT_MAX: usize = 8192;
 
-fn fallback_cache_capacity_from_env(default: usize) -> usize {
-  match std::env::var(FALLBACK_CACHE_CAPACITY_ENV) {
-    Ok(raw) => {
-      let trimmed = raw.trim();
-      if trimmed.is_empty() {
-        return default;
-      }
-      match trimmed.parse::<usize>() {
-        Ok(0) | Err(_) => default,
-        Ok(value) => value,
-      }
-    }
-    Err(_) => default,
+fn fallback_cache_capacity_from_runtime_toggles(default: usize) -> usize {
+  let toggles = runtime_toggles();
+  let Some(raw) = toggles.get(FALLBACK_CACHE_CAPACITY_ENV) else {
+    return default.max(1);
+  };
+
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return default.max(1);
+  }
+
+  match trimmed.parse::<usize>() {
+    Ok(0) | Err(_) => default.max(1),
+    Ok(value) => value.max(1),
   }
 }
 
@@ -441,7 +443,7 @@ pub(crate) struct FallbackCache {
 
 impl FallbackCache {
   pub(crate) fn new(capacity: usize) -> Self {
-    let capacity = fallback_cache_capacity_from_env(capacity).max(1);
+    let capacity = fallback_cache_capacity_from_runtime_toggles(capacity);
     let shard_count = FALLBACK_CACHE_SHARDS.min(capacity).max(1);
     let hint_capacity = fallback_hint_cache_capacity(capacity);
     let hint_shard_count = FALLBACK_CACHE_SHARDS.min(hint_capacity).max(1);
@@ -989,7 +991,8 @@ impl FallbackChainBuilder {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::sync::OnceLock;
+  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
+  use std::collections::HashMap;
 
   fn dummy_descriptor() -> FallbackCacheDescriptor {
     FallbackCacheDescriptor::new(
@@ -1005,31 +1008,11 @@ mod tests {
     )
   }
 
-  fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-  }
-
-  struct EnvVarGuard {
-    key: &'static str,
-    prev: Option<String>,
-  }
-
-  impl EnvVarGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-      let prev = std::env::var(key).ok();
-      std::env::set_var(key, value);
-      Self { key, prev }
-    }
-  }
-
-  impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-      match &self.prev {
-        Some(value) => std::env::set_var(self.key, value),
-        None => std::env::remove_var(self.key),
-      }
-    }
+  fn toggles_with_capacity(raw: &str) -> Arc<RuntimeToggles> {
+    Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      FALLBACK_CACHE_CAPACITY_ENV.to_string(),
+      raw.to_string(),
+    )])))
   }
 
   #[test]
@@ -1130,86 +1113,85 @@ mod tests {
 
   #[test]
   fn fallback_cache_prepare_clears_shards() {
-    let _lock = env_lock().lock();
-    let _guard = EnvVarGuard::set(FALLBACK_CACHE_CAPACITY_ENV, "0");
-    let cache = FallbackCache::new(32);
-    let descriptor = dummy_descriptor();
-    let glyph_key = GlyphFallbackCacheKey {
-      descriptor,
-      ch: 'a',
-    };
-    let cluster_key = ClusterFallbackCacheKey {
-      descriptor,
-      signature: 42,
-    };
+    with_runtime_toggles(toggles_with_capacity("0"), || {
+      let cache = FallbackCache::new(32);
+      let descriptor = dummy_descriptor();
+      let glyph_key = GlyphFallbackCacheKey {
+        descriptor,
+        ch: 'a',
+      };
+      let cluster_key = ClusterFallbackCacheKey {
+        descriptor,
+        signature: 42,
+      };
 
-    cache.insert_glyph(glyph_key, None);
-    cache.insert_cluster(cluster_key, None);
-    assert!(matches!(cache.get_glyph(&glyph_key), Some(None)));
-    assert!(matches!(cache.get_cluster(&cluster_key), Some(None)));
+      cache.insert_glyph(glyph_key, None);
+      cache.insert_cluster(cluster_key, None);
+      assert!(matches!(cache.get_glyph(&glyph_key), Some(None)));
+      assert!(matches!(cache.get_cluster(&cluster_key), Some(None)));
 
-    // New cache starts at generation 0, so prepare(0) is a no-op.
-    cache.prepare(0);
-    assert!(matches!(cache.get_glyph(&glyph_key), Some(None)));
-    assert!(matches!(cache.get_cluster(&cluster_key), Some(None)));
+      // New cache starts at generation 0, so prepare(0) is a no-op.
+      cache.prepare(0);
+      assert!(matches!(cache.get_glyph(&glyph_key), Some(None)));
+      assert!(matches!(cache.get_cluster(&cluster_key), Some(None)));
 
-    // Generation bump should clear all shards.
-    cache.prepare(1);
-    assert!(cache.get_glyph(&glyph_key).is_none());
-    assert!(cache.get_cluster(&cluster_key).is_none());
+      // Generation bump should clear all shards.
+      cache.prepare(1);
+      assert!(cache.get_glyph(&glyph_key).is_none());
+      assert!(cache.get_cluster(&cluster_key).is_none());
 
-    let stats = cache.stats();
-    assert_eq!(stats.clears, 1);
-    assert_eq!(stats.glyph_entries, 0);
-    assert_eq!(stats.cluster_entries, 0);
-    assert!(stats.shards > 1);
+      let stats = cache.stats();
+      assert_eq!(stats.clears, 1);
+      assert_eq!(stats.glyph_entries, 0);
+      assert_eq!(stats.cluster_entries, 0);
+      assert!(stats.shards > 1);
+    });
   }
 
   #[test]
   fn fallback_cache_records_evictions() {
-    let _lock = env_lock().lock();
-    let _guard = EnvVarGuard::set(FALLBACK_CACHE_CAPACITY_ENV, "0");
-    let cache = FallbackCache::new(1);
-    let descriptor = dummy_descriptor();
+    with_runtime_toggles(toggles_with_capacity("0"), || {
+      let cache = FallbackCache::new(1);
+      let descriptor = dummy_descriptor();
 
-    let glyph_key_1 = GlyphFallbackCacheKey {
-      descriptor,
-      ch: 'a',
-    };
-    let glyph_key_2 = GlyphFallbackCacheKey {
-      descriptor,
-      ch: 'b',
-    };
-    cache.insert_glyph(glyph_key_1, None);
-    cache.insert_glyph(glyph_key_2, None);
+      let glyph_key_1 = GlyphFallbackCacheKey {
+        descriptor,
+        ch: 'a',
+      };
+      let glyph_key_2 = GlyphFallbackCacheKey {
+        descriptor,
+        ch: 'b',
+      };
+      cache.insert_glyph(glyph_key_1, None);
+      cache.insert_glyph(glyph_key_2, None);
 
-    let cluster_key_1 = ClusterFallbackCacheKey {
-      descriptor,
-      signature: 1,
-    };
-    let cluster_key_2 = ClusterFallbackCacheKey {
-      descriptor,
-      signature: 2,
-    };
-    cache.insert_cluster(cluster_key_1, None);
-    cache.insert_cluster(cluster_key_2, None);
+      let cluster_key_1 = ClusterFallbackCacheKey {
+        descriptor,
+        signature: 1,
+      };
+      let cluster_key_2 = ClusterFallbackCacheKey {
+        descriptor,
+        signature: 2,
+      };
+      cache.insert_cluster(cluster_key_1, None);
+      cache.insert_cluster(cluster_key_2, None);
 
-    let stats = cache.stats();
-    assert!(stats.glyph_evictions >= 1);
-    assert!(stats.cluster_evictions >= 1);
-    assert_eq!(stats.glyph_entries, 1);
-    assert_eq!(stats.cluster_entries, 1);
+      let stats = cache.stats();
+      assert!(stats.glyph_evictions >= 1);
+      assert!(stats.cluster_evictions >= 1);
+      assert_eq!(stats.glyph_entries, 1);
+      assert_eq!(stats.cluster_entries, 1);
+    });
   }
 
   #[test]
   fn fallback_cache_capacity_env_override_is_honored() {
-    let _lock = env_lock().lock();
-    let _guard = EnvVarGuard::set(FALLBACK_CACHE_CAPACITY_ENV, "123");
-
-    let cache = FallbackCache::new(1);
-    let stats = cache.stats();
-    assert_eq!(stats.glyph_capacity, 123);
-    assert_eq!(stats.cluster_capacity, 123);
-    assert_eq!(stats.shards, FALLBACK_CACHE_SHARDS as u64);
+    with_runtime_toggles(toggles_with_capacity("123"), || {
+      let cache = FallbackCache::new(1);
+      let stats = cache.stats();
+      assert_eq!(stats.glyph_capacity, 123);
+      assert_eq!(stats.cluster_capacity, 123);
+      assert_eq!(stats.shards, FALLBACK_CACHE_SHARDS as u64);
+    });
   }
 }

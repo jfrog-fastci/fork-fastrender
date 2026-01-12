@@ -125,7 +125,6 @@ pub(crate) const DEFAULT_OBLIQUE_ANGLE_DEG: f32 = 14.0;
 const SHAPING_CACHE_CAPACITY: usize = 65536;
 const SHAPING_CACHE_HASH_COLLISION_BUCKET_LIMIT: usize = 8;
 const FONT_RESOLUTION_CACHE_SIZE: usize = 131072;
-const TEXT_FALLBACK_CACHE_CAPACITY_ENV: &str = "FASTR_TEXT_FALLBACK_CACHE_CAPACITY";
 #[cfg(any(test, debug_assertions))]
 thread_local! {
   // These counters are used by unit/integration tests as guardrails against excessive churn.
@@ -138,23 +137,6 @@ thread_local! {
 }
 
 type ShapingCacheHasher = BuildHasherDefault<FxHasher>;
-
-fn fallback_cache_capacity() -> usize {
-  static CAPACITY: OnceLock<usize> = OnceLock::new();
-  *CAPACITY.get_or_init(|| match std::env::var(TEXT_FALLBACK_CACHE_CAPACITY_ENV) {
-    Ok(raw) => {
-      let trimmed = raw.trim();
-      if trimmed.is_empty() {
-        return FONT_RESOLUTION_CACHE_SIZE;
-      }
-      match trimmed.parse::<usize>() {
-        Ok(0) | Err(_) => FONT_RESOLUTION_CACHE_SIZE,
-        Ok(value) => value,
-      }
-    }
-    Err(_) => FONT_RESOLUTION_CACHE_SIZE,
-  })
-}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TextCacheStats {
@@ -6451,7 +6433,7 @@ impl ShapingPipeline {
     SHAPING_PIPELINE_NEW_CALLS.with(|calls| calls.set(calls.get() + 1));
     Self {
       cache: ShapingCache::new(shaping_cache_capacity_from_env()),
-      font_cache: FallbackCache::new(fallback_cache_capacity()),
+      font_cache: FallbackCache::new(FONT_RESOLUTION_CACHE_SIZE),
     }
   }
 
@@ -6471,7 +6453,7 @@ impl ShapingPipeline {
   fn with_cache_capacity_for_test(capacity: usize) -> Self {
     Self {
       cache: ShapingCache::new(capacity),
-      font_cache: FallbackCache::new(fallback_cache_capacity()),
+      font_cache: FallbackCache::new(FONT_RESOLUTION_CACHE_SIZE),
     }
   }
 
