@@ -5379,3 +5379,31 @@ rs.pipeTo(ws)
   assert_eq!(ok, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn element_get_bounding_client_rect_returns_zero_dom_rect_in_window_host_state() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><body><div id=x></div></body></html>",
+  )?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  let ok = host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"(() => {
+      const el = document.getElementById('x');
+      if (typeof Element.prototype.getBoundingClientRect !== 'function') return false;
+      if (typeof el.getBoundingClientRect !== 'function') return false;
+      const r = el.getBoundingClientRect();
+      if (!(r instanceof DOMRectReadOnly)) return false;
+      const props = ['x', 'y', 'width', 'height', 'top', 'left', 'right', 'bottom'];
+      for (const p of props) { if (typeof r[p] !== 'number') return false; }
+      if (!(r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0)) return false;
+      let msg = null;
+      try { Element.prototype.getBoundingClientRect.call(document); } catch (e) { msg = e && e.message; }
+      return msg === 'Illegal invocation';
+    })()"#,
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}

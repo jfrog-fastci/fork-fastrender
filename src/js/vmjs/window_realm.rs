@@ -10605,75 +10605,47 @@ fn element_get_bounding_client_rect_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(wrapper_obj) = this else {
-    return Err(VmError::TypeError(
-      "Element.getBoundingClientRect must be called on an element object",
-    ));
+    return Err(VmError::TypeError("Illegal invocation"));
   };
 
   let handle = element_handle_from_wrapper_obj(
     vm,
     scope,
     wrapper_obj,
-    "Element.getBoundingClientRect must be called on an element object",
+    "Illegal invocation",
   )?;
-  let document_obj = handle.document_obj;
 
-  let document_window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
-  let window_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &document_window_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => {
-      return Err(VmError::TypeError(
-        "Element.getBoundingClientRect requires a DOM-backed document",
-      ))
-    }
-  };
-
-  // Only renderer-backed documents can currently compute layout geometry.
-  let (x, y, width, height) = if is_host_document_id(vm, handle.document_id) {
+  let rect = if is_host_document_id(vm, handle.document_id) {
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
-      if document.ensure_layout_for_dom_queries().is_ok() {
-        if let Ok(geometry) = document.geometry_context() {
-          if let Some(rect) = geometry.border_box_in_viewport(handle.node_id) {
-            (
-              rect.x() as f64,
-              rect.y() as f64,
-              rect.width() as f64,
-              rect.height() as f64,
-            )
-          } else {
-            (0.0, 0.0, 0.0, 0.0)
-          }
-        } else {
-          (0.0, 0.0, 0.0, 0.0)
-        }
-      } else {
-        (0.0, 0.0, 0.0, 0.0)
-      }
+      document
+        .geometry_context()
+        .ok()
+        .and_then(|ctx| ctx.border_box_in_viewport(handle.node_id))
+        .unwrap_or(Rect::ZERO)
     } else {
-      (0.0, 0.0, 0.0, 0.0)
+      Rect::ZERO
     }
   } else {
-    (0.0, 0.0, 0.0, 0.0)
+    Rect::ZERO
   };
 
-  // Read the constructor off the global object so the returned instance has the right prototype.
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(window_obj))?;
-  let dom_rect_ctor_key = alloc_key(&mut scope, "DOMRectReadOnly")?;
-  let dom_rect_ctor = scope
-    .heap()
-    .object_get_own_data_property_value(window_obj, &dom_rect_ctor_key)?
-    .unwrap_or(Value::Undefined);
-  let Value::Object(dom_rect_ctor) = dom_rect_ctor else {
-    return Err(VmError::TypeError(
-      "DOMRectReadOnly constructor is not available",
-    ));
+  let global = match document_window_from_document(scope, handle.document_obj)? {
+    Some(global) => global,
+    None => vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.window_obj)
+      .ok_or(VmError::TypeError("Illegal invocation"))?,
   };
 
-  dom_rect_create_instance(&mut scope, dom_rect_ctor, true, x, y, width, height)
+  let rect_obj = crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+    scope,
+    global,
+    rect.x() as f64,
+    rect.y() as f64,
+    rect.width() as f64,
+    rect.height() as f64,
+  )?;
+  Ok(Value::Object(rect_obj))
 }
 
 fn document_create_element_native(
@@ -42103,7 +42075,59 @@ mod tests {
     let ok = exec_script_with_dom_host(
       &mut realm,
       &mut host,
-      "document.getElementById('x').getBoundingClientRect() instanceof DOMRectReadOnly",
+      "(() => {\n\
+        const el = document.getElementById('x');\n\
+        const r = el.getBoundingClientRect();\n\
+        if (!(r instanceof DOMRectReadOnly)) return false;\n\
+        const props = ['x', 'y', 'width', 'height', 'top', 'left', 'right', 'bottom'];\n\
+        for (const p of props) { if (typeof r[p] !== 'number') return false; }\n\
+        // Non-rendered host documents return a deterministic dummy rect.\n\
+        if (!(r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0)) return false;\n\
+        let msg = null;\n\
+        try { Element.prototype.getBoundingClientRect.call(document); } catch (e) { msg = e && e.message; }\n\
+        return msg === 'Illegal invocation';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_get_bounding_client_rect_returns_zero_without_cached_layout_for_browser_document_dom2(
+  ) -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            #x { width: 30px; height: 40px; }
+          </style>
+        </head>
+        <body>
+          <div id="x"></div>
+        </body>
+      </html>"#;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      html,
+      RenderOptions::new().with_viewport(200, 200),
+    )
+    .expect("BrowserDocumentDom2::from_html should succeed");
+
+    // Intentionally do not call `render_frame()` / `ensure_layout_for_dom_queries()`.
+    // `getBoundingClientRect()` should not force layout and must return zeros when no cached layout
+    // exists yet.
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+         const r = document.getElementById('x').getBoundingClientRect();\n\
+         return r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0 &&\n\
+                r.top === 0 && r.left === 0 && r.right === 0 && r.bottom === 0 &&\n\
+                r instanceof DOMRectReadOnly;\n\
+       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
@@ -42151,7 +42175,8 @@ mod tests {
       "(() => {\n\
          const r = document.getElementById('x').getBoundingClientRect();\n\
          const close = (a, b) => Math.abs(a - b) < 0.01;\n\
-         return close(r.x, 10) && close(r.y, 20) && close(r.width, 30) && close(r.height, 40);\n\
+         return close(r.x, 10) && close(r.y, 20) && close(r.width, 30) && close(r.height, 40)\n\
+            && close(r.top, 20) && close(r.left, 10) && close(r.right, 40) && close(r.bottom, 60);\n\
        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
