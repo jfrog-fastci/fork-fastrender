@@ -615,6 +615,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
       | "global"
       | "console"
       | "crypto"
+      | "EventTarget"
       | "document"
       | "history"
       | "location"
@@ -677,6 +678,24 @@ mod tests {
         effects: EffectTemplate::Pure,
         effect_summary: EffectSummary::PURE,
         purity: PurityTemplate::Pure,
+        async_: None,
+        idempotent: None,
+        deterministic: None,
+        parallelizable: None,
+        semantics: None,
+        signature: None,
+        since: None,
+        until: None,
+        properties: Default::default(),
+      },
+      ApiSemantics {
+        id: ApiId::from_name("EventTarget.prototype.addEventListener"),
+        name: "EventTarget.prototype.addEventListener".to_string(),
+        kind: ApiKind::Function,
+        aliases: vec![],
+        effects: EffectTemplate::Unknown,
+        effect_summary: EffectSummary::UNKNOWN_CALL,
+        purity: PurityTemplate::Impure,
         async_: None,
         idempotent: None,
         deterministic: None,
@@ -1203,6 +1222,25 @@ mod tests {
       resolve_api_use(file, body, call_expr, names, &kb),
       Some(ResolvedApiUse {
         api: ApiId::from_name("crypto.getRandomValues"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_event_target_prototype_add_event_listener_call() {
+    let source = r#"EventTarget.prototype.addEventListener(target, 'x', cb);"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+    let call_expr = find_expr(body, |kind| matches!(kind, ExprKind::Call(_)));
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("EventTarget.prototype.addEventListener"),
         kind: ApiUseKind::Call,
       })
     );
