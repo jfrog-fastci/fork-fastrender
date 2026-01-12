@@ -50,6 +50,10 @@ pub enum ChromeAction {
   CloseFindInPage(TabId),
   NewTab,
   CloseTab(TabId),
+  ReloadTab(TabId),
+  DuplicateTab(TabId),
+  CloseOtherTabs(TabId),
+  CloseTabsToRight(TabId),
   ReopenClosedTab,
   ActivateTab(TabId),
   TogglePinTab(TabId),
@@ -206,6 +210,34 @@ pub fn chrome_ui_with_bookmarks(
   let motion = UiMotion::from_env();
   let mut address_bar_rect: Option<egui::Rect> = None;
   let mut address_bar_text_edit_response: Option<egui::Response> = None;
+
+  // Tab context menu state (right-click on a tab).
+  //
+  // This is browser-chrome UI state, so keep it local to the chrome layer (rather than the worker).
+  if ctx.input(|i| !i.focused || i.key_pressed(egui::Key::Escape)) {
+    app.chrome.open_tab_context_menu = None;
+    app.chrome.tab_context_menu_rect = None;
+  }
+
+  // Dismiss the menu on click outside.
+  if app.chrome.open_tab_context_menu.is_some() {
+    if let Some((min_x, min_y, max_x, max_y)) = app.chrome.tab_context_menu_rect {
+      let clicked_outside = ctx.input(|i| {
+        i.events.iter().any(|event| match event {
+          egui::Event::PointerButton { pos, pressed: true, .. } => {
+            pos.x < min_x || pos.x > max_x || pos.y < min_y || pos.y > max_y
+          }
+          _ => false,
+        })
+      });
+      if clicked_outside {
+        app.chrome.open_tab_context_menu = None;
+        app.chrome.tab_context_menu_rect = None;
+      }
+    }
+  } else {
+    app.chrome.tab_context_menu_rect = None;
+  }
 
   // -----------------------------------------------------------------------------
   // Chrome-level keyboard shortcuts
@@ -432,6 +464,8 @@ pub fn chrome_ui_with_bookmarks(
         if let Some(idx) = app.tabs.iter().position(|t| t.id == active) {
           let new_idx = (idx as isize + delta).rem_euclid(len as isize) as usize;
           actions.push(ChromeAction::ActivateTab(app.tabs[new_idx].id));
+          app.chrome.open_tab_context_menu = None;
+          app.chrome.tab_context_menu_rect = None;
         }
       }
     }
@@ -446,6 +480,8 @@ pub fn chrome_ui_with_bookmarks(
       };
       if let Some(tab) = app.tabs.get(idx) {
         actions.push(ChromeAction::ActivateTab(tab.id));
+        app.chrome.open_tab_context_menu = None;
+        app.chrome.tab_context_menu_rect = None;
       }
     }
   }
@@ -1588,6 +1624,109 @@ pub fn chrome_ui_with_bookmarks(
       });
     });
 
+  // -----------------------------------------------------------------------------
+  // Tab strip context menu popup
+  // -----------------------------------------------------------------------------
+  if let Some(open_menu) = app.chrome.open_tab_context_menu {
+    let tab_id = open_menu.tab_id;
+
+    // If the tab no longer exists (e.g. it was closed while the menu is open), close the menu.
+    if app.tab(tab_id).is_none() {
+      app.chrome.open_tab_context_menu = None;
+      app.chrome.tab_context_menu_rect = None;
+    } else {
+      let can_close_tabs = app.tabs.len() > 1;
+      let can_reopen_closed_tab = !app.closed_tabs.is_empty();
+      let can_close_tabs_to_right = app
+        .tabs
+        .iter()
+        .position(|t| t.id == tab_id)
+        .is_some_and(|idx| idx + 1 < app.tabs.len());
+      let is_pinned = app
+        .tab(tab_id)
+        .is_some_and(|tab| tab.pinned);
+
+      let menu_pos = egui::pos2(open_menu.anchor_points.0, open_menu.anchor_points.1);
+
+      let menu_id = egui::Id::new(("tab_context_menu", tab_id));
+      let menu_response = egui::Area::new(menu_id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(menu_pos)
+        .show(ctx, |ui| {
+          egui::Frame::popup(ui.style()).show(ui, |ui| {
+            // Provide a consistent target size for hit-testing and a more browser-like look.
+            ui.set_min_width(180.0);
+
+            if ui.button("Reload Tab").clicked() {
+              actions.push(ChromeAction::ReloadTab(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+            if ui.button("Duplicate Tab").clicked() {
+              actions.push(ChromeAction::DuplicateTab(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+            if ui.button(if is_pinned { "Unpin Tab" } else { "Pin Tab" }).clicked() {
+              actions.push(ChromeAction::TogglePinTab(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+            if ui
+              .add_enabled(can_close_tabs, egui::Button::new("Close Tab"))
+              .clicked()
+            {
+              actions.push(ChromeAction::CloseTab(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+
+            ui.separator();
+
+            if ui
+              .add_enabled(can_close_tabs, egui::Button::new("Close Other Tabs"))
+              .clicked()
+            {
+              actions.push(ChromeAction::CloseOtherTabs(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+            if ui
+              .add_enabled(
+                can_close_tabs_to_right,
+                egui::Button::new("Close Tabs to the Right"),
+              )
+              .clicked()
+            {
+              actions.push(ChromeAction::CloseTabsToRight(tab_id));
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+
+            ui.separator();
+
+            if ui
+              .add_enabled(
+                can_reopen_closed_tab,
+                egui::Button::new("Reopen Closed Tab"),
+              )
+              .clicked()
+            {
+              actions.push(ChromeAction::ReopenClosedTab);
+              app.chrome.open_tab_context_menu = None;
+              app.chrome.tab_context_menu_rect = None;
+            }
+          })
+        });
+
+      // Update the click-outside rect for the next frame.
+      if app.chrome.open_tab_context_menu.is_some() {
+        let rect = menu_response.response.rect;
+        app.chrome.tab_context_menu_rect = Some((rect.min.x, rect.min.y, rect.max.x, rect.max.y));
+      }
+    }
+  }
+
   actions
 }
 
@@ -1616,6 +1755,7 @@ mod tests {
     ));
     // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
     raw.time = Some(0.0);
+    raw.focused = true;
     ctx.begin_frame(raw);
     ctx
   }
@@ -1629,6 +1769,7 @@ mod tests {
     ));
     // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
     raw.time = Some(0.0);
+    raw.focused = true;
     raw.events.push(egui::Event::Key {
       key,
       pressed: true,
@@ -1647,6 +1788,7 @@ mod tests {
     ));
     // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
     raw.time = Some(0.0);
+    raw.focused = true;
     raw.events = events;
     ctx.begin_frame(raw);
   }
@@ -1663,6 +1805,7 @@ mod tests {
     ));
     // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
     raw.time = Some(0.0);
+    raw.focused = true;
     raw.events = events;
     ctx.begin_frame(raw);
   }
@@ -1804,6 +1947,51 @@ mod tests {
       .iter()
       .map(|clipped| count_in_shape(&clipped.shape, rect))
       .sum()
+  }
+
+  fn right_click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+    vec![
+      egui::Event::PointerMoved(pos),
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Secondary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+      },
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Secondary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+      },
+    ]
+  }
+
+  fn find_text_pos(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<egui::Pos2> {
+    let mut texts = Vec::new();
+    for clipped in shapes {
+      collect_text_shapes(&clipped.shape, &mut texts);
+    }
+    texts
+      .into_iter()
+      .find_map(|(text, pos)| text.contains(needle).then_some(pos))
+  }
+
+  fn collect_text_strings(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+    use std::collections::BTreeSet;
+
+    let mut texts = Vec::new();
+    for clipped in shapes {
+      collect_text_shapes(&clipped.shape, &mut texts);
+    }
+    let mut out = BTreeSet::new();
+    for (raw, _) in texts {
+      let trimmed = raw.trim();
+      if !trimmed.is_empty() {
+        out.insert(trimmed.to_string());
+      }
+    }
+    out.into_iter().collect()
   }
 
   #[test]
@@ -3639,6 +3827,56 @@ mod tests {
     assert!(
       matches!(actions.as_slice(), [ChromeAction::OpenClearBrowsingDataDialog]),
       "expected ChromeAction::OpenClearBrowsingDataDialog, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn tab_context_menu_duplicate_emits_duplicate_tab_action() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once to obtain stable tab rects from the tab strip test layout.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    let (_strip_rect, tab_rects) = super::tab_strip::load_test_layout(&ctx)
+      .expect("expected tab strip layout metadata in egui context");
+    let tab_a_rect = tab_rects
+      .first()
+      .copied()
+      .expect("expected at least one tab rect");
+
+    // Frame 1: right-click the first tab to open the context menu.
+    begin_frame(&ctx, right_click_at(tab_a_rect.center()));
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: render again so the popup contents appear.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let output = ctx.end_frame();
+
+    let duplicate_text_pos = find_text_pos(&output.shapes, "Duplicate Tab").unwrap_or_else(|| {
+      let texts = collect_text_strings(&output.shapes);
+      panic!("expected Duplicate Tab menu item; found texts: {texts:?}");
+    });
+
+    // Frame 3: click the "Duplicate Tab" menu item.
+    begin_frame(&ctx, left_click_at(duplicate_text_pos + egui::vec2(1.0, 1.0)));
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::DuplicateTab(id) if *id == tab_a)),
+      "expected ChromeAction::DuplicateTab({tab_a:?}), got {actions:?}"
     );
   }
 }

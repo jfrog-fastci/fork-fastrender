@@ -1,5 +1,7 @@
 use crate::ui::a11y;
-use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
+use crate::ui::browser_app::{
+  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState,
+};
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
@@ -128,21 +130,14 @@ fn tab_ui(
   can_close_tabs: bool,
   tab_width: f32,
   favicon_tex: Option<egui::TextureId>,
+  chrome: &mut ChromeState,
 ) -> (Rect, Response, Option<ChromeAction>) {
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
-  let mut menu_action: Option<ChromeAction> = None;
   let response = ui
     .interact(tab_rect, tab_id, Sense::click_and_drag())
-    .on_hover_text(title.as_str())
-    .context_menu(|ui| {
-      let label = if tab.pinned { "Unpin Tab" } else { "Pin Tab" };
-      if ui.button(label).clicked() {
-        menu_action = Some(ChromeAction::TogglePinTab(tab.id));
-        ui.close_menu();
-      }
-    });
+    .on_hover_text(title.as_str());
   response.widget_info({
     let title = title.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
@@ -290,17 +285,33 @@ fn tab_ui(
   }
 
   // Input semantics.
-  if let Some(action) = menu_action {
-    return (tab_rect, response, Some(action));
+  if response.clicked_by(egui::PointerButton::Secondary) {
+    if let Some(pos) = response
+      .interact_pointer_pos()
+      .or_else(|| ui.input(|i| i.pointer.hover_pos()))
+    {
+      chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
+        tab_id: tab.id,
+        anchor_points: (pos.x, pos.y),
+      });
+      chrome.tab_context_menu_rect = None;
+    }
+    return (tab_rect, response, None);
   }
   if close_clicked && can_close_tabs {
+    chrome.open_tab_context_menu = None;
+    chrome.tab_context_menu_rect = None;
     return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
   }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
+      chrome.open_tab_context_menu = None;
+      chrome.tab_context_menu_rect = None;
       return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
     }
   } else if response.clicked() {
+    chrome.open_tab_context_menu = None;
+    chrome.tab_context_menu_rect = None;
     return (tab_rect, response, Some(ChromeAction::ActivateTab(tab.id)));
   }
 
@@ -314,21 +325,14 @@ fn pinned_tab_ui(
   is_active: bool,
   can_close_tabs: bool,
   favicon_tex: Option<egui::TextureId>,
+  chrome: &mut ChromeState,
 ) -> (Rect, Response, Option<ChromeAction>) {
   let (_, tab_rect) = ui.allocate_space(Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
-  let mut menu_action: Option<ChromeAction> = None;
   let response = ui
     .interact(tab_rect, tab_id, Sense::click_and_drag())
-    .on_hover_text(title.as_str())
-    .context_menu(|ui| {
-      let label = if tab.pinned { "Unpin Tab" } else { "Pin Tab" };
-      if ui.button(label).clicked() {
-        menu_action = Some(ChromeAction::TogglePinTab(tab.id));
-        ui.close_menu();
-      }
-    });
+    .on_hover_text(title.as_str());
   response.widget_info({
     let title = title.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, title.clone())
@@ -392,14 +396,28 @@ fn pinned_tab_ui(
   }
 
   // Input semantics.
-  if let Some(action) = menu_action {
-    return (tab_rect, response, Some(action));
+  if response.clicked_by(egui::PointerButton::Secondary) {
+    if let Some(pos) = response
+      .interact_pointer_pos()
+      .or_else(|| ui.input(|i| i.pointer.hover_pos()))
+    {
+      chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
+        tab_id: tab.id,
+        anchor_points: (pos.x, pos.y),
+      });
+      chrome.tab_context_menu_rect = None;
+    }
+    return (tab_rect, response, None);
   }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
+      chrome.open_tab_context_menu = None;
+      chrome.tab_context_menu_rect = None;
       return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
     }
   } else if response.clicked() {
+    chrome.open_tab_context_menu = None;
+    chrome.tab_context_menu_rect = None;
     return (tab_rect, response, Some(ChromeAction::ActivateTab(tab.id)));
   }
 
@@ -437,6 +455,7 @@ pub(super) fn tab_strip_ui(
   let can_close_tabs = tab_count > 1;
   let pinned_count = app.tabs.iter().take_while(|t| t.pinned).count();
   let unpinned_count = tab_count - pinned_count;
+  let active_id = app.active_tab_id();
 
   let pinned_content_width = if pinned_count == 0 {
     0.0
@@ -482,17 +501,20 @@ pub(super) fn tab_strip_ui(
       pinned_ui.set_clip_rect(pinned_viewport_rect);
       pinned_ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
       pinned_ui.horizontal(|ui| {
+        let (tabs, chrome) = (&app.tabs, &mut app.chrome);
         for idx in 0..pinned_count {
-          let tab_id = app.tabs[idx].id;
-          let is_active = app.active_tab_id() == Some(tab_id);
+          let tab = &tabs[idx];
+          let tab_id = tab.id;
+          let is_active = active_id == Some(tab_id);
           let favicon_tex = favicon_for_tab(tab_id);
           let (tab_rect, tab_response, maybe_action) = pinned_tab_ui(
             ui,
             motion,
-            &app.tabs[idx],
+            tab,
             is_active,
             can_close_tabs,
             favicon_tex,
+            chrome,
           );
           if is_active {
             active_tab_rect = Some(tab_rect);
@@ -502,11 +524,11 @@ pub(super) fn tab_strip_ui(
           tab_rects_for_test.push(tab_rect);
 
           pinned_tab_rects_for_drag.push((tab_id, tab_rect));
-          if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
-            app.chrome.dragging_tab_id = Some(tab_id);
-            app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+          if tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
+            chrome.dragging_tab_id = Some(tab_id);
+            chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
           }
-          if app.chrome.dragging_tab_id == Some(tab_id) {
+          if chrome.dragging_tab_id == Some(tab_id) {
             dragged_tab_rect = Some(tab_rect);
           }
 
@@ -530,18 +552,21 @@ pub(super) fn tab_strip_ui(
         .show(&mut unpinned_ui, |ui| {
           ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
           ui.horizontal(|ui| {
+            let (tabs, chrome) = (&app.tabs, &mut app.chrome);
             for idx in pinned_count..tab_count {
-              let tab_id = app.tabs[idx].id;
-              let is_active = app.active_tab_id() == Some(tab_id);
+              let tab = &tabs[idx];
+              let tab_id = tab.id;
+              let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
               let (tab_rect, tab_response, maybe_action) = tab_ui(
                 ui,
                 motion,
-                &app.tabs[idx],
+                tab,
                 is_active,
                 can_close_tabs,
                 sizing.tab_width,
                 favicon_tex,
+                chrome,
               );
               if is_active {
                 active_tab_rect = Some(tab_rect);
@@ -551,11 +576,11 @@ pub(super) fn tab_strip_ui(
               tab_rects_for_test.push(tab_rect);
 
               unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
-              if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
-                app.chrome.dragging_tab_id = Some(tab_id);
-                app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+              if tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
+                chrome.dragging_tab_id = Some(tab_id);
+                chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
               }
-              if app.chrome.dragging_tab_id == Some(tab_id) {
+              if chrome.dragging_tab_id == Some(tab_id) {
                 dragged_tab_rect = Some(tab_rect);
               }
 

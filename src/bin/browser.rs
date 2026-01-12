@@ -6201,6 +6201,160 @@ impl App {
             });
           }
         }
+        ChromeAction::CloseOtherTabs(tab_id) => {
+          if self.browser_state.tabs.len() <= 1 || self.browser_state.tab(tab_id).is_none() {
+            continue;
+          }
+
+          let prev_active = self.browser_state.active_tab_id();
+          let closed = self.browser_state.close_other_tabs(tab_id);
+          if closed.is_empty() {
+            continue;
+          }
+
+          for closed_tab_id in closed {
+            self.pending_frame_uploads.remove_tab(closed_tab_id);
+            if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
+              tex.destroy(&mut self.egui_renderer);
+            }
+            if let Some(tex) = self.tab_favicons.remove(&closed_tab_id) {
+              tex.destroy(&mut self.egui_renderer);
+            }
+            if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
+              cancel.bump_nav();
+            }
+            self.send_worker_msg(UiToWorker::CloseTab { tab_id: closed_tab_id });
+          }
+
+          let new_active = self.browser_state.active_tab_id();
+          if new_active != prev_active {
+            if let Some(new_active) = new_active {
+              self.viewport_cache_tab = None;
+              self.pointer_captured = false;
+              self.captured_button = fastrender::ui::PointerButton::None;
+              self.cursor_in_page = false;
+              self.hover_sync_pending = true;
+              self.pending_pointer_move = None;
+              self.pending_frame_uploads.clear();
+              self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+              self.send_worker_msg(UiToWorker::RequestRepaint {
+                tab_id: new_active,
+                reason: RepaintReason::Explicit,
+              });
+            }
+          }
+
+          // Chrome UI was already drawn this frame; request another redraw so tab strip reflects the
+          // updated tab list immediately.
+          self.window.request_redraw();
+        }
+        ChromeAction::CloseTabsToRight(tab_id) => {
+          if self.browser_state.tabs.len() <= 1 || self.browser_state.tab(tab_id).is_none() {
+            continue;
+          }
+
+          let prev_active = self.browser_state.active_tab_id();
+          let closed = self.browser_state.close_tabs_to_right(tab_id);
+          if closed.is_empty() {
+            continue;
+          }
+
+          for closed_tab_id in closed {
+            self.pending_frame_uploads.remove_tab(closed_tab_id);
+            if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
+              tex.destroy(&mut self.egui_renderer);
+            }
+            if let Some(tex) = self.tab_favicons.remove(&closed_tab_id) {
+              tex.destroy(&mut self.egui_renderer);
+            }
+            if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
+              cancel.bump_nav();
+            }
+            self.send_worker_msg(UiToWorker::CloseTab { tab_id: closed_tab_id });
+          }
+
+          let new_active = self.browser_state.active_tab_id();
+          if new_active != prev_active {
+            if let Some(new_active) = new_active {
+              self.viewport_cache_tab = None;
+              self.pointer_captured = false;
+              self.captured_button = fastrender::ui::PointerButton::None;
+              self.cursor_in_page = false;
+              self.hover_sync_pending = true;
+              self.pending_pointer_move = None;
+              self.pending_frame_uploads.clear();
+              self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+              self.send_worker_msg(UiToWorker::RequestRepaint {
+                tab_id: new_active,
+                reason: RepaintReason::Explicit,
+              });
+            }
+          }
+
+          // Chrome UI was already drawn this frame; request another redraw so tab strip reflects the
+          // updated tab list immediately.
+          self.window.request_redraw();
+        }
+        ChromeAction::ReloadTab(tab_id) => {
+          if self.browser_state.tab(tab_id).is_none() {
+            continue;
+          }
+          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+            tab.loading = true;
+            tab.error = None;
+            tab.stage = None;
+            tab.title = None;
+          }
+          self.send_worker_msg(UiToWorker::Reload { tab_id });
+        }
+        ChromeAction::DuplicateTab(source_tab_id) => {
+          use fastrender::ui::about_pages;
+
+          let Some(source) = self.browser_state.tab(source_tab_id) else {
+            continue;
+          };
+          let url = source
+            .committed_url
+            .clone()
+            .or_else(|| source.current_url.clone())
+            .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
+
+          let tab_id = fastrender::ui::TabId::new();
+          let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
+          tab_state.title = source.title.clone();
+          tab_state.committed_title = source.committed_title.clone();
+          tab_state.loading = true;
+
+          let cancel = tab_state.cancel.clone();
+          self.tab_cancel.insert(tab_id, cancel.clone());
+          self.browser_state.push_tab(tab_state, true);
+          self.browser_state.chrome.address_bar_text = url.clone();
+
+          // Match typical UX: duplicating a tab activates the new tab, but should not steal focus to
+          // the address bar.
+          self.viewport_cache_tab = None;
+          self.pointer_captured = false;
+          self.captured_button = fastrender::ui::PointerButton::None;
+          self.cursor_in_page = false;
+          self.hover_sync_pending = true;
+          self.pending_pointer_move = None;
+          self.pending_frame_uploads.clear();
+
+          self.send_worker_msg(UiToWorker::CreateTab {
+            tab_id,
+            initial_url: Some(url),
+            cancel,
+          });
+          self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+          self.send_worker_msg(UiToWorker::RequestRepaint {
+            tab_id,
+            reason: RepaintReason::Explicit,
+          });
+
+          // Chrome UI was already drawn this frame; request another redraw so the new tab appears in
+          // the tab strip immediately.
+          self.window.request_redraw();
+        }
         ChromeAction::ActivateTab(tab_id) => {
           if self.browser_state.set_active_tab(tab_id) {
             session_dirty = true;

@@ -448,6 +448,12 @@ pub struct ChromeState {
   pub bookmarks_manager_open: bool,
   /// Search/filter query for the Bookmarks Manager panel.
   pub bookmarks_manager_search_text: String,
+  /// The currently open tab-strip context menu (right-click on a tab label/icon), if any.
+  ///
+  /// This is chrome-only UI state (not part of the worker protocol).
+  pub open_tab_context_menu: Option<OpenTabContextMenuState>,
+  /// Last known tab context menu rect (in egui points), used for click-outside dismissal.
+  pub tab_context_menu_rect: Option<(f32, f32, f32, f32)>,
   /// Transient tab-strip drag state (used by the optional egui chrome).
   ///
   /// Kept behind the `browser_ui` feature gate so the core renderer does not depend on egui types.
@@ -466,6 +472,12 @@ impl ChromeState {
     self.drag_start_pointer_pos = None;
     self.drag_target_index = None;
   }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenTabContextMenuState {
+  pub tab_id: TabId,
+  pub anchor_points: (f32, f32),
 }
 
 #[derive(Debug, Clone)]
@@ -796,6 +808,90 @@ impl BrowserAppState {
       new_active: Some(new_active),
       created_tab: None,
     }
+  }
+
+  /// Close all tabs except `tab_id`, returning the ids of closed tabs.
+  ///
+  /// Invariant: if `tab_id` exists, at least one tab remains (the kept tab).
+  pub fn close_other_tabs(&mut self, tab_id: TabId) -> Vec<TabId> {
+    if self.tabs.len() <= 1 {
+      return Vec::new();
+    }
+    let Some(keep_idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+      return Vec::new();
+    };
+
+    let mut tabs = std::mem::take(&mut self.tabs);
+    let kept = tabs.remove(keep_idx);
+
+    let mut closed_ids = Vec::new();
+    for closed in tabs {
+      closed_ids.push(closed.id);
+      self.push_closed_tab_state(ClosedTabState {
+        url: closed
+          .committed_url
+          .clone()
+          .or_else(|| closed.current_url.clone())
+          .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string()),
+        title: closed.committed_title.clone().or_else(|| closed.title.clone()),
+        pinned: closed.pinned,
+      });
+    }
+
+    self.tabs = vec![kept];
+    let _ = self.set_active_tab(tab_id);
+    closed_ids
+  }
+
+  /// Close all tabs to the right of `tab_id`, returning the ids of closed tabs.
+  ///
+  /// Invariant: closing tabs to the right is a no-op if `tab_id` is the last tab (or doesn't
+  /// exist), and never makes the tab list empty.
+  pub fn close_tabs_to_right(&mut self, tab_id: TabId) -> Vec<TabId> {
+    if self.tabs.len() <= 1 {
+      return Vec::new();
+    }
+    let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+      return Vec::new();
+    };
+    if idx + 1 >= self.tabs.len() {
+      return Vec::new();
+    }
+
+    let active_id = self.active_tab_id();
+    let active_idx = active_id.and_then(|id| self.tabs.iter().position(|t| t.id == id));
+
+    let drained = self.tabs.drain((idx + 1)..).collect::<Vec<_>>();
+    let mut closed_ids = Vec::new();
+    for closed in drained {
+      closed_ids.push(closed.id);
+      self.push_closed_tab_state(ClosedTabState {
+        url: closed
+          .committed_url
+          .clone()
+          .or_else(|| closed.current_url.clone())
+          .unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string()),
+        title: closed.committed_title.clone().or_else(|| closed.title.clone()),
+        pinned: closed.pinned,
+      });
+    }
+
+    if active_idx.is_some_and(|active_idx| active_idx > idx) {
+      let _ = self.set_active_tab(tab_id);
+    }
+
+    // Defensive fallback: ensure `active_tab` stays valid.
+    let active_is_valid = self
+      .active_tab_id()
+      .is_some_and(|id| self.tabs.iter().any(|t| t.id == id));
+    if !active_is_valid {
+      let _ = self.set_active_tab(tab_id);
+      if self.active_tab.is_none() {
+        self.active_tab = self.tabs.first().map(|t| t.id);
+      }
+    }
+
+    closed_ids
   }
 
   fn push_closed_tab_state(&mut self, closed: ClosedTabState) {
@@ -1269,6 +1365,70 @@ mod browser_app_tests {
     assert_eq!(app.tabs.len(), 1);
     assert_active_is_valid(&app);
     assert_eq!(app.active_tab_id(), Some(last));
+  }
+
+  #[test]
+  fn close_other_tabs_keeps_requested_tab_and_active_is_valid() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let tab_c = TabId(3);
+    app.push_tab(
+      BrowserTabState::new(tab_a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.set_active_tab(tab_b);
+
+    let closed = app.close_other_tabs(tab_c);
+
+    assert_eq!(closed, vec![tab_a, tab_b]);
+    assert_eq!(app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![tab_c]);
+    assert_eq!(app.active_tab_id(), Some(tab_c));
+    assert_active_is_valid(&app);
+  }
+
+  #[test]
+  fn close_tabs_to_right_closes_expected_tabs_and_preserves_invariants() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let tab_c = TabId(3);
+    let tab_d = TabId(4);
+    app.push_tab(
+      BrowserTabState::new(tab_a, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_c, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_d, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    assert_eq!(app.active_tab_id(), Some(tab_d));
+
+    let closed = app.close_tabs_to_right(tab_b);
+
+    assert_eq!(closed, vec![tab_c, tab_d]);
+    assert_eq!(
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+      vec![tab_a, tab_b]
+    );
+    assert_eq!(app.active_tab_id(), Some(tab_b));
+    assert_active_is_valid(&app);
   }
 
   #[test]

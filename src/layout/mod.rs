@@ -104,7 +104,6 @@ pub mod table;
 pub(crate) mod auto_scrollbars;
 pub mod fragmentation;
 pub(crate) mod style_override;
-
 // Future modules (to be implemented in Wave 3+):
 // pub mod block;        // W3.T04
 // pub mod flex;         // W3.T08
