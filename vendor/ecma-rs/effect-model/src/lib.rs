@@ -43,7 +43,10 @@ pub enum Purity {
   #[cfg_attr(feature = "serde", serde(alias = "Pure"))]
   Pure,
   /// May read observable state, but performs no writes/allocations/IO.
-  #[cfg_attr(feature = "serde", serde(rename = "readonly", alias = "ReadOnly", alias = "read_only"))]
+  #[cfg_attr(
+    feature = "serde",
+    serde(rename = "readonly", alias = "ReadOnly", alias = "read_only", alias = "readOnly")
+  )]
   ReadOnly,
   /// Allocates, but performs no writes/IO.
   #[cfg_attr(feature = "serde", serde(alias = "Allocating"))]
@@ -510,7 +513,10 @@ impl EffectTemplate {
 pub enum PurityTemplate {
   #[cfg_attr(feature = "serde", serde(alias = "Pure"))]
   Pure,
-  #[cfg_attr(feature = "serde", serde(rename = "readonly", alias = "ReadOnly", alias = "read_only"))]
+  #[cfg_attr(
+    feature = "serde",
+    serde(rename = "readonly", alias = "ReadOnly", alias = "read_only", alias = "readOnly")
+  )]
   ReadOnly,
   #[cfg_attr(feature = "serde", serde(alias = "Allocating"))]
   Allocating,
@@ -750,5 +756,15 @@ mod tests {
         args: vec![0],
       }
     );
+  }
+
+  #[cfg(feature = "serde")]
+  #[test]
+  fn purity_deserialize_accepts_camel_case_readonly() {
+    let purity: Purity = serde_json::from_str(r#""readOnly""#).unwrap();
+    assert_eq!(purity, Purity::ReadOnly);
+
+    let template: PurityTemplate = serde_json::from_str(r#""readOnly""#).unwrap();
+    assert_eq!(template, PurityTemplate::ReadOnly);
   }
 }
