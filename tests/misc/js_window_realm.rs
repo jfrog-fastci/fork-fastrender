@@ -1217,6 +1217,43 @@ fn event_loop_microtask_checkpoint_uses_dom_shim_hooks() -> Result<()> {
 }
 
 #[test]
+fn html_element_instanceof_uses_dom_platform_prototypes() -> Result<()> {
+  let dom = fastrender::dom2::parse_html(
+    "<!doctype html><html><body>\n\
+      <input id=\"i\">\n\
+      <div id=\"d\"></div>\n\
+      <svg id=\"s\"></svg>\n\
+    </body></html>",
+  )?;
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let ok = host.exec_script(
+    "(() => {\n\
+      const input = document.getElementById('i');\n\
+      const div = document.getElementById('d');\n\
+      const svg = document.getElementById('s');\n\
+\n\
+      if (typeof HTMLElement !== 'function') return false;\n\
+      if (typeof HTMLInputElement !== 'function') return false;\n\
+      if (typeof HTMLDivElement !== 'function') return false;\n\
+\n\
+      if (!(input instanceof HTMLInputElement)) return false;\n\
+      if (!(input instanceof HTMLElement)) return false;\n\
+      if (!(div instanceof HTMLDivElement)) return false;\n\
+      if (!(div instanceof HTMLElement)) return false;\n\
+      if (svg instanceof HTMLElement) return false;\n\
+      if (!(svg instanceof Element)) return false;\n\
+\n\
+      if (HTMLElement.prototype === Element.prototype) return false;\n\
+      if (Object.getPrototypeOf(HTMLElement.prototype) !== Element.prototype) return false;\n\
+      if (Object.getPrototypeOf(HTMLInputElement.prototype) !== HTMLElement.prototype) return false;\n\
+      return true;\n\
+    })()",
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn strict_script_top_level_this_is_window() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
