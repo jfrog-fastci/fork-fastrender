@@ -1607,7 +1607,7 @@ fn reader_read_native(
   let (outcome, pending_stream) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let reader_state = state
       .readers
-      .get_mut(&WeakGcObject::from(reader_obj))
+      .get(&WeakGcObject::from(reader_obj))
       .ok_or(VmError::TypeError(
         "ReadableStreamDefaultReader.read: illegal invocation",
       ))?;

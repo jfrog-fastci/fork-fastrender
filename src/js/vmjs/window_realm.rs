@@ -27762,19 +27762,34 @@ fn init_window_globals(
         Ok(ctor)
       };
 
-    install_illegal_dom_ctor(&mut scope, "HTMLElement", html_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLInputElement", html_input_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLTextAreaElement", html_text_area_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLSelectElement", html_select_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLOptionElement", html_option_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLFormElement", html_form_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLDivElement", html_div_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLSpanElement", html_span_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLParagraphElement", html_paragraph_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLImageElement", html_image_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLAnchorElement", html_anchor_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLLinkElement", html_link_element_proto)?;
-    install_illegal_dom_ctor(&mut scope, "HTMLScriptElement", html_script_element_proto)?;
+    let html_element_ctor = install_illegal_dom_ctor(&mut scope, "HTMLElement", html_element_proto)?;
+    let html_input_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLInputElement", html_input_element_proto)?;
+    let html_text_area_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLTextAreaElement", html_text_area_element_proto)?;
+    let html_select_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLSelectElement", html_select_element_proto)?;
+    let html_option_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLOptionElement", html_option_element_proto)?;
+    let html_form_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLFormElement", html_form_element_proto)?;
+    let html_div_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLDivElement", html_div_element_proto)?;
+    let html_span_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLSpanElement", html_span_element_proto)?;
+    let html_paragraph_element_ctor = install_illegal_dom_ctor(
+      &mut scope,
+      "HTMLParagraphElement",
+      html_paragraph_element_proto,
+    )?;
+    let html_image_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLImageElement", html_image_element_proto)?;
+    let html_anchor_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLAnchorElement", html_anchor_element_proto)?;
+    let html_link_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLLinkElement", html_link_element_proto)?;
+    let html_script_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLScriptElement", html_script_element_proto)?;
 
     let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
     scope.push_root(Value::Object(document_ctor))?;
@@ -27862,6 +27877,47 @@ fn init_window_globals(
       processing_instruction_key,
       data_desc(Value::Object(processing_instruction_ctor)),
     )?;
+    // WebIDL interface object inheritance chain.
+    //
+    // This makes `Object.getPrototypeOf(Node) === EventTarget` and ensures interface objects inherit
+    // static members/constants from their parent interface (e.g. `Element.ELEMENT_NODE` via Node).
+    scope
+      .heap_mut()
+      .object_set_prototype(node_ctor, Some(event_target_ctor_func))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(document_type_ctor, Some(node_ctor))?;
+    scope.heap_mut().object_set_prototype(element_ctor, Some(node_ctor))?;
+    scope.heap_mut().object_set_prototype(document_ctor, Some(node_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(document_fragment_ctor, Some(node_ctor))?;
+    scope.heap_mut().object_set_prototype(text_ctor, Some(node_ctor))?;
+    scope.heap_mut().object_set_prototype(comment_ctor, Some(node_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(processing_instruction_ctor, Some(node_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(html_element_ctor, Some(element_ctor))?;
+    for ctor in [
+      html_input_element_ctor,
+      html_select_element_ctor,
+      html_text_area_element_ctor,
+      html_option_element_ctor,
+      html_form_element_ctor,
+      html_div_element_ctor,
+      html_span_element_ctor,
+      html_paragraph_element_ctor,
+      html_image_element_ctor,
+      html_anchor_element_ctor,
+      html_link_element_ctor,
+      html_script_element_ctor,
+    ] {
+      scope
+        .heap_mut()
+        .object_set_prototype(ctor, Some(html_element_ctor))?;
+    }
 
     // HTMLCollection constructor + prototype.
     //
@@ -36571,6 +36627,35 @@ mod tests {
         if (frag.getElementById('f2') !== f2) return false;\n\
         if (document.getElementById('f1') !== null) return false;\n\
 \n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_interface_object_inheritance_is_installed_for_dom_and_html_constructors(
+  ) -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        if (Object.getPrototypeOf(Node) !== EventTarget) return 'Node';\n\
+        if (Object.getPrototypeOf(Element) !== Node) return 'Element';\n\
+        if (Object.getPrototypeOf(Document) !== Node) return 'Document';\n\
+        if (Object.getPrototypeOf(DocumentFragment) !== Node) return 'DocumentFragment';\n\
+        if (Object.getPrototypeOf(Text) !== Node) return 'Text';\n\
+\n\
+        if (Object.getPrototypeOf(HTMLElement) !== Element) return 'HTMLElement';\n\
+        if (Object.getPrototypeOf(HTMLInputElement) !== HTMLElement) return 'HTMLInputElement';\n\
+        if (Object.getPrototypeOf(HTMLSelectElement) !== HTMLElement) return 'HTMLSelectElement';\n\
+        if (Object.getPrototypeOf(HTMLTextAreaElement) !== HTMLElement) return 'HTMLTextAreaElement';\n\
+        if (Object.getPrototypeOf(HTMLOptionElement) !== HTMLElement) return 'HTMLOptionElement';\n\
+        if (Object.getPrototypeOf(HTMLFormElement) !== HTMLElement) return 'HTMLFormElement';\n\
+\n\
+        // Spot-check inherited static constants via the interface object prototype chain.\n\
+        if (Element.ELEMENT_NODE !== 1) return 'Element.ELEMENT_NODE';\n\
         return true;\n\
       })()",
     )?;
