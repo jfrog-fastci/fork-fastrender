@@ -41843,10 +41843,22 @@ mod tests {
         hostDiv.dispatchEvent(new Event('x'));\n\
         ownedDiv.dispatchEvent(new Event('x'));\n\
 \n\
-        return hostElCount + ',' + ownedElCount + ',' + hostDocCount + ',' + ownedDocCount + ',' + hostDivCount + ',' + ownedDivCount;\n\
+        const countKey = hostElCount + ',' + ownedElCount + ',' + hostDocCount + ',' + ownedDocCount + ',' + hostDivCount + ',' + ownedDivCount;\n\
+        if (countKey !== '1,1,1,1,1,1') return 'bad-counts:' + countKey;\n\
+\n\
+        // Regression test: removing a listener from the host node must NOT affect an owned-document\n\
+        // node that happens to share the same internal NodeId index.\n\
+        let removedOk = 0;\n\
+        function cb() { removedOk++; }\n\
+        ownedDiv.addEventListener('y', cb);\n\
+        hostDiv.removeEventListener('y', cb); // should be a no-op\n\
+        ownedDiv.dispatchEvent(new Event('y'));\n\
+        if (removedOk !== 1) return 'bad-remove:' + removedOk;\n\
+\n\
+        return 'ok';\n\
       })()",
     )?;
-    assert_eq!(get_string(realm.heap(), counts), "1,1,1,1,1,1");
+    assert_eq!(get_string(realm.heap(), counts), "ok");
     Ok(())
   }
 
