@@ -5792,7 +5792,7 @@ mod tests {
 
   #[test]
   fn loads_woff2_fixture_font() {
-    let path = std::path::Path::new("tests/fixtures/fonts/DejaVuSans-subset.woff2");
+    let path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.woff2");
     if !path.exists() {
       return;
     }
@@ -5823,14 +5823,14 @@ mod tests {
 
   #[test]
   fn preserves_authored_source_order_when_loading_remote_fonts() {
-    let woff2_path = std::path::Path::new("tests/fixtures/fonts/DejaVuSans-subset.woff2");
-    let ttf_path = std::path::Path::new("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let woff2_path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.woff2");
+    let ttf_path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.ttf");
     if !(woff2_path.exists() && ttf_path.exists()) {
       return;
     }
 
-    let woff2_bytes = fs::read(woff2_path).expect("read woff2 fixture");
-    let ttf_bytes = fs::read(ttf_path).expect("read ttf fixture");
+    let woff2_bytes = fs::read(&woff2_path).expect("read woff2 fixture");
+    let ttf_bytes = fs::read(&ttf_path).expect("read ttf fixture");
 
     let fetcher = Arc::new(RecordingFetcher::new(vec![
       (
@@ -5871,14 +5871,14 @@ mod tests {
 
   #[test]
   fn infers_format_from_url_when_hints_are_missing() {
-    let woff2_path = std::path::Path::new("tests/fixtures/fonts/DejaVuSans-subset.woff2");
-    let ttf_path = std::path::Path::new("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let woff2_path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.woff2");
+    let ttf_path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.ttf");
     if !(woff2_path.exists() && ttf_path.exists()) {
       return;
     }
 
-    let woff2_bytes = fs::read(woff2_path).expect("read woff2 fixture");
-    let ttf_bytes = fs::read(ttf_path).expect("read ttf fixture");
+    let woff2_bytes = fs::read(&woff2_path).expect("read woff2 fixture");
+    let ttf_bytes = fs::read(&ttf_path).expect("read ttf fixture");
 
     // `@font-face` rules on some pages omit `format()` hints. Ensure we infer format from the URL
     // suffix so unsupported legacy sources (EOT) are skipped when modern sources exist.
@@ -5917,7 +5917,7 @@ mod tests {
 
   #[test]
   fn discord_woff2_asset_alias_is_rewritten_before_fetch() {
-    let woff2_path = std::path::Path::new("tests/fixtures/fonts/DejaVuSans-subset.woff2");
+    let woff2_path = crate::testing::fixtures_dir().join("fonts/DejaVuSans-subset.woff2");
     let woff2_bytes = fs::read(woff2_path).expect("read woff2 fixture");
 
     let hash = "16061b95fbd74aace4a9b2617573c601";
