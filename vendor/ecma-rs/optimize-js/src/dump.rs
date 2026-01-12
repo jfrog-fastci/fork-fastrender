@@ -12,9 +12,10 @@
 use crate::analysis::{self, analyze_cfg};
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{
-  Arg, ArgUseMode, BinOp, Const, EffectSet, InPlaceHint, Inst, InstTyp, OwnershipState, Purity,
-  StringEncoding, UnOp,
+  Arg, ArgUseMode, AwaitBehavior, BinOp, Const, EffectSet, InPlaceHint, Inst, InstTyp, Nullability,
+  NullabilityNarrowing, OwnershipState, ParallelPlan, Purity, StringEncoding, UnOp,
 };
+use crate::il::meta::{EscapeState as ValueEscapeState, ValueFacts};
 use crate::symbol::semantics::{ScopeId, SymbolId};
 use crate::{Program, TopLevelMode};
 use std::collections::BTreeMap;
@@ -184,6 +185,133 @@ pub struct NullabilityFactDump {
   pub is_bottom: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ValueEscapeStateDump {
+  Unknown,
+  NoEscape,
+  Escapes,
+}
+
+impl From<ValueEscapeState> for ValueEscapeStateDump {
+  fn from(value: ValueEscapeState) -> Self {
+    match value {
+      ValueEscapeState::Unknown => Self::Unknown,
+      ValueEscapeState::NoEscape => Self::NoEscape,
+      ValueEscapeState::Escapes => Self::Escapes,
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ValueNullabilityDump {
+  Unknown,
+  Nullish,
+  NonNullish,
+}
+
+impl From<Nullability> for ValueNullabilityDump {
+  fn from(value: Nullability) -> Self {
+    match value {
+      Nullability::Unknown => Self::Unknown,
+      Nullability::Nullish => Self::Nullish,
+      Nullability::NonNullish => Self::NonNullish,
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct NullabilityNarrowingDump {
+  pub var: u32,
+  pub when_true: ValueNullabilityDump,
+  pub when_false: ValueNullabilityDump,
+}
+
+fn dump_nullability_narrowing(value: NullabilityNarrowing) -> NullabilityNarrowingDump {
+  NullabilityNarrowingDump {
+    var: value.var,
+    when_true: value.when_true.into(),
+    when_false: value.when_false.into(),
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct SourceSpanDump {
+  pub start: u32,
+  pub end: u32,
+}
+
+fn dump_span(span: diagnostics::TextRange, source_len: u32) -> SourceSpanDump {
+  let mut start = span.start.min(source_len);
+  let mut end = span.end.min(source_len);
+  if end < start {
+    std::mem::swap(&mut start, &mut end);
+  }
+  SourceSpanDump { start, end }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct ValueIntRangeDump {
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub min: Option<i64>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub max: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct ValueFactsDump {
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub purity: Option<Purity>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub escape: Option<ValueEscapeStateDump>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub ownership: Option<OwnershipState>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub encoding: Option<StringEncoding>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub int_range: Option<ValueIntRangeDump>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub nullability: Option<ValueNullabilityDump>,
+}
+
+fn dump_value_facts(value: &ValueFacts) -> Option<ValueFactsDump> {
+  let int_range = value.int_range.and_then(|range| {
+    (range.min.is_some() || range.max.is_some()).then_some(ValueIntRangeDump {
+      min: range.min,
+      max: range.max,
+    })
+  });
+
+  let out = ValueFactsDump {
+    purity: value.purity,
+    escape: value.escape.map(Into::into),
+    ownership: value.ownership,
+    encoding: value.encoding,
+    int_range,
+    nullability: value.nullability.map(Into::into),
+  };
+
+  let is_empty = out.purity.is_none()
+    && out.escape.is_none()
+    && out.ownership.is_none()
+    && out.encoding.is_none()
+    && out.int_range.is_none()
+    && out.nullability.is_none();
+
+  (!is_empty).then_some(out)
+}
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -209,6 +337,26 @@ pub struct InstMetaDump {
   pub type_summary: Option<String>,
   pub excludes_nullish: bool,
   #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub native_layout: Option<String>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub span: Option<SourceSpanDump>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub preserve_var_assign: Option<bool>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub stack_alloc_candidate: Option<bool>,
+  #[cfg(feature = "native-async-ops")]
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub await_known_resolved: Option<bool>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub await_behavior: Option<AwaitBehavior>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub parallel: Option<ParallelPlan>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub nullability_narrowing: Option<NullabilityNarrowingDump>,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  pub value: Option<ValueFactsDump>,
+  /// Reserved for legacy tooling. Prefer [`InstMetaDump::native_layout`].
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
   pub layout_id: Option<u32>,
   #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
   pub hir_expr: Option<u32>,
@@ -219,6 +367,7 @@ fn dump_inst(
   range: Option<analysis::range::IntRange>,
   nullability: Option<analysis::nullability::NullabilityMask>,
   encoding: Option<StringEncoding>,
+  source_len: u32,
 ) -> InstDump {
   // Canonicalize `spreads` (order doesn't matter; it's a set of indices).
   let mut spreads: Vec<u32> = inst.spreads.iter().map(|s| *s as u32).collect();
@@ -282,6 +431,35 @@ fn dump_inst(
     }
   };
 
+  let native_layout = {
+    #[cfg(feature = "typed")]
+    {
+      inst
+        .meta
+        .native_layout
+        .map(|layout| format!("0x{:032x}", layout.0))
+    }
+    #[cfg(not(feature = "typed"))]
+    {
+      None
+    }
+  };
+
+  let span = inst.meta.span.map(|span| dump_span(span, source_len));
+
+  let preserve_var_assign = inst.meta.preserve_var_assign.then_some(true);
+  let stack_alloc_candidate = inst.meta.stack_alloc_candidate.then_some(true);
+
+  #[cfg(feature = "native-async-ops")]
+  let await_known_resolved = inst.meta.await_known_resolved.then_some(true);
+
+  let nullability_narrowing = inst
+    .meta
+    .nullability_narrowing
+    .map(dump_nullability_narrowing);
+
+  let value = inst.meta.value.as_ref().and_then(dump_value_facts);
+
   InstDump {
     t: format!("{:?}", inst.t),
     tgts: inst.tgts.clone(),
@@ -306,13 +484,23 @@ fn dump_inst(
       type_id,
       type_summary: inst.meta.type_summary.map(|s| format!("{s:?}")),
       excludes_nullish: inst.meta.excludes_nullish,
+      native_layout,
+      span,
+      preserve_var_assign,
+      stack_alloc_candidate,
+      #[cfg(feature = "native-async-ops")]
+      await_known_resolved,
+      await_behavior: inst.meta.await_behavior,
+      parallel: inst.meta.parallel,
+      nullability_narrowing,
+      value,
       layout_id: None,
       hir_expr: inst.meta.hir_expr.map(|id| id.0),
     },
   }
 }
 
-fn dump_cfg(cfg: &Cfg, analyses: &analysis::driver::FunctionAnalyses) -> CfgDump {
+fn dump_cfg(cfg: &Cfg, analyses: &analysis::driver::FunctionAnalyses, source_len: u32) -> CfgDump {
   let entry = cfg.entry;
   let bblock_order = cfg.graph.calculate_postorder(cfg.entry).0;
 
@@ -372,7 +560,15 @@ fn dump_cfg(cfg: &Cfg, analyses: &analysis::driver::FunctionAnalyses) -> CfgDump
     let dumped = insts
       .iter()
       .enumerate()
-      .map(|(idx, inst)| dump_inst(inst, range_facts[idx], nullability_facts[idx], encoding_facts[idx]))
+      .map(|(idx, inst)| {
+        dump_inst(
+          inst,
+          range_facts[idx],
+          nullability_facts[idx],
+          encoding_facts[idx],
+          source_len,
+        )
+      })
       .collect::<Vec<_>>();
     bblocks.insert(label, dumped);
   }
@@ -855,7 +1051,7 @@ pub fn dump_program(program: &Program, opts: DumpOptions) -> ProgramDump {
   let top_level = FunctionDump {
     id: None,
     params: program.top_level.params.clone(),
-    cfg: dump_cfg(top_level_cfg, &top_level_analyses),
+    cfg: dump_cfg(top_level_cfg, &top_level_analyses, program.source_len),
   };
 
   let mut functions = Vec::with_capacity(program.functions.len());
@@ -865,7 +1061,7 @@ pub fn dump_program(program: &Program, opts: DumpOptions) -> ProgramDump {
     functions.push(FunctionDump {
       id: Some(idx as u32),
       params: func.params.clone(),
-      cfg: dump_cfg(cfg, &analyses),
+      cfg: dump_cfg(cfg, &analyses, program.source_len),
     });
   }
 

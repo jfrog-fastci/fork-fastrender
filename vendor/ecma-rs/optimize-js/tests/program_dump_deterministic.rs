@@ -1,12 +1,10 @@
 #![cfg(all(feature = "serde", feature = "typed"))]
 
-use optimize_js::analysis::annotate_program;
 use optimize_js::dump::{dump_program, DumpOptions};
 use optimize_js::{compile_source_typed, TopLevelMode};
 
 fn dump_json(source: &str) -> String {
-  let mut program = compile_source_typed(source, TopLevelMode::Module, false).expect("compile");
-  annotate_program(&mut program);
+  let program = compile_source_typed(source, TopLevelMode::Module, false).expect("compile");
   dump_program(
     &program,
     DumpOptions {
@@ -35,4 +33,3 @@ fn program_dump_is_deterministic() {
 
   assert_eq!(first, second, "program dumps should be deterministic");
 }
-
