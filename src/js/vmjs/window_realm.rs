@@ -26871,6 +26871,9 @@ fn init_window_globals(
     let html_text_area_element_proto = platform.prototype_for(DomInterface::HTMLTextAreaElement);
     let html_option_element_proto = platform.prototype_for(DomInterface::HTMLOptionElement);
     let html_form_element_proto = platform.prototype_for(DomInterface::HTMLFormElement);
+    let html_div_element_proto = platform.prototype_for(DomInterface::HTMLDivElement);
+    let html_span_element_proto = platform.prototype_for(DomInterface::HTMLSpanElement);
+    let html_paragraph_element_proto = platform.prototype_for(DomInterface::HTMLParagraphElement);
     let html_anchor_element_proto = platform.prototype_for(DomInterface::HTMLAnchorElement);
     let html_image_element_proto = platform.prototype_for(DomInterface::HTMLImageElement);
     let html_link_element_proto = platform.prototype_for(DomInterface::HTMLLinkElement);
@@ -26981,6 +26984,9 @@ fn init_window_globals(
     install_illegal_dom_ctor(&mut scope, "HTMLSelectElement", html_select_element_proto)?;
     install_illegal_dom_ctor(&mut scope, "HTMLOptionElement", html_option_element_proto)?;
     install_illegal_dom_ctor(&mut scope, "HTMLFormElement", html_form_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLDivElement", html_div_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLSpanElement", html_span_element_proto)?;
+    install_illegal_dom_ctor(&mut scope, "HTMLParagraphElement", html_paragraph_element_proto)?;
     install_illegal_dom_ctor(&mut scope, "HTMLImageElement", html_image_element_proto)?;
     install_illegal_dom_ctor(&mut scope, "HTMLAnchorElement", html_anchor_element_proto)?;
     install_illegal_dom_ctor(&mut scope, "HTMLLinkElement", html_link_element_proto)?;
@@ -32232,19 +32238,25 @@ mod tests {
       &mut host,
       "(() => {\n\
         const div = document.createElement('div');\n\
+        const span = document.createElement('span');\n\
+        const p = document.createElement('p');\n\
         const input = document.createElement('input');\n\
         const form = document.createElement('form');\n\
         const ok1 = div instanceof HTMLElement;\n\
         const ok2 = div instanceof Element;\n\
-        const ok3 = input instanceof HTMLInputElement;\n\
-        const ok4 = form instanceof HTMLFormElement;\n\
-        const ok5 = Object.getPrototypeOf(HTMLElement.prototype) === Element.prototype;\n\
-        const ok6 = Object.getPrototypeOf(HTMLInputElement.prototype) === HTMLElement.prototype;\n\
+        const ok3 = div instanceof HTMLDivElement;\n\
+        const ok4 = span instanceof HTMLSpanElement;\n\
+        const ok5 = p instanceof HTMLParagraphElement;\n\
+        const ok6 = input instanceof HTMLInputElement;\n\
+        const ok7 = form instanceof HTMLFormElement;\n\
+        const ok8 = Object.getPrototypeOf(HTMLElement.prototype) === Element.prototype;\n\
+        const ok9 = Object.getPrototypeOf(HTMLInputElement.prototype) === HTMLElement.prototype;\n\
+        const ok10 = Object.getPrototypeOf(HTMLDivElement.prototype) === HTMLElement.prototype;\n\
         let illegalOk = false;\n\
         try { new HTMLInputElement(); } catch (e) {\n\
           illegalOk = e && e.name === 'TypeError' && String(e.message).includes('Illegal constructor');\n\
         }\n\
-        return ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && illegalOk;\n\
+        return ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && illegalOk;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
