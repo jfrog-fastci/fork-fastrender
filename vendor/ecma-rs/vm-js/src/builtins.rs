@@ -508,37 +508,6 @@ pub fn object_define_property(
   Ok(Value::Object(target))
 }
 
-pub fn object_get_own_property_descriptor(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let mut scope = scope.reborrow();
-
-  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let target = scope.to_object(vm, host, hooks, target_val)?;
-  scope.push_root(Value::Object(target))?;
-
-  let prop = args.get(1).copied().unwrap_or(Value::Undefined);
-  let key = scope.to_property_key(vm, host, hooks, prop)?;
-  root_property_key(&mut scope, key)?;
-
-  let Some(desc) = scope.heap().object_get_own_property(target, &key)? else {
-    return Ok(Value::Undefined);
-  };
-
-  // `FromPropertyDescriptor` (ECMA-262).
-  //
-  // This must create an ordinary object inheriting from `%Object.prototype%` when a realm is
-  // initialized so callers can use methods like `hasOwnProperty` on the descriptor.
-  let out = crate::property_descriptor_ops::from_property_descriptor(&mut scope, desc)?;
-  Ok(Value::Object(out))
-}
-
 pub fn object_create(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
