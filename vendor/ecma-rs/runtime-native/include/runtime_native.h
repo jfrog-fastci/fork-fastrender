@@ -421,7 +421,8 @@ size_t rt_backing_store_external_bytes(void);
 //
 // The common ELF setup is to link the module with `runtime-native/link/stackmaps.ld`,
 // which defines `__llvm_stackmaps_start` / `__llvm_stackmaps_end` symbols for the
-// module's stackmaps output section.
+// module's in-memory stackmaps byte range (the payload may be appended into a
+// broader RELRO output section like `.data.rel.ro`).
 bool rt_stackmaps_register(const uint8_t* start, const uint8_t* end);
 bool rt_stackmaps_unregister(const uint8_t* start);
 
