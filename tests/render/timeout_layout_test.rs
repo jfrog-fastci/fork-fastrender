@@ -1,6 +1,7 @@
+use crate::common::{global_test_lock, StageListenerGuard};
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::error::{Error, RenderError, RenderStage};
-use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use fastrender::render_control::StageHeartbeat;
 use fastrender::LayoutParallelism;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -16,10 +17,11 @@ fn heavy_inline_html(count: usize) -> String {
 
 #[test]
 fn layout_loops_respect_timeout() {
+  let _lock = global_test_lock();
   let layout_checks = Arc::new(AtomicUsize::new(0));
   let saw_layout_heartbeat = Arc::new(AtomicBool::new(false));
   let saw_layout_heartbeat_listener = Arc::clone(&saw_layout_heartbeat);
-  let _stage_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+  let _stage_guard = StageListenerGuard::new(Arc::new(move |stage| {
     if stage == StageHeartbeat::Layout {
       saw_layout_heartbeat_listener.store(true, Ordering::Relaxed);
     }
@@ -66,10 +68,11 @@ fn layout_loops_respect_timeout() {
 
 #[test]
 fn layout_timeout_records_diagnostics() {
+  let _lock = global_test_lock();
   let layout_checks = Arc::new(AtomicUsize::new(0));
   let saw_layout_heartbeat = Arc::new(AtomicBool::new(false));
   let saw_layout_heartbeat_listener = Arc::clone(&saw_layout_heartbeat);
-  let _stage_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+  let _stage_guard = StageListenerGuard::new(Arc::new(move |stage| {
     if stage == StageHeartbeat::Layout {
       saw_layout_heartbeat_listener.store(true, Ordering::Relaxed);
     }

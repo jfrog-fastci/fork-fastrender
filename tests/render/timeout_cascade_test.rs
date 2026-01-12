@@ -1,20 +1,22 @@
+use crate::common::{global_test_lock, StageListenerGuard};
 use fastrender::api::FastRender;
 use fastrender::api::RenderOptions;
 use fastrender::error::{Error, RenderError, RenderStage};
-use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use fastrender::render_control::StageHeartbeat;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[test]
 fn cascade_selector_matching_obeys_timeout() {
+  let _lock = global_test_lock();
   let cascade_checks = Arc::new(AtomicUsize::new(0));
 
   // Use stage heartbeats to only trip the cancel callback once cascade begins. This avoids relying
   // on fragile wall-clock thresholds and makes the test independent of HTML parse speed.
   let saw_cascade_heartbeat = Arc::new(AtomicBool::new(false));
   let saw_cascade_heartbeat_listener = Arc::clone(&saw_cascade_heartbeat);
-  let _stage_listener_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+  let _stage_listener_guard = StageListenerGuard::new(Arc::new(move |stage| {
     if stage == StageHeartbeat::Cascade {
       saw_cascade_heartbeat_listener.store(true, Ordering::Relaxed);
     }

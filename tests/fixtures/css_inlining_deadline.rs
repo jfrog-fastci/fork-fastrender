@@ -1,10 +1,10 @@
-use crate::common::global_state::global_test_lock;
+use crate::common::{global_test_lock, StageListenerGuard};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::error::RenderStage;
-use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use fastrender::render_control::StageHeartbeat;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use url::Url;
@@ -20,7 +20,7 @@ fn css_inlining_respects_deadline() {
   // stage hint (`render_control::active_stage()`) to deterministically cancel only during CSS work
   // (avoiding fragile wall-clock thresholds).
   let saw_css_inline_heartbeat_listener = Arc::clone(&saw_css_inline_heartbeat);
-  let _stage_listener_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
+  let _stage_listener_guard = StageListenerGuard::new(Arc::new(move |stage| {
     if stage == StageHeartbeat::CssInline {
       saw_css_inline_heartbeat_listener.store(true, Ordering::Relaxed);
     }

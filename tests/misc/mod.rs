@@ -1,5 +1,13 @@
 //! Miscellaneous tests consolidated from tests/*.rs
 
+/// Serialises tests that mutate process-wide state (environment variables, current dir, global
+/// stage listeners, etc).
+///
+/// The implementation lives in `tests/common/` so the consolidated `tests/integration.rs` harness
+/// can share a single lock across modules.
+pub(crate) fn global_test_lock() -> std::sync::MutexGuard<'static, ()> {
+  crate::common::global_test_lock()
+}
 mod audio_without_controls_hidden;
 mod background_clip_text_parallel;
 mod base_url_dom_override;
