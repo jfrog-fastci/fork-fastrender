@@ -4,6 +4,9 @@ use ahash::AHashMap;
 const FALLBACK_START: u32 = 1 << 31;
 const RESERVED_FILE_ID: u32 = u32::MAX;
 
+const STABLE_HASH_OFFSET: u64 = 0xcbf29ce484222325;
+const STABLE_HASH_PRIME: u64 = 0x100000001b3;
+
 /// Distinguish between user-provided source files and library inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FileOrigin {
@@ -43,41 +46,43 @@ fn preferred_file_id(key: &FileKey) -> Option<u32> {
 /// hasher (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`). The input
 /// stream is:
 /// - [`FileOrigin`] discriminant (`u8`)
-/// - file key bytes (`&str`, UTF-8)
 /// - deterministic collision salt (`u64`, little-endian bytes)
+/// - file key byte length (`u32`, little-endian bytes)
+/// - file key bytes (`&str`, UTF-8)
 ///
 /// The final value is folded to `u32` by XORing the high and low 32-bit halves,
 /// mirroring other stable IDs in the toolchain.
 fn stable_hash_u32(key: &FileKey, origin: FileOrigin, salt: u64) -> u32 {
-  const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-  const PRIME: u64 = 0x100000001b3;
-
+  #[derive(Clone, Copy)]
   struct StableHasher(u64);
 
   impl StableHasher {
     fn new() -> Self {
-      Self(OFFSET_BASIS)
+      Self(STABLE_HASH_OFFSET)
     }
 
-    fn write_byte(&mut self, byte: u8) {
-      self.0 ^= byte as u64;
-      self.0 = self.0.wrapping_mul(PRIME);
+    fn write_bytes(&mut self, bytes: &[u8]) {
+      for byte in bytes {
+        self.0 ^= *byte as u64;
+        self.0 = self.0.wrapping_mul(STABLE_HASH_PRIME);
+      }
     }
 
     fn write_u8(&mut self, value: u8) {
-      self.write_byte(value);
+      self.write_bytes(&[value]);
+    }
+
+    fn write_u32(&mut self, value: u32) {
+      self.write_bytes(&value.to_le_bytes());
     }
 
     fn write_u64(&mut self, value: u64) {
-      for byte in value.to_le_bytes() {
-        self.write_byte(byte);
-      }
+      self.write_bytes(&value.to_le_bytes());
     }
 
     fn write_str(&mut self, value: &str) {
-      for &byte in value.as_bytes() {
-        self.write_byte(byte);
-      }
+      self.write_u32(value.len() as u32);
+      self.write_bytes(value.as_bytes());
     }
 
     fn finish_u32(self) -> u32 {
@@ -87,8 +92,8 @@ fn stable_hash_u32(key: &FileKey, origin: FileOrigin, salt: u64) -> u32 {
 
   let mut hasher = StableHasher::new();
   hasher.write_u8(origin.stable_discriminant());
-  hasher.write_str(key.as_str());
   hasher.write_u64(salt);
+  hasher.write_str(key.as_str());
   hasher.finish_u32()
 }
 
@@ -291,7 +296,7 @@ mod tests {
     // Pinned numeric value to ensure the fallback allocation stays stable across
     // Rust versions. If this changes, it is likely a deliberate hashing scheme
     // change and should be accompanied by an incremental cache version bump.
-    assert_eq!(id_a, FileId(0xb39a4ce5));
+    assert_eq!(id_a, FileId(0xC105_EF2E));
   }
 
   #[test]
@@ -307,11 +312,11 @@ mod tests {
 
     assert_eq!(
       registry.intern(&source_key, FileOrigin::Source),
-      FileId(0xa121_1524)
+      FileId(0xC4F3_04E4)
     );
     assert_eq!(
       registry.intern(&lib_key, FileOrigin::Lib),
-      FileId(0xdd1b_de45)
+      FileId(0xEE4D_1A26)
     );
   }
 }
