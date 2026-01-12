@@ -80,6 +80,42 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
 
+### Appearance / accessibility / debugging (browser UX)
+
+These are intended for the windowed `browser` UI and affect the browser chrome (and, where noted, the default user-preference media query surface seen by rendered pages).
+
+Not all builds implement all of these toggles yet; unsupported values are expected to be ignored. When in doubt, confirm the current behaviour in `src/bin/browser.rs` / `src/ui/`.
+
+- `FASTR_BROWSER_THEME=system|light|dark` – select the browser chrome theme.
+  - Default: `system`.
+  - `system` follows the OS light/dark preference when available.
+  - `light` / `dark` force a specific theme regardless of the OS preference.
+  - Interaction with content rendering:
+    - When the browser UI is following a system/dark/light mode, the intent is to expose the same preference to pages via `prefers-color-scheme`.
+    - Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` take precedence over any browser UI preference.
+- `FASTR_BROWSER_UI_SCALE=<float>` – UI scale multiplier for browser chrome widgets.
+  - Default: `1.0` (no additional scaling beyond the OS/window scale factor).
+  - Must be a finite, positive float (e.g. `1.25`).
+  - This is intended to affect **UI density/readability** and is separate from per-tab page zoom.
+- `FASTR_BROWSER_HIGH_CONTRAST=0|1` – enable a high-contrast UI theme / stronger focus indicators.
+  - Default: `0`.
+  - Interaction with content rendering:
+    - Intended to map to `prefers-contrast` for pages unless explicitly overridden via `FASTR_PREFERS_CONTRAST=...`.
+- `FASTR_BROWSER_REDUCED_MOTION=0|1` – reduce/disable non-essential UI animations.
+  - Default: `0`.
+  - Interaction with content rendering:
+    - Intended to map to `prefers-reduced-motion` for pages unless explicitly overridden via `FASTR_PREFERS_REDUCED_MOTION=...`.
+- `FASTR_BROWSER_HUD=0|1` – show an in-app HUD overlay with browser/debug metrics.
+  - Default: `0`.
+- `FASTR_BROWSER_DEBUG_LOG=0|1` – enable browser/worker debug logging UI.
+  - Default: `0`.
+
+### Browser session file (tabs / zoom persistence)
+
+- `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` – override where the browser session file is stored.
+  - Primary use case: tests/integration harnesses that need an isolated session file.
+  - The default is a per-user config path (via `directories`) with a fallback to `./fastrender_session.json` in the current working directory.
+
 ## Compatibility toggles
 
 - `FASTR_COMPAT_REPLACED_MAX_WIDTH_100=0|1` – control whether FastRender applies a **non-standard** default `max-width: 100%` to replaced elements (`img`, `video`, `audio`, `canvas`, `iframe`, `embed`, `object`).

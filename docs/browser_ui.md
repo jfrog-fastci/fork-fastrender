@@ -107,7 +107,67 @@ Troubleshooting tips:
 CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` binary with
 `--features browser_ui` on Linux/macOS/Windows; Linux additionally runs the headless smoke mode.
 
-Note: the windowed `browser` app currently starts by navigating to `about:newtab`.
+Note: when run without a URL, the windowed `browser` app will typically try to restore the previous
+session (tabs + per-tab zoom). If no session file exists yet, it falls back to `about:newtab`.
+Use `--no-restore` to disable session restore.
+
+## Appearance
+
+The windowed browser UI is gaining a small set of appearance/accessibility knobs (theme, UI scale,
+high-contrast, reduced-motion, and debug overlays). These are configured via environment variables;
+see [env-vars.md](env-vars.md).
+
+Note: not all builds implement all of these toggles yet; unsupported env vars are expected to be
+ignored.
+
+### Theme mode selection
+
+`FASTR_BROWSER_THEME=system|light|dark` is intended to control the browser chrome theme:
+
+- `system` (default): follow the OS light/dark preference when available.
+- `light` / `dark`: force a specific theme.
+
+Interaction with rendered pages:
+
+- The intended behaviour is for the browser UI preference to also drive the default
+  `prefers-color-scheme` media query surface for page rendering.
+- Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` take precedence.
+
+### High contrast / reduced motion
+
+- `FASTR_BROWSER_HIGH_CONTRAST=1` is intended to enable a higher-contrast chrome theme and stronger
+  focus indicators.
+  - Intended to map to `prefers-contrast` for pages unless explicitly overridden via
+    `FASTR_PREFERS_CONTRAST=...`.
+- `FASTR_BROWSER_REDUCED_MOTION=1` is intended to reduce/disable non-essential UI animations.
+  - Intended to map to `prefers-reduced-motion` for pages unless explicitly overridden via
+    `FASTR_PREFERS_REDUCED_MOTION=...`.
+
+### UI scale vs page zoom
+
+- **UI scale** (`FASTR_BROWSER_UI_SCALE=<float>`) is intended to scale the browser chrome UI (tabs,
+  toolbar, fonts) without changing the page zoom level.
+- **Page zoom** is currently implemented as a per-tab setting:
+  - shortcuts: Ctrl/Cmd +/-/0, and Ctrl/Cmd + mouse wheel.
+  - behaviour: scales the CSS viewport size + DPR (keeps the drawn pixmap size roughly constant
+    while making content larger/smaller).
+
+### HUD / debug overlays
+
+- `FASTR_BROWSER_HUD=1` is intended to show an in-app HUD overlay with browser/debug metrics.
+- `FASTR_BROWSER_DEBUG_LOG=1` is intended to enable browser/worker debug logging UI (and optionally
+  print worker debug lines to stderr).
+
+### Persistence (session file)
+
+The browser persists a lightweight session file on exit (open tabs + active tab + per-tab zoom):
+
+- Default location: a per-user config directory (via `directories`), e.g.
+  `~/.config/fastrender/fastrender_session.json` on Linux.
+- Override: `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json`.
+
+At the time of writing, appearance settings are not persisted in the session file; only tabs and
+zoom are.
 
 ## Platform polish (window icon, sizing, system theme)
 
@@ -191,10 +251,10 @@ Note: zoom is tracked per-tab and persisted in the browser session file (see `sr
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
   [`src/ui/`](../src/ui/)
   - UI state model (`BrowserAppState`/tabs/chrome): [`src/ui/browser_app.rs`](../src/ui/browser_app.rs)
-  - Chrome action types + a reusable egui chrome UI helper: [`src/ui/chrome.rs`](../src/ui/chrome.rs)
-    - The windowed `browser` app currently renders its chrome widgets inline in
-      [`src/bin/browser.rs`](../src/bin/browser.rs) (see `App::render_chrome_ui`), but reuses the
-      `ChromeAction` type.
+  - Chrome UI + shortcut handling: [`src/ui/chrome.rs`](../src/ui/chrome.rs)
+    - `chrome_ui` builds the tab strip + toolbar + address bar and returns `ChromeAction` values for
+      the front-end to translate into worker messages. The windowed `browser` app calls this helper
+      each egui frame.
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
     - Used by the canonical UI render worker runtime ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
