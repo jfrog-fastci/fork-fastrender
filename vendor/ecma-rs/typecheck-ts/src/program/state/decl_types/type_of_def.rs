@@ -360,7 +360,98 @@ impl ProgramState {
               .and_then(|pat| res.pat_type(pat))
               .filter(|ty| !matches!(store.type_kind(store.canon(*ty)), tti::TypeKind::Unknown));
 
-            let init_ty = init_ty_from_pat.or_else(|| res.expr_type(init.expr));
+            let mut init_ty = init_ty_from_pat;
+
+            // When a variable is initialized with a function or class *expression*, prefer the
+            // expression's definition type over the raw expression type produced by the body
+            // checker. The body checker currently types uncontextualized function expressions as
+            // `(...args) => unknown` and class expressions as `unknown`, but the declaration type
+            // pipeline can derive accurate value types from their stable `DefId`s.
+            //
+            // Only apply this for the *root* binding of the declarator; destructuring bindings
+            // should continue to use the pattern type computed by the body checker.
+            if init_pat_is_root {
+              enum InitExprDefKind {
+                Function(DefId),
+                Class(DefId),
+              }
+
+              let hir_expr_kind = self.body_map.get(&init.body).and_then(|meta| {
+                let hir_id = meta.hir?;
+                let lowered = self.hir_lowered.get(&meta.file)?;
+                let hir_body = lowered.body(hir_id)?;
+                let expr_kind = hir_body
+                  .exprs
+                  .get(init.expr.0 as usize)
+                  .map(|expr| &expr.kind)?;
+                match expr_kind {
+                  HirExprKind::FunctionExpr { def, .. } => Some(InitExprDefKind::Function(*def)),
+                  HirExprKind::ClassExpr { def, .. } => Some(InitExprDefKind::Class(*def)),
+                  _ => None,
+                }
+              });
+
+              match hir_expr_kind {
+                Some(InitExprDefKind::Function(def)) => {
+                  if init_ty.is_none() {
+                    init_ty = Some(self.type_of_def(def)?);
+                  } else if init_ty.is_some_and(|ty| callable_return_is_unknown(&store, ty)) {
+                    let func_data = self.def_data.get(&def).and_then(|data| match &data.kind {
+                      DefKind::Function(func) => Some(func.clone()),
+                      _ => None,
+                    });
+                    if let Some(func_data) = func_data {
+                      let old_ty = store.canon(init_ty.unwrap_or(prim.unknown));
+                      let (callable_ty, intersection_members, callable_index) =
+                        match store.type_kind(old_ty) {
+                          tti::TypeKind::Callable { .. } => (old_ty, None, None),
+                          tti::TypeKind::Intersection(members) => {
+                            let prim = store.primitive_ids();
+                            let idx = members.iter().position(|member| match store.type_kind(*member) {
+                              tti::TypeKind::Callable { overloads } => overloads
+                                .iter()
+                                .any(|sig_id| store.signature(*sig_id).ret == prim.unknown),
+                              _ => false,
+                            });
+                            if let Some(idx) = idx {
+                              (members[idx], Some(members.clone()), Some(idx))
+                            } else {
+                              (old_ty, None, None)
+                            }
+                          }
+                          _ => (old_ty, None, None),
+                        };
+                      let updated_callable =
+                        self.infer_cached_callable_return_type(&func_data, &store, callable_ty)?;
+                      if let Some(updated_callable) = updated_callable {
+                        init_ty = Some(if let (Some(mut members), Some(idx)) =
+                          (intersection_members, callable_index)
+                        {
+                          members[idx] = updated_callable;
+                          store.intersection(members)
+                        } else {
+                          updated_callable
+                        });
+                      } else {
+                        init_ty = Some(self.type_of_def(def)?);
+                      }
+                    } else {
+                      init_ty = Some(self.type_of_def(def)?);
+                    }
+                  }
+                }
+                Some(InitExprDefKind::Class(def)) => {
+                  if init_ty.is_none() {
+                    if let Some(value_def) = self.value_defs.get(&def).copied() {
+                      init_ty = Some(self.type_of_def(value_def)?);
+                    }
+                  }
+                }
+                _ => {}
+              }
+            }
+
+            let init_ty = init_ty.or_else(|| res.expr_type(init.expr));
             if let Some(init_ty) = init_ty {
               let init_ty = self.resolve_value_ref_type(init_ty)?;
               store.canon(init_ty)

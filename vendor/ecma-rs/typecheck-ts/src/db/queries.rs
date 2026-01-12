@@ -1466,6 +1466,33 @@ pub mod body_check {
   use crate::program::{NamespaceMemberIndex, ProgramTypeResolver};
   use crate::{BodyCheckResult, BodyId, DefId, ExportMap, Host, PatId, SymbolBinding, TypeId};
 
+  fn callable_return_is_unknown(store: &TypeStore, ty: TypeId) -> bool {
+    let prim = store.primitive_ids();
+    let mut seen = HashSet::new();
+    let mut pending = vec![store.canon(ty)];
+    while let Some(ty) = pending.pop() {
+      if !seen.insert(ty) {
+        continue;
+      }
+      match store.type_kind(ty) {
+        types_ts_interned::TypeKind::Callable { overloads } => {
+          if overloads
+            .iter()
+            .any(|sig_id| store.signature(*sig_id).ret == prim.unknown)
+          {
+            return true;
+          }
+        }
+        types_ts_interned::TypeKind::Union(members)
+        | types_ts_interned::TypeKind::Intersection(members) => {
+          pending.extend(members.iter().copied());
+        }
+        _ => {}
+      }
+    }
+    false
+  }
+
   #[derive(Clone)]
   pub struct ArcAst(Arc<Node<TopLevel>>);
 
@@ -2785,7 +2812,8 @@ pub mod body_check {
     let Some(pat) = body.pats.get(pat_id.0 as usize) else {
       return;
     };
-    let ty = result.pat_type(PatId(pat_id.0)).unwrap_or(unknown);
+    let store = ctx.store.as_ref();
+    let mut ty = result.pat_type(PatId(pat_id.0)).unwrap_or(unknown);
     match &pat.kind {
       HirPatKind::Ident(name_id) => {
         if let Some(name) = names.resolve(*name_id) {
@@ -2800,6 +2828,29 @@ pub mod body_check {
             // inferred for the pattern (which may be `unknown`).
             if binding_defs.get(&name) == Some(&def_id) {
               return;
+            }
+            if store.contains_type_id(ty) && callable_return_is_unknown(store, ty)
+              || !store.contains_type_id(ty)
+              || matches!(
+                store.type_kind(store.canon(ty)),
+                types_ts_interned::TypeKind::Unknown
+              )
+            {
+              if let Some(def_ty) = ctx.interned_def_types.get(&def_id).copied() {
+                let def_ty = if store.contains_type_id(def_ty) {
+                  store.canon(def_ty)
+                } else {
+                  unknown
+                };
+                if store.contains_type_id(def_ty)
+                  && !matches!(
+                    store.type_kind(store.canon(def_ty)),
+                    types_ts_interned::TypeKind::Unknown
+                  )
+                {
+                  ty = def_ty;
+                }
+              }
             }
             binding_defs.insert(name.clone(), def_id);
           }

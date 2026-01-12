@@ -124,6 +124,7 @@ impl Program {
       let mut binding_def: Option<DefId> = None;
       let mut binding_ty: Option<TypeId> = None;
       let mut contextual_ty: Option<TypeId> = None;
+      let mut expr_def_fallback: Option<DefId> = None;
 
       {
         let state = self.read_state();
@@ -156,6 +157,12 @@ impl Program {
                         let base_ty = result.expr_type(mem.object).unwrap_or(unknown);
                         member_fallback = Some((mem.optional, base_ty, key));
                       }
+                    }
+                    HirExprKind::FunctionExpr { def, .. } => {
+                      expr_def_fallback = Some(*def);
+                    }
+                    HirExprKind::ClassExpr { def, .. } => {
+                      expr_def_fallback = state.value_defs.get(def).copied();
                     }
                     _ => {}
                   }
@@ -256,6 +263,29 @@ impl Program {
           };
           if let Some(prop_ty) = prop_ty {
             ty = prop_ty;
+          }
+        }
+      }
+
+      // `BodyCheckResult` currently types function/class expressions as `unknown` (or functions as
+      // `(...args) => unknown`) when they are uncontextualized. Use the expression's stable `DefId`
+      // to recover the proper declaration type on demand.
+      if let Some(def) = expr_def_fallback {
+        let ty_is_unknown =
+          !store.contains_type_id(ty) || matches!(store.type_kind(store.canon(ty)), tti::TypeKind::Unknown);
+        let ty_is_underspecified =
+          store.contains_type_id(ty) && super::super::callable_return_is_unknown(&store, ty);
+        if ty_is_unknown || ty_is_underspecified {
+          match self.type_of_def_fallible(def) {
+            Ok(def_ty) => {
+              ty = if store.contains_type_id(def_ty) {
+                store.canon(def_ty)
+              } else {
+                unknown
+              };
+            }
+            Err(FatalError::Cancelled) => return Err(FatalError::Cancelled),
+            Err(_) => {}
           }
         }
       }
