@@ -4759,12 +4759,12 @@ impl<'a> Checker<'a> {
   }
 
   fn jsx_child_text_type(&mut self, text: &Node<JsxText>) -> Option<TypeId> {
+    let prim = self.store.primitive_ids();
     let trimmed = text.stx.value.trim();
     if trimmed.is_empty() {
       return None;
     }
-    let name = self.store.intern_name_ref(trimmed);
-    Some(self.store.intern_type(TypeKind::StringLiteral(name)))
+    Some(prim.string)
   }
 
   fn jsx_first_missing_required_prop(&self, target: TypeId, actual_ty: TypeId) -> Option<String> {

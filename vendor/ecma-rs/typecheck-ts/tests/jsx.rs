@@ -913,6 +913,46 @@ const bad = <div>{"a"}{"b"}</div>;
 }
 
 #[test]
+fn jsx_text_children_are_not_string_literals() {
+  let mut options = CompilerOptions::default();
+  options.no_default_lib = true;
+  options.jsx = Some(JsxMode::React);
+
+  let jsx = LibFile {
+    key: FileKey::new("jsx.d.ts"),
+    name: Arc::from("jsx.d.ts"),
+    kind: FileKind::Dts,
+    text: Arc::from(
+      r#"
+declare namespace JSX {
+  interface Element {}
+  interface IntrinsicElements {
+    div: { children?: "hi" };
+  }
+}
+"#,
+    ),
+  };
+
+  let entry = FileKey::new("entry.tsx");
+  let source = r#"
+const el = <div>hi</div>;
+"#;
+  let host = TestHost::new(options)
+    .with_lib(jsx)
+    .with_file(entry.clone(), source);
+  let program = Program::new(host, vec![entry]);
+  let diagnostics = program.check();
+
+  assert!(
+    diagnostics
+      .iter()
+      .any(|d| d.code.as_str() == codes::TYPE_MISMATCH.as_str()),
+    "expected a type mismatch diagnostic for text children vs string-literal prop, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn tuple_children_pass() {
   let mut options = CompilerOptions::default();
   options.no_default_lib = true;
