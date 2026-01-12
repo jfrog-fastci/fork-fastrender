@@ -496,19 +496,37 @@ fn namespace_then_value_emits_ts2434_and_merges_members() {
 fn namespace_not_merged_with_default_export_reports_ts2652() {
   let mut host = MemoryHost::default();
   let key = fk(9);
-  host.insert(
-    key.clone(),
-    "export default function foo() {}\nnamespace foo { export const x = 1; }\n",
-  );
+  let source = "export default function foo() {}\nnamespace foo { export const x = 1; }\n";
+  host.insert(key.clone(), source);
 
   let program = Program::new(host, vec![key.clone()]);
   let diagnostics = program.check();
-  let ts2652_count = diagnostics
+
+  let ts2652: Vec<_> = diagnostics
     .iter()
     .filter(|d| d.code.as_str() == "TS2652")
-    .count();
+    .collect();
   assert_eq!(
-    ts2652_count, 2,
+    ts2652.len(),
+    2,
     "expected two TS2652 diagnostics, got {diagnostics:?}"
   );
+  assert!(
+    diagnostics.iter().all(|d| d.code.as_str() == "TS2652"),
+    "expected only TS2652 diagnostics, got {diagnostics:?}"
+  );
+
+  let positions: Vec<u32> = source
+    .match_indices("foo")
+    .map(|(idx, _)| idx as u32)
+    .collect();
+  assert_eq!(positions.len(), 2);
+  let expected = vec![(positions[0], positions[0] + 3), (positions[1], positions[1] + 3)];
+
+  let mut actual: Vec<_> = ts2652
+    .iter()
+    .map(|d| (d.primary.range.start, d.primary.range.end))
+    .collect();
+  actual.sort();
+  assert_eq!(actual, expected);
 }
