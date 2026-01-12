@@ -4,6 +4,7 @@ use crate::diagnostic_norm::{
 };
 use crate::directives::{
   parse_directive, DirectiveParseOptions, HarnessOptions, HarnessOptionsParseResult,
+  IgnoredDirectiveSummary,
 };
 use crate::expectations::{AppliedExpectation, ExpectationKind, Expectations};
 use crate::multifile::{is_normalized_virtual_path, normalize_name_cow, normalize_name_into};
@@ -109,6 +110,10 @@ pub struct DifftscArgs {
   /// When to fail the run on mismatches.
   #[arg(long, value_enum, default_value_t = FailOn::New)]
   pub fail_on: FailOn,
+
+  /// Skip test cases that contain unknown harness directives (e.g. `// @foo:`).
+  #[arg(long)]
+  pub fail_on_unknown_directives: bool,
 
   /// Number of worker threads to use.
   #[arg(long, default_value_t = default_jobs())]
@@ -339,6 +344,8 @@ struct Summary {
 struct JsonReport {
   suite: String,
   summary: Summary,
+  #[serde(default, skip_serializing_if = "IgnoredDirectiveSummary::is_empty")]
+  directives: IgnoredDirectiveSummary,
   results: Vec<CaseReport>,
 }
 
@@ -511,6 +518,9 @@ fn run_impl(args: DifftscArgs) -> Result<CommandStatus> {
     xpass,
     ..summary
   };
+  let directives = IgnoredDirectiveSummary::from_harness_options(
+    results.iter().filter_map(|r| r.harness_options.as_ref()),
+  );
 
   if args.update_baselines && !args.json {
     println!("updated baselines under {}", baselines_root.display());
@@ -524,13 +534,20 @@ fn run_impl(args: DifftscArgs) -> Result<CommandStatus> {
       &JsonReport {
         suite: suite_name.clone(),
         summary: summary.clone(),
+        directives: directives.clone(),
         results,
       },
     )
     .context("serialize JSON output")?;
     writeln!(handle).context("write JSON output")?;
   } else {
-    print_human_summary(&suite_name, &summary, &results, args.trace_resolution);
+    print_human_summary(
+      &suite_name,
+      &summary,
+      &results,
+      args.trace_resolution,
+      &directives,
+    );
   }
 
   let should_fail = if args.fail_on != FailOn::None && summary.xpass > 0 {
@@ -574,6 +591,7 @@ fn print_human_summary(
   summary: &Summary,
   results: &[CaseReport],
   trace_resolution: bool,
+  directives: &IgnoredDirectiveSummary,
 ) {
   println!(
     "difftsc: suite `{suite}` — total={}, matched={}, mismatched={}, updated={}, errors={}, skipped={}, xpass={}",
@@ -585,6 +603,9 @@ fn print_human_summary(
     summary.skipped,
     summary.xpass
   );
+  if let Some(line) = directives.human_summary() {
+    println!("{line}");
+  }
 
   if summary.mismatched == 0 && summary.errors == 0 {
     return;
@@ -707,11 +728,42 @@ fn run_single_test(
   let parsed = harness_options_from_files(&test.files);
   let mut notes = parsed.notes;
   let harness_options = parsed.options;
+  if let Some(note) = harness_options.directives.ignored_directives_note() {
+    notes.push(note);
+  }
   let mut tsc_options = harness_options.to_tsc_options_map();
   if args.trace_resolution {
     tsc_options.insert("traceResolution".to_string(), Value::Bool(true));
   }
   let file_set = HarnessFileSet::new(&test.files);
+
+  if args.fail_on_unknown_directives && harness_options.directives.has_unknown() {
+    let unknown = harness_options
+      .directives
+      .unknown
+      .iter()
+      .map(|name| format!("@{name}"))
+      .collect::<Vec<_>>()
+      .join(", ");
+    notes.push(format!("skipped due to unknown directives: {unknown}"));
+    return CaseReport {
+      name: test.name.clone(),
+      status: CaseStatus::Skipped,
+      expectation: None,
+      harness_options: Some(harness_options),
+      tsc_options: Some(tsc_options),
+      rust_resolution_trace: None,
+      tsc_resolution_trace: None,
+      expected: None,
+      actual: None,
+      diff: None,
+      expected_types: None,
+      actual_types: None,
+      type_diff: None,
+      report: None,
+      notes,
+    };
+  }
 
   if Instant::now() >= deadline {
     notes.push(format!("timed out after {}ms", timeout.as_millis()));

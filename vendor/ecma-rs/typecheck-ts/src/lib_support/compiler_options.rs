@@ -5,6 +5,11 @@ use std::{fmt, sync::Arc};
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use types_ts_interned::CacheConfig;
 
+#[cfg(feature = "serde")]
+fn is_false(value: &bool) -> bool {
+  !*value
+}
+
 /// Target language level.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -95,6 +100,34 @@ pub struct CompilerOptions {
   pub module_resolution: Option<String>,
   /// Explicitly included `@types` packages.
   pub types: Vec<String>,
+  /// Allow JavaScript files to be part of the program (`allowJs` / `compilerOptions.allowJs`).
+  ///
+  /// The checker currently accepts JS roots unconditionally, but we keep this flag
+  /// so harnesses can round-trip TypeScript test directives and future work can
+  /// gate JS-specific semantics as needed.
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub allow_js: bool,
+  /// Enable full checking of JavaScript files (`checkJs` / `compilerOptions.checkJs`).
+  ///
+  /// This is tracked for parity with `tsc` and may be used by downstream tools
+  /// to suppress diagnostics in JS sources when disabled.
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub check_js: bool,
+  /// Module detection strategy (`moduleDetection` / `compilerOptions.moduleDetection`).
+  ///
+  /// Stored as the raw, lower-cased string to match the harness/tsconfig parsing
+  /// model used elsewhere (e.g. `moduleResolution`).
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub module_detection: Option<String>,
+  /// JSX import source package (`jsxImportSource` / `compilerOptions.jsxImportSource`).
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Option::is_none")
+  )]
+  pub jsx_import_source: Option<String>,
   pub strict_null_checks: bool,
   pub no_implicit_any: bool,
   /// Enforce the AOT-friendly subset of TypeScript described in EXEC.plan.
@@ -150,6 +183,10 @@ impl Default for CompilerOptions {
       declaration: false,
       module_resolution: None,
       types: Vec::new(),
+      allow_js: false,
+      check_js: false,
+      module_detection: None,
+      jsx_import_source: None,
       strict_null_checks: true,
       no_implicit_any: false,
       native_strict: false,

@@ -2,7 +2,7 @@ use crate::tsc::apply_default_tsc_options;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use typecheck_ts::lib_support::{CompilerOptions, JsxMode, LibName, ModuleKind, ScriptTarget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +25,129 @@ pub struct HarnessDirective {
   /// 1-based line number within the original harness file.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub line: Option<usize>,
+}
+
+/// Normalized view of which `@directives` were seen by the harness.
+///
+/// This is used to surface when the harness ignores directives (either because
+/// they are unknown, or known-but-unsupported).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HarnessDirectiveInfo {
+  /// Directive names that are recognized and applied by the harness.
+  pub applied: Vec<String>,
+  /// Directive names that are not recognized by the harness.
+  pub unknown: Vec<String>,
+  /// Directive names that are recognized, but not currently supported by the harness.
+  pub unsupported: Vec<String>,
+}
+
+impl HarnessDirectiveInfo {
+  pub fn has_unknown(&self) -> bool {
+    !self.unknown.is_empty()
+  }
+
+  pub fn has_ignored(&self) -> bool {
+    !self.unknown.is_empty() || !self.unsupported.is_empty()
+  }
+
+  pub fn ignored_directives_note(&self) -> Option<String> {
+    if !self.has_ignored() {
+      return None;
+    }
+
+    let mut ignored = Vec::new();
+    ignored.extend(self.unknown.iter().cloned());
+    ignored.extend(self.unsupported.iter().cloned());
+    ignored.sort();
+    ignored.dedup();
+
+    let displayed: Vec<String> = ignored
+      .iter()
+      .take(DEFAULT_DIRECTIVE_SAMPLE_LIMIT)
+      .map(|name| format!("@{name}"))
+      .collect();
+
+    let mut note = format!("ignored directives: {}", displayed.join(", "));
+    if ignored.len() > displayed.len() {
+      note.push_str(" (…)"); // truncated
+    }
+    Some(note)
+  }
+}
+
+pub const DEFAULT_DIRECTIVE_SAMPLE_LIMIT: usize = 10;
+
+/// Aggregated view of ignored harness directives for a full conformance/difftsc run.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct IgnoredDirectiveSummary {
+  pub unknown_count: usize,
+  pub unsupported_count: usize,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub unknown_directives: Vec<String>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub unsupported_directives: Vec<String>,
+}
+
+impl IgnoredDirectiveSummary {
+  pub fn is_empty(&self) -> bool {
+    self.unknown_count == 0 && self.unsupported_count == 0
+  }
+
+  pub fn human_summary(&self) -> Option<String> {
+    if self.is_empty() {
+      return None;
+    }
+
+    let mut names = Vec::new();
+    names.extend(self.unknown_directives.iter().cloned());
+    names.extend(self.unsupported_directives.iter().cloned());
+    names.sort();
+    names.dedup();
+
+    let mut line = format!(
+      "ignored directives (unknown={}, unsupported={}): {}",
+      self.unknown_count,
+      self.unsupported_count,
+      names.join(", ")
+    );
+    let total = self.unknown_count.saturating_add(self.unsupported_count);
+    if total > names.len() {
+      line.push_str(" (…)"); // truncated
+    }
+    Some(line)
+  }
+
+  pub fn from_harness_options<'a>(
+    options: impl IntoIterator<Item = &'a HarnessOptions>,
+  ) -> IgnoredDirectiveSummary {
+    let mut unknown: BTreeSet<String> = BTreeSet::new();
+    let mut unsupported: BTreeSet<String> = BTreeSet::new();
+    for opt in options {
+      unknown.extend(opt.directives.unknown.iter().cloned());
+      unsupported.extend(opt.directives.unsupported.iter().cloned());
+    }
+
+    let unknown_count = unknown.len();
+    let unsupported_count = unsupported.len();
+
+    let unknown_directives = unknown
+      .iter()
+      .take(DEFAULT_DIRECTIVE_SAMPLE_LIMIT)
+      .map(|name| format!("@{name}"))
+      .collect();
+    let unsupported_directives = unsupported
+      .iter()
+      .take(DEFAULT_DIRECTIVE_SAMPLE_LIMIT)
+      .map(|name| format!("@{name}"))
+      .collect();
+
+    IgnoredDirectiveSummary {
+      unknown_count,
+      unsupported_count,
+      unknown_directives,
+      unsupported_directives,
+    }
+  }
 }
 
 /// Parse a harness directive from a single line of text.
@@ -155,6 +278,20 @@ pub struct HarnessOptions {
   pub experimental_decorators: Option<bool>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub emit_decorator_metadata: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub allow_js: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub check_js: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub module_detection: Option<String>,
+
+  /// Directive names seen while parsing this test case.
+  ///
+  /// This field is intentionally excluded from JSON output to avoid bloating
+  /// large conformance reports. The aggregated, truncated view is surfaced on
+  /// the report metadata instead.
+  #[serde(skip)]
+  pub directives: HarnessDirectiveInfo,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -196,46 +333,163 @@ impl HarnessOptions {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     let mut unknown_notes = Vec::new();
 
+    let mut applied: BTreeSet<String> = BTreeSet::new();
+    let mut unknown: BTreeSet<String> = BTreeSet::new();
+    let mut unsupported: BTreeSet<String> = BTreeSet::new();
+
     for directive in directives {
       let value = directive.value.as_deref();
       let mut recognized = true;
       match directive.name.as_str() {
-        "target" => options.target = value.map(|v| normalize_scalar(v).to_string()),
-        "module" => options.module = value.map(|v| normalize_scalar(v).to_string()),
-        "jsx" => options.jsx = value.map(|v| normalize_scalar(v).to_string()),
+        "filename" => {
+          applied.insert(directive.name.clone());
+        }
+        "target" => {
+          options.target = value.map(|v| normalize_scalar(v).to_string());
+          applied.insert(directive.name.clone());
+        }
+        "module" => {
+          options.module = value.map(|v| normalize_scalar(v).to_string());
+          applied.insert(directive.name.clone());
+        }
+        "jsx" => {
+          options.jsx = value.map(|v| normalize_scalar(v).to_string());
+          applied.insert(directive.name.clone());
+        }
         "jsximportsource" => {
-          options.jsx_import_source = value.map(|v| normalize_scalar(v).to_string())
+          options.jsx_import_source = value.map(|v| normalize_scalar(v).to_string());
+          applied.insert(directive.name.clone());
         }
-        "baseurl" => options.base_url = value.map(|v| normalize_scalar(v).to_string()),
-        "strict" => options.strict = parse_bool(value),
-        "strictfunctiontypes" => options.strict_function_types = parse_bool(value),
-        "noimplicitany" => options.no_implicit_any = parse_bool(value),
-        "strictnullchecks" => options.strict_null_checks = parse_bool(value),
-        "exactoptionalpropertytypes" => options.exact_optional_property_types = parse_bool(value),
-        "nouncheckedindexedaccess" => options.no_unchecked_indexed_access = parse_bool(value),
-        "nolib" => options.no_lib = parse_bool(value),
-        "lib" => options.lib = parse_list(value),
-        "skiplibcheck" => options.skip_lib_check = parse_bool(value),
-        "noemit" => options.no_emit = parse_bool(value),
-        "usedefineforclassfields" => options.use_define_for_class_fields = parse_bool(value),
-        "noemitonerror" => options.no_emit_on_error = parse_bool(value),
-        "declaration" => options.declaration = parse_bool(value),
+        "baseurl" => {
+          options.base_url = value.map(|v| normalize_scalar(v).to_string());
+          applied.insert(directive.name.clone());
+        }
+        "strict" => {
+          options.strict = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "strictfunctiontypes" => {
+          options.strict_function_types = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "noimplicitany" => {
+          options.no_implicit_any = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "strictnullchecks" => {
+          options.strict_null_checks = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "exactoptionalpropertytypes" => {
+          options.exact_optional_property_types = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "nouncheckedindexedaccess" => {
+          options.no_unchecked_indexed_access = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "nolib" => {
+          options.no_lib = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "lib" => {
+          options.lib = parse_list(value);
+          applied.insert(directive.name.clone());
+        }
+        "skiplibcheck" => {
+          options.skip_lib_check = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "noemit" => {
+          options.no_emit = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "usedefineforclassfields" | "use_define_for_class_fields" => {
+          options.use_define_for_class_fields = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "noemitonerror" => {
+          options.no_emit_on_error = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "declaration" => {
+          options.declaration = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
         "moduleresolution" => {
-          options.module_resolution = value.map(|v| normalize_scalar(v).to_ascii_lowercase())
+          options.module_resolution = value.map(|v| normalize_scalar(v).to_ascii_lowercase());
+          applied.insert(directive.name.clone());
         }
-        "typeroots" => options.type_roots = parse_list(value),
-        "paths" => match value.and_then(|v| parse_jsonish_value(v, &mut notes)) {
-          Some(parsed) => options.paths = Some(parsed),
-          None => options.paths = None,
-        },
-        "types" => options.types = parse_list(value),
-        "esmoduleinterop" => options.es_module_interop = parse_bool(value),
+        "typeroots" => {
+          options.type_roots = parse_list(value);
+          applied.insert(directive.name.clone());
+        }
+        "paths" => {
+          options.paths = match value.and_then(|v| parse_jsonish_value(v, &mut notes)) {
+            Some(parsed) => Some(parsed),
+            None => None,
+          };
+          applied.insert(directive.name.clone());
+        }
+        "types" => {
+          options.types = parse_list(value);
+          applied.insert(directive.name.clone());
+        }
+        "esmoduleinterop" => {
+          options.es_module_interop = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
         "allowsyntheticdefaultimports" => {
-          options.allow_synthetic_default_imports = parse_bool(value)
+          options.allow_synthetic_default_imports = parse_bool(value);
+          applied.insert(directive.name.clone());
         }
-        "resolvejsonmodule" => options.resolve_json_module = parse_bool(value),
-        "experimentaldecorators" => options.experimental_decorators = parse_bool(value),
-        "emitdecoratormetadata" => options.emit_decorator_metadata = parse_bool(value),
+        "resolvejsonmodule" => {
+          options.resolve_json_module = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "experimentaldecorators" => {
+          options.experimental_decorators = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "emitdecoratormetadata" => {
+          options.emit_decorator_metadata = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "allowjs" => {
+          options.allow_js = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "checkjs" => {
+          options.check_js = parse_bool(value);
+          applied.insert(directive.name.clone());
+        }
+        "moduledetection" => {
+          options.module_detection = value.map(|v| normalize_scalar(v).to_ascii_lowercase());
+          applied.insert(directive.name.clone());
+        }
+
+        // Known TypeScript harness directives that we recognize but do not
+        // currently model in `HarnessOptions` / compiler option mapping.
+        //
+        // When these appear, the harness will record them as "unsupported" so
+        // reports can highlight potentially untrustworthy comparisons.
+        "noimplicitthis"
+        | "strictpropertyinitialization"
+        | "isolatedmodules"
+        | "preserveconstenums"
+        | "importsnotusedasvalues"
+        | "jsxfactory"
+        | "jsxfragmentfactory"
+        | "reactnamespace"
+        | "out"
+        | "outdir"
+        | "outfile"
+        | "sourcemap"
+        | "inlinesourcemap"
+        | "inlinesources" => {
+          unsupported.insert(directive.name.clone());
+        }
+
         _ => {
           recognized = false;
         }
@@ -245,18 +499,21 @@ impl HarnessOptions {
         if directive.name != "filename" {
           *counts.entry(directive.name.as_str()).or_insert(0) += 1;
         }
-      } else if parse_options.strict {
-        let line = directive.line.unwrap_or(0);
-        if let Some(value) = directive.value.as_deref() {
-          unknown_notes.push(format!(
-            "unrecognized directive @{} at line {} (value: {})",
-            directive.name, line, value
-          ));
-        } else {
-          unknown_notes.push(format!(
-            "unrecognized directive @{} at line {}",
-            directive.name, line
-          ));
+      } else {
+        unknown.insert(directive.name.clone());
+        if parse_options.strict {
+          let line = directive.line.unwrap_or(0);
+          if let Some(value) = directive.value.as_deref() {
+            unknown_notes.push(format!(
+              "unrecognized directive @{} at line {} (value: {})",
+              directive.name, line, value
+            ));
+          } else {
+            unknown_notes.push(format!(
+              "unrecognized directive @{} at line {}",
+              directive.name, line
+            ));
+          }
         }
       }
     }
@@ -274,6 +531,12 @@ impl HarnessOptions {
       unknown_notes.sort();
       notes.extend(unknown_notes);
     }
+
+    options.directives = HarnessDirectiveInfo {
+      applied: applied.into_iter().collect(),
+      unknown: unknown.into_iter().collect(),
+      unsupported: unsupported.into_iter().collect(),
+    };
 
     HarnessOptionsParseResult { options, notes }
   }
@@ -338,6 +601,18 @@ impl HarnessOptions {
     }
     if !self.types.is_empty() {
       opts.types = self.types.clone();
+    }
+    if let Some(value) = self.allow_js {
+      opts.allow_js = value;
+    }
+    if let Some(value) = self.check_js {
+      opts.check_js = value;
+    }
+    if let Some(value) = self.module_detection.as_ref() {
+      opts.module_detection = Some(value.clone());
+    }
+    if let Some(value) = self.jsx_import_source.as_ref() {
+      opts.jsx_import_source = Some(value.clone());
     }
 
     if let Some(mode) = self.jsx.as_deref().and_then(parse_jsx_mode) {
@@ -478,6 +753,15 @@ impl HarnessOptions {
     }
     if let Some(value) = self.emit_decorator_metadata {
       map.insert("emitDecoratorMetadata".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = self.allow_js {
+      map.insert("allowJs".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = self.check_js {
+      map.insert("checkJs".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = self.module_detection.as_ref() {
+      map.insert("moduleDetection".to_string(), Value::String(value.clone()));
     }
 
     map
@@ -903,5 +1187,61 @@ mod tests {
       "expected unknown directive note; notes={:?}",
       parsed.notes
     );
+  }
+
+  #[test]
+  fn tracks_unknown_and_unsupported_directives() {
+    let directives = vec![
+      dir("target", Some("ES5")),
+      dir("noimplicitthis", Some("true")),
+      dir("madeup", Some("true")),
+    ];
+    let options = HarnessOptions::from_directives(&directives);
+    assert!(options.directives.applied.iter().any(|d| d == "target"));
+    assert_eq!(options.directives.unsupported, vec!["noimplicitthis"]);
+    assert_eq!(options.directives.unknown, vec!["madeup"]);
+  }
+
+  #[test]
+  fn maps_module_detection_and_js_directives() {
+    let directives = vec![
+      dir("allowjs", Some("true")),
+      dir("checkjs", Some("false")),
+      dir("moduledetection", Some("force")),
+      dir("jsximportsource", Some("preact")),
+    ];
+    let options = HarnessOptions::from_directives(&directives);
+    let tsc = options.to_tsc_options_map();
+    let compiler = options.to_compiler_options();
+
+    assert_eq!(tsc.get("allowJs"), Some(&Value::Bool(true)));
+    assert_eq!(tsc.get("checkJs"), Some(&Value::Bool(false)));
+    assert_eq!(
+      tsc.get("moduleDetection"),
+      Some(&Value::String("force".to_string()))
+    );
+    assert_eq!(
+      tsc.get("jsxImportSource"),
+      Some(&Value::String("preact".to_string()))
+    );
+
+    assert!(compiler.allow_js);
+    assert!(!compiler.check_js);
+    assert_eq!(
+      compiler.module_detection.as_deref(),
+      Some("force"),
+      "module_detection should be normalized"
+    );
+    assert_eq!(compiler.jsx_import_source.as_deref(), Some("preact"));
+  }
+
+  #[test]
+  fn accepts_use_define_for_class_fields_alias() {
+    let directives = vec![dir("use_define_for_class_fields", Some("false"))];
+    let options = HarnessOptions::from_directives(&directives);
+    assert_eq!(options.use_define_for_class_fields, Some(false));
+
+    let compiler = options.to_compiler_options();
+    assert!(!compiler.use_define_for_class_fields);
   }
 }

@@ -2,6 +2,7 @@ use crate::diagnostic_norm::{
   describe, normalize_rust_diagnostics, normalize_tsc_diagnostics, sort_diagnostics,
   within_tolerance, NormalizedDiagnostic,
 };
+use crate::directives::IgnoredDirectiveSummary;
 use crate::directives::HarnessOptions;
 use crate::discover::{
   discover_conformance_test_paths, Filter, Shard, ShardStrategy, TestCase, TestCasePath,
@@ -146,6 +147,7 @@ pub struct ConformanceOptions {
   pub jobs: usize,
   pub manifest: Option<PathBuf>,
   pub fail_on: FailOn,
+  pub fail_on_unknown_directives: bool,
 }
 
 impl ConformanceOptions {
@@ -172,6 +174,7 @@ impl ConformanceOptions {
       jobs: 1,
       manifest: None,
       fail_on: FailOn::New,
+      fail_on_unknown_directives: false,
     }
   }
 }
@@ -264,6 +267,8 @@ impl MismatchSummary {
 pub struct ConformanceReport {
   pub summary: Summary,
   pub compare_mode: CompareMode,
+  #[serde(default, skip_serializing_if = "IgnoredDirectiveSummary::is_empty")]
+  pub directives: IgnoredDirectiveSummary,
   pub results: Vec<TestResult>,
 }
 
@@ -669,19 +674,33 @@ pub fn run_conformance(opts: ConformanceOptions) -> Result<ConformanceReport> {
         let PlannedCase { case, expectation } = planned;
         let base_result = match expectation.expectation.kind {
           ExpectationKind::Skip => match load_case_for_run(case) {
-            Ok(case) => build_skipped_result(case),
+            Ok(case) => build_skipped_result(case, "skipped by manifest"),
             Err((case, err)) => build_load_error_result(case, &err),
           },
           _ => match load_case_for_run(case) {
-            Ok(case) => run_single_case(
-              case,
-              compare_mode,
-              tsc_pool_ref,
-              &timeout_manager,
-              tsc_available,
-              &snapshot_store,
-              &opts,
-            ),
+            Ok(case) => {
+              if opts.fail_on_unknown_directives && case.options.directives.has_unknown() {
+                let unknown = case
+                  .options
+                  .directives
+                  .unknown
+                  .iter()
+                  .map(|name| format!("@{name}"))
+                  .collect::<Vec<_>>()
+                  .join(", ");
+                build_skipped_result(case, format!("unknown directives: {unknown}"))
+              } else {
+                run_single_case(
+                  case,
+                  compare_mode,
+                  tsc_pool_ref,
+                  &timeout_manager,
+                  tsc_available,
+                  &snapshot_store,
+                  &opts,
+                )
+              }
+            }
             Err((case, err)) => build_load_error_result(case, &err),
           },
         };
@@ -747,11 +766,15 @@ pub fn run_conformance(opts: ConformanceOptions) -> Result<ConformanceReport> {
   Ok(ConformanceReport {
     summary,
     compare_mode,
+    directives: IgnoredDirectiveSummary::from_harness_options(
+      results.iter().map(|r| &r.options.harness),
+    ),
     results,
   })
 }
 
-fn build_skipped_result(case: TestCase) -> TestResult {
+fn build_skipped_result(case: TestCase, message: impl Into<String>) -> TestResult {
+  let message = message.into();
   let TestCase {
     id,
     path,
@@ -770,8 +793,8 @@ fn build_skipped_result(case: TestCase) -> TestResult {
     rust_ms: None,
     tsc_ms: None,
     diff_ms: None,
-    rust: EngineDiagnostics::skipped(Some("skipped by manifest".into())),
-    tsc: EngineDiagnostics::skipped(Some("skipped by manifest".into())),
+    rust: EngineDiagnostics::skipped(Some(message.clone())),
+    tsc: EngineDiagnostics::skipped(Some(message)),
     options: build_test_options(harness_options, rust_options, tsc_options),
     query_stats: None,
     rust_resolution_trace: None,
@@ -797,6 +820,9 @@ fn load_case_for_run(
   );
   let mut notes = split.notes;
   notes.extend(parsed.notes);
+  if let Some(note) = parsed.options.directives.ignored_directives_note() {
+    notes.push(note);
+  }
   Ok(TestCase {
     id: case.id,
     path: case.path,
@@ -3456,6 +3482,7 @@ echo '{"diagnostics":[]}'
       jobs,
       manifest: None,
       fail_on: FailOn::New,
+      fail_on_unknown_directives: false,
     };
 
     let report = run_conformance(opts).expect("run_conformance");
@@ -3530,6 +3557,7 @@ echo '{"diagnostics":[]}'
       jobs: 2,
       manifest: None,
       fail_on: FailOn::New,
+      fail_on_unknown_directives: false,
     };
     let report = run_conformance(opts).expect("run_conformance");
     let elapsed = start.elapsed();

@@ -34,6 +34,73 @@ module `typescript`”, revisit the prerequisites below.
 All fixtures are treated as UTF-8; discovery will fail fast on invalid encodings
 to keep spans and offsets consistent.
 
+## Harness directives (`// @...:`)
+
+Both the upstream conformance suite and local fixtures can embed configuration
+directives in comments, for example:
+
+```ts
+// @target: ES2022
+// @module: nodenext
+// @strictNullChecks: true
+```
+
+The harness parses a subset of these directives and forwards them to the Rust
+checker and/or `tsc` (when used as an oracle). Options that are only supported
+by `tsc` are surfaced as notes so comparisons remain auditable.
+
+### Supported directives
+
+- `@filename`: splits multi-file tests (metadata only; not a compiler option)
+- `@target`
+- `@module`
+- `@moduleResolution`
+- `@moduleDetection`
+- `@jsx`
+- `@jsxImportSource`
+- `@lib`
+- `@noLib`
+- `@typeRoots`
+- `@baseUrl`
+- `@paths`
+- `@types`
+- `@strict`
+- `@noImplicitAny`
+- `@strictNullChecks`
+- `@strictFunctionTypes`
+- `@exactOptionalPropertyTypes`
+- `@noUncheckedIndexedAccess`
+- `@skipLibCheck`
+- `@noEmit`
+- `@noEmitOnError`
+- `@declaration`
+- `@useDefineForClassFields` (also accepts `@use_define_for_class_fields`)
+- `@esModuleInterop`
+- `@allowSyntheticDefaultImports`
+- `@resolveJsonModule`
+- `@experimentalDecorators`
+- `@emitDecoratorMetadata`
+- `@allowJs`
+- `@checkJs`
+
+Boolean directives accept `true/false` (plus common variants like `1/0`, `yes/no`)
+or omit the value to mean `true` (`// @strict:`, `// @skipLibCheck:`).
+
+### Unknown / unsupported directives
+
+By default, unknown `@...:` directives are ignored, but the harness reports them
+so conformance and differential results remain auditable:
+
+- Each affected test case gets a `notes` entry like `ignored directives: @foo, @bar`.
+- JSON reports include a `directives` metadata section with counts and a
+  truncated list of unknown/unsupported directive names.
+- Human output prints an aggregate summary when any ignored directives were
+  observed.
+
+To enforce strictness, pass `--fail-on-unknown-directives` to `conformance` or
+`difftsc`. When enabled, any test case containing an unknown directive is
+skipped with a clear reason.
+
 ## Prerequisites
 
 ### TypeScript upstream suite (submodule)

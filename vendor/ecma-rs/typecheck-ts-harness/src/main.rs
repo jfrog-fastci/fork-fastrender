@@ -139,6 +139,10 @@ enum Commands {
     #[arg(long, value_enum, default_value_t = FailOn::New)]
     fail_on: FailOn,
 
+    /// Skip test cases that contain unknown harness directives (e.g. `// @foo:`).
+    #[arg(long)]
+    fail_on_unknown_directives: bool,
+
     /// Number of worker threads to use (defaults to CPU count)
     #[arg(long, default_value_t = default_jobs())]
     jobs: usize,
@@ -262,6 +266,7 @@ fn main() -> ExitCode {
       allow_empty,
       manifest,
       fail_on,
+      fail_on_unknown_directives,
       jobs,
     } => {
       let filter_pattern = filter.clone();
@@ -308,6 +313,7 @@ fn main() -> ExitCode {
       options.allow_mismatches = true;
       options.manifest = manifest;
       options.fail_on = fail_on;
+      options.fail_on_unknown_directives = fail_on_unknown_directives;
       options.extensions = extensions;
       options.allow_empty = allow_empty;
       options.jobs = jobs;
@@ -342,6 +348,9 @@ fn main() -> ExitCode {
                 "Mismatches — expected: {}, unexpected: {}, flaky: {}, xpass: {}",
                 m.expected, m.unexpected, m.flaky, m.xpass
               );
+            }
+            if let Some(line) = report.directives.human_summary() {
+              println!("{line}");
             }
           }
           if !allow_mismatches
