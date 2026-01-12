@@ -58,7 +58,6 @@ fn function_decl_closure_captures_lexical_binding() {
 }
 
 #[test]
-#[ignore = "arrow expressions in function bodies are not yet supported by the parser"]
 fn arrow_captures_lexical_this_across_calls_and_gc() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -105,7 +104,6 @@ fn arrow_captures_lexical_this_across_calls_and_gc() -> Result<(), VmError> {
 }
 
 #[test]
-#[ignore = "arrow expressions in function bodies are not yet supported by the parser"]
 fn arrow_captures_lexical_new_target_across_calls_and_gc() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -177,7 +175,6 @@ fn arrow_functions_are_not_constructable() -> Result<(), VmError> {
 }
 
 #[test]
-#[ignore = "arrow expressions in function bodies are not yet supported by the parser"]
 fn arrow_this_is_lexical_and_ignores_call_site() {
   let mut rt = new_runtime();
   let value = rt
@@ -196,7 +193,6 @@ fn arrow_this_is_lexical_and_ignores_call_site() {
 }
 
 #[test]
-#[ignore = "arrow expressions in function bodies are not yet supported by the parser"]
 fn arrow_new_target_is_lexical_undefined_in_plain_call() {
   let mut rt = new_runtime();
   let value = rt
