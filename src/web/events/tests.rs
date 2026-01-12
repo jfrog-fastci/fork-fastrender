@@ -44,6 +44,22 @@ fn make_dom_abc() -> (Document, NodeId, NodeId, NodeId) {
   (doc, a, b, c)
 }
 
+fn find_node_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> {
+  for node_id in doc.subtree_preorder(doc.root()) {
+    let (NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. }) = &doc.node(node_id).kind
+    else {
+      continue;
+    };
+    if attributes
+      .iter()
+      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+    {
+      return Some(node_id);
+    }
+  }
+  None
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Action {
   None,
@@ -1357,6 +1373,307 @@ fn template_contents_event_path_does_not_include_template_document_or_window() {
   .unwrap();
 
   assert_eq!(invoker.calls.as_slice(), &["in"]);
+}
+
+#[test]
+fn shadow_root_event_path_respects_composed_flag() {
+  let html = "<!doctype html><div id=host><template shadowroot=open><span id=inner></span></template><p id=light></p></div>";
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let host = doc.get_element_by_id("host").expect("host element not found");
+  let shadow_root = doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+    .expect("expected host to have an attached shadow root");
+  let inner = find_node_id_anywhere(&doc, "inner").expect("shadow node not found");
+  assert_eq!(doc.containing_shadow_root(inner), Some(shadow_root));
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+
+  let id_window_capture = ListenerId::new(1);
+  let id_document_capture = ListenerId::new(2);
+  let id_host_capture = ListenerId::new(3);
+  let id_shadow_root_capture = ListenerId::new(4);
+  let id_inner_capture = ListenerId::new(5);
+
+  let id_inner_bubble = ListenerId::new(6);
+  let id_shadow_root_bubble = ListenerId::new(7);
+  let id_host_bubble = ListenerId::new(8);
+  let id_document_bubble = ListenerId::new(9);
+  let id_window_bubble = ListenerId::new(10);
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(host),
+    type_,
+    id_host_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(shadow_root),
+    type_,
+    id_shadow_root_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(inner),
+    type_,
+    id_inner_capture,
+    AddEventListenerOptions {
+      capture: true,
+      ..Default::default()
+    }
+  ));
+
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(inner),
+    type_,
+    id_inner_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(shadow_root),
+    type_,
+    id_shadow_root_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(host),
+    type_,
+    id_host_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Document,
+    type_,
+    id_document_bubble,
+    AddEventListenerOptions::default()
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Window,
+    type_,
+    id_window_bubble,
+    AddEventListenerOptions::default()
+  ));
+
+  let behaviors = [
+    (
+      id_window_capture,
+      Behavior {
+        label: "window_capture",
+        expected_phase: EventPhase::Capturing,
+        expected_current_target: EventTargetId::Window,
+        action: Action::None,
+      },
+    ),
+    (
+      id_document_capture,
+      Behavior {
+        label: "document_capture",
+        expected_phase: EventPhase::Capturing,
+        expected_current_target: EventTargetId::Document,
+        action: Action::None,
+      },
+    ),
+    (
+      id_host_capture,
+      Behavior {
+        label: "host_capture",
+        expected_phase: EventPhase::Capturing,
+        expected_current_target: EventTargetId::Node(host),
+        action: Action::None,
+      },
+    ),
+    (
+      id_shadow_root_capture,
+      Behavior {
+        label: "shadow_root_capture",
+        expected_phase: EventPhase::Capturing,
+        expected_current_target: EventTargetId::Node(shadow_root),
+        action: Action::None,
+      },
+    ),
+    (
+      id_inner_capture,
+      Behavior {
+        label: "inner_capture",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(inner),
+        action: Action::None,
+      },
+    ),
+    (
+      id_inner_bubble,
+      Behavior {
+        label: "inner_bubble",
+        expected_phase: EventPhase::AtTarget,
+        expected_current_target: EventTargetId::Node(inner),
+        action: Action::None,
+      },
+    ),
+    (
+      id_shadow_root_bubble,
+      Behavior {
+        label: "shadow_root_bubble",
+        expected_phase: EventPhase::Bubbling,
+        expected_current_target: EventTargetId::Node(shadow_root),
+        action: Action::None,
+      },
+    ),
+    (
+      id_host_bubble,
+      Behavior {
+        label: "host_bubble",
+        expected_phase: EventPhase::Bubbling,
+        expected_current_target: EventTargetId::Node(host),
+        action: Action::None,
+      },
+    ),
+    (
+      id_document_bubble,
+      Behavior {
+        label: "document_bubble",
+        expected_phase: EventPhase::Bubbling,
+        expected_current_target: EventTargetId::Document,
+        action: Action::None,
+      },
+    ),
+    (
+      id_window_bubble,
+      Behavior {
+        label: "window_bubble",
+        expected_phase: EventPhase::Bubbling,
+        expected_current_target: EventTargetId::Window,
+        action: Action::None,
+      },
+    ),
+  ];
+
+  // Non-composed events must not escape from the shadow root to the host/document/window.
+  let mut invoker = RecordingInvoker::new(&registry, EventTargetId::Node(inner), behaviors);
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      composed: false,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(inner),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+  assert_eq!(
+    invoker.calls.as_slice(),
+    &[
+      "shadow_root_capture",
+      "inner_capture",
+      "inner_bubble",
+      "shadow_root_bubble"
+    ]
+  );
+
+  // Composed events do escape the shadow root.
+  let mut invoker = RecordingInvoker::new(&registry, EventTargetId::Node(inner), behaviors);
+  let mut event = Event::new(
+    type_,
+    EventInit {
+      bubbles: true,
+      composed: true,
+      ..Default::default()
+    },
+  );
+  dispatch_event(
+    EventTargetId::Node(inner),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+  assert_eq!(
+    invoker.calls.as_slice(),
+    &[
+      "window_capture",
+      "document_capture",
+      "host_capture",
+      "shadow_root_capture",
+      "inner_capture",
+      "inner_bubble",
+      "shadow_root_bubble",
+      "host_bubble",
+      "document_bubble",
+      "window_bubble"
+    ]
+  );
+}
+
+#[test]
+fn has_listeners_for_dispatch_respects_composed_shadow_boundary() {
+  let html = "<!doctype html><div id=host><template shadowroot=open><span id=inner></span></template><p id=light></p></div>";
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let host = doc.get_element_by_id("host").expect("host element not found");
+  let inner = find_node_id_anywhere(&doc, "inner").expect("shadow node not found");
+
+  let registry = EventListenerRegistry::new();
+  let type_ = "x";
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(host),
+    type_,
+    ListenerId::new(1),
+    AddEventListenerOptions::default()
+  ));
+
+  assert!(
+    !registry.has_listeners_for_dispatch(
+      EventTargetId::Node(inner),
+      type_,
+      &doc,
+      /* bubbles */ true,
+      /* composed */ false
+    ),
+    "non-composed events inside a shadow tree must not see light-DOM host listeners"
+  );
+  assert!(
+    registry.has_listeners_for_dispatch(
+      EventTargetId::Node(inner),
+      type_,
+      &doc,
+      /* bubbles */ true,
+      /* composed */ true
+    ),
+    "composed events should be able to reach the host's listeners"
+  );
 }
 
 #[test]

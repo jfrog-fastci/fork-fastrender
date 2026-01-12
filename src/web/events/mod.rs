@@ -6,8 +6,8 @@
 //! - a listener registry decoupled from `dom2::Node`
 //! - a deterministic, spec-shaped `dispatch_event` algorithm
 //!
-//! Shadow DOM composed paths are intentionally ignored for now, but the event path representation
-//! keeps room for extension.
+//! Shadow DOM retargeting and full composed-path semantics are intentionally ignored for now, but we
+//! do respect the `Event.composed` boundary for propagation out of a shadow tree.
 
 use crate::dom2;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -431,8 +431,8 @@ impl EventListenerRegistry {
       .is_some_and(|listeners| !listeners.is_empty())
   }
 
-  /// Returns `true` if `dispatch_event` for an event with the given `target`, `type_`, and `bubbles`
-  /// flag would invoke any listeners.
+  /// Returns `true` if `dispatch_event` for an event with the given `target`, `type_`, `bubbles`,
+  /// and `composed` flags would invoke any listeners.
   ///
   /// This is useful as an optimization for hosts: queueing a task to dispatch an event that cannot
   /// possibly observe a listener is wasted work and can affect deterministic "task turn" tests.
@@ -442,6 +442,7 @@ impl EventListenerRegistry {
     type_: &str,
     dom: &dom2::Document,
     bubbles: bool,
+    composed: bool,
   ) -> bool {
     fn has_matching_listener(
       registry: &EventListenerRegistry,
@@ -458,7 +459,11 @@ impl EventListenerRegistry {
         .is_some_and(|listeners| listeners.iter().any(|l| l.options.capture == capture))
     }
 
-    let path = build_event_path(target, dom, self);
+    let shadow_root_boundary = match target.normalize() {
+      EventTargetId::Node(node_id) => dom.containing_shadow_root(node_id),
+      _ => None,
+    };
+    let path = build_event_path(target, dom, self, composed, shadow_root_boundary);
     if path.is_empty() {
       return false;
     }
@@ -620,17 +625,27 @@ fn event_target_parent(
   target: EventTargetId,
   dom: &dom2::Document,
   registry: &EventListenerRegistry,
+  composed: bool,
+  shadow_root_boundary: Option<dom2::NodeId>,
 ) -> Option<EventTargetId> {
   match target.normalize() {
     EventTargetId::Window => None,
     EventTargetId::Document => Some(EventTargetId::Window),
-    EventTargetId::Node(node_id) => dom.dom_parent_for_event_path(node_id).map(|parent| {
-      if parent.index() == 0 {
-        EventTargetId::Document
-      } else {
-        EventTargetId::Node(parent)
+    EventTargetId::Node(node_id) => {
+      // DOM: a shadow root's "get the parent" algorithm returns `null` when the event is not
+      // composed and the shadow root is the tree root of the original target's node tree.
+      if !composed && shadow_root_boundary == Some(node_id) {
+        return None;
       }
-    }),
+
+      dom.dom_parent_for_event_path(node_id).map(|parent| {
+        if parent.index() == 0 {
+          EventTargetId::Document
+        } else {
+          EventTargetId::Node(parent)
+        }
+      })
+    }
     EventTargetId::Opaque(id) => registry.opaque_parent(id),
   }
 }
@@ -639,6 +654,8 @@ fn build_event_path(
   target: EventTargetId,
   dom: &dom2::Document,
   registry: &EventListenerRegistry,
+  composed: bool,
+  shadow_root_boundary: Option<dom2::NodeId>,
 ) -> Vec<EventPathEntry> {
   let mut rev: Vec<EventTargetId> = Vec::new();
   let mut seen: FxHashSet<EventTargetId> = FxHashSet::default();
@@ -651,7 +668,7 @@ fn build_event_path(
       break;
     }
     rev.push(current);
-    let Some(parent) = event_target_parent(current, dom, registry) else {
+    let Some(parent) = event_target_parent(current, dom, registry, composed, shadow_root_boundary) else {
       break;
     };
     current = parent.normalize();
@@ -720,7 +737,11 @@ pub fn dispatch_event(
   event.immediate_propagation_stopped = false;
   event.in_passive_listener = false;
 
-  event.path = build_event_path(target, dom, registry);
+  let shadow_root_boundary = match target {
+    EventTargetId::Node(node_id) => dom.containing_shadow_root(node_id),
+    _ => None,
+  };
+  event.path = build_event_path(target, dom, registry, event.composed, shadow_root_boundary);
   let dispatch_res = (|| {
     if event.path.is_empty() {
       return Ok(());

@@ -1,4 +1,4 @@
-use super::{Document, NodeId};
+use super::{Document, NodeId, NodeKind};
 
 impl Document {
   #[inline]
@@ -14,6 +14,28 @@ impl Document {
   pub fn parent_node(&self, node: NodeId) -> Option<NodeId> {
     let parent = self.get_node(node)?.parent?;
     self.contains_node(parent).then_some(parent)
+  }
+
+  /// Returns the nearest ancestor [`NodeKind::ShadowRoot`] for `node` (including `node` itself).
+  ///
+  /// This is used by spec-shaped algorithms that need to know whether a node is inside a shadow
+  /// tree. The returned shadow root is the tree root of the node tree that `node` belongs to.
+  pub fn containing_shadow_root(&self, node: NodeId) -> Option<NodeId> {
+    let mut remaining = self.nodes.len() + 1;
+    let mut current = self.contains_node(node).then_some(node);
+    while let Some(id) = current {
+      if remaining == 0 {
+        break;
+      }
+      remaining -= 1;
+
+      let node = self.get_node(id)?;
+      if matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+        return Some(id);
+      }
+      current = self.parent_node(id);
+    }
+    None
   }
 
   /// Returns the DOM parent when building an event dispatch path.
