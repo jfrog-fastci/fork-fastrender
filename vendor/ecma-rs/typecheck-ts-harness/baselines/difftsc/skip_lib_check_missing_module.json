@@ -16,5 +16,14 @@
       "useDefineForClassFields": true
     }
   },
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": 2307,
+      "file": "broken.d.ts",
+      "start": 20,
+      "end": 31,
+      "category": "error",
+      "message": "Cannot find module './missing' or its corresponding type declarations."
+    }
+  ]
 }

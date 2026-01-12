@@ -115,12 +115,34 @@ impl ProgramState {
       }
       let code = diag.code.as_str();
 
-      // `skipLibCheck` suppresses almost all semantic diagnostics originating
-      // from `.d.ts` files (type errors, binder errors, and resolution errors).
-      // Keep diagnostics that are not tied to semantic checking (parse errors,
-      // host errors, etc).
-      if code.starts_with("TC") || code.starts_with("BIND") || code.starts_with("TS") {
+      // Some `.d.ts` diagnostics are produced as a result of checking user code
+      // (rather than while typechecking the declaration file itself). Keep these
+      // even under `skipLibCheck` so the user can fix their JSX typing setup.
+      //
+      // Note: TS2608 is triggered while checking user JSX, but can be attributed
+      // to a `.d.ts` file depending on how the JSX container type is resolved.
+      if code == "TS2608" {
+        return true;
+      }
+
+      if code.starts_with("TC") {
+        // `skipLibCheck` should suppress type-check diagnostics originating from
+        // `.d.ts` files, but it must NOT hide module/file resolution failures.
+        //
+        // Resolution errors are reported while constructing the program and can
+        // affect user code regardless of whether declaration files are checked,
+        // so they are not "lib check" errors.
+        return matches!(code, "TC1001" | "TC1007" | "TC2010");
+      }
+      if code.starts_with("BIND") {
         return false;
+      }
+
+      // Keep a small allow-list of non-type-checking TS codes for `.d.ts` files
+      // so failures like missing `/// <reference lib=\"...\" />` targets remain
+      // visible.
+      if code.starts_with("TS") {
+        return matches!(code, "TS6053" | "TS2688" | "TS2726");
       }
 
       true

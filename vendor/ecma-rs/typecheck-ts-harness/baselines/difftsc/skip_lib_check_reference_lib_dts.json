@@ -16,5 +16,14 @@
       "useDefineForClassFields": true
     }
   },
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": 2726,
+      "file": "broken.d.ts",
+      "start": 20,
+      "end": 31,
+      "category": "error",
+      "message": "Cannot find lib definition file for 'missing-lib'."
+    }
+  ]
 }
