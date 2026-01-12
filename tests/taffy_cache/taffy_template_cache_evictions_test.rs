@@ -1,34 +1,20 @@
-use fastrender::{DiagnosticsLevel, FastRender, FastRenderConfig, FontConfig, RenderOptions};
-
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<String>,
-}
-
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    let previous = std::env::var(key).ok();
-    std::env::set_var(key, value);
-    Self { key, previous }
-  }
-}
-
-impl Drop for EnvVarGuard {
-  fn drop(&mut self) {
-    match self.previous.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
-  }
-}
+use fastrender::{
+  debug::runtime::RuntimeToggles, DiagnosticsLevel, FastRender, FastRenderConfig, FontConfig,
+  RenderOptions,
+};
+use std::collections::HashMap;
 
 #[test]
 fn taffy_template_cache_evictions_are_reported_in_diagnostics() {
-  let _diag_env = EnvVarGuard::set("FASTR_DIAGNOSTICS_LEVEL", "none");
-  // Force the template cache small enough that inserting multiple templates will evict entries.
-  let _cache_env = EnvVarGuard::set("FASTR_TAFFY_CACHE_LIMIT", "1");
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_TAFFY_CACHE_LIMIT".to_string(),
+    "1".to_string(),
+  )]));
 
-  let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+  // Force the template cache small enough that inserting multiple templates will evict entries.
+  let config = FastRenderConfig::default()
+    .with_font_sources(FontConfig::bundled_only())
+    .with_runtime_toggles(toggles);
   let mut renderer = FastRender::with_config(config).expect("renderer");
 
   let options = RenderOptions::default()

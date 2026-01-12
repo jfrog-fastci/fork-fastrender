@@ -21,6 +21,7 @@
 //! `LayoutDiagnostics.taffy_{flex,grid}_compute_cpu_ms` (legacy JSON may still use
 //! `taffy_{flex,grid}_compute_ms`).
 
+use crate::debug::runtime;
 use crate::geometry::Size;
 use crate::style::types::{AspectRatio, FlexBasis, GridTrack, IntrinsicSizeKeyword};
 use crate::style::values::{CalcLength, Length};
@@ -33,7 +34,7 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 use taffy::style::Style as TaffyStyle;
 use taffy::TaffyTree;
@@ -1145,11 +1146,11 @@ struct TaffyTemplateCacheLimitOverrides {
 }
 
 impl TaffyTemplateCacheLimitOverrides {
-  fn from_env() -> Self {
+  fn from_runtime_toggles(toggles: &runtime::RuntimeToggles) -> Self {
     Self {
-      global: parse_taffy_cache_limit_env("FASTR_TAFFY_CACHE_LIMIT"),
-      flex: parse_taffy_cache_limit_env("FASTR_TAFFY_FLEX_CACHE_LIMIT"),
-      grid: parse_taffy_cache_limit_env("FASTR_TAFFY_GRID_CACHE_LIMIT"),
+      global: parse_taffy_cache_limit(toggles, "FASTR_TAFFY_CACHE_LIMIT"),
+      flex: parse_taffy_cache_limit(toggles, "FASTR_TAFFY_FLEX_CACHE_LIMIT"),
+      grid: parse_taffy_cache_limit(toggles, "FASTR_TAFFY_GRID_CACHE_LIMIT"),
     }
   }
 
@@ -1161,16 +1162,15 @@ impl TaffyTemplateCacheLimitOverrides {
   }
 }
 
-fn parse_taffy_cache_limit_env(var: &str) -> Option<usize> {
-  std::env::var(var)
-    .ok()
-    .and_then(|raw| raw.trim().parse::<usize>().ok())
+fn parse_taffy_cache_limit(toggles: &runtime::RuntimeToggles, var: &str) -> Option<usize> {
+  toggles
+    .usize(var)
     .map(|value| value.clamp(MIN_TAFFY_CACHE_LIMIT, MAX_TAFFY_CACHE_LIMIT))
 }
 
-fn taffy_cache_limit_overrides() -> &'static TaffyTemplateCacheLimitOverrides {
-  static LIMITS: OnceLock<TaffyTemplateCacheLimitOverrides> = OnceLock::new();
-  LIMITS.get_or_init(TaffyTemplateCacheLimitOverrides::from_env)
+fn taffy_cache_limit_overrides() -> TaffyTemplateCacheLimitOverrides {
+  let toggles = runtime::runtime_toggles();
+  TaffyTemplateCacheLimitOverrides::from_runtime_toggles(&toggles)
 }
 
 fn adaptive_taffy_cache_limit(box_tree_nodes: usize) -> usize {
