@@ -6477,6 +6477,18 @@ pub fn object_prototype_to_string(
   const TAG_STRING: [u16; 6] = [b'S' as u16, b't' as u16, b'r' as u16, b'i' as u16, b'n' as u16, b'g' as u16];
   const TAG_SYMBOL: [u16; 6] = [b'S' as u16, b'y' as u16, b'm' as u16, b'b' as u16, b'o' as u16, b'l' as u16];
   const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
+  const TAG_PROMISE: [u16; 7] = [b'P' as u16, b'r' as u16, b'o' as u16, b'm' as u16, b'i' as u16, b's' as u16, b'e' as u16];
+  const TAG_GENERATOR: [u16; 9] = [
+    b'G' as u16,
+    b'e' as u16,
+    b'n' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'o' as u16,
+    b'r' as u16,
+  ];
   const TAG_FUNCTION: [u16; 8] = [
     b'F' as u16,
     b'u' as u16,
@@ -6488,37 +6500,6 @@ pub fn object_prototype_to_string(
     b'n' as u16,
   ];
   const TAG_OBJECT: [u16; 6] = [b'O' as u16, b'b' as u16, b'j' as u16, b'e' as u16, b'c' as u16, b't' as u16];
-
-  fn get_proxy_aware(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    obj: GcObject,
-    key: PropertyKey,
-    receiver: Value,
-  ) -> Result<Value, VmError> {
-    // Proxy-aware `[[Get]]` internal method dispatch.
-    //
-    // `vm-js` does not implement Proxy trap semantics yet, but Proxy objects can exist as
-    // host-created values. Per spec, any attempt to perform `[[Get]]` on a revoked Proxy must throw
-    // a TypeError.
-    let mut current = obj;
-    let mut steps = 0usize;
-    loop {
-      if steps != 0 && steps % 1024 == 0 {
-        vm.tick()?;
-      }
-      steps = steps.saturating_add(1);
-      if !scope.heap().is_proxy_object(current) {
-        return scope.ordinary_get_with_host_and_hooks(vm, host, hooks, current, key, receiver);
-      }
-      let Some(target) = scope.heap().proxy_target(current)? else {
-        return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
-      };
-      current = target;
-    }
-  }
 
   // 1. Handle `undefined` / `null` early.
   if matches!(this, Value::Undefined) {
@@ -6549,6 +6530,7 @@ pub fn object_prototype_to_string(
   scope.push_root(receiver)?;
 
   // `builtinTag`
+  let can_check_markers = !scope.heap().is_proxy_object(o);
   let builtin_tag: &[u16] = match this {
     Value::Bool(_) => &TAG_BOOLEAN,
     Value::Number(_) => &TAG_NUMBER,
@@ -6561,6 +6543,38 @@ pub fn object_prototype_to_string(
       } else if scope.heap().is_callable(receiver)? {
         // `IsCallable` follows Proxy chains (and is intentionally non-throwing for revoked proxies).
         &TAG_FUNCTION
+      } else if scope.heap().is_promise_object(o) {
+        &TAG_PROMISE
+      } else if scope.heap().is_generator_object(o) {
+        &TAG_GENERATOR
+      } else if can_check_markers {
+        let heap = scope.heap();
+        let has_marker = |marker: Option<crate::GcSymbol>| -> Result<bool, VmError> {
+          let Some(marker_sym) = marker else {
+            return Ok(false);
+          };
+          let key = PropertyKey::from_symbol(marker_sym);
+          Ok(
+            heap
+              .object_get_own_property(o, &key)?
+              .map(|d| d.is_data_descriptor())
+              .unwrap_or(false),
+          )
+        };
+
+        if has_marker(heap.internal_boolean_data_symbol())? {
+          &TAG_BOOLEAN
+        } else if has_marker(heap.internal_number_data_symbol())? {
+          &TAG_NUMBER
+        } else if has_marker(heap.internal_bigint_data_symbol())? {
+          &TAG_BIGINT
+        } else if has_marker(heap.internal_string_data_symbol())? {
+          &TAG_STRING
+        } else if has_marker(heap.internal_symbol_data_symbol())? {
+          &TAG_SYMBOL
+        } else {
+          &TAG_OBJECT
+        }
       } else {
         &TAG_OBJECT
       }
@@ -6570,20 +6584,42 @@ pub fn object_prototype_to_string(
 
   // `Get(O, @@toStringTag)`
   let to_string_tag_key = PropertyKey::from_symbol(intr.well_known_symbols().to_string_tag);
-  let to_string_tag = get_proxy_aware(vm, &mut scope, host, hooks, o, to_string_tag_key, receiver)?;
-  let tag_override_units: Option<Vec<u16>> = match to_string_tag {
-    Value::String(s) => Some(scope.heap().get_string(s)?.as_code_units().to_vec()),
+  let to_string_tag = crate::spec_ops::internal_get_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    o,
+    to_string_tag_key,
+    receiver,
+  )?;
+  let tag_string = match to_string_tag {
+    Value::String(s) => Some(s),
     _ => None,
   };
 
-  let tag_units = tag_override_units.as_deref().unwrap_or(builtin_tag);
-
+  let tag_units_len = match tag_string {
+    Some(s) => scope.heap().get_string(s)?.as_code_units().len(),
+    None => builtin_tag.len(),
+  };
+  let total_len = PREFIX
+    .len()
+    .checked_add(tag_units_len)
+    .and_then(|n| n.checked_add(SUFFIX.len()))
+    .ok_or(VmError::OutOfMemory)?;
   let mut out = Vec::new();
   out
-    .try_reserve_exact(PREFIX.len() + tag_units.len() + SUFFIX.len())
+    .try_reserve_exact(total_len)
     .map_err(|_| VmError::OutOfMemory)?;
   out.extend_from_slice(&PREFIX);
-  out.extend_from_slice(tag_units);
+  if let Some(s) = tag_string {
+    {
+      let units = scope.heap().get_string(s)?.as_code_units();
+      out.extend_from_slice(units);
+    }
+  } else {
+    out.extend_from_slice(builtin_tag);
+  }
   out.extend_from_slice(&SUFFIX);
   Ok(Value::String(scope.alloc_string_from_u16_vec(out)?))
 }

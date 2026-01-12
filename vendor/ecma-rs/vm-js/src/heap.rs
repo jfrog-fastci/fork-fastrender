@@ -895,6 +895,10 @@ impl Heap {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::Promise(_)))
   }
 
+  pub(crate) fn is_generator_object(&self, _obj: GcObject) -> bool {
+    false
+  }
+
   /// Returns `true` if `obj` currently points to a live ArrayBuffer object allocation.
   pub fn is_array_buffer_object(&self, obj: GcObject) -> bool {
     matches!(self.get_heap_object(obj.0), Ok(HeapObject::ArrayBuffer(_)))
@@ -3052,6 +3056,70 @@ impl Heap {
         continue;
       };
       if js.as_code_units() == STRING_DATA_KEY {
+        return Some(entry.sym);
+      }
+    }
+    None
+  }
+
+  pub(crate) fn internal_boolean_data_symbol(&self) -> Option<GcSymbol> {
+    const BOOLEAN_DATA_KEY: [u16; 26] = [
+      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 66, 111, 111, 108,
+      101, 97, 110, 68, 97, 116, 97,
+    ];
+    for entry in &self.symbol_registry {
+      let Ok(js) = self.get_string(entry.key) else {
+        continue;
+      };
+      if js.as_code_units() == BOOLEAN_DATA_KEY {
+        return Some(entry.sym);
+      }
+    }
+    None
+  }
+
+  pub(crate) fn internal_number_data_symbol(&self) -> Option<GcSymbol> {
+    const NUMBER_DATA_KEY: [u16; 25] = [
+      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 78, 117, 109, 98,
+      101, 114, 68, 97, 116, 97,
+    ];
+    for entry in &self.symbol_registry {
+      let Ok(js) = self.get_string(entry.key) else {
+        continue;
+      };
+      if js.as_code_units() == NUMBER_DATA_KEY {
+        return Some(entry.sym);
+      }
+    }
+    None
+  }
+
+  pub(crate) fn internal_symbol_data_symbol(&self) -> Option<GcSymbol> {
+    const SYMBOL_DATA_KEY: [u16; 25] = [
+      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 83, 121, 109, 98,
+      111, 108, 68, 97, 116, 97,
+    ];
+    for entry in &self.symbol_registry {
+      let Ok(js) = self.get_string(entry.key) else {
+        continue;
+      };
+      if js.as_code_units() == SYMBOL_DATA_KEY {
+        return Some(entry.sym);
+      }
+    }
+    None
+  }
+
+  pub(crate) fn internal_bigint_data_symbol(&self) -> Option<GcSymbol> {
+    const BIGINT_DATA_KEY: [u16; 25] = [
+      118, 109, 45, 106, 115, 46, 105, 110, 116, 101, 114, 110, 97, 108, 46, 66, 105, 103, 73,
+      110, 116, 68, 97, 116, 97,
+    ];
+    for entry in &self.symbol_registry {
+      let Ok(js) = self.get_string(entry.key) else {
+        continue;
+      };
+      if js.as_code_units() == BIGINT_DATA_KEY {
         return Some(entry.sym);
       }
     }
