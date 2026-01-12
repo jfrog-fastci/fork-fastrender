@@ -1129,6 +1129,123 @@ mod tests {
   }
 
   #[test]
+  fn webidl_event_target_prototype_methods_throw_on_illegal_invocation() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    {
+      let window = host.host_mut().window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      for name in ["EventTarget"] {
+        let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+        scope
+          .push_root(Value::String(key_s))
+          .map_err(|err| Error::Other(err.to_string()))?;
+        let key = PropertyKey::from_string(key_s);
+        scope
+          .delete_property_or_throw(global, key)
+          .map_err(|err| Error::Other(err.to_string()))?;
+      }
+    }
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    host.exec_script(
+      r#"
+      globalThis.__err_add = "";
+      globalThis.__err_dispatch = "";
+
+      try {
+        EventTarget.prototype.addEventListener.call({}, "x", () => {});
+      } catch (e) {
+        globalThis.__err_add = String(e && e.message || e);
+      }
+
+      try {
+        EventTarget.prototype.dispatchEvent.call({}, { type: "x" });
+      } catch (e) {
+        globalThis.__err_dispatch = String(e && e.message || e);
+      }
+      "#,
+    )?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err_add").as_deref(),
+      Some("Illegal invocation")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err_dispatch").as_deref(),
+      Some("Illegal invocation")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_abort_signal_still_behaves_like_event_target() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    {
+      // Ensure AbortSignal inherits from the WebIDL-generated EventTarget.prototype by reinstalling
+      // AbortController/AbortSignal after installing generated EventTarget.
+      let window = host.host_mut().window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      for name in ["EventTarget", "AbortController", "AbortSignal"] {
+        let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+        scope
+          .push_root(Value::String(key_s))
+          .map_err(|err| Error::Other(err.to_string()))?;
+        let key = PropertyKey::from_string(key_s);
+        scope
+          .delete_property_or_throw(global, key)
+          .map_err(|err| Error::Other(err.to_string()))?;
+      }
+    }
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      crate::js::window_abort::install_window_abort_bindings(vm, realm, heap)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    host.exec_script(
+      r#"
+      globalThis.__aborted = 0;
+      globalThis.__err = "";
+
+      try {
+        const ac = new AbortController();
+        ac.signal.addEventListener("abort", () => { globalThis.__aborted++; });
+        ac.abort();
+      } catch (e) {
+        globalThis.__err = String(e && e.message || e);
+      }
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert!(matches!(
+      get_global_prop(&mut host, "__aborted"),
+      Value::Number(n) if n == 1.0
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn window_host_state_exec_script_in_event_loop_sets_webidl_bindings_host_slot() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

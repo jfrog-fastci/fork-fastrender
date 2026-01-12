@@ -5,6 +5,7 @@ use crate::js::window_timers::{
   SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
 use crate::js::{TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
+use crate::js::window_realm::WindowRealmUserData;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -22,6 +23,7 @@ const URLSP_ITER_VALUES_SLOT: &str = "__fastrender_urlsp_iter_values";
 const URLSP_ITER_INDEX_SLOT: &str = "__fastrender_urlsp_iter_index";
 const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
+const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -459,6 +461,51 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       return Err(VmError::TypeError("Illegal invocation"));
     };
     Ok(obj)
+  }
+
+  fn require_event_target_receiver(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+  ) -> Result<GcObject, VmError> {
+    let obj = Self::require_receiver_object(receiver)?;
+
+    if let Some(global) = self.global {
+      if obj == global {
+        return Ok(obj);
+      }
+    }
+
+    // WindowRealm installs `document` (and `dom2` node wrappers) via `DomPlatform` metadata tracked
+    // in `WindowRealmUserData`. Accept any registered node wrapper (including the document node).
+    if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+      if data.window_obj() == Some(obj) {
+        return Ok(obj);
+      }
+      if data.document_obj() == Some(obj) {
+        return Ok(obj);
+      }
+
+      if let Some(platform) = data.dom_platform_mut() {
+        match platform.event_target_id_for_value(scope.heap(), Value::Object(obj)) {
+          Ok(_) => return Ok(obj),
+          Err(VmError::TypeError("Illegal invocation")) => {}
+          Err(err) => return Err(err),
+        }
+      }
+    }
+
+    // AbortSignal and `new EventTarget()` instances share a private-ish brand property.
+    let brand_key = key_from_str(scope, EVENT_TARGET_BRAND_KEY)?;
+    if matches!(
+      scope.heap().object_get_own_data_property_value(obj, &brand_key)?,
+      Some(Value::Bool(true))
+    ) {
+      return Ok(obj);
+    }
+
+    Err(VmError::TypeError("Illegal invocation"))
   }
 
   fn require_url(&self, receiver: Option<Value>) -> Result<Url, VmError> {
@@ -946,6 +993,19 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
     match (interface, operation, overload) {
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
+        let brand_key = key_from_str(scope, EVENT_TARGET_BRAND_KEY)?;
+        scope.define_property(
+          obj,
+          brand_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Bool(true),
+              writable: false,
+            },
+          },
+        )?;
         self
           .event_targets
           .entry(WeakGcObject::from(obj))
@@ -966,7 +1026,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         Ok(Value::Undefined)
       }
       ("EventTarget", "addEventListener", 0) => {
-        let obj = Self::require_receiver_object(receiver)?;
+        let obj = self.require_event_target_receiver(vm, scope, receiver)?;
         let Some(Value::String(_)) = args.get(0).copied() else {
           return Err(VmError::TypeError(
             "EventTarget.addEventListener: missing type",
@@ -1011,7 +1071,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         Ok(Value::Undefined)
       }
       ("EventTarget", "removeEventListener", 0) => {
-        let obj = Self::require_receiver_object(receiver)?;
+        let obj = self.require_event_target_receiver(vm, scope, receiver)?;
         let Some(Value::String(_)) = args.get(0).copied() else {
           return Ok(Value::Undefined);
         };
@@ -1046,7 +1106,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         Ok(Value::Undefined)
       }
       ("EventTarget", "dispatchEvent", 0) => {
-        let obj = Self::require_receiver_object(receiver)?;
+        let obj = self.require_event_target_receiver(vm, scope, receiver)?;
         let event_val = args.get(0).copied().unwrap_or(Value::Undefined);
 
         // Snapshot listeners before touching JS to avoid re-entrancy hazards.

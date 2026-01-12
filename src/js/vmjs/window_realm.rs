@@ -363,16 +363,16 @@ impl WindowRealmUserData {
     &self.document_url
   }
 
-  pub(crate) fn dom_platform_mut(&mut self) -> Option<&mut DomPlatform> {
-    self.dom_platform.as_mut()
-  }
-
   pub(crate) fn window_obj(&self) -> Option<GcObject> {
     self.window_obj
   }
 
   pub(crate) fn document_obj(&self) -> Option<GcObject> {
     self.document_obj
+  }
+
+  pub(crate) fn dom_platform_mut(&mut self) -> Option<&mut DomPlatform> {
+    self.dom_platform.as_mut()
   }
 }
 
