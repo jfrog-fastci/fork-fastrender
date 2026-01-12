@@ -427,8 +427,11 @@ pub fn create_list_from_array_like_with_host_and_hooks(
       get_with_host_and_hooks(vm, &mut iter_scope, host, hooks, obj, key, Value::Object(obj))?
     };
 
-    // Root each element so values are kept alive across subsequent allocations and potential GC.
-    scope.push_root(value)?;
+    // Root each GC-managed element so values are kept alive across subsequent allocations and
+    // potential GC. Primitive values (undefined/null/bool/number/bigint) do not need rooting.
+    if matches!(value, Value::String(_) | Value::Symbol(_) | Value::Object(_)) {
+      scope.push_root(value)?;
+    }
     out.push(value);
   }
 

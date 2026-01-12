@@ -36,6 +36,8 @@ fn yield_star_over_array_delegates_values() -> Result<(), VmError> {
       | "generator function call"
       | "async generator function call"
       | "Generator.prototype.next"
+      | "Generator.prototype.return"
+      | "Generator.prototype.throw"
       | "GeneratorResume"
       | "GeneratorResumeAbrupt",
     )) => Ok(()),
