@@ -238,7 +238,7 @@ fn ordinary_get_traverses_prototype_chain() -> Result<(), VmError> {
 
   scope.object_set_prototype(child, Some(parent))?;
 
-  assert!(scope.ordinary_has_property(child, k_p)?);
+  assert!(scope.ordinary_has_property(&mut vm, child, k_p)?);
   let v = scope.ordinary_get(&mut vm, child, k_p, Value::Object(child))?;
   assert_eq!(v, Value::Number(42.0));
 

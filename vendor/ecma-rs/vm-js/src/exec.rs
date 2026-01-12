@@ -5361,7 +5361,17 @@ impl<'a> Evaluator<'a> {
   }
 
   fn eval_try(&mut self, scope: &mut Scope<'_>, stmt: &TryStmt) -> Result<Completion, VmError> {
-    let mut result = self.eval_block_stmt(scope, &stmt.wrapped.stx)?;
+    // Evaluate the `try` statement in a nested scope so stack roots pushed while constructing
+    // implicit Error objects (and other temporaries) inside the `try`/`catch`/`finally` do not
+    // escape into the surrounding statement list.
+    //
+    // Without this, repeated throw/catch patterns like:
+    // `for (...) { try { ... } catch(e) {} }`
+    // can accumulate roots and retain otherwise-unreachable Error objects, eventually exhausting
+    // the heap in low-memory configurations (tests run with a small heap limit).
+    let mut try_scope = scope.reborrow();
+
+    let mut result = self.eval_block_stmt(&mut try_scope, &stmt.wrapped.stx)?;
 
     if matches!(result, Completion::Throw(_)) {
       if let Some(catch) = &stmt.catch {
@@ -5369,7 +5379,7 @@ impl<'a> Evaluator<'a> {
           Completion::Throw(thrown) => thrown.value,
           _ => return Err(VmError::Unimplemented("try/catch missing thrown value")),
         };
-        result = self.eval_catch(scope, &catch.stx, thrown)?;
+        result = self.eval_catch(&mut try_scope, &catch.stx, thrown)?;
       }
     }
 
@@ -5378,11 +5388,11 @@ impl<'a> Evaluator<'a> {
       // allocate and trigger GC.
       let pending_root = result
         .value()
-        .map(|v| scope.heap_mut().add_root(v))
+        .map(|v| try_scope.heap_mut().add_root(v))
         .transpose()?;
-      let finally_result = self.eval_block_stmt(scope, &finally.stx)?;
+      let finally_result = self.eval_block_stmt(&mut try_scope, &finally.stx)?;
       if let Some(root) = pending_root {
-        scope.heap_mut().remove_root(root);
+        try_scope.heap_mut().remove_root(root);
       }
 
       if finally_result.is_abrupt() {
@@ -7643,19 +7653,19 @@ impl<'a> Evaluator<'a> {
           let mut key_scope = scope.reborrow();
           key_scope.push_root(Value::Object(global_object))?;
           let key_s = key_scope.alloc_string(&id.stx.name)?;
-          key_scope.push_root(Value::String(key_s))?;
-          let key = PropertyKey::from_string(key_s);
+           key_scope.push_root(Value::String(key_s))?;
+           let key = PropertyKey::from_string(key_s);
 
-          if !crate::spec_ops::internal_has_property_with_host_and_hooks(
-            self.vm,
-            &mut key_scope,
-            &mut *self.host,
-            &mut *self.hooks,
-            global_object,
-            key,
-          )? {
-            return Ok(Value::Bool(true));
-          }
+           if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+             self.vm,
+             &mut key_scope,
+             &mut *self.host,
+             &mut *self.hooks,
+             global_object,
+             key,
+           )? {
+             return Ok(Value::Bool(true));
+           }
 
           Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
             self.vm,
@@ -7706,19 +7716,19 @@ impl<'a> Evaluator<'a> {
           let mut key_scope = scope.reborrow();
           key_scope.push_root(Value::Object(global_object))?;
           let key_s = key_scope.alloc_string(&id.stx.name)?;
-          key_scope.push_root(Value::String(key_s))?;
-          let key = PropertyKey::from_string(key_s);
+           key_scope.push_root(Value::String(key_s))?;
+           let key = PropertyKey::from_string(key_s);
 
-          if !crate::spec_ops::internal_has_property_with_host_and_hooks(
-            self.vm,
-            &mut key_scope,
-            &mut *self.host,
-            &mut *self.hooks,
-            global_object,
-            key,
-          )? {
-            return Ok(Value::Bool(true));
-          }
+           if !crate::spec_ops::internal_has_property_with_host_and_hooks(
+             self.vm,
+             &mut key_scope,
+             &mut *self.host,
+             &mut *self.hooks,
+             global_object,
+             key,
+           )? {
+             return Ok(Value::Bool(true));
+           }
 
           Ok(Value::Bool(crate::spec_ops::internal_delete_with_host_and_hooks(
             self.vm,

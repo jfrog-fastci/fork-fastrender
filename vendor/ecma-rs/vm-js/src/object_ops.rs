@@ -1183,8 +1183,13 @@ impl<'a> Scope<'a> {
   }
 
   /// ECMAScript `[[HasProperty]]` for ordinary objects.
-  pub fn ordinary_has_property(&self, obj: GcObject, key: PropertyKey) -> Result<bool, VmError> {
-    self.ordinary_has_property_with_tick(obj, key, || Ok(()))
+  pub fn ordinary_has_property(
+    &mut self,
+    vm: &mut Vm,
+    obj: GcObject,
+    key: PropertyKey,
+  ) -> Result<bool, VmError> {
+    self.ordinary_has_property_with_tick(vm, obj, key, Vm::tick)
   }
 
   /// ECMAScript `[[HasProperty]]` internal method dispatch.
@@ -1208,7 +1213,7 @@ impl<'a> Scope<'a> {
 
     // Fast path: ordinary object.
     if !self.heap().is_proxy_object(obj) {
-      return self.ordinary_has_property_with_tick(obj, key, || vm.tick());
+      return self.ordinary_has_property_with_tick(vm, obj, key, Vm::tick);
     }
 
     // Follow Proxy chains iteratively to avoid recursion.
@@ -1227,7 +1232,7 @@ impl<'a> Scope<'a> {
       steps += 1;
 
       if !self.heap().is_proxy_object(current) {
-        return self.ordinary_has_property_with_tick(current, key, || vm.tick());
+        return self.ordinary_has_property_with_tick(vm, current, key, Vm::tick);
       }
 
       let Some(target) = self.heap().proxy_target(current)? else {
@@ -1298,74 +1303,164 @@ impl<'a> Scope<'a> {
   }
 
   pub fn ordinary_has_property_with_tick(
-    &self,
+    &mut self,
+    vm: &mut Vm,
     obj: GcObject,
     key: PropertyKey,
-    mut tick: impl FnMut() -> Result<(), VmError>,
+    mut tick: impl FnMut(&mut Vm) -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
-    if self.heap().object_is_module_namespace(obj)? {
-      match key {
-        PropertyKey::Symbol(_) => {
-          // Symbols use ordinary behavior.
-        }
-        PropertyKey::String(s) => {
-          return Ok(self.heap().module_namespace_export(obj, s)?.is_some());
+    // Root inputs so Proxy traps can allocate freely.
+    let mut scope = self.reborrow();
+    let key_value = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    scope.push_roots(&[Value::Object(obj), key_value])?;
+
+    let mut visited: HashSet<GcObject> = HashSet::new();
+    if visited.try_reserve(1).is_err() {
+      return Err(VmError::OutOfMemory);
+    }
+    visited.insert(obj);
+
+    // Cache the `"has"` trap key across Proxy hops so we only allocate it once per operation.
+    let mut has_trap_key: Option<PropertyKey> = None;
+
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      // Budget prototype/proxy traversal so deep chains can't run unbounded work inside a single
+      // `HasProperty` operation.
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        tick(vm)?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      // --- Proxy [[HasProperty]] dispatch (partial) ---
+      if scope.heap().is_proxy_object(current) {
+        let Some(target) = scope.heap().proxy_target(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
+        };
+        let Some(handler) = scope.heap().proxy_handler(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'has' on a revoked Proxy"));
+        };
+
+        // Root `target`/`handler` across trap lookup + invocation. `GetMethod(handler, "has")` can
+        // invoke user code via accessors, which can revoke this Proxy and then trigger a GC.
+        scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+        // Let trap be ? GetMethod(handler, "has").
+        let trap_key = match has_trap_key {
+          Some(k) => k,
+          None => {
+            let s = scope.alloc_string("has")?;
+            scope.push_root(Value::String(s))?;
+            let k = PropertyKey::from_string(s);
+            has_trap_key = Some(k);
+            k
+          }
+        };
+        let trap = vm.get_method(&mut scope, Value::Object(handler), trap_key)?;
+
+        // If the trap is undefined, forward to the target.
+        let Some(trap) = trap else {
+          current = target;
+          // Root the forwarded `target` so it remains valid even if the Proxy was revoked while
+          // looking up the trap.
+          scope.push_root(Value::Object(current))?;
+          if visited.try_reserve(1).is_err() {
+            return Err(VmError::OutOfMemory);
+          }
+          if !visited.insert(current) {
+            return Err(VmError::PrototypeCycle);
+          }
+          continue;
+        };
+        // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
+        scope.push_root(trap)?;
+
+        let trap_args = [Value::Object(target), key_value];
+        let mut dummy_host = ();
+        let trap_result =
+          vm.call(&mut dummy_host, &mut scope, trap, Value::Object(handler), &trap_args)?;
+        return scope.heap().to_boolean(trap_result);
+      }
+
+      // --- Ordinary [[HasProperty]] ---
+      if scope.heap().object_is_module_namespace(current)? {
+        match key {
+          PropertyKey::Symbol(_) => {
+            // Symbols use ordinary behavior.
+          }
+          PropertyKey::String(s) => {
+            return Ok(scope.heap().module_namespace_export(current, s)?.is_some());
+          }
         }
       }
-    }
 
-    // Integer-indexed exotic objects (typed arrays): canonical numeric index strings are handled
-    // without consulting the prototype chain.
-    //
-    // https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-hasproperty-p
-    if self.heap().is_typed_array_object(obj) {
-      let PropertyKey::String(s) = key else {
-        // Only string keys can be numeric index strings.
-        return Ok(self.heap().get_property_with_tick(obj, &key, &mut tick)?.is_some());
+      // Integer-indexed exotic objects (typed arrays): canonical numeric index strings are handled
+      // without consulting the prototype chain.
+      //
+      // https://tc39.es/ecma262/#sec-integer-indexed-exotic-objects-hasproperty-p
+      if scope.heap().is_typed_array_object(current) {
+        if let PropertyKey::String(s) = key {
+          if let Some(numeric_index) = scope.heap().canonical_numeric_index_string(s)? {
+            // `IsValidIntegerIndex`
+            if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+              // -0 is a canonical numeric index string but never a valid integer index.
+              return Ok(false);
+            }
+            if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
+              return Ok(false);
+            }
+            if numeric_index < 0.0 {
+              return Ok(false);
+            }
+            if numeric_index > usize::MAX as f64 {
+              return Ok(false);
+            }
+            let index = numeric_index as usize;
+            let len = scope.heap().typed_array_length(current)?;
+            return Ok(index < len);
+          }
+        }
+      }
+
+      // Own property check.
+      if scope
+        .heap()
+        .object_get_own_property_with_tick(current, &key, || tick(vm))?
+        .is_some()
+      {
+        return Ok(true);
+      }
+      let mut tick0 = || tick(vm);
+      if scope
+        .string_object_in_range_index_with_tick(current, &key, &mut tick0)?
+        .is_some()
+      {
+        return Ok(true);
+      }
+
+      let Some(proto) = scope.heap().object_prototype(current)? else {
+        return Ok(false);
       };
 
-      let Some(numeric_index) = self.heap().canonical_numeric_index_string(s)? else {
-        // Non-numeric keys use ordinary `[[HasProperty]]` semantics.
-        return Ok(
-          self
-            .heap()
-            .get_property_with_tick(obj, &PropertyKey::String(s), &mut tick)?
-            .is_some(),
-        );
-      };
-
-      // `IsValidIntegerIndex`
-      if numeric_index == 0.0 && numeric_index.is_sign_negative() {
-        // -0 is a canonical numeric index string but never a valid integer index.
-        return Ok(false);
+      current = proto;
+      // Root prototypes so a `__proto__` mutation during user code (Proxy traps) cannot invalidate
+      // the iterator's internal object handle before we reach it.
+      scope.push_root(Value::Object(current))?;
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
       }
-      if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
-        return Ok(false);
+      if !visited.insert(current) {
+        return Err(VmError::PrototypeCycle);
       }
-      if numeric_index < 0.0 {
-        return Ok(false);
-      }
-      if numeric_index > usize::MAX as f64 {
-        return Ok(false);
-      }
-
-      let index = numeric_index as usize;
-      let len = self.heap().typed_array_length(obj)?;
-      return Ok(index < len);
     }
-
-    if self
-      .heap()
-      .get_property_with_tick(obj, &key, &mut tick)?
-      .is_some()
-    {
-      return Ok(true);
-    }
-    Ok(
-      self
-        .string_object_in_range_index_with_tick(obj, &key, &mut tick)?
-        .is_some(),
-    )
   }
 
   /// ECMAScript `[[Get]]` internal method dispatch.
@@ -2313,20 +2408,33 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     receiver: Value,
   ) -> Result<Value, VmError> {
-    if self.heap().object_is_module_namespace(obj)? {
-      if let PropertyKey::String(s) = key {
-        // Root inputs for the duration of the `[[Get]]` operation: the TDZ path needs to allocate
-        // a `ReferenceError` object.
-        self.push_roots(&[Value::Object(obj), Value::String(s), receiver])?;
+    // Built-ins sometimes call `ordinary_get` with Proxy receivers. Rather than crashing with
+    // `InvalidHandle`, dispatch to the Proxy-aware `[[Get]]` implementation so traps are observed.
+    if self.heap().is_proxy_object(obj) {
+      return self.get(vm, obj, key, receiver);
+    }
 
-        let Some(export) = self.heap().module_namespace_export(obj, s)? else {
+    // Root inputs so Proxy traps and accessors can allocate freely.
+    //
+    // Keep all temporary roots local to this operation.
+    let mut scope = self.reborrow();
+    let key_value = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    scope.push_roots(&[Value::Object(obj), key_value, receiver])?;
+
+    if scope.heap().object_is_module_namespace(obj)? {
+      if let PropertyKey::String(s) = key {
+        let Some(export) = scope.heap().module_namespace_export(obj, s)? else {
           return Ok(Value::Undefined);
         };
-        return self.module_namespace_get_export_value(vm, obj, export);
+        return scope.module_namespace_get_export_value(vm, obj, export);
       }
     }
 
-    if let Some(desc) = self
+    // Fast path: own property.
+    if let Some(desc) = scope
       .heap()
       .object_get_own_property_with_tick(obj, &key, || vm.tick())?
     {
@@ -2336,54 +2444,180 @@ impl<'a> Scope<'a> {
           if matches!(get, Value::Undefined) {
             Ok(Value::Undefined)
           } else {
-            if !self.heap().is_callable(get)? {
+            if !scope.heap().is_callable(get)? {
               return Err(VmError::TypeError("accessor getter is not callable"));
             }
             // Use `Vm::call` (with a dummy host context) so an embedder-provided
             // `Vm::with_host_hooks_override` is respected. `call_without_host` always forces the
             // VM-owned microtask queue, bypassing any active host hooks override.
             let mut dummy_host = ();
-            vm.call(&mut dummy_host, self, get, receiver, &[])
+            vm.call(&mut dummy_host, &mut scope, get, receiver, &[])
           }
         }
       };
     }
 
-    if let Some(value) = self.string_object_get_index_value_with_tick(obj, &key, || vm.tick())? {
+    if let Some(value) = scope.string_object_get_index_value_with_tick(obj, &key, || vm.tick())? {
       return Ok(value);
     }
 
     // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys do not
     // consult the prototype chain. If we didn't find an own property above, this is an invalid
     // integer index.
-    if self.heap().is_typed_array_object(obj) {
+    if scope.heap().is_typed_array_object(obj) {
       if let PropertyKey::String(s) = key {
-        if self.heap_mut().canonical_numeric_index_string(s)?.is_some() {
+        if scope.heap_mut().canonical_numeric_index_string(s)?.is_some() {
           return Ok(Value::Undefined);
         }
       }
     }
 
-    let Some(desc) = self
-      .heap()
-      .get_property_from_prototype_with_tick(obj, &key, || vm.tick())?
-    else {
+    let Some(proto) = scope.heap().object_prototype(obj)? else {
       return Ok(Value::Undefined);
     };
+    // Root the initial prototype so it remains valid even if a Proxy trap later in the chain runs
+    // user code that mutates the prototype chain and triggers GC.
+    scope.push_root(Value::Object(proto))?;
 
-    match desc.kind {
-      PropertyKind::Data { value, .. } => Ok(value),
-      PropertyKind::Accessor { get, .. } => {
-        if matches!(get, Value::Undefined) {
-          Ok(Value::Undefined)
-        } else {
-          if !self.heap().is_callable(get)? {
-            return Err(VmError::TypeError("accessor getter is not callable"));
+    // Walk the prototype chain iteratively so Proxy objects in the chain are handled by their
+    // `[[Get]]` internal method (including `get` traps and revoked-proxy errors).
+    let mut visited: HashSet<GcObject> = HashSet::new();
+    if visited.try_reserve(2).is_err() {
+      return Err(VmError::OutOfMemory);
+    }
+    visited.insert(obj);
+    if !visited.insert(proto) {
+      return Err(VmError::PrototypeCycle);
+    }
+
+    let mut current = proto;
+    let mut steps = 0usize;
+
+    // Cache the `"get"` trap key across Proxy hops so we only allocate it once per operation.
+    let mut get_trap_key: Option<PropertyKey> = None;
+
+    loop {
+      // Budget prototype/proxy traversal so deep chains can't run unbounded work inside a single
+      // `Get(O, P)` operation.
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      // --- Proxy [[Get]] dispatch (partial) ---
+      if scope.heap().is_proxy_object(current) {
+        let Some(target) = scope.heap().proxy_target(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+        };
+        let Some(handler) = scope.heap().proxy_handler(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'get' on a revoked Proxy"));
+        };
+        // Root `target`/`handler` across trap lookup + invocation. `GetMethod(handler, "get")` can
+        // invoke user code via accessors on the handler, which can revoke this Proxy and then
+        // trigger a GC.
+        scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+        // Let trap be ? GetMethod(handler, "get").
+        let get_key = match get_trap_key {
+          Some(k) => k,
+          None => {
+            let s = scope.alloc_string("get")?;
+            scope.push_root(Value::String(s))?;
+            let k = PropertyKey::from_string(s);
+            get_trap_key = Some(k);
+            k
           }
-          let mut dummy_host = ();
-          vm.call(&mut dummy_host, self, get, receiver, &[])
+        };
+
+        let trap = vm.get_method(&mut scope, Value::Object(handler), get_key)?;
+
+        // If trap is undefined, forward to the target.
+        let Some(trap) = trap else {
+          current = target;
+          if visited.try_reserve(1).is_err() {
+            return Err(VmError::OutOfMemory);
+          }
+          if !visited.insert(current) {
+            return Err(VmError::PrototypeCycle);
+          }
+          // Root the forwarded target so it remains valid across GC while the traversal continues.
+          scope.push_root(Value::Object(current))?;
+          continue;
+        };
+        // Root the trap: it may be the result of an accessor getter and not otherwise reachable.
+        scope.push_root(trap)?;
+
+        let args = [Value::Object(target), key_value, receiver];
+        let mut dummy_host = ();
+        return vm.call(&mut dummy_host, &mut scope, trap, Value::Object(handler), &args);
+      }
+
+      // Module Namespace Exotic Object `[[Get]]` (ECMA-262 §9.4.6).
+      if scope.heap().object_is_module_namespace(current)? {
+        if let PropertyKey::String(s) = key {
+          let Some(export) = scope.heap().module_namespace_export(current, s)? else {
+            return Ok(Value::Undefined);
+          };
+          return scope.module_namespace_get_export_value(vm, current, export);
         }
       }
+
+      // Fast path: own property.
+      if let Some(desc) = scope
+        .heap()
+        .object_get_own_property_with_tick(current, &key, || vm.tick())?
+      {
+        return match desc.kind {
+          PropertyKind::Data { value, .. } => Ok(value),
+          PropertyKind::Accessor { get, .. } => {
+            if matches!(get, Value::Undefined) {
+              Ok(Value::Undefined)
+            } else {
+              if !scope.heap().is_callable(get)? {
+                return Err(VmError::TypeError("accessor getter is not callable"));
+              }
+              let mut dummy_host = ();
+              vm.call(&mut dummy_host, &mut scope, get, receiver, &[])
+            }
+          }
+        };
+      }
+
+      if let Some(value) =
+        scope.string_object_get_index_value_with_tick(current, &key, || vm.tick())?
+      {
+        return Ok(value);
+      }
+
+      // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys do not
+      // consult the prototype chain. If we didn't find an own property above, this is an invalid
+      // integer index.
+      if scope.heap().is_typed_array_object(current) {
+        if let PropertyKey::String(s) = key {
+          if scope.heap_mut().canonical_numeric_index_string(s)?.is_some() {
+            return Ok(Value::Undefined);
+          }
+        }
+      }
+
+      let Some(proto) = scope.heap().object_prototype(current)? else {
+        return Ok(Value::Undefined);
+      };
+
+      current = proto;
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
+      if !visited.insert(current) {
+        return Err(VmError::PrototypeCycle);
+      }
+      // Root prototypes so a `__proto__` mutation during user code (Proxy traps) cannot invalidate
+      // the iterator's internal object handle before we reach it.
+      scope.push_root(Value::Object(current))?;
     }
   }
 
@@ -2708,9 +2942,10 @@ impl<'a> Scope<'a> {
     value: Value,
     receiver: Value,
   ) -> Result<bool, VmError> {
-    // Root inputs together so GC cannot collect `key`/`value`/`receiver` while growing the root
-    // stack (important when setting a new property on an object, where the key/value are not yet
-    // reachable from any heap object).
+    // Root inputs so Proxy traps and accessors can allocate freely.
+    //
+    // Keep all temporary roots local to this operation.
+    let mut scope = self.reborrow();
     let roots = [
       Value::Object(obj),
       match key {
@@ -2720,100 +2955,187 @@ impl<'a> Scope<'a> {
       value,
       receiver,
     ];
-    self.push_roots(&roots)?;
+    scope.push_roots(&roots)?;
 
-    if self.heap().object_is_module_namespace(obj)? {
-      if matches!(key, PropertyKey::String(_)) {
-        return Ok(false);
-      }
+    let key_value = roots[1];
+
+    // OrdinarySet (ECMA-262): we must not scan the prototype chain as ordinary objects, since the
+    // prototype can contain Proxy objects. If the property is not an own property, delegate to
+    // `proto.[[Set]]` so Proxy `set` traps are observed.
+    //
+    // Implement this by walking the chain iteratively so we can keep a visited set to guard against
+    // prototype cycles.
+    let mut visited: HashSet<GcObject> = HashSet::new();
+    if visited.try_reserve(1).is_err() {
+      return Err(VmError::OutOfMemory);
     }
+    visited.insert(obj);
 
-    // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys use
-    // TypedArray `[[Set]]` semantics.
-    if self.heap().is_typed_array_object(obj) {
-      if let PropertyKey::String(s) = key {
-        if let Some(numeric_index) = self.heap_mut().canonical_numeric_index_string(s)? {
-          // `SameValue(O, Receiver)` check: element writes only happen when `receiver` is the typed
-          // array object itself.
-          if let Value::Object(receiver_obj) = receiver {
-            if receiver_obj == obj {
-              // `TypedArraySetElement` always performs `ToNumber(value)` before checking
-              // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `"-1"`,
-              // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because `ToNumber(Symbol)`
-              // / `ToNumber(BigInt)` throw.
-              //
-              // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
-              let index = if numeric_index.is_finite()
-                && numeric_index.fract() == 0.0
-                && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
-                && numeric_index >= 0.0
-              {
-                let index = numeric_index as u128;
-                if index <= usize::MAX as u128 {
-                  Some(index as usize)
+    // Cache the `"set"` trap key across Proxy hops so we only allocate it once per operation.
+    let mut set_trap_key: Option<PropertyKey> = None;
+
+    let mut current = obj;
+    let mut steps = 0usize;
+
+    let desc = loop {
+      const TICK_EVERY: usize = 1024;
+      if steps != 0 && steps % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      // --- Proxy [[Set]] dispatch (partial) ---
+      if scope.heap().is_proxy_object(current) {
+        let Some(target) = scope.heap().proxy_target(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'set' on a revoked Proxy"));
+        };
+        let Some(handler) = scope.heap().proxy_handler(current)? else {
+          return Err(VmError::TypeError("Cannot perform 'set' on a revoked Proxy"));
+        };
+
+        // Root `target`/`handler` across trap lookup + invocation. `GetMethod(handler, "set")` can
+        // invoke user code via accessors, which can revoke this Proxy and then trigger a GC.
+        scope.push_roots(&[Value::Object(target), Value::Object(handler)])?;
+
+        // Let trap be ? GetMethod(handler, "set").
+        let trap_key = match set_trap_key {
+          Some(k) => k,
+          None => {
+            let s = scope.alloc_string("set")?;
+            scope.push_root(Value::String(s))?;
+            let k = PropertyKey::from_string(s);
+            set_trap_key = Some(k);
+            k
+          }
+        };
+        let trap = vm.get_method(&mut scope, Value::Object(handler), trap_key)?;
+
+        // If the trap is undefined, forward to the target.
+        let Some(trap) = trap else {
+          current = target;
+          scope.push_root(Value::Object(current))?;
+          if visited.try_reserve(1).is_err() {
+            return Err(VmError::OutOfMemory);
+          }
+          if !visited.insert(current) {
+            return Err(VmError::PrototypeCycle);
+          }
+          continue;
+        };
+        scope.push_root(trap)?;
+
+        let trap_args = [Value::Object(target), key_value, value, receiver];
+        // See `ordinary_get`: prefer `Vm::call` so any active host hook override is honored.
+        let mut dummy_host = ();
+        let trap_result =
+          vm.call(&mut dummy_host, &mut scope, trap, Value::Object(handler), &trap_args)?;
+        return scope.heap().to_boolean(trap_result);
+      }
+
+      if scope.heap().object_is_module_namespace(current)? {
+        if matches!(key, PropertyKey::String(_)) {
+          return Ok(false);
+        }
+      }
+
+      // Integer-indexed exotic objects (typed arrays): canonical numeric index string keys use
+      // TypedArray `[[Set]]` semantics.
+      if scope.heap().is_typed_array_object(current) {
+        if let PropertyKey::String(s) = key {
+          if let Some(numeric_index) = scope.heap_mut().canonical_numeric_index_string(s)? {
+            // `SameValue(O, Receiver)` check: element writes only happen when `receiver` is the typed
+            // array object itself.
+            if let Value::Object(receiver_obj) = receiver {
+              if receiver_obj == current {
+                // `TypedArraySetElement` always performs `ToNumber(value)` before checking
+                // `IsValidIntegerIndex`, even when the numeric index is invalid (e.g. `"-1"`,
+                // `"1.5"`, `"NaN"`, `"Infinity"`, `"-0"`). This matters because `ToNumber(Symbol)`
+                // / `ToNumber(BigInt)` throw.
+                //
+                // Spec: https://tc39.es/ecma262/#sec-typedarraysetelement
+                let index = if numeric_index.is_finite()
+                  && numeric_index.fract() == 0.0
+                  && !(numeric_index == 0.0 && numeric_index.is_sign_negative())
+                  && numeric_index >= 0.0
+                {
+                  let index = numeric_index as u128;
+                  if index <= usize::MAX as u128 {
+                    Some(index as usize)
+                  } else {
+                    None
+                  }
                 } else {
                   None
-                }
-              } else {
-                None
-              };
+                };
 
-              match index {
-                Some(index) => {
-                  // `TypedArraySetElement`: no-op for out-of-bounds indices or detached buffers.
-                  let _ = self
-                    .heap_mut()
-                    .typed_array_set_element_value(obj, index, value)?;
+                match index {
+                  Some(index) => {
+                    // `TypedArraySetElement`: no-op for out-of-bounds indices or detached buffers.
+                    let _ = scope
+                      .heap_mut()
+                      .typed_array_set_element_value(current, index, value)?;
+                  }
+                  None => {
+                    // Invalid numeric index: still `ToNumber(value)` per spec, but no element write.
+                    let _ = scope.heap_mut().to_number(value)?;
+                  }
                 }
-                None => {
-                  // Invalid numeric index: still `ToNumber(value)` per spec, but no element write.
-                  let _ = self.heap_mut().to_number(value)?;
-                }
+                return Ok(true);
               }
+            }
+
+            // If `receiver` is not the typed array itself, only fall back to ordinary `[[Set]]` when
+            // the numeric index is a valid integer index.
+            //
+            // Spec: https://tc39.es/ecma262/#sec-typedarray-set
+            if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
               return Ok(true);
             }
+            if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+              return Ok(true);
+            }
+            if numeric_index < 0.0 {
+              return Ok(true);
+            }
+            let len = scope.heap().typed_array_length(current)?;
+            if numeric_index >= len as f64 {
+              return Ok(true);
+            }
+            // Valid integer index: continue with ordinary `[[Set]]` semantics below.
           }
-
-          // If `receiver` is not the typed array itself, only fall back to ordinary `[[Set]]` when
-          // the numeric index is a valid integer index.
-          //
-          // Spec: https://tc39.es/ecma262/#sec-typedarray-set
-          if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
-            return Ok(true);
-          }
-          if numeric_index == 0.0 && numeric_index.is_sign_negative() {
-            return Ok(true);
-          }
-          if numeric_index < 0.0 {
-            return Ok(true);
-          }
-          let len = self.heap().typed_array_length(obj)?;
-          if numeric_index >= len as f64 {
-            return Ok(true);
-          }
-           // Valid integer index: continue with ordinary `[[Set]]` semantics below.
-         }
+        }
       }
-    }
 
-    let mut desc = self
-      .heap()
-      .get_property_with_tick(obj, &key, || vm.tick())?;
-    if desc.is_none() {
-      desc = Some(PropertyDescriptor {
-        enumerable: true,
-        configurable: true,
-        kind: PropertyKind::Data {
-          value: Value::Undefined,
-          writable: true,
-        },
-      });
-    }
+      let Some(desc) = scope.ordinary_get_own_property_with_tick(current, key, || vm.tick())? else {
+        let Some(proto) = scope.heap().object_prototype(current)? else {
+          // No prototype: treat as a new writable data property.
+          break PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: Value::Undefined,
+              writable: true,
+            },
+          };
+        };
 
-    let Some(desc) = desc else {
-      return Err(VmError::InvariantViolation(
-        "ordinary_set: internal error: missing property descriptor",
-      ));
+        current = proto;
+        // Root prototypes so a `__proto__` mutation during user code (Proxy traps) cannot invalidate
+        // the iterator's internal object handle before we reach it.
+        scope.push_root(Value::Object(current))?;
+        if visited.try_reserve(1).is_err() {
+          return Err(VmError::OutOfMemory);
+        }
+        if !visited.insert(current) {
+          return Err(VmError::PrototypeCycle);
+        }
+        continue;
+      };
+
+      break desc;
     };
 
     match desc.kind {
@@ -2825,7 +3147,8 @@ impl<'a> Scope<'a> {
           return Ok(false);
         };
 
-        let existing_desc = self.ordinary_get_own_property_with_tick(receiver_obj, key, || vm.tick())?;
+        let existing_desc =
+          scope.ordinary_get_own_property_with_tick(receiver_obj, key, || vm.tick())?;
         if let Some(existing_desc) = existing_desc {
           if existing_desc.is_accessor_descriptor() {
             return Ok(false);
@@ -2838,7 +3161,7 @@ impl<'a> Scope<'a> {
             return Ok(false);
           }
 
-          return self.define_own_property_with_tick(
+          return scope.define_own_property_with_tick(
             receiver_obj,
             key,
             PropertyDescriptorPatch {
@@ -2849,18 +3172,18 @@ impl<'a> Scope<'a> {
           );
         }
 
-        self.create_data_property(receiver_obj, key, value)
+        scope.create_data_property(receiver_obj, key, value)
       }
       PropertyKind::Accessor { set, .. } => {
         if matches!(set, Value::Undefined) {
           return Ok(false);
         }
-        if !self.heap().is_callable(set)? {
+        if !scope.heap().is_callable(set)? {
           return Err(VmError::TypeError("accessor setter is not callable"));
         }
         // See `ordinary_get`: prefer `Vm::call` so any active host hook override is honored.
         let mut dummy_host = ();
-        let _ = vm.call(&mut dummy_host, self, set, receiver, &[value])?;
+        let _ = vm.call(&mut dummy_host, &mut scope, set, receiver, &[value])?;
         Ok(true)
       }
     }

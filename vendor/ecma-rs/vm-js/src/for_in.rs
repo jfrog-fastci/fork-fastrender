@@ -150,7 +150,7 @@ impl ForInEnumerator {
         if obj != self.original_object
           && scope.heap().is_typed_array_object(self.original_object)
           && scope.heap().canonical_numeric_index_string(key_s)?.is_some()
-          && !scope.ordinary_has_property_with_tick(self.original_object, key, || vm.tick())?
+          && !scope.ordinary_has_property_with_tick(vm, self.original_object, key, Vm::tick)?
         {
           continue;
         }
