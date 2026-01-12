@@ -4295,7 +4295,7 @@ mod element_dispatch_tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod dom_dispatch_tests {
   use super::*;
 
   use crate::js::window::WindowHostState;
