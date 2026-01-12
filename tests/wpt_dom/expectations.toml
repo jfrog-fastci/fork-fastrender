@@ -44,6 +44,16 @@ status = "xfail"
 reason = "NodeList/HTMLCollection constructors are not exposed globally yet (collections exist but prototype/constructor shape is incomplete)."
 
 [[expectations]]
+id = "dom/domimplementation_create_html_document.window.js"
+status = "xfail"
+reason = "Multi-document DOMImplementation APIs not implemented yet"
+
+[[expectations]]
+id = "dom/domimplementation_create_document_type.window.js"
+status = "xfail"
+reason = "Multi-document DOMImplementation APIs not implemented yet"
+
+[[expectations]]
 id = "vmjs/time_determinism.window.js"
 backend = "quickjs"
 status = "skip"
