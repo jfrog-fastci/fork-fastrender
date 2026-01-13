@@ -4993,16 +4993,16 @@ impl BrowserRuntime {
         } else {
           match hit {
             Some(hit) => {
-              let tooltip =
-                tooltip_from_hover_chain(dom, engine.interaction_state().hover_chain());
-              let cursor = cursor_kind_for_hit(Some(&hit));
-              let crate::interaction::HitTestResult {
-                dom_element_id,
-                dom_node_id,
-                kind,
-                href,
-                ..
-              } = hit;
+               let tooltip =
+                 tooltip_from_hover_chain(dom, engine.interaction_state().hover_chain());
+               let cursor = cursor_kind_for_hit(Some(&hit));
+               let crate::interaction::HitTestResult {
+                 element_id,
+                 dom_node_id,
+                 kind,
+                 href,
+                 ..
+               } = hit;
 
               // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
               let hovered_url = match kind {
@@ -5012,18 +5012,18 @@ impl BrowserRuntime {
                 _ => None,
               };
 
-              (
-                hovered_url,
-                cursor,
-                tooltip,
-                Some(dom_node_id),
-                dom_element_id,
-                hover_is_drop_target,
-              )
-            }
-            None => (None, CursorKind::Default, None, None, None, false),
-          }
-        };
+               (
+                 hovered_url,
+                 cursor,
+                 tooltip,
+                 Some(dom_node_id),
+                 element_id,
+                 hover_is_drop_target,
+               )
+             }
+             None => (None, CursorKind::Default, None, None, None, false),
+           }
+         };
 
         if pointer_in_page && drag_drop_active {
           cursor = if hover_is_drop_target {
@@ -5488,7 +5488,7 @@ impl BrowserRuntime {
          };
 
          let (target_id, target_element_id) = match hit {
-           Some(hit) => (Some(hit.dom_node_id), hit.dom_element_id),
+           Some(hit) => (Some(hit.dom_node_id), hit.element_id),
            None => (None, None),
          };
 
@@ -5639,7 +5639,7 @@ impl BrowserRuntime {
           let page_point = viewport_point.translate(scroll.viewport);
           let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
           let (target_id, target_element_id) = match hit {
-            Some(hit) => (Some(hit.dom_node_id), hit.dom_element_id),
+            Some(hit) => (Some(hit.dom_node_id), hit.element_id),
             None => (None, None),
           };
 
@@ -6552,8 +6552,10 @@ impl BrowserRuntime {
 
         let page_point = viewport_point.translate(scroll.viewport);
         let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
-        let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
-        let target_element_id = hit.as_ref().and_then(|hit| hit.dom_element_id.clone());
+        let (target_id, target_element_id) = match hit {
+          Some(hit) => (Some(hit.dom_node_id), hit.element_id),
+          None => (None, None),
+        };
 
         (false, (target_id, target_element_id))
       }) {
@@ -6756,6 +6758,7 @@ impl BrowserRuntime {
           dom_index
             .node(target_id)
             .and_then(|node| node.get_attribute_ref("id"))
+            .filter(|id| !id.is_empty())
             .map(|id| id.to_string())
         });
         let href = hit

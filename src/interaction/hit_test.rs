@@ -65,11 +65,11 @@ pub struct HitTestResult {
   /// True when the hit corresponds to a selectable text fragment, meaning a document selection can
   /// start at this location and the UI should show an I-beam cursor.
   pub is_selectable_text: bool,
-  /// The hit element's `id` attribute (if any).
+  /// The resolved element's HTML `id` attribute (if any).
   ///
-  /// This is the `id` attribute of the resolved semantic DOM target (`dom_node_id`), not the raw
-  /// styled node (`styled_node_id`).
-  pub dom_element_id: Option<String>,
+  /// This corresponds to `dom_node_id` (including `<img usemap>` → `<area>` resolution), and is
+  /// only populated when the resolved node is an element with a non-empty `id` attribute.
+  pub element_id: Option<String>,
   /// True when the resolved hit target is a text control that could accept dropped text.
   ///
   /// This is a fast pre-check that ignores inherited disabled/inert/hidden state (e.g. `<fieldset
@@ -549,9 +549,11 @@ pub(crate) fn hit_test_dom_with_indices<D: DomIdLookupExt + ?Sized>(
       }
     }
 
-    let dom_element_id = dom_index
+    let element_id = dom_index
       .node(resolved_dom_node_id)
+      .filter(|node| node.is_element())
       .and_then(|node| node.get_attribute_ref("id"))
+      .filter(|id| !id.is_empty())
       .map(|id| id.to_string());
     let (editable_text_drop_target_candidate, form_control_cursor) = dom_index
       .node(resolved_dom_node_id)
@@ -567,7 +569,7 @@ pub(crate) fn hit_test_dom_with_indices<D: DomIdLookupExt + ?Sized>(
       box_id,
       css_cursor,
       is_selectable_text,
-      dom_element_id,
+      element_id,
       is_editable_text_drop_target_candidate: editable_text_drop_target_candidate,
       form_control_cursor,
       styled_node_id,
@@ -694,9 +696,11 @@ pub(crate) fn hit_test_dom_all_with_indices<D: DomIdLookupExt + ?Sized>(
       continue;
     }
 
-    let dom_element_id = dom_index
+    let element_id = dom_index
       .node(resolved_dom_node_id)
+      .filter(|node| node.is_element())
       .and_then(|node| node.get_attribute_ref("id"))
+      .filter(|id| !id.is_empty())
       .map(|id| id.to_string());
     let (editable_text_drop_target_candidate, form_control_cursor) = dom_index
       .node(resolved_dom_node_id)
@@ -712,7 +716,7 @@ pub(crate) fn hit_test_dom_all_with_indices<D: DomIdLookupExt + ?Sized>(
       box_id,
       css_cursor,
       is_selectable_text,
-      dom_element_id,
+      element_id,
       is_editable_text_drop_target_candidate: editable_text_drop_target_candidate,
       form_control_cursor,
       styled_node_id,
@@ -811,6 +815,91 @@ mod tests {
       None,
       "NBSP must not be treated as ASCII whitespace when resolving label for= associations"
     );
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_none_is_default() {
+    let dom = crate::dom::parse_html("<html><body>hi</body></html>").expect("parse");
+    assert_eq!(cursor_kind_for_hover(&dom, None), CursorKind::Default);
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_link_is_pointer() {
+    let dom =
+      crate::dom::parse_html("<html><body><a href=\"x\">Link</a></body></html>").expect("parse");
+    let a_id = find_element_node_id(&dom, "a");
+    let hit = HitTestResult {
+      box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
+      element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
+      styled_node_id: a_id,
+      dom_node_id: a_id,
+      kind: HitTestKind::Link,
+      href: Some("x".to_string()),
+    };
+    assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Pointer);
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_text_input_is_text() {
+    let dom = crate::dom::parse_html("<html><body><input></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let hit = HitTestResult {
+      box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
+      element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
+      styled_node_id: input_id,
+      dom_node_id: input_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Text);
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_checkbox_input_is_default() {
+    let dom =
+      crate::dom::parse_html("<html><body><input type=\"checkbox\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let hit = HitTestResult {
+      box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
+      element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
+      styled_node_id: input_id,
+      dom_node_id: input_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Default);
+  }
+
+  #[test]
+  fn cursor_kind_for_hover_textarea_is_text() {
+    let dom =
+      crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&dom, "textarea");
+    let hit = HitTestResult {
+      box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
+      element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
+      styled_node_id: textarea_id,
+      dom_node_id: textarea_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Text);
   }
 
   fn prepare_for_hit_testing(html: &str) -> crate::api::PreparedDocument {
@@ -1012,7 +1101,7 @@ mod dom_hit_testing_tests {
     assert_eq!(result.box_id, anonymous_box_id);
     assert_eq!(result.styled_node_id, 3);
     assert_eq!(result.dom_node_id, 2);
-    assert_eq!(result.dom_element_id.as_deref(), Some("link"));
+    assert_eq!(result.element_id.as_deref(), Some("link"));
     assert!(!result.is_editable_text_drop_target_candidate);
     assert_eq!(result.form_control_cursor, CursorKind::Default);
     assert_eq!(result.kind, HitTestKind::Link);
@@ -1114,7 +1203,7 @@ mod dom_hit_testing_tests {
     assert_eq!(result.box_id, img_box_id);
     assert_eq!(result.styled_node_id, img_id);
     assert_eq!(result.dom_node_id, area1_id);
-    assert_eq!(result.dom_element_id.as_deref(), Some("a1"));
+    assert_eq!(result.element_id.as_deref(), Some("a1"));
     assert!(!result.is_editable_text_drop_target_candidate);
     assert_eq!(result.form_control_cursor, CursorKind::Default);
     assert_eq!(result.kind, HitTestKind::Link);
@@ -1128,7 +1217,7 @@ mod dom_hit_testing_tests {
     let result =
       hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(85.0, 85.0)).expect("hit");
     assert_eq!(result.dom_node_id, dead_id);
-    assert_eq!(result.dom_element_id.as_deref(), Some("dead"));
+    assert_eq!(result.element_id.as_deref(), Some("dead"));
     assert_eq!(result.kind, HitTestKind::Other);
     assert_eq!(result.href, None);
   }
@@ -1163,7 +1252,7 @@ mod dom_hit_testing_tests {
     assert_eq!(result.box_id, input_box_id);
     assert_eq!(result.styled_node_id, 2);
     assert_eq!(result.dom_node_id, 2);
-    assert_eq!(result.dom_element_id.as_deref(), Some("x"));
+    assert_eq!(result.element_id.as_deref(), Some("x"));
     assert!(result.is_editable_text_drop_target_candidate);
     assert_eq!(result.form_control_cursor, CursorKind::Text);
     assert_eq!(result.kind, HitTestKind::FormControl);
