@@ -6,6 +6,7 @@ pub mod dom_mutation;
 pub mod dom_mutation_dom2;
 pub mod dom_geometry;
 pub(crate) mod effective_disabled;
+pub(crate) mod effective_disabled_dom2;
 pub mod engine;
 pub mod focus_scroll;
 pub mod form_submit;
