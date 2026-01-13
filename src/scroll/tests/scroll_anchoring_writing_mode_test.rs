@@ -1,21 +1,22 @@
 use crate::geometry::{Point, Rect, Size};
 use crate::scroll::{apply_scroll_anchoring_between_fragment_trees, ScrollState};
 use crate::style::types::WritingMode;
-use crate::style::{block_axis_positive, ComputedStyle};
+use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 use std::sync::Arc;
 
 #[test]
 fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
-  // Ensure scroll anchoring adjusts the physical scroll axis that corresponds to the anchor's
-  // movement even under vertical writing modes.
+  // In `writing-mode: vertical-rl`, the block axis is horizontal. Scroll anchoring should still
+  // adjust the physical X scroll offset when layout shifts along that axis.
   let writing_mode = WritingMode::VerticalRl;
 
   let mut root_style = ComputedStyle::default();
   root_style.writing_mode = writing_mode;
   let root_style = Arc::new(root_style);
 
-  // The anchor is the only visible fragment with a box id.
+  // The anchor is the only visible fragment with a box id and remains in view under the initial
+  // scroll offset.
   let anchor_old_bounds = Rect::from_xywh(20.0, 0.0, 10.0, 10.0);
   let anchor_new_bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
 
@@ -41,10 +42,9 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
 
   let adjusted = apply_scroll_anchoring_between_fragment_trees(&prev_tree, &next_tree, &scroll_state);
 
-  // The scroll adjustment mirrors the movement of the anchor fragment in physical coordinates, but
-  // must be converted back into a logical-start-relative scroll offset using the writing mode.
-  let sign = if block_axis_positive(writing_mode) { 1.0 } else { -1.0 };
-  let expected_x = scroll_state.viewport.x + sign * (anchor_new_bounds.x() - anchor_old_bounds.x());
+  // The scroll adjustment tracks the movement of the selected anchor origin in physical
+  // coordinates.
+  let expected_x = scroll_state.viewport.x + (anchor_new_bounds.x() - anchor_old_bounds.x());
 
   assert!(
     (adjusted.viewport.x - expected_x).abs() < 1e-3,

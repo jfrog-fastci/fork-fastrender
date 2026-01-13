@@ -38249,9 +38249,15 @@ fn range_insert_node_native(
   let Value::Object(node_obj) = node_value else {
     return Err(VmError::TypeError("Range.insertNode requires a node argument"));
   };
+  let node_handle = node_handle_from_wrapper_obj(
+    vm,
+    &mut scope,
+    node_obj,
+    "Range.insertNode requires a node argument",
+  )?;
 
-  let node_handle =
-    node_handle_from_wrapper_obj(vm, &mut scope, node_obj, "Range.insertNode requires a node argument")?;
+  // Cache insertion bookkeeping for the source node so we can keep wrapper-cached live collections
+  // (`childNodes`, `children`, `<select>.options`) consistent when insertion moves nodes.
   let node_document_obj = node_handle.document_obj;
   let mut node_dom_ptr = dom_ptr_for_document_id_mut(vm, host, node_handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
