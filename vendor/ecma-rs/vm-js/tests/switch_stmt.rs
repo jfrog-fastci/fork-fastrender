@@ -124,6 +124,66 @@ fn switch_let_is_not_visible_outside_case_block() {
 }
 
 #[test]
+fn switch_generator_function_is_not_visible_outside_case_block() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { switch (0) { case 0: function* x() {} } x } catch(e) { e.name }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn switch_generator_function_is_not_visible_outside_case_block_strict() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""use strict"; try { switch (0) { case 0: function* x() {} } x } catch(e) { e.name }"#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn switch_async_function_is_not_visible_outside_case_block() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { switch (0) { case 0: async function x() {} } x } catch(e) { e.name }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn switch_async_function_is_not_visible_outside_case_block_strict() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""use strict"; try { switch (0) { case 0: async function x() {} } x } catch(e) { e.name }"#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn switch_async_generator_function_is_not_visible_outside_case_block() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { switch (0) { case 0: async function* x() {} } x } catch(e) { e.name }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn switch_async_generator_function_is_not_visible_outside_case_block_strict() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""use strict"; try { switch (0) { case 0: async function* x() {} } x } catch(e) { e.name }"#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
 fn switch_let_tdz_applies_across_case_clauses() {
   let mut rt = new_runtime();
   let value = rt
