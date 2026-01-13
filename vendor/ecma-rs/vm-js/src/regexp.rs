@@ -13,7 +13,6 @@
 //! Call sites must treat compilation failures as `SyntaxError`.
 
 use crate::fallible_alloc::box_try_new_vm;
-pub(crate) use crate::regexp_unicode_property_strings::UnicodeStringProperty;
 use crate::regexp_unicode_property_strings::{match_property_at, MAX_MATCHES_PER_POSITION};
 pub(crate) use crate::regexp_unicode_property_strings::UnicodeStringProperty;
 use crate::regexp_unicode_resolver::{resolve_unicode_property_value_expression, ResolvedUnicodeProperty};
