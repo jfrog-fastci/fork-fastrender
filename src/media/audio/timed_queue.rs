@@ -631,4 +631,34 @@ mod tests {
     q.push_segment(seg(1000, &[2.0; 5])).unwrap();
     assert_eq!(q.buffered_frames(), 10);
   }
+
+  #[test]
+  fn out_of_order_contiguous_segments_merge() {
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    q.push_segment(seg(400, &[5.0, 6.0, 7.0, 8.0]))
+      .unwrap();
+    q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0]))
+      .unwrap();
+
+    assert_eq!(q.segments.len(), 1, "contiguous segments should merge even if pushed out-of-order");
+
+    let mut out = vec![0.0; 8];
+    q.read_into(&mut out, Duration::ZERO, 8);
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+  }
+
+  #[test]
+  fn out_of_order_overlap_trims_later_segment() {
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    // Overlapping segment pushed first.
+    q.push_segment(seg(200, &[5.0, 6.0, 7.0, 8.0]))
+      .unwrap();
+    // Earlier segment pushed later should take precedence for the overlap region.
+    q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0]))
+      .unwrap();
+
+    let mut out = vec![0.0; 6];
+    q.read_into(&mut out, Duration::ZERO, 6);
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 7.0, 8.0]);
+  }
 }
