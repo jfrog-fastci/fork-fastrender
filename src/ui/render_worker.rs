@@ -447,6 +447,7 @@ struct TabState {
   pointer_buttons: u16,
   last_hovered_dom_node_id: Option<usize>,
   last_hovered_dom_element_id: Option<String>,
+  last_hovered_dom2_node: Option<crate::dom2::NodeId>,
   last_hovered_url: Option<String>,
   last_cursor: CursorKind,
 
@@ -488,6 +489,7 @@ impl TabState {
       pointer_buttons: 0,
       last_hovered_dom_node_id: None,
       last_hovered_dom_element_id: None,
+      last_hovered_dom2_node: None,
       last_hovered_url: None,
       last_cursor: CursorKind::Default,
       pending_navigation: None,
@@ -4013,12 +4015,13 @@ impl BrowserRuntime {
     // DOM mouse events (`mousemove` + hover transitions)
     // ---------------------------------------------------------------------------
     let prev_hovered_dom_node_id = tab.last_hovered_dom_node_id;
-    let prev_hovered_dom_element_id = tab.last_hovered_dom_element_id.clone();
+    let prev_target = tab.last_hovered_dom2_node;
     tab.last_hovered_dom_node_id = hovered_dom_node_id;
     tab.last_hovered_dom_element_id = hovered_dom_element_id.clone();
 
     let pointer_buttons = tab.pointer_buttons;
     let Some(js_tab) = tab.js_tab.as_mut() else {
+      tab.last_hovered_dom2_node = None;
       return;
     };
     let js_mutation_generation_before_dispatch = js_tab.dom().mutation_generation();
@@ -4037,24 +4040,27 @@ impl BrowserRuntime {
       related_target: None,
     };
 
-    let current_target = hovered_dom_node_id.and_then(|preorder_id| {
-      js_dom_node_for_preorder_id(
-        js_tab,
-        preorder_id,
-        hovered_dom_element_id.as_deref(),
-        &mut tab.js_dom_mapping_generation,
-        &mut tab.js_dom_mapping,
-      )
-    });
-    let prev_target = prev_hovered_dom_node_id.and_then(|preorder_id| {
-      js_dom_node_for_preorder_id(
-        js_tab,
-        preorder_id,
-        prev_hovered_dom_element_id.as_deref(),
-        &mut tab.js_dom_mapping_generation,
-        &mut tab.js_dom_mapping,
-      )
-    });
+    // Avoid repeated renderer-preorder → dom2 NodeId mapping on the hot `PointerMove` path.
+    //
+    // Hover-transition ordering is computed from dom2 ancestor chains, so we cache the resolved dom2
+    // target across events and only resolve the current renderer preorder id once per move event.
+    let current_target = if hovered_dom_node_id.is_some()
+      && hovered_dom_node_id == prev_hovered_dom_node_id
+      && prev_target.is_some()
+    {
+      prev_target
+    } else {
+      hovered_dom_node_id.and_then(|preorder_id| {
+        js_dom_node_for_preorder_id(
+          js_tab,
+          preorder_id,
+          hovered_dom_element_id.as_deref(),
+          &mut tab.js_dom_mapping_generation,
+          &mut tab.js_dom_mapping,
+        )
+      })
+    };
+    tab.last_hovered_dom2_node = current_target;
     // Prefer the mapped JS DOM node ids when determining hover transitions: the renderer pre-order id
     // can shift under DOM mutations (especially when we fall back to `getElementById` for stability),
     // but the dom2 `NodeId` for an element remains stable across insertions/removals.
