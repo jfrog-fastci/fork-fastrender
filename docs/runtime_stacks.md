@@ -1,4 +1,4 @@
-# Runtime stacks: `BrowserDocument` vs `BrowserDocument2` vs `BrowserDocumentDom2` vs `BrowserTab`
+# Runtime stacks: `BrowserDocument` vs `BrowserDocument2` vs `BrowserDocumentDom2` vs `BrowserTab` vs `BrowserDocumentJs`
 
 FastRender currently exposes multiple “document/tab” APIs that look similar but live at different layers.
 This doc is a **choose-the-right-type** reference that answers:
