@@ -197,6 +197,8 @@ mod multiprocess_shared_renderer_process_crash;
 mod worker_harness;
 mod ui_text_control_pointer_selection;
 mod untrusted_worker_messages;
+#[cfg(feature = "browser_ui")]
+mod renderer_chrome_address_bar_sync;
 
 // -----------------------------------------------------------------------------
 // Global integration test environment

@@ -14,7 +14,6 @@ pub mod chrome_action;
 pub mod chrome_action_url;
 pub mod chrome_compositor_layout;
 pub mod chrome_loading_progress;
-pub mod chrome_frame;
 pub mod process_assignment_config;
 pub mod theme_parsing;
 pub mod high_contrast;
@@ -75,6 +74,7 @@ pub mod viewport_throttle;
 pub mod notifications;
 pub mod chrome_dynamic_asset_fetcher;
 pub mod renderer_chrome_html;
+pub mod chrome_frame_document;
 pub mod multiprocess;
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -285,4 +285,9 @@ pub use profile_persistence::{
   bookmarks_path, history_path, load_bookmarks, load_history, parse_bookmarks_json,
   parse_history_json, save_bookmarks_atomic, save_history_atomic, LoadOutcome, LoadSource,
   PersistedGlobalHistoryStore,
+};
+
+pub use chrome_frame_document::{
+  apply_chrome_frame_event, dom_input_value_by_element_id, sync_browser_state_to_chrome_frame,
+  ChromeFrameDocument, ChromeFrameEvent, CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID,
 };
