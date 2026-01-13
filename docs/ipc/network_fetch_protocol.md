@@ -52,6 +52,11 @@ Constants (as implemented in `src/resource/ipc_fetcher.rs`):
 - `IPC_MAX_INBOUND_FRAME_BYTES = 8 MiB`
 - `IPC_MAX_OUTBOUND_FRAME_BYTES = 80 MiB`
 
+For the purposes of this document, these are the effective **max frame lengths**:
+
+- `MAX_FRAME_LEN` (client → server) = `IPC_MAX_INBOUND_FRAME_BYTES` (8 MiB)
+- `MAX_FRAME_LEN` (server → client) = `IPC_MAX_OUTBOUND_FRAME_BYTES` (80 MiB)
+
 ### Payload encoding (JSON)
 
 Each frame payload is a single UTF‑8 JSON value serialized via `serde_json`.
@@ -63,6 +68,58 @@ Important for implementers in other languages:
   - unit variants encode as `"VariantName"`
 - `IpcRequest` and `IpcResponse` are `#[serde(deny_unknown_fields)]` (unknown fields must fail
   closed).
+
+### Example JSON payloads (no length prefix shown)
+
+Hello request (unenveloped):
+
+```json
+{"Hello":{"token":"<redacted>"}}
+```
+
+Hello response (unenveloped unit variant):
+
+```json
+"HelloAck"
+```
+
+Enveloped fetch request:
+
+```json
+{
+  "id": 42,
+  "request": {
+    "Fetch": { "url": "https://example.com/" }
+  }
+}
+```
+
+Chunked fetch response start:
+
+```json
+{
+  "FetchStart": {
+    "id": 42,
+    "meta": {
+      "content_type": "text/html",
+      "nosniff": false,
+      "content_encoding": null,
+      "status": 200,
+      "etag": null,
+      "last_modified": null,
+      "access_control_allow_origin": null,
+      "timing_allow_origin": null,
+      "vary": null,
+      "response_referrer_policy": null,
+      "access_control_allow_credentials": false,
+      "final_url": "https://example.com/",
+      "cache_policy": null,
+      "response_headers": null
+    },
+    "total_len": 2000000
+  }
+}
+```
 
 ---
 
@@ -238,6 +295,81 @@ pub enum IpcResult<T> {
 }
 ```
 
+### Response payload structs (as serialized)
+
+Fetch responses carry either a full `IpcFetchedResource` (inline body) or an `IpcFetchedResourceMeta`
+followed by chunk bytes (chunked body):
+
+```rust
+pub struct IpcFetchedResourceMeta {
+  pub content_type: Option<String>,
+  pub nosniff: bool,
+  pub content_encoding: Option<String>,
+  pub status: Option<u16>,
+  pub etag: Option<String>,
+  pub last_modified: Option<String>,
+  pub access_control_allow_origin: Option<String>,
+  pub timing_allow_origin: Option<String>,
+  pub vary: Option<String>,
+  pub response_referrer_policy: Option<ReferrerPolicy>,
+  pub access_control_allow_credentials: bool,
+  pub final_url: Option<String>,
+  pub cache_policy: Option<IpcHttpCachePolicy>,
+  pub response_headers: Option<Vec<(String, String)>>,
+}
+
+pub struct IpcFetchedResource {
+  /// Base64 (standard alphabet, padded) of the entire response body.
+  pub bytes_b64: String,
+  pub content_type: Option<String>,
+  pub nosniff: bool,
+  pub content_encoding: Option<String>,
+  pub status: Option<u16>,
+  pub etag: Option<String>,
+  pub last_modified: Option<String>,
+  pub access_control_allow_origin: Option<String>,
+  pub timing_allow_origin: Option<String>,
+  pub vary: Option<String>,
+  pub response_referrer_policy: Option<ReferrerPolicy>,
+  pub access_control_allow_credentials: bool,
+  pub final_url: Option<String>,
+  pub cache_policy: Option<IpcHttpCachePolicy>,
+  pub response_headers: Option<Vec<(String, String)>>,
+}
+
+pub struct IpcError {
+  pub message: String,
+  pub content_type: Option<String>,
+  pub status: Option<u16>,
+  pub final_url: Option<String>,
+  pub etag: Option<String>,
+  pub last_modified: Option<String>,
+}
+
+pub struct IpcHttpCachePolicy {
+  pub max_age: Option<u64>,
+  pub s_maxage: Option<u64>,
+  pub no_cache: bool,
+  pub no_store: bool,
+  pub must_revalidate: bool,
+  pub expires_epoch_secs: Option<u64>,
+  pub date_epoch_secs: Option<u64>,
+  pub age: Option<u64>,
+  pub stale_if_error: Option<u64>,
+  pub stale_while_revalidate: Option<u64>,
+  pub last_modified_epoch_secs: Option<u64>,
+}
+```
+
+Notes:
+
+- Base64 uses the standard padded alphabet (`base64::engine::general_purpose::STANDARD`); decoders must
+  reject non-multiple-of-4 lengths and enforce the per-chunk/per-body decoded byte caps.
+- `response_headers` is an ordered list of `(name, value)` pairs and may include duplicates (e.g.
+  multiple `set-cookie` values).
+- Optional fields are currently serialized as explicit `null` values (the structs do not use
+  `skip_serializing_if = "Option::is_none"`).
+
 ---
 
 ## Body transport strategy (inline vs chunked)
@@ -308,6 +440,40 @@ Client (renderer/browser)                              Network process
   |  frame: NetworkToBrowser::FetchEnd { id:42 }          |
   |<-----------------------------------------------------|
 ```
+
+---
+
+## Error reporting vs protocol violations
+
+There are two classes of failures:
+
+### 1) Structured per-request errors (normal)
+
+Network/fetch failures (DNS, TLS, HTTP errors surfaced as `Error`, etc.) are returned as an `IpcError`
+inside:
+
+- `NetworkToBrowser::Response { .. IpcResponse::Fetched(IpcResult::Err(IpcError)) .. }` (inline path),
+  or
+- `NetworkToBrowser::FetchErr { id, err: IpcError }` (chunked path).
+
+These are *request-scoped* and do not imply the connection is unusable.
+
+### 2) Protocol violations (fatal to the connection)
+
+Malformed frames or messages (bad JSON, invalid lengths, `id` mismatch, invalid chunk sizes, etc.)
+are treated as **fatal** and the receiver closes the connection.
+
+Examples that trigger a hard close in the in-tree client implementation:
+
+- response `id` does not match the request `id`
+- `FetchBodyChunk` decoded length exceeds `IPC_CHUNK_MAX_BYTES`
+- chunk stream sends more bytes than `FetchStart.total_len`
+
+Examples that trigger a hard close in the in-tree server (`IpcFetchServer`):
+
+- invalid JSON
+- request fails `validate_ipc_request` (oversize URL/headers/body, invalid header tokens, etc.)
+- `Hello` is sent after the initial handshake
 
 ---
 
@@ -397,8 +563,16 @@ Semantics:
   additional deterministic limits).
 - `cookie_string` is capped to 4096 bytes by `validate_ipc_request`.
 
+MVP caveats (important for audits):
+
+- The renderer-side `document.cookie` implementation (`src/js/cookie_jar.rs`) stores only
+  `name=value` pairs and ignores cookie attributes (Path/Domain/SameSite/HttpOnly/etc). It also uses
+  deterministic bounds (max cookie count and max string bytes).
+- Because the getter path is backed by `CookieHeaderValue` (\"cookies that would be sent\"), the
+  current behavior may expose cookies that a full browser would hide from `document.cookie` (notably
+  `HttpOnly`). Treat this as an MVP limitation, not a security guarantee.
+
 Security note:
 
 - The client must **not** expose `Set-Cookie` response headers directly to untrusted JS; `Set-Cookie`
   is a forbidden response header in Fetch.
-
