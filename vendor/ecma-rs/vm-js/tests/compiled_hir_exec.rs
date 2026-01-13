@@ -11552,3 +11552,82 @@ fn compiled_import_meta_in_module_returns_cached_object() -> Result<(), VmError>
 
   Ok(())
 }
+
+#[test]
+fn compiled_new_constructs_compiled_user_function() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        function C(x) { this.x = x; }
+        let o = new C(3);
+        return o.x;
+      }
+      f();
+    "#,
+  )?;
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_spread_call_args_work_for_call_and_new() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        function C(a, b) { this.v = a + b; }
+        let args = Array(1, 2);
+        let a = function(x, y) { return x + y; };
+        return a(...args) + (new C(...args)).v;
+      }
+      f();
+    "#,
+  )?;
+  let value = rt.exec_compiled_script(script)?;
+  // a(...[1,2]) == 3 and (new C(...[1,2])).v == 3
+  assert_eq!(value, Value::Number(6.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_arrow_function_is_not_constructable() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var g = () => {};
+      new g();
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  let Value::Object(thrown_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+
+  let type_error_proto = rt.realm().intrinsics().type_error_prototype();
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(thrown_obj))?;
+  let thrown_proto = scope.heap().object_prototype(thrown_obj)?;
+  assert_eq!(thrown_proto, Some(type_error_proto));
+  Ok(())
+}

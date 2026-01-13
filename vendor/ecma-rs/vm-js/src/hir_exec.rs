@@ -6561,11 +6561,6 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     call: &hir_js::CallExpr,
   ) -> Result<OptionalChainEval, VmError> {
-    // Only support non-spread arguments for now.
-    if call.args.iter().any(|arg| arg.spread) {
-      return Err(VmError::Unimplemented("spread arguments (hir-js compiled path)"));
-    }
-
     // Track whether this call is *syntactically* a direct eval candidate (`eval(...)`).
     //
     // A call is only a direct eval if:
@@ -6604,9 +6599,60 @@ impl<'vm> HirEvaluator<'vm> {
         .try_reserve_exact(call.args.len())
         .map_err(|_| VmError::OutOfMemory)?;
       for arg in &call.args {
-        let v = self.eval_expr(&mut scope, body, arg.expr)?;
-        scope.push_root(v)?;
-        args.push(v);
+        if arg.spread {
+          let spread_value = self.eval_expr(&mut scope, body, arg.expr)?;
+          scope.push_root(spread_value)?;
+
+          let mut iter = crate::iterator::get_iterator(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut scope,
+            spread_value,
+          )?;
+          scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
+          if let Err(err) = scope.push_root(iter.next_method) {
+            // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform `IteratorClose`
+            // on abrupt completions (including when `next` throws).
+            return Err(err);
+          }
+
+          loop {
+            let next_value = match crate::iterator::iterator_step_value(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut scope,
+              &mut iter,
+            ) {
+              Ok(v) => v,
+              // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
+              // while stepping the iterator (`next`/`done`/`value`).
+              Err(err) => return Err(err),
+            };
+            let Some(value) = next_value else {
+              break;
+            };
+
+            let step_res: Result<(), VmError> = (|| {
+              // Per-spread-element tick: spreading large iterators should be budgeted even when the
+              // iterator's `next()` is native/cheap.
+              self.vm.tick()?;
+              scope.push_root(value)?;
+              args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+              args.push(value);
+              Ok(())
+            })();
+            if let Err(err) = step_res {
+              return Err(err);
+            }
+          }
+        } else {
+          let v = self.eval_expr(&mut scope, body, arg.expr)?;
+          scope.push_root(v)?;
+          args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          args.push(v);
+        }
       }
 
       // For `new F(...)`, the `newTarget` is `F` itself.
@@ -6669,9 +6715,60 @@ impl<'vm> HirEvaluator<'vm> {
       .try_reserve_exact(call.args.len())
       .map_err(|_| VmError::OutOfMemory)?;
     for arg in &call.args {
-      let v = self.eval_expr(&mut scope, body, arg.expr)?;
-      scope.push_root(v)?;
-      args.push(v);
+      if arg.spread {
+        let spread_value = self.eval_expr(&mut scope, body, arg.expr)?;
+        scope.push_root(spread_value)?;
+
+        let mut iter = crate::iterator::get_iterator(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut scope,
+          spread_value,
+        )?;
+        scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
+        if let Err(err) = scope.push_root(iter.next_method) {
+          // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform `IteratorClose` on
+          // abrupt completions (including when `next` throws).
+          return Err(err);
+        }
+
+        loop {
+          let next_value = match crate::iterator::iterator_step_value(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut scope,
+            &mut iter,
+          ) {
+            Ok(v) => v,
+            // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
+            // while stepping the iterator (`next`/`done`/`value`).
+            Err(err) => return Err(err),
+          };
+          let Some(value) = next_value else {
+            break;
+          };
+
+          let step_res: Result<(), VmError> = (|| {
+            // Per-spread-element tick: spreading large iterators should be budgeted even when the
+            // iterator's `next()` is native/cheap.
+            self.vm.tick()?;
+            scope.push_root(value)?;
+            args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            args.push(value);
+            Ok(())
+          })();
+          if let Err(err) = step_res {
+            return Err(err);
+          }
+        }
+      } else {
+        let v = self.eval_expr(&mut scope, body, arg.expr)?;
+        scope.push_root(v)?;
+        args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        args.push(v);
+      }
     }
 
     if direct_eval_syntax {
