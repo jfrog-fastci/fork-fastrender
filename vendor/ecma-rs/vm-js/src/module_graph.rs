@@ -380,12 +380,12 @@ impl ModuleGraph {
       self.script_loaded_modules.insert(script, Vec::new());
     }
     // Safe: we inserted the key above if it was missing.
-    Ok(
-      self
-        .script_loaded_modules
-        .get_mut(&script)
-        .expect("script_loaded_modules missing key after insertion"),
-    )
+    self
+      .script_loaded_modules
+      .get_mut(&script)
+      .ok_or(VmError::InvariantViolation(
+        "script_loaded_modules missing key after insertion",
+      ))
   }
 
   pub(crate) fn realm_loaded_modules_mut(
@@ -399,12 +399,12 @@ impl ModuleGraph {
         .map_err(|_| VmError::OutOfMemory)?;
       self.realm_loaded_modules.insert(realm, Vec::new());
     }
-    Ok(
-      self
-        .realm_loaded_modules
-        .get_mut(&realm)
-        .expect("realm_loaded_modules missing key after insertion"),
-    )
+    self
+      .realm_loaded_modules
+      .get_mut(&realm)
+      .ok_or(VmError::InvariantViolation(
+        "realm_loaded_modules missing key after insertion",
+      ))
   }
   pub fn set_global_lexical_env(&mut self, env: GcEnv) {
     self.global_lexical_env = Some(env);

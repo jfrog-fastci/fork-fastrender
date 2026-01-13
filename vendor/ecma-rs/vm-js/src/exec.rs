@@ -7775,7 +7775,11 @@ impl<'a> Evaluator<'a> {
             return Err(VmError::Unimplemented("class index signature"));
           }
           // Class static blocks are handled above (collected and evaluated after this loop).
-          ClassOrObjVal::StaticBlock(_) => unreachable!("static blocks collected before key eval"),
+          ClassOrObjVal::StaticBlock(_) => {
+            return Err(VmError::InvariantViolation(
+              "class static blocks should be collected before key evaluation",
+            ));
+          }
         }
       }
 
@@ -12114,13 +12118,20 @@ impl<'a> Evaluator<'a> {
           let left_num = self.to_numeric(&mut op_scope, left)?;
           let right_num = self.to_numeric(&mut op_scope, right)?;
           let value = match (left_num, right_num) {
-            (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
-              OperatorName::AssignmentSubtraction => Value::Number(a - b),
-              OperatorName::AssignmentMultiplication => Value::Number(a * b),
-              OperatorName::AssignmentDivision => Value::Number(a / b),
-              OperatorName::AssignmentRemainder => Value::Number(a % b),
-              _ => unreachable!(),
-            }),
+            (NumericValue::Number(a), NumericValue::Number(b)) => {
+              let value = match expr.operator {
+                OperatorName::AssignmentSubtraction => Value::Number(a - b),
+                OperatorName::AssignmentMultiplication => Value::Number(a * b),
+                OperatorName::AssignmentDivision => Value::Number(a / b),
+                OperatorName::AssignmentRemainder => Value::Number(a % b),
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "unexpected operator in arithmetic compound assignment",
+                  ));
+                }
+              };
+              Ok(value)
+            }
             (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
               let out = {
                 let a = op_scope.heap().get_bigint(a)?;
@@ -12148,7 +12159,11 @@ impl<'a> Evaluator<'a> {
                     let (_, r) = a.div_mod_with_tick(b, &mut || self.tick())?;
                     r
                   }
-                  _ => unreachable!(),
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "unexpected operator in arithmetic BigInt compound assignment",
+                    ));
+                  }
                 }
               };
               let out = op_scope.alloc_bigint(out)?;
@@ -12194,7 +12209,11 @@ impl<'a> Evaluator<'a> {
                 OperatorName::AssignmentBitwiseAnd => a & b,
                 OperatorName::AssignmentBitwiseOr => a | b,
                 OperatorName::AssignmentBitwiseXor => a ^ b,
-                _ => unreachable!(),
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "unexpected operator in bitwise compound assignment",
+                  ));
+                }
               };
               Ok(Value::Number(out as f64))
             }
@@ -12206,7 +12225,11 @@ impl<'a> Evaluator<'a> {
                   OperatorName::AssignmentBitwiseAnd => a.bitwise_and(b)?,
                   OperatorName::AssignmentBitwiseOr => a.bitwise_or(b)?,
                   OperatorName::AssignmentBitwiseXor => a.bitwise_xor(b)?,
-                  _ => unreachable!(),
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "unexpected operator in bitwise BigInt compound assignment",
+                    ));
+                  }
                 }
               };
               let out = op_scope.alloc_bigint(out)?;
@@ -12245,9 +12268,9 @@ impl<'a> Evaluator<'a> {
           let left_num = self.to_numeric(&mut op_scope, left)?;
           let right_num = self.to_numeric(&mut op_scope, right)?;
           let value = match (left_num, right_num) {
-            (NumericValue::Number(a), NumericValue::Number(b)) => Ok({
+            (NumericValue::Number(a), NumericValue::Number(b)) => {
               let shift = (to_uint32(b) & 0x1f) as u32;
-              match expr.operator {
+              let value = match expr.operator {
                 OperatorName::AssignmentBitwiseLeftShift => {
                   let a = to_int32(a);
                   Value::Number(a.wrapping_shl(shift) as f64)
@@ -12260,9 +12283,14 @@ impl<'a> Evaluator<'a> {
                   let a = to_uint32(a);
                   Value::Number((a >> shift) as f64)
                 }
-                _ => unreachable!(),
-              }
-            }),
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "unexpected operator in bitwise shift compound assignment",
+                  ));
+                }
+              };
+              Ok(value)
+            }
             (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
               if matches!(expr.operator, OperatorName::AssignmentBitwiseUnsignedRightShift) {
                 Err(throw_type_error(
@@ -12305,8 +12333,16 @@ impl<'a> Evaluator<'a> {
                         a.shr(shift)?
                       }
                     }
-                    OperatorName::AssignmentBitwiseUnsignedRightShift => unreachable!(),
-                    _ => unreachable!(),
+                    OperatorName::AssignmentBitwiseUnsignedRightShift => {
+                      return Err(VmError::InvariantViolation(
+                        "unexpected unsigned right shift in BigInt compound assignment",
+                      ));
+                    }
+                    _ => {
+                      return Err(VmError::InvariantViolation(
+                        "unexpected operator in BigInt shift compound assignment",
+                      ));
+                    }
                   }
                 };
                 let out = op_scope.alloc_bigint(out)?;
@@ -12342,7 +12378,11 @@ impl<'a> Evaluator<'a> {
             OperatorName::AssignmentLogicalAnd => to_boolean(op_scope.heap(), left)?,
             OperatorName::AssignmentLogicalOr => !to_boolean(op_scope.heap(), left)?,
             OperatorName::AssignmentNullishCoalescing => is_nullish(left),
-            _ => unreachable!(),
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "unexpected operator in logical assignment expression",
+              ));
+            }
           };
           if !should_assign {
             return Ok(left);
@@ -22678,13 +22718,20 @@ fn async_eval_assignment_apply_reference(
                 .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
 
               match (left_num, right_num) {
-                (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
-                  OperatorName::AssignmentSubtraction => Value::Number(a - b),
-                  OperatorName::AssignmentMultiplication => Value::Number(a * b),
-                  OperatorName::AssignmentDivision => Value::Number(a / b),
-                  OperatorName::AssignmentRemainder => Value::Number(a % b),
-                  _ => unreachable!(),
-                }),
+                (NumericValue::Number(a), NumericValue::Number(b)) => {
+                  let value = match expr.operator {
+                    OperatorName::AssignmentSubtraction => Value::Number(a - b),
+                    OperatorName::AssignmentMultiplication => Value::Number(a * b),
+                    OperatorName::AssignmentDivision => Value::Number(a / b),
+                    OperatorName::AssignmentRemainder => Value::Number(a % b),
+                    _ => {
+                      return Err(VmError::InvariantViolation(
+                        "unexpected operator in async arithmetic compound assignment",
+                      ));
+                    }
+                  };
+                  Ok(value)
+                }
                 (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
                   let out = {
                     let a = compound_scope.heap().get_bigint(a)?;
@@ -22712,7 +22759,11 @@ fn async_eval_assignment_apply_reference(
                         let (_, r) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
                         r
                       }
-                      _ => unreachable!(),
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "unexpected operator in async arithmetic BigInt compound assignment",
+                        ));
+                      }
                     }
                   };
                   let out = compound_scope.alloc_bigint(out)?;
@@ -22725,7 +22776,11 @@ fn async_eval_assignment_apply_reference(
                 )?),
               }?
             }
-            _ => unreachable!(),
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "unexpected operator in async compound assignment expression",
+              ));
+            }
           };
 
           compound_scope.push_root(value)?;
@@ -22801,7 +22856,11 @@ fn async_eval_assignment_apply_reference(
             OperatorName::AssignmentBitwiseLeftShift => OperatorName::BitwiseLeftShift,
             OperatorName::AssignmentBitwiseRightShift => OperatorName::BitwiseRightShift,
             OperatorName::AssignmentBitwiseUnsignedRightShift => OperatorName::BitwiseUnsignedRightShift,
-            _ => unreachable!(),
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "unexpected operator in async bitwise shift compound assignment",
+              ));
+            }
           };
 
           let value = async_apply_binary_operator(evaluator, &mut shift_scope, shift_op, left, right)?;
@@ -27706,13 +27765,20 @@ fn async_resume_from_frames(
                       })?;
 
                     match (left_num, right_num) {
-                      (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
-                        OperatorName::AssignmentSubtraction => Value::Number(a - b),
-                        OperatorName::AssignmentMultiplication => Value::Number(a * b),
-                        OperatorName::AssignmentDivision => Value::Number(a / b),
-                        OperatorName::AssignmentRemainder => Value::Number(a % b),
-                        _ => unreachable!(),
-                      }),
+                      (NumericValue::Number(a), NumericValue::Number(b)) => {
+                        let value = match expr.operator {
+                          OperatorName::AssignmentSubtraction => Value::Number(a - b),
+                          OperatorName::AssignmentMultiplication => Value::Number(a * b),
+                          OperatorName::AssignmentDivision => Value::Number(a / b),
+                          OperatorName::AssignmentRemainder => Value::Number(a % b),
+                          _ => {
+                            return Err(VmError::InvariantViolation(
+                              "unexpected operator in async arithmetic compound assignment",
+                            ));
+                          }
+                        };
+                        Ok(value)
+                      }
                       (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
                         let out = {
                           let a = compound_scope.heap().get_bigint(a)?;
@@ -27744,7 +27810,11 @@ fn async_resume_from_frames(
                               let (_, r) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
                               r
                             }
-                            _ => unreachable!(),
+                            _ => {
+                              return Err(VmError::InvariantViolation(
+                                "unexpected operator in async arithmetic BigInt compound assignment",
+                              ));
+                            }
                           }
                         };
                         let out = compound_scope.alloc_bigint(out)?;
@@ -27766,7 +27836,11 @@ fn async_resume_from_frames(
                       OperatorName::AssignmentBitwiseUnsignedRightShift => {
                         OperatorName::BitwiseUnsignedRightShift
                       }
-                      _ => unreachable!(),
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "unexpected operator in async bitwise shift compound assignment",
+                        ));
+                      }
                     };
                     async_apply_binary_operator(evaluator, &mut compound_scope, shift_op, left, right)?
                   }
@@ -32145,6 +32219,15 @@ fn gen_binary_after_left(
         Ok(GenEval::Suspend(suspend))
       }
     },
+    OperatorName::Comma => {
+      // Comma operator: evaluate the RHS and return it (LHS value is discarded).
+      //
+      // This is yield-aware because `gen_eval_expr` is used for both operands. If the RHS yields,
+      // we can propagate the suspension directly: unlike arithmetic operators, there is no
+      // additional computation to perform after the RHS completes.
+      let _ = left;
+      gen_eval_expr(evaluator, scope, &expr.right)
+    }
     _ => Err(VmError::Unimplemented("yield in binary operator")),
   }
 }
