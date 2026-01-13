@@ -2497,7 +2497,13 @@ fn attribute_ci<'a>(node: &'a roxmltree::Node, name: &str) -> Option<&'a str> {
 fn parse_number(value: Option<&str>) -> f32 {
   value
     .and_then(|v| split_ascii_whitespace(v).next())
-    .and_then(|v| v.parse::<f32>().ok())
+    .and_then(|v| {
+      if v.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
+        None
+      } else {
+        v.parse::<f32>().ok()
+      }
+    })
     .unwrap_or(0.0)
 }
 
@@ -2833,7 +2839,13 @@ fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
     .to_ascii_lowercase();
   let parse_or_default = |name: &str, default: f32| -> Option<f32> {
     match node.attribute(name) {
-      Some(raw) => raw.parse::<f32>().ok(),
+      Some(raw) => {
+        if raw.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
+          None
+        } else {
+          raw.parse::<f32>().ok()
+        }
+      }
       None => Some(default),
     }
   };
@@ -3096,12 +3108,22 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   if kernel.len() != total_taps {
     return None;
   }
-  let divisor = node
-    .attribute("divisor")
-    .and_then(|v| v.parse::<f32>().ok());
+  let divisor = node.attribute("divisor").and_then(|v| {
+    if v.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
+      None
+    } else {
+      v.parse::<f32>().ok()
+    }
+  });
   let bias = node
     .attribute("bias")
-    .and_then(|v| v.parse::<f32>().ok())
+    .and_then(|v| {
+      if v.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
+        None
+      } else {
+        v.parse::<f32>().ok()
+      }
+    })
     .unwrap_or(0.0);
   let kernel_unit_length = attribute_ci(node, "kernelUnitLength").map(|v| {
     let (mut x, mut y) = parse_number_pair(Some(v));
@@ -4686,10 +4708,8 @@ fn apply_primitive(
         return Ok(None);
       };
       let region = img.region;
-      let kernel_unit = filter.resolve_primitive_pair(
-        kernel_unit_length.unwrap_or((1.0, 1.0)),
-        css_bbox,
-      );
+      let kernel_unit =
+        filter.resolve_primitive_pair(kernel_unit_length.unwrap_or((1.0, 1.0)), css_bbox);
       let step_x = kernel_unit.0.abs() * scale_x;
       let step_y = kernel_unit.1.abs() * scale_y;
       let step_x = if step_x.is_finite() { step_x } else { scale_x };
@@ -6393,12 +6413,7 @@ fn apply_convolve_matrix(
                   }
                   let sx = x_f + x_offsets.get(kx).copied().unwrap_or(0.0);
                   let sample = sample_premultiplied_edge_mode(
-                    src_pixels,
-                    sx,
-                    sy,
-                    width_i32,
-                    height_i32,
-                    edge_mode,
+                    src_pixels, sx, sy, width_i32, height_i32, edge_mode,
                   );
                   let (r, g, b, a) = unpremultiply_f32(sample);
                   sum_r += r * weight;
@@ -6471,8 +6486,7 @@ fn sample_premultiplied_edge_mode(
   let mut accum = [0.0; 4];
   for dy in 0..=1 {
     for dx in 0..=1 {
-      let weight =
-        (if dx == 0 { 1.0 - tx } else { tx }) * (if dy == 0 { 1.0 - ty } else { ty });
+      let weight = (if dx == 0 { 1.0 - tx } else { tx }) * (if dy == 0 { 1.0 - ty } else { ty });
       if weight <= 0.0 {
         continue;
       }
@@ -7845,7 +7859,12 @@ mod unit_tests {
     let px_scaled = out_scaled.pixel(0, 0).unwrap();
 
     assert_eq!(
-      (px_default.red(), px_default.green(), px_default.blue(), px_default.alpha()),
+      (
+        px_default.red(),
+        px_default.green(),
+        px_default.blue(),
+        px_default.alpha()
+      ),
       (0, 0, 0, 255),
       "expected default kernelUnitLength to sample adjacent black pixel"
     );
@@ -7855,7 +7874,12 @@ mod unit_tests {
         && (px_scaled.green() as i32 - expected as i32).abs() <= 1
         && (px_scaled.blue() as i32 - expected as i32).abs() <= 1,
       "expected kernelUnitLength=2 to sample from white pixel two units away (got {:?})",
-      (px_scaled.red(), px_scaled.green(), px_scaled.blue(), px_scaled.alpha())
+      (
+        px_scaled.red(),
+        px_scaled.green(),
+        px_scaled.blue(),
+        px_scaled.alpha()
+      )
     );
   }
 
