@@ -502,7 +502,7 @@ pub enum UiToWorker {
     tab_id: TabId,
     pos_css: (f32, f32),
   },
-  /// Forward an AccessKit action request targeting the page content.
+  /// Forward an AccessKit [`accesskit::ActionRequest`] targeting the page content.
   ///
   /// This is used by the windowed browser UI (feature = `browser_ui`) to allow assistive
   /// technologies to request operations (for example scrolling a node into view) without going
