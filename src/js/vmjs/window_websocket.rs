@@ -23,9 +23,11 @@ use crate::ipc::websocket::{
   MAX_WEBSOCKET_URL_BYTES,
 };
 use crate::resource::ResourceFetcher;
+use crate::ipc::IpcError;
 use std::borrow::Cow;
 use std::char::decode_utf16;
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -148,6 +150,55 @@ pub type WebSocketIpcCommand = crate::ipc::RendererToNetwork;
 
 /// IPC events emitted by a network process and consumed by the renderer/JS realm.
 pub type WebSocketIpcEvent = crate::ipc::NetworkToRenderer;
+
+// -----------------------------------------------------------------------------
+// WebSocket IPC framing (renderer ↔ network process)
+// -----------------------------------------------------------------------------
+//
+// Security note:
+// WebSocket commands/events can contain large binary payloads (up to `MAX_WEBSOCKET_MESSAGE_BYTES`).
+// The network process must treat the renderer as untrusted: a malicious renderer can otherwise send
+// a bogus length prefix that tricks the receiver into allocating unbounded buffers before
+// deserialization/validation runs.
+//
+// We therefore enforce a hard maximum encoded frame size. Frames larger than this should be
+// treated as a protocol violation and the renderer IPC channel terminated.
+
+/// Maximum encoded WebSocket IPC frame size (bytes).
+///
+/// This is intentionally sized above the maximum *allowed* WebSocket message payload
+/// (`MAX_WEBSOCKET_MESSAGE_BYTES`, 4 MiB) plus serialization overhead.
+pub const MAX_WEBSOCKET_IPC_FRAME_BYTES: usize = crate::ipc::MAX_IPC_MESSAGE_BYTES;
+
+/// Write a renderer→network WebSocket command frame.
+pub fn write_websocket_ipc_command_frame<W: Write>(
+  writer: &mut W,
+  cmd: &WebSocketIpcCommand,
+) -> Result<(), IpcError> {
+  crate::ipc::framing::write_bincode_frame(writer, cmd)?;
+  writer.flush()?;
+  Ok(())
+}
+
+/// Read a renderer→network WebSocket command frame.
+pub fn read_websocket_ipc_command_frame<R: Read>(reader: &mut R) -> Result<WebSocketIpcCommand, IpcError> {
+  crate::ipc::framing::read_bincode_frame(reader)
+}
+
+/// Write a network→renderer WebSocket event frame.
+pub fn write_websocket_ipc_event_frame<W: Write>(
+  writer: &mut W,
+  event: &WebSocketIpcEvent,
+) -> Result<(), IpcError> {
+  crate::ipc::framing::write_bincode_frame(writer, event)?;
+  writer.flush()?;
+  Ok(())
+}
+
+/// Read a network→renderer WebSocket event frame.
+pub fn read_websocket_ipc_event_frame<R: Read>(reader: &mut R) -> Result<WebSocketIpcEvent, IpcError> {
+  crate::ipc::framing::read_bincode_frame(reader)
+}
 
 /// Environment configuration for installing the IPC-based WebSocket backend.
 ///
