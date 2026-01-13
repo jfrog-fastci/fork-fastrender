@@ -586,3 +586,35 @@ fn regexp_lookbehind_with_literal_gt_does_not_parse_as_named_capture_group() {
   let v = rt.exec_script(r#"/(?<!a>)a$/.test("a>a")"#).unwrap();
   assert_eq!(v, Value::Bool(false));
 }
+
+#[test]
+fn regexp_lookbehind_variable_length() {
+  // From test262 `lookBehind/variable-length.js`.
+  let mut rt = new_runtime();
+  let v = rt
+    .exec_script(
+      r#"
+        "abcdef".match(/(?<=[a|b|c]*)[^a|b|c]{3}/)[0] === "def" &&
+        "abcdef".match(/(?<=\w*)[^a|b|c]{3}/)[0] === "def"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+}
+
+#[test]
+fn regexp_lookbehind_global_exec_merges_captures() {
+  // From test262 `lookBehind/sticky.js`.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var re = /(?<=^(\w+))def/g;
+        var a = re.exec("abcdefdef");
+        var b = re.exec("abcdefdef");
+        [a[0], a[1], b[0], b[1], re.lastIndex].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "def,abc,def,abcdef,9");
+}
