@@ -116,25 +116,26 @@ pub fn bookmarks_manager_side_panel(
       // -----------------------------------------------------------------------
       // Search + toolbar
       // -----------------------------------------------------------------------
-      search_bar(ui, state, &mut out);
-      ui.add_space(ui.spacing().item_spacing.y.max(6.0));
-
-      let new_folder_clicked = ui
-        .add_sized(
-          egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
-          egui::Button::new("New folder"),
-        )
-        .clicked();
-      if new_folder_clicked {
-        state.creating_folder = Some(CreateFolderState {
-          title: String::new(),
-          parent: None,
-          error: None,
-          request_focus_title: true,
+      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let new_folder = icon_button(ui, BrowserIcon::Folder, "New folder", true);
+        new_folder.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Create new folder")
         });
-      }
+        if new_folder.clicked() {
+          state.creating_folder = Some(CreateFolderState {
+            title: String::new(),
+            parent: None,
+            error: None,
+            request_focus_title: true,
+          });
+        }
 
-      ui.add_space(ui.spacing().item_spacing.y.max(6.0));
+        ui.add_space(6.0);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+          search_bar(ui, state, &mut out);
+        });
+      });
+      ui.add_space(ui.spacing().item_spacing.y.max(8.0));
 
       // -----------------------------------------------------------------------
       // Create folder / edit bookmark flows (cards)
