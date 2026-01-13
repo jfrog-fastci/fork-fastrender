@@ -15053,28 +15053,33 @@ mod tests {
   }
 
   #[test]
-  fn collapsed_line_positions_include_half_outer_borders() {
+  fn collapsed_line_positions_include_full_outer_borders() {
     let sizes = vec![100.0, 50.0];
     let line_widths = vec![10.0, 4.0, 6.0];
-    let (line_pos, offsets, extent) = collapsed_line_positions(&sizes, &line_widths, 0.0, 0.0);
+    let pad_left = line_widths[0] * 0.5;
+    let pad_right = line_widths[2] * 0.5;
+    let (line_pos, offsets, extent) =
+      collapsed_line_positions(&sizes, &line_widths, pad_left, pad_right);
 
     assert_eq!(line_pos.len(), 3);
     assert_eq!(offsets.len(), 2);
-    assert!((line_pos[0] - 0.0).abs() < 1e-6);
+    // Outer border strokes are centered half a width inside the table bounds.
+    assert!((line_pos[0] - 5.0).abs() < 1e-6);
     assert!(
-      (offsets[0] - 5.0).abs() < 1e-6,
-      "first column should start after half the left border"
+      (offsets[0] - 10.0).abs() < 1e-6,
+      "first column should start after the full left border"
     );
 
-    let expected_second_line = 5.0 + 100.0 + 2.0;
+    let expected_second_line = 5.0 + 5.0 + 100.0 + 2.0;
     assert!((line_pos[1] - expected_second_line).abs() < 1e-6);
     assert!(
       (offsets[1] - (line_pos[1] + line_widths[1] * 0.5)).abs() < 1e-6,
       "second column should start after half of the interior line"
     );
 
-    let expected_extent = expected_second_line + 2.0 + 50.0 + 3.0;
-    assert!((line_pos[2] - expected_extent).abs() < 1e-6);
+    let expected_last_line = expected_second_line + 2.0 + 50.0 + 3.0;
+    assert!((line_pos[2] - expected_last_line).abs() < 1e-6);
+    let expected_extent = expected_last_line + pad_right;
     assert!((extent - expected_extent).abs() < 1e-6);
   }
 
@@ -20232,9 +20237,9 @@ mod tests {
     let constraints = LayoutConstraints::definite_width(100.0);
     let fragment = tfc.layout(&table, &constraints).expect("table layout");
 
-    // Width should include the outer collapsed borders (3 + 3) even with zero cell width.
+    // Width should include the full outer collapsed borders (3 + 3) even with zero cell width.
     assert!(fragment.bounds.width() >= 6.0);
-    // Height should include the outer collapsed borders (2 + 2) plus at least a minimal row height.
+    // Height should include the full outer collapsed borders (2 + 2).
     assert!(fragment.bounds.height() >= 4.0);
   }
 
@@ -20335,7 +20340,7 @@ mod tests {
           .unwrap_or(false)
       })
       .expect("cell fragment");
-    // Cell should be offset by the collapsed borders.
+    // Cell should be offset by the full collapsed outer borders.
     assert!((cell_frag.bounds.x() - 6.0).abs() < 0.51);
     assert!((cell_frag.bounds.y() - 4.0).abs() < 0.51);
     // Table width should include both borders plus the cell.
@@ -20793,13 +20798,14 @@ mod tests {
       })
       .expect("bottom-aligned cell fragment");
 
-    // The table border is 2px wide; collapsed border strokes are centered on the grid lines,
-    // so the first row's cell boxes should start ~1px below the table fragment origin.
+    // The table border is 2px wide. Collapsed-border layout aligns the table fragment origin with
+    // the outer border paint edge, so the first row's cell boxes should start ~2px below the
+    // origin.
     let min_y = cells
       .iter()
       .map(|c| c.bounds.y())
       .fold(f32::INFINITY, f32::min);
-    assert!((min_y - 1.0).abs() < 0.51);
+    assert!((min_y - 2.0).abs() < 0.51);
 
     // The rowspan cell should occupy column 0 on both rows, causing the second row's cell to
     // be placed in column 1 (aligned with the first row's second cell).

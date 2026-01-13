@@ -64,7 +64,7 @@ use crate::tree::box_tree::AnonymousType;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxType;
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
 use std::sync::Arc;
 
 /// Table structure fixer
@@ -85,16 +85,21 @@ use std::sync::Arc;
 pub struct TableStructureFixer;
 
 #[cfg(test)]
-static TRACK_FIXUP_INTERNALS: AtomicBool = AtomicBool::new(false);
-#[cfg(test)]
-static FIXUP_INTERNAL_CALLS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+  // Test-only instrumentation for verifying when the fixup path is invoked.
+  //
+  // Keep this thread-local so unit tests can run in parallel without polluting each other's
+  // counters (Rust's test harness executes tests concurrently by default).
+  static TRACK_FIXUP_INTERNALS: Cell<bool> = const { Cell::new(false) };
+  static FIXUP_INTERNAL_CALLS: Cell<usize> = const { Cell::new(0) };
+}
 #[cfg(test)]
 pub struct FixupCounterGuard;
 
 #[cfg(test)]
 impl Drop for FixupCounterGuard {
   fn drop(&mut self) {
-    TRACK_FIXUP_INTERNALS.store(false, Ordering::SeqCst);
+    TRACK_FIXUP_INTERNALS.with(|track| track.set(false));
   }
 }
 const TABLE_FIXUP_DEADLINE_STRIDE: usize = 256;
@@ -161,9 +166,11 @@ impl TableStructureFixer {
   pub fn fixup_table_internals(table_box: BoxNode) -> Result<BoxNode> {
     let mut deadline_counter = 0usize;
     #[cfg(test)]
-    if TRACK_FIXUP_INTERNALS.load(Ordering::SeqCst) {
-      FIXUP_INTERNAL_CALLS.fetch_add(1, Ordering::SeqCst);
-    }
+    TRACK_FIXUP_INTERNALS.with(|track| {
+      if track.get() {
+        FIXUP_INTERNAL_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+      }
+    });
     Self::fixup_table_internals_with_deadline(table_box, &mut deadline_counter)
   }
 
@@ -177,14 +184,14 @@ impl TableStructureFixer {
 
   #[cfg(test)]
   pub fn scoped_fixup_internals_counter() -> FixupCounterGuard {
-    FIXUP_INTERNAL_CALLS.store(0, Ordering::SeqCst);
-    TRACK_FIXUP_INTERNALS.store(true, Ordering::SeqCst);
+    FIXUP_INTERNAL_CALLS.with(|calls| calls.set(0));
+    TRACK_FIXUP_INTERNALS.with(|track| track.set(true));
     FixupCounterGuard
   }
 
   #[cfg(test)]
   pub fn fixup_internals_call_count() -> usize {
-    FIXUP_INTERNAL_CALLS.load(Ordering::SeqCst)
+    FIXUP_INTERNAL_CALLS.with(|calls| calls.get())
   }
 
   // ==================== Type Checking ====================
