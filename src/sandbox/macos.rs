@@ -18,6 +18,8 @@
 
 use std::ffi::{CStr, CString};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 // Seatbelt sandboxing is macOS-specific.
 //
@@ -38,6 +40,12 @@ extern "C" {
     errorbuf: *mut *mut libc::c_char,
   ) -> libc::c_int;
   fn sandbox_free_error(errorbuf: *mut libc::c_char);
+  fn sandbox_check(
+    pid: libc::pid_t,
+    operation: *const libc::c_char,
+    r#type: libc::c_int,
+    ...
+  ) -> libc::c_int;
 }
 
 // `sandbox_init` flags are not exposed in `libc`.
@@ -114,6 +122,89 @@ const STRICT_FALLBACK_PROFILE: &str = r#"(version 1)
 enum StrictSandboxBackend {
   NamedProfile,
   EmbeddedFallback,
+}
+
+// `sandbox_check` filters are not exposed in `libc` either. These values match `<sandbox.h>`.
+const SANDBOX_FILTER_NONE: libc::c_int = 0;
+const SANDBOX_FILTER_PATH: libc::c_int = 1;
+
+const OP_FILE_READ_DATA: &[u8] = b"file-read-data\0";
+const OP_FILE_READ_METADATA: &[u8] = b"file-read-metadata\0";
+const OP_NETWORK_OUTBOUND: &[u8] = b"network-outbound\0";
+
+fn cstr_from_bytes(bytes: &'static [u8]) -> &'static CStr {
+  // SAFETY: all call sites pass string literals with a trailing NUL byte and no interior NULs.
+  unsafe { CStr::from_bytes_with_nul_unchecked(bytes) }
+}
+
+fn sandbox_check_inner(
+  operation: &CStr,
+  filter: libc::c_int,
+  filter_arg: Option<&CStr>,
+) -> io::Result<bool> {
+  // SAFETY: `sandbox_check` is an FFI call. When the filter is PATH we pass a valid NUL-terminated
+  // C string as the corresponding vararg.
+  let rc = unsafe {
+    match filter_arg {
+      Some(arg) => sandbox_check(0, operation.as_ptr(), filter, arg.as_ptr()),
+      None => sandbox_check(0, operation.as_ptr(), filter),
+    }
+  };
+  if rc == 0 {
+    return Ok(true);
+  }
+  if rc > 0 {
+    // Seatbelt returns a positive errno-style value for denied operations (e.g. EPERM).
+    return Ok(false);
+  }
+  Err(io::Error::last_os_error())
+}
+
+fn format_sandbox_check(result: io::Result<bool>) -> String {
+  match result {
+    Ok(true) => "allowed".to_string(),
+    Ok(false) => "denied".to_string(),
+    Err(err) => format!("error({:?}): {err}", err.kind()),
+  }
+}
+
+/// Query whether the current process' Seatbelt sandbox would allow reading the file at `path`.
+///
+/// This uses `sandbox_check(3)` with the `SANDBOX_FILTER_PATH` filter against both `file-read-data`
+/// and `file-read-metadata`.
+pub fn sandbox_check_file_read(path: &Path) -> io::Result<bool> {
+  let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+    io::Error::new(io::ErrorKind::InvalidInput, "sandbox_check path contains NUL byte")
+  })?;
+  let data_allowed =
+    sandbox_check_inner(cstr_from_bytes(OP_FILE_READ_DATA), SANDBOX_FILTER_PATH, Some(&path))?;
+  let meta_allowed = sandbox_check_inner(
+    cstr_from_bytes(OP_FILE_READ_METADATA),
+    SANDBOX_FILTER_PATH,
+    Some(&path),
+  )?;
+  Ok(data_allowed && meta_allowed)
+}
+
+/// Render a human-friendly `sandbox_check` verdict for [`sandbox_check_file_read`].
+pub fn sandbox_check_file_read_diagnostic(path: &Path) -> String {
+  format_sandbox_check(sandbox_check_file_read(path))
+}
+
+/// Query whether the current process' Seatbelt sandbox would allow outbound network connections.
+///
+/// This uses `sandbox_check(3)` for the `network-outbound` operation with no additional filters.
+pub fn sandbox_check_network_outbound() -> io::Result<bool> {
+  sandbox_check_inner(
+    cstr_from_bytes(OP_NETWORK_OUTBOUND),
+    SANDBOX_FILTER_NONE,
+    None,
+  )
+}
+
+/// Render a human-friendly `sandbox_check` verdict for [`sandbox_check_network_outbound`].
+pub fn sandbox_check_network_outbound_diagnostic() -> String {
+  format_sandbox_check(sandbox_check_network_outbound())
 }
 
 fn sandbox_init_profile(profile: &CStr, flags: u64) -> io::Result<()> {
@@ -293,7 +384,7 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
 
     if std::env::var_os(CHILD_ENV).is_some() {
       // Call through the sandbox module's public wrapper to ensure it remains usable.
-      super::super::apply_pure_computation_sandbox().expect("apply Seatbelt pure-computation sandbox");
+      apply_pure_computation_sandbox().expect("apply Seatbelt pure-computation sandbox");
       std::io::stdout()
         .write_all(SENTINEL)
         .and_then(|_| std::io::stdout().flush())
@@ -341,19 +432,34 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
       apply_pure_computation_sandbox().expect("apply pure-computation sandbox");
 
       // 1) File read should fail.
-      let read_err = std::fs::read_to_string("/private/etc/passwd")
-        .or_else(|err| {
-          if err.kind() == io::ErrorKind::NotFound {
-            std::fs::read_to_string("/etc/passwd")
-          } else {
-            Err(err)
-          }
-        })
-        .expect_err("expected filesystem read to be denied by sandbox");
-      assert!(
-        is_permission_error(&read_err),
-        "expected file read to be denied by sandbox, got {read_err:?}"
-      );
+      let passwd_private = Path::new("/private/etc/passwd");
+      let passwd_etc = Path::new("/etc/passwd");
+      let (passwd_path, read_result) = match std::fs::read_to_string(passwd_private) {
+        Ok(contents) => (passwd_private, Ok(contents)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+          (passwd_etc, std::fs::read_to_string(passwd_etc))
+        }
+        Err(err) => (passwd_private, Err(err)),
+      };
+      match read_result {
+        Ok(contents) => panic!(
+          "expected filesystem read to be denied by sandbox (read {} bytes from {}); sandbox_check: {}={}; {}={}",
+          contents.len(),
+          passwd_path.display(),
+          passwd_private.display(),
+          sandbox_check_file_read_diagnostic(passwd_private),
+          passwd_etc.display(),
+          sandbox_check_file_read_diagnostic(passwd_etc)
+        ),
+        Err(read_err) => assert!(
+          is_permission_error(&read_err),
+          "expected file read to be denied by sandbox, got {read_err:?}; sandbox_check: {}={}; {}={}",
+          passwd_private.display(),
+          sandbox_check_file_read_diagnostic(passwd_private),
+          passwd_etc.display(),
+          sandbox_check_file_read_diagnostic(passwd_etc)
+        ),
+      }
 
       // 2) File write should fail.
       let temp_path = std::env::temp_dir().join(format!(
@@ -372,22 +478,29 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
         .expect_err("expected network bind to be denied by sandbox");
       assert!(
         is_permission_error(&bind_err),
-        "expected network bind to be denied by sandbox, got {bind_err:?}"
+        "expected network bind to be denied by sandbox, got {bind_err:?}; sandbox_check network-outbound: {}",
+        sandbox_check_network_outbound_diagnostic()
       );
 
       let udp_bind_err = UdpSocket::bind("127.0.0.1:0")
         .expect_err("expected UDP bind to be denied by sandbox");
       assert!(
         is_permission_error(&udp_bind_err),
-        "expected UDP bind to be denied by sandbox, got {udp_bind_err:?}"
+        "expected UDP bind to be denied by sandbox, got {udp_bind_err:?}; sandbox_check network-outbound: {}",
+        sandbox_check_network_outbound_diagnostic()
       );
 
-      let connect_err = TcpStream::connect(("127.0.0.1", port))
-        .expect_err("expected network connect to be denied by sandbox");
-      assert!(
-        is_permission_error(&connect_err),
-        "expected network connect to be denied by sandbox, got {connect_err:?}"
-      );
+      match TcpStream::connect(("127.0.0.1", port)) {
+        Ok(_stream) => panic!(
+          "expected network connect to be denied by sandbox; sandbox_check network-outbound: {}",
+          sandbox_check_network_outbound_diagnostic()
+        ),
+        Err(connect_err) => assert!(
+          is_permission_error(&connect_err),
+          "expected network connect to be denied by sandbox, got {connect_err:?}; sandbox_check network-outbound: {}",
+          sandbox_check_network_outbound_diagnostic()
+        ),
+      };
       return;
     }
 
@@ -510,19 +623,34 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
         "expected strict sandbox helper to use the embedded fallback profile"
       );
 
-      let read_err = std::fs::read_to_string("/etc/passwd")
-        .expect_err("expected filesystem read to be denied by sandbox");
-      assert!(
-        is_permission_error(&read_err),
-        "expected file read to be denied by sandbox, got {read_err:?}"
-      );
+      let passwd = Path::new("/etc/passwd");
+      match std::fs::read_to_string(passwd) {
+        Ok(contents) => panic!(
+          "expected filesystem read to be denied by sandbox (read {} bytes from {}); sandbox_check {}={}",
+          contents.len(),
+          passwd.display(),
+          passwd.display(),
+          sandbox_check_file_read_diagnostic(passwd)
+        ),
+        Err(read_err) => assert!(
+          is_permission_error(&read_err),
+          "expected file read to be denied by sandbox, got {read_err:?}; sandbox_check {}={}",
+          passwd.display(),
+          sandbox_check_file_read_diagnostic(passwd)
+        ),
+      }
 
-      let connect_err = TcpStream::connect(("127.0.0.1", port))
-        .expect_err("expected network connect to be denied by sandbox");
-      assert!(
-        is_permission_error(&connect_err),
-        "expected network connect to be denied by sandbox, got {connect_err:?}"
-      );
+      match TcpStream::connect(("127.0.0.1", port)) {
+        Ok(_stream) => panic!(
+          "expected network connect to be denied by sandbox; sandbox_check network-outbound: {}",
+          sandbox_check_network_outbound_diagnostic()
+        ),
+        Err(connect_err) => assert!(
+          is_permission_error(&connect_err),
+          "expected network connect to be denied by sandbox, got {connect_err:?}; sandbox_check network-outbound: {}",
+          sandbox_check_network_outbound_diagnostic()
+        ),
+      };
       return;
     }
 
