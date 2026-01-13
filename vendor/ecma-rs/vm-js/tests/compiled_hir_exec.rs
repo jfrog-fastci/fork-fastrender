@@ -375,6 +375,49 @@ fn compiled_member_call_boxes_primitive_base_via_to_object() -> Result<(), VmErr
   Ok(())
 }
 
+#[test]
+fn compiled_member_call_uses_primitive_this_for_strict_functions() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // In strict mode, `this` is not coerced by the call machinery. Member calls on primitive bases
+  // should therefore observe `this` as the primitive value (not the boxed wrapper object).
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      String.prototype.f = function() { return this === 'abc'; };
+      'abc'.f()
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_member_assignment_to_primitive_throws_in_strict_mode() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      let ok = 0;
+      try { 'abc'.x = 1; } catch(e) { ok = 1; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
 fn proxy_get_trap(
   _vm: &mut Vm,
   _scope: &mut vm_js::Scope<'_>,

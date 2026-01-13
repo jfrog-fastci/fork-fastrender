@@ -1707,18 +1707,18 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::ExprKind::Member(member) => {
-        let object = self.eval_expr(scope, body, member.object)?;
-        let Value::Object(obj) = object else {
-          return Err(VmError::TypeError("member assignment requires object"));
-        };
+        let base = self.eval_expr(scope, body, member.object)?;
 
         let mut update_scope = scope.reborrow();
+        // Root the original base across `ToObject`, key allocation, `[[Get]]` and `[[Set]]`.
+        update_scope.push_root(base)?;
+        let obj = update_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
         update_scope.push_root(Value::Object(obj))?;
 
         let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
         root_property_key(&mut update_scope, key)?;
 
-        let receiver = Value::Object(obj);
+        let receiver = base;
         let old_value = update_scope.get_with_host_and_hooks(
           self.vm,
           &mut *self.host,
@@ -2659,7 +2659,8 @@ impl<'vm> HirEvaluator<'vm> {
 
     let key = self.eval_object_key(&mut scope, body, &member.property)?;
     root_property_key(&mut scope, key)?;
-    let receiver = Value::Object(obj);
+    // Spec: `GetV` uses the original base value as the receiver (`this` value) for `[[Get]]`.
+    let receiver = base;
 
     scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, receiver)
   }
@@ -2684,7 +2685,8 @@ impl<'vm> HirEvaluator<'vm> {
     let key = self.eval_object_key(&mut scope, body, &member.property)?;
     root_property_key(&mut scope, key)?;
 
-    let receiver = Value::Object(obj);
+    // Spec: `PutValue` uses the original base value as the receiver (`this` value) for `[[Set]]`.
+    let receiver = base;
     let ok = crate::spec_ops::internal_set_with_host_and_hooks(
       self.vm,
       &mut scope,
@@ -2866,10 +2868,13 @@ impl<'vm> HirEvaluator<'vm> {
         let key = self.eval_object_key(&mut scope, body, &member.property)?;
         root_property_key(&mut scope, key)?;
 
-        let receiver = Value::Object(obj);
+        // Property access (`[[Get]]`) uses the original base value as the receiver.
+        let receiver = base;
         let func =
           scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, receiver)?;
-        (func, receiver)
+        // Method calls use the original base value as `this` (strict-mode functions observe the
+        // primitive `this` value, matching JS semantics).
+        (func, base)
       }
       _ => {
         let callee_value = self.eval_expr(&mut scope, body, call.callee)?;
