@@ -18,11 +18,12 @@ fn main() {
     let target = env::var("TARGET").expect("TARGET not set");
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS not set");
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH not set");
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_else(|_| "<unknown>".to_string());
 
     // This crate intentionally starts minimal: we only guarantee Linux x86_64 builds work.
-    if target_os != "linux" || target_arch != "x86_64" {
+    if target_os != "linux" || target_arch != "x86_64" || target_env != "gnu" {
         panic!(
-            "libvpx-sys-bundled currently supports only Linux x86_64 (got target: {target})"
+            "libvpx-sys-bundled currently supports only x86_64-unknown-linux-gnu (got target: {target})"
         );
     }
 
