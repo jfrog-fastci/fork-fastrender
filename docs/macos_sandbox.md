@@ -89,5 +89,5 @@ allowing a shared pixel buffer.
 
 ## Editing the profiles
 
-The profiles currently live in `src/bin/macos_sandbox_probe.rs`. This tool is intentionally small
+The profiles currently live in `src/bin/macos_sandbox_probe/probe.rs`. This tool is intentionally small
 so you can tweak the profile rules and re-run quickly.
