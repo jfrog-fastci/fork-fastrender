@@ -2410,6 +2410,23 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
   }
 
+  fn is_valid_simple_assignment_target_expr(expr: &Node<Expr>) -> bool {
+    // Parenthesized expressions are not valid simple assignment targets.
+    //
+    // Examples:
+    // - `(a) = 1`
+    // - `++(a)`
+    if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+      return false;
+    }
+    match &*expr.stx {
+      Expr::Id(_) | Expr::IdPat(_) => true,
+      Expr::Member(member) => !member.stx.optional_chaining,
+      Expr::ComputedMember(member) => !member.stx.optional_chaining,
+      _ => false,
+    }
+  }
+
   fn visit_binary(&mut self, ctx: &mut ControlContext, expr: &BinaryExpr) -> Result<(), VmError> {
     if expr.operator.is_assignment() {
       // `eval = ...` and `arguments = ...` are strict-mode early errors.
@@ -2435,11 +2452,21 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         }
       }
 
+      // Destructuring patterns are only valid for plain `=` assignment.
+      if matches!(&*expr.left.stx, Expr::ArrPat(_) | Expr::ObjPat(_))
+        && expr.operator != OperatorName::Assignment
+      {
+        self.push_error(expr.left.loc, "Invalid left-hand side in assignment")?;
+      }
+
       // Optional chaining is a static early error in assignment targets.
       if matches!(&*expr.left.stx, Expr::ArrPat(_) | Expr::ObjPat(_)) {
         // Destructuring patterns handle optional chaining only in `Pat::AssignTarget` positions.
       } else if let Some(loc) = Self::optional_chain_in_assignment_target_expr(&expr.left) {
         self.push_error(loc, "optional chaining cannot appear in assignment targets")?;
+      } else if !Self::is_valid_simple_assignment_target_expr(&expr.left) {
+        // Non-pattern assignment targets must be simple assignment targets.
+        self.push_error(expr.left.loc, "Invalid left-hand side in assignment")?;
       }
     }
 
@@ -2551,6 +2578,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         }
         if let Some(loc) = Self::optional_chain_in_assignment_target_expr(&expr.argument) {
           self.push_error(loc, "optional chaining cannot appear in assignment targets")?;
+        } else if !Self::is_valid_simple_assignment_target_expr(&expr.argument) {
+          self.push_error(expr.argument.loc, "Invalid left-hand side in assignment")?;
         }
       }
       _ => {}
@@ -2590,6 +2619,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         }
         if let Some(loc) = Self::optional_chain_in_assignment_target_expr(&expr.argument) {
           self.push_error(loc, "optional chaining cannot appear in assignment targets")?;
+        } else if !Self::is_valid_simple_assignment_target_expr(&expr.argument) {
+          self.push_error(expr.argument.loc, "Invalid left-hand side in assignment")?;
         }
       }
       _ => {}
@@ -2777,6 +2808,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if matches!(role, PatRole::AssignmentTarget | PatRole::Assignment) {
           if let Some(loc) = Self::optional_chain_in_assignment_target_expr(expr) {
             self.push_error(loc, "optional chaining cannot appear in assignment targets")?;
+          } else if !Self::is_valid_simple_assignment_target_expr(expr) {
+            self.push_error(expr.loc, "Invalid left-hand side in assignment")?;
           }
         }
         self.visit_expr(ctx, expr)
