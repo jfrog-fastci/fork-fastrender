@@ -2028,6 +2028,30 @@ fn regexp_lookbehind_misc_anchor_interactions() {
 }
 
 #[test]
+fn regexp_lookbehind_misc_recursive_backreference_matches_empty() {
+  let mut rt = new_runtime();
+
+  // Ported from test262 `built-ins/RegExp/lookBehind/misc.js` (#10-#13).
+  //
+  // A backreference to an in-progress capture should behave as if the referenced capture is
+  // undefined (i.e. match the empty string).
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          JSON.stringify(/(abc\1)/.exec("abc")) === '["abc","abc"]',
+          JSON.stringify(/(abc\1)/.exec("abc\u1234")) === '["abc","abc"]',
+          JSON.stringify(/(abc\1)/i.exec("abc")) === '["abc","abc"]',
+          JSON.stringify(/(abc\1)/i.exec("abc\u1234")) === '["abc","abc"]',
+        ].every((x) => x === true)
+      "#,
+    )
+    .unwrap();
+
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn regexp_lookbehind_can_reference_prior_captures() {
   let mut rt = new_runtime();
   let value = rt
