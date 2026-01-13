@@ -2402,7 +2402,13 @@ impl TextItem {
       }];
     }
 
-    let mut advances = Vec::new();
+    // Cluster boundaries are at most "one per glyph" (cluster-trivial shaping) plus a small number
+    // of run-ending sentinels. Reserving upfront avoids repeated reallocations on long paragraphs.
+    let estimated_glyphs = runs
+      .iter()
+      .fold(0usize, |acc, run| acc.saturating_add(run.glyphs.len()));
+    let mut advances: Vec<ClusterBoundary> =
+      Vec::with_capacity(estimated_glyphs.saturating_add(runs.len()));
     let mut cumulative = 0.0;
     let mut process_run = |run_idx: usize, advances: &mut Vec<ClusterBoundary>, cumulative: &mut f32| {
       let run = &runs[run_idx];
@@ -2504,8 +2510,8 @@ impl TextItem {
       }
     }
 
-    // Deduplicate by byte offset, keeping the greatest advance so that cumulative width remains monotonic
-    let mut deduped: Vec<ClusterBoundary> = Vec::new();
+    // Deduplicate by byte offset, keeping the greatest advance so that cumulative width remains monotonic.
+    let mut deduped: Vec<ClusterBoundary> = Vec::with_capacity(advances.len());
     for boundary in advances {
       if let Some(last) = deduped.last_mut() {
         if last.byte_offset == boundary.byte_offset {
