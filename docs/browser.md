@@ -132,7 +132,7 @@ Startup note:
     **configuration** from the previous session (appearance/UI scale, menu bar visibility, and window
     geometry) when available.
 - If the primary session file is corrupted/unparseable, the browser can fall back to a retained
-  last-known-good backup (typically `*.json.bak` next to the session file).
+  last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`).
 - If no session exists yet, it falls back to `about:newtab`, which acts as a basic start page
   (showing bookmarks + recently visited pages when available). Use `--no-restore` to disable tab
   restore.

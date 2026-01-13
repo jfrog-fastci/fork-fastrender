@@ -378,7 +378,7 @@ Sidecar files:
   file for the session path. If another `browser` process is already running with the same session
   path, a second instance will refuse to start. Use `--session-path` (or `FASTR_BROWSER_SESSION_PATH`)
   to run multiple isolated instances.
-- **Backup file (`*.json.bak`):** the browser retains a last-known-good backup of the session file
+- **Backup file (`*.bak`):** the browser retains a last-known-good backup of the session file
   (for example `fastrender_session.json.bak` next to `fastrender_session.json`). If the primary
   session file is corrupted/unparseable, the backup can be used to recover.
 
