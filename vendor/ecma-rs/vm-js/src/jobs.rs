@@ -211,13 +211,51 @@ impl Job {
 
   /// Records an existing persistent root so it will be automatically removed when the job is run
   /// or discarded.
-  pub fn push_root(&mut self, id: RootId) {
+  pub fn try_push_root(&mut self, id: RootId) -> Result<(), VmError> {
+    self
+      .roots
+      .try_reserve_exact(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    // `try_reserve_exact(1)` guarantees `push` won't grow/reallocate the buffer.
     self.roots.push(id);
+    Ok(())
   }
 
   /// Adds multiple existing persistent roots.
-  pub fn extend_roots(&mut self, ids: impl IntoIterator<Item = RootId>) {
-    self.roots.extend(ids);
+  pub fn try_extend_roots(&mut self, ids: impl IntoIterator<Item = RootId>) -> Result<(), VmError> {
+    let iter = ids.into_iter();
+    let (lower, upper) = iter.size_hint();
+    // Prefer reserving the exact number of elements up-front when the iterator provides an upper
+    // bound. This avoids partial updates under OOM and reduces the chance of failing due to
+    // over-reserving (e.g. `try_reserve`'s exponential growth strategy).
+    if let Some(upper) = upper {
+      self
+        .roots
+        .try_reserve_exact(upper)
+        .map_err(|_| VmError::OutOfMemory)?;
+      // `try_reserve_exact(upper)` guarantees `extend` won't grow/reallocate the buffer because the
+      // iterator must yield no more than `upper` items.
+      self.roots.extend(iter);
+      return Ok(());
+    }
+
+    // Fallback for iterators with an unknown upper bound: extend one element at a time using a
+    // fallible reserve so allocator OOM does not abort the process.
+    //
+    // Note: This may partially extend `roots` if the iterator yields more than `lower` elements and
+    // we hit OOM mid-way. Callers that need all-or-nothing semantics should pass an iterator with a
+    // known upper bound (e.g. a slice/`Vec`).
+    if lower != 0 {
+      // Pre-reserve the lower bound as a best-effort optimisation; failure here indicates OOM.
+      self
+        .roots
+        .try_reserve_exact(lower)
+        .map_err(|_| VmError::OutOfMemory)?;
+    }
+    for id in iter {
+      self.try_push_root(id)?;
+    }
+    Ok(())
   }
 
   /// Replaces the job's root list (useful when capturing roots at enqueue time).
@@ -1094,6 +1132,7 @@ pub trait VmHostHooks {
 #[cfg(test)]
 mod oom_tests {
   use super::*;
+  use crate::test_alloc::FailAllocsGuard;
   use crate::test_alloc::FailNextMatchingAllocGuard;
 
   const JOB_CALLBACK_ARC_INNER_SIZE: usize = std::mem::size_of::<ArcInner<JobCallbackInner>>();
@@ -1116,5 +1155,25 @@ mod oom_tests {
       .host_make_job_callback_fallible(callback)
       .expect_err("expected OOM error");
     assert!(matches!(err, VmError::OutOfMemory));
+  }
+
+  #[test]
+  fn job_root_helpers_return_out_of_memory_instead_of_aborting_on_allocator_oom() -> Result<(), VmError> {
+    // Construct jobs before enabling allocation failure so `Job::new` can allocate its closure box.
+    let mut job_push = Job::new(JobKind::Generic, |_ctx, _host| Ok(()))?;
+    let mut job_extend = Job::new(JobKind::Generic, |_ctx, _host| Ok(()))?;
+
+    // Fail all allocations on this thread. `try_push_root` / `try_extend_roots` must surface this
+    // as `VmError::OutOfMemory` rather than aborting via `Vec` growth.
+    let _guard = FailAllocsGuard::new();
+    let push_result = job_push.try_push_root(RootId(0));
+    let extend_result = job_extend.try_extend_roots([RootId(0), RootId(1)]);
+    drop(_guard);
+
+    assert!(matches!(push_result, Err(VmError::OutOfMemory)));
+    assert!(matches!(extend_result, Err(VmError::OutOfMemory)));
+    assert!(job_push.roots.is_empty());
+    assert!(job_extend.roots.is_empty());
+    Ok(())
   }
 }

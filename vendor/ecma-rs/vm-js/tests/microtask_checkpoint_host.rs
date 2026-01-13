@@ -121,7 +121,10 @@ fn microtask_checkpoint_terminates_and_discards_remaining_jobs() -> Result<(), V
     ctx.call(hooks, tick_fn_value, Value::Undefined, &[])?;
     Ok(())
   })?;
-  job1.push_root(tick_fn_root);
+  if let Err(e) = job1.try_push_root(tick_fn_root) {
+    heap.remove_root(tick_fn_root);
+    return Err(e);
+  }
 
   // Second job has a Rust-side side effect but does not call into the VM (so it won't tick).
   let counter = Arc::new(AtomicUsize::new(0));
