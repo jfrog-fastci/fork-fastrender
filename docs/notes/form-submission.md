@@ -8,10 +8,10 @@ FastRender implements a spec-shaped subset of the HTML form submission algorithm
 - `method=get|post` (case-insensitive, default `get`).
 - `enctype` for `post`:
   - `application/x-www-form-urlencoded`
-  - `multipart/form-data` (text controls; file inputs are currently treated as “no files selected”)
+  - `multipart/form-data` (text controls + file inputs; file bytes are sourced from interaction state)
   - `text/plain`
 - Successful controls collection (tree order + `form=`-associated controls):
-  - `<input>` text-like types, `<textarea>`, `<select>`
+  - value-bearing `<input>` types (text-like, date/time, `range`, `file`, etc.), `<textarea>`, `<select>`
   - checked `checkbox`/`radio`
   - submitter `name=value` pair when present
   - disabled / inert / `<template>` subtrees excluded
@@ -31,4 +31,3 @@ The interaction engine returns:
 
 The UI worker/navigation layer performs POST document navigations via
 `FastRender::prepare_http_request` / `BrowserDocument::navigate_http_request_with_options`.
-

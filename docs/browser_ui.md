@@ -51,8 +51,9 @@ If you run the `browser` binary without the feature, it will print a short messa
 ### Native dialogs (file/color) (developer note)
 
 The `browser_ui` feature includes an optional dependency on the
-[`rfd`](https://crates.io/crates/rfd) crate for native file/color dialogs, but the current windowed
-`browser` app does **not** open native file pickers or color pickers yet.
+[`rfd`](https://crates.io/crates/rfd) crate (pinned for MSRV) for native file/color dialogs, but the
+current windowed `browser` app does **not** open native file pickers or color pickers yet (e.g.
+clicking `<input type="file">` will not show a file picker).
 
 On Linux, `rfd` is configured to use the `xdg-portal` backend (via Cargo feature selection) so
 `--features browser_ui` stays **CI-friendly** and does **not** require GTK development packages
