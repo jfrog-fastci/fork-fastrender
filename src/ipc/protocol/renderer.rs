@@ -449,13 +449,6 @@ pub enum BrowserToRenderer {
   /// (shared memory segment, pooled buffer, etc).
   FrameAck { frame_seq: u64 },
 
-  /// Release a shared frame buffer back to the renderer's frame pool.
-  ///
-  /// This is an alternative flow-control mechanism used by shared-memory buffer pool transports
-  /// (see [`crate::ipc::frame_pool`]). The `generation` lets the renderer ignore stale releases
-  /// after the browser recreates its pool.
-  ReleaseFrameBuffer { generation: u64, buffer_index: u32 },
-
   /// Close a tab (drop all associated renderer-side state).
   TabClosed { tab_id: u64 },
 
@@ -685,12 +678,6 @@ mod frame_flow_control {
     let msg = BrowserToRenderer::FrameAck { frame_seq: 123 };
     assert_eq!(msg, roundtrip(&msg));
 
-    let msg = BrowserToRenderer::ReleaseFrameBuffer {
-      generation: 7,
-      buffer_index: 3,
-    };
-    assert_eq!(msg, roundtrip(&msg));
-
     let msg = BrowserToRenderer::Navigate {
       tab_id: 42,
       url: UrlString::try_from("https://example.com/").unwrap(),
@@ -811,10 +798,6 @@ mod frame_flow_control {
       BrowserToRenderer::FrameAck { frame_seq: 9 },
       BrowserToRenderer::TabClosed { tab_id: 1 },
       BrowserToRenderer::Shutdown,
-      BrowserToRenderer::ReleaseFrameBuffer {
-        generation: 1,
-        buffer_index: 0,
-      },
     ];
 
     for msg in b2r_zero_fd_cases {
