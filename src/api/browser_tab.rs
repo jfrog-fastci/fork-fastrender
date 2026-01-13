@@ -7410,6 +7410,46 @@ mod tests {
   }
 
   #[test]
+  fn browser_tab_external_task_queue_handle_is_invalidated_after_navigation() -> Result<()> {
+    let html = "<!doctype html><html><body><div id=box></div></body></html>";
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      RenderOptions::new().with_viewport(64, 64),
+      TestExecutor {
+        log: Rc::new(RefCell::new(Vec::new())),
+      },
+      JsExecutionOptions::default(),
+    )?;
+
+    let handle = tab.external_task_queue_handle();
+    tab.navigate_to_html(
+      "<!doctype html><html><body><div id=next></div></body></html>",
+      RenderOptions::default(),
+    )?;
+
+    match handle.queue_task(TaskSource::DOMManipulation, |_host, _event_loop| Ok(())) {
+      Ok(()) => {
+        return Err(Error::Other(
+          "expected external task handle to be closed after navigation".to_string(),
+        ));
+      }
+      Err(Error::Other(msg)) => {
+        assert!(
+          msg.contains("closed"),
+          "expected close error message; got {msg:?}"
+        );
+      }
+      Err(err) => {
+        return Err(Error::Other(format!(
+          "expected close error after navigation, got {err}"
+        )));
+      }
+    }
+
+    Ok(())
+  }
+
+  #[test]
   fn vmjs_executor_supports_webidl_url_search_params() -> Result<()> {
     let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
 
