@@ -32,6 +32,10 @@ impl WavAudioBackend {
 
   /// Create a WAV backend writing to `path`, using `config` as the stream format.
   pub fn new_with_config(path: impl AsRef<Path>, config: AudioStreamConfig) -> std::io::Result<Self> {
+    // Defensive: ensure the backend always has a non-zero stream config so downstream calculations
+    // (WAV spec, clocking, buffering) never divide by zero.
+    let config = AudioStreamConfig::new(config.sample_rate_hz.max(1), config.channels.max(1));
+
     let path = path.as_ref().to_path_buf();
     if let Some(parent) = path.parent() {
       if !parent.as_os_str().is_empty() {
@@ -39,7 +43,7 @@ impl WavAudioBackend {
       }
     }
 
-    let channels = config.channels.max(1);
+    let channels = config.channels;
     let spec = hound::WavSpec {
       channels,
       sample_rate: config.sample_rate_hz.max(1),

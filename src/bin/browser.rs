@@ -18,6 +18,11 @@ const ENV_BROWSER_DEBUG_LOG: &str = "FASTR_BROWSER_DEBUG_LOG";
 #[cfg(feature = "browser_ui")]
 const ENV_BROWSER_SHOW_MENU_BAR: &str = "FASTR_BROWSER_SHOW_MENU_BAR";
 
+// Hidden debug knob: play a short test tone at browser startup to validate the audio output
+// pipeline without needing any media decode.
+#[cfg(all(feature = "browser_ui", feature = "audio_cpal"))]
+const ENV_AUDIO_TEST_TONE: &str = "FASTR_AUDIO_TEST_TONE";
+
 // Experimental renderer-chrome toggle (render browser chrome via FastRender HTML/CSS).
 //
 // Manual smoke test (macOS VoiceOver / Windows Narrator / Linux Orca):
@@ -68,6 +73,47 @@ fn parse_env_bool(raw: Option<&str>) -> bool {
     "0" | "false" | "no" | "off" => false,
     _ => true,
   }
+}
+
+#[cfg(all(feature = "browser_ui", feature = "audio_cpal"))]
+fn maybe_play_startup_test_tone() {
+  if !parse_env_bool(std::env::var(ENV_AUDIO_TEST_TONE).ok().as_deref()) {
+    return;
+  }
+
+  std::thread::spawn(|| {
+    use fastrender::media::audio::{test_signal, AudioBackend, CpalAudioBackend};
+
+    let backend = match CpalAudioBackend::new() {
+      Ok(backend) => backend,
+      Err(err) => {
+        eprintln!("warning: {ENV_AUDIO_TEST_TONE}=1 but failed to init audio backend: {err}");
+        return;
+      }
+    };
+
+    let cfg = backend.output_config();
+    let sink = backend.create_sink();
+
+    // Keep the tone short and quiet; this is meant for quick sanity checking.
+    let duration = std::time::Duration::from_millis(250);
+    let mut samples = test_signal::sine(440.0, duration, cfg.sample_rate_hz, cfg.channels);
+    for sample in &mut samples {
+      *sample *= 0.2;
+    }
+
+    let accepted = sink.push_interleaved_f32(&samples);
+    if accepted < samples.len() {
+      eprintln!(
+        "warning: startup test tone truncated (accepted {accepted} of {} samples)",
+        samples.len()
+      );
+    }
+
+    std::thread::sleep(duration + std::time::Duration::from_millis(50));
+    drop(sink);
+    drop(backend);
+  });
 }
 
 // Structured JSONL performance logging used by the windowed browser UI.
@@ -3966,6 +4012,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   };
 
   let cli = BrowserCliArgs::parse();
+
+  #[cfg(feature = "audio_cpal")]
+  maybe_play_startup_test_tone();
 
   // ---------------------------------------------------------------------------
   // Crash/unresponsive testing knobs (CLI/env)

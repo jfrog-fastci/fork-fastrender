@@ -192,8 +192,7 @@ impl MediaClock for AudioClock {
 
 #[cfg(test)]
 mod tests {
-  use super::AudioClock;
-  use crate::media::audio_clock::InterpolatedAudioClock;
+  use super::{AudioClock, InterpolatedAudioClock};
   use crate::media::clock::MediaClock;
   use std::sync::Arc;
   use std::time::Instant;
@@ -213,6 +212,17 @@ mod tests {
 
     assert!(clock.is_started());
     assert_eq!(clock.frames(), 480);
+  }
+
+  #[test]
+  fn audio_clock_output_frames_large_values_do_not_panic() {
+    let inner = Arc::new(InterpolatedAudioClock::new(48_000));
+    // Large (but still representable) update.
+    inner.on_callback_end(u32::MAX);
+    let clock = AudioClock::OutputFrames { clock: inner };
+
+    // This should not panic in debug builds due to intermediate overflow.
+    let _ = clock.time();
   }
 }
 
