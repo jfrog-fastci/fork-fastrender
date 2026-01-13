@@ -4232,6 +4232,22 @@ impl crate::js::html_script_pipeline::ScriptElementEventHost for BrowserTabHost 
   }
 }
 
+#[derive(Debug, Clone)]
+struct RendererDomMappingCache {
+  generation: u64,
+  mapping: crate::dom2::RendererDomMapping,
+}
+
+// Test hook: count how many times `BrowserTab` had to (re)build a renderer preorder mapping for UI
+// event dispatch. This should stay low even under high-frequency pointer move events.
+//
+// Keep this counter thread-local so unit tests can assert against it without flaking under the
+// default parallel test runner.
+#[cfg(test)]
+thread_local! {
+  static BROWSER_TAB_RENDERER_DOM_MAPPING_BUILD_COUNT: Cell<usize> = Cell::new(0);
+}
+
 /// JS-capable "tab" runtime (DOM + event loop + script scheduling + rendering).
 ///
 /// `BrowserTab` couples:
@@ -4253,6 +4269,7 @@ pub struct BrowserTab {
   event_loop: EventLoop<BrowserTabHost>,
   pending_frame: Option<Pixmap>,
   history: TabHistory,
+  renderer_dom_mapping_cache: Option<RendererDomMappingCache>,
 }
 
 impl BrowserTab {
@@ -4345,6 +4362,7 @@ impl BrowserTab {
       event_loop,
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host
@@ -4600,6 +4618,7 @@ impl BrowserTab {
       event_loop,
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host
@@ -4752,6 +4771,7 @@ impl BrowserTab {
       event_loop,
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host
@@ -4837,6 +4857,7 @@ impl BrowserTab {
       event_loop,
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host
@@ -4976,6 +4997,7 @@ impl BrowserTab {
       event_loop,
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host
@@ -5153,6 +5175,7 @@ impl BrowserTab {
   pub fn navigate_to_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
     // Navigations replace the current document; any pending frame is no longer relevant.
     self.pending_frame = None;
+    self.renderer_dom_mapping_cache = None;
     let trace_session = super::TraceSession::from_options(Some(&options));
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
@@ -5310,6 +5333,7 @@ impl BrowserTab {
   ) -> Result<()> {
     // Navigations replace the current document; any pending frame is no longer relevant.
     self.pending_frame = None;
+    self.renderer_dom_mapping_cache = None;
     let trace_session = super::TraceSession::from_options(Some(&options));
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
@@ -6680,6 +6704,54 @@ impl BrowserTab {
     self.host.dom_mut()
   }
 
+  fn cached_renderer_dom_mapping(&mut self) -> &crate::dom2::RendererDomMapping {
+    let generation = self.dom().mutation_generation();
+    let rebuild = match self.renderer_dom_mapping_cache.as_ref() {
+      Some(cache) => cache.generation != generation,
+      None => true,
+    };
+
+    if rebuild {
+      let mapping = self.dom().build_renderer_preorder_mapping();
+      self.renderer_dom_mapping_cache = Some(RendererDomMappingCache { generation, mapping });
+      #[cfg(test)]
+      {
+        BROWSER_TAB_RENDERER_DOM_MAPPING_BUILD_COUNT.with(|count| {
+          count.set(count.get().saturating_add(1));
+        });
+      }
+    }
+
+    // If the cache was empty and mapping construction panicked, we'd have crashed already; keep the
+    // unwrap for a compact return path.
+    &self
+      .renderer_dom_mapping_cache
+      .as_ref()
+      .expect("renderer dom mapping cache missing after rebuild")
+      .mapping
+  }
+
+  /// Translate a renderer/cascade 1-based preorder id (see `crate::dom::enumerate_dom_ids`) back to
+  /// a stable `dom2` node id.
+  ///
+  /// This builds (and caches) a `dom2::RendererDomMapping` on first use, and reuses it until the
+  /// underlying dom2 document's [`Document::mutation_generation`] changes.
+  pub fn dom2_node_for_renderer_preorder(&mut self, preorder_id: usize) -> Option<crate::dom2::NodeId> {
+    self
+      .cached_renderer_dom_mapping()
+      .node_id_for_preorder(preorder_id)
+  }
+
+  #[cfg(test)]
+  pub fn renderer_dom_mapping_build_count_for_test() -> usize {
+    BROWSER_TAB_RENDERER_DOM_MAPPING_BUILD_COUNT.with(|count| count.get())
+  }
+
+  #[cfg(test)]
+  pub fn reset_renderer_dom_mapping_build_count_for_test() {
+    BROWSER_TAB_RENDERER_DOM_MAPPING_BUILD_COUNT.with(|count| count.set(0));
+  }
+
   fn reset_event_loop(&mut self) {
     let queue_limits = self.event_loop.queue_limits();
     reset_event_loop_for_navigation(&mut self.event_loop, self.trace.clone(), queue_limits);
@@ -6856,6 +6928,58 @@ mod tests {
   use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
   use base64::Engine;
   use sha2::{Digest, Sha256};
+
+  #[test]
+  fn renderer_dom_mapping_cache_reuses_mapping_per_mutation_generation() -> Result<()> {
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(
+      "<!doctype html><html><body><div></div></body></html>",
+      RenderOptions::default(),
+    )?;
+    BrowserTab::reset_renderer_dom_mapping_build_count_for_test();
+
+    assert!(
+      tab.dom2_node_for_renderer_preorder(1).is_some(),
+      "expected renderer preorder id 1 to map to the dom2 document root"
+    );
+    assert_eq!(
+      BrowserTab::renderer_dom_mapping_build_count_for_test(),
+      1,
+      "expected the first mapping lookup to build the mapping once"
+    );
+
+    assert!(
+      tab.dom2_node_for_renderer_preorder(1).is_some(),
+      "expected repeated lookups to keep working"
+    );
+    assert_eq!(
+      BrowserTab::renderer_dom_mapping_build_count_for_test(),
+      1,
+      "expected repeated lookups to reuse the cached mapping"
+    );
+
+    // Bump the mutation generation (conservative invalidation signal).
+    let root = tab.dom().root();
+    let _ = tab.dom_mut().node_mut(root);
+
+    assert!(
+      tab.dom2_node_for_renderer_preorder(1).is_some(),
+      "expected mapping lookups to succeed after mutations"
+    );
+    assert_eq!(
+      BrowserTab::renderer_dom_mapping_build_count_for_test(),
+      2,
+      "expected exactly one rebuild after mutation_generation changed"
+    );
+
+    assert!(tab.dom2_node_for_renderer_preorder(1).is_some());
+    assert_eq!(
+      BrowserTab::renderer_dom_mapping_build_count_for_test(),
+      2,
+      "expected repeated lookups in the new generation to reuse the rebuilt mapping"
+    );
+
+    Ok(())
+  }
 
   struct RecordingInvoker {
     log: Rc<RefCell<Vec<String>>>,
@@ -12185,6 +12309,7 @@ html, body { margin: 0; padding: 0; }
       event_loop: EventLoop::new(),
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host
@@ -12251,6 +12376,7 @@ html, body { margin: 0; padding: 0; }
       event_loop: EventLoop::new(),
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host
@@ -12363,6 +12489,7 @@ html, body { margin: 0; padding: 0; }
       event_loop: EventLoop::new(),
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
 
     let document_url = "https://example.com/".to_string();
@@ -12427,6 +12554,7 @@ html, body { margin: 0; padding: 0; }
       event_loop: EventLoop::new(),
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host
@@ -12667,6 +12795,7 @@ html, body { margin: 0; padding: 0; }
       event_loop: EventLoop::new(),
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
 
     let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
@@ -13379,6 +13508,7 @@ html, body { margin: 0; padding: 0; }
       event_loop: EventLoop::new(),
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
 
     let err = tab
@@ -13507,6 +13637,7 @@ html, body { margin: 0; padding: 0; }
       event_loop: EventLoop::new(),
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
 
     let err = tab
@@ -13889,6 +14020,7 @@ html, body { margin: 0; padding: 0; }
       event_loop: EventLoop::new(),
       pending_frame: None,
       history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
     };
     tab
       .host

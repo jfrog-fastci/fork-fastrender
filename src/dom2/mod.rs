@@ -1481,7 +1481,13 @@ impl Document {
     Some(root)
   }
 
-  fn build_renderer_preorder_mapping(&self) -> RendererDomMapping {
+  /// Build a mapping between renderer preorder ids (as produced by `crate::dom::enumerate_dom_ids`)
+  /// and `dom2` [`NodeId`]s for this document.
+  ///
+  /// This operation is **O(tree size)**. Callers that need to translate many renderer preorder ids
+  /// (for example: high-frequency UI event dispatch) should cache the returned
+  /// [`RendererDomMapping`] and invalidate it when [`Document::mutation_generation`] changes.
+  pub fn build_renderer_preorder_mapping(&self) -> RendererDomMapping {
     // Preorder ids are 1-based (index 0 unused), matching `crate::dom::enumerate_dom_ids` and the
     // debug inspector.
     let mut preorder_to_node_id: Vec<Option<NodeId>> = Vec::with_capacity(self.nodes.len() + 1);

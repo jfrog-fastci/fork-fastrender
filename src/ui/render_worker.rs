@@ -690,34 +690,24 @@ fn mouse_client_coord(value: f32) -> f64 {
 }
 
 fn js_dom_node_for_preorder_id(
-  js_tab: &BrowserTab,
+  js_tab: &mut BrowserTab,
   preorder_id: usize,
   element_id: Option<&str>,
-  js_dom_mapping_generation: &mut u64,
-  js_dom_mapping: &mut Option<crate::dom2::RendererDomMapping>,
+  _js_dom_mapping_generation: &mut u64,
+  _js_dom_mapping: &mut Option<crate::dom2::RendererDomMapping>,
 ) -> Option<crate::dom2::NodeId> {
   if let Some(node_id) = element_id.and_then(|id| js_tab.dom().get_element_by_id(id)) {
     return Some(node_id);
   }
 
-  let dom = js_tab.dom();
-  let generation = dom.mutation_generation();
-  if js_dom_mapping.is_none() || *js_dom_mapping_generation != generation {
-    let snapshot = dom.to_renderer_dom_with_mapping();
-    *js_dom_mapping_generation = generation;
-    *js_dom_mapping = Some(snapshot.mapping);
-  }
-
-  js_dom_mapping
-    .as_ref()
-    .and_then(|mapping| mapping.node_id_for_preorder(preorder_id))
+  js_tab.dom2_node_for_renderer_preorder(preorder_id)
 }
 
 fn js_dom_node_for_preorder_id_with_log(
   ui_tx: &Sender<WorkerToUi>,
   tab_id: TabId,
   debug_log_enabled: bool,
-  js_tab: &BrowserTab,
+  js_tab: &mut BrowserTab,
   preorder_id: usize,
   element_id: Option<&str>,
   js_dom_mapping_generation: &mut u64,
