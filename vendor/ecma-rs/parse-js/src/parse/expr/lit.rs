@@ -1099,28 +1099,7 @@ fn validate_regex_pattern(
   let mut quantifier_allows_lazy = false;
 
   fn unicode_property_of_strings(name: &str) -> bool {
-    // https://tc39.es/ecma262/#table-binary-unicode-properties-of-strings
-    fn normalize(s: &str) -> String {
-      let mut out = String::with_capacity(s.len());
-      for b in s.bytes() {
-        if b == b'_' {
-          continue;
-        }
-        out.push((b as char).to_ascii_lowercase());
-      }
-      out
-    }
-    let key = normalize(name);
-    matches!(
-      key.as_str(),
-      "basicemoji"
-        | "emojikeycapsequence"
-        | "rgiemojimodifiersequence"
-        | "rgiemojiflagsequence"
-        | "rgiemojitagsequence"
-        | "rgiemojizwjsequence"
-        | "rgiemoji"
-    )
+    super::regex_unicode_property::is_unicode_property_of_strings(name)
   }
 
   fn validate_unicode_property_escape(
@@ -1180,6 +1159,16 @@ fn validate_regex_pattern(
     }
 
     let content = &pattern[brace_start + 1..j];
+    if !super::regex_unicode_property::validate_unicode_property_value_expression(
+      content,
+      unicode_sets_mode,
+    ) {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: base_offset + escape_start,
+        len: j + 1 - escape_start,
+      });
+    }
     let prop_name = content.split('=').next().unwrap_or("");
     let is_strings_prop = unicode_property_of_strings(prop_name);
     if is_strings_prop {

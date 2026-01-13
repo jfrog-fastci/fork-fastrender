@@ -1,0 +1,43 @@
+use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+
+fn parses_ecma(src: &str) -> bool {
+  parse_with_options(
+    src,
+    ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Script,
+    },
+  )
+  .is_ok()
+}
+
+#[test]
+fn parses_valid_unicode_property_escape() {
+  assert!(parses_ecma(r"/(?:\p{Lu})/u;"));
+}
+
+#[test]
+fn rejects_binary_property_with_value() {
+  assert!(!parses_ecma(r"/\p{ASCII=N}/u;"));
+}
+
+#[test]
+fn rejects_loose_matching() {
+  assert!(!parses_ecma(r"/\P{General_Category = Uppercase_Letter}/u;"));
+}
+
+#[test]
+fn rejects_nonbinary_property_without_value() {
+  assert!(!parses_ecma(r"/\P{Script=}/u;"));
+}
+
+#[test]
+fn rejects_empty_body() {
+  assert!(!parses_ecma(r"/\p{}/u;"));
+}
+
+#[test]
+fn rejects_unclosed_body() {
+  assert!(!parses_ecma(r"/\p{/u;"));
+}
+

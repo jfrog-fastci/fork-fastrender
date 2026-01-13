@@ -2,6 +2,7 @@ pub mod jsx;
 pub mod lit;
 pub mod pat;
 pub mod util;
+mod regex_unicode_property;
 
 use super::ParseCtx;
 use super::Parser;
