@@ -402,6 +402,11 @@ fn parses_other_test262_regexp_v_flag_files() {
     return;
   }
   for rel in [
+    "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js",
+    "built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js",
+    "built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag.js",
+    "built-ins/String/prototype/search/regexp-prototype-search-v-flag.js",
+    "built-ins/String/prototype/search/regexp-prototype-search-v-u-flag.js",
     "built-ins/RegExp/prototype/flags/this-val-regexp.js",
     "built-ins/RegExp/prototype/exec/regexp-builtin-exec-v-u-flag.js",
   ] {
