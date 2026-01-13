@@ -28,7 +28,8 @@ The windowed `browser` UI can emit newline-delimited JSON (`.jsonl`) perf events
   - `FASTR_LOG_CONTAINER_FIELDS=1` lists which layout-affecting fields changed for the sampled diff entries.
   - `FASTR_LOG_CONTAINER_QUERY=1` logs container sizes while building the container-query context (useful when debugging “why did this query match?”).
 
-These env vars are read in the rendering binaries (`render_pages`, `fetch_and_render`) and cascade internals; leave them unset for normal runs.
+These env vars are read in the rendering binaries (`render_pages`, `fetch_and_render`) and cascade
+internals; leave them unset for normal runs.
 
 ## Browser responsiveness
 
@@ -44,21 +45,21 @@ See the workstream goals/metric definitions in
 Set `FASTR_PERF_LOG=1` when running the windowed browser to emit **JSON Lines** (one JSON object per
 line) describing UI responsiveness events.
 
-For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1`, resource
-limits, and saving stdout to a JSONL file):
+For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1` and writes a
+JSONL file under repo guardrails):
 
 ```bash
-scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
+bash scripts/capture_browser_perf_log.sh --out target/browser_perf.jsonl --url about:test-layout-stress
 
-# Capture + run `browser_perf_log_summary` (if available):
-scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl --summary
+# Capture + summarize (runs `browser_perf_log_summary` after the browser exits):
+bash scripts/capture_browser_perf_log.sh --out target/browser_perf.jsonl --url about:test-layout-stress --summary
 ```
 
 Typical run (writes a JSONL log you can post-process with `jq`, pandas, etc.):
 
 ```bash
 FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-  bash scripts/run_limited.sh --as 64G -- \
+  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 ```
 
@@ -67,14 +68,13 @@ When enabled, you should expect events covering at least:
 - **TTFP** (“time to first paint”): navigation start → first presented frame for that tab.
 - **Frame time samples** during scroll and resize (used to spot jank and dropped frames).
 - **Input latency** samples (input arrival → visible UI response).
-- **Idle CPU / background spin**: once-per-second `cpu_summary` events with recent process CPU%.
 
 The exact schema evolves, but each JSON line is intended to be self-describing. Common fields
 include:
 
 - `schema_version` (integer) — currently `1`.
 - `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`).
-- `ts_ms` (integer) — monotonic timestamp in milliseconds since process start.
+- `t_ms` (integer) — monotonic timestamp in milliseconds since process start.
 - `window_id` (string) — identifier for the window instance.
 - Event-specific numeric fields such as `ui_frame_ms`, `input_to_present_ms`, `resize_to_present_ms`,
   `ttfp_ms`, etc.
@@ -93,7 +93,7 @@ bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.js
 Or run the binary directly:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin ui_perf_smoke -- \
   --output target/ui_perf_smoke.json
 ```

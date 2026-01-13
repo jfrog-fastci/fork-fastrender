@@ -63,10 +63,21 @@ A change counts if it lands at least one of:
 ### Profiling tools
 
 ```bash
+# Capture a windowed browser perf log (JSONL) under repo guardrails:
+bash scripts/capture_browser_perf_log.sh target/browser_perf.jsonl about:test-layout-stress
+
+# Capture + summarize (p50/p95/max) after the browser exits:
+bash scripts/capture_browser_perf_log.sh --summary target/browser_perf.jsonl about:test-layout-stress
+
 # Manual run: write perf JSONL directly to a file.
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+
+# Or summarize later (supports --from-ms/--to-ms windowing):
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
+  --input target/browser_perf.jsonl
 
 # Debug invalidation fast paths for hover/focus/caret interactions (stderr one-line logs):
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
@@ -76,14 +87,6 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 # Headless smoke harness (`ui_perf_smoke`; JSON summary).
 # Measures navigation→first frame (TTFP proxy) for a few built-in about: scenarios.
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
-
-# Windowed perf-log capture (stdout JSONL) + summary (preferred over recording huge logs)
-timeout -k 10 600 bash scripts/capture_browser_perf_log.sh \
-  --url about:test-layout-stress --out target/browser_perf.jsonl --summary
-
-# Or summarize later (supports --from-ms/--to-ms windowing):
-timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
-  --input target/browser_perf.jsonl
 
 # CPU profiling (Linux): reproduce resize/scroll jank, then close the window to finish recording.
 timeout -k 10 600 bash scripts/profile_browser_samply.sh --url about:test-layout-stress
