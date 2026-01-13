@@ -1184,6 +1184,50 @@ fn range_insert_node_splits_text_and_updates_end_when_collapsed() {
 }
 
 #[test]
+fn range_insert_node_ignores_shadow_root_in_host_offset_space() {
+  // `dom2` stores an attached ShadowRoot as a child of the host element for renderer traversal.
+  // Range boundary point offsets into the host must exclude that ShadowRoot so inserting at offset 0
+  // inserts before the first light DOM child, not before the ShadowRoot pseudo-child.
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<span id=a></span>",
+    "<span id=b></span>",
+    "</div>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  let shadow_root = doc.node(host).children[0];
+  assert!(
+    matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+    "expected host to have an attached ShadowRoot"
+  );
+  assert_eq!(doc.node(host).children[1], a);
+
+  // Insert at host offset 0 (collapsed range).
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 0).unwrap();
+  doc.range_set_end(range, host, 0).unwrap();
+
+  let inserted = doc.create_element("i", "");
+  doc.range_insert_node(range, inserted).unwrap();
+
+  // ShadowRoot must remain at raw index 0; the inserted element becomes the first tree child.
+  assert_eq!(doc.node(host).children, vec![shadow_root, inserted, a, b]);
+
+  // For a collapsed range, insertNode updates the end boundary point to be after the inserted node.
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
 fn range_insert_node_document_fragment_moves_children_and_updates_end_offset() {
   let html = concat!(
     "<!doctype html>",
