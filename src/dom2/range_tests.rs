@@ -912,9 +912,15 @@ fn range_remap_node_ids_updates_boundary_points_for_cross_document_adopted_detac
   // Adopt the subtree into a new document. `dom2` approximates adoption via clone+mapping, which
   // changes `NodeId` values.
   let mut dest = Document::new(QuirksMode::NoQuirks);
+  // Ensure the adopted subtree receives fresh node ids that differ from the source document's ids.
+  let _preexisting = dest.create_element("preexisting", "");
   let adopted = dest.adopt_node_from(&mut src, detached_root).unwrap();
   let mapping: HashMap<_, _> = adopted.mapping.into_iter().collect();
   let new_text = *mapping.get(&text).expect("expected text node to be remapped");
+  assert_ne!(
+    new_text, text,
+    "expected cross-document adoption to allocate new NodeIds"
+  );
 
   // Remap Range endpoints using the same old→new mapping used by wrapper identity remapping.
   src.range_remap_node_ids(&mapping);

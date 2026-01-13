@@ -10847,20 +10847,32 @@ fn maybe_adopt_node_into_document(
     )?;
   }
 
-  // Remap any live ranges whose boundary points were inside the adopted subtree.
+  // Live ranges: update `Range` wrappers and Rust-side range state affected by this adoption.
   //
-  // `dom2::Document::adopt_node_from` approximates DOM adoption by cloning nodes and returning an
-  // old→new `NodeId` mapping so the JS binding layer can preserve wrapper identity. Range boundary
-  // points store `NodeId`s as well, so they must be updated alongside wrapper remapping to keep
+  // For parentless (detached) subtrees, live range boundary points remain inside the adopted tree,
+  // so those ranges must be migrated alongside wrapper identity remapping to keep
   // `Range.startContainer` / `Range.endContainer` stable.
   //
-  // NOTE: When the node had a parent, `adopt_node_from` detaches it using `remove_child`, which
-  // already performs the DOM "live range pre-remove steps" on the source document. This remap
-  // therefore primarily affects ranges anchored in *detached* subtrees (which are not subject to
-  // pre-remove rewriting per spec).
-  //
-  // SAFETY: `src_dom_ptr` is valid for the duration of this native call.
-  unsafe { src_dom_ptr.as_mut() }.range_remap_node_ids(&mapping);
+  // When the node had a parent, `adopt_node_from` detaches it using `remove_child`, which already
+  // performs the DOM "live range pre-remove steps" on the source document; in those cases ranges
+  // should not follow the moved subtree.
+  let ranges_to_rebind_same_dom: Vec<GcObject>;
+  let moved_ranges_cross_doc: Vec<dom2::MovedLiveRange>;
+  if src_dom_ptr == dest_dom_ptr {
+    // Same underlying `dom2::Document` (document wrapper aliases): wrappers are rebound between JS
+    // documents, but range state stays in the same arena. We only need to rebind `Range` wrappers
+    // so they resolve node wrappers in the destination document.
+    ranges_to_rebind_same_dom =
+      unsafe { src_dom_ptr.as_mut() }.live_range_wrappers_with_endpoints_in_mapping(scope.heap(), &mapping);
+    moved_ranges_cross_doc = Vec::new();
+  } else {
+    ranges_to_rebind_same_dom = Vec::new();
+    moved_ranges_cross_doc = unsafe { src_dom_ptr.as_mut() }.move_live_ranges_to_after_node_id_remap(
+      scope.heap(),
+      unsafe { dest_dom_ptr.as_mut() },
+      &mapping,
+    );
+  }
 
   let Some(platform) = dom_platform_mut(vm) else {
     return Ok(DomNodeKey::new(dest_document_id, new_root));
@@ -10894,6 +10906,49 @@ fn maybe_adopt_node_into_document(
       writable: true,
     },
   };
+
+  // Update `Range` wrappers impacted by the adoption so subsequent range getters/methods dispatch
+  // against the correct document.
+  //
+  // - For alias-document moves (`src_dom_ptr == dest_dom_ptr`), only the wrapper's document slot
+  //   needs to change.
+  // - For cross-document adoption, range state is migrated to `dest_dom_ptr` with a fresh id, so we
+  //   also update the wrapper's host slots.
+  for range_obj in &ranges_to_rebind_same_dom {
+    match scope.heap_mut().object_set_existing_data_property_value(
+      *range_obj,
+      &wrapper_document_key,
+      owner_document_value,
+    ) {
+      Ok(()) => {}
+      Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+        scope.define_property(*range_obj, wrapper_document_key, owner_document_desc)?;
+      }
+      Err(err) => return Err(err),
+    }
+  }
+  for moved in &moved_ranges_cross_doc {
+    // Update the wrapper's range id (host slots) first so subsequent native calls resolve the
+    // migrated range state.
+    scope.heap_mut().object_set_host_slots(
+      moved.wrapper,
+      HostSlots {
+        a: moved.new_id.as_u64(),
+        b: RANGE_HOST_TAG,
+      },
+    )?;
+    match scope.heap_mut().object_set_existing_data_property_value(
+      moved.wrapper,
+      &wrapper_document_key,
+      owner_document_value,
+    ) {
+      Ok(()) => {}
+      Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+        scope.define_property(moved.wrapper, wrapper_document_key, owner_document_desc)?;
+      }
+      Err(err) => return Err(err),
+    }
+  }
 
   for &new_id in mapping.values() {
     if new_id.index() == 0 {
@@ -57549,6 +57604,36 @@ mod tests {
     )?;
 
     assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn range_end_offset_updates_after_cross_document_adopt_of_detached_container() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const range = document.createRange();
+        const container = document.createElement("container");
+        const child = document.createElement("child");
+        container.appendChild(child);
+        range.setStart(container, 0);
+        range.setEnd(container, 1);
+
+        const other = document.implementation.createDocument(null, null);
+        other.appendChild(container);
+
+        // Remove the only child after adoption; live range updates should still collapse the range.
+        container.removeChild(child);
+
+        return range.endOffset;
+      })()"#,
+    )?;
+
+    assert_eq!(result, Value::Number(0.0));
     Ok(())
   }
 

@@ -100,6 +100,17 @@ pub(crate) struct LiveMutationSweepResult {
   pub(crate) dead_node_iterators: Vec<NodeIteratorId>,
 }
 
+/// A live `Range` wrapper/state pair that was transferred to another `dom2::Document`.
+///
+/// This is used by clone+mapping adoption approximations that preserve JS wrapper identity across
+/// documents: ranges whose boundary points remain inside a detached adopted subtree must move to
+/// the destination document so subsequent DOM mutations keep their live updates consistent.
+pub(crate) struct MovedLiveRange {
+  pub(crate) wrapper: GcObject,
+  pub(crate) old_id: LiveRangeId,
+  pub(crate) new_id: LiveRangeId,
+}
+
 impl Default for LiveMutation {
   fn default() -> Self {
     Self {
@@ -268,6 +279,134 @@ impl Document {
     // `Document.createRange()` in the DOM Standard.
     self.create_range_for_id(id);
     id
+  }
+
+  /// Register a JS `Range` wrapper object for an existing `RangeId`.
+  ///
+  /// This is used by binding layers that allocate the range id/state first (via `create_range`) and
+  /// then construct the wrapper object.
+  pub(crate) fn register_live_range_wrapper_for_id(
+    &mut self,
+    heap: &Heap,
+    id: LiveRangeId,
+    wrapper: GcObject,
+  ) {
+    self.sweep_dead_live_traversals_if_needed(heap);
+    self
+      .live_mutation
+      .live_ranges
+      .insert(id, WeakGcObject::from(wrapper));
+  }
+
+  /// Returns all live JS `Range` wrapper objects whose boundary point container nodes are present
+  /// in `mapping`.
+  ///
+  /// This is useful for cross-document adoption between *alias* document wrappers that share the
+  /// same underlying `dom2::Document`: node wrapper objects are rebound to a different JS
+  /// `Document` wrapper, so `Range` wrappers must be rebound as well to keep `startContainer` /
+  /// `endContainer` stable.
+  pub(crate) fn live_range_wrappers_with_endpoints_in_mapping(
+    &mut self,
+    heap: &Heap,
+    mapping: &HashMap<NodeId, NodeId>,
+  ) -> Vec<GcObject> {
+    if mapping.is_empty() {
+      return Vec::new();
+    }
+    self.sweep_dead_live_traversals_if_needed(heap);
+
+    let ids: Vec<LiveRangeId> = self.live_mutation.live_ranges.keys().copied().collect();
+    let mut out: Vec<GcObject> = Vec::new();
+    for id in ids {
+      let Some(range) = self.ranges.get(&id) else {
+        continue;
+      };
+      if !mapping.contains_key(&range.start.node) || !mapping.contains_key(&range.end.node) {
+        continue;
+      }
+      let Some(weak) = self.live_mutation.live_ranges.get(&id).copied() else {
+        continue;
+      };
+      if let Some(obj) = weak.upgrade(heap) {
+        out.push(obj);
+      }
+    }
+    out
+  }
+
+  /// Transfer live range state for any live ranges whose boundary points remain inside a subtree
+  /// being adopted into `dest`.
+  ///
+  /// `mapping` is the old→new `NodeId` remap produced by the adoption algorithm.
+  ///
+  /// Each moved range receives a new `RangeId` allocated in `dest`; the returned `MovedLiveRange`
+  /// entries allow the embedding layer to update wrapper host slots accordingly.
+  pub(crate) fn move_live_ranges_to_after_node_id_remap(
+    &mut self,
+    heap: &Heap,
+    dest: &mut Document,
+    mapping: &HashMap<NodeId, NodeId>,
+  ) -> Vec<MovedLiveRange> {
+    if mapping.is_empty() || self.live_mutation.live_ranges.is_empty() {
+      return Vec::new();
+    }
+
+    // Prune any stale weak wrappers up-front so upgrades below are expected to succeed.
+    self.sweep_dead_live_traversals_if_needed(heap);
+    dest.sweep_dead_live_traversals_if_needed(heap);
+
+    let ids: Vec<LiveRangeId> = self.live_mutation.live_ranges.keys().copied().collect();
+    let mut moved: Vec<MovedLiveRange> = Vec::new();
+
+    for old_id in ids {
+      let Some(range) = self.ranges.get(&old_id) else {
+        continue;
+      };
+      // Only move ranges whose endpoints are fully inside the adopted subtree. Cross-root ranges
+      // should have been collapsed by pre-remove steps when applicable.
+      if !mapping.contains_key(&range.start.node) || !mapping.contains_key(&range.end.node) {
+        continue;
+      }
+
+      let Some(weak) = self.live_mutation.live_ranges.remove(&old_id) else {
+        continue;
+      };
+      let Some(wrapper) = weak.upgrade(heap) else {
+        // Wrapper is gone; drop the Rust-side range state rather than migrating it.
+        self.ranges.remove(&old_id);
+        continue;
+      };
+
+      let Some(mut range_state) = self.ranges.remove(&old_id) else {
+        continue;
+      };
+
+      if let Some(&new_start) = mapping.get(&range_state.start.node) {
+        range_state.start.node = new_start;
+      }
+      if let Some(&new_end) = mapping.get(&range_state.end.node) {
+        range_state.end.node = new_end;
+      }
+
+      // Allocate a fresh id in the destination document to avoid collisions with its own range id
+      // space. The JS embedding layer updates wrapper host slots to preserve wrapper identity.
+      let mut new_id = dest.live_mutation.alloc_live_range_id();
+      while dest.ranges.contains_key(&new_id) || dest.live_mutation.live_ranges.contains_key(&new_id) {
+        new_id = dest.live_mutation.alloc_live_range_id();
+      }
+
+      let prev = dest.ranges.insert(new_id, range_state);
+      debug_assert!(prev.is_none(), "range id collision while moving live ranges");
+      dest.live_mutation.live_ranges.insert(new_id, weak);
+
+      moved.push(MovedLiveRange {
+        wrapper,
+        old_id,
+        new_id,
+      });
+    }
+
+    moved
   }
 
   pub(crate) fn register_node_iterator_wrapper(

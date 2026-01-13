@@ -20,8 +20,8 @@ pub type RangeId = LiveRangeId;
 
 #[derive(Debug, Clone)]
 pub(super) struct Range {
-  start: BoundaryPoint,
-  end: BoundaryPoint,
+  pub(super) start: BoundaryPoint,
+  pub(super) end: BoundaryPoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
