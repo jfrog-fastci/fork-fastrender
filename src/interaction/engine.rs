@@ -127,6 +127,7 @@ pub struct InteractionEngine {
   range_drag: Option<RangeDragState>,
   number_spin: Option<NumberSpinState>,
   text_drag: Option<TextDragState>,
+  text_drag_drop: Option<TextDragDropState>,
   document_drag: Option<DocumentDragState>,
   text_edit: Option<TextEditState>,
   text_undo: HashMap<usize, TextUndoHistory>,
@@ -321,6 +322,52 @@ struct TextDragState {
   box_id: usize,
   anchor: usize,
   focus_before: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TextDragDropCandidate {
+  node_id: usize,
+  box_id: usize,
+  down_point: Point,
+  down_caret: usize,
+  down_caret_affinity: CaretAffinity,
+  selection: (usize, usize),
+  text: String,
+  focus_before: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TextDragDropActive {
+  node_id: usize,
+  box_id: usize,
+  down_point: Point,
+  down_caret: usize,
+  down_caret_affinity: CaretAffinity,
+  selection: (usize, usize),
+  text: String,
+  focus_before: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum TextDragDropState {
+  Candidate(TextDragDropCandidate),
+  Active(TextDragDropActive),
+}
+
+impl TextDragDropState {
+  fn node_id(&self) -> usize {
+    match self {
+      TextDragDropState::Candidate(state) => state.node_id,
+      TextDragDropState::Active(state) => state.node_id,
+    }
+  }
+
+  fn focus_before(&self) -> Option<usize> {
+    match self {
+      TextDragDropState::Candidate(state) => state.focus_before,
+      TextDragDropState::Active(state) => state.focus_before,
+    }
+  }
 }
 
 struct DomIndexMut {
@@ -3875,6 +3922,7 @@ impl InteractionEngine {
       range_drag: None,
       number_spin: None,
       text_drag: None,
+      text_drag_drop: None,
       document_drag: None,
       text_edit: None,
       text_undo: HashMap::new(),
@@ -3940,6 +3988,12 @@ impl InteractionEngine {
     }
     if let Some(state) = self.text_drag {
       check_node_id("text_drag", state.node_id);
+    }
+    if let Some(state) = &self.text_drag_drop {
+      check_node_id("text_drag_drop", state.node_id());
+      if let Some(focus_before) = state.focus_before() {
+        check_node_id("text_drag_drop.focus_before", focus_before);
+      }
     }
     if let Some(id) = self.last_click_target {
       check_node_id("last_click_target", id);
@@ -4480,6 +4534,7 @@ impl InteractionEngine {
       self.state.ime_preedit = None;
       self.text_edit = None;
       self.text_drag = None;
+      self.text_drag_drop = None;
       self.document_drag = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
       self.state.document_selection = None;
@@ -4570,6 +4625,7 @@ impl InteractionEngine {
       return;
     }
     self.text_drag = None;
+    self.text_drag_drop = None;
     match self.text_edit.as_mut() {
       Some(edit) if edit.node_id == node_id => {
         edit.caret = caret;
@@ -4604,6 +4660,7 @@ impl InteractionEngine {
       (end, start)
     };
     self.text_drag = None;
+    self.text_drag_drop = None;
     match self.text_edit.as_mut() {
       Some(edit) if edit.node_id == node_id => {
         edit.caret = end;
@@ -4697,6 +4754,7 @@ impl InteractionEngine {
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
+    self.text_drag_drop = None;
     self.document_drag = None;
     hover_changed | active_changed
   }
@@ -4708,6 +4766,7 @@ impl InteractionEngine {
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
+    self.text_drag_drop = None;
     self.document_drag = None;
   }
 
@@ -4728,6 +4787,33 @@ impl InteractionEngine {
     let page_point = viewport_point.translate(scroll.viewport);
     let mut index = DomIndexMut::new(dom);
     let mut dom_changed = false;
+
+    // Text-control drag-and-drop: promote a candidate drag when the pointer moves past a small
+    // threshold, mirroring browser behavior where a plain click inside selection doesn't collapse
+    // until mouseup.
+    const TEXT_DRAG_DROP_THRESHOLD_PX: f32 = 5.0;
+    if let Some(TextDragDropState::Candidate(candidate)) = self.text_drag_drop.as_mut() {
+      if page_point.x.is_finite()
+        && page_point.y.is_finite()
+        && page_point.x >= 0.0
+        && page_point.y >= 0.0
+        && candidate.down_point.distance_to(page_point) >= TEXT_DRAG_DROP_THRESHOLD_PX
+      {
+        let active = TextDragDropActive {
+          node_id: candidate.node_id,
+          box_id: candidate.box_id,
+          down_point: candidate.down_point,
+          down_caret: candidate.down_caret,
+          down_caret_affinity: candidate.down_caret_affinity,
+          selection: candidate.selection,
+          text: std::mem::take(&mut candidate.text),
+          focus_before: candidate.focus_before,
+        };
+        self.text_drag_drop = Some(TextDragDropState::Active(active));
+        dom_changed = true;
+      }
+    }
+
     if let Some(state) = self.range_drag {
       // When the browser UI's cursor leaves the page image while dragging a range input, it sends a
       // sentinel pointer position (translated by the worker to a negative page-point) to clear
@@ -4938,6 +5024,7 @@ impl InteractionEngine {
     self.range_drag = None;
     self.number_spin = None;
     self.text_drag = None;
+    self.text_drag_drop = None;
     self.document_drag = None;
     let prev_doc_selection = self.state.document_selection.clone();
 
@@ -5040,7 +5127,42 @@ impl InteractionEngine {
 
           let shift_extend = modifiers.shift() && focus_before == Some(hit.dom_node_id);
 
-          let text_edit_changed = if let Some(state) = self
+          // If this is a single-click inside an existing selection highlight of the already-focused
+          // control, defer caret collapse until mouseup so we can interpret the gesture as a text
+          // drag-and-drop.
+          let mut started_drag_drop = false;
+          if click_count == 1 && !shift_extend && focus_before == Some(hit.dom_node_id) {
+            if let Some((sel_start, sel_end)) = self
+              .text_edit
+              .as_ref()
+              .filter(|state| state.node_id == hit.dom_node_id)
+              .and_then(|state| state.selection())
+            {
+              let caret_in_bounds = caret.min(current_len);
+              if caret_in_bounds > sel_start && caret_in_bounds < sel_end {
+                let start_byte = byte_offset_for_char_idx(&current_value, sel_start);
+                let end_byte = byte_offset_for_char_idx(&current_value, sel_end);
+                if start_byte < end_byte && end_byte <= current_value.len() {
+                  let text = current_value[start_byte..end_byte].to_string();
+                  self.text_drag_drop = Some(TextDragDropState::Candidate(TextDragDropCandidate {
+                    node_id: hit.dom_node_id,
+                    box_id: hit.box_id,
+                    down_point: page_point,
+                    down_caret: caret_in_bounds,
+                    down_caret_affinity: caret_affinity,
+                    selection: (sel_start, sel_end),
+                    text,
+                    focus_before,
+                  }));
+                  started_drag_drop = true;
+                }
+              }
+            }
+          }
+
+          let text_edit_changed = if started_drag_drop {
+            false
+          } else if let Some(state) = self
             .text_edit
             .as_mut()
             .filter(|state| state.node_id == hit.dom_node_id)
@@ -5143,23 +5265,25 @@ impl InteractionEngine {
             true
           };
 
-          if text_edit_changed {
-            dom_changed = true;
-          }
-          dom_changed |= self.sync_text_edit_paint_state();
+          if !started_drag_drop {
+            if text_edit_changed {
+              dom_changed = true;
+            }
+            dom_changed |= self.sync_text_edit_paint_state();
 
-          let drag_anchor = self
-            .text_edit
-            .as_ref()
-            .filter(|state| state.node_id == hit.dom_node_id)
-            .map(|state| state.selection_anchor.unwrap_or(state.caret))
-            .unwrap_or(caret.min(current_len));
-          self.text_drag = Some(TextDragState {
-            node_id: hit.dom_node_id,
-            box_id: hit.box_id,
-            anchor: drag_anchor,
-            focus_before,
-          });
+            let drag_anchor = self
+              .text_edit
+              .as_ref()
+              .filter(|state| state.node_id == hit.dom_node_id)
+              .map(|state| state.selection_anchor.unwrap_or(state.caret))
+              .unwrap_or(caret.min(current_len));
+            self.text_drag = Some(TextDragState {
+              node_id: hit.dom_node_id,
+              box_id: hit.box_id,
+              anchor: drag_anchor,
+              focus_before,
+            });
+          }
         }
       }
     }
@@ -5380,6 +5504,29 @@ impl InteractionEngine {
       }
     }
 
+    if let Some(state) = &mut self.text_drag_drop {
+      let old_node_id = state.node_id();
+      let new_node_id = old_index
+        .id_to_node
+        .get(old_node_id)
+        .copied()
+        .filter(|ptr| !ptr.is_null())
+        .and_then(|ptr| new_ids.get(&(ptr as *const DomNode)).copied());
+      match new_node_id {
+        Some(new_id) => match state {
+          TextDragDropState::Candidate(candidate) => {
+            candidate.node_id = new_id;
+            remap_opt(&mut candidate.focus_before, old_index, new_ids);
+          }
+          TextDragDropState::Active(active) => {
+            active.node_id = new_id;
+            remap_opt(&mut active.focus_before, old_index, new_ids);
+          }
+        },
+        None => self.text_drag_drop = None,
+      }
+    }
+
     if let Some(state) = &mut self.document_drag {
       let ptr = old_index
         .id_to_node
@@ -5468,17 +5615,40 @@ impl InteractionEngine {
     let range_drag = self.range_drag.take();
     let number_spin = self.number_spin.take();
     let text_drag = self.text_drag.take();
+    let text_drag_drop = self.text_drag_drop.take();
     let document_drag = self.document_drag.take();
-    let suppress_click = document_drag.is_some()
+
+    let mut drag_drop_candidate: Option<TextDragDropCandidate> = None;
+    let mut drag_drop_active: Option<TextDragDropActive> = None;
+    if let Some(state) = text_drag_drop {
+      match state {
+        TextDragDropState::Candidate(candidate) => drag_drop_candidate = Some(candidate),
+        TextDragDropState::Active(active) => drag_drop_active = Some(active),
+      }
+    }
+
+    let suppress_click = (document_drag.is_some()
       && self
         .state
         .document_selection
         .as_ref()
-        .is_some_and(|sel| sel.has_highlight());
+        .is_some_and(|sel| sel.has_highlight()))
+      || drag_drop_active.is_some();
+
     let prev_focus = text_drag
       .as_ref()
       .map(|state| state.focus_before)
-      .unwrap_or(self.state.focused);
+      .unwrap_or_else(|| {
+        drag_drop_candidate
+          .as_ref()
+          .map(|state| state.focus_before)
+          .unwrap_or_else(|| {
+            drag_drop_active
+              .as_ref()
+              .map(|state| state.focus_before)
+              .unwrap_or(self.state.focused)
+          })
+      });
 
     let page_point = viewport_point.translate(scroll.viewport);
 
@@ -5518,6 +5688,54 @@ impl InteractionEngine {
     self.pointer_down_target = None;
     dom_changed |= active_changed;
 
+    // Text drag-and-drop: when active, suppress click behavior and attempt to insert the dragged
+    // text into the drop target.
+    if let Some(active) = drag_drop_active {
+      if matches!(button, PointerButton::Primary) {
+        if let Some(hit) = up_hit.as_ref() {
+          let target_id = hit.dom_node_id;
+          if index
+            .node(target_id)
+            .is_some_and(|node| is_text_input(node) || is_textarea(node))
+            && !(node_or_ancestor_is_inert(&index, target_id)
+              || node_is_disabled(&index, target_id)
+              || node_is_readonly(&index, target_id))
+          {
+            if is_focusable_interactive_element(&index, target_id) {
+              dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+            }
+
+            let (caret, caret_affinity) = caret_index_for_text_control_point(
+              &index,
+              box_tree,
+              fragment_tree,
+              scroll,
+              target_id,
+              hit.box_id,
+              page_point,
+            )
+            .unwrap_or((0, CaretAffinity::Downstream));
+
+            dom_changed |= self.insert_text_into_text_control_at_caret(
+              &mut index,
+              target_id,
+              &active.text,
+              caret,
+              caret_affinity,
+            );
+          }
+        }
+      }
+
+      let mut action = InteractionAction::None;
+      if self.state.focused != prev_focus {
+        action = InteractionAction::FocusChanged {
+          node_id: self.state.focused,
+        };
+      }
+      return (dom_changed, action);
+    }
+
     let mut click_qualifies = match (down_semantic, up_semantic) {
       (Some(down), Some(up)) => down == up || is_ancestor_or_self(&index, down, up),
       (None, None) => true,
@@ -5530,6 +5748,56 @@ impl InteractionEngine {
     let mut action = InteractionAction::None;
     let is_primary_button = matches!(button, PointerButton::Primary);
     let allow_link_activation = matches!(button, PointerButton::Primary | PointerButton::Middle);
+
+    // Text drag-and-drop candidate: if the pointer was pressed inside an existing selection but we
+    // never crossed the drag threshold, treat this as a normal click (collapse selection to the
+    // down-point caret) on mouseup.
+    if let Some(candidate) = drag_drop_candidate.take() {
+      if is_primary_button
+        && click_qualifies
+        && down_semantic == Some(candidate.node_id)
+        && self.state.focused == Some(candidate.node_id)
+      {
+        let current_len = index
+          .node(candidate.node_id)
+          .map(|node| {
+            if is_textarea(node) {
+              textarea_value_for_editing(node).chars().count()
+            } else {
+              node.get_attribute_ref("value").unwrap_or("").chars().count()
+            }
+          })
+          .unwrap_or(0);
+
+        let next_caret = candidate.down_caret.min(current_len);
+        let selection_changed = if let Some(edit) = self
+          .text_edit
+          .as_mut()
+          .filter(|edit| edit.node_id == candidate.node_id)
+        {
+          let prev = (edit.caret, edit.caret_affinity, edit.selection_anchor);
+          edit.caret = next_caret;
+          edit.caret_affinity = candidate.down_caret_affinity;
+          edit.selection_anchor = None;
+          edit.preferred_x = None;
+          (edit.caret, edit.caret_affinity, edit.selection_anchor) != prev
+        } else {
+          self.text_edit = Some(TextEditState {
+            node_id: candidate.node_id,
+            caret: next_caret,
+            caret_affinity: candidate.down_caret_affinity,
+            selection_anchor: None,
+            preferred_x: None,
+          });
+          true
+        };
+
+        if selection_changed {
+          dom_changed = true;
+        }
+        dom_changed |= self.sync_text_edit_paint_state();
+      }
+    }
 
     let mut click_target = if click_qualifies { down_semantic } else { None };
     // `<details>/<summary>`: clicking the "details summary" toggles the parent `<details open>`
@@ -6055,6 +6323,109 @@ impl InteractionEngine {
         set_node_attr(node_mut, "data-fastr-file-value", &value_string)
       };
       changed |= attr_changed;
+    }
+
+    changed
+  }
+
+  fn insert_text_into_text_control_at_caret(
+    &mut self,
+    index: &mut DomIndexMut,
+    node_id: usize,
+    text: &str,
+    caret: usize,
+    caret_affinity: CaretAffinity,
+  ) -> bool {
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+    let is_text_input = is_text_input(node);
+    let is_textarea = is_textarea(node);
+    if !(is_text_input || is_textarea) {
+      return false;
+    }
+    if text.is_empty() {
+      return false;
+    }
+    if node_or_ancestor_is_inert(index, node_id) || node_is_disabled(index, node_id) {
+      return false;
+    }
+    if node_is_readonly(index, node_id) {
+      return false;
+    }
+
+    self.ensure_form_default_snapshot_for_control(index, node_id);
+
+    let current = if is_textarea {
+      textarea_value_for_editing(node)
+    } else {
+      node.get_attribute_ref("value").unwrap_or("").to_string()
+    };
+    let current_len = current.chars().count();
+
+    // Any direct text mutation cancels an in-progress IME preedit string.
+    let mut changed = self.ime_cancel_internal();
+
+    let caret = caret.min(current_len);
+    let mut edit = self.text_edit.unwrap_or(TextEditState {
+      node_id,
+      caret,
+      caret_affinity,
+      selection_anchor: None,
+      preferred_x: None,
+    });
+    if edit.node_id != node_id {
+      edit = TextEditState {
+        node_id,
+        caret,
+        caret_affinity,
+        selection_anchor: None,
+        preferred_x: None,
+      };
+    }
+    // For drag-and-drop insertion, treat the drop caret as a collapsed selection.
+    edit.caret = caret;
+    edit.caret_affinity = caret_affinity;
+    edit.selection_anchor = None;
+    edit.preferred_x = None;
+
+    let start_byte = byte_offset_for_char_idx(&current, caret);
+    let end_byte = start_byte;
+
+    let mut next = String::with_capacity(current.len().saturating_add(text.len()));
+    next.push_str(&current[..start_byte]);
+    next.push_str(text);
+    next.push_str(&current[end_byte..]);
+
+    let next_len = next.chars().count();
+    let inserted_chars = text.chars().count();
+    let next_caret = caret.saturating_add(inserted_chars).min(next_len);
+
+    let Some(node_mut) = index.node_mut(node_id) else {
+      return changed;
+    };
+    if next != current {
+      self.record_text_undo_snapshot(node_id, &current, &edit);
+    }
+    let changed_value = if is_text_input {
+      set_node_attr(node_mut, "value", &next)
+    } else {
+      set_node_attr(node_mut, "data-fastr-value", &next)
+    };
+    changed |= changed_value;
+    if changed_value {
+      changed |= self.mark_user_validity(node_id);
+    }
+
+    if self.state.focused == Some(node_id) {
+      self.text_edit = Some(TextEditState {
+        node_id,
+        caret: next_caret,
+        caret_affinity: CaretAffinity::Upstream,
+        selection_anchor: None,
+        preferred_x: None,
+      });
+      changed |= self.sync_text_edit_paint_state();
     }
 
     changed
