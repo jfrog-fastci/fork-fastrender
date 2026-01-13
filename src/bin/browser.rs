@@ -339,6 +339,67 @@ mod open_typed_in_new_tab_tests {
       "expected Navigate(TypedUrl) for {new_tab_id:?}, got {msgs:?}"
     );
   }
+
+  #[test]
+  fn typed_fragment_open_in_new_tab_joins_against_active_url() {
+    let mut browser_state = BrowserAppState::new();
+    let tab_a = TabId(1);
+    browser_state.push_tab(
+      BrowserTabState::new(tab_a, "https://example.org/path?x=1".to_string()),
+      true,
+    );
+
+    let mut cancels = HashMap::new();
+    let (new_tab_id, msgs) =
+      open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "#frag")
+        .expect("fragment URL should resolve");
+
+    assert_eq!(browser_state.tabs.len(), 2);
+    assert_eq!(browser_state.active_tab_id(), Some(new_tab_id));
+
+    let new_tab = browser_state
+      .tab(new_tab_id)
+      .expect("new tab state should exist");
+    assert_eq!(
+      new_tab.current_url.as_deref(),
+      Some("https://example.org/path?x=1#frag")
+    );
+
+    assert!(
+      msgs.iter().any(|msg| matches!(
+        msg,
+        UiToWorker::Navigate { tab_id, url, reason }
+          if *tab_id == new_tab_id
+            && url == "https://example.org/path?x=1#frag"
+            && *reason == NavigationReason::TypedUrl
+      )),
+      "expected Navigate(TypedUrl) for fragment URL {new_tab_id:?}, got {msgs:?}"
+    );
+  }
+
+  #[test]
+  fn typed_open_in_new_tab_rejects_disallowed_scheme() {
+    let mut browser_state = BrowserAppState::new();
+    let tab_a = TabId(1);
+    browser_state.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+
+    let mut cancels = HashMap::new();
+    let result = open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "javascript:alert(1)");
+
+    assert!(result.is_err(), "expected disallowed scheme to error");
+    assert_eq!(
+      browser_state.tabs.len(),
+      1,
+      "expected no tab to be created on error"
+    );
+    assert!(
+      cancels.is_empty(),
+      "expected no cancel token to be created on error"
+    );
+  }
 }
 
 #[cfg(feature = "browser_ui")]

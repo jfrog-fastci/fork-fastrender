@@ -6540,6 +6540,59 @@ mod tests {
     );
   }
 
+  #[test]
+  fn omnibox_alt_enter_with_selection_emits_open_in_new_tab_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app.visited.record_visit(
+      "https://example.com/".to_string(),
+      Some("Example".to_string()),
+    );
+    app.chrome.address_bar_text.clear();
+
+    let ctx = egui::Context::default();
+
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Key {
+        key: egui::Key::Enter,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+          alt: true,
+          ..Default::default()
+        },
+      }],
+    );
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.iter().any(|action| matches!(
+        action,
+        ChromeAction::OpenUrlInNewTab(url) if url == "https://example.com/"
+      )),
+      "expected ChromeAction::OpenUrlInNewTab(\"https://example.com/\"), got {actions:?}"
+    );
+  }
+
   fn expect_temp_rect(ctx: &egui::Context, key: &'static str) -> egui::Rect {
     ctx
       .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(key)))
