@@ -36,8 +36,8 @@ use crate::ui::clipboard;
 use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
-  BrowserMediaPreferences, CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton,
-  RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
+  BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, NavigationReason,
+  PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
@@ -2553,6 +2553,18 @@ impl BrowserRuntime {
         item_index,
       } => {
         self.handle_select_dropdown_pick(tab_id, select_node_id, item_index);
+      }
+      UiToWorker::DatalistChoose {
+        tab_id,
+        input_node_id,
+        option_node_id,
+      } => {
+        self.handle_datalist_choose(tab_id, input_node_id, option_node_id);
+      }
+      UiToWorker::DatalistCancel { tab_id } => {
+        // Front-ends typically own the overlay state, so cancellation is a no-op on the worker
+        // side. Emit `DatalistClosed` anyway so UIs can dismiss the popup deterministically.
+        let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
       }
       UiToWorker::DateTimePickerChoose {
         tab_id,
@@ -5501,6 +5513,33 @@ impl BrowserRuntime {
     }
   }
 
+  fn handle_datalist_choose(
+    &mut self,
+    tab_id: TabId,
+    input_node_id: usize,
+    option_node_id: usize,
+  ) {
+    // Close the datalist popup deterministically for any UI: `DatalistChoose` always corresponds to
+    // a user selecting an option in the suggestion overlay, so the popup should be dismissed even
+    // if the selection is rejected (disabled option) or a no-op.
+    let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let engine = &mut tab.interaction;
+    let dom_changed =
+      doc.mutate_dom(|dom| engine.activate_datalist_option(dom, input_node_id, option_node_id));
+    if dom_changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
   fn handle_select_dropdown_pick(
     &mut self,
     tab_id: TabId,
@@ -5561,7 +5600,95 @@ impl BrowserRuntime {
       return;
     };
 
-    let changed = doc.mutate_dom(|dom| tab.interaction.text_input(dom, text));
+    let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
+    let changed = doc.mutate_dom(|dom| {
+      let changed = tab.interaction.text_input(dom, text);
+      if changed {
+        let Some(input_node_id) = tab.interaction.focused_node_id() else {
+          return changed;
+        };
+
+        let index = crate::interaction::dom_index::DomIndex::build(dom);
+        let Some(input) = index.node(input_node_id).filter(|node| dom_is_text_input(node)) else {
+          return changed;
+        };
+
+        let list_id = input
+          .get_attribute_ref("list")
+          .map(trim_ascii_whitespace)
+          .unwrap_or("");
+        if list_id.is_empty() {
+          return changed;
+        }
+
+        let Some(&datalist_node_id) = index.id_by_element_id.get(list_id) else {
+          return changed;
+        };
+        let Some(datalist) = index.node(datalist_node_id) else {
+          return changed;
+        };
+        if !datalist
+          .tag_name()
+          .is_some_and(|t| t.eq_ignore_ascii_case("datalist"))
+        {
+          return changed;
+        }
+
+        let query = input.get_attribute_ref("value").unwrap_or("");
+
+        let mut options = Vec::new();
+        for node_id in 1..=index.len() {
+          if !is_ancestor_or_self(&index, datalist_node_id, node_id) {
+            continue;
+          }
+          let Some(node) = index.node(node_id) else {
+            continue;
+          };
+          if !node.tag_name().is_some_and(|t| t.eq_ignore_ascii_case("option")) {
+            continue;
+          }
+
+          let value = node.get_attribute_ref("value").unwrap_or("").to_string();
+          if !query.is_empty() && !value.starts_with(query) {
+            continue;
+          }
+
+          options.push(DatalistOption {
+            option_node_id: node_id,
+            value,
+            disabled: node.get_attribute_ref("disabled").is_some(),
+          });
+        }
+
+        if !options.is_empty() {
+          datalist_open = Some((input_node_id, options));
+        }
+      }
+      changed
+    });
+
+    if let Some((input_node_id, options)) = datalist_open {
+      let anchor_css = doc
+        .prepared()
+        .and_then(|prepared| {
+          styled_node_anchor_css(
+            prepared.box_tree(),
+            prepared.fragment_tree(),
+            &tab.scroll_state,
+            input_node_id,
+          )
+        })
+        .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+        .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
+
+      let _ = self.ui_tx.send(WorkerToUi::DatalistOpened {
+        tab_id,
+        input_node_id,
+        options,
+        anchor_css,
+      });
+    }
+
     if changed {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {

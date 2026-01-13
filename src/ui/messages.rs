@@ -199,6 +199,20 @@ pub struct ScrollMetrics {
   pub content_css: (f32, f32),
 }
 
+/// A single `<option>` entry surfaced in an `<input list=...>` datalist popup.
+///
+/// This is part of the UI↔worker protocol. It contains only the information needed by UIs to render
+/// the suggestion list and report a user choice back to the worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatalistOption {
+  /// Stable pre-order DOM id for the `<option>` element.
+  pub option_node_id: usize,
+  /// The value that would be applied to the `<input>` if this option is chosen.
+  pub value: String,
+  /// True when the option is disabled and must not be selectable.
+  pub disabled: bool,
+}
+
 /// High-level pointer cursor semantics reported by the render worker.
 ///
 /// This intentionally mirrors a small subset of common browser cursor types so UIs can map them to
@@ -506,6 +520,27 @@ pub enum UiToWorker {
   SelectDropdownCancel {
     tab_id: TabId,
   },
+  /// User chose an option in a `<datalist>` popup associated with an `<input list=...>` control.
+  ///
+  /// The UI should send this after receiving [`WorkerToUi::DatalistOpened`].
+  ///
+  /// Workers respond with [`WorkerToUi::DatalistClosed`] so front-ends can dismiss the popup
+  /// deterministically even when the selection is a no-op (e.g. choosing a disabled option or
+  /// spoofing an option id).
+  DatalistChoose {
+    tab_id: TabId,
+    /// The `<input>` element that owns the datalist popup.
+    input_node_id: usize,
+    /// The `<option>` element chosen by the user.
+    option_node_id: usize,
+  },
+  /// User dismissed an open `<datalist>` popup without choosing an option.
+  ///
+  /// Front-ends typically send this when the user presses Escape or clicks outside the popup.
+  /// Workers may treat this as a no-op or use it to emit [`WorkerToUi::DatalistClosed`].
+  DatalistCancel {
+    tab_id: TabId,
+  },
   /// User chose a value in a date/time picker popup.
   ///
   /// The UI should send this after receiving [`WorkerToUi::DateTimePickerOpened`].
@@ -687,6 +722,18 @@ impl UiToWorker {
     UiToWorker::SelectDropdownCancel { tab_id }
   }
 
+  pub fn datalist_choose(tab_id: TabId, input_node_id: usize, option_node_id: usize) -> Self {
+    UiToWorker::DatalistChoose {
+      tab_id,
+      input_node_id,
+      option_node_id,
+    }
+  }
+
+  pub fn datalist_cancel(tab_id: TabId) -> Self {
+    UiToWorker::DatalistCancel { tab_id }
+  }
+
   pub fn date_time_picker_choose(tab_id: TabId, input_node_id: usize, value: String) -> Self {
     UiToWorker::DateTimePickerChoose {
       tab_id,
@@ -804,17 +851,20 @@ pub enum WorkerToUi {
   SelectDropdownClosed {
     tab_id: TabId,
   },
-  /// Request that the UI open a `<datalist>` suggestions popup for an `<input list=...>` control.
+  /// Request that the UI open a datalist suggestion popup for an `<input list=...>` control.
   DatalistOpened {
     tab_id: TabId,
     input_node_id: usize,
-    options: Vec<DatalistSuggestion>,
+    options: Vec<DatalistOption>,
     /// Bounding box of the `<input>` control in **viewport CSS coordinates**.
     ///
     /// (0,0 is the top-left of the rendered viewport; does not include scroll offset.)
     anchor_css: Rect,
   },
-  /// Notification that a `<datalist>` suggestions popup should be dismissed.
+  /// Notification that a datalist popup should be dismissed.
+  ///
+  /// Workers emit this in response to [`UiToWorker::DatalistChoose`] and [`UiToWorker::DatalistCancel`]
+  /// so front-ends can close the overlay deterministically.
   DatalistClosed {
     tab_id: TabId,
   },

@@ -8799,6 +8799,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       | UiToWorker::SelectDropdownChoose { tab_id, .. }
       | UiToWorker::SelectDropdownCancel { tab_id }
       | UiToWorker::SelectDropdownPick { tab_id, .. }
+      | UiToWorker::DatalistChoose { tab_id, .. }
+      | UiToWorker::DatalistCancel { tab_id }
       | UiToWorker::DateTimePickerChoose { tab_id, .. }
       | UiToWorker::DateTimePickerCancel { tab_id }
       | UiToWorker::ColorPickerChoose { tab_id, .. }
@@ -8848,6 +8850,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           | UiToWorker::SelectDropdownChoose { .. }
           | UiToWorker::SelectDropdownCancel { .. }
           | UiToWorker::SelectDropdownPick { .. }
+          | UiToWorker::DatalistChoose { .. }
+          | UiToWorker::DatalistCancel { .. }
           | UiToWorker::DateTimePickerChoose { .. }
           | UiToWorker::DateTimePickerCancel { .. }
           | UiToWorker::ColorPickerChoose { .. }

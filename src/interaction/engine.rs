@@ -5746,6 +5746,46 @@ impl InteractionEngine {
     changed
   }
 
+  /// Update an `<input>` element's value from a chosen `<datalist>` `<option>`.
+  ///
+  /// This validates that the chosen option is a descendant of the `<datalist>` referenced by
+  /// `input[list]` and rejects disabled/inert/readonly controls.
+  pub fn activate_datalist_option(
+    &mut self,
+    dom: &mut DomNode,
+    input_node_id: usize,
+    option_node_id: usize,
+  ) -> bool {
+    let index = DomIndexMut::new(dom);
+    self.ensure_form_default_snapshot_for_control(&index, input_node_id);
+
+    // Direct value mutation cancels any in-progress IME preedit.
+    let mut changed = self.ime_cancel_internal();
+    let dom_changed = dom_mutation::activate_datalist_option(dom, input_node_id, option_node_id);
+    changed |= dom_changed;
+    if dom_changed {
+      changed |= self.mark_user_validity(input_node_id);
+    }
+
+    if dom_changed && self.state.focused == Some(input_node_id) {
+      let value = index
+        .node(input_node_id)
+        .and_then(|node| node.get_attribute_ref("value"))
+        .unwrap_or("");
+      let len = value.chars().count();
+      self.text_edit = Some(TextEditState {
+        node_id: input_node_id,
+        caret: len,
+        caret_affinity: CaretAffinity::Downstream,
+        selection_anchor: None,
+        preferred_x: None,
+      });
+      changed |= self.sync_text_edit_paint_state();
+    }
+
+    changed
+  }
+
   /// Update the value for a date/time-like `<input>` control as if the user edited it.
   ///
   /// This applies HTML value sanitization rules: invalid values sanitize to the empty string.

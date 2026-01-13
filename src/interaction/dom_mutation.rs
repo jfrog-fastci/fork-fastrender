@@ -1046,3 +1046,95 @@ pub fn set_select_selected_options(
 
   changed
 }
+
+/// Activate/choose an `<option>` descendant of a `<datalist>` referenced by an `<input list=...>`.
+///
+/// Returns `true` iff any DOM attributes were changed.
+pub fn activate_datalist_option(
+  root: &mut DomNode,
+  input_node_id: usize,
+  option_node_id: usize,
+) -> bool {
+  let mut index = DomIndex::build(root);
+
+  if super::effective_disabled::is_effectively_inert(input_node_id, &index)
+    || super::effective_disabled::is_effectively_disabled(input_node_id, &index)
+  {
+    return false;
+  }
+
+  // Resolve the associated datalist from the input's `list` attribute.
+  let Some((input_ok, readonly, datalist_id)) = index.with_node_mut(input_node_id, |node| {
+    let is_input = node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("input") && is_html_element(node));
+    if !is_input {
+      return (false, false, String::new());
+    }
+    let readonly = node.get_attribute_ref("readonly").is_some();
+    let list = node
+      .get_attribute_ref("list")
+      .map(trim_ascii_whitespace)
+      .unwrap_or("");
+    (true, readonly, list.to_string())
+  }) else {
+    return false;
+  };
+  if !input_ok || readonly {
+    return false;
+  }
+  if datalist_id.is_empty() {
+    return false;
+  }
+
+  let Some(&datalist_node_id) = index.id_by_element_id.get(&datalist_id) else {
+    return false;
+  };
+
+  let datalist_ok = index.node(datalist_node_id).is_some_and(|node| {
+    node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("datalist") && is_html_element(node))
+  });
+  if !datalist_ok {
+    return false;
+  }
+
+  // Validate the option node and extract its value string.
+  let Some((option_ok, option_value)) = index.with_node_mut(option_node_id, |node| {
+    let is_option = node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(node));
+    if !is_option {
+      return (false, String::new());
+    }
+    if node.get_attribute_ref("disabled").is_some() {
+      return (false, String::new());
+    }
+    let value = node.get_attribute_ref("value").unwrap_or("").to_string();
+    (true, value)
+  }) else {
+    return false;
+  };
+  if !option_ok {
+    return false;
+  }
+
+  // Verify `option` is a descendant of the resolved `<datalist>`.
+  let mut parent = index.parent.get(option_node_id).copied().unwrap_or(0);
+  let mut found_datalist = false;
+  while parent != 0 {
+    if parent == datalist_node_id {
+      found_datalist = true;
+      break;
+    }
+    parent = index.parent.get(parent).copied().unwrap_or(0);
+  }
+  if !found_datalist {
+    return false;
+  }
+
+  index
+    .with_node_mut(input_node_id, |node| set_attr(node, "value", &option_value))
+    .unwrap_or(false)
+}

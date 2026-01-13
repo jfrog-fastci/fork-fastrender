@@ -12,7 +12,8 @@ use crate::ui::about_pages;
 use crate::ui::clipboard;
 use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
+  DatalistOption, NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker,
+  WorkerToUi,
 };
 use crate::{BrowserDocument, FastRender, RenderOptions, Result};
 use std::path::PathBuf;
@@ -203,6 +204,14 @@ impl BrowserTabController {
       } if tab_id == self.tab_id => {
         self.handle_select_dropdown_choose(select_node_id, option_node_id)
       }
+      UiToWorker::DatalistChoose {
+        tab_id,
+        input_node_id,
+        option_node_id,
+      } if tab_id == self.tab_id => self.handle_datalist_choose(input_node_id, option_node_id),
+      UiToWorker::DatalistCancel { tab_id } if tab_id == self.tab_id => Ok(vec![
+        WorkerToUi::DatalistClosed { tab_id },
+      ]),
       UiToWorker::DateTimePickerChoose {
         tab_id,
         input_node_id,
@@ -1103,14 +1112,51 @@ impl BrowserTabController {
   }
 
   fn handle_text_input(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
+    let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
+    let changed = self.document.mutate_dom(|dom| {
+      let changed = self.interaction.text_input(dom, text);
+      if changed {
+        if let Some(focused) = self.interaction.focused_node_id() {
+          datalist_open = datalist_popup_options(dom, focused).map(|options| (focused, options));
+        }
+      }
+      changed
+    });
+
+    let mut out = Vec::new();
+    if let Some((input_node_id, options)) = datalist_open {
+      let anchor_css = self.select_anchor_css(input_node_id).unwrap_or(Rect::ZERO);
+      out.push(WorkerToUi::DatalistOpened {
+        tab_id: self.tab_id,
+        input_node_id,
+        options,
+        anchor_css,
+      });
+    }
+    if changed {
+      out.extend(self.paint_if_needed()?);
+      Ok(out)
+    } else {
+      Ok(out)
+    }
+  }
+
+  fn handle_datalist_choose(
+    &mut self,
+    input_node_id: usize,
+    option_node_id: usize,
+  ) -> Result<Vec<WorkerToUi>> {
+    // Mirror the threaded worker semantics: choosing any option in the datalist overlay should close
+    // the popup even when the selection is rejected (disabled option) or a no-op.
+    let mut out = vec![WorkerToUi::DatalistClosed { tab_id: self.tab_id }];
+    let engine = &mut self.interaction;
     let changed = self
       .document
-      .mutate_dom(|dom| self.interaction.text_input(dom, text));
+      .mutate_dom(|dom| engine.activate_datalist_option(dom, input_node_id, option_node_id));
     if changed {
-      self.paint_if_needed()
-    } else {
-      Ok(Vec::new())
+      out.extend(self.paint_if_needed()?);
     }
+    Ok(out)
   }
 
   fn handle_select_all(&mut self) -> Result<Vec<WorkerToUi>> {
@@ -1899,6 +1945,89 @@ fn strip_fragment(url: &str) -> String {
   };
   parsed.set_fragment(None);
   parsed.to_string()
+}
+
+fn is_html_element(node: &crate::dom::DomNode) -> bool {
+  matches!(
+    node.namespace(),
+    Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
+  )
+}
+
+fn is_ancestor_or_self(
+  index: &crate::interaction::dom_index::DomIndex,
+  ancestor: usize,
+  mut node: usize,
+) -> bool {
+  while node != 0 {
+    if node == ancestor {
+      return true;
+    }
+    node = *index.parent.get(node).unwrap_or(&0);
+  }
+  false
+}
+
+fn datalist_popup_options(
+  dom: &mut crate::dom::DomNode,
+  input_node_id: usize,
+) -> Option<Vec<DatalistOption>> {
+  let index = crate::interaction::dom_index::DomIndex::build(dom);
+
+  let input = index.node(input_node_id)?;
+  if !input
+    .tag_name()
+    .is_some_and(|t| t.eq_ignore_ascii_case("input") && is_html_element(input))
+  {
+    return None;
+  }
+
+  let list_id = input
+    .get_attribute_ref("list")
+    .map(crate::ui::url::trim_ascii_whitespace)
+    .unwrap_or("");
+  if list_id.is_empty() {
+    return None;
+  }
+
+  let datalist_node_id = *index.id_by_element_id.get(list_id)?;
+  let datalist = index.node(datalist_node_id)?;
+  if !datalist
+    .tag_name()
+    .is_some_and(|t| t.eq_ignore_ascii_case("datalist") && is_html_element(datalist))
+  {
+    return None;
+  }
+
+  let query = input.get_attribute_ref("value").unwrap_or("");
+
+  let mut options: Vec<DatalistOption> = Vec::new();
+  for node_id in 1..=index.len() {
+    if !is_ancestor_or_self(&index, datalist_node_id, node_id) {
+      continue;
+    }
+
+    let node = index.node(node_id)?;
+    if !node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(node))
+    {
+      continue;
+    }
+
+    let value = node.get_attribute_ref("value").unwrap_or("").to_string();
+    if !query.is_empty() && !value.starts_with(query) {
+      continue;
+    }
+
+    options.push(DatalistOption {
+      option_node_id: node_id,
+      value,
+      disabled: node.get_attribute_ref("disabled").is_some(),
+    });
+  }
+
+  (!options.is_empty()).then_some(options)
 }
 
 #[cfg(test)]

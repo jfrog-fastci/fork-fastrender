@@ -5,7 +5,7 @@ use crate::ui::appearance::AppearanceSettings;
 use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
-  CursorKind, DatalistSuggestion, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame,
+  CursorKind, DatalistOption, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame,
   ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::multiprocess::{RendererProcessId, SiteKey};
@@ -425,7 +425,7 @@ pub struct OpenSelectDropdownUpdate {
 pub struct OpenDatalistUpdate {
   pub tab_id: TabId,
   pub input_node_id: usize,
-  pub options: Vec<DatalistSuggestion>,
+  pub options: Vec<DatalistOption>,
   /// Optional viewport-local CSS-pixel rect for positioning a datalist popup.
   pub anchor_css: Option<crate::geometry::Rect>,
 }
