@@ -65,6 +65,33 @@ fn regexp_literal_with_uv_flags_is_early_error() {
 }
 
 #[test]
+fn regexp_unicode_sets_class_set_character_non_bmp_literal() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = new RegExp("[👨]", "v");
+        [r.test("👨"), r.test("\uD83D")].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+}
+
+#[test]
+fn regexp_unicode_sets_family_zwj_matches_first_code_point() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        "👨‍👩‍👧‍👦".match(new RegExp("[👨‍👩‍👧‍👦]", "v"))[0]
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "👨");
+}
+
+#[test]
 fn regexp_invalid_character_class_range_throws_syntax_error() {
   let mut rt = new_runtime();
   let value = rt

@@ -2793,6 +2793,19 @@ impl<'a> Parser<'a> {
         }
       }
       x => {
+        // In UnicodeMode (`u`/`v`), pattern source text is interpreted as Unicode code points, so
+        // UTF-16 surrogate pairs in the pattern represent a single atom.
+        if unicode_mode && (0xD800..=0xDBFF).contains(&x) {
+          if let Some(next) = self.peek() {
+            if (0xDC00..=0xDFFF).contains(&next) {
+              self.next(); // consume low surrogate
+              let lead = (x as u32).saturating_sub(0xD800);
+              let trail = (next as u32).saturating_sub(0xDC00);
+              let cp = 0x10000u32.saturating_add((lead << 10) | trail);
+              return Ok(Atom::Literal(cp));
+            }
+          }
+        }
         Ok(Atom::Literal(x as u32))
       }
     }
@@ -3147,7 +3160,27 @@ impl<'a> Parser<'a> {
           }
         }
       }
-      other => Ok(CharClassItem::Char(other as u32)),
+      other => {
+        // In UnicodeMode (`u`/`v`), the RegExp grammar operates over Unicode code points. Literal
+        // non-BMP characters therefore appear in the pattern as UTF-16 surrogate pairs and must be
+        // decoded into a single `u32` code point.
+        //
+        // This is especially important for `/v` (UnicodeSets) patterns like `[👨‍👩‍👧‍👦]/v`, which
+        // must match the full code point `👨` rather than a single surrogate half.
+        if self.flags.has_either_unicode_flag() && (0xD800..=0xDBFF).contains(&other) {
+          if let Some(next) = self.peek() {
+            if (0xDC00..=0xDFFF).contains(&next) {
+              // Consume the low surrogate.
+              self.next();
+              let lead = (other as u32).saturating_sub(0xD800);
+              let trail = (next as u32).saturating_sub(0xDC00);
+              let cp = 0x10000u32.saturating_add((lead << 10) | trail);
+              return Ok(CharClassItem::Char(cp));
+            }
+          }
+        }
+        Ok(CharClassItem::Char(other as u32))
+      }
     }
   }
 
