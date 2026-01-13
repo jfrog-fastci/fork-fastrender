@@ -95,7 +95,7 @@ desktop, VMs, or systems without a working GPU stack), you can force a software 
 backend:
 
 - `browser --wgpu-fallback` / `FASTR_BROWSER_WGPU_FALLBACK=1`
-- `browser --wgpu-backend gl` / `FASTR_BROWSER_WGPU_BACKENDS=gl`
+- `browser --wgpu-backends gl` / `FASTR_BROWSER_WGPU_BACKENDS=gl`
 
 For CI environments without a display/GPU, the `browser` entrypoint provides **test-only** headless
 hooks to exercise startup and UI↔worker wiring without creating a window:
