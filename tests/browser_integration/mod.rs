@@ -95,8 +95,6 @@ mod ui_worker_image_input_submit;
 mod ui_worker_form_submit;
 mod ui_worker_form_target_blank;
 mod ui_worker_file_input_multiple;
-mod ui_worker_form_target_blank;
-mod ui_worker_file_input_multiple;
 mod ui_worker_fragment_navigation;
 mod ui_worker_history;
 mod ui_worker_hover_active;

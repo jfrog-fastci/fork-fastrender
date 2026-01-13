@@ -3557,6 +3557,7 @@ impl App {
       | UiToWorker::PointerMove { tab_id, .. }
       | UiToWorker::PointerDown { tab_id, .. }
       | UiToWorker::PointerUp { tab_id, .. }
+      | UiToWorker::DropFiles { tab_id, .. }
       | UiToWorker::ContextMenuRequest { tab_id, .. }
       | UiToWorker::SelectDropdownChoose { tab_id, .. }
       | UiToWorker::SelectDropdownCancel { tab_id }
@@ -3599,6 +3600,7 @@ impl App {
           | UiToWorker::PointerMove { .. }
           | UiToWorker::PointerDown { .. }
           | UiToWorker::PointerUp { .. }
+          | UiToWorker::DropFiles { .. }
           | UiToWorker::SelectDropdownChoose { .. }
           | UiToWorker::SelectDropdownCancel { .. }
           | UiToWorker::SelectDropdownPick { .. }
