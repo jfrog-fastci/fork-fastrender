@@ -8323,7 +8323,6 @@ impl BrowserRuntime {
             // PageUp/PageDown are not commonly consumed by media controls, so keep their behaviour
             // aligned with other non-button form controls.
             let focus_consumes_page = focused_is_input || focused_is_textarea || focused_is_select;
-
             let allow_scroll = match key {
               crate::interaction::KeyAction::Space | crate::interaction::KeyAction::ShiftSpace => {
                 !focus_consumes_space

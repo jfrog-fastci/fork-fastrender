@@ -127,6 +127,7 @@ mod ui_input_routing;
 mod ui_keyboard_horizontal_scrolling;
 mod ui_browser_tab_controller_focus_scroll;
 mod ui_keyboard_scrolling;
+mod ui_tab_controller_keyboard_scrolling;
 mod ui_navigation_messages;
 mod ui_number_input_wheel_step;
 mod ui_render_thread;

@@ -6,8 +6,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use super::support::{
-  create_tab_msg_with_cancel, drain_for, format_messages, key_action, navigate_msg, rgba_at, scroll_msg,
-  viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
+  create_tab_msg_with_cancel, drain_for, format_messages, key_action, navigate_msg, rgba_at,
+  scroll_msg, viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
 };
 
 fn wait_for_initial_frame(
@@ -108,7 +108,7 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
   );
   y = frame_y;
 
-  // PageUp should scroll back up by ~0.9 * viewport height.
+  // PageUp should scroll back up by ~0.9 * viewport height (and clamp at the top).
   tx.send(key_action(tab_id, fastrender::interaction::KeyAction::PageUp))
     .unwrap();
   let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
@@ -121,7 +121,7 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
   y = frame_y;
 
   // End.
-  tx.send(scroll_msg(tab_id, (0.0, 1_000_000_000.0), None))
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::End))
     .unwrap();
   let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
     next > y + 10.0 && next > 3_000.0
@@ -133,7 +133,8 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
   y = frame_y;
 
   // Home.
-  tx.send(scroll_msg(tab_id, (0.0, -y), None)).unwrap();
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Home))
+    .unwrap();
   let (_scroll_y, frame_y) =
     wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next <= 1.0);
   assert!(

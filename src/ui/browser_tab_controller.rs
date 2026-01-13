@@ -1695,6 +1695,7 @@ impl BrowserTabController {
         )
       }
     };
+    let action_is_none = matches!(&action, InteractionAction::None);
 
     let mut scroll_changed = false;
     if let Some(next_scroll) = focus_scroll {
@@ -1722,7 +1723,7 @@ impl BrowserTabController {
 
     // Basic keyboard scrolling: when scroll keys are pressed and the focused element is not a form
     // control that would normally consume them, treat the key as a viewport scrolling shortcut.
-    if matches!(action, InteractionAction::None) {
+    if action_is_none {
       let focus_consumes_space =
         focused_is_input || focused_is_textarea || focused_is_select || focused_is_button;
       let focus_consumes_arrows = focused_is_input || focused_is_textarea || focused_is_select;
@@ -1731,6 +1732,9 @@ impl BrowserTabController {
       let allow_scroll = match key {
         crate::interaction::KeyAction::Space | crate::interaction::KeyAction::ShiftSpace => {
           !focus_consumes_space
+        }
+        crate::interaction::KeyAction::PageUp | crate::interaction::KeyAction::PageDown => {
+          !focus_consumes_arrows
         }
         crate::interaction::KeyAction::ArrowDown | crate::interaction::KeyAction::ArrowUp => {
           !focus_consumes_arrows
@@ -1759,6 +1763,16 @@ impl BrowserTabController {
             self.handle_scroll((0.0, dy), None)
           }
           crate::interaction::KeyAction::ShiftSpace => {
+            let h = self.viewport_css.1.max(1) as f32;
+            let dy = -((h * 0.9).max(1.0));
+            self.handle_scroll((0.0, dy), None)
+          }
+          crate::interaction::KeyAction::PageDown => {
+            let h = self.viewport_css.1.max(1) as f32;
+            let dy = (h * 0.9).max(1.0);
+            self.handle_scroll((0.0, dy), None)
+          }
+          crate::interaction::KeyAction::PageUp => {
             let h = self.viewport_css.1.max(1) as f32;
             let dy = -((h * 0.9).max(1.0));
             self.handle_scroll((0.0, dy), None)
