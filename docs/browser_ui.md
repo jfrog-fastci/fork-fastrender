@@ -308,8 +308,8 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
   - Use it for quick local checks and for CI-style regression tests where you can’t (or don’t want
     to) open a real window/GPU-backed swapchain.
 - `browser_perf_log_summary` summarizes a captured perf log into p50/p95/max numbers.
-- Optional helper (if present in your checkout): `scripts/capture_browser_perf_log.sh` — wrapper for
-  capturing a perf log from a short browser run.
+- `scripts/capture_browser_perf_log.sh` wraps an interactive windowed run (under `run_limited`) and
+  tees stdout JSONL to a file; pass `--summary` to run `browser_perf_log_summary` automatically.
 
 See [perf-logging.md#browser-responsiveness](perf-logging.md#browser-responsiveness) (and the
 “Measuring browser responsiveness” section below) for full details.
