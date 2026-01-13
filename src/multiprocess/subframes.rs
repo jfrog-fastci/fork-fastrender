@@ -44,6 +44,7 @@ pub enum BrowserToRendererFrame {
     frame_id: FrameId,
     width: u32,
     height: u32,
+    device_pixel_ratio: f32,
   },
   DestroyFrame {
     frame_id: FrameId,
@@ -59,7 +60,9 @@ pub struct DiscoveredSubframe {
   /// This is currently used for `<iframe sandbox>` when the token list does **not** include
   /// `allow-same-origin`.
   pub force_opaque_origin: bool,
+  /// Iframe content box rect in CSS pixels, relative to the parent frame viewport origin.
   pub rect: Rect,
+  /// Clip rect in CSS pixels (same coordinate space as `rect`).
   pub clip: Rect,
   /// Whether the embedding `<iframe>` participates in hit testing / pointer events.
   ///
@@ -73,6 +76,12 @@ pub struct DiscoveredSubframe {
 pub enum RendererToBrowserFrame {
   SubframesDiscovered {
     parent_frame_id: FrameId,
+    /// Device pixel ratio of the *parent* frame at the time this geometry was computed.
+    ///
+    /// The browser uses this to:
+    /// - map `DiscoveredSubframe::rect` to device pixels in the compositor, and
+    /// - instruct child renderers to re-render at the correct resolution.
+    parent_dpr: f32,
     subframes: Vec<DiscoveredSubframe>,
   },
 }
@@ -83,9 +92,13 @@ pub enum RendererToBrowserFrame {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameEmbedding {
+  /// Iframe content box rect in CSS pixels, relative to the parent frame viewport origin.
   pub rect: Rect,
+  /// Clip rect in CSS pixels (same coordinate space as `rect`).
   pub clip: Rect,
   pub hit_testable: bool,
+  /// Device pixel ratio of the parent frame at the time this geometry was computed.
+  pub parent_dpr: f32,
 }
 
 #[derive(Debug)]
@@ -365,12 +378,18 @@ where
     match msg {
       RendererToBrowserFrame::SubframesDiscovered {
         parent_frame_id,
+        parent_dpr,
         subframes,
-      } => self.handle_subframes_discovered(parent_frame_id, subframes),
+      } => self.handle_subframes_discovered(parent_frame_id, parent_dpr, subframes),
     }
   }
 
-  pub fn handle_subframes_discovered(&mut self, parent_frame_id: FrameId, subframes: Vec<DiscoveredSubframe>) {
+  pub fn handle_subframes_discovered(
+    &mut self,
+    parent_frame_id: FrameId,
+    parent_dpr: f32,
+    subframes: Vec<DiscoveredSubframe>,
+  ) {
     let Some(parent_site) = self
       .frame_tree
       .frame(parent_frame_id)
@@ -386,6 +405,8 @@ where
     else {
       return;
     };
+
+    let parent_dpr = sanitize_dpr(parent_dpr);
 
     let existing_children: HashMap<SubframeId, FrameId> = self
       .frame_tree
@@ -427,6 +448,7 @@ where
         rect: subframe.rect,
         clip: subframe.clip,
         hit_testable: subframe.hit_testable,
+        parent_dpr,
       };
 
       let existing_child_frame_id = self
@@ -443,7 +465,7 @@ where
             (
               node.process_id,
               node.url.as_str() != subframe.url,
-              node.embedding.as_ref().map(|e| e.rect),
+              node.embedding.as_ref().map(|e| (e.rect, e.parent_dpr)),
               node.site.clone(),
             )
           })
@@ -461,8 +483,10 @@ where
           parent_site.clone()
         };
 
-        let needs_resize = old_rect.is_some_and(|r| {
-          r.width() != subframe.rect.width() || r.height() != subframe.rect.height()
+        let needs_resize = old_rect.is_some_and(|(r, old_dpr)| {
+          r.width() != subframe.rect.width()
+            || r.height() != subframe.rect.height()
+            || old_dpr != parent_dpr
         });
 
         let desired_existing_process = if isolate {
@@ -517,6 +541,7 @@ where
               frame_id: child_frame_id,
               width: w,
               height: h,
+              device_pixel_ratio: parent_dpr,
             },
           );
           continue;
@@ -544,6 +569,7 @@ where
               frame_id: child_frame_id,
               width: w,
               height: h,
+              device_pixel_ratio: parent_dpr,
             },
           );
         }
@@ -594,6 +620,7 @@ where
             frame_id,
             width: w,
             height: h,
+            device_pixel_ratio: parent_dpr,
           },
         );
 
@@ -612,6 +639,14 @@ fn size_from_rect(rect: Rect) -> (u32, u32) {
     }
   };
   (sanitize(rect.width()), sanitize(rect.height()))
+}
+
+fn sanitize_dpr(dpr: f32) -> f32 {
+  if dpr.is_finite() && dpr > 0.0 {
+    dpr
+  } else {
+    1.0
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -730,6 +765,7 @@ mod tests {
           rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
           clip: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
           hit_testable: false,
+          parent_dpr: 1.0,
         },
       ),
     );
@@ -766,6 +802,7 @@ mod tests {
           rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
           clip: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
           hit_testable: true,
+          parent_dpr: 1.0,
         },
       ),
     );
@@ -792,6 +829,7 @@ mod tests {
     let root = browser.create_root_frame("https://parent.test/");
     browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
       parent_frame_id: root,
+      parent_dpr: 1.0,
       subframes: vec![
         test_subframe(1, "https://a.test/", 100.0, 50.0),
         test_subframe(2, "https://b.test/", 80.0, 40.0),
@@ -856,8 +894,8 @@ mod tests {
     assert!(
       msgs1.iter().any(|msg| matches!(
         msg,
-        BrowserToRendererFrame::Resize { frame_id, width, height }
-          if *frame_id == child1_frame && *width == 100 && *height == 50
+        BrowserToRendererFrame::Resize { frame_id, width, height, device_pixel_ratio }
+          if *frame_id == child1_frame && *width == 100 && *height == 50 && *device_pixel_ratio == 1.0
       )),
       "expected Resize for child1, got {msgs1:?}"
     );
@@ -883,6 +921,7 @@ mod tests {
 
     browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
       parent_frame_id: root,
+      parent_dpr: 1.0,
       subframes: vec![test_subframe(1, "https://example.test/inner", 10.0, 20.0)],
     });
 
@@ -935,6 +974,7 @@ mod tests {
 
     browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
       parent_frame_id: root,
+      parent_dpr: 1.0,
       subframes: vec![test_subframe(1, "https://child.test/", 50.0, 50.0)],
     });
 
@@ -954,6 +994,7 @@ mod tests {
     // Now report no subframes → child should be destroyed and its process ref released.
     browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
       parent_frame_id: root,
+      parent_dpr: 1.0,
       subframes: Vec::new(),
     });
 
@@ -1013,6 +1054,7 @@ mod tests {
 
     let msg = RendererToBrowserFrame::SubframesDiscovered {
       parent_frame_id: root,
+      parent_dpr: 1.0,
       subframes: vec![test_subframe(0, "about:srcdoc", 10.0, 10.0), opaque1, opaque2],
     };
 
@@ -1083,6 +1125,84 @@ mod tests {
         .expect("child2 still exists")
         .process_id,
       child2_process
+    );
+  }
+
+  #[test]
+  fn parent_dpr_change_triggers_resize_to_child_frames() {
+    let log: Arc<Mutex<HashMap<RendererProcessId, Vec<BrowserToRendererFrame>>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let terminate_count = Arc::new(AtomicUsize::new(0));
+
+    let spawner = FakeSpawner::new(Arc::clone(&log), Arc::clone(&terminate_count));
+    let processes = RendererProcessRegistry::new(spawner);
+    let mut browser = SubframesController::new(processes);
+    browser.set_max_subframes_per_parent(8);
+
+    let root = browser.create_root_frame("https://parent.test/");
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 1.0,
+      subframes: vec![test_subframe(1, "https://child.test/", 10.0, 20.0)],
+    });
+
+    let child_frame = browser
+      .frame_tree
+      .frame(root)
+      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .expect("child frame exists");
+    let child_process = browser
+      .frame_tree
+      .frame(child_frame)
+      .expect("child node exists")
+      .process_id;
+
+    let msgs_before = logged_msgs(&log, child_process);
+    let resize_before: Vec<_> = msgs_before
+      .iter()
+      .filter_map(|m| match m {
+        BrowserToRendererFrame::Resize {
+          frame_id,
+          width,
+          height,
+          device_pixel_ratio,
+        } => Some((*frame_id, *width, *height, *device_pixel_ratio)),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(resize_before.len(), 1, "expected initial resize message");
+    assert_eq!(
+      resize_before[0],
+      (child_frame, 10, 20, 1.0),
+      "expected initial Resize to carry CSS size + DPR"
+    );
+
+    // Now simulate a HiDPI / device-pixel-ratio change in the parent frame without changing the
+    // iframe element size. The browser should still send a Resize so the child can re-render at the
+    // correct device resolution.
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 2.0,
+      subframes: vec![test_subframe(1, "https://child.test/", 10.0, 20.0)],
+    });
+
+    let msgs_after = logged_msgs(&log, child_process);
+    let resize_after: Vec<_> = msgs_after
+      .iter()
+      .filter_map(|m| match m {
+        BrowserToRendererFrame::Resize {
+          frame_id,
+          width,
+          height,
+          device_pixel_ratio,
+        } => Some((*frame_id, *width, *height, *device_pixel_ratio)),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(resize_after.len(), 2, "expected resize to be sent again on DPR change");
+    assert!(
+      resize_after.contains(&(child_frame, 10, 20, 2.0)),
+      "expected a Resize with updated DPR, got {resize_after:?}"
     );
   }
 }

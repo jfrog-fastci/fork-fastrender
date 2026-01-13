@@ -9,7 +9,8 @@
 //! - Child frame pixmaps are assumed to already be rendered with a transparent
 //!   background (matching `render_iframe_*` behaviour in the renderer).
 //! - Each child is drawn into the root pixmap at the iframe *content box*
-//!   rectangle (`rect_css`) mapped to device pixels via `dpr`.
+//!   rectangle (`rect_css`) mapped to device pixels via the *embedding (parent)*
+//!   frame's device pixel ratio (DPR).
 //! - The child draw is clipped to the content box with optional border-radius
 //!   (`clip_radii`), matching the renderer-side `emit_iframe_image` clipping
 //!   behaviour.
@@ -32,9 +33,11 @@ pub struct EmbeddedFrame<'a> {
   /// The child frame's content box rectangle, in CSS pixels, in the *root
   /// frame's coordinate space*.
   pub rect_css: Rect,
-  /// Device pixel ratio used to render this frame. Used to map `rect_css` to
-  /// device pixels.
-  pub dpr: f32,
+  /// Device pixel ratio of the embedding (parent) frame.
+  ///
+  /// The compositor converts `rect_css` to device pixels using this value.
+  /// (The child surface is expected to be rendered at `rect_css.size * parent_dpr`.)
+  pub parent_dpr: f32,
   /// Content-box clip radii, in CSS pixels.
   pub clip_radii: BorderRadii,
 }
@@ -56,13 +59,36 @@ fn ds_radii(radii: BorderRadii, scale: f32) -> BorderRadii {
   }
 }
 
-fn ds_rect(rect: Rect, scale: f32) -> Rect {
-  Rect::from_xywh(
-    rect.x() * scale,
-    rect.y() * scale,
-    rect.width() * scale,
-    rect.height() * scale,
-  )
+fn css_rect_to_device_rect(rect_css: Rect, parent_dpr: f32) -> Option<Rect> {
+  if !rect_css.x().is_finite()
+    || !rect_css.y().is_finite()
+    || !rect_css.width().is_finite()
+    || !rect_css.height().is_finite()
+  {
+    return None;
+  }
+  if rect_css.width() <= 0.0 || rect_css.height() <= 0.0 {
+    return None;
+  }
+
+  let dpr = sanitize_dpr(parent_dpr);
+
+  // Snap iframe surfaces to device pixels to avoid fractional translation (blur).
+  // Use edge snapping (left/right, top/bottom) rather than rounding width/height
+  // independently to reduce off-by-one errors when the rect origin is fractional.
+  let left = (rect_css.x() * dpr).round();
+  let top = (rect_css.y() * dpr).round();
+  let right = ((rect_css.x() + rect_css.width()) * dpr).round();
+  let bottom = ((rect_css.y() + rect_css.height()) * dpr).round();
+
+  if !left.is_finite() || !top.is_finite() || !right.is_finite() || !bottom.is_finite() {
+    return None;
+  }
+
+  let width = (right - left).max(1.0);
+  let height = (bottom - top).max(1.0);
+
+  Some(Rect::from_xywh(left, top, width, height))
 }
 
 fn build_rounded_rect_clip_mask(
@@ -106,11 +132,9 @@ fn build_rounded_rect_clip_mask(
 /// Children are drawn in the order they appear in `frames` (deterministic order).
 pub fn composite_tab_surface(mut root: Pixmap, frames: &[EmbeddedFrame<'_>]) -> Pixmap {
   for frame in frames {
-    let dpr = sanitize_dpr(frame.dpr);
-    let dest_rect_device = ds_rect(frame.rect_css, dpr);
-    if dest_rect_device.width() <= 0.0 || dest_rect_device.height() <= 0.0 {
+    let Some(dest_rect_device) = css_rect_to_device_rect(frame.rect_css, frame.parent_dpr) else {
       continue;
-    }
+    };
 
     let src_w = frame.pixmap.width() as f32;
     let src_h = frame.pixmap.height() as f32;
@@ -124,6 +148,7 @@ pub fn composite_tab_surface(mut root: Pixmap, frames: &[EmbeddedFrame<'_>]) -> 
       continue;
     }
 
+    let dpr = sanitize_dpr(frame.parent_dpr);
     let radii_device = ds_radii(frame.clip_radii, dpr);
     let clip_mask = if radii_device.is_zero() {
       None
@@ -176,7 +201,7 @@ mod tests {
       frame_id: 1,
       pixmap: &child,
       rect_css: Rect::from_xywh(4.0, 6.0, 8.0, 8.0),
-      dpr: 1.0,
+      parent_dpr: 1.0,
       clip_radii: BorderRadii::ZERO,
     }];
 
@@ -207,7 +232,7 @@ mod tests {
       frame_id: 2,
       pixmap: &child,
       rect_css: Rect::from_xywh(8.0, 8.0, 16.0, 16.0),
-      dpr: 1.0,
+      parent_dpr: 1.0,
       clip_radii: BorderRadii::uniform(6.0),
     }];
 
@@ -229,15 +254,15 @@ mod tests {
     let mut root = Pixmap::new(32, 32).expect("root pixmap");
     root.fill(Color::from_rgba8(0, 255, 0, 255));
 
-    // 8×8 CSS px at DPR=2 => 16×16 device px.
-    let mut child = Pixmap::new(16, 16).expect("child pixmap");
+    // 10×10 CSS px at DPR=2 => 20×20 device px.
+    let mut child = Pixmap::new(20, 20).expect("child pixmap");
     child.fill(Color::from_rgba8(255, 0, 0, 255));
 
     let frames = [EmbeddedFrame {
       frame_id: 3,
       pixmap: &child,
-      rect_css: Rect::from_xywh(1.0, 2.0, 8.0, 8.0),
-      dpr: 2.0,
+      rect_css: Rect::from_xywh(1.0, 2.0, 10.0, 10.0),
+      parent_dpr: 2.0,
       clip_radii: BorderRadii::ZERO,
     }];
 
@@ -248,12 +273,12 @@ mod tests {
       "expected child to start at (rect_css*dpr) = (2,4)"
     );
     assert_eq!(
-      rgba(&out, 17, 19),
+      rgba(&out, 21, 23),
       (255, 0, 0, 255),
-      "expected child to cover 16×16 device px region"
+      "expected child to cover 20×20 device px region"
     );
     assert_eq!(
-      rgba(&out, 18, 20),
+      rgba(&out, 22, 24),
       (0, 255, 0, 255),
       "pixels outside the mapped child rect should remain background"
     );
@@ -273,7 +298,7 @@ mod tests {
       frame_id: 4,
       pixmap: &child,
       rect_css: Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
-      dpr: 2.0,
+      parent_dpr: 2.0,
       clip_radii: BorderRadii::uniform(2.0),
     }];
 
