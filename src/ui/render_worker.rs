@@ -2593,6 +2593,10 @@ impl BrowserRuntime {
           }
         }
       }
+      #[cfg(feature = "browser_ui")]
+      UiToWorker::AccessKitAction { tab_id, request } => {
+        self.handle_accesskit_action(tab_id, request);
+      }
       UiToWorker::PointerMove {
         tab_id,
         pos_css,
@@ -2852,6 +2856,55 @@ impl BrowserRuntime {
         tab.force_repaint = true;
       }
     }
+  }
+
+  #[cfg(feature = "browser_ui")]
+  fn handle_accesskit_action(&mut self, tab_id: TabId, request: accesskit::ActionRequest) {
+    // Currently we only support scroll-related accessibility actions. The goal is to let assistive
+    // technologies request that a node becomes visible without having to focus it.
+    match request.action {
+      accesskit::Action::ScrollIntoView | accesskit::Action::ScrollToPoint => {}
+      _ => return,
+    }
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let target_node_id: usize = match usize::try_from(request.target.0.get()) {
+      Ok(id) => id,
+      Err(_) => return,
+    };
+
+    let next_scroll = {
+      let Some(prepared) = doc.prepared() else {
+        return;
+      };
+      crate::interaction::focus_scroll::scroll_state_for_focus(
+        prepared.box_tree(),
+        prepared.fragment_tree(),
+        &tab.scroll_state,
+        target_node_id,
+      )
+    };
+
+    let Some(next_scroll) = next_scroll else {
+      return;
+    };
+
+    tab.scroll_state = next_scroll;
+    doc.set_scroll_state(tab.scroll_state.clone());
+    let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+      tab_id,
+      scroll: tab.scroll_state.clone(),
+    });
+
+    tab.cancel.bump_paint();
+    tab.needs_repaint = true;
+    tab.scroll_coalesce = true;
   }
 
   fn set_download_directory(&mut self, path: PathBuf) {

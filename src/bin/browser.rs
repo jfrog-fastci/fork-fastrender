@@ -9699,10 +9699,11 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
 
     // Keep overlay scrollbars visible when a scroll is initiated via any input path (wheel, track
-    // click, thumb drag, keyboard shortcuts that synthesize `ScrollTo`, etc).
+    // click, thumb drag, keyboard shortcuts that synthesize `ScrollTo`, accessibility scroll
+    // actions, etc).
     if matches!(
       &msg,
-      UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. }
+      UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. } | UiToWorker::AccessKitAction { .. }
     ) {
       self
         .overlay_scrollbar_visibility
@@ -9727,6 +9728,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       | UiToWorker::ViewportChanged { tab_id, .. }
       | UiToWorker::Scroll { tab_id, .. }
       | UiToWorker::ScrollTo { tab_id, .. }
+      | UiToWorker::AccessKitAction { tab_id, .. }
       | UiToWorker::PointerMove { tab_id, .. }
       | UiToWorker::PointerDown { tab_id, .. }
       | UiToWorker::PointerUp { tab_id, .. }
@@ -9782,6 +9784,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           | UiToWorker::ViewportChanged { .. }
           | UiToWorker::Scroll { .. }
           | UiToWorker::ScrollTo { .. }
+          | UiToWorker::AccessKitAction { .. }
           | UiToWorker::PointerMove { .. }
           | UiToWorker::PointerDown { .. }
           | UiToWorker::PointerUp { .. }
