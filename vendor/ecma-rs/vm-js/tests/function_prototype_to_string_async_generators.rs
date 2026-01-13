@@ -64,6 +64,20 @@ fn async_generator_function_to_string_slices_source_text() -> Result<(), VmError
 }
 
 #[test]
+fn async_generator_function_expression_to_string_trims_trailing_semicolon() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script("const g = async function*() { yield 1; };\ng.toString()") {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(s, "async function*() { yield 1; }");
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
+
+#[test]
 fn async_generator_function_constructor_to_string_matches_test262() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
   match rt.exec_script(
