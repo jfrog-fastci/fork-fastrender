@@ -25,6 +25,7 @@ use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::style::computed::Visibility;
 use crate::style::types::OrientationTransform;
+use crate::style::types::CursorKeyword;
 use crate::style::types::UserSelect;
 use crate::text::font_db::FontConfig;
 use crate::tree::box_tree::{BoxNode, BoxType, ImageSelectionContext, ReplacedType};
@@ -430,6 +431,19 @@ fn cursor_for_form_control(dom: &mut crate::dom::DomNode, dom_node_id: usize) ->
   }
 
   CursorKind::Default
+}
+
+fn cursor_kind_from_css_cursor(cursor: CursorKeyword) -> Option<CursorKind> {
+  match cursor {
+    CursorKeyword::Auto => None,
+    CursorKeyword::Pointer => Some(CursorKind::Pointer),
+    CursorKeyword::Text | CursorKeyword::VerticalText => Some(CursorKind::Text),
+    CursorKeyword::Crosshair => Some(CursorKind::Crosshair),
+    CursorKeyword::NotAllowed | CursorKeyword::NoDrop => Some(CursorKind::NotAllowed),
+    CursorKeyword::Grab => Some(CursorKind::Grab),
+    CursorKeyword::Grabbing => Some(CursorKind::Grabbing),
+    _ => Some(CursorKind::Default),
+  }
 }
 
 fn box_node_by_id<'a>(box_tree: &'a crate::BoxTree, target_box_id: usize) -> Option<&'a crate::BoxNode> {
@@ -2886,26 +2900,41 @@ impl BrowserRuntime {
               let element_id = crate::dom::find_node_mut_by_preorder_id(dom, hit.dom_node_id)
                 .and_then(|node| node.get_attribute_ref("id"))
                 .map(|id| id.to_string());
-              let (hovered_url, cursor) = match hit.kind {
-                HitTestKind::Link => {
-                  let resolved = hit
-                    .href
-                    .as_deref()
-                    .and_then(|href| resolve_link_url(&base_url, href));
-                  // Keep showing the hand cursor over links even when we reject the URL scheme (e.g.
-                  // `javascript:`).
-                  (resolved, CursorKind::Pointer)
-                }
-                HitTestKind::FormControl => (None, cursor_for_form_control(dom, hit.dom_node_id)),
-                _ => {
-                  let cursor = if box_id_is_selectable_text_for_document_cursor(box_tree, hit.box_id) {
-                    CursorKind::Text
-                  } else {
-                    CursorKind::Default
-                  };
-                  (None, cursor)
-                }
+
+              // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
+              // behaviour matches the platform. Only fall back to legacy heuristics when the computed
+              // cursor is `auto`.
+              let css_cursor_kind = box_node_by_id(box_tree, hit.box_id)
+                .and_then(|node| cursor_kind_from_css_cursor(node.style.cursor));
+
+              // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
+              let hovered_url = match hit.kind {
+                HitTestKind::Link => hit
+                  .href
+                  .as_deref()
+                  .and_then(|href| resolve_link_url(&base_url, href)),
+                _ => None,
               };
+
+              let cursor = match css_cursor_kind {
+                Some(cursor) => cursor,
+                None => match hit.kind {
+                  HitTestKind::Link => {
+                    // Keep showing the hand cursor over links even when we reject the URL scheme
+                    // (e.g. `javascript:`).
+                    CursorKind::Pointer
+                  }
+                  HitTestKind::FormControl => cursor_for_form_control(dom, hit.dom_node_id),
+                  _ => {
+                    if box_id_is_selectable_text_for_document_cursor(box_tree, hit.box_id) {
+                      CursorKind::Text
+                    } else {
+                      CursorKind::Default
+                    }
+                  }
+                },
+              };
+
               (hovered_url, cursor, Some(hit.dom_node_id), element_id)
             }
             None => (None, CursorKind::Default, None, None),

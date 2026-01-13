@@ -195,7 +195,7 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
     ))
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
-  assert_eq!(cursor, CursorKind::Default);
+  assert_eq!(cursor, CursorKind::Pointer);
   assert_eq!(hovered_url, None);
 
   // Hover input again, then ensure selects don't use the I-beam.
@@ -216,6 +216,132 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
     .send(support::pointer_move(
       tab_id,
       (15.0, 155.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Default);
+  assert_eq!(hovered_url, None);
+
+  worker.join().unwrap();
+}
+
+#[test]
+fn hover_changed_respects_computed_css_cursor_keywords() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let page_url = site.write(
+    "index.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body { margin: 0; padding: 0; }
+            .box { position: absolute; left: 10px; width: 140px; height: 24px; background: rgb(220, 220, 0); }
+            #crosshair { top: 10px; cursor: crosshair; }
+            #grab { top: 40px; cursor: grab; }
+            #grabbing { top: 70px; cursor: grabbing; }
+            #disabled { position: absolute; top: 100px; left: 10px; width: 140px; height: 24px; border: 1px solid #000; }
+            #details { position: absolute; top: 130px; left: 10px; margin: 0; }
+            #summary { display: block; width: 140px; height: 24px; background: rgb(180, 180, 255); }
+          </style>
+        </head>
+        <body>
+          <div id="crosshair" class="box">crosshair</div>
+          <div id="grab" class="box">grab</div>
+          <div id="grabbing" class="box">grabbing</div>
+          <input id="disabled" type="text" disabled value="disabled">
+          <details id="details" open>
+            <summary id="summary">Summary</summary>
+            <div>Details content</div>
+          </details>
+        </body>
+      </html>
+    "##,
+  );
+
+  let worker = spawn_ui_worker("fastr-ui-worker-hover-css-cursor").expect("spawn ui worker");
+  let tab_id = TabId(1);
+  worker
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (256, 220), 1.0))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      page_url,
+      NavigationReason::TypedUrl,
+    ))
+    .unwrap();
+
+  next_frame_ready(&worker.ui_rx, tab_id);
+
+  // Custom CSS cursor: crosshair.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 15.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Crosshair);
+  assert_eq!(hovered_url, None);
+
+  // Custom CSS cursor: grab.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 45.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Grab);
+  assert_eq!(hovered_url, None);
+
+  // Custom CSS cursor: grabbing.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 75.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Grabbing);
+  assert_eq!(hovered_url, None);
+
+  // UA stylesheet cursor: `<summary>` should use `cursor: pointer`.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 135.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Pointer);
+  assert_eq!(hovered_url, None);
+
+  // UA stylesheet cursor: disabled text inputs should use `cursor: default`.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 110.0),
       PointerButton::None,
     ))
     .unwrap();
