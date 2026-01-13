@@ -1460,6 +1460,9 @@ impl Document {
     }
 
     // The new node was inserted immediately after `node`, so it sits at `index + 1`.
+    //
+    // `index` is the split node's index in the parent *tree child* list (ShadowRoot-aware), which
+    // matches Range boundary-point offset semantics.
     let insertion_offset = index.saturating_add(1);
 
     for range in self.ranges.values_mut() {

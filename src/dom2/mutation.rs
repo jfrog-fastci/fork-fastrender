@@ -1072,16 +1072,23 @@ impl Document {
     if let Some(parent) = parent {
       // Find the Text node's index among its parent's child list so we can insert immediately after
       // it and perform the spec's splitText-specific live Range updates.
-      let index = self
+      let raw_index = self
         .index_of_child_internal(parent, node_id)?
         .ok_or(DomError::NotFoundError)?;
+      let tree_index = self
+        .tree_child_index_for_range(parent, node_id)
+        .unwrap_or_else(|| self.tree_child_index_from_raw_index_for_range(parent, raw_index));
 
       // Insert the new Text node immediately after the original node.
-      let reference = self.nodes[parent.index()].children.get(index + 1).copied();
+      let reference = self
+        .nodes[parent.index()]
+        .children
+        .get(raw_index + 1)
+        .copied();
       let _ = self.insert_before(parent, new_node, reference)?;
 
       // Live range updates for splitText (the extra steps beyond generic insert/replace-data).
-      self.live_range_split_text_steps(node_id, offset_utf16, new_node, parent, index);
+      self.live_range_split_text_steps(node_id, offset_utf16, new_node, parent, tree_index);
     }
 
     // Truncate the original node's data to the prefix [0, offset).

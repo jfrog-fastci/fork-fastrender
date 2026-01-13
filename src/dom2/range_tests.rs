@@ -660,6 +660,52 @@ fn range_split_text_moves_boundary_points_from_old_text_to_new_text() {
 }
 
 #[test]
+fn range_split_text_parent_offsets_ignore_shadow_root_pseudo_child() {
+  let mut doc: Document = parse_html(concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "hello",
+    "<span id=after></span>",
+    "</div>",
+  ))
+  .unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let after = doc.get_element_by_id("after").expect("after node not found");
+
+  let shadow_root = doc.node(host).children[0];
+  assert!(
+    matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+    "expected host to have an attached ShadowRoot pseudo-child"
+  );
+
+  let text = doc.node(host).children[1];
+  assert!(matches!(doc.node(text).kind, NodeKind::Text { .. }));
+  assert_eq!(
+    doc.node(host).children[2],
+    after,
+    "expected the light DOM <span> to follow the text node"
+  );
+
+  // Boundary point is immediately after the text node, expressed in the parent in *tree child*
+  // index space. With an attached ShadowRoot pseudo-child stored at raw index 0, this must still
+  // be offset 1.
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+  doc.range_set_end(range, host, 1).unwrap();
+
+  let _ = doc.split_text(text, 2).unwrap();
+
+  // The split inserts a new text node immediately after the original, so a boundary point at
+  // (host, 1) must shift to (host, 2). This must ignore the ShadowRoot pseudo-child.
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
 fn range_compare_boundary_points_returns_not_supported_error_before_root_check() {
   let mut doc: Document =
     parse_html("<!doctype html><html><body><p id=a>abcd</p></body></html>").unwrap();
