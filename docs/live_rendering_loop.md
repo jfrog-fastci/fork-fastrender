@@ -188,7 +188,8 @@ CSS animations are sampled when painting. FastRender supports two approaches:
   - For `BrowserDocumentDom2` there are helpers like
     `set_animation_time_ms(...)` / `set_animation_time(None)`.
   - When the value changes, the document marks paint dirty.
-- **Real-time sampling**: call `set_realtime_animations_enabled(true)` so that, when no explicit
+- **Real-time sampling**: call `BrowserDocumentDom2::set_realtime_animations_enabled(true)` so that,
+  when no explicit
   `RenderOptions.animation_time` override is present, each paint samples animations at the time
   elapsed since the first rendered frame after enabling.
 
