@@ -335,6 +335,13 @@ can disable layers during bring-up.
 The sandbox code maps these failures into structured errors (see `SandboxError` in
 `src/sandbox/mod.rs`).
 
+Linux-only preflight helper (repo reality):
+
+- `fastrender::sandbox::linux_preflight()` probes the current process/kernel for seccomp
+  compatibility *before* attempting to install the full renderer sandbox. This can produce more
+  actionable errors in environments where seccomp is unavailable or blocked (old kernels,
+  container policies that deny `seccomp()`/`prctl()`, already running in `SECCOMP_MODE_STRICT`, etc.).
+
 ### Landlock prerequisites / failure modes
 
 Landlock requires:

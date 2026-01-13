@@ -178,6 +178,9 @@ Linux sandbox code lives in:
   (`sandbox::spawn::configure_renderer_command`). Note: this cannot install the *full* renderer seccomp
   policy (it needs `execve(2)`); install the full sandbox early in the renderer process via
   `sandbox::apply_renderer_sandbox(...)`.
+- Optional compatibility probe: `fastrender::sandbox::linux_preflight()` (Linux-only) can be used by
+  tools/tests to check seccomp/no_new_privs support and required kernel seccomp actions before
+  attempting to install the full sandbox.
 
 Repo reality (today): the Linux seccomp sandbox is designed to:
 
