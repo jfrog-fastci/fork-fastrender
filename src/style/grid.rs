@@ -1280,9 +1280,6 @@ pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
   if !saw_subgrid {
     return None;
   }
-  if line_names.is_empty() {
-    line_names.push(Vec::new());
-  }
   Some(line_names)
 }
 
