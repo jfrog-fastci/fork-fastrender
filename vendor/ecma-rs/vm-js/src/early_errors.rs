@@ -3070,6 +3070,24 @@ mod tests {
   use crate::VmError;
   use diagnostics::Diagnostic;
 
+  fn assert_syntax_error(source: &str, opts: EarlyErrorOptions) {
+    let program = parse_js::parse(source).expect("parse source");
+    let mut tick = || Ok(());
+    let res = validate_top_level(&program.stx.body, opts, &mut tick);
+    match res {
+      Err(VmError::Syntax(diags)) => {
+        assert!(
+          !diags.is_empty(),
+          "expected at least one early error diagnostic, got empty list"
+        );
+        for d in diags {
+          let Diagnostic { .. } = d;
+        }
+      }
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
+
   #[test]
   fn private_name_decl_state_insert_returns_syntax_error_instead_of_panicking() {
     // Exercise the private-name declaration state insertion path in `visit_class_body` by
@@ -3090,5 +3108,50 @@ mod tests {
       }
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn strict_mode_disallows_yield_as_binding_identifier_in_patterns() {
+    assert_syntax_error(
+      "\"use strict\"; let { yield } = {};",
+      EarlyErrorOptions::script(true),
+    );
+  }
+
+  #[test]
+  fn generator_disallows_yield_as_binding_identifier_in_patterns() {
+    assert_syntax_error(
+      "function* g() { let { yield } = {}; }",
+      EarlyErrorOptions::script(false),
+    );
+  }
+
+  #[test]
+  fn strict_mode_disallows_yield_in_assignment_patterns() {
+    assert_syntax_error(
+      "\"use strict\"; for ({ yield } in [{}]) ;",
+      EarlyErrorOptions::script(true),
+    );
+  }
+
+  #[test]
+  fn async_function_disallows_await_as_binding_identifier_in_patterns() {
+    assert_syntax_error(
+      "async function f() { let { await } = {}; }",
+      EarlyErrorOptions::script(false),
+    );
+  }
+
+  #[test]
+  fn async_function_disallows_await_in_assignment_patterns() {
+    assert_syntax_error(
+      "async function f() { for ({ await } in [{}]) ; }",
+      EarlyErrorOptions::script(false),
+    );
+  }
+
+  #[test]
+  fn module_disallows_await_as_binding_identifier_in_patterns() {
+    assert_syntax_error("let { await } = {};", EarlyErrorOptions::module());
   }
 }
