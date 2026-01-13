@@ -7,16 +7,18 @@ use std::ptr;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-  ERROR_INSUFFICIENT_BUFFER, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+  ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
+use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Threading::{
-  CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+  CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
   InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute,
-  WaitForSingleObject, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
-  LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-  PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-  PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, STARTUPINFOW,
+  WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_UNICODE_ENVIRONMENT,
+  EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+  PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+  PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+  STARTUPINFOEXW, STARTUPINFOW,
 };
 
 /// Configuration for spawning a sandboxed Windows child process.
@@ -289,6 +291,13 @@ pub fn spawn_sandboxed(
 
   let b_inherit_handles = if cfg.inherit_handles.is_empty() { 0 } else { 1 };
 
+  let parent_in_job = {
+    let mut in_job: i32 = 0;
+    // SAFETY: `in_job` is a valid out param; null job handle queries "any job".
+    let ok = unsafe { IsProcessInJob(GetCurrentProcess(), ptr::null_mut(), &mut in_job) };
+    ok != 0 && in_job != 0
+  };
+
   // Build any requested attributes.
   //
   // Note: `AppContainerProfile` can be disabled (no SID). Treat that as "no AppContainer".
@@ -313,22 +322,39 @@ pub fn spawn_sandboxed(
     si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
 
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let ok = unsafe {
-      CreateProcessW(
-        exe_w.as_ptr(),
-        cmdline.as_mut_ptr(),
-        ptr::null(),
-        ptr::null(),
-        b_inherit_handles,
-        CREATE_UNICODE_ENVIRONMENT,
-        env_ptr as *const _ as *mut _,
-        current_dir_ptr,
-        &mut si,
-        &mut pi,
-      )
+    let mut create_process_inner = |flags: u32| -> std::result::Result<(), WinSandboxError> {
+      let ok = unsafe {
+        CreateProcessW(
+          exe_w.as_ptr(),
+          cmdline.as_mut_ptr(),
+          ptr::null(),
+          ptr::null(),
+          b_inherit_handles,
+          flags,
+          env_ptr as *const _ as *mut _,
+          current_dir_ptr,
+          &mut si,
+          &mut pi,
+        )
+      };
+      if ok == 0 {
+        return Err(WinSandboxError::last("CreateProcessW"));
+      }
+      Ok(())
     };
-    if ok == 0 {
-      return Err(WinSandboxError::last("CreateProcessW"));
+
+    let flags = CREATE_UNICODE_ENVIRONMENT;
+    if parent_in_job {
+      match create_process_inner(flags | CREATE_BREAKAWAY_FROM_JOB) {
+        Ok(()) => {}
+        Err(err) if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
+        {
+          create_process_inner(flags)?;
+        }
+        Err(err) => return Err(err),
+      }
+    } else {
+      create_process_inner(flags)?;
     }
 
     return Ok(ChildProcess {
@@ -395,22 +421,38 @@ pub fn spawn_sandboxed(
   let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
   let flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
 
-  let ok = unsafe {
-    CreateProcessW(
-      exe_w.as_ptr(),
-      cmdline.as_mut_ptr(),
-      ptr::null(),
-      ptr::null(),
-      b_inherit_handles,
-      flags,
-      env_ptr as *const _ as *mut _,
-      current_dir_ptr,
-      &mut si_ex.StartupInfo,
-      &mut pi,
-    )
+  let mut create_process_inner = |flags: u32| -> std::result::Result<(), WinSandboxError> {
+    let ok = unsafe {
+      CreateProcessW(
+        exe_w.as_ptr(),
+        cmdline.as_mut_ptr(),
+        ptr::null(),
+        ptr::null(),
+        b_inherit_handles,
+        flags,
+        env_ptr as *const _ as *mut _,
+        current_dir_ptr,
+        &mut si_ex.StartupInfo,
+        &mut pi,
+      )
+    };
+    if ok == 0 {
+      return Err(WinSandboxError::last("CreateProcessW"));
+    }
+    Ok(())
   };
-  if ok == 0 {
-    return Err(WinSandboxError::last("CreateProcessW"));
+
+  if parent_in_job {
+    match create_process_inner(flags | CREATE_BREAKAWAY_FROM_JOB) {
+      Ok(()) => {}
+      Err(err) if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
+      {
+        create_process_inner(flags)?;
+      }
+      Err(err) => return Err(err),
+    }
+  } else {
+    create_process_inner(flags)?;
   }
 
   Ok(ChildProcess {
