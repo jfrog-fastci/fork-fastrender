@@ -1515,6 +1515,18 @@ mod tests {
 
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
     assert!(html.contains("<form"), "expected about:newtab to include a <form>");
+    assert!(
+      html.contains("method=\"get\""),
+      "expected about:newtab search form to use method=get"
+    );
+    assert!(
+      html.contains("role=\"search\""),
+      "expected about:newtab search form to include role=search"
+    );
+    assert!(
+      html.contains("type=\"search\""),
+      "expected about:newtab search form to include a search <input>"
+    );
 
     const NEEDLE: &str = "fastrender_test_query";
     let replaced = DEFAULT_SEARCH_ENGINE_TEMPLATE.replace("{query}", NEEDLE);
