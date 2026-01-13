@@ -33252,11 +33252,9 @@ mod tests {
 
   // Nested character classes (RegExp set notation) require the `v` flag.
   //
-  // `vm-js` supports the `v` flag plumbing (parsing, canonicalization, and UnicodeMode semantics),
-  // but does not yet implement full set-notation parsing/execution (including nested classes).
-  // Keep this regression test ignored until that functionality lands.
+  // This regression test ensures the RegExp literal scanner correctly matches the closing `/`
+  // delimiter when Unicode Sets mode contains nested character classes (e.g. `/[[0-9]]/v`).
   #[test]
-  #[ignore = "vm-js does not yet implement nested RegExp set notation (v) character classes"]
   fn regexp_literal_nested_character_classes_v() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
