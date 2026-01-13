@@ -70,6 +70,8 @@ thread_local! {
 
   static GET_CALLS: Cell<u32> = const { Cell::new(0) };
   static GET_EXPECTED_THIS: Cell<Option<GcObject>> = const { Cell::new(None) };
+  static GET_EXPECTED_TARGET: Cell<Option<GcObject>> = const { Cell::new(None) };
+  static GET_EXPECTED_RECEIVER: Cell<Option<GcObject>> = const { Cell::new(None) };
 }
 
 fn own_keys_trap(
@@ -182,6 +184,17 @@ fn get_trap(
 
   // Args: [target, propertyKeyValue, receiver]
   assert_eq!(args.len(), 3);
+
+  let expected_target = GET_EXPECTED_TARGET
+    .with(|t| t.get())
+    .expect("GET_EXPECTED_TARGET should be set");
+  assert_eq!(args[0], Value::Object(expected_target));
+
+  let expected_receiver = GET_EXPECTED_RECEIVER
+    .with(|t| t.get())
+    .expect("GET_EXPECTED_RECEIVER should be set");
+  assert_eq!(args[2], Value::Object(expected_receiver));
+
   let Value::String(key_s) = args[1] else {
     return Err(VmError::TypeError("expected get trap key arg to be a string"));
   };
@@ -755,6 +768,8 @@ fn record_conversion_invokes_proxy_get_own_property_trap() -> Result<(), VmError
 fn record_conversion_invokes_proxy_get_trap() -> Result<(), VmError> {
   GET_CALLS.with(|c| c.set(0));
   GET_EXPECTED_THIS.with(|t| t.set(None));
+  GET_EXPECTED_TARGET.with(|t| t.set(None));
+  GET_EXPECTED_RECEIVER.with(|t| t.set(None));
 
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
@@ -782,6 +797,7 @@ fn record_conversion_invokes_proxy_get_trap() -> Result<(), VmError> {
 
   let handler = rt.alloc_object()?;
   GET_EXPECTED_THIS.with(|t| t.set(Some(handler)));
+  GET_EXPECTED_TARGET.with(|t| t.set(Some(target)));
 
   let get_key = rt.property_key("get")?;
   rt.define_data_property(
@@ -792,6 +808,7 @@ fn record_conversion_invokes_proxy_get_trap() -> Result<(), VmError> {
   )?;
 
   let proxy = rt.scope.alloc_proxy(Some(target), Some(handler))?;
+  GET_EXPECTED_RECEIVER.with(|t| t.set(Some(proxy)));
 
   let out = conversions::to_record(
     &mut rt,
