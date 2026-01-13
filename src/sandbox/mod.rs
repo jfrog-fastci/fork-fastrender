@@ -113,9 +113,7 @@ pub mod fd_sanitizer;
 pub mod spawn;
 
 pub use fd_sanitizer::{close_fds_except, set_cloexec_on_fds_except};
-
 use std::env::VarError;
-
 #[cfg(target_os = "linux")]
 mod linux_prelude;
 
