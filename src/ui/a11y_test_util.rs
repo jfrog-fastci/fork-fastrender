@@ -58,6 +58,27 @@ pub struct AccessKitConnectivitySnapshot {
   pub orphans: Vec<AccessKitNodeSnapshot>,
 }
 
+/// Assertion helper that fails the test if `update` contains orphan nodes.
+///
+/// This is intended for page-a11y subtree injection tests: if injected nodes are not connected to
+/// the tree root, they will show up as *orphans* (present in `update.nodes` but unreachable).
+pub fn assert_accesskit_update_has_no_orphans<'a, I>(
+  update: &'a accesskit::TreeUpdate,
+  root_id_fallback: Option<accesskit::NodeId>,
+  additional_nodes: I,
+) where
+  I: IntoIterator<Item = (accesskit::NodeId, &'a accesskit::Node)>,
+{
+  let snapshot =
+    accesskit_connectivity_snapshot_from_update(update, root_id_fallback, additional_nodes);
+  if snapshot.orphans.is_empty() {
+    return;
+  }
+  let pretty = serde_json::to_string_pretty(&snapshot)
+    .expect("accesskit connectivity snapshot must serialize to JSON");
+  panic!("AccessKit update contains orphan nodes (unreachable from root):\n{pretty}");
+}
+
 /// Convenience helper for tests that need to reason about multiple incremental AccessKit updates.
 ///
 /// `accesskit::TreeUpdate` objects can omit `tree` (and thus the root id) and may only contain the
@@ -599,6 +620,15 @@ pub fn accesskit_connectivity_pretty_json_from_full_output(output: &egui::FullOu
   accesskit_connectivity_pretty_json_from_platform_output(&output.platform_output)
 }
 
+pub fn assert_accesskit_platform_output_has_no_orphans(output: &egui::PlatformOutput) {
+  let update = accesskit_update_from_platform_output(output);
+  assert_accesskit_update_has_no_orphans(update, None, std::iter::empty());
+}
+
+pub fn assert_accesskit_full_output_has_no_orphans(output: &egui::FullOutput) {
+  assert_accesskit_platform_output_has_no_orphans(&output.platform_output);
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -780,5 +810,24 @@ mod tests {
         name: "orphan".to_string(),
       }]
     );
+  }
+
+  #[test]
+  #[should_panic(expected = "contains orphan nodes")]
+  fn assert_accesskit_update_has_no_orphans_panics_on_orphans() {
+    let root_id = id(1);
+    let orphan_id = id(2);
+    let mut classes = accesskit::NodeClassSet::new();
+    let root = node_with_classes(&mut classes, accesskit::Role::Window, "root", &[]);
+    let orphan = node_with_classes(&mut classes, accesskit::Role::Button, "orphan", &[]);
+    let update = accesskit::TreeUpdate {
+      nodes: vec![(root_id, root), (orphan_id, orphan)],
+      tree: Some(accesskit::Tree {
+        root: root_id,
+        root_scroller: None,
+      }),
+      focus: None,
+    };
+    assert_accesskit_update_has_no_orphans(&update, None, std::iter::empty());
   }
 }
