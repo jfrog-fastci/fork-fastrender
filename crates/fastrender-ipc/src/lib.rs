@@ -19,15 +19,18 @@ use url::Url;
 /// inline buffers.
 pub const MAX_IPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
-/// Hard cap on navigation URL string length (in bytes) when deriving site keys.
+/// Hard cap on URL string length (in bytes) accepted from an untrusted IPC peer.
 ///
 /// This is a defense-in-depth limit: even though IPC framing already caps message sizes, a
 /// compromised peer could still send multi-megabyte URL strings that would be expensive to parse
 /// with the `url` crate and could lead to unbounded CPU usage.
 ///
-/// When a URL exceeds this length, FastRender treats it as having an opaque origin for site
-/// isolation purposes.
-pub const MAX_SITE_KEY_URL_BYTES: usize = 8 * 1024;
+/// This cap is used by browser-side policy evaluation helpers (e.g. CSP `frame-src`) and site-key
+/// derivation.
+pub const MAX_UNTRUSTED_URL_BYTES: usize = 8 * 1024;
+
+/// Backwards-compatible alias for the site-key derivation URL cap.
+pub const MAX_SITE_KEY_URL_BYTES: usize = MAX_UNTRUSTED_URL_BYTES;
 
 /// Hard cap on how many subframes (iframes) a single frame may report for browser-side composition
 /// or hit testing.
@@ -536,7 +539,7 @@ impl SiteKeyFactory {
   /// - Unparseable/unsupported URLs: opaque.
   pub fn site_key_for_navigation(&self, url: &str, parent: Option<&SiteKey>) -> SiteKey {
     // Avoid pathological URL strings causing expensive parsing work.
-    if url.len() > MAX_SITE_KEY_URL_BYTES {
+    if url.len() > MAX_UNTRUSTED_URL_BYTES {
       return self.new_opaque();
     }
 

@@ -623,17 +623,21 @@ fn check_frame_src_labeled(
 ) -> Result<Url, String> {
   let Some(csp) = csp else {
     return resolve_for_csp(candidate, document_url, document_origin).ok_or_else(|| {
+      let candidate_display = format_candidate_for_error(candidate);
       format!(
         "Blocked by Content-Security-Policy ({}) for {label} URL (invalid URL): {candidate}",
-        CspDirective::FrameSrc.as_str()
+        CspDirective::FrameSrc.as_str(),
+        candidate = candidate_display,
       )
     });
   };
 
   let parsed = resolve_for_csp(candidate, document_url, document_origin).ok_or_else(|| {
+    let candidate_display = format_candidate_for_error(candidate);
     format!(
       "Blocked by Content-Security-Policy ({}) for {label} URL (invalid URL): {candidate}",
-      CspDirective::FrameSrc.as_str()
+      CspDirective::FrameSrc.as_str(),
+      candidate = candidate_display,
     )
   })?;
 
@@ -703,10 +707,14 @@ fn resolve_for_csp(
   if candidate.is_empty() {
     return None;
   }
+  if candidate.len() > crate::MAX_UNTRUSTED_URL_BYTES {
+    return None;
+  }
   Url::parse(candidate)
     .ok()
     .or_else(|| {
       document_url
+        .filter(|base| base.len() <= crate::MAX_UNTRUSTED_URL_BYTES)
         .and_then(|base| Url::parse(base).ok())
         .and_then(|base| base.join(candidate).ok())
     })
@@ -716,6 +724,15 @@ fn resolve_for_csp(
         .and_then(|origin| Url::parse(&format!("{origin}/")).ok())
         .and_then(|base| base.join(candidate).ok())
     })
+}
+
+fn format_candidate_for_error(candidate: &str) -> String {
+  let candidate = trim_ascii_whitespace(candidate);
+  if candidate.len() > crate::MAX_UNTRUSTED_URL_BYTES {
+    format!("<too long: {} bytes>", candidate.len())
+  } else {
+    candidate.to_string()
+  }
 }
 
 #[cfg(test)]
@@ -809,6 +826,28 @@ mod tests {
     assert_eq!(
       err,
       "Blocked by Content-Security-Policy (frame-src) for requested URL (invalid URL): http://example.com:99999/"
+    );
+  }
+
+  #[test]
+  fn overly_long_frame_src_candidate_reports_invalid_url_without_echoing_input() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed("https://example.com/".to_string(), Vec::new());
+
+    let long = "a".repeat(crate::MAX_UNTRUSTED_URL_BYTES + 1);
+    let err = frame
+      .check_frame_src(&long)
+      .expect_err("expected overly long URL to be rejected");
+
+    let expected = format!(
+      "Blocked by Content-Security-Policy (frame-src) for requested URL (invalid URL): <too long: {} bytes>",
+      crate::MAX_UNTRUSTED_URL_BYTES + 1
+    );
+    assert_eq!(err, expected);
+    assert!(
+      err.len() < 200,
+      "expected diagnostic to stay small even for huge inputs (len={}, err={err:?})",
+      err.len()
     );
   }
 
