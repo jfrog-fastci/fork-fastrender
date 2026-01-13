@@ -1,12 +1,26 @@
 use crate::geometry::Rect;
 use crate::image_loader::ImageCache;
 use crate::paint::svg_filter::{apply_svg_filter, parse_svg_filter_from_svg_document};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use image::codecs::png::PngEncoder;
+use image::ColorType;
+use image::ImageEncoder;
 use resvg::usvg;
 use tiny_skia::{Pixmap, Transform};
 
 fn rgba_at(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
   let px = pixmap.pixel(x, y).expect("pixel in bounds");
   [px.red(), px.green(), px.blue(), px.alpha()]
+}
+
+fn encode_png_data_url_rgba(pixels: &[u8], width: u32, height: u32) -> String {
+  let mut buffer = Vec::new();
+  let encoder = PngEncoder::new(&mut buffer);
+  encoder
+    .write_image(pixels, width, height, ColorType::Rgba8.into())
+    .expect("encode png");
+  format!("data:image/png;base64,{}", BASE64.encode(buffer))
 }
 
 fn assert_pixmaps_match_with_tolerance(actual: &Pixmap, expected: &Pixmap, tolerance: u8) {
@@ -509,4 +523,68 @@ fn svg_filter_resvg_offset_fractional_dx_dy_interpolates() {
     (10, 10),
     1,
   );
+}
+
+#[test]
+fn svg_filter_resvg_fe_image_preserve_aspect_ratio_align_and_slice() {
+  // A non-square raster image (12×6) with distinct colors so alignment/cropping is observable.
+  let src_w = 12u32;
+  let src_h = 6u32;
+  let mut wide_pixels = vec![0u8; (src_w * src_h * 4) as usize];
+  for y in 0..src_h {
+    for x in 0..src_w {
+      let idx = ((y * src_w + x) * 4) as usize;
+      if x < src_w / 2 {
+        // Red left half.
+        wide_pixels[idx..idx + 4].copy_from_slice(&[255, 0, 0, 255]);
+      } else {
+        // Green right half.
+        wide_pixels[idx..idx + 4].copy_from_slice(&[0, 255, 0, 255]);
+      }
+    }
+  }
+  let wide_href = encode_png_data_url_rgba(&wide_pixels, src_w, src_h);
+
+  // A trivial 1×1 pixel source graphic for the filtered <image> element.
+  let source_href = encode_png_data_url_rgba(&[255, 255, 255, 255], 1, 1);
+
+  let dest = 12u32;
+  let bbox = Rect::from_xywh(0.0, 0.0, dest as f32, dest as f32);
+
+  let svg_for_par = |par: &str| {
+    format!(
+      r#"
+      <svg xmlns="http://www.w3.org/2000/svg" width="{dest}" height="{dest}">
+        <defs>
+          <filter id="f" x="0" y="0" width="{dest}" height="{dest}"
+                  filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+                  color-interpolation-filters="sRGB">
+            <feFlood flood-color="rgb(0,0,255)" result="bg"/>
+            <feImage href="{wide_href}" x="0" y="0" width="{dest}" height="{dest}"
+                     preserveAspectRatio="{par}" result="img"/>
+            <feComposite in="img" in2="bg" operator="over"/>
+          </filter>
+        </defs>
+        <image x="0" y="0" width="{dest}" height="{dest}" href="{source_href}" filter="url(#f)"/>
+      </svg>
+    "#
+    )
+  };
+
+  let svg_meet = svg_for_par("xMinYMin meet");
+  let svg_slice = svg_for_par("xMaxYMax slice");
+
+  // Sanity check: these two modes should produce visibly different output (bottom padding vs no
+  // padding).
+  let expected_meet = render_svg_resvg(&svg_meet, dest, dest);
+  let expected_slice = render_svg_resvg(&svg_slice, dest, dest);
+  assert_ne!(
+    rgba_at(&expected_meet, 1, dest - 2),
+    rgba_at(&expected_slice, 1, dest - 2),
+    "expected meet vs slice to differ at a bottom pixel"
+  );
+
+  // Parity against resvg for both meet alignment and slice cropping.
+  assert_svg_filter_matches_resvg(&svg_meet, "f", bbox, (dest, dest), 0);
+  assert_svg_filter_matches_resvg(&svg_slice, "f", bbox, (dest, dest), 0);
 }

@@ -874,19 +874,145 @@ impl SvgLength {
   }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PreserveAspectRatio {
+  /// `none` disables uniform scaling. The source image is scaled non-uniformly to exactly fill the
+  /// destination rectangle.
   None,
-  XMidYMidMeet,
+  /// Any of the `x*Y*` alignments with optional `meet`/`slice`.
+  Aligned {
+    align: PreserveAspectAlign,
+    meet_or_slice: PreserveAspectMeetOrSlice,
+  },
+}
+
+impl Default for PreserveAspectRatio {
+  fn default() -> Self {
+    PreserveAspectRatio::Aligned {
+      align: PreserveAspectAlign::XMidYMid,
+      meet_or_slice: PreserveAspectMeetOrSlice::Meet,
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreserveAspectAlign {
+  XMinYMin,
+  XMidYMin,
+  XMaxYMin,
+  XMinYMid,
+  XMidYMid,
+  XMaxYMid,
+  XMinYMax,
+  XMidYMax,
+  XMaxYMax,
+}
+
+impl PreserveAspectAlign {
+  fn parse(token: &str) -> Option<Self> {
+    if token.eq_ignore_ascii_case("xMinYMin") {
+      Some(PreserveAspectAlign::XMinYMin)
+    } else if token.eq_ignore_ascii_case("xMidYMin") {
+      Some(PreserveAspectAlign::XMidYMin)
+    } else if token.eq_ignore_ascii_case("xMaxYMin") {
+      Some(PreserveAspectAlign::XMaxYMin)
+    } else if token.eq_ignore_ascii_case("xMinYMid") {
+      Some(PreserveAspectAlign::XMinYMid)
+    } else if token.eq_ignore_ascii_case("xMidYMid") {
+      Some(PreserveAspectAlign::XMidYMid)
+    } else if token.eq_ignore_ascii_case("xMaxYMid") {
+      Some(PreserveAspectAlign::XMaxYMid)
+    } else if token.eq_ignore_ascii_case("xMinYMax") {
+      Some(PreserveAspectAlign::XMinYMax)
+    } else if token.eq_ignore_ascii_case("xMidYMax") {
+      Some(PreserveAspectAlign::XMidYMax)
+    } else if token.eq_ignore_ascii_case("xMaxYMax") {
+      Some(PreserveAspectAlign::XMaxYMax)
+    } else {
+      None
+    }
+  }
+
+  fn factors(self) -> (f32, f32) {
+    match self {
+      PreserveAspectAlign::XMinYMin => (0.0, 0.0),
+      PreserveAspectAlign::XMidYMin => (0.5, 0.0),
+      PreserveAspectAlign::XMaxYMin => (1.0, 0.0),
+      PreserveAspectAlign::XMinYMid => (0.0, 0.5),
+      PreserveAspectAlign::XMidYMid => (0.5, 0.5),
+      PreserveAspectAlign::XMaxYMid => (1.0, 0.5),
+      PreserveAspectAlign::XMinYMax => (0.0, 1.0),
+      PreserveAspectAlign::XMidYMax => (0.5, 1.0),
+      PreserveAspectAlign::XMaxYMax => (1.0, 1.0),
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreserveAspectMeetOrSlice {
+  Meet,
+  Slice,
 }
 
 impl PreserveAspectRatio {
+  /// Parse `preserveAspectRatio` per SVG rules.
+  ///
+  /// - Tokens are separated by ASCII whitespace.
+  /// - Keywords are ASCII case-insensitive.
+  /// - Unknown tokens (including extra tokens) fall back to the default `xMidYMid meet`.
   fn parse(attr: Option<&str>) -> PreserveAspectRatio {
     let raw = trim_ascii_whitespace(attr.unwrap_or(""));
-    if raw.eq_ignore_ascii_case("none") {
-      PreserveAspectRatio::None
+    if raw.is_empty() {
+      return PreserveAspectRatio::default();
+    }
+
+    let mut tokens = split_ascii_whitespace(raw);
+    let Some(mut first) = tokens.next() else {
+      return PreserveAspectRatio::default();
+    };
+
+    // SVG allows an optional leading `defer` keyword (primarily for <symbol>/<view>). Accept it to
+    // be resilient when filters are authored with it.
+    if first.eq_ignore_ascii_case("defer") {
+      first = match tokens.next() {
+        Some(t) => t,
+        None => return PreserveAspectRatio::default(),
+      };
+    }
+
+    if first.eq_ignore_ascii_case("none") {
+      match tokens.next() {
+        None => PreserveAspectRatio::None,
+        Some(tok) if tok.eq_ignore_ascii_case("meet") || tok.eq_ignore_ascii_case("slice") => {
+          if tokens.next().is_some() {
+            PreserveAspectRatio::default()
+          } else {
+            // `meet`/`slice` is ignored when `align="none"` in SVG.
+            PreserveAspectRatio::None
+          }
+        }
+        Some(_) => PreserveAspectRatio::default(),
+      }
     } else {
-      PreserveAspectRatio::XMidYMidMeet
+      let Some(align) = PreserveAspectAlign::parse(first) else {
+        return PreserveAspectRatio::default();
+      };
+
+      let meet_or_slice = match tokens.next() {
+        None => PreserveAspectMeetOrSlice::Meet,
+        Some(tok) if tok.eq_ignore_ascii_case("meet") => PreserveAspectMeetOrSlice::Meet,
+        Some(tok) if tok.eq_ignore_ascii_case("slice") => PreserveAspectMeetOrSlice::Slice,
+        Some(_) => return PreserveAspectRatio::default(),
+      };
+
+      if tokens.next().is_some() {
+        return PreserveAspectRatio::default();
+      }
+
+      PreserveAspectRatio::Aligned {
+        align,
+        meet_or_slice,
+      }
     }
   }
 }
@@ -910,7 +1036,7 @@ impl ImagePrimitive {
       y: SvgLength::Percent(0.0),
       width: SvgLength::Percent(1.0),
       height: SvgLength::Percent(1.0),
-      preserve_aspect_ratio: PreserveAspectRatio::XMidYMidMeet,
+      preserve_aspect_ratio: PreserveAspectRatio::default(),
       units: SvgCoordinateUnits::ObjectBoundingBox,
     }
   }
@@ -1218,7 +1344,27 @@ fn hash_image_primitive(prim: &ImagePrimitive, state: &mut impl Hasher) {
   hash_length(&prim.height, state);
   match prim.preserve_aspect_ratio {
     PreserveAspectRatio::None => state.write_u8(0),
-    PreserveAspectRatio::XMidYMidMeet => state.write_u8(1),
+    PreserveAspectRatio::Aligned {
+      align,
+      meet_or_slice,
+    } => {
+      state.write_u8(1);
+      state.write_u8(match align {
+        PreserveAspectAlign::XMinYMin => 0,
+        PreserveAspectAlign::XMidYMin => 1,
+        PreserveAspectAlign::XMaxYMin => 2,
+        PreserveAspectAlign::XMinYMid => 3,
+        PreserveAspectAlign::XMidYMid => 4,
+        PreserveAspectAlign::XMaxYMid => 5,
+        PreserveAspectAlign::XMinYMax => 6,
+        PreserveAspectAlign::XMidYMax => 7,
+        PreserveAspectAlign::XMaxYMax => 8,
+      });
+      state.write_u8(match meet_or_slice {
+        PreserveAspectMeetOrSlice::Meet => 0,
+        PreserveAspectMeetOrSlice::Slice => 1,
+      });
+    }
   }
   match prim.units {
     SvgCoordinateUnits::ObjectBoundingBox => state.write_u8(0),
@@ -2824,7 +2970,7 @@ fn parse_fe_image(
   let y = SvgLength::parse(node.attribute("y"), SvgLength::Percent(0.0));
   let width = SvgLength::parse(node.attribute("width"), SvgLength::Percent(1.0));
   let height = SvgLength::parse(node.attribute("height"), SvgLength::Percent(1.0));
-  let preserve_aspect_ratio = PreserveAspectRatio::parse(node.attribute("preserveAspectRatio"));
+  let preserve_aspect_ratio = PreserveAspectRatio::parse(attribute_ci(node, "preserveAspectRatio"));
   Some(FilterPrimitive::Image(ImagePrimitive {
     pixmap,
     x,
@@ -4408,7 +4554,7 @@ fn apply_primitive(
       source.pixmap.width(),
       source.pixmap.height(),
       filter_region,
-    ),
+    )?,
     FilterPrimitive::Tile { input } => {
       let Some(img) = resolve_input(
         input,
@@ -4727,12 +4873,15 @@ fn render_fe_image(
   target_width: u32,
   target_height: u32,
   primitive_region: Rect,
-) -> Option<FilterResult> {
-  let mut out = new_pixmap(target_width.max(1), target_height.max(1))?;
+) -> RenderResult<Option<FilterResult>> {
+  check_active(RenderStage::Paint)?;
+  let Some(mut out) = new_pixmap(target_width.max(1), target_height.max(1)) else {
+    return Ok(None);
+  };
   let src_w = prim.pixmap.width() as f32;
   let src_h = prim.pixmap.height() as f32;
   if src_w == 0.0 || src_h == 0.0 {
-    return Some(FilterResult::full_region(out, primitive_region));
+    return Ok(Some(FilterResult::full_region(out, primitive_region)));
   }
 
   let scale_x = if scale_x.is_finite() && scale_x > 0.0 {
@@ -4767,7 +4916,7 @@ fn render_fe_image(
     || !dest_w.is_finite()
     || !dest_h.is_finite()
   {
-    return Some(FilterResult::full_region(out, primitive_region));
+    return Ok(Some(FilterResult::full_region(out, primitive_region)));
   }
 
   let mut paint = PixmapPaint::default();
@@ -4781,26 +4930,42 @@ fn render_fe_image(
       let scale_x = dest_w / src_w;
       let scale_y = dest_h / src_h;
       if !scale_x.is_finite() || !scale_y.is_finite() {
-        return Some(FilterResult::full_region(out, primitive_region));
+        return Ok(Some(FilterResult::full_region(out, primitive_region)));
       }
       let transform = Transform::from_row(scale_x, 0.0, 0.0, scale_y, dest_x, dest_y);
       out.draw_pixmap(0, 0, prim.pixmap.as_ref(), &paint, transform, None);
     }
-    PreserveAspectRatio::XMidYMidMeet => {
-      let scale = (dest_w / src_w).min(dest_h / src_h);
+    PreserveAspectRatio::Aligned {
+      align,
+      meet_or_slice,
+    } => {
+      let scale_x = dest_w / src_w;
+      let scale_y = dest_h / src_h;
+      let scale = match meet_or_slice {
+        PreserveAspectMeetOrSlice::Meet => scale_x.min(scale_y),
+        PreserveAspectMeetOrSlice::Slice => scale_x.max(scale_y),
+      };
       if !scale.is_finite() || scale <= 0.0 {
-        return Some(FilterResult::full_region(out, primitive_region));
+        return Ok(Some(FilterResult::full_region(out, primitive_region)));
       }
       let scaled_w = src_w * scale;
       let scaled_h = src_h * scale;
-      let offset_x = dest_x + (dest_w - scaled_w) * 0.5;
-      let offset_y = dest_y + (dest_h - scaled_h) * 0.5;
+      let (fx, fy) = align.factors();
+      let offset_x = dest_x + (dest_w - scaled_w) * fx;
+      let offset_y = dest_y + (dest_h - scaled_h) * fy;
       let transform = Transform::from_row(scale, 0.0, 0.0, scale, offset_x, offset_y);
       out.draw_pixmap(0, 0, prim.pixmap.as_ref(), &paint, transform, None);
+
+      // For `slice`, the scaled image overflows the destination box and must be cropped to the
+      // `feImage` viewport. Clipping at the primitive subregion is not sufficient because the
+      // filter primitive region may exceed the `feImage` destination rectangle.
+      if matches!(meet_or_slice, PreserveAspectMeetOrSlice::Slice) {
+        clip_to_region(&mut out, dest_region)?;
+      }
     }
   }
 
-  Some(FilterResult::new(out, dest_region, primitive_region))
+  Ok(Some(FilterResult::new(out, dest_region, primitive_region)))
 }
 
 fn lighting_color_in_space(
@@ -6818,11 +6983,70 @@ mod unit_tests {
     ));
     assert!(matches!(
       PreserveAspectRatio::parse(Some(&format!("{nbsp}none"))),
-      PreserveAspectRatio::XMidYMidMeet
+      PreserveAspectRatio::Aligned {
+        align: PreserveAspectAlign::XMidYMid,
+        meet_or_slice: PreserveAspectMeetOrSlice::Meet
+      }
     ));
 
     assert_eq!(parse_number(Some("1")), 1.0);
     assert_eq!(parse_number(Some(&format!("{nbsp}1"))), 0.0);
+  }
+
+  #[test]
+  fn preserve_aspect_ratio_parses_align_and_meet_or_slice() {
+    assert_eq!(
+      PreserveAspectRatio::parse(Some("none")),
+      PreserveAspectRatio::None
+    );
+
+    assert_eq!(
+      PreserveAspectRatio::parse(Some("xMinYMin meet")),
+      PreserveAspectRatio::Aligned {
+        align: PreserveAspectAlign::XMinYMin,
+        meet_or_slice: PreserveAspectMeetOrSlice::Meet,
+      }
+    );
+
+    assert_eq!(
+      PreserveAspectRatio::parse(Some("xMaxYMax slice")),
+      PreserveAspectRatio::Aligned {
+        align: PreserveAspectAlign::XMaxYMax,
+        meet_or_slice: PreserveAspectMeetOrSlice::Slice,
+      }
+    );
+
+    // Unknown keywords fall back to the SVG default.
+    assert_eq!(
+      PreserveAspectRatio::parse(Some("xMinYMin unknown")),
+      PreserveAspectRatio::default()
+    );
+  }
+
+  #[test]
+  fn fe_image_preserve_aspect_ratio_attribute_name_is_case_insensitive() {
+    // 1×1 opaque PNG pixel (L=233, A=255), copied from `src/image_loader/tests.rs`.
+    const PIXEL_PNG: &str =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mN8+R8AAtcB6oaHtZcAAAAASUVORK5CYII=";
+
+    let svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg">
+        <filter id="f">
+          <feImage href="data:image/png;base64,{PIXEL_PNG}" preserveaspectratio="none" />
+        </filter>
+      </svg>"#
+    );
+
+    let cache = ImageCache::new();
+    let filter = parse_filter_definition(&svg, Some("f"), &cache).expect("filter");
+
+    let FilterPrimitive::Image(prim) = &filter.steps[0].primitive else {
+      panic!(
+        "expected feImage primitive, got {:?}",
+        filter.steps[0].primitive
+      );
+    };
+    assert_eq!(prim.preserve_aspect_ratio, PreserveAspectRatio::None);
   }
 
   #[test]
