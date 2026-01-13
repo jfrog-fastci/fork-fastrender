@@ -1536,8 +1536,7 @@ reason = "vm-js: RegExp named capture groups / match result `.groups` semantics 
 
 [[expectations]]
 id = "built-ins/RegExp/prototype/exec/regexp-builtin-exec-v-u-flag.js"
-status = "xfail"
-reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/RegExp/named-groups/**"
@@ -1696,23 +1695,19 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js"
-status = "xfail"
-reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js"
-status = "xfail"
-reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/search/regexp-prototype-search-v-flag.js"
-status = "xfail"
-reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/search/regexp-prototype-search-v-u-flag.js"
-status = "xfail"
-reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/S15.5.4.11_A3_T1.js"
@@ -1736,8 +1731,7 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag.js"
-status = "xfail"
-reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/replaceValue-evaluation-order-regexp-object.js"
