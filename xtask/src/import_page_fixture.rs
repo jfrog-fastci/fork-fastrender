@@ -47,10 +47,14 @@ pub struct ImportPageFixtureArgs {
   pub include_media: bool,
 
   /// Maximum total bytes of vendored media assets when `--include-media` is set (0 = unlimited).
+  ///
+  /// Defaults to 5MiB.
   #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MEDIA_MAX_BYTES)]
   pub media_max_bytes: u64,
 
   /// Maximum bytes per vendored media asset when `--include-media` is set (0 = unlimited).
+  ///
+  /// Defaults to 2MiB.
   #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MEDIA_MAX_FILE_BYTES)]
   pub media_max_file_bytes: u64,
 

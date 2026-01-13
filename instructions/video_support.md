@@ -181,6 +181,19 @@ Create/collect test videos in various formats:
 - `test_av1_opus.mp4` - Modern format
 - Various resolutions: 360p, 720p, 1080p, 4K
 
+When importing offline page fixtures that need **playable** media (e.g. to exercise `<video>` in the
+windowed `browser` UI), note that `xtask import-page-fixture` rewrites media sources to deterministic
+empty placeholder files by default to keep fixtures small.
+
+Opt in to vendoring media bytes with:
+
+```bash
+bash scripts/cargo_agent.sh xtask import-page-fixture <bundle.tar> <fixture_name> --include-media
+```
+
+Safety: vendored media is capped by `--media-max-bytes` (total) and `--media-max-file-bytes` (per
+file). Set either to `0` to disable the limit if you intentionally need larger files.
+
 ### Test pages
 
 ```html
