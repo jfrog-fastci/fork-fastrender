@@ -5849,25 +5849,43 @@ impl TouchGestureRecognizer {
     });
   }
 
-  fn touch_move(&mut self, id: u64, pos_points: (f32, f32)) {
+  /// Update the active touch gesture with a new position.
+  ///
+  /// When the gesture transitions into a drag (movement exceeds the configured slop radius), this
+  /// returns the most recent finger delta (in egui points) so callers can translate it into a scroll
+  /// delta.
+  fn touch_move(&mut self, id: u64, pos_points: (f32, f32)) -> Option<(f32, f32)> {
     let Some(active) = self.active.as_mut() else {
-      return;
+      return None;
     };
     if active.id != id {
-      return;
+      return None;
     }
 
+    let prev_pos_points = active.last_pos_points;
     active.last_pos_points = pos_points;
-    if active.moved_too_far || active.long_press_triggered {
-      return;
+    let delta_points = (
+      pos_points.0 - prev_pos_points.0,
+      pos_points.1 - prev_pos_points.1,
+    );
+    if active.long_press_triggered {
+      return None;
     }
 
-    let dx = pos_points.0 - active.start_pos_points.0;
-    let dy = pos_points.1 - active.start_pos_points.1;
-    let dist2 = dx * dx + dy * dy;
-    let max_dist2 = self.slop_radius_points * self.slop_radius_points;
-    if dist2 > max_dist2 {
-      active.moved_too_far = true;
+    if !active.moved_too_far {
+      let dx = pos_points.0 - active.start_pos_points.0;
+      let dy = pos_points.1 - active.start_pos_points.1;
+      let dist2 = dx * dx + dy * dy;
+      let max_dist2 = self.slop_radius_points * self.slop_radius_points;
+      if dist2 > max_dist2 {
+        active.moved_too_far = true;
+      }
+    }
+
+    if active.moved_too_far && (delta_points.0 != 0.0 || delta_points.1 != 0.0) {
+      Some(delta_points)
+    } else {
+      None
     }
   }
 
@@ -13599,6 +13617,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
   fn handle_winit_input_event(&mut self, event: &winit::event::WindowEvent<'_>) {
     use winit::event::ElementState;
     use winit::event::Ime;
+    use winit::event::TouchPhase;
     use winit::event::VirtualKeyCode;
     use winit::event::WindowEvent;
 
@@ -14155,9 +14174,53 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               .touch_start(touch.id, now, (pos_points.x, pos_points.y));
           }
           TouchPhase::Moved => {
-            self
+            let Some(delta_points) = self
               .touch_gesture
-              .touch_move(touch.id, (pos_points.x, pos_points.y));
+              .touch_move(touch.id, (pos_points.x, pos_points.y))
+            else {
+              return;
+            };
+
+            // Touch-drag scrolling should never scroll stale content under the loading overlay.
+            if self.page_loading_overlay_blocks_input {
+              return;
+            }
+            let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) else {
+              return;
+            };
+            let Some(mapping) = self.page_input_mapping else {
+              return;
+            };
+            let Some(pointer_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+              return;
+            };
+
+            // Convert finger delta in points → CSS pixels.
+            //
+            // `wheel_delta_to_delta_css` already applies the correct points→CSS scaling and also
+            // flips the sign into "document scroll" semantics (down increases scroll_y). That sign
+            // convention matches touch-drag scrolling (finger moves down → scroll up), so we can
+            // reuse it here.
+            let Some(delta_css) = mapping.wheel_delta_to_delta_css(fastrender::ui::WheelDelta::Points(
+              egui::vec2(delta_points.0, delta_points.1),
+            )) else {
+              return;
+            };
+            if delta_css.0 == 0.0 && delta_css.1 == 0.0 {
+              return;
+            }
+
+            self.page_has_focus = true;
+            self.cursor_in_page = true;
+            self
+              .overlay_scrollbar_visibility
+              .register_interaction(std::time::Instant::now());
+            self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+              tab_id,
+              delta_css,
+              pointer_css: Some(pointer_css),
+            });
+            self.window.request_redraw();
           }
           TouchPhase::Ended => {
             let action = self
@@ -18633,6 +18696,60 @@ mod touch_long_press_tests {
     ));
     assert_eq!(
       recognizer.touch_end(1, t0 + Duration::from_millis(650), (5.0, 5.0)),
+      None
+    );
+  }
+}
+
+#[cfg(test)]
+mod touch_scroll_gesture_tests {
+  use super::{TouchGestureAction, TouchGestureRecognizer};
+  use std::time::{Duration, Instant};
+
+  #[test]
+  fn tap_returns_tap_action() {
+    let mut recognizer = TouchGestureRecognizer::new_with_config(Duration::from_millis(500), 4.0);
+    let t0 = Instant::now();
+    recognizer.touch_start(1, t0, (10.0, 20.0));
+    assert_eq!(
+      recognizer.touch_end(1, t0 + Duration::from_millis(20), (10.0, 20.0)),
+      Some(TouchGestureAction::Tap {
+        pos_points: (10.0, 20.0)
+      })
+    );
+  }
+
+  #[test]
+  fn small_jitter_still_counts_as_tap() {
+    let mut recognizer = TouchGestureRecognizer::new_with_config(Duration::from_millis(500), 4.0);
+    let t0 = Instant::now();
+    recognizer.touch_start(1, t0, (0.0, 0.0));
+    // Within slop radius: should not be treated as a drag.
+    assert_eq!(recognizer.touch_move(1, (3.0, 0.0)), None);
+    assert_eq!(
+      recognizer.touch_end(1, t0 + Duration::from_millis(20), (3.0, 0.0)),
+      Some(TouchGestureAction::Tap {
+        pos_points: (3.0, 0.0)
+      })
+    );
+  }
+
+  #[test]
+  fn drag_emits_scroll_deltas_and_suppresses_tap() {
+    let mut recognizer = TouchGestureRecognizer::new_with_config(Duration::from_millis(500), 4.0);
+    let t0 = Instant::now();
+    recognizer.touch_start(1, t0, (0.0, 0.0));
+
+    // Move beyond slop radius: should be treated as a drag and return finger deltas.
+    assert_eq!(recognizer.touch_move(1, (0.0, 10.0)), Some((0.0, 10.0)));
+    assert_eq!(recognizer.touch_move(1, (0.0, 18.0)), Some((0.0, 8.0)));
+
+    // Drag gestures should not trigger long-press context menus.
+    assert_eq!(recognizer.tick(t0 + Duration::from_millis(600)), None);
+
+    // Drag gestures should not be synthesised as a click on release.
+    assert_eq!(
+      recognizer.touch_end(1, t0 + Duration::from_millis(650), (0.0, 18.0)),
       None
     );
   }
