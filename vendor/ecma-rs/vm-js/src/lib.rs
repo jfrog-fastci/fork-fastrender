@@ -399,6 +399,8 @@ pub use crate::promise_ops::perform_promise_then_with_result_capability;
 pub use crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks;
 pub use crate::promise_ops::promise_resolve;
 pub use crate::promise_ops::promise_resolve_with_host_and_hooks;
+pub use crate::promise_ops::promise_resolve_thenable_immediate;
+pub use crate::promise_ops::promise_resolve_thenable_immediate_with_host_and_hooks;
 pub use crate::promise_rejection_tracker::AboutToBeNotifiedBatch;
 pub use crate::promise_rejection_tracker::PromiseRejectionHandleAction;
 pub use crate::promise_rejection_tracker::PromiseRejectionTracker;
