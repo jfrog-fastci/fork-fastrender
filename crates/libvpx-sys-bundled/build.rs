@@ -221,6 +221,17 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         make_env.clone()
     };
 
+    // libvpx's build uses GNU-make specific features. On macOS the system `make` is BSD make, which
+    // will fail with confusing errors ("missing separator", etc). Detect this early and emit a
+    // clear hint.
+    if target_os == "macos" && effective_make == "make" && !is_gnu_make(&effective_make) {
+        unsupported(
+            &target,
+            &host,
+            "libvpx build requires GNU make. Install GNU make (e.g. `brew install make`) and ensure `gmake` is in PATH, or set `MAKE=gmake`.",
+        );
+    }
+
     let source_tree_hash = hash_dir_contents(&src_dir);
     let build_fingerprint = format!(
         "target={target}\nhost={host}\ncc={cc}\ncxx={cxx}\ncflags={cflags}\nar={ar}\nmake={effective_make}\nas={effective_as}\ncross={effective_cross}\nlibvpx_source_tree_hash={source_tree_hash}\nconfigure_args={}\n",
@@ -580,4 +591,18 @@ fn tool_in_path(tool: &str) -> bool {
         }
     }
     false
+}
+
+fn is_gnu_make(make: &str) -> bool {
+    let out = Command::new(make).arg("--version").output();
+    match out {
+        Ok(out) => {
+            let mut combined = Vec::new();
+            combined.extend_from_slice(&out.stdout);
+            combined.extend_from_slice(&out.stderr);
+            let text = String::from_utf8_lossy(&combined);
+            text.contains("GNU Make")
+        }
+        Err(_) => false,
+    }
 }
