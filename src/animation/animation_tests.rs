@@ -1364,6 +1364,41 @@ fn transform_matrix_decomposition_handles_list_length_mismatch() {
 }
 
 #[test]
+fn transform_interpolation_preserves_matching_prefix_and_matrix_interpolates_remainder() {
+  let sheet = parse_stylesheet(
+    "@keyframes mix { from { transform: rotate(0deg) scale(1) translateX(20px); } to { transform: rotate(270deg) translateX(10px) scale(2); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(120.0, 80.0),
+  );
+  let transform = match sampled.get("transform") {
+    Some(AnimatedValue::Transform(t)) => t,
+    other => panic!("unexpected value {other:?}"),
+  };
+
+  assert_eq!(
+    transform.len(),
+    2,
+    "expected matching prefix interpolation + matrix remainder, got {transform:?}"
+  );
+  match &transform[0] {
+    CssTransform::Rotate(deg) => assert!((*deg - 135.0).abs() < 1e-3),
+    other => panic!("expected rotate prefix, got {other:?}"),
+  }
+  match &transform[1] {
+    CssTransform::Matrix3d(_) => {}
+    other => panic!("expected matrix remainder, got {other:?}"),
+  }
+}
+
+#[test]
 fn keyframes_interpolate_filters() {
   let sheet =
     parse_stylesheet("@keyframes blur { from { filter: blur(0px); } to { filter: blur(10px); } }")
@@ -2456,9 +2491,7 @@ fn scroll_timeline_drives_animation_during_render() {
   );
 }
 
-fn find_scroll_container<'a>(
-  node: &'a crate::FragmentNode,
-) -> Option<&'a crate::FragmentNode> {
+fn find_scroll_container<'a>(node: &'a crate::FragmentNode) -> Option<&'a crate::FragmentNode> {
   let is_scroll_container = node
     .style
     .as_ref()

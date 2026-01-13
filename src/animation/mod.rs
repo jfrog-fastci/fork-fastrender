@@ -2501,10 +2501,9 @@ fn interpolate_transform_value(
       let interpolated = interpolate_transform_lists(ta, tb, t).unwrap_or_else(|| {
         let ma = compose_transform_list(ta);
         let mb = compose_transform_list(tb);
-        let m = interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
-        vec![crate::css::types::Transform::Matrix3d(
-          m.m,
-        )]
+        let m =
+          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+        vec![crate::css::types::Transform::Matrix3d(m.m)]
       });
       Some(AnimatedValue::Transform(interpolated))
     }
@@ -4921,7 +4920,11 @@ fn recompose_transform_matrix3d(decomp: &DecomposedTransform3D) -> Option<Transf
   matrix.m.iter().all(|v| v.is_finite()).then_some(matrix)
 }
 
-fn interpolate_matrix_decomposition(a: &Transform3D, b: &Transform3D, t: f32) -> Option<Transform3D> {
+fn interpolate_matrix_decomposition(
+  a: &Transform3D,
+  b: &Transform3D,
+  t: f32,
+) -> Option<Transform3D> {
   let da = decompose_transform_matrix3d(a)?;
   let db = decompose_transform_matrix3d(b)?;
 
@@ -4954,18 +4957,68 @@ fn lerp_matrix(a: &Transform3D, b: &Transform3D, t: f32) -> Transform3D {
   Transform3D { m }
 }
 
+fn identity_transform_matching(t: &crate::css::types::Transform) -> crate::css::types::Transform {
+  use crate::css::types::Transform;
+  match t {
+    Transform::Translate(..) => Transform::Translate(Length::px(0.0), Length::px(0.0)),
+    Transform::TranslateX(..) => Transform::TranslateX(Length::px(0.0)),
+    Transform::TranslateY(..) => Transform::TranslateY(Length::px(0.0)),
+    Transform::TranslateZ(..) => Transform::TranslateZ(Length::px(0.0)),
+    Transform::Translate3d(..) => {
+      Transform::Translate3d(Length::px(0.0), Length::px(0.0), Length::px(0.0))
+    }
+    Transform::Scale(..) => Transform::Scale(1.0, 1.0),
+    Transform::ScaleX(..) => Transform::ScaleX(1.0),
+    Transform::ScaleY(..) => Transform::ScaleY(1.0),
+    Transform::ScaleZ(..) => Transform::ScaleZ(1.0),
+    Transform::Scale3d(..) => Transform::Scale3d(1.0, 1.0, 1.0),
+    Transform::Rotate(..) => Transform::Rotate(0.0),
+    Transform::RotateZ(..) => Transform::RotateZ(0.0),
+    Transform::RotateX(..) => Transform::RotateX(0.0),
+    Transform::RotateY(..) => Transform::RotateY(0.0),
+    Transform::Rotate3d(x, y, z, ..) => Transform::Rotate3d(*x, *y, *z, 0.0),
+    Transform::SkewX(..) => Transform::SkewX(0.0),
+    Transform::SkewY(..) => Transform::SkewY(0.0),
+    Transform::Skew(..) => Transform::Skew(0.0, 0.0),
+    Transform::Perspective(..) => Transform::Perspective(Length::px(f32::INFINITY)),
+    Transform::Matrix(..) => Transform::Matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+    Transform::Matrix3d(..) => Transform::Matrix3d(Transform3D::IDENTITY.m),
+  }
+}
+
 fn interpolate_transform_lists(
   a: &[crate::css::types::Transform],
   b: &[crate::css::types::Transform],
   t: f32,
 ) -> Option<Vec<crate::css::types::Transform>> {
-  if a.len() != b.len() {
-    return None;
+  let mut a = a.to_vec();
+  let mut b = b.to_vec();
+
+  // CSS Transforms: If the transform lists differ in length (treating `none` as length 0), extend
+  // the shorter list by appending identity functions matching the corresponding entries of the
+  // longer list.
+  if a.len() < b.len() {
+    for idx in a.len()..b.len() {
+      a.push(identity_transform_matching(&b[idx]));
+    }
+  } else if b.len() < a.len() {
+    for idx in b.len()..a.len() {
+      b.push(identity_transform_matching(&a[idx]));
+    }
   }
+
   let mut out = Vec::with_capacity(a.len());
-  for (ta, tb) in a.iter().zip(b.iter()) {
+  for idx in 0..a.len() {
+    let ta = &a[idx];
+    let tb = &b[idx];
+
     if discriminant(ta) != discriminant(tb) {
-      return None;
+      let ma = compose_transform_list(&a[idx..]);
+      let mb = compose_transform_list(&b[idx..]);
+      let m =
+        interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+      out.push(crate::css::types::Transform::Matrix3d(m.m));
+      break;
     }
 
     let next = match (ta, tb) {
@@ -5049,8 +5102,52 @@ fn interpolate_transform_lists(
       (
         crate::css::types::Transform::Perspective(pa),
         crate::css::types::Transform::Perspective(pb),
-      ) => crate::css::types::Transform::Perspective(Length::px(lerp(pa.to_px(), pb.to_px(), t))),
-      _ => return None,
+      ) => {
+        let ma = Transform3D::perspective(pa.to_px());
+        let mb = Transform3D::perspective(pb.to_px());
+        let m =
+          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+        crate::css::types::Transform::Matrix3d(m.m)
+      }
+      (
+        crate::css::types::Transform::Matrix(a, b, c, d, e, f),
+        crate::css::types::Transform::Matrix(aa, bb, cc, dd, ee, ff),
+      ) => {
+        let ma = Transform3D::from_2d(&Transform2D {
+          a: *a,
+          b: *b,
+          c: *c,
+          d: *d,
+          e: *e,
+          f: *f,
+        });
+        let mb = Transform3D::from_2d(&Transform2D {
+          a: *aa,
+          b: *bb,
+          c: *cc,
+          d: *dd,
+          e: *ee,
+          f: *ff,
+        });
+        let m =
+          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+        crate::css::types::Transform::Matrix3d(m.m)
+      }
+      (
+        crate::css::types::Transform::Matrix3d(values),
+        crate::css::types::Transform::Matrix3d(values_b),
+      ) => {
+        let ma = Transform3D { m: *values };
+        let mb = Transform3D { m: *values_b };
+        let m =
+          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+        crate::css::types::Transform::Matrix3d(m.m)
+      }
+      _ => {
+        // Should be unreachable due to the discriminant check above, but keep the Option-based API
+        // robust against future enum variants.
+        return None;
+      }
     };
 
     out.push(next);
