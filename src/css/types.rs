@@ -3,6 +3,7 @@
 //! Core types for representing CSS stylesheets, rules, and values.
 
 use super::selectors::FastRenderSelectorImpl;
+use super::selectors::PseudoClass;
 use super::selectors::PseudoClassParser;
 use super::selectors::PseudoElement;
 use super::supports;
@@ -2669,6 +2670,99 @@ fn supports_font_tech_keyword(tech: &FontTechKeyword) -> bool {
 /// The selector list uses forgiving parsing: if any selector in the list parses successfully with
 /// the engine's selector grammar, the overall condition is considered true.
 fn supports_selector_is_valid(selector_list: &str) -> bool {
+  fn selector_has_disallowed_vendor_pseudos(
+    selector: &selectors::parser::Selector<FastRenderSelectorImpl>,
+  ) -> bool {
+    use selectors::parser::Component;
+
+    fn slice_has_disallowed(selectors: &[selectors::parser::Selector<FastRenderSelectorImpl>]) -> bool {
+      selectors.iter().any(selector_has_disallowed_vendor_pseudos)
+    }
+
+    for component in selector.iter_raw_match_order() {
+      match component {
+        Component::NonTSPseudoClass(pseudo) => {
+          match pseudo {
+            // Conservative: these Mozilla-only / legacy pseudo-classes should not flip
+            // `@supports selector(...)` queries to true in non-Firefox engines.
+            PseudoClass::MozFocusring
+            | PseudoClass::MozUiInvalid
+            | PseudoClass::MozPlaceholder
+            | PseudoClass::MsInputPlaceholder
+            | PseudoClass::Vendor(_) => {
+              return true;
+            }
+            // Pseudo-classes containing nested selectors must be walked so vendor-only selectors
+            // inside `:has(...)`, `:host(...)`, `:nth-child(... of ...)`, etc are also rejected.
+            PseudoClass::Has(relatives) => {
+              if relatives
+                .iter()
+                .any(|relative| selector_has_disallowed_vendor_pseudos(&relative.selector))
+              {
+                return true;
+              }
+            }
+            PseudoClass::Host(Some(list)) => {
+              if slice_has_disallowed(list.slice()) {
+                return true;
+              }
+            }
+            PseudoClass::HostContext(list) => {
+              if slice_has_disallowed(list.slice()) {
+                return true;
+              }
+            }
+            PseudoClass::NthChild(_, _, Some(list)) | PseudoClass::NthLastChild(_, _, Some(list)) => {
+              if slice_has_disallowed(list.slice()) {
+                return true;
+              }
+            }
+            _ => {}
+          }
+        }
+        Component::PseudoElement(pseudo_element) => {
+          if matches!(
+            pseudo_element,
+            PseudoElement::MozFocusInner | PseudoElement::MozFocusOuter | PseudoElement::Vendor(_)
+          ) {
+            return true;
+          }
+        }
+        Component::Negation(list) | Component::Is(list) | Component::Where(list) => {
+          if slice_has_disallowed(list.slice()) {
+            return true;
+          }
+        }
+        Component::NthOf(data) => {
+          if slice_has_disallowed(data.selectors()) {
+            return true;
+          }
+        }
+        Component::Has(relatives) => {
+          if relatives
+            .iter()
+            .any(|relative| selector_has_disallowed_vendor_pseudos(&relative.selector))
+          {
+            return true;
+          }
+        }
+        Component::Slotted(inner) => {
+          if selector_has_disallowed_vendor_pseudos(inner) {
+            return true;
+          }
+        }
+        Component::Host(Some(inner)) => {
+          if selector_has_disallowed_vendor_pseudos(inner) {
+            return true;
+          }
+        }
+        _ => {}
+      }
+    }
+
+    false
+  }
+
   for selector in split_selector_list(selector_list) {
     let mut input = ParserInput::new(&selector);
     let mut parser = Parser::new(&mut input);
@@ -2680,15 +2774,15 @@ fn supports_selector_is_valid(selector_list: &str) -> bool {
       continue;
     };
 
-    // We accept vendor-prefixed pseudo-elements in normal selector parsing to avoid invalidating
-    // entire selector lists, but they should not flip `@supports selector(...)` queries. Treat
-    // selectors that end in an unmodelled vendor pseudo-element (e.g. `::-webkit-scrollbar`) as
-    // unsupported so `@supports not selector(::-webkit-scrollbar)` gates can enable standard
-    // scrollbar styling fallback.
+    // We accept vendor-prefixed pseudo-classes/elements in normal selector parsing to avoid
+    // invalidating entire selector lists, but they should not flip `@supports selector(...)`
+    // queries in engines that don't implement them. This is particularly important for Mozilla-
+    // only feature gates like `@supports selector(:-moz-focusring) { ... }`, which would
+    // otherwise apply Firefox-specific rules in a Chrome-like engine.
     if list
       .slice()
       .iter()
-      .any(|selector| !matches!(selector.pseudo_element(), Some(PseudoElement::Vendor(_))))
+      .any(|selector| !selector_has_disallowed_vendor_pseudos(selector))
     {
       return true;
     }
@@ -3054,6 +3148,30 @@ mod tests {
     assert!(
       aliased.matches(),
       "vendor aliases that map to supported pseudo-elements should still count as supported"
+    );
+  }
+
+  #[test]
+  fn supports_selector_is_conservative_for_vendor_only_mozilla_pseudos() {
+    assert!(
+      !SupportsCondition::selector(":-moz-focusring").matches(),
+      "Firefox-only pseudo-classes should not be treated as supported in selector() queries"
+    );
+    assert!(
+      SupportsCondition::selector(":focus-visible").matches(),
+      "standard pseudo-classes should still be treated as supported in selector() queries"
+    );
+  }
+
+  #[test]
+  fn parse_stylesheet_with_media_prunes_vendor_only_selector_supports_blocks() {
+    let css = "@supports selector(:-moz-focusring) { .a { color: red; } }";
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let stylesheet =
+      parse_stylesheet_with_media(css, &media_ctx, None).expect("@supports stylesheet parses");
+    assert!(
+      stylesheet.rules.is_empty(),
+      "@supports selector(:-moz-focusring) blocks should be pruned when the selector is unsupported"
     );
   }
 
