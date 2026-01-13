@@ -239,6 +239,94 @@ fn compiled_new_target_is_constructor_function_in_new_call() -> Result<(), VmErr
 }
 
 #[test]
+fn compiled_arrow_function_captures_lexical_new_target_in_plain_call() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        return (() => new.target)();
+      }
+      f() === undefined
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_arrow_function_captures_lexical_new_target_in_constructor() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function C() {
+        this.ok = (() => new.target === C)();
+      }
+      let o = new C();
+      o.ok === true
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_constructor_can_return_arrow_capturing_new_target() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function C() {
+        return () => new.target;
+      }
+      let f = new C();
+      f() === C
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_reflect_construct_threads_new_target() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function Base() {
+        this.ok = new.target === Derived;
+      }
+      function Derived() {}
+      let o = Reflect.construct(Base, [], Derived);
+      o.ok === true && Object.getPrototypeOf(o) === Derived.prototype
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_strict_equality_compares_string_contents() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
