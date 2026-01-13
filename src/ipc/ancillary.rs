@@ -176,48 +176,110 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     ));
   }
 
-  if msg.msg_controllen < cmsg_len(FD_LEN) {
+  // Parse and wrap any SCM_RIGHTS fds *before* checking MSG_CTRUNC/MSG_TRUNC so we reliably close
+  // them on protocol errors (fd leak defense).
+  let control_len = (msg.msg_controllen as usize).min(CONTROL_LEN);
+  let start = msg.msg_control as usize;
+  let end = start.checked_add(control_len).ok_or_else(|| {
+    io::Error::new(
+      io::ErrorKind::InvalidData,
+      "control buffer length overflow while receiving fd",
+    )
+  })?;
+
+  let header_aligned = cmsg_align(std::mem::size_of::<libc::cmsghdr>());
+  let mut fds_out: Vec<OwnedFd> = Vec::new();
+  let mut protocol_error: Option<io::Error> = None;
+
+  if control_len > 0 {
+    let mut cmsg_ptr = msg.msg_control as *const libc::cmsghdr;
+    while (cmsg_ptr as usize)
+      .checked_add(std::mem::size_of::<libc::cmsghdr>())
+      .is_some_and(|next| next <= end)
+    {
+      // SAFETY: bounds checked above.
+      let cmsg = unsafe { &*cmsg_ptr };
+      let cmsg_len_raw = cmsg.cmsg_len as usize;
+      if cmsg_len_raw < header_aligned {
+        protocol_error = Some(io::Error::new(
+          io::ErrorKind::InvalidData,
+          "malformed control message while receiving fd",
+        ));
+        break;
+      }
+
+      let Some(cmsg_end) = (cmsg_ptr as usize).checked_add(cmsg_len_raw) else {
+        protocol_error = Some(io::Error::new(
+          io::ErrorKind::InvalidData,
+          "control message length overflow while receiving fd",
+        ));
+        break;
+      };
+      if cmsg_end > end {
+        protocol_error = Some(io::Error::new(
+          io::ErrorKind::InvalidData,
+          "control message length out of bounds while receiving fd",
+        ));
+        break;
+      }
+
+      if cmsg.cmsg_level == libc::SOL_SOCKET && cmsg.cmsg_type == libc::SCM_RIGHTS {
+        let data_len = cmsg_len_raw - header_aligned;
+        if data_len % std::mem::size_of::<RawFd>() != 0 {
+          protocol_error = Some(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "misaligned SCM_RIGHTS payload while receiving fd",
+          ));
+          break;
+        }
+        let fd_count = data_len / std::mem::size_of::<RawFd>();
+        let data_ptr = (cmsg_ptr as *const u8).wrapping_add(header_aligned) as *const RawFd;
+        // SAFETY: data_ptr points into the received control buffer; fd_count is bounds checked.
+        let fd_slice = unsafe { std::slice::from_raw_parts(data_ptr, fd_count) };
+        for &fd in fd_slice {
+          if fd < 0 {
+            protocol_error = Some(io::Error::new(
+              io::ErrorKind::InvalidData,
+              "received negative fd via SCM_RIGHTS",
+            ));
+            break;
+          }
+          // SAFETY: fds returned via SCM_RIGHTS are now owned by the receiver.
+          fds_out.push(unsafe { OwnedFd::from_raw_fd(fd) });
+        }
+      } else {
+        // Keep parsing so any SCM_RIGHTS fds appearing later are closed.
+        if protocol_error.is_none() {
+          protocol_error = Some(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected control message while receiving fd",
+          ));
+        }
+      }
+
+      let next = (cmsg_ptr as usize).checked_add(cmsg_align(cmsg_len_raw));
+      let Some(next) = next else { break };
+      if next <= cmsg_ptr as usize {
+        break;
+      }
+      cmsg_ptr = next as *const libc::cmsghdr;
+    }
+  }
+
+  if let Some(err) = protocol_error {
+    drop(fds_out);
+    return Err(err);
+  }
+
+  if fds_out.len() != 1 {
+    drop(fds_out);
     return Err(io::Error::new(
       io::ErrorKind::InvalidData,
-      "missing SCM_RIGHTS control message",
+      "expected exactly one fd via SCM_RIGHTS",
     ));
   }
 
-  // SAFETY: `msg.msg_control` points at `control.buf`, which is aligned for `cmsghdr`.
-  let received_fd = unsafe {
-    let cmsg = msg.msg_control as *const libc::cmsghdr;
-    if cmsg.is_null() {
-      return Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "missing SCM_RIGHTS control message",
-      ));
-    }
-    if (*cmsg).cmsg_level != libc::SOL_SOCKET || (*cmsg).cmsg_type != libc::SCM_RIGHTS {
-      return Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "unexpected control message while receiving fd",
-      ));
-    }
-    if (*cmsg).cmsg_len < cmsg_len(FD_LEN) as _ {
-      return Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "short SCM_RIGHTS control message",
-      ));
-    }
-    let data_ptr = (cmsg as *const u8).add(cmsg_align(std::mem::size_of::<libc::cmsghdr>()))
-      as *const RawFd;
-    std::ptr::read_unaligned(data_ptr)
-  };
-
-  if received_fd < 0 {
-    return Err(io::Error::new(
-      io::ErrorKind::InvalidData,
-      "received negative fd via SCM_RIGHTS",
-    ));
-  }
-
-  // SAFETY: `received_fd` came from the kernel via SCM_RIGHTS; we now own it.
-  let owned = unsafe { OwnedFd::from_raw_fd(received_fd) };
+  let owned = fds_out.pop().expect("checked len == 1");
   // Check truncation after parsing so any received fds are reliably closed on error.
   if (msg.msg_flags & libc::MSG_CTRUNC) != 0 {
     drop(owned);
