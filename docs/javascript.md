@@ -166,7 +166,7 @@ to disable it yet; the `browser --js` flag is currently only meaningful for `--h
   - Each rendered frame reports `RenderedFrame.wants_ticks` (in
     [`WorkerToUi::FrameReady`](../src/ui/messages.rs)).
   - While `wants_ticks` is true, the UI sends periodic `UiToWorker::Tick { tab_id }` messages to
-    advance the document’s notion of time (CSS animations/transitions, JS timers, and
+    advance time-based effects (CSS animations/transitions, animated images, JS timers, and
     `requestAnimationFrame`) and repaint when needed.
 
 For the message-level protocol and scheduling details, see the “Tick loop” section in

@@ -874,8 +874,9 @@ Front-ends drive time-based behavior by sending periodic
     [`src/bin/browser.rs`](../src/bin/browser.rs), using `ControlFlow::WaitUntil` so it can animate
     without busy-polling the winit event loop.
   - Ticks are typically paused when the window is minimized/occluded or unfocused.
-- A tick is the worker’s chance to run a bounded slice of time-based work (CSS animations, JS
-  timers, `requestAnimationFrame`) and schedule a repaint if the page becomes dirty.
+- A tick is the worker’s chance to run a bounded slice of time-based work (CSS
+  animations/transitions, animated images, JS timers/`requestAnimationFrame`, etc) and schedule a
+  repaint if the page becomes dirty.
 - `Tick` is a wake-up signal (no timestamp). Time-aware subsystems (timers, animations, media) must
   query their own clocks; see [`docs/media_clocking.md`](media_clocking.md).
   - CSS animations/transitions in the current UI worker are advanced by a fixed per-tick step for
