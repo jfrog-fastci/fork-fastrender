@@ -1791,7 +1791,7 @@ pub fn resolve_first_strong_direction(node: &DomNode) -> Option<TextDirection> {
       DomNodeType::Element { tag_name, .. } => {
         let skip = tag_name.eq_ignore_ascii_case("script")
           || tag_name.eq_ignore_ascii_case("style")
-          || tag_name.eq_ignore_ascii_case("template");
+          || current.template_contents_are_inert();
         if skip {
           continue;
         }
@@ -1866,7 +1866,7 @@ pub fn collect_text_codepoints(node: &DomNode) -> Result<Vec<u32>> {
       } => {
         let skip = tag_name.eq_ignore_ascii_case("script")
           || tag_name.eq_ignore_ascii_case("style")
-          || tag_name.eq_ignore_ascii_case("template");
+          || current.template_contents_are_inert();
         if skip {
           continue;
         }
@@ -9668,7 +9668,6 @@ mod tests {
     DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
-        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -10810,7 +10809,6 @@ mod tests {
     let mut dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
-        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -13595,7 +13593,6 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
-        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -13645,7 +13642,6 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
-        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -13872,7 +13868,6 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
-        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -13891,6 +13886,31 @@ mod tests {
 
     let codepoints = collect_text_codepoints(&dom).unwrap();
     let expected: Vec<u32> = vec!['a', 'b', 'c'].into_iter().map(|c| c as u32).collect();
+    assert_eq!(codepoints, expected);
+  }
+
+  #[test]
+  fn collect_text_codepoints_includes_svg_template_contents() {
+    let svg_template = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "template".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![text("Ω")],
+    };
+    let svg = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "svg".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![svg_template],
+    };
+    let dom = document(vec![element("div", vec![text("a")]), svg]);
+
+    let codepoints = collect_text_codepoints(&dom).unwrap();
+    let expected: Vec<u32> = vec!['a', 'Ω'].into_iter().map(|c| c as u32).collect();
     assert_eq!(codepoints, expected);
   }
 
@@ -14151,7 +14171,6 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
-        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -14231,7 +14250,6 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
-        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -14309,7 +14327,6 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
-        is_html_document: true,
         scripting_enabled: true,
         is_html_document: true,
       },
@@ -15019,6 +15036,31 @@ mod tests {
     assert_eq!(resolve_first_strong_direction(&root), None);
     assert!(matches(&root, &[], &PseudoClass::Dir(TextDirection::Ltr)));
     assert!(!matches(&root, &[], &PseudoClass::Dir(TextDirection::Rtl)));
+  }
+
+  #[test]
+  fn dir_auto_traverses_svg_template_contents() {
+    let svg_template = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "template".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![text("שלום")],
+    };
+    let root = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("dir".to_string(), "auto".to_string())],
+      },
+      children: vec![svg_template],
+    };
+
+    assert_eq!(
+      resolve_first_strong_direction(&root),
+      Some(TextDirection::Rtl)
+    );
   }
 
   #[test]
