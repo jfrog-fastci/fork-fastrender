@@ -2101,6 +2101,14 @@ mod tests {
     let _windows_guard = EnvVarGuard::remove(ENV_WINDOWS_RENDERER_SANDBOX);
     let _allow_guard = EnvVarGuard::remove(ENV_ALLOW_UNSANDBOXED_RENDERER);
 
+    let support = win_sandbox::SandboxSupport::detect();
+    if support != win_sandbox::SandboxSupport::Full {
+      eprintln!(
+        "skipping Windows sandbox spawn token-state test: Windows sandbox is unavailable ({support})"
+      );
+      return;
+    }
+
     let mut listener: Option<TcpListener> = None;
     let port = match TcpListener::bind(("127.0.0.1", 0)) {
       Ok(bound) => {
