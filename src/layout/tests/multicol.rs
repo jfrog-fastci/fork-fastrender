@@ -2,6 +2,9 @@ use crate::debug::runtime::RuntimeToggles;
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::block::BlockFormattingContext;
 use crate::layout::engine::LayoutParallelism;
+use crate::layout::formatting_context::{
+  set_fragmentainer_block_offset_hint, set_fragmentainer_block_size_hint,
+};
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::style::color::Rgba;
@@ -2220,5 +2223,114 @@ fn column_rule_fragments_are_split_per_column_set_around_spanner() {
     "second set rule should start after the spanner (rule={:?}, spanner={:?})",
     rules[1].bounds,
     span_frag.bounds
+  );
+}
+
+#[test]
+fn column_rule_fragments_are_split_per_column_set_in_paged_multicol() {
+  // In a paged fragmentation context (`fragmentainer_block_size_hint`), additional columns overflow
+  // into *new column sets* stacked in the block direction. Column rules must be segmented per set
+  // rather than spanning the entire multi-column flow.
+  let page_size = 50.0;
+  let _hint_guard = set_fragmentainer_block_size_hint(Some(page_size));
+  let _offset_guard = set_fragmentainer_block_offset_hint(0.0);
+
+  let color = Rgba::new(200, 0, 0, 1.0);
+
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(300.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(20.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  parent_style.column_rule_style = BorderStyle::Solid;
+  parent_style.column_rule_width = Length::px(8.0);
+  parent_style.column_rule_color = Some(color);
+  let parent_style = Arc::new(parent_style);
+
+  let block = |id: usize, break_after: bool| -> BoxNode {
+    let mut style = ComputedStyle::default();
+    style.height = Some(Length::px(10.0));
+    if break_after {
+      style.break_after = BreakBetween::Column;
+    }
+    let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+    node.id = id;
+    node
+  };
+
+  // Force four columns worth of content. With `column-count:2` this requires two column sets.
+  let mut parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![block(1, true), block(2, true), block(3, true), block(4, false)],
+  );
+  parent.id = 250;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(300.0))
+    .expect("layout");
+
+  let container = find_fragment(&fragment, parent.id).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info for multicol container");
+
+  let mut rules = collect_rule_fragments(container, color);
+  rules.sort_by(|a, b| {
+    a.bounds
+      .y()
+      .partial_cmp(&b.bounds.y())
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
+  assert_eq!(
+    rules.len(),
+    2,
+    "expected one rule per column set in paged multicol (got {:#?})",
+    rules.iter().map(|r| r.bounds).collect::<Vec<_>>()
+  );
+
+  let expected_x = info.column_width + (info.column_gap - 8.0) * 0.5;
+  for rule in &rules {
+    assert!(
+      (rule.bounds.x() - expected_x).abs() < 0.05,
+      "rule should be centered in the gap (got x={}, expected={})",
+      rule.bounds.x(),
+      expected_x
+    );
+    assert!(
+      (rule.bounds.width() - 8.0).abs() < 0.05,
+      "expected rule width to remain 8px (got w={})",
+      rule.bounds.width()
+    );
+    assert!(
+      (rule.bounds.height() - page_size).abs() < 0.05,
+      "expected rule to extend the full fragmentainer height in paged multicol (got h={}, expected={})",
+      rule.bounds.height(),
+      page_size
+    );
+  }
+
+  assert!(
+    (rules[0].bounds.y() - 0.0).abs() < 0.05,
+    "first set rule should start at the top of the flow (got y={})",
+    rules[0].bounds.y()
+  );
+  assert!(
+    (rules[1].bounds.y() - page_size).abs() < 0.05,
+    "second set rule should be offset by one fragmentainer (got y={}, expected={})",
+    rules[1].bounds.y(),
+    page_size
+  );
+  assert!(
+    rules[0].bounds.max_y() <= page_size + 0.05,
+    "first set rule should not extend past the first fragmentainer (rule={:?})",
+    rules[0].bounds
+  );
+  assert!(
+    rules[1].bounds.y() >= page_size - 0.05,
+    "second set rule should not start before the second fragmentainer (rule={:?})",
+    rules[1].bounds
   );
 }
