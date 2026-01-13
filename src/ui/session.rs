@@ -13,12 +13,21 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const SESSION_ENV_PATH: &str = "FASTR_BROWSER_SESSION_PATH";
 const SESSION_FILE_NAME: &str = "fastrender_session.json";
 const SESSION_VERSION: u32 = 2;
+/// Maximum on-disk session payload size that `load_session` will read.
+///
+/// The persisted session JSON should be small (URLs, zoom levels, window geometry). If the file is
+/// corrupted or replaced with a huge payload, unbounded reads can cause excessive memory usage or
+/// long stalls at startup.
+///
+/// When this limit is exceeded, we refuse to read/parse the session and attempt to fall back to
+/// the `.bak` backup file (if present).
+const MAX_SESSION_FILE_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
 
 const MAX_WINDOW_DIM_PX: i64 = 16_384;
 const MAX_WINDOW_POS_ABS_PX: i64 = 1_000_000;
@@ -1129,6 +1138,41 @@ mod tests {
   }
 
   #[test]
+  fn load_session_rejects_oversized_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let mut file = File::create(&path).unwrap();
+    file.set_len(MAX_SESSION_FILE_BYTES + 1).unwrap();
+    drop(file);
+
+    let err = load_session(&path).expect_err("expected oversized session file to be rejected");
+    assert!(
+      err.contains(&MAX_SESSION_FILE_BYTES.to_string()),
+      "expected error to mention size limit, got: {err}"
+    );
+  }
+
+  #[test]
+  fn load_session_falls_back_to_backup_when_main_is_oversized() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let mut file = File::create(&path).unwrap();
+    file.set_len(MAX_SESSION_FILE_BYTES + 1).unwrap();
+    drop(file);
+
+    let backup_path = session_backup_path(&path);
+    let backup_session = BrowserSession::single("about:blank".to_string());
+    std::fs::write(
+      &backup_path,
+      serde_json::to_string(&backup_session).expect("serialize backup session"),
+    )
+    .unwrap();
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session, backup_session);
+  }
+
+  #[test]
   fn session_sanitizes_empty_and_invalid_indices() {
     let session = BrowserSession {
       version: 999,
@@ -1711,36 +1755,74 @@ fn session_backup_path(path: &Path) -> PathBuf {
   path.with_file_name(backup_name)
 }
 
+fn read_session_file_bounded(path: &Path) -> Result<Option<String>, String> {
+  let file = match File::open(path) {
+    Ok(file) => file,
+    Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+    Err(err) => return Err(format!("failed to open {}: {err}", path.display())),
+  };
+
+  let size = file
+    .metadata()
+    .map_err(|err| format!("failed to stat {}: {err}", path.display()))?
+    .len();
+  if size > MAX_SESSION_FILE_BYTES {
+    return Err(format!(
+      "refusing to load session {}: file is {size} bytes, exceeding the maximum supported size of {MAX_SESSION_FILE_BYTES} bytes ({} MiB)",
+      path.display(),
+      MAX_SESSION_FILE_BYTES / (1024 * 1024)
+    ));
+  }
+
+  let mut limited = file.take(MAX_SESSION_FILE_BYTES.saturating_add(1));
+  let mut buf = Vec::with_capacity(size as usize);
+  limited
+    .read_to_end(&mut buf)
+    .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+  if (buf.len() as u64) > MAX_SESSION_FILE_BYTES {
+    // Defensive check in case the file changed size after the metadata check (or for non-regular
+    // files where `metadata.len()` is unreliable).
+    return Err(format!(
+      "refusing to load session {}: file exceeds the maximum supported size of {MAX_SESSION_FILE_BYTES} bytes ({} MiB)",
+      path.display(),
+      MAX_SESSION_FILE_BYTES / (1024 * 1024)
+    ));
+  }
+
+  String::from_utf8(buf)
+    .map(Some)
+    .map_err(|err| format!("failed to decode {} as UTF-8: {err}", path.display()))
+}
+
 /// Attempt to read + parse a session file. Missing file is not an error.
+///
+/// If the primary session file is missing, unreadable, corrupt, or too large, we will attempt to
+/// fall back to a `.bak` backup session file in the same directory.
 pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
-  let data = match std::fs::read_to_string(path) {
-    Ok(data) => data,
-    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+  let data = match read_session_file_bounded(path) {
+    Ok(Some(data)) => data,
+    Ok(None) => return Ok(None),
     Err(err) => {
       let backup = session_backup_path(path);
-      match std::fs::read_to_string(&backup) {
-        Ok(data) => {
+      match read_session_file_bounded(&backup) {
+        Ok(Some(data)) => {
           let session = parse_session_json(&data).map_err(|backup_err| {
             format!(
-              "failed to read {}: {err}; also failed to parse backup {}: {backup_err}",
-              path.display(),
+              "{err}; also failed to parse backup {}: {backup_err}",
               backup.display()
             )
           })?;
           eprintln!(
-            "failed to read session file {} ({err}); recovered from backup {}",
+            "failed to load session file {} ({err}); recovered from backup {}",
             path.display(),
             backup.display()
           );
           return Ok(Some(session));
         }
-        Err(backup_err) if backup_err.kind() == std::io::ErrorKind::NotFound => {
-          return Err(format!("failed to read {}: {err}", path.display()))
-        }
+        Ok(None) => return Err(err),
         Err(backup_err) => {
           return Err(format!(
-            "failed to read {}: {err}; also failed to read backup {}: {backup_err}",
-            path.display(),
+            "{err}; also failed to read backup {}: {backup_err}",
             backup.display()
           ))
         }
@@ -1752,11 +1834,9 @@ pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
     Ok(session) => Ok(Some(session)),
     Err(primary_err) => {
       let backup_path = session_backup_path(path);
-      let backup_data = match std::fs::read_to_string(&backup_path) {
-        Ok(data) => data,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-          return Err(format!("failed to parse {}: {primary_err}", path.display()));
-        }
+      let backup_data = match read_session_file_bounded(&backup_path) {
+        Ok(Some(data)) => data,
+        Ok(None) => return Err(format!("failed to parse {}: {primary_err}", path.display())),
         Err(err) => {
           return Err(format!(
             "failed to parse {}: {primary_err}; also failed to read backup {}: {err}",
@@ -1801,7 +1881,7 @@ pub fn save_session_atomic(path: &Path, session: &BrowserSession) -> Result<(), 
   //
   // This allows recovery from disk corruption or manual edits that make `session.json` unreadable.
   // We intentionally do *not* fail the save if updating the backup fails.
-  if let Ok(existing) = std::fs::read_to_string(path) {
+  if let Ok(Some(existing)) = read_session_file_bounded(path) {
     if parse_session_json(&existing).is_ok() {
       let backup_path = session_backup_path(path);
       let _ = std::fs::write(&backup_path, existing);
