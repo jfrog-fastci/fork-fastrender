@@ -16,20 +16,13 @@ use thiserror::Error;
 use crate::error::{RenderError, RenderStage};
 use crate::render_control::{check_root, check_root_periodic};
 
-use super::{MediaData, MediaError, MediaPacket, MediaResult, MediaTrackType};
+use super::{MediaData, MediaError, MediaLimits, MediaPacket, MediaResult, MediaTrackType};
 
 const MP4_PARSE_DEADLINE_STRIDE: usize = 1024;
-
-// Hard cap on per-track sample tables (used for both full demuxing and seek-only indexing).
-//
 // MP4 sample tables can express very large `sample_count` values compactly (e.g. a single `stts`
-// run with `sample_count = 0xFFFF_FFFF`). Building a per-sample `Vec` for such inputs would attempt
-// to allocate tens of gigabytes and can trivially OOM the process.
-//
-// This project currently demuxes MP4s fully in-memory or uses a best-effort seek index. For
-// extremely large tracks, we instead fail index construction (and in the seek-index case, the
-// caller will fall back to the slower linear scan path).
-const MAX_SAMPLES_PER_TRACK: u64 = 2_000_000;
+// run with `sample_count = 0xFFFF_FFFF`). Building per-sample `Vec`s for such inputs would attempt
+// to allocate tens of gigabytes and can trivially OOM the process. Use `MediaLimits` to keep this
+// bounded.
 
 // Hard cap on MP4 sample table entry counts (stts/ctts/stsc/stco/co64/stss).
 //
@@ -67,6 +60,8 @@ pub enum Mp4Error {
   UnsupportedBoxVersion { box_name: &'static str, version: u8 },
   #[error("missing required mp4 box: {0}")]
   MissingBox(&'static str),
+  #[error("mp4 has too many tracks: {track_count} (max {max})")]
+  TooManyTracks { track_count: usize, max: usize },
   #[error("mp4 track has too many samples: {sample_count} (max {max})")]
   TooManySamples { sample_count: u64, max: u64 },
   #[error("mp4 box {box_name} has too many entries: {entry_count} (max {max})")]
@@ -75,6 +70,8 @@ pub enum Mp4Error {
     entry_count: u64,
     max: u64,
   },
+  #[error("mp4 sample size {size} exceeds max_packet_bytes {max}")]
+  SampleTooLarge { size: u32, max: usize },
 }
 
 type Result<T> = std::result::Result<T, Mp4Error>;
@@ -183,21 +180,34 @@ impl Mp4Demuxer {
   /// [`Mp4Demuxer::from_arc`] to avoid the copy when you already have an `Arc` (e.g. from a memory
   /// map or `Vec<u8>`).
   pub fn new(bytes: &[u8]) -> Result<Self> {
-    Self::from_arc(Arc::from(bytes))
+    let limits = MediaLimits::default();
+    Self::from_arc_with_limits(Arc::from(bytes), &limits)
   }
 
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-    Self::from_arc(Arc::from(bytes))
+    let limits = MediaLimits::default();
+    Self::from_arc_with_limits(Arc::from(bytes), &limits)
   }
 
   pub fn from_arc(bytes: Arc<[u8]>) -> Result<Self> {
+    let limits = MediaLimits::default();
+    Self::from_arc_with_limits(bytes, &limits)
+  }
+
+  pub fn from_bytes_with_limits(bytes: &[u8], limits: &MediaLimits) -> Result<Self> {
+    Self::from_arc_with_limits(Arc::from(bytes), limits)
+  }
+
+  pub fn from_arc_with_limits(bytes: Arc<[u8]>, limits: &MediaLimits) -> Result<Self> {
     check_root(RenderStage::Paint)?;
     let moov =
       find_top_level_box(bytes.as_ref(), fourcc(b"moov"))?.ok_or(Mp4Error::MissingBox("moov"))?;
 
-    let tracks = parse_moov(bytes.as_ref(), moov)?
+    let file_len = bytes.len();
+    let tracks = parse_moov(bytes.as_ref(), moov, limits)?
       .into_iter()
-      .map(build_track)
+      .enumerate()
+      .map(|(track_index, t)| build_track(track_index, t, file_len, limits))
       .collect::<Result<Vec<_>>>()?;
 
     if tracks.is_empty() {
@@ -289,12 +299,17 @@ pub struct Mp4SeekIndex {
 
 impl Mp4SeekIndex {
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    let limits = MediaLimits::default();
+    Self::from_bytes_with_limits(bytes, &limits)
+  }
+
+  pub fn from_bytes_with_limits(bytes: &[u8], limits: &MediaLimits) -> Result<Self> {
     check_root(RenderStage::Paint)?;
     let moov = find_top_level_box(bytes, fourcc(b"moov"))?.ok_or(Mp4Error::MissingBox("moov"))?;
 
-    let tracks = parse_moov_seek(bytes, moov)?
+    let tracks = parse_moov_seek(bytes, moov, limits)?
       .into_iter()
-      .map(build_seek_track)
+      .map(|t| build_seek_track(t, limits))
       .collect::<Result<Vec<_>>>()?;
 
     if tracks.is_empty() {
@@ -425,7 +440,7 @@ struct SeekTrackBoxes {
   ctts: Option<Vec<CttsEntry>>,
 }
 
-fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
+fn build_track(track_index: usize, t: TrackBoxes, file_len: usize, limits: &MediaLimits) -> Result<Mp4Track> {
   let id = t.id.ok_or(Mp4Error::MissingBox("tkhd"))?;
   let timescale = t.timescale.ok_or(Mp4Error::MissingBox("mdhd"))?;
   if timescale == 0 {
@@ -449,10 +464,10 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
       last_seek_method: None,
     });
   }
-  if u64::from(stsz.sample_count) > MAX_SAMPLES_PER_TRACK {
+  if u64::from(stsz.sample_count) > limits.max_samples_per_track as u64 {
     return Err(Mp4Error::TooManySamples {
       sample_count: u64::from(stsz.sample_count),
-      max: MAX_SAMPLES_PER_TRACK,
+      max: limits.max_samples_per_track as u64,
     });
   }
 
@@ -530,9 +545,28 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
       };
 
       let start = offset;
-      offset = offset
+      if size as usize > limits.max_packet_bytes {
+        return Err(Mp4Error::SampleTooLarge {
+          size,
+          max: limits.max_packet_bytes,
+        });
+      }
+      let end = offset
         .checked_add(u64::from(size))
         .ok_or(Mp4Error::Invalid("sample offset overflow"))?;
+
+      let start_usize = usize::try_from(start).unwrap_or(usize::MAX);
+      let end_usize = usize::try_from(end).unwrap_or(usize::MAX);
+      let range = start_usize..end_usize;
+      if range.start >= range.end || range.end > file_len {
+        return Err(Mp4Error::SampleOutOfBounds {
+          track_index,
+          sample_index: sample_idx,
+          range,
+          file_len,
+        });
+      }
+      offset = end;
 
       samples.push(Mp4Sample {
         offset: start,
@@ -649,7 +683,7 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
   })
 }
 
-fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
+fn build_seek_track(t: SeekTrackBoxes, limits: &MediaLimits) -> Result<Mp4SeekTrack> {
   let id = t.id.ok_or(Mp4Error::MissingBox("tkhd"))?;
   let timescale = t.timescale.ok_or(Mp4Error::MissingBox("mdhd"))?;
   if timescale == 0 {
@@ -669,10 +703,10 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
       pts_index: PtsIndex::Monotonic,
     });
   }
-  if stts_total > MAX_SAMPLES_PER_TRACK {
+  if stts_total > limits.max_samples_per_track as u64 {
     return Err(Mp4Error::TooManySamples {
       sample_count: stts_total,
-      max: MAX_SAMPLES_PER_TRACK,
+      max: limits.max_samples_per_track as u64,
     });
   }
 
@@ -1138,7 +1172,7 @@ fn find_top_level_box(bytes: &[u8], typ: u32) -> Result<Option<Range<usize>>> {
   Ok(None)
 }
 
-fn parse_moov(bytes: &[u8], moov: Range<usize>) -> Result<Vec<TrackBoxes>> {
+fn parse_moov(bytes: &[u8], moov: Range<usize>, limits: &MediaLimits) -> Result<Vec<TrackBoxes>> {
   let mut cur = Cursor::new(bytes, moov.start);
   let mut tracks = Vec::new();
   let mut deadline_counter = 0usize;
@@ -1153,7 +1187,13 @@ fn parse_moov(bytes: &[u8], moov: Range<usize>) -> Result<Vec<TrackBoxes>> {
       break;
     };
     if b.typ == fourcc(b"trak") {
-      tracks.push(parse_trak(bytes, b.content)?);
+      if tracks.len() >= limits.max_track_count {
+        return Err(Mp4Error::TooManyTracks {
+          track_count: tracks.len() + 1,
+          max: limits.max_track_count,
+        });
+      }
+      tracks.push(parse_trak(bytes, b.content, limits)?);
     }
     cur.pos = b.end;
   }
@@ -1161,7 +1201,11 @@ fn parse_moov(bytes: &[u8], moov: Range<usize>) -> Result<Vec<TrackBoxes>> {
   Ok(tracks)
 }
 
-fn parse_moov_seek(bytes: &[u8], moov: Range<usize>) -> Result<Vec<SeekTrackBoxes>> {
+fn parse_moov_seek(
+  bytes: &[u8],
+  moov: Range<usize>,
+  limits: &MediaLimits,
+) -> Result<Vec<SeekTrackBoxes>> {
   let mut cur = Cursor::new(bytes, moov.start);
   let mut tracks = Vec::new();
   let mut deadline_counter = 0usize;
@@ -1176,7 +1220,13 @@ fn parse_moov_seek(bytes: &[u8], moov: Range<usize>) -> Result<Vec<SeekTrackBoxe
       break;
     };
     if b.typ == fourcc(b"trak") {
-      tracks.push(parse_trak_seek(bytes, b.content)?);
+      if tracks.len() >= limits.max_track_count {
+        return Err(Mp4Error::TooManyTracks {
+          track_count: tracks.len() + 1,
+          max: limits.max_track_count,
+        });
+      }
+      tracks.push(parse_trak_seek(bytes, b.content, limits)?);
     }
     cur.pos = b.end;
   }
@@ -1184,7 +1234,7 @@ fn parse_moov_seek(bytes: &[u8], moov: Range<usize>) -> Result<Vec<SeekTrackBoxe
   Ok(tracks)
 }
 
-fn parse_trak(bytes: &[u8], trak: Range<usize>) -> Result<TrackBoxes> {
+fn parse_trak(bytes: &[u8], trak: Range<usize>, limits: &MediaLimits) -> Result<TrackBoxes> {
   let mut cur = Cursor::new(bytes, trak.start);
   let mut t = TrackBoxes::default();
   let mut deadline_counter = 0usize;
@@ -1203,7 +1253,7 @@ fn parse_trak(bytes: &[u8], trak: Range<usize>) -> Result<TrackBoxes> {
         t.id = Some(parse_tkhd(bytes, b.content)?);
       }
       typ if typ == fourcc(b"mdia") => {
-        parse_mdia(bytes, b.content, &mut t)?;
+        parse_mdia(bytes, b.content, &mut t, limits)?;
       }
       _ => {}
     }
@@ -1213,7 +1263,11 @@ fn parse_trak(bytes: &[u8], trak: Range<usize>) -> Result<TrackBoxes> {
   Ok(t)
 }
 
-fn parse_trak_seek(bytes: &[u8], trak: Range<usize>) -> Result<SeekTrackBoxes> {
+fn parse_trak_seek(
+  bytes: &[u8],
+  trak: Range<usize>,
+  limits: &MediaLimits,
+) -> Result<SeekTrackBoxes> {
   let mut cur = Cursor::new(bytes, trak.start);
   let mut t = SeekTrackBoxes::default();
   let mut deadline_counter = 0usize;
@@ -1232,7 +1286,7 @@ fn parse_trak_seek(bytes: &[u8], trak: Range<usize>) -> Result<SeekTrackBoxes> {
         t.id = Some(parse_tkhd(bytes, b.content)?);
       }
       typ if typ == fourcc(b"mdia") => {
-        parse_mdia_seek(bytes, b.content, &mut t)?;
+        parse_mdia_seek(bytes, b.content, &mut t, limits)?;
       }
       _ => {}
     }
@@ -1242,7 +1296,7 @@ fn parse_trak_seek(bytes: &[u8], trak: Range<usize>) -> Result<SeekTrackBoxes> {
   Ok(t)
 }
 
-fn parse_mdia(bytes: &[u8], mdia: Range<usize>, t: &mut TrackBoxes) -> Result<()> {
+fn parse_mdia(bytes: &[u8], mdia: Range<usize>, t: &mut TrackBoxes, limits: &MediaLimits) -> Result<()> {
   let mut cur = Cursor::new(bytes, mdia.start);
   let mut deadline_counter = 0usize;
   while cur.pos < mdia.end {
@@ -1259,7 +1313,7 @@ fn parse_mdia(bytes: &[u8], mdia: Range<usize>, t: &mut TrackBoxes) -> Result<()
         t.timescale = Some(parse_mdhd(bytes, b.content)?);
       }
       typ if typ == fourcc(b"minf") => {
-        parse_minf(bytes, b.content, t)?;
+        parse_minf(bytes, b.content, t, limits)?;
       }
       _ => {}
     }
@@ -1268,7 +1322,12 @@ fn parse_mdia(bytes: &[u8], mdia: Range<usize>, t: &mut TrackBoxes) -> Result<()
   Ok(())
 }
 
-fn parse_mdia_seek(bytes: &[u8], mdia: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
+fn parse_mdia_seek(
+  bytes: &[u8],
+  mdia: Range<usize>,
+  t: &mut SeekTrackBoxes,
+  limits: &MediaLimits,
+) -> Result<()> {
   let mut cur = Cursor::new(bytes, mdia.start);
   let mut deadline_counter = 0usize;
   while cur.pos < mdia.end {
@@ -1285,7 +1344,7 @@ fn parse_mdia_seek(bytes: &[u8], mdia: Range<usize>, t: &mut SeekTrackBoxes) -> 
         t.timescale = Some(parse_mdhd(bytes, b.content)?);
       }
       typ if typ == fourcc(b"minf") => {
-        parse_minf_seek(bytes, b.content, t)?;
+        parse_minf_seek(bytes, b.content, t, limits)?;
       }
       _ => {}
     }
@@ -1294,7 +1353,7 @@ fn parse_mdia_seek(bytes: &[u8], mdia: Range<usize>, t: &mut SeekTrackBoxes) -> 
   Ok(())
 }
 
-fn parse_minf(bytes: &[u8], minf: Range<usize>, t: &mut TrackBoxes) -> Result<()> {
+fn parse_minf(bytes: &[u8], minf: Range<usize>, t: &mut TrackBoxes, limits: &MediaLimits) -> Result<()> {
   let mut cur = Cursor::new(bytes, minf.start);
   let mut deadline_counter = 0usize;
   while cur.pos < minf.end {
@@ -1307,14 +1366,19 @@ fn parse_minf(bytes: &[u8], minf: Range<usize>, t: &mut TrackBoxes) -> Result<()
       break;
     };
     if b.typ == fourcc(b"stbl") {
-      parse_stbl(bytes, b.content, t)?;
+      parse_stbl(bytes, b.content, t, limits)?;
     }
     cur.pos = b.end;
   }
   Ok(())
 }
 
-fn parse_minf_seek(bytes: &[u8], minf: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
+fn parse_minf_seek(
+  bytes: &[u8],
+  minf: Range<usize>,
+  t: &mut SeekTrackBoxes,
+  limits: &MediaLimits,
+) -> Result<()> {
   let mut cur = Cursor::new(bytes, minf.start);
   let mut deadline_counter = 0usize;
   while cur.pos < minf.end {
@@ -1327,14 +1391,19 @@ fn parse_minf_seek(bytes: &[u8], minf: Range<usize>, t: &mut SeekTrackBoxes) -> 
       break;
     };
     if b.typ == fourcc(b"stbl") {
-      parse_stbl_seek(bytes, b.content, t)?;
+      parse_stbl_seek(bytes, b.content, t, limits)?;
     }
     cur.pos = b.end;
   }
   Ok(())
 }
 
-fn parse_stbl(bytes: &[u8], stbl: Range<usize>, t: &mut TrackBoxes) -> Result<()> {
+fn parse_stbl(
+  bytes: &[u8],
+  stbl: Range<usize>,
+  t: &mut TrackBoxes,
+  limits: &MediaLimits,
+) -> Result<()> {
   let mut cur = Cursor::new(bytes, stbl.start);
   let mut deadline_counter = 0usize;
   while cur.pos < stbl.end {
@@ -1348,28 +1417,28 @@ fn parse_stbl(bytes: &[u8], stbl: Range<usize>, t: &mut TrackBoxes) -> Result<()
     };
     match b.typ {
       typ if typ == fourcc(b"stts") => {
-        t.stts = Some(parse_stts(bytes, b.content)?);
+        t.stts = Some(parse_stts(bytes, b.content, limits)?);
       }
       typ if typ == fourcc(b"ctts") => {
-        t.ctts = Some(parse_ctts(bytes, b.content)?);
+        t.ctts = Some(parse_ctts(bytes, b.content, limits)?);
       }
       typ if typ == fourcc(b"stsc") => {
-        t.stsc = Some(parse_stsc(bytes, b.content)?);
+        t.stsc = Some(parse_stsc(bytes, b.content, limits)?);
       }
       typ if typ == fourcc(b"stsz") => {
-        t.stsz = Some(parse_stsz(bytes, b.content)?);
+        t.stsz = Some(parse_stsz(bytes, b.content, limits)?);
       }
       typ if typ == fourcc(b"stco") => {
         // Prefer co64 if present; otherwise store stco.
         if t.chunk_offsets.is_none() {
-          t.chunk_offsets = Some(parse_stco(bytes, b.content)?);
+          t.chunk_offsets = Some(parse_stco(bytes, b.content, limits)?);
         }
       }
       typ if typ == fourcc(b"co64") => {
-        t.chunk_offsets = Some(parse_co64(bytes, b.content)?);
+        t.chunk_offsets = Some(parse_co64(bytes, b.content, limits)?);
       }
       typ if typ == fourcc(b"stss") => {
-        t.stss = Some(parse_stss(bytes, b.content)?);
+        t.stss = Some(parse_stss(bytes, b.content, limits)?);
       }
       _ => {}
     }
@@ -1378,7 +1447,12 @@ fn parse_stbl(bytes: &[u8], stbl: Range<usize>, t: &mut TrackBoxes) -> Result<()
   Ok(())
 }
 
-fn parse_stbl_seek(bytes: &[u8], stbl: Range<usize>, t: &mut SeekTrackBoxes) -> Result<()> {
+fn parse_stbl_seek(
+  bytes: &[u8],
+  stbl: Range<usize>,
+  t: &mut SeekTrackBoxes,
+  limits: &MediaLimits,
+) -> Result<()> {
   let mut cur = Cursor::new(bytes, stbl.start);
   let mut deadline_counter = 0usize;
   while cur.pos < stbl.end {
@@ -1392,10 +1466,10 @@ fn parse_stbl_seek(bytes: &[u8], stbl: Range<usize>, t: &mut SeekTrackBoxes) -> 
     };
     match b.typ {
       typ if typ == fourcc(b"stts") => {
-        t.stts = Some(parse_stts(bytes, b.content)?);
+        t.stts = Some(parse_stts(bytes, b.content, limits)?);
       }
       typ if typ == fourcc(b"ctts") => {
-        t.ctts = Some(parse_ctts(bytes, b.content)?);
+        t.ctts = Some(parse_ctts(bytes, b.content, limits)?);
       }
       _ => {}
     }
@@ -1460,18 +1534,21 @@ fn parse_tkhd(bytes: &[u8], tkhd: Range<usize>) -> Result<u32> {
   Ok(track_id)
 }
 
-fn checked_entry_count(box_name: &'static str, entry_count: u32) -> Result<usize> {
-  if entry_count > MAX_TABLE_ENTRIES {
+fn checked_entry_count(box_name: &'static str, entry_count: u32, limits: &MediaLimits) -> Result<usize> {
+  let max_by_limits =
+    u32::try_from(limits.max_samples_per_track).unwrap_or(MAX_TABLE_ENTRIES);
+  let max = MAX_TABLE_ENTRIES.min(max_by_limits);
+  if entry_count > max {
     return Err(Mp4Error::TooManyTableEntries {
       box_name,
       entry_count: u64::from(entry_count),
-      max: u64::from(MAX_TABLE_ENTRIES),
+      max: u64::from(max),
     });
   }
   Ok(entry_count as usize)
 }
 
-fn parse_stts(bytes: &[u8], stts: Range<usize>) -> Result<Vec<SttsEntry>> {
+fn parse_stts(bytes: &[u8], stts: Range<usize>, limits: &MediaLimits) -> Result<Vec<SttsEntry>> {
   let mut cur = Cursor::new(bytes, stts.start);
   let version = read_fullbox_version(&mut cur, stts.end)?;
   if version != 0 {
@@ -1482,7 +1559,7 @@ fn parse_stts(bytes: &[u8], stts: Range<usize>) -> Result<Vec<SttsEntry>> {
   }
 
   let entry_count = cur.read_u32(stts.end)?;
-  let entry_count = checked_entry_count("stts", entry_count)?;
+  let entry_count = checked_entry_count("stts", entry_count, limits)?;
   let remaining_bytes = stts.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 8;
   if entry_count > max_entries_by_bytes {
@@ -1506,7 +1583,7 @@ fn parse_stts(bytes: &[u8], stts: Range<usize>) -> Result<Vec<SttsEntry>> {
   Ok(out)
 }
 
-fn parse_ctts(bytes: &[u8], ctts: Range<usize>) -> Result<Vec<CttsEntry>> {
+fn parse_ctts(bytes: &[u8], ctts: Range<usize>, limits: &MediaLimits) -> Result<Vec<CttsEntry>> {
   let mut cur = Cursor::new(bytes, ctts.start);
   let version = read_fullbox_version(&mut cur, ctts.end)?;
   if version != 0 && version != 1 {
@@ -1517,7 +1594,7 @@ fn parse_ctts(bytes: &[u8], ctts: Range<usize>) -> Result<Vec<CttsEntry>> {
   }
 
   let entry_count = cur.read_u32(ctts.end)?;
-  let entry_count = checked_entry_count("ctts", entry_count)?;
+  let entry_count = checked_entry_count("ctts", entry_count, limits)?;
   let remaining_bytes = ctts.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 8;
   if entry_count > max_entries_by_bytes {
@@ -1545,7 +1622,7 @@ fn parse_ctts(bytes: &[u8], ctts: Range<usize>) -> Result<Vec<CttsEntry>> {
   Ok(out)
 }
 
-fn parse_stsc(bytes: &[u8], stsc: Range<usize>) -> Result<Vec<StscEntry>> {
+fn parse_stsc(bytes: &[u8], stsc: Range<usize>, limits: &MediaLimits) -> Result<Vec<StscEntry>> {
   let mut cur = Cursor::new(bytes, stsc.start);
   let version = read_fullbox_version(&mut cur, stsc.end)?;
   if version != 0 {
@@ -1556,7 +1633,7 @@ fn parse_stsc(bytes: &[u8], stsc: Range<usize>) -> Result<Vec<StscEntry>> {
   }
 
   let entry_count = cur.read_u32(stsc.end)?;
-  let entry_count = checked_entry_count("stsc", entry_count)?;
+  let entry_count = checked_entry_count("stsc", entry_count, limits)?;
   let remaining_bytes = stsc.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 12;
   if entry_count > max_entries_by_bytes {
@@ -1584,7 +1661,7 @@ fn parse_stsc(bytes: &[u8], stsc: Range<usize>) -> Result<Vec<StscEntry>> {
   Ok(out)
 }
 
-fn parse_stsz(bytes: &[u8], stsz: Range<usize>) -> Result<StszBox> {
+fn parse_stsz(bytes: &[u8], stsz: Range<usize>, limits: &MediaLimits) -> Result<StszBox> {
   let mut cur = Cursor::new(bytes, stsz.start);
   let version = read_fullbox_version(&mut cur, stsz.end)?;
   if version != 0 {
@@ -1596,14 +1673,20 @@ fn parse_stsz(bytes: &[u8], stsz: Range<usize>) -> Result<StszBox> {
 
   let sample_size = cur.read_u32(stsz.end)?;
   let sample_count = cur.read_u32(stsz.end)?;
-  if u64::from(sample_count) > MAX_SAMPLES_PER_TRACK {
-    return Err(Mp4Error::TooManySamples {
-      sample_count: u64::from(sample_count),
-      max: MAX_SAMPLES_PER_TRACK,
-    });
-  }
 
   let mut sample_sizes = Vec::new();
+  if u64::from(sample_count) > limits.max_samples_per_track as u64 {
+    return Err(Mp4Error::TooManySamples {
+      sample_count: u64::from(sample_count),
+      max: limits.max_samples_per_track as u64,
+    });
+  }
+  if sample_size != 0 && sample_size as usize > limits.max_packet_bytes {
+    return Err(Mp4Error::SampleTooLarge {
+      size: sample_size,
+      max: limits.max_packet_bytes,
+    });
+  }
   if sample_size == 0 {
     let sample_count_usize = sample_count as usize;
     let remaining_bytes = stsz.end.saturating_sub(cur.pos);
@@ -1620,7 +1703,14 @@ fn parse_stsz(bytes: &[u8], stsz: Range<usize>) -> Result<StszBox> {
         MP4_PARSE_DEADLINE_STRIDE,
         RenderStage::Paint,
       )?;
-      sample_sizes.push(cur.read_u32(stsz.end)?);
+      let size = cur.read_u32(stsz.end)?;
+      if size as usize > limits.max_packet_bytes {
+        return Err(Mp4Error::SampleTooLarge {
+          size,
+          max: limits.max_packet_bytes,
+        });
+      }
+      sample_sizes.push(size);
     }
   }
 
@@ -1631,7 +1721,7 @@ fn parse_stsz(bytes: &[u8], stsz: Range<usize>) -> Result<StszBox> {
   })
 }
 
-fn parse_stco(bytes: &[u8], stco: Range<usize>) -> Result<Vec<u64>> {
+fn parse_stco(bytes: &[u8], stco: Range<usize>, limits: &MediaLimits) -> Result<Vec<u64>> {
   let mut cur = Cursor::new(bytes, stco.start);
   let version = read_fullbox_version(&mut cur, stco.end)?;
   if version != 0 {
@@ -1642,7 +1732,7 @@ fn parse_stco(bytes: &[u8], stco: Range<usize>) -> Result<Vec<u64>> {
   }
 
   let entry_count = cur.read_u32(stco.end)?;
-  let entry_count = checked_entry_count("stco", entry_count)?;
+  let entry_count = checked_entry_count("stco", entry_count, limits)?;
   let remaining_bytes = stco.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 4;
   if entry_count > max_entries_by_bytes {
@@ -1661,7 +1751,7 @@ fn parse_stco(bytes: &[u8], stco: Range<usize>) -> Result<Vec<u64>> {
   Ok(out)
 }
 
-fn parse_co64(bytes: &[u8], co64: Range<usize>) -> Result<Vec<u64>> {
+fn parse_co64(bytes: &[u8], co64: Range<usize>, limits: &MediaLimits) -> Result<Vec<u64>> {
   let mut cur = Cursor::new(bytes, co64.start);
   let version = read_fullbox_version(&mut cur, co64.end)?;
   if version != 0 {
@@ -1672,7 +1762,7 @@ fn parse_co64(bytes: &[u8], co64: Range<usize>) -> Result<Vec<u64>> {
   }
 
   let entry_count = cur.read_u32(co64.end)?;
-  let entry_count = checked_entry_count("co64", entry_count)?;
+  let entry_count = checked_entry_count("co64", entry_count, limits)?;
   let remaining_bytes = co64.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 8;
   if entry_count > max_entries_by_bytes {
@@ -1691,7 +1781,7 @@ fn parse_co64(bytes: &[u8], co64: Range<usize>) -> Result<Vec<u64>> {
   Ok(out)
 }
 
-fn parse_stss(bytes: &[u8], stss: Range<usize>) -> Result<Vec<u32>> {
+fn parse_stss(bytes: &[u8], stss: Range<usize>, limits: &MediaLimits) -> Result<Vec<u32>> {
   let mut cur = Cursor::new(bytes, stss.start);
   let version = read_fullbox_version(&mut cur, stss.end)?;
   if version != 0 {
@@ -1702,7 +1792,7 @@ fn parse_stss(bytes: &[u8], stss: Range<usize>) -> Result<Vec<u32>> {
   }
 
   let entry_count = cur.read_u32(stss.end)?;
-  let entry_count = checked_entry_count("stss", entry_count)?;
+  let entry_count = checked_entry_count("stss", entry_count, limits)?;
   let remaining_bytes = stss.end.saturating_sub(cur.pos);
   let max_entries_by_bytes = remaining_bytes / 4;
   if entry_count > max_entries_by_bytes {
@@ -1890,11 +1980,13 @@ mod tests {
     // dts: 0, 1, 2, 3
     // ctts: -3, -1, 0, 1
     // pts: -3, 0, 2, 4  => normalize by +3 => 0, 3, 5, 7
-    let track = build_seek_track(SeekTrackBoxes {
-      id: Some(1),
-      timescale: Some(1),
-      stts: Some(vec![SttsEntry {
-        sample_count: 4,
+    let limits = MediaLimits::default();
+    let track = build_seek_track(
+      SeekTrackBoxes {
+        id: Some(1),
+        timescale: Some(1),
+        stts: Some(vec![SttsEntry {
+          sample_count: 4,
         sample_delta: 1,
       }]),
       ctts: Some(vec![
@@ -1915,7 +2007,9 @@ mod tests {
           sample_offset: 1,
         },
       ]),
-    })
+      },
+      &limits,
+    )
     .expect("build_seek_track");
 
     assert_eq!(
@@ -2110,8 +2204,12 @@ mod tests {
 
   #[test]
   fn seek_track_rejects_excessive_sample_counts() {
+    let mut limits = MediaLimits::default();
+    limits.max_samples_per_track = 10;
     let stts = vec![SttsEntry {
-      sample_count: (MAX_SAMPLES_PER_TRACK as u32) + 1,
+      sample_count: u32::try_from(limits.max_samples_per_track)
+        .unwrap_or(u32::MAX)
+        .saturating_add(1),
       sample_delta: 1,
     }];
     let t = SeekTrackBoxes {
@@ -2121,7 +2219,7 @@ mod tests {
       ctts: None,
     };
 
-    match build_seek_track(t) {
+    match build_seek_track(t, &limits) {
       Err(Mp4Error::TooManySamples { sample_count, max }) => {
         assert!(sample_count > max);
       }
@@ -2131,10 +2229,12 @@ mod tests {
 
   #[test]
   fn mp4_table_parsers_reject_excessive_counts_without_panicking_or_allocating() {
+    let limits = MediaLimits::default();
+
     // A tiny `stts` box that claims an absurd entry_count. Historically this would attempt to
     // allocate an enormous vector (or panic/abort) before failing with EOF.
     let stts = [0_u8, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
-    let r = std::panic::catch_unwind(|| parse_stts(&stts, 0..stts.len()));
+    let r = std::panic::catch_unwind(|| parse_stts(&stts, 0..stts.len(), &limits));
     assert!(matches!(
       r,
       Ok(Err(Mp4Error::TooManyTableEntries { box_name: "stts", .. }))
@@ -2146,7 +2246,7 @@ mod tests {
     stsz.extend_from_slice(&[0_u8, 0, 0, 0]); // version + flags
     stsz.extend_from_slice(&0_u32.to_be_bytes()); // sample_size
     stsz.extend_from_slice(&u32::MAX.to_be_bytes()); // sample_count
-    let r = std::panic::catch_unwind(|| parse_stsz(&stsz, 0..stsz.len()));
+    let r = std::panic::catch_unwind(|| parse_stsz(&stsz, 0..stsz.len(), &limits));
     assert!(matches!(r, Ok(Err(Mp4Error::TooManySamples { .. }))));
   }
 
@@ -2176,24 +2276,29 @@ mod tests {
 
   #[test]
   fn parse_stsz_rejects_excessive_sample_count_without_reading_entries() {
+    let mut limits = MediaLimits::default();
+    limits.max_samples_per_track = 10;
+
     // stsz (fullbox) content:
     // version+flags (4 bytes), sample_size (4 bytes), sample_count (4 bytes)
     //
     // We intentionally do not include per-sample sizes in the payload; the parser must reject the
     // sample_count before trying to allocate/read the table.
-    let sample_count = (MAX_SAMPLES_PER_TRACK as u32) + 1;
+    let sample_count = u32::try_from(limits.max_samples_per_track)
+      .unwrap_or(u32::MAX)
+      .saturating_add(1);
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&[0, 0, 0, 0]); // version 0 + flags
     bytes.extend_from_slice(&0u32.to_be_bytes()); // sample_size = 0 => would normally read table
     bytes.extend_from_slice(&sample_count.to_be_bytes());
 
-    match parse_stsz(&bytes, 0..bytes.len()) {
+    match parse_stsz(&bytes, 0..bytes.len(), &limits) {
       Err(Mp4Error::TooManySamples {
         sample_count: got,
         max,
       }) => {
         assert_eq!(got, u64::from(sample_count));
-        assert_eq!(max, MAX_SAMPLES_PER_TRACK);
+        assert_eq!(max, limits.max_samples_per_track as u64);
       }
       other => panic!("expected TooManySamples error, got {other:?}"),
     }

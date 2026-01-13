@@ -2,7 +2,7 @@
 use super::yuv::yuv420p_to_rgba;
 use super::{
   DecodedAudioChunk, DecodedVideoFrame, MediaCodec, MediaError, MediaPacket, MediaResult,
-  MediaTrackInfo,
+  MediaLimits, MediaTrackInfo,
 };
 #[cfg(feature = "codec_h264_openh264")]
 use openh264::formats::YUVSource;
@@ -193,16 +193,24 @@ pub struct H264Decoder {
   cfg: H264CodecConfig,
   sent_headers: bool,
   scratch: Vec<u8>,
+  limits: MediaLimits,
 }
 
 #[cfg(feature = "codec_h264_openh264")]
 impl H264Decoder {
   pub fn from_codec_private(codec_private: &[u8]) -> MediaResult<Self> {
-    let cfg = parse_h264_codec_private(codec_private)?;
-    Self::new(cfg)
+    Self::from_codec_private_with_limits(codec_private, MediaLimits::default())
   }
 
-  fn new(cfg: H264CodecConfig) -> MediaResult<Self> {
+  pub fn from_codec_private_with_limits(
+    codec_private: &[u8],
+    limits: MediaLimits,
+  ) -> MediaResult<Self> {
+    let cfg = parse_h264_codec_private(codec_private)?;
+    Self::new(cfg, limits)
+  }
+
+  fn new(cfg: H264CodecConfig, limits: MediaLimits) -> MediaResult<Self> {
     let decoder = openh264::decoder::Decoder::new()
       .map_err(|e| MediaError::Decode(format!("openh264: init failed: {e}")))?;
     Ok(Self {
@@ -210,6 +218,7 @@ impl H264Decoder {
       cfg,
       sent_headers: false,
       scratch: Vec::new(),
+      limits,
     })
   }
 
@@ -261,6 +270,14 @@ impl H264Decoder {
 #[cfg(feature = "codec_h264_openh264")]
 impl VideoDecoder for H264Decoder {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVideoFrame>> {
+    if packet.data.len() > self.limits.max_packet_bytes {
+      return Err(MediaError::resource_too_large(format!(
+        "h264 packet size {} exceeds max_packet_bytes {}",
+        packet.data.len(),
+        self.limits.max_packet_bytes
+      )));
+    }
+
     self.mp4_to_annexb(packet.as_slice())?;
 
     let decoded = self
@@ -273,9 +290,12 @@ impl VideoDecoder for H264Decoder {
     };
 
     let (w, h) = yuv.dimensions();
-    let rgba_len = validate_decoded_rgba_frame_size("h264", w, h)?;
+    let width: u32 =
+      u32::try_from(w).map_err(|_| MediaError::resource_too_large("h264 frame width overflow"))?;
+    let height: u32 = u32::try_from(h)
+      .map_err(|_| MediaError::resource_too_large("h264 frame height overflow"))?;
+    let rgba_len = super::decode::validate_video_frame_dimensions(width, height, &self.limits)?;
     let mut rgba = vec![0u8; rgba_len];
-
     let (y_stride, u_stride, v_stride) = yuv.strides();
     yuv420p_to_rgba(
       w,
@@ -292,8 +312,8 @@ impl VideoDecoder for H264Decoder {
     Ok(vec![DecodedVideoFrame {
       pts_ns: packet.pts_ns,
       duration_ns: packet.duration_ns,
-      width: w as u32,
-      height: h as u32,
+      width,
+      height,
       rgba,
     }])
   }

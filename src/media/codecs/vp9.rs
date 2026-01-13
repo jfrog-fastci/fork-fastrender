@@ -1,4 +1,4 @@
-use crate::media::{MediaError, MediaPacket, MediaResult};
+use crate::media::{MediaError, MediaLimits, MediaPacket, MediaResult};
 
 /// Decoded VP9 frame in RGBA8 format.
 #[derive(Debug, Clone)]
@@ -13,6 +13,7 @@ pub struct DecodedVp9Frame {
 /// VP9 bitstream decoder backed by libvpx.
 pub struct Vp9Decoder {
   inner: libvpx_sys_bundled::Vp9Decoder,
+  limits: MediaLimits,
 }
 
 // SAFETY: The underlying libvpx decoder context does not contain any Rust references and can be
@@ -23,8 +24,12 @@ unsafe impl Send for Vp9Decoder {}
 impl Vp9Decoder {
   /// Create a new VP9 decoder instance.
   pub fn new(threads: u32) -> MediaResult<Self> {
+    Self::new_with_limits(threads, MediaLimits::default())
+  }
+
+  pub fn new_with_limits(threads: u32, limits: MediaLimits) -> MediaResult<Self> {
     let inner = libvpx_sys_bundled::Vp9Decoder::new(threads).map_err(map_libvpx_error)?;
-    Ok(Self { inner })
+    Ok(Self { inner, limits })
   }
 
   /// Decode a compressed VP9 packet.
@@ -33,9 +38,21 @@ impl Vp9Decoder {
   /// container typically provides a duration for the packet; we distribute PTS across the decoded
   /// frames to keep timestamps monotonic.
   pub fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVp9Frame>> {
+    if packet.data.len() > self.limits.max_packet_bytes {
+      return Err(MediaError::resource_too_large(format!(
+        "vp9 packet size {} exceeds max_packet_bytes {}",
+        packet.data.len(),
+        self.limits.max_packet_bytes
+      )));
+    }
+
+    let decode_limits = libvpx_sys_bundled::DecodeLimits {
+      max_video_dimensions: self.limits.max_video_dimensions,
+      max_rgba_bytes: self.limits.max_rgba_bytes,
+    };
     let frames = self
       .inner
-      .decode(packet.as_slice())
+      .decode_with_limits(packet.as_slice(), &decode_limits)
       .map_err(map_libvpx_error)?;
     if frames.is_empty() {
       return Ok(Vec::new());
@@ -79,7 +96,8 @@ impl Vp9Decoder {
 
 fn map_libvpx_error(err: libvpx_sys_bundled::MediaError) -> MediaError {
   match err {
-    libvpx_sys_bundled::MediaError::Unsupported(msg) => MediaError::Unsupported(msg.into()),
+    libvpx_sys_bundled::MediaError::ResourceTooLarge(msg) => MediaError::resource_too_large(msg),
+    libvpx_sys_bundled::MediaError::Unsupported(msg) => MediaError::unsupported(msg),
     libvpx_sys_bundled::MediaError::Decode(msg) => MediaError::Decode(msg),
   }
 }

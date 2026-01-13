@@ -20,6 +20,7 @@ const MAX_VIDEO_FRAME_BYTES: usize = 128 * 1024 * 1024;
 /// 10/12-bit VP9 output frames).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaError {
+  ResourceTooLarge(String),
   Unsupported(String),
   Decode(String),
 }
@@ -27,6 +28,7 @@ pub enum MediaError {
 impl fmt::Display for MediaError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
+      Self::ResourceTooLarge(msg) => write!(f, "resource too large: {msg}"),
       Self::Unsupported(msg) => write!(f, "unsupported: {msg}"),
       Self::Decode(msg) => write!(f, "decode error: {msg}"),
     }
@@ -49,6 +51,22 @@ pub struct Vp9Frame {
   /// This corresponds to `vpx_image_t.r_h` and may differ from `height`.
   pub render_height: u32,
   pub rgba8: Vec<u8>,
+}
+
+/// Safety limits enforced while converting decoded VP9 frames to RGBA8.
+#[derive(Debug, Clone)]
+pub struct DecodeLimits {
+  pub max_video_dimensions: (u32, u32),
+  pub max_rgba_bytes: usize,
+}
+
+impl Default for DecodeLimits {
+  fn default() -> Self {
+    Self {
+      max_video_dimensions: (8192, 8192),
+      max_rgba_bytes: 64 * 1024 * 1024,
+    }
+  }
 }
 
 /// VP9 bitstream decoder backed by libvpx.
@@ -108,6 +126,15 @@ impl Vp9Decoder {
   /// If `data` is empty, this performs a libvpx **flush** (equivalent to calling
   /// `vpx_codec_decode(ctx, NULL, 0, ...)` in C) and returns any delayed frames.
   pub fn decode(&mut self, data: &[u8]) -> Result<Vec<Vp9Frame>, MediaError> {
+    self.decode_with_limits(data, &DecodeLimits::default())
+  }
+
+  /// Decode a VP9 frame with explicit [`DecodeLimits`].
+  pub fn decode_with_limits(
+    &mut self,
+    data: &[u8],
+    limits: &DecodeLimits,
+  ) -> Result<Vec<Vp9Frame>, MediaError> {
     if !self.initialized {
       return Err(MediaError::Decode(
         "vp9 decoder not initialized".to_string(),
@@ -147,7 +174,7 @@ impl Vp9Decoder {
         break;
       }
       let img = unsafe { &*img_ptr };
-      frames.push(Self::rgba_from_image(img)?);
+      frames.push(Self::rgba_from_image_with_limits(img, limits)?);
     }
     Ok(frames)
   }
@@ -161,6 +188,13 @@ impl Vp9Decoder {
   /// For high bit depth output, we downshift the 16-bit YUV planes to 8-bit and then convert to
   /// RGBA8. This is lossy but avoids silently treating 16-bit planes as 8-bit.
   pub fn rgba_from_image(img: &crate::vpx_image_t) -> Result<Vp9Frame, MediaError> {
+    Self::rgba_from_image_with_limits(img, &DecodeLimits::default())
+  }
+
+  pub fn rgba_from_image_with_limits(
+    img: &crate::vpx_image_t,
+    limits: &DecodeLimits,
+  ) -> Result<Vp9Frame, MediaError> {
     let fmt = img.fmt as u32;
     let high_bit_depth = (fmt & Self::VPX_IMG_FMT_HIGHBITDEPTH) != 0;
     let has_alpha = (fmt & Self::VPX_IMG_FMT_HAS_ALPHA) != 0;
@@ -213,21 +247,23 @@ impl Vp9Decoder {
 
     // Treat decoded dimensions as untrusted: reject absurdly large frames before touching any plane
     // pointers or allocating output buffers.
-    let max_dim = MAX_VIDEO_DIMENSION as usize;
-    if width > max_dim || height > max_dim {
-      return Err(MediaError::Unsupported(format!(
-        "vp9 frame dimensions {width}x{height} exceed hard cap {}x{}",
-        MAX_VIDEO_DIMENSION, MAX_VIDEO_DIMENSION
+    let (limit_w, limit_h) = limits.max_video_dimensions;
+    let max_w = limit_w.min(MAX_VIDEO_DIMENSION) as usize;
+    let max_h = limit_h.min(MAX_VIDEO_DIMENSION) as usize;
+    if width > max_w || height > max_h {
+      return Err(MediaError::ResourceTooLarge(format!(
+        "vp9 frame dimensions {width}x{height} exceed max_video_dimensions {max_w}x{max_h}"
       )));
     }
 
     let rgba_len = width
       .checked_mul(height)
       .and_then(|v| v.checked_mul(4))
-      .ok_or_else(|| MediaError::Decode("vp9 frame buffer size overflow".to_string()))?;
-    if rgba_len > MAX_VIDEO_FRAME_BYTES {
-      return Err(MediaError::Unsupported(format!(
-        "vp9 frame size {width}x{height} ({rgba_len} bytes) exceeds hard cap ({MAX_VIDEO_FRAME_BYTES} bytes)"
+      .ok_or_else(|| MediaError::ResourceTooLarge("vp9 frame buffer size overflow".to_string()))?;
+    let max_rgba_bytes = limits.max_rgba_bytes.min(MAX_VIDEO_FRAME_BYTES);
+    if rgba_len > max_rgba_bytes {
+      return Err(MediaError::ResourceTooLarge(format!(
+        "vp9 frame rgba size {rgba_len} exceeds max_rgba_bytes {max_rgba_bytes}"
       )));
     }
 

@@ -1371,6 +1371,8 @@ impl WorkerToUi {
       | WorkerToUi::TickHint { tab_id, .. }
       | WorkerToUi::PageAccessibility { tab_id, .. }
       | WorkerToUi::OpenSelectDropdown { tab_id, .. }
+      | WorkerToUi::DatalistOpened { tab_id, .. }
+      | WorkerToUi::DatalistClosed { tab_id, .. }
       | WorkerToUi::NavigationStarted { tab_id, .. }
       | WorkerToUi::NavigationCommitted { tab_id, .. }
       | WorkerToUi::NavigationFailed { tab_id, .. }
@@ -1398,6 +1400,8 @@ impl WorkerToUi {
       | WorkerToUi::ContextMenu { tab_id, .. }
       | WorkerToUi::HoverChanged { tab_id, .. }
       | WorkerToUi::FindResult { tab_id, .. }
+      | WorkerToUi::MediaControlsOpened { tab_id, .. }
+      | WorkerToUi::MediaControlsClosed { tab_id, .. }
       | WorkerToUi::SetClipboardText { tab_id, .. }
       | WorkerToUi::MediaControlsOpened { tab_id, .. }
       | WorkerToUi::MediaControlsClosed { tab_id }

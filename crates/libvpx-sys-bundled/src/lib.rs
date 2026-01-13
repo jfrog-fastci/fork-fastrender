@@ -922,4 +922,4 @@ pub unsafe fn vpx_codec_dec_init(
 
 pub mod vp9_decoder;
 
-pub use vp9_decoder::{MediaError, Vp9Decoder, Vp9Frame};
+pub use vp9_decoder::{DecodeLimits, MediaError, Vp9Decoder, Vp9Frame};

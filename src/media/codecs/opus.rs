@@ -1,4 +1,4 @@
-use crate::media::{DecodedAudioChunk, MediaError, MediaPacket, MediaResult};
+use crate::media::{DecodedAudioChunk, MediaError, MediaLimits, MediaPacket, MediaResult};
 
 /// Opus always decodes at 48kHz internally.
 ///
@@ -91,10 +91,15 @@ pub struct OpusDecoder {
   channels: u16,
   /// Remaining samples (per channel) to discard for Opus pre-skip.
   pre_skip_remaining: usize,
+  limits: MediaLimits,
 }
 
 impl OpusDecoder {
   pub fn new(head: &OpusHead) -> MediaResult<Self> {
+    Self::new_with_limits(head, MediaLimits::default())
+  }
+
+  pub fn new_with_limits(head: &OpusHead, limits: MediaLimits) -> MediaResult<Self> {
     let channels = match head.channel_count {
       1 => opus::Channels::Mono,
       2 => opus::Channels::Stereo,
@@ -108,12 +113,21 @@ impl OpusDecoder {
       decoder,
       channels: u16::from(head.channel_count),
       pre_skip_remaining: head.pre_skip as usize,
+      limits,
     })
   }
 
   pub fn from_codec_private(codec_private: &[u8]) -> MediaResult<Self> {
     let head = OpusHead::parse(codec_private)?;
     Self::new(&head)
+  }
+
+  pub fn from_codec_private_with_limits(
+    codec_private: &[u8],
+    limits: MediaLimits,
+  ) -> MediaResult<Self> {
+    let head = OpusHead::parse(codec_private)?;
+    Self::new_with_limits(&head, limits)
   }
 
   /// Decode a single Opus packet into interleaved `f32` PCM.
@@ -124,6 +138,14 @@ impl OpusDecoder {
   /// `duration_ns = (samples_per_channel / 48_000) * 1e9`.
   pub fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Option<DecodedAudioChunk>> {
     const MAX_FRAME_SIZE_SAMPLES_PER_CHANNEL: usize = 5760; // 120ms @ 48kHz (Opus max)
+
+    if packet.data.len() > self.limits.max_packet_bytes {
+      return Err(MediaError::resource_too_large(format!(
+        "opus packet size {} exceeds max_packet_bytes {}",
+        packet.data.len(),
+        self.limits.max_packet_bytes
+      )));
+    }
 
     let channels = self.channels as usize;
     let mut pcm = vec![0.0f32; MAX_FRAME_SIZE_SAMPLES_PER_CHANNEL * channels];
@@ -139,7 +161,10 @@ impl OpusDecoder {
       .try_into()
       .map_err(|_| MediaError::Decode("Opus decode returned invalid sample count".to_string()))?;
 
-    let total_samples = decoded_samples_per_channel.saturating_mul(channels);
+    let total_samples = decoded_samples_per_channel
+      .checked_mul(channels)
+      .ok_or_else(|| MediaError::resource_too_large("opus sample count overflow"))?;
+    crate::media::decode::validate_audio_samples_per_packet(total_samples, &self.limits)?;
     pcm.truncate(total_samples);
 
     let mut trimmed_this_packet = false;
@@ -182,6 +207,8 @@ impl OpusDecoder {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  use crate::media::MediaLimits;
 
   fn build_opus_head(channels: u8, pre_skip: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(OpusHead::BASE_LEN);
@@ -379,5 +406,32 @@ mod tests {
     assert!(decoded.channels > 0);
     assert!(!decoded.samples.is_empty());
     assert_eq!(decoded.samples.len() % decoded.channels as usize, 0);
+  }
+
+  #[test]
+  fn rejects_large_output_buffers() {
+    // 20ms @ 48kHz.
+    let samples_per_channel = 960usize;
+    let packet_data = encode_silence_packet(samples_per_channel, 1);
+
+    let opus_head = OpusHead::parse(&build_opus_head(1, 0)).expect("parse OpusHead");
+    let mut limits = MediaLimits::default();
+    limits.max_audio_samples_per_packet = 100;
+    let mut decoder = OpusDecoder::new_with_limits(&opus_head, limits).expect("create decoder");
+
+    let packet = MediaPacket {
+      track_id: 1,
+      dts_ns: 0,
+      pts_ns: 0,
+      duration_ns: 0,
+      data: packet_data.into(),
+      is_keyframe: false,
+    };
+
+    let err = decoder.decode(&packet).unwrap_err();
+    assert!(
+      matches!(err, MediaError::ResourceTooLarge(_)),
+      "unexpected error: {err}"
+    );
   }
 }

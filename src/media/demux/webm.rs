@@ -10,8 +10,8 @@ use crate::media::track_selection::{
   TrackSelectionPolicy,
 };
 use crate::media::{
-  MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
-  MediaVideoInfo,
+  MediaAudioInfo, MediaCodec, MediaError, MediaLimits, MediaPacket, MediaResult, MediaTrackInfo,
+  MediaTrackType, MediaVideoInfo,
 };
 use crate::render_control::{check_root, check_root_periodic};
 use matroska_demuxer::{ContentEncodingValue, DemuxError, Frame, MatroskaFile, TrackType};
@@ -360,6 +360,7 @@ pub struct WebmDemuxer<R: Read + Seek> {
   primary_video_track_id: Option<u64>,
   primary_audio_track_id: Option<u64>,
   timestamp_scale_ns: u64,
+  limits: MediaLimits,
   /// Codec delay (nanoseconds) per track.
   codec_delay_ns: HashMap<u64, u64>,
   /// Max codec delay across supported tracks (nanoseconds).
@@ -384,10 +385,22 @@ pub struct WebmDemuxer<R: Read + Seek> {
 
 impl<R: Read + Seek> WebmDemuxer<R> {
   pub fn open(reader: R) -> MediaResult<Self> {
-    Self::open_with_options(reader, WebmDemuxerOptions::default())
+    Self::open_with_options_and_limits(reader, WebmDemuxerOptions::default(), MediaLimits::default())
   }
 
   pub fn open_with_options(reader: R, options: WebmDemuxerOptions) -> MediaResult<Self> {
+    Self::open_with_options_and_limits(reader, options, MediaLimits::default())
+  }
+
+  pub fn open_with_limits(reader: R, limits: MediaLimits) -> MediaResult<Self> {
+    Self::open_with_options_and_limits(reader, WebmDemuxerOptions::default(), limits)
+  }
+
+  fn open_with_options_and_limits(
+    reader: R,
+    options: WebmDemuxerOptions,
+    limits: MediaLimits,
+  ) -> MediaResult<Self> {
     check_root(RenderStage::Paint).map_err(MediaError::from)?;
 
     if options.per_track_queue_capacity == 0 {
@@ -468,6 +481,23 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         }
       }
 
+      if tracks.len() >= limits.max_track_count {
+        return Err(MediaError::resource_too_large(format!(
+          "webm track count exceeds max_track_count {}",
+          limits.max_track_count
+        )));
+      }
+
+      if let Some(video) = video {
+        let (max_w, max_h) = limits.max_video_dimensions;
+        if video.width > max_w || video.height > max_h {
+          return Err(MediaError::resource_too_large(format!(
+            "webm video dimensions {}x{} exceed max_video_dimensions {max_w}x{max_h}",
+            video.width, video.height
+          )));
+        }
+      }
+
       tracks.push(MediaTrackInfo {
         id,
         track_type,
@@ -539,6 +569,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       primary_video_track_id,
       primary_audio_track_id,
       timestamp_scale_ns,
+      limits,
       codec_delay_ns,
       max_codec_delay_ns,
       seek_pre_roll_ns,
@@ -619,7 +650,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       let duration_ns = clamp_duration_ns(duration_ns);
 
       let data = std::mem::take(&mut self.frame.data);
-      check_webm_packet_size(self.frame.track, data.len())?;
+      validate_packet_size(data.len(), &self.limits)?;
       let is_keyframe = match self.frame.is_keyframe {
         Some(is_keyframe) => is_keyframe,
         None => {
@@ -936,6 +967,16 @@ fn vp9_is_keyframe(frame: &[u8]) -> MediaResult<bool> {
   Ok(frame_type == 0)
 }
 
+fn validate_packet_size(packet_bytes: usize, limits: &MediaLimits) -> MediaResult<()> {
+  if packet_bytes > limits.max_packet_bytes {
+    return Err(MediaError::resource_too_large(format!(
+      "webm packet size {packet_bytes} exceeds max_packet_bytes {}",
+      limits.max_packet_bytes
+    )));
+  }
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1124,6 +1165,14 @@ mod tests {
       msg.contains("encrypted"),
       "expected error message to mention encryption, got {msg}"
     );
+  }
+
+  #[test]
+  fn rejects_large_packets() {
+    let mut limits = MediaLimits::default();
+    limits.max_packet_bytes = 10;
+    let err = validate_packet_size(11, &limits).unwrap_err();
+    assert!(matches!(err, MediaError::ResourceTooLarge(_)));
   }
 
   #[test]

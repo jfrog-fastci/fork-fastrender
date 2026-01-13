@@ -1,6 +1,6 @@
 use super::{MediaError, MediaPacket, MediaResult, MediaTrackInfo};
 #[cfg(feature = "media_mp4")]
-use super::{MediaAudioInfo, MediaCodec, MediaTrackType, MediaVideoInfo};
+use super::{MediaAudioInfo, MediaCodec, MediaLimits, MediaTrackType, MediaVideoInfo};
 #[cfg(feature = "media_mp4")]
 use std::collections::HashMap;
 #[cfg(feature = "media_mp4")]
@@ -84,20 +84,25 @@ pub struct Mp4PacketDemuxer<R: Read + Seek + Send> {
   tracks: Vec<MediaTrackInfo>,
   cursors: Vec<Mp4TrackCursor>,
   sample_tables: HashMap<u32, TrackSampleTable>,
+  limits: MediaLimits,
 }
 
 #[cfg(feature = "media_mp4")]
 impl Mp4PacketDemuxer<BufReader<File>> {
   pub fn open(path: impl AsRef<Path>) -> MediaResult<Self> {
+    Self::open_with_limits(path, MediaLimits::default())
+  }
+
+  pub fn open_with_limits(path: impl AsRef<Path>, limits: MediaLimits) -> MediaResult<Self> {
     let mut file = File::open(path.as_ref())?;
     let len = file.metadata()?.len();
 
     let mp4parse_meta = {
       file.rewind()?;
-      let meta = match mp4parse_read_meta(&mut file) {
+      let meta = match mp4parse_read_meta(&mut file, len, &limits) {
         Ok(meta) => meta,
         // Fail fast for DRM/CENC tracks so we don't proceed to an opaque decode failure later.
-        Err(err @ MediaError::Unsupported(_)) => return Err(err),
+        Err(err @ (MediaError::Unsupported(_) | MediaError::ResourceTooLarge(_))) => return Err(err),
         // `mp4parse` is used here as a best-effort metadata supplement. If it fails to parse this
         // MP4, we can still proceed using the `mp4` crate (just with less codec introspection).
         Err(_) => Mp4ParseMeta::default(),
@@ -111,17 +116,28 @@ impl Mp4PacketDemuxer<BufReader<File>> {
     let mp4 = mp4::Mp4Reader::read_header(reader, len)
       .map_err(|e| MediaError::Demux(format!("mp4: failed to read header: {e}")))?;
 
-    Self::from_reader_with_meta(mp4, mp4parse_meta)
+    Self::from_reader_with_meta(mp4, mp4parse_meta, limits)
   }
 }
 
 #[cfg(feature = "media_mp4")]
 impl Mp4PacketDemuxer<std::io::Cursor<std::sync::Arc<[u8]>>> {
   pub fn from_bytes(bytes: std::sync::Arc<[u8]>) -> MediaResult<Self> {
+    Self::from_bytes_with_limits(bytes, MediaLimits::default())
+  }
+
+  pub fn from_bytes_with_limits(bytes: std::sync::Arc<[u8]>, limits: MediaLimits) -> MediaResult<Self> {
+    if bytes.len() > limits.max_media_bytes {
+      return Err(MediaError::resource_too_large(format!(
+        "mp4 byte length {} exceeds max_media_bytes {}",
+        bytes.len(),
+        limits.max_media_bytes
+      )));
+    }
     let mut cursor = std::io::Cursor::new(std::sync::Arc::clone(&bytes));
-    let mp4parse_meta = match mp4parse_read_meta(&mut cursor) {
+    let mp4parse_meta = match mp4parse_read_meta(&mut cursor, bytes.len() as u64, &limits) {
       Ok(meta) => meta,
-      Err(err @ MediaError::Unsupported(_)) => return Err(err),
+      Err(err @ (MediaError::Unsupported(_) | MediaError::ResourceTooLarge(_))) => return Err(err),
       Err(_) => Mp4ParseMeta::default(),
     };
     cursor.set_position(0);
@@ -130,20 +146,33 @@ impl Mp4PacketDemuxer<std::io::Cursor<std::sync::Arc<[u8]>>> {
     let mp4 = mp4::Mp4Reader::read_header(cursor, len)
       .map_err(|e| MediaError::Demux(format!("mp4: failed to read header: {e}")))?;
 
-    Mp4PacketDemuxer::from_reader_with_meta(mp4, mp4parse_meta)
+    Mp4PacketDemuxer::from_reader_with_meta(mp4, mp4parse_meta, limits)
   }
 }
 
 #[cfg(feature = "media_mp4")]
 impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
   pub fn from_reader(mp4: mp4::Mp4Reader<R>) -> MediaResult<Self> {
-    Self::from_reader_with_meta(mp4, Mp4ParseMeta::default())
+    Self::from_reader_with_limits(mp4, MediaLimits::default())
+  }
+
+  pub fn from_reader_with_limits(mp4: mp4::Mp4Reader<R>, limits: MediaLimits) -> MediaResult<Self> {
+    Self::from_reader_with_meta(mp4, Mp4ParseMeta::default(), limits)
   }
 
   fn from_reader_with_meta(
     mp4: mp4::Mp4Reader<R>,
     mp4parse_meta: Mp4ParseMeta,
+    limits: MediaLimits,
   ) -> MediaResult<Self> {
+    if mp4.tracks().len() > limits.max_track_count {
+      return Err(MediaError::resource_too_large(format!(
+        "mp4 has {} tracks which exceeds max_track_count {}",
+        mp4.tracks().len(),
+        limits.max_track_count
+      )));
+    }
+
     let Mp4ParseMeta {
       vp9_tracks,
       sample_tables: mut meta_sample_tables,
@@ -179,6 +208,12 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
         Some(mp4::MediaType::H264) => {
           let width = track.width() as u32;
           let height = track.height() as u32;
+          let (max_w, max_h) = limits.max_video_dimensions;
+          if width > max_w || height > max_h {
+            return Err(MediaError::resource_too_large(format!(
+              "mp4 H264 track dimensions {width}x{height} exceed max_video_dimensions {max_w}x{max_h}"
+            )));
+          }
 
           let avcc = track
             .trak
@@ -264,6 +299,13 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
         }
         _ => {
           if let Some(vp9) = vp9_tracks.get(track_id) {
+            let (max_w, max_h) = limits.max_video_dimensions;
+            if vp9.width > max_w || vp9.height > max_h {
+              return Err(MediaError::resource_too_large(format!(
+                "mp4 VP9 track dimensions {}x{} exceed max_video_dimensions {max_w}x{max_h}",
+                vp9.width, vp9.height
+              )));
+            }
             tracks.push(MediaTrackInfo {
               id: u64::from(*track_id),
               track_type: MediaTrackType::Video,
@@ -283,14 +325,29 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
       let emit_packets = matches!(media_type, Some(mp4::MediaType::H264 | mp4::MediaType::AAC))
         || vp9_tracks.contains_key(track_id);
       if emit_packets {
+        let sample_count_usize = usize::try_from(sample_count).unwrap_or(usize::MAX);
+        if sample_count_usize > limits.max_samples_per_track {
+          return Err(MediaError::resource_too_large(format!(
+            "mp4 track {track_id} has {sample_count_usize} samples which exceeds max_samples_per_track {}",
+            limits.max_samples_per_track
+          )));
+        }
+
         if let Some(table) = meta_sample_tables.remove(track_id) {
           sample_tables.insert(*track_id, table);
+        }
+
+        let mut effective_sample_count = sample_count;
+        if let Some(table) = sample_tables.get(track_id) {
+          if let Ok(len_u32) = u32::try_from(table.samples.len()) {
+            effective_sample_count = effective_sample_count.min(len_u32);
+          }
         }
 
         cursors.push(Mp4TrackCursor {
           id: *track_id,
           timescale,
-          sample_count,
+          sample_count: effective_sample_count,
           next_sample: 1,
           peeked: None,
           track_type: if matches!(media_type, Some(mp4::MediaType::AAC)) {
@@ -310,6 +367,7 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
       tracks,
       cursors,
       sample_tables,
+      limits,
     })
   }
 }
@@ -416,7 +474,11 @@ struct Mp4ParseMeta {
 }
 
 #[cfg(feature = "media_mp4")]
-fn mp4parse_read_meta<R: Read + Seek>(reader: &mut R) -> MediaResult<Mp4ParseMeta> {
+fn mp4parse_read_meta<R: Read + Seek>(
+  reader: &mut R,
+  file_len: u64,
+  limits: &MediaLimits,
+) -> MediaResult<Mp4ParseMeta> {
   use std::io::SeekFrom;
 
   reader.seek(SeekFrom::Start(0))?;
@@ -425,7 +487,12 @@ fn mp4parse_read_meta<R: Read + Seek>(reader: &mut R) -> MediaResult<Mp4ParseMet
   super::demux::mp4parse::reject_encrypted_tracks(&ctx)?;
 
   let vp9_tracks = mp4parse_vp9_tracks_from_ctx(&ctx).unwrap_or_default();
-  let sample_tables = mp4parse_build_sample_tables(&ctx).unwrap_or_default();
+  let sample_tables = match mp4parse_build_sample_tables(&ctx, file_len, limits) {
+    Ok(t) => t,
+    // mp4parse metadata is best-effort, but limit violations should surface as hard failures.
+    Err(err @ MediaError::ResourceTooLarge(_)) => return Err(err),
+    Err(_) => HashMap::new(),
+  };
   let aac_asc = mp4parse_extract_aac_asc(&ctx).unwrap_or_default();
 
   Ok(Mp4ParseMeta {
@@ -438,6 +505,8 @@ fn mp4parse_read_meta<R: Read + Seek>(reader: &mut R) -> MediaResult<Mp4ParseMet
 #[cfg(feature = "media_mp4")]
 #[derive(Debug, Clone, Copy)]
 struct SampleTiming {
+  offset: u64,
+  size: u32,
   dts_ns: u64,
   pts_ns: u64,
   duration_ns: u64,
@@ -581,12 +650,10 @@ fn mp4parse_track_sample_count(track: &mp4parse::Track) -> Option<usize> {
 #[cfg(feature = "media_mp4")]
 fn mp4parse_build_sample_tables(
   ctx: &mp4parse::MediaContext,
+  file_len: u64,
+  limits: &MediaLimits,
 ) -> MediaResult<HashMap<u32, TrackSampleTable>> {
   use mp4parse::unstable::{create_sample_table, CheckedInteger};
-
-  // Hard cap so a corrupted MP4 can't make us allocate an unbounded sample table.
-  const MAX_SAMPLES_PER_TRACK: usize = 2_000_000;
-  const MAX_TOTAL_SAMPLES: usize = 4_000_000;
 
   let mut total_samples = 0_usize;
   let mut out = HashMap::new();
@@ -606,13 +673,22 @@ fn mp4parse_build_sample_tables(
     let Some(sample_count) = mp4parse_track_sample_count(track) else {
       continue;
     };
-    if sample_count > MAX_SAMPLES_PER_TRACK {
-      continue;
+
+    if sample_count > limits.max_samples_per_track {
+      return Err(MediaError::resource_too_large(format!(
+        "mp4 track {track_id} sample count {sample_count} exceeds max_samples_per_track {}",
+        limits.max_samples_per_track
+      )));
     }
 
     let new_total = total_samples.saturating_add(sample_count);
-    if new_total > MAX_TOTAL_SAMPLES {
-      continue;
+    let max_total_samples = limits
+      .max_samples_per_track
+      .saturating_mul(limits.max_track_count.max(1));
+    if new_total > max_total_samples {
+      return Err(MediaError::resource_too_large(format!(
+        "mp4 total sample count {new_total} exceeds max_total_samples {max_total_samples}"
+      )));
     }
     total_samples = new_total;
 
@@ -656,6 +732,30 @@ fn mp4parse_build_sample_tables(
     let mut sync_sample_indices = Vec::new();
 
     for (i, s) in table.iter().enumerate() {
+      let start_offset = s.start_offset.0;
+      let end_offset = s.end_offset.0;
+      if end_offset < start_offset {
+        return Err(MediaError::Demux(format!(
+          "mp4parse: invalid sample offsets (track {track_id}, sample {i}): {start_offset}..{end_offset}"
+        )));
+      }
+      if end_offset > file_len {
+        return Err(MediaError::Demux(format!(
+          "mp4parse: sample out of bounds (track {track_id}, sample {i}): {start_offset}..{end_offset} (file len {file_len})"
+        )));
+      }
+
+      let size_u64 = end_offset - start_offset;
+      if size_u64 > u64::try_from(limits.max_packet_bytes).unwrap_or(u64::MAX) {
+        return Err(MediaError::resource_too_large(format!(
+          "mp4 sample size {size_u64} exceeds max_packet_bytes {}",
+          limits.max_packet_bytes
+        )));
+      }
+      let size_u32 = u32::try_from(size_u64).map_err(|_| {
+        MediaError::resource_too_large(format!("mp4 sample size {size_u64} overflows u32"))
+      })?;
+
       let dts_ticks_i64 = s.start_decode.0.saturating_add(dts_shift);
       let pts_ticks_i64 = s.start_composition.0.saturating_add(pts_shift);
       let duration_ticks_i64 = s.end_composition.0.saturating_sub(s.start_composition.0);
@@ -673,6 +773,8 @@ fn mp4parse_build_sample_tables(
       }
 
       samples.push(SampleTiming {
+        offset: start_offset,
+        size: size_u32,
         dts_ns,
         pts_ns,
         duration_ns,
@@ -1128,7 +1230,7 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
 
   fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
     for cursor in &mut self.cursors {
-      mp4_fill_peeked(&mut self.mp4, &self.sample_tables, cursor)?;
+      mp4_fill_peeked(&mut self.mp4, &self.sample_tables, cursor, &self.limits)?;
     }
 
     let Some((best_idx, _, _)) = self
@@ -1157,7 +1259,7 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
         // Fallback: scan forward until the first sample with PTS >= time.
         cursor.next_sample = 1;
         loop {
-          mp4_fill_peeked(&mut self.mp4, &self.sample_tables, cursor)?;
+          mp4_fill_peeked(&mut self.mp4, &self.sample_tables, cursor, &self.limits)?;
           match cursor.peeked.as_ref() {
             None => break,
             Some(pkt) if pkt.pts_ns < time_ns => {
@@ -1192,6 +1294,7 @@ fn mp4_fill_peeked<R: Read + Seek>(
   mp4: &mut mp4::Mp4Reader<R>,
   sample_tables: &HashMap<u32, TrackSampleTable>,
   cursor: &mut Mp4TrackCursor,
+  limits: &MediaLimits,
 ) -> MediaResult<()> {
   if cursor.peeked.is_some() {
     return Ok(());
@@ -1200,6 +1303,24 @@ fn mp4_fill_peeked<R: Read + Seek>(
   while cursor.next_sample <= cursor.sample_count {
     let sample_idx = cursor.next_sample;
     cursor.next_sample += 1;
+
+    let timing = sample_tables
+      .get(&cursor.id)
+      .and_then(|t| t.samples.get(sample_idx as usize - 1))
+      .copied();
+
+    // When mp4parse metadata is available, check sample sizes *before* asking the `mp4` crate to
+    // read the sample so we don't allocate unbounded memory.
+    if let Some(t) = timing {
+      let size_usize = usize::try_from(t.size)
+        .map_err(|_| MediaError::resource_too_large("mp4 sample size overflows usize"))?;
+      if size_usize > limits.max_packet_bytes {
+        return Err(MediaError::resource_too_large(format!(
+          "mp4 sample size {size_usize} exceeds max_packet_bytes {}",
+          limits.max_packet_bytes
+        )));
+      }
+    }
 
     let Some(sample) = mp4
       .read_sample(cursor.id, sample_idx)
@@ -1213,11 +1334,13 @@ fn mp4_fill_peeked<R: Read + Seek>(
     // length. This check still prevents a second attacker-controlled allocation when converting to
     // our owned `Vec<u8>`.
     check_mp4_packet_size(cursor.id, sample.bytes.len())?;
-
-    let timing = sample_tables
-      .get(&cursor.id)
-      .and_then(|t| t.samples.get(sample_idx as usize - 1))
-      .copied();
+    if sample.bytes.len() > limits.max_packet_bytes {
+      return Err(MediaError::resource_too_large(format!(
+        "mp4 packet size {} exceeds max_packet_bytes {}",
+        sample.bytes.len(),
+        limits.max_packet_bytes
+      )));
+    }
 
     let (dts_ns, pts_ns, is_keyframe) = match timing {
       Some(t) => (t.dts_ns, t.pts_ns, t.is_sync),

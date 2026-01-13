@@ -7,6 +7,10 @@
 //! - container demux primitives (track metadata + compressed packets)
 //! - codec backends for decoding compressed packets into PCM / frames
 //!
+//! Media files are hostile inputs: they can encode absurd sizes/counts that trigger large
+//! allocations (OOM) or multi-minute CPU loops. See [`MediaLimits`] for the guardrails enforced by
+//! the demux/decode stack.
+//!
 //! For the intended A/V clocking model (audio master clock, UI tick as wake-up only), see
 //! `docs/media_clocking.md`.
 
@@ -25,10 +29,12 @@ pub mod backends;
 pub mod clock;
 pub mod playback_control;
 pub mod codecs;
+pub mod decode;
 pub mod decoder;
 pub mod demux;
 pub mod demuxer;
 pub mod error;
+pub mod limits;
 pub mod loader;
 pub mod player;
 pub mod frame_provider;
@@ -197,6 +203,7 @@ pub use clock::{
 };
 pub use frame_provider::SizeHintMediaFrameProvider;
 pub use error::MediaClockError;
+pub use limits::MediaLimits;
 pub use master_clock::{ClockSource, MasterClock};
 pub use mp4::{Mp4Demuxer, Mp4Sample, Mp4Track, SeekMethod};
 pub use packet::{MediaData, MediaPacket};
@@ -304,6 +311,9 @@ pub enum MediaError {
   #[error("render error: {0}")]
   Render(#[from] RenderError),
 
+  #[error("media resource too large: {0}")]
+  ResourceTooLarge(String),
+
   #[error("unsupported: {0}")]
   Unsupported(Cow<'static, str>),
 
@@ -312,6 +322,24 @@ pub enum MediaError {
 
   #[error("decode error: {0}")]
   Decode(String),
+}
+
+impl MediaError {
+  pub fn resource_too_large(message: impl Into<String>) -> Self {
+    Self::ResourceTooLarge(message.into())
+  }
+
+  pub fn unsupported(message: impl Into<Cow<'static, str>>) -> Self {
+    Self::Unsupported(message.into())
+  }
+
+  pub fn demux(message: impl Into<String>) -> Self {
+    Self::Demux(message.into())
+  }
+
+  pub fn decode(message: impl Into<String>) -> Self {
+    Self::Decode(message.into())
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
