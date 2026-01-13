@@ -17,7 +17,7 @@ fn wait_for_navigation_committed_and_frame(
   expected_url: &str,
   expected_title: &str,
   timeout: Duration,
-) {
+) -> fastrender::ui::messages::RenderedFrame {
   let deadline = Instant::now() + timeout;
   let mut committed = false;
 
@@ -51,8 +51,9 @@ fn wait_for_navigation_committed_and_frame(
           panic!("navigation failed for {url}: {error}");
         }
         WorkerToUi::FrameReady {
-          tab_id: msg_tab, ..
-        } if committed && msg_tab == tab_id => return,
+          tab_id: msg_tab,
+          frame,
+        } if committed && msg_tab == tab_id => return frame,
         _ => {}
       },
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -112,7 +113,7 @@ fn about_pages_render_and_have_titles() {
         NavigationReason::TypedUrl,
       ))
       .unwrap_or_else(|_| panic!("navigate to {url}"));
-    wait_for_navigation_committed_and_frame(&ui_rx, tab, url, title, TIMEOUT);
+    let _frame = wait_for_navigation_committed_and_frame(&ui_rx, tab, url, title, TIMEOUT);
   }
 
   drop(ui_tx);
@@ -141,27 +142,12 @@ fn layout_stress_page_reflows_with_viewport_width() {
     .send(navigate_msg(tab, url.clone(), NavigationReason::TypedUrl))
     .expect("navigate");
 
-  super::support::recv_for_tab(&ui_rx, tab, TIMEOUT, |msg| {
-    matches!(
-      msg,
-      WorkerToUi::NavigationCommitted {
-        url: committed, ..
-      } if committed == &url
-    )
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for NavigationCommitted for {url}"));
-
-  let wide_frame_msg = super::support::recv_for_tab(&ui_rx, tab, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { frame, .. } if frame.viewport_css == wide_viewport)
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for {url}"));
-
-  let WorkerToUi::FrameReady {
-    frame: wide_frame, ..
-  } = wide_frame_msg
-  else {
-    unreachable!();
-  };
+  let wide_frame =
+    wait_for_navigation_committed_and_frame(&ui_rx, tab, &url, "Layout Stress Test", TIMEOUT);
+  assert_eq!(
+    wide_frame.viewport_css, wide_viewport,
+    "expected first frame after navigating to layout-stress to use the configured wide viewport"
+  );
   let wide_height = wide_frame.scroll_metrics.content_css.1;
 
   ui_tx
