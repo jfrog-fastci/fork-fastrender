@@ -1,5 +1,5 @@
 use crate::heap::ExternalMemoryToken;
-use crate::fallible_format;
+use crate::fallible_format::MAX_ERROR_MESSAGE_BYTES;
 use crate::{Heap, VmError};
 use core::mem;
 use std::fmt::Display;
@@ -227,41 +227,135 @@ impl Display for StackFrame {
 
 /// Format stack frames into a stable stack trace string.
 pub fn format_stack_trace(frames: &[StackFrame]) -> String {
-  fn try_push_stack_frame(out: &mut String, frame: &StackFrame) -> Result<(), VmError> {
+  const OOM_PLACEHOLDER: &str = "<stack trace omitted: OOM>";
+
+  #[inline]
+  fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+      return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+      end -= 1;
+    }
+    &s[..end]
+  }
+
+  #[inline]
+  fn try_push_str_limited(out: &mut String, s: &str, max_bytes: usize) -> Result<(), ()> {
+    if out.len() >= max_bytes {
+      return Ok(());
+    }
+    let remaining = max_bytes - out.len();
+    let part = truncate_to_char_boundary(s, remaining);
+    if part.is_empty() {
+      return Ok(());
+    }
+    out.try_reserve(part.len()).map_err(|_| ())?;
+    out.push_str(part);
+    Ok(())
+  }
+
+  #[inline]
+  fn try_push_char_limited(out: &mut String, ch: char, max_bytes: usize) -> Result<(), ()> {
+    if out.len() >= max_bytes {
+      return Ok(());
+    }
+    let mut buf = [0u8; 4];
+    let encoded = ch.encode_utf8(&mut buf);
+    let remaining = max_bytes - out.len();
+    if encoded.len() > remaining {
+      return Ok(());
+    }
+    out.try_reserve(encoded.len()).map_err(|_| ())?;
+    out.push(ch);
+    Ok(())
+  }
+
+  #[inline]
+  fn try_push_u32_limited(out: &mut String, mut value: u32, max_bytes: usize) -> Result<(), ()> {
+    if out.len() >= max_bytes {
+      return Ok(());
+    }
+
+    // u32::MAX has 10 digits.
+    let mut buf = [0u8; 10];
+    let mut i = buf.len();
+    if value == 0 {
+      i -= 1;
+      buf[i] = b'0';
+    } else {
+      while value != 0 && i != 0 {
+        let digit = (value % 10) as u8;
+        value /= 10;
+        i -= 1;
+        buf[i] = b'0' + digit;
+      }
+    }
+    let s = std::str::from_utf8(&buf[i..]).unwrap_or("0");
+    try_push_str_limited(out, s, max_bytes)
+  }
+
+  #[inline]
+  fn try_format_frame(out: &mut String, frame: &StackFrame, max_bytes: usize) -> Result<(), ()> {
+    try_push_str_limited(out, "at ", max_bytes)?;
     match &frame.function {
       Some(function) => {
-        fallible_format::try_push_str(out, "at ")?;
-        fallible_format::try_push_str(out, function)?;
-        fallible_format::try_push_str(out, " (")?;
-        fallible_format::try_push_str(out, &frame.source)?;
-        fallible_format::try_push_char(out, ':')?;
-        fallible_format::try_write_u32(out, frame.line)?;
-        fallible_format::try_push_char(out, ':')?;
-        fallible_format::try_write_u32(out, frame.col)?;
-        fallible_format::try_push_char(out, ')')?;
+        try_push_str_limited(out, function, max_bytes)?;
+        try_push_str_limited(out, " (", max_bytes)?;
+        try_push_str_limited(out, &frame.source, max_bytes)?;
+        try_push_char_limited(out, ':', max_bytes)?;
+        try_push_u32_limited(out, frame.line, max_bytes)?;
+        try_push_char_limited(out, ':', max_bytes)?;
+        try_push_u32_limited(out, frame.col, max_bytes)?;
+        try_push_char_limited(out, ')', max_bytes)?;
       }
       None => {
-        fallible_format::try_push_str(out, "at ")?;
-        fallible_format::try_push_str(out, &frame.source)?;
-        fallible_format::try_push_char(out, ':')?;
-        fallible_format::try_write_u32(out, frame.line)?;
-        fallible_format::try_push_char(out, ':')?;
-        fallible_format::try_write_u32(out, frame.col)?;
+        try_push_str_limited(out, &frame.source, max_bytes)?;
+        try_push_char_limited(out, ':', max_bytes)?;
+        try_push_u32_limited(out, frame.line, max_bytes)?;
+        try_push_char_limited(out, ':', max_bytes)?;
+        try_push_u32_limited(out, frame.col, max_bytes)?;
       }
     }
     Ok(())
   }
 
-  let mut out = String::new();
-  for (i, frame) in frames.iter().enumerate() {
-    if i != 0 {
-      if fallible_format::try_push_char(&mut out, '\n').is_err() {
-        return out;
-      }
+  #[inline]
+  fn oom_placeholder() -> String {
+    let mut out = String::new();
+    if out.try_reserve_exact(OOM_PLACEHOLDER.len()).is_ok() {
+      out.push_str(OOM_PLACEHOLDER);
     }
-    if try_push_stack_frame(&mut out, frame).is_err() {
-      return out;
+    out
+  }
+
+  if frames.is_empty() {
+    return String::new();
+  }
+
+  let mut out = String::new();
+  // Best-effort preallocation. If it fails, we still attempt incremental writes below.
+  let estimate = frames
+    .len()
+    .saturating_mul(32)
+    .min(MAX_ERROR_MESSAGE_BYTES);
+  let _ = out.try_reserve_exact(estimate);
+
+  for (i, frame) in frames.iter().enumerate() {
+    if out.len() >= MAX_ERROR_MESSAGE_BYTES {
+      break;
+    }
+    if i != 0 && try_push_char_limited(&mut out, '\n', MAX_ERROR_MESSAGE_BYTES).is_err() {
+      // OOM while adding a separator: return what we've built so far.
+      return if out.is_empty() { oom_placeholder() } else { out };
+    }
+    if try_format_frame(&mut out, frame, MAX_ERROR_MESSAGE_BYTES).is_err() {
+      // OOM while formatting a frame: return a partial stack trace (or a placeholder if we failed
+      // before producing anything).
+      return if out.is_empty() { oom_placeholder() } else { out };
     }
   }
+
   out
 }

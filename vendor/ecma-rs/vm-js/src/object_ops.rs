@@ -3885,12 +3885,19 @@ impl<'a> Scope<'a> {
   ) -> Result<Vec<PropertyKey>, VmError> {
     if self.heap().object_is_module_namespace(obj)? {
       let exports = self.heap().module_namespace_exports(obj)?;
-      let symbol_keys = self
+      let own_keys = self
         .heap()
-        .ordinary_own_property_keys_with_tick(obj, &mut tick)?
-        .into_iter()
-        .filter(|k| matches!(k, PropertyKey::Symbol(_)))
-        .collect::<Vec<_>>();
+        .ordinary_own_property_keys_with_tick(obj, &mut tick)?;
+      let mut symbol_keys: Vec<PropertyKey> = Vec::new();
+      for key in own_keys {
+        if matches!(key, PropertyKey::Symbol(_)) {
+          // `Vec::push` can abort the process on allocator OOM; reserve fallibly first.
+          symbol_keys
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          symbol_keys.push(key);
+        }
+      }
 
       let out_len = exports
         .len()

@@ -2,9 +2,9 @@ use std::process;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vm_js::{
-  Agent, Budget, HeapLimits, Job, JobKind, LoadedModuleRequest, MicrotaskQueue, ModuleGraph, ModuleId,
-  ModuleRequest, ModuleStatus, PropertyDescriptor, PropertyKey, PropertyKind, RootId,
-  SourceTextModuleRecord, StackFrame, Value, VmError, VmHostHooks, VmJobContext, VmOptions,
+  format_stack_trace, Agent, Budget, HeapLimits, Job, JobKind, LoadedModuleRequest, MicrotaskQueue,
+  ModuleGraph, ModuleId, ModuleRequest, ModuleStatus, PropertyDescriptor, PropertyKey, PropertyKind,
+  RootId, SourceTextModuleRecord, StackFrame, Value, VmError, VmHostHooks, VmJobContext, VmOptions,
   MAX_PROTOTYPE_CHAIN,
 };
 
@@ -55,7 +55,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
   );
   process::exit(2);
 }
@@ -573,7 +573,7 @@ fn main() {
             process::exit(1);
           }
         };
-
+ 
         // Build a deep proxy chain so the visited `HashSet` needs to grow enough to allocate a
         // large backing table (more likely to hit allocator OOM even when small free-lists exist).
         for _ in 0..MAX_PROTOTYPE_CHAIN {
@@ -587,12 +587,12 @@ fn main() {
         }
         target
       };
-
+ 
       // Consume remaining address space so the `HashSet` inside `object_prototype` hits allocator
       // OOM.
       let pressure = exhaust_address_space();
       let _keep = (&filler, &pressure);
-
+ 
       match agent.heap_mut().object_prototype(proxy) {
         Ok(_) => Ok(Value::Undefined),
         Err(err) => Err(err),
@@ -617,7 +617,7 @@ fn main() {
             process::exit(1);
           }
         };
-
+ 
         // Create a deep prototype chain so `object_set_prototype` has to insert many entries into
         // its visited `HashSet` during cycle detection.
         //
@@ -639,16 +639,39 @@ fn main() {
         }
         (obj, proto)
       };
-
+ 
       // Consume remaining address space so the `HashSet` inside `object_set_prototype` hits
       // allocator OOM.
       let pressure = exhaust_address_space();
       let _keep = (&filler, &pressure);
-
+ 
       match agent.heap_mut().object_set_prototype(obj, Some(proto)) {
         Ok(()) => Ok(Value::Undefined),
         Err(err) => Err(err),
       }
+    }
+    "stackTrace" => {
+      // Trigger stack trace formatting under memory pressure (large `source_name` held alive by the
+      // captured stack frames).
+      let script = "function f(n) { if (n === 0) throw 1; return f(n - 1); }\nf(64);";
+      let _keep = &filler;
+ 
+      // For the stack trace scenario, interpret `len_code_units` as a *byte length* for the source
+      // name. This keeps the script text small while making stack frame formatting expensive.
+      let mut bytes: Vec<u8> = Vec::new();
+      if bytes.try_reserve_exact(len_code_units).is_err() {
+        eprintln!("oom_harness: failed to allocate source name buffer");
+        process::exit(1);
+      }
+      bytes.resize(len_code_units, b'a');
+      let source_name = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(err) => {
+          eprintln!("oom_harness: failed to build source name string: {err:?}");
+          process::exit(1);
+        }
+      };
+      agent.run_script(source_name, script, Budget::unlimited(1), None)
     }
     "eval"
     | "function"
@@ -675,10 +698,8 @@ fn main() {
         "arrayMap" => "Array(S.length).map(() => 0)",
         _ => unreachable!(),
       };
-
-      // Keep `filler` alive for the duration of the run.
+ 
       let _keep = &filler;
-
       agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
     }
     other => {
@@ -708,6 +729,25 @@ fn main() {
       }
     }
   }
+
+  if scenario == "stackTrace" {
+    match &result {
+      Err(VmError::ThrowWithStack { stack, .. }) => {
+        if stack.is_empty() {
+          eprintln!("oom_harness: expected non-empty stack trace");
+          process::exit(1);
+        }
+        // Ensure stack trace formatting runs under memory pressure and never aborts.
+        let _ = format_stack_trace(stack);
+        process::exit(0);
+      }
+      other => {
+        eprintln!("oom_harness: unexpected stackTrace result: {other:?}");
+        process::exit(1);
+      }
+    }
+  }
+
   match result {
     Err(VmError::OutOfMemory) => process::exit(0),
     Err(VmError::Syntax(_)) if scenario == "labelEarlyError" => process::exit(0),

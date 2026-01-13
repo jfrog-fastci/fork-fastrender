@@ -123,6 +123,16 @@ fn set_prototype_of_cycle_check_does_not_abort_on_oom() {
 }
 
 #[test]
+fn stack_trace_formatting_does_not_abort_on_oom() {
+  // Ensure host stack trace formatting (used when surfacing exceptions/terminations) is OOM-safe.
+  //
+  // This drives the `stackTrace` scenario, which uses a huge `source_name` held alive by captured
+  // stack frames. Formatting the stack should never abort the process, even when it cannot
+  // allocate enough space to render the full trace.
+  run_oom_harness("stackTrace", 16 * 1024 * 1024);
+}
+
+#[test]
 fn module_linking_error_strings_do_not_abort_on_oom() {
   // Module linking errors may embed attacker-controlled module specifiers / export names in the
   // thrown SyntaxError message. Ensure those error strings are constructed using bounded, fallible
