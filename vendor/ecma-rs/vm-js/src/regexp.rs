@@ -4403,6 +4403,39 @@ mod tests {
   }
 
   #[test]
+  fn regexp_d_flag_is_accepted_by_regexp_literals_and_constructor() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // RegExp literal with `/d`.
+    assert!(eval_bool(&mut rt, r#"(/a/d.test("a"))"#)?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const r = /a/d; return r.hasIndices === true && r.flags === "d"; })()"#,
+    )?);
+
+    // RegExp constructor with `d`.
+    assert!(eval_bool(&mut rt, r#"(new RegExp("a", "d").test("a"))"#)?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const r = new RegExp("a", "d"); return r.hasIndices === true && r.flags === "d"; })()"#,
+    )?);
+
+    // `d` composes with `/v` and canonicalizes to `"dv"`.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const r = /a/vd; return r.unicode === false && r.unicodeSets === true && r.hasIndices === true && r.flags === "dv"; })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const r = new RegExp("a", "vd"); return r.unicode === false && r.unicodeSets === true && r.hasIndices === true && r.flags === "dv"; })()"#,
+    )?);
+
+    Ok(())
+  }
+
+  #[test]
   fn regexp_v_enables_unicode_mode_for_control_escapes() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
