@@ -995,7 +995,8 @@ mod windows {
 
   fn print_usage() {
     eprintln!(
-      "Usage:\n  cargo run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost] [--timeout-ms <MS>]\n\n\
+      "Usage:\n  # From the workspace root (wrapper-friendly):\n  bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost] [--timeout-ms <MS>]\n\n\
+  # Or directly via cargo:\n  cargo run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost] [--timeout-ms <MS>]\n\n\
 Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints sandbox state and runs probes.\n"
     );
   }
