@@ -4107,6 +4107,27 @@ fn compiled_computed_object_literal_key_uses_to_property_key() -> Result<(), VmE
 }
 
 #[test]
+fn compiled_computed_class_member_key_uses_to_property_key() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let k = { toString(){ return 'm'; } };
+      class C { [k](){ return 3; } }
+      (new C()).m()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
