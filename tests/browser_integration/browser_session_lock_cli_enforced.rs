@@ -52,8 +52,9 @@ fn browser_refuses_to_start_when_cli_session_path_is_locked() {
     stderr.contains("already in use"),
     "expected browser to mention the session is already in use; stderr:\n{stderr}\nstdout:\n{stdout}"
   );
+  let cli_session_display = cli_session_path.to_string_lossy();
   assert!(
-    stderr.contains(&cli_session_path.to_string_lossy()),
+    stderr.contains(cli_session_display.as_ref()),
     "expected browser error to mention CLI session path {}; stderr:\n{stderr}\nstdout:\n{stdout}",
     cli_session_path.display()
   );
