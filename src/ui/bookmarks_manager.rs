@@ -872,28 +872,58 @@ fn bookmarks_list(
           let row = cache.rows[row_idx];
           match row.kind {
             BookmarkRowKind::Folder => {
-              let Some((title, item_count)) =
-                store.nodes.get(&row.id).and_then(|node| match node {
-                  BookmarkNode::Folder(folder) => Some((folder.title.clone(), folder.children.len())),
-                  _ => None,
-                })
-              else {
-                // Keep row spacing stable until the cache is rebuilt next frame.
-                list_row(ui, ("missing_folder_row", row.id.0), false, |_| {});
-                continue;
+              let delete_clicked = match store.nodes.get(&row.id) {
+                Some(BookmarkNode::Folder(folder)) => {
+                  render_folder_row(
+                    ui,
+                    state,
+                    row.id,
+                    folder.title.as_str(),
+                    folder.children.len(),
+                    row.depth,
+                  )
+                }
+                _ => {
+                  // Keep row spacing stable until the cache is rebuilt next frame.
+                  list_row(ui, ("missing_folder_row", row.id.0), false, |_| {});
+                  continue;
+                }
               };
-              render_folder_row(ui, state, store, row.id, title, item_count, row.depth, out);
+
+              if delete_clicked {
+                let mut deltas = Vec::new();
+                if store.remove_by_id_with_deltas(row.id, &mut deltas) {
+                  out.changed = true;
+                  out.bookmark_deltas.extend(deltas);
+                  out.request_flush = true;
+                  state.clear_transient();
+                }
+              }
             }
             BookmarkRowKind::Bookmark => {
-              let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&row.id).cloned() else {
-                list_row(ui, ("missing_bookmark_row", row.id.0), false, |_| {});
-                continue;
+              let delete_clicked = match store.nodes.get(&row.id) {
+                Some(BookmarkNode::Bookmark(entry)) => {
+                  let parent_label = folder_labels
+                    .get(&entry.parent)
+                    .map(String::as_str)
+                    .unwrap_or("Root");
+                  render_bookmark_row(ui, state, entry, row.depth, parent_label, out)
+                }
+                _ => {
+                  list_row(ui, ("missing_bookmark_row", row.id.0), false, |_| {});
+                  continue;
+                }
               };
-              let parent_label = folder_labels
-                .get(&entry.parent)
-                .map(String::as_str)
-                .unwrap_or("Root");
-              render_bookmark_row(ui, state, store, entry, row.depth, parent_label, out);
+
+              if delete_clicked {
+                let mut deltas = Vec::new();
+                if store.remove_by_id_with_deltas(row.id, &mut deltas) {
+                  out.changed = true;
+                  out.bookmark_deltas.extend(deltas);
+                  out.request_flush = true;
+                  state.clear_transient();
+                }
+              }
             }
           }
         }
@@ -977,13 +1007,11 @@ fn build_visible_rows(ctx: &egui::Context, store: &BookmarkStore, query: &str) -
 fn render_folder_row(
   ui: &mut egui::Ui,
   state: &mut BookmarksManagerState,
-  store: &mut BookmarkStore,
   folder_id: BookmarkId,
-  title: String,
+  title: &str,
   item_count: usize,
   depth: usize,
-  out: &mut BookmarksManagerOutput,
-) {
+) -> bool {
   let open_id = folder_open_id(folder_id);
   let mut open = ui
     .ctx()
@@ -1000,7 +1028,7 @@ fn render_folder_row(
         let del = icon_button(ui, BrowserIcon::Trash, "Delete folder", true);
         del.widget_info({
           let label = format!("Delete folder: {title}");
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if del.clicked() {
           delete_clicked = true;
@@ -1025,28 +1053,16 @@ fn render_folder_row(
   });
 
   row_resp.widget_info({
-    let title = title.clone();
-    move || {
-      egui::WidgetInfo::labeled(
-        egui::WidgetType::Button,
-        if open {
-          format!("Collapse folder: {title}")
-        } else {
-          format!("Expand folder: {title}")
-        },
-      )
-    }
+    let label = if open {
+      format!("Collapse folder: {title}")
+    } else {
+      format!("Expand folder: {title}")
+    };
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
   });
 
   if delete_clicked {
-    let mut deltas = Vec::new();
-    if store.remove_by_id_with_deltas(folder_id, &mut deltas) {
-      out.changed = true;
-      out.bookmark_deltas.extend(deltas);
-      out.request_flush = true;
-      state.clear_transient();
-    }
-    return;
+    return true;
   }
 
   if row_resp.clicked() {
@@ -1056,17 +1072,18 @@ fn render_folder_row(
     state.folder_open_revision = state.folder_open_revision.wrapping_add(1);
     ui.ctx().request_repaint();
   }
+
+  false
 }
 
 fn render_bookmark_row(
   ui: &mut egui::Ui,
   state: &mut BookmarksManagerState,
-  store: &mut BookmarkStore,
-  entry: super::bookmarks::BookmarkEntry,
+  entry: &super::bookmarks::BookmarkEntry,
   depth: usize,
   parent_label: &str,
   out: &mut BookmarksManagerOutput,
-) {
+) -> bool {
   let editing_this = state
     .editing_bookmark
     .as_ref()
@@ -1095,7 +1112,7 @@ fn render_bookmark_row(
         let del = icon_button(ui, BrowserIcon::Trash, "Delete bookmark", true);
         del.widget_info({
           let label = format!("Delete bookmark: {title}");
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if del.clicked() {
           delete_clicked = true;
@@ -1104,7 +1121,7 @@ fn render_bookmark_row(
         let edit_btn = icon_button(ui, BrowserIcon::Edit, "Edit bookmark", true);
         edit_btn.widget_info({
           let label = format!("Edit bookmark: {title}");
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if edit_btn.clicked() {
           edit_clicked = true;
@@ -1123,13 +1140,10 @@ fn render_bookmark_row(
         ui.vertical(|ui| {
           ui.set_width(ui.available_width());
 
-          let title_text = if editing_this {
-            egui::RichText::new(title.clone())
-              .strong()
-              .color(ui.visuals().selection.stroke.color)
-          } else {
-            egui::RichText::new(title.clone()).strong()
-          };
+          let mut title_text = egui::RichText::new(title.clone()).strong();
+          if editing_this {
+            title_text = title_text.color(ui.visuals().selection.stroke.color);
+          }
           ui.label(title_text);
           ui.label(
             egui::RichText::new(url_display.clone())
@@ -1148,14 +1162,8 @@ fn render_bookmark_row(
   .on_hover_text(entry.url.clone());
 
   row_resp.widget_info({
-    let title = title.clone();
-    let url = entry.url.clone();
-    move || {
-      egui::WidgetInfo::labeled(
-        egui::WidgetType::Button,
-        format!("Open bookmark: {title} ({url})"),
-      )
-    }
+    let label = format!("Open bookmark: {title} ({})", entry.url);
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
   });
 
   if row_resp.clicked() {
@@ -1173,7 +1181,7 @@ fn render_bookmark_row(
   if edit_clicked {
     state.editing_bookmark = Some(EditBookmarkState {
       id: entry.id,
-      title: entry.title.unwrap_or_default(),
+      title: entry.title.clone().unwrap_or_default(),
       url: entry.url.clone(),
       parent: entry.parent,
       error: None,
@@ -1182,15 +1190,7 @@ fn render_bookmark_row(
     out.unfocus_page = true;
   }
 
-  if delete_clicked {
-    let mut deltas = Vec::new();
-    if store.remove_by_id_with_deltas(entry.id, &mut deltas) {
-      out.changed = true;
-      out.bookmark_deltas.extend(deltas);
-      out.request_flush = true;
-      state.clear_transient();
-    }
-  }
+  delete_clicked
 }
 
 fn folder_options(store: &BookmarkStore) -> Vec<(Option<BookmarkId>, String)> {
