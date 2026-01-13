@@ -60377,6 +60377,59 @@ mod tests {
   }
 
   #[test]
+  fn node_iterator_wrapper_gc_prunes_dom2_state() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=root></div></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Create a NodeIterator wrapper without keeping it alive in JS.
+    let it_value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        // whatToShow=1 == NodeFilter.SHOW_ELEMENT.\n\
+        const it = document.createNodeIterator(root, 1, null);\n\
+        return it;\n\
+      })()",
+    )?;
+    let it_obj = match it_value {
+      Value::Object(obj) => obj,
+      other => panic!("expected NodeIterator object, got {other:?}"),
+    };
+
+    // Extract the internal iterator id so we can assert the backing dom2 traversal state is pruned.
+    let iterator_id = {
+      let mut scope = realm.heap_mut().scope();
+      scope.push_root(Value::Object(it_obj))?;
+      let key = alloc_key(&mut scope, NODE_ITERATOR_ID_KEY)?;
+      match scope.heap().object_get_own_data_property_value(it_obj, &key)? {
+        Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => dom2::NodeIteratorId::from_u64(n as u64),
+        other => panic!("expected {NODE_ITERATOR_ID_KEY} number, got {other:?}"),
+      }
+    };
+
+    let root_id = host.dom().get_element_by_id("root").expect("missing #root");
+    assert_eq!(host.dom().node_iterator_root(iterator_id), Some(root_id));
+
+    let weak = vm_js::WeakGcObject::new(it_obj);
+    realm.heap_mut().collect_garbage();
+    assert!(
+      weak.upgrade(realm.heap()).is_none(),
+      "expected NodeIterator wrapper to be collectable"
+    );
+
+    // Explicitly sweep the dom2 weak registry to prune stale traversal state.
+    host
+      .dom_mut()
+      .sweep_dead_live_traversals_if_needed(realm.heap());
+    assert_eq!(host.dom().node_iterator_root(iterator_id), None);
+
+    Ok(())
+  }
+
+  #[test]
   fn event_return_value_false_prevents_default_for_cancelable_event() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     assert_eq!(
