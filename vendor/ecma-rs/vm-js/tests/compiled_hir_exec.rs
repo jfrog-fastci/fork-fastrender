@@ -10402,3 +10402,81 @@ fn compiled_allows_defining_async_function_decls() -> Result<(), VmError> {
   assert_eq!(result, Value::Number(2.0));
   Ok(())
 }
+
+#[test]
+fn compiled_import_meta_in_module_returns_cached_object() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `import.meta` is defined only in modules. We don't currently have a compiled-module entry point,
+  // so simulate module execution by pushing an `ExecutionContext` whose active ScriptOrModule is a
+  // module id.
+  let module = rt
+    .modules_mut()
+    .add_module(vm_js::SourceTextModuleRecord::default())?;
+
+  let script = CompiledScript::compile_module(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() { return import.meta; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut hooks = vm_js::MicrotaskQueue::new();
+  let mut host = ();
+  let realm_id = rt.realm().id();
+
+  let mut scope = rt.heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+  // Keep the callee alive across allocations and multiple calls.
+  scope.push_root(Value::Object(f))?;
+
+  let exec_ctx = vm_js::ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(vm_js::ScriptOrModule::Module(module)),
+  };
+  let mut vm_ctx = rt.vm.execution_context_guard(exec_ctx)?;
+
+  let v1 = vm_ctx.call_with_host_and_hooks(
+    &mut host,
+    &mut scope,
+    &mut hooks,
+    Value::Object(f),
+    Value::Undefined,
+    &[],
+  )?;
+  let v2 = vm_ctx.call_with_host_and_hooks(
+    &mut host,
+    &mut scope,
+    &mut hooks,
+    Value::Object(f),
+    Value::Undefined,
+    &[],
+  )?;
+
+  let Value::Object(meta1) = v1 else {
+    panic!("expected import.meta to be an object, got {v1:?}");
+  };
+  let Value::Object(meta2) = v2 else {
+    panic!("expected import.meta to be an object, got {v2:?}");
+  };
+
+  // `import.meta` should be cached per module; repeated evaluations return the same object.
+  assert_eq!(meta1, meta2);
+
+  // Spec: `OrdinaryObjectCreate(null)` -> null-prototype object.
+  assert_eq!(scope.object_get_prototype(meta1)?, None);
+
+  Ok(())
+}

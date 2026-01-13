@@ -24,11 +24,16 @@ use parse_js::operator::OperatorName;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::sync::Arc;
 
-/// A compiled JavaScript classic script (source text + lowered HIR).
+/// A compiled JavaScript source file (source text + lowered HIR).
+///
+/// Despite the name, this type can represent both classic scripts and modules; the compilation
+/// entry points choose the parser's `SourceType`.
 #[derive(Debug)]
 pub struct CompiledScript {
   pub source: SourceText,
   pub hir: Arc<hir_js::LowerResult>,
+  #[allow(dead_code)]
+  source_type: SourceType,
   #[allow(dead_code)]
   external_memory: ExternalMemoryToken,
 }
@@ -77,6 +82,39 @@ impl CompiledScript {
     Ok(Arc::new(Self {
       source,
       hir: Arc::new(hir),
+      source_type: SourceType::Script,
+      external_memory,
+    }))
+  }
+
+  /// Parse and lower a source text module (ECMAScript dialect, `SourceType::Module`).
+  pub fn compile_module(
+    heap: &mut Heap,
+    name: impl Into<Arc<str>>,
+    text: impl Into<Arc<str>>,
+  ) -> Result<Arc<CompiledScript>, VmError> {
+    let source = SourceText::new_charged(heap, name, text)?;
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Module,
+    };
+    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      parse_with_options(source.text.as_ref(), opts)
+    }))
+    .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a module"))?
+    .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+
+    let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
+    }))
+    .map_err(|_| VmError::InvariantViolation("hir-js panicked while lowering a module"))?;
+
+    let estimated_hir_bytes = source.text.len().saturating_mul(8);
+    let external_memory = heap.charge_external(estimated_hir_bytes)?;
+    Ok(Arc::new(Self {
+      source,
+      hir: Arc::new(hir),
+      source_type: SourceType::Module,
       external_memory,
     }))
   }
@@ -121,6 +159,32 @@ impl CompiledScript {
     Ok(Arc::new(Self {
       source,
       hir: Arc::new(hir),
+      source_type: SourceType::Script,
+      external_memory,
+    }))
+  }
+
+  /// Parse and lower a source text module using a VM's budget/interrupt checks.
+  pub fn compile_module_with_budget(
+    heap: &mut Heap,
+    vm: &mut Vm,
+    name: impl Into<Arc<str>>,
+    text: impl Into<Arc<str>>,
+  ) -> Result<Arc<CompiledScript>, VmError> {
+    let source = SourceText::new_charged(heap, name, text)?;
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Module,
+    };
+
+    let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
+    let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
+    let estimated_hir_bytes = source.text.len().saturating_mul(8);
+    let external_memory = heap.charge_external(estimated_hir_bytes)?;
+    Ok(Arc::new(Self {
+      source,
+      hir: Arc::new(hir),
+      source_type: SourceType::Module,
       external_memory,
     }))
   }
