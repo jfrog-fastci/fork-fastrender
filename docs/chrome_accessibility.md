@@ -93,6 +93,8 @@ Maintainability rules (to keep ids stable and avoid collisions):
 - When a label changes based on state (“Details” → “Hide details”), keep the underlying id stable by scoping the widget in a stable parent id.
   - Example: tests in [`src/bin/browser.rs`](../src/bin/browser.rs) assert that a toggle keeps focus and id stable across label changes.
 - Use `ui.push_id(...)` / `id.with(...)` to namespace repeating widgets (tab rows, menu items, list entries) so ids don’t collide.
+- In tests, prefer **name/role snapshots** over comparing raw ids. AccessKit ids are implementation details and can change when egui’s internal hashing changes.
+  - See [`src/ui/a11y_test_util.rs`](../src/ui/a11y_test_util.rs) helpers used by chrome/menu unit tests.
 
 ### Future: FastRender node ids
 
@@ -105,6 +107,13 @@ Constraints to keep in mind (even if the exact scheme changes):
   - multiple tabs/documents
   - “virtual” wrapper nodes (window root, split panes, etc) vs DOM nodes
 - Prefer a reversible mapping (helpful for debugging action routing): you should be able to recover `(tree_kind, tab_id, node_id)` from an AccessKit `NodeId` without a global hashmap where possible.
+
+One reasonable (but **not implemented**) approach is to encode a small namespace header into the high bits of the `u128`, for example:
+
+- high bits: `(tree_kind, tab_id)` (or a per-tab “document generation”)
+- low bits: a stable FastRender node id (DOM/styled/layout id)
+
+If/when this lands, update this section to match the real encoding and ensure it is documented in the code where ids are minted (so tooling can reverse-map ids during debugging).
 
 ---
 
@@ -168,6 +177,17 @@ bash scripts/run_limited.sh --as 64G -- \
 
 Use this when you’re debugging what screen readers actually see for the **browser chrome** (widget names/roles, focus target, expanded state/actions, etc).
 
+### Unit tests (headless AccessKit snapshots)
+
+Many chrome widgets have unit tests that force-enable AccessKit (`ctx.enable_accesskit()`) and assert on the emitted `TreeUpdate`.
+
+Useful helpers live in [`src/ui/a11y_test_util.rs`](../src/ui/a11y_test_util.rs):
+
+- `accesskit_names_from_full_output` / `accesskit_named_roles_from_full_output` (stable, ID-free)
+- `accesskit_pretty_json_from_full_output` (full snapshot, includes ids)
+
+Prefer the ID-free helpers unless you are explicitly debugging id stability.
+
 ### Screen reader smoke tests (manual)
 
 The fastest “does this basically work?” check is a real screen reader:
@@ -194,4 +214,3 @@ The hard parts to plan for:
 - **Action routing:** AccessKit actions on content nodes must reach the correct renderer/interaction instance (possibly over IPC in a multi-process model).
 
 Until content accessibility is wired up, keep chrome AccessKit behavior healthy (stable ids, correct labels, correct focus) so we have a solid foundation to compose on top of later.
-

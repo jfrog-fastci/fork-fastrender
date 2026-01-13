@@ -27,6 +27,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Browser page interaction (forms, focus): [`instructions/browser_interaction.md`](../instructions/browser_interaction.md)
 - Desktop browser app (`browser` binary): [browser.md](browser.md)
 - Running the desktop browser UI locally: [browser_ui.md](browser_ui.md)
+- Chrome accessibility (AccessKit + debugging): [chrome_accessibility.md](chrome_accessibility.md)
 
 ## Architecture & security workstreams
 
