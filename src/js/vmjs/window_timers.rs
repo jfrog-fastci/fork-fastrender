@@ -12,7 +12,6 @@ use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
 use crate::js::realm_module_loader::ModuleLoadOutcome;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
-  drain_pending_dataset_mutation_observer_microtasks,
   dispatch_host_exotic_delete, dispatch_host_exotic_get, dispatch_host_exotic_set,
   DatasetExoticContext, ExoticDispatchHandledBy,
   WindowRealmHost, WindowRealmUserData,
@@ -841,7 +840,12 @@ fn mutation_observer_notify_microtask<Host: WindowRealmHost + 'static>(
   let drain_result: crate::error::Result<()> = {
     let drain_result = {
       let mut scope = heap.scope();
-      drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+      crate::js::window_realm::drain_pending_dataset_mutation_observer_microtasks(
+        &mut vm,
+        &mut scope,
+        vm_host,
+        &mut hooks,
+      )
     };
     drain_result
       .map_err(|err| vm_error_to_event_loop_error(heap, err))
@@ -925,7 +929,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
         let drain_result: crate::error::Result<()> = {
           let drain_result = {
             let mut scope = heap.scope();
-            drain_pending_dataset_mutation_observer_microtasks(&mut vm, &mut scope, vm_host, &mut hooks)
+            crate::js::window_realm::drain_pending_dataset_mutation_observer_microtasks(
+              &mut vm,
+              &mut scope,
+              vm_host,
+              &mut hooks,
+            )
           };
           drain_result
             .map_err(|err| vm_error_to_event_loop_error(heap, err))
@@ -1829,7 +1838,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
       let drain_result: crate::error::Result<()> = {
         let drain_result = {
           let mut scope = heap.scope();
-          drain_pending_dataset_mutation_observer_microtasks(
+          crate::js::window_realm::drain_pending_dataset_mutation_observer_microtasks(
             &mut vm,
             &mut scope,
             vm_host,
@@ -2017,7 +2026,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
       let drain_result: crate::error::Result<()> = {
         let drain_result = {
           let mut scope = heap.scope();
-          drain_pending_dataset_mutation_observer_microtasks(
+          crate::js::window_realm::drain_pending_dataset_mutation_observer_microtasks(
             &mut vm,
             &mut scope,
             vm_host,
@@ -2195,7 +2204,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
       let drain_result: crate::error::Result<()> = {
         let drain_result = {
           let mut scope = heap.scope();
-          drain_pending_dataset_mutation_observer_microtasks(
+          crate::js::window_realm::drain_pending_dataset_mutation_observer_microtasks(
             &mut vm,
             &mut scope,
             vm_host,
