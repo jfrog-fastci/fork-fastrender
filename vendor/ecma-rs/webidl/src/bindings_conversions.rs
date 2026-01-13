@@ -455,15 +455,11 @@ fn string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
   string: R::JsValue,
 ) -> Result<String, R::Error> {
   let max_units = rt.limits().max_string_code_units;
-  let result = rt.with_string_code_units(string, |units| {
-    if units.len() > max_units {
-      return Err(WebIdlException::range_error(
-        "string exceeds maximum length",
-      ));
-    }
-    Ok(String::from_utf16_lossy(units))
-  })?;
-  result.map_err(|e| throw_webidl_exception(rt, e))
+  let len = rt.with_string_code_units(string, |units| units.len())?;
+  if len > max_units {
+    return Err(rt.throw_range_error("string exceeds maximum length"));
+  }
+  rt.string_to_utf8_lossy(string)
 }
 
 fn usv_string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
@@ -471,31 +467,13 @@ fn usv_string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
   string: R::JsValue,
 ) -> Result<String, R::Error> {
   let max_units = rt.limits().max_string_code_units;
-  let result = rt.with_string_code_units(string, |units| {
-    if units.len() > max_units {
-      return Err(WebIdlException::range_error(
-        "string exceeds maximum length",
-      ));
-    }
-    Ok(usv_string_from_utf16_code_units(units))
-  })?;
-  result.map_err(|e| throw_webidl_exception(rt, e))
-}
-
-fn usv_string_from_utf16_code_units(units: &[u16]) -> String {
-  // A USVString is a Unicode scalar value string: any surrogate code points in the input must be
-  // replaced with U+FFFD.
-  //
-  // We do an explicit UTF-16 decode here to keep behaviour deterministic for ill-formed sequences
-  // (e.g. lone surrogates), rather than relying on engine-specific string implementations.
-  let mut out = String::new();
-  for item in std::char::decode_utf16(units.iter().copied()) {
-    match item {
-      Ok(ch) => out.push(ch),
-      Err(_) => out.push('\u{FFFD}'),
-    }
+  let len = rt.with_string_code_units(string, |units| units.len())?;
+  if len > max_units {
+    return Err(rt.throw_range_error("string exceeds maximum length"));
   }
-  out
+  // `string_to_utf8_lossy` performs a UTF-16 decode with replacement (`U+FFFD`) for ill-formed
+  // surrogate sequences, matching USVString's scalar-value requirement.
+  rt.string_to_utf8_lossy(string)
 }
 
 fn convert_to_enum<R: WebIdlJsRuntime>(
