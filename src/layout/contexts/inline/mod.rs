@@ -678,6 +678,12 @@ fn hash_text_emphasis_style(value: &crate::style::types::TextEmphasisStyle, hash
 fn text_inline_item_cache_style_hash(style: &ComputedStyle) -> u64 {
   let mut hasher = FxHasher::default();
   shaping_style_hash(style).hash(&mut hasher);
+  // `shaping_style_hash` intentionally collapses all non-zero `letter-spacing` values to improve
+  // shaping-cache hit rate (only the boolean "zero vs non-zero" affects HarfBuzz feature
+  // selection). However, the inline item cache stores `TextItem`s after spacing has been applied
+  // to glyph advances, so we must still key entries by the actual `letter-spacing` value to avoid
+  // reusing items with the wrong metrics.
+  f32_to_canonical_bits(style.letter_spacing).hash(&mut hasher);
   f32_to_canonical_bits(style.root_font_size).hash(&mut hasher);
   f32_to_canonical_bits(style.word_spacing).hash(&mut hasher);
   hash_line_height(&style.line_height, &mut hasher);
