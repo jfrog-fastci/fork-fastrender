@@ -425,7 +425,7 @@ fn convert_arguments_treats_defaulted_params_as_optional() {
 }
 
 #[test]
-fn record_conversion_uses_to_object() {
+fn record_conversion_rejects_non_objects() {
   let mut rt = VmJsRuntime::new();
   let ctx = TypeContext::default();
 
@@ -434,11 +434,8 @@ fn record_conversion_uses_to_object() {
     Box::new(IdlType::Numeric(NumericType::Long)),
   );
 
-  let converted = convert_to_idl(&mut rt, Value::Bool(true), &ty, &ctx).unwrap();
-  let ConvertedValue::Record { entries, .. } = converted else {
-    panic!("expected record, got {converted:?}");
-  };
-  assert!(entries.is_empty());
+  let err = convert_to_idl(&mut rt, Value::Bool(true), &ty, &ctx).unwrap_err();
+  assert!(error_to_string(&mut rt, err).starts_with("TypeError"));
 }
 
 #[test]

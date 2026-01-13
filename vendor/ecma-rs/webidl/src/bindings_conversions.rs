@@ -1043,8 +1043,12 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
-  // Record conversions use `ToObject` (per WebIDL), so accept primitives here.
-  let obj = rt.to_object(v)?;
+  // WebIDL "js-to-record" begins by rejecting non-Object values. Unlike `object` conversion, record
+  // conversion does *not* apply `ToObject` to accept primitives.
+  if !rt.is_object(v) {
+    return Err(rt.throw_type_error("Value is not an object"));
+  }
+  let obj = v;
 
   let entries = conversions_shared::materialize_record_entries(
     rt,

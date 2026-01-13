@@ -220,10 +220,10 @@ where
 /// Convert an ECMAScript value to an IDL `record<K, V>` value.
 ///
 /// This follows the WebIDL "js-to-record" algorithm shape:
-/// - `ToObject` is applied (primitives are accepted; `null`/`undefined` throw).
-/// - Only own enumerable **string** keys are included.
-/// - Enumerable **symbol** keys can throw, because record conversion performs `ToString(key)`
-///   (WebIDL `PropertyKeyToString`) and `ToString(Symbol)` throws a TypeError.
+/// - If the input value is not an Object, throw a TypeError.
+/// - Only own enumerable keys are considered.
+/// - Record conversion applies WebIDL `PropertyKeyToString` / ECMAScript `ToString(key)`, so
+///   enumerable Symbol keys throw a TypeError.
 ///
 /// The bindings layer representation used by the `vm-js` WebIDL backend is a JavaScript plain
 /// object containing the converted values.
@@ -243,18 +243,9 @@ where
     Value,
   ) -> Result<Value, VmError>,
 {
-  if matches!(value, Value::Undefined | Value::Null) {
+  let Value::Object(input) = value else {
     return Err(rt.throw_type_error(expected_object_message));
-  }
-
-  // Root `value` across `ToObject` (boxing may allocate/GC and `value` may contain GC handles).
-  rt.scope.push_root(value)?;
-
-  let input = match value {
-    Value::Object(obj) => obj,
-    other => rt.scope.to_object(&mut *rt.vm, host, hooks, other)?,
   };
-
   rt.scope.push_root(Value::Object(input))?;
 
   let out_obj = rt.alloc_object()?;

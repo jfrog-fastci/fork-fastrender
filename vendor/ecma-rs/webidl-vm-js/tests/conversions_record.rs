@@ -162,7 +162,7 @@ fn get_own_property_descriptor_trap(
 }
 
 #[test]
-fn record_conversion_uses_to_object_and_ignores_non_enumerable_keys() -> Result<(), VmError> {
+fn record_conversion_ignores_non_enumerable_keys() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
@@ -173,7 +173,6 @@ fn record_conversion_uses_to_object_and_ignores_non_enumerable_keys() -> Result<
   let mut rt = BindingsRuntime::from_scope(&mut vm, scope.reborrow());
   let intr = realm.intrinsics();
 
-  // ---- record conversion ignores non-enumerable keys ----
   let input = rt.alloc_object()?;
 
   let a_key = rt.property_key("a")?;
@@ -236,24 +235,60 @@ fn record_conversion_uses_to_object_and_ignores_non_enumerable_keys() -> Result<
     .unwrap_or(Value::Undefined);
   assert_eq!(v, Value::Number(1.0));
 
-  // ---- record conversion uses `ToObject` (primitives are accepted) ----
-  let out2 = conversions::to_record(
+  drop(rt);
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn record_conversion_rejects_non_objects() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let mut dummy_host = ();
+  let mut hooks = DummyHooks;
+  let mut rt = BindingsRuntime::from_scope(&mut vm, scope.reborrow());
+  let intr = realm.intrinsics();
+
+  let err = conversions::to_record(
     &mut rt,
     &mut dummy_host,
     &mut hooks,
     Value::Bool(true),
     "expected object for record",
     |_rt, _host, _hooks, v| Ok(v),
+  )
+  .expect_err("expected non-object record input to throw");
+  assert_thrown_error(
+    &mut rt,
+    &realm,
+    err,
+    intr.type_error_prototype(),
+    "TypeError",
+    "expected object for record",
   )?;
-  let Value::Object(out2_obj) = out2 else {
-    return Err(VmError::TypeError("expected object from record conversion"));
-  };
-  rt.scope.push_root(Value::Object(out2_obj))?;
-  let keys = rt.scope.ordinary_own_property_keys(out2_obj)?;
-  assert!(
-    keys.is_empty(),
-    "boxed primitive should convert to an empty record"
-  );
+
+  let hi = rt.alloc_string("hi")?;
+  let err = conversions::to_record(
+    &mut rt,
+    &mut dummy_host,
+    &mut hooks,
+    Value::String(hi),
+    "expected object for record",
+    |_rt, _host, _hooks, v| Ok(v),
+  )
+  .expect_err("expected non-object record input to throw");
+  assert_thrown_error(
+    &mut rt,
+    &realm,
+    err,
+    intr.type_error_prototype(),
+    "TypeError",
+    "expected object for record",
+  )?;
 
   drop(rt);
   drop(scope);
