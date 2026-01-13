@@ -10,8 +10,12 @@
 //! - `blob:` URLs are keyed by the origin of their embedded URL when it is `http`/`https`
 //!   (e.g. `blob:https://example.com/<uuid>` is treated as same-site with `https://example.com/`),
 //!   matching blob URL origin semantics.
-//! - Everything else is treated as *opaque* and keyed by the full normalized URL string produced by
-//!   `url::Url` (`Url::to_string()`).
+//! - `about:` URLs are treated as opaque, but keyed by the about page identifier only (e.g.
+//!   `about:history`, `about:newtab`). Query/fragment components are ignored because internal pages
+//!   frequently use them for in-page state.
+//! - Everything else is treated as *opaque* and keyed by the normalized URL string produced by
+//!   `url::Url` (`Url::to_string()`), with the fragment removed so same-document navigations do not
+//!   trigger process swaps.
 //!
 //! Treating non-HTTP(S) schemes as opaque avoids accidentally coalescing unrelated documents (e.g.
 //! `about:newtab` and `about:history`) into the same renderer process.
@@ -86,9 +90,32 @@ impl SiteKey {
         return Self::Origin { scheme, host, port };
       }
     }
+
+    if scheme == "about" {
+      // Key `about:` URLs by their page identifier only (e.g. `about:history`), ignoring any
+      // query/fragment used for in-page state.
+      let page = parsed.path().trim_start_matches('/').to_ascii_lowercase();
+      return Self::Opaque {
+        scheme,
+        url: format!("about:{page}"),
+      };
+    }
+
+    // For opaque schemes, ignore the fragment so same-document navigations do not force a process
+    // swap. (A stricter policy may still treat query changes as cross-site for some schemes, but
+    // fragments are always same-document.)
+    let mut normalized = parsed.clone();
+    normalized.set_fragment(None);
+
+    // `file:` URLs often use `?query` for in-document state; treat file navigations that only
+    // change query/fragment as same-site to avoid process churn.
+    if scheme == "file" {
+      normalized.set_query(None);
+    }
+
     Self::Opaque {
       scheme,
-      url: parsed.to_string(),
+      url: normalized.to_string(),
     }
   }
 }
@@ -167,6 +194,16 @@ mod tests {
   }
 
   #[test]
+  fn about_pages_ignore_query_and_fragment() {
+    let base = SiteKey::from_url("about:history").unwrap();
+    assert_eq!(base, SiteKey::from_url("about:history?q=rust").unwrap());
+    assert_eq!(base, SiteKey::from_url("about:history#foo").unwrap());
+
+    // Page identifiers are case-insensitive.
+    assert_eq!(base, SiteKey::from_url("ABOUT:History?q=ignored").unwrap());
+  }
+
+  #[test]
   fn file_urls_do_not_collapse_by_default() {
     let a = SiteKey::from_url("file:///tmp/a.html").unwrap();
     let b = SiteKey::from_url("file:///tmp/b.html").unwrap();
@@ -175,6 +212,14 @@ mod tests {
     let mut set = HashSet::new();
     set.insert(a);
     assert!(set.insert(b));
+  }
+
+  #[test]
+  fn file_urls_ignore_fragments() {
+    assert_eq!(
+      SiteKey::from_url("file:///tmp/a.html#x").unwrap(),
+      SiteKey::from_url("file:///tmp/a.html#y").unwrap()
+    );
   }
 
   #[test]
