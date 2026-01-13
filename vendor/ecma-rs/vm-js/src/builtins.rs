@@ -12772,7 +12772,11 @@ pub fn array_prototype_concat(
   let out = array_species_create_with_host_and_hooks(vm, &mut scope, host, hooks, obj, 0)?;
   scope.push_root(Value::Object(out))?;
 
-  let length_key = string_key(&mut scope, "length")?;
+  // Cache the `"length"` key since it is used for each spreadable item and for the final result
+  // length update.
+  let length_s = scope.common_key_length()?;
+  scope.push_root(Value::String(length_s))?;
+  let length_key = PropertyKey::from_string(length_s);
   // Per ECMA-262 `Array.prototype.concat`, `n` is the next insertion index and is guarded against
   // exceeding `2^53 - 1` (`Number.MAX_SAFE_INTEGER`).
   //
@@ -12780,9 +12784,20 @@ pub fn array_prototype_concat(
   // values do not lead to O(len) loops when the spec requires an early TypeError.
   const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991; // 2^53 - 1
   let mut n: u64 = 0;
+  let mut processed_items: usize = 0;
 
   // Per spec, concat starts with `this` and then processes each argument.
   let mut process_item = |item: Value, n: &mut u64| -> Result<(), VmError> {
+    // Budget concatenation even when all items are empty or non-spreadable (e.g. large argument
+    // lists of `[]`). The VM interpreter ticks per statement/iteration, but built-ins can otherwise
+    // perform attacker-controlled work without observing budgets.
+    if processed_items % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    processed_items = processed_items
+      .checked_add(1)
+      .ok_or(VmError::OutOfMemory)?;
+
     if crate::spec_ops::is_concat_spreadable_with_host_and_hooks(vm, &mut scope, host, hooks, item)? {
       let Value::Object(source_obj) = item else {
         return Err(VmError::InvariantViolation(
@@ -12813,8 +12828,116 @@ pub fn array_prototype_concat(
         ));
       }
 
+      // Fast path for spreadable TypedArrays: integer-indexed element access does not consult
+      // prototypes or invoke user code, so we can avoid allocating per-index key strings and avoid
+      // repeated `HasProperty`/`Get` dispatch.
+      if scope.heap().is_typed_array_object(source_obj) {
+        let typed_len = scope.heap().typed_array_length(source_obj)?;
+
+        // Fast path: when the output is a normal Array and the entire write range fits in the dense
+        // fast-elements table, write element descriptors directly instead of performing a full
+        // `CreateDataPropertyOrThrow` for each element.
+        //
+        // This avoids heavy per-element property descriptor validation and is critical for keeping
+        // `concat` linear-time on large TypedArrays.
+        let mut can_fast_elements =
+          new_n <= (crate::heap::MAX_FAST_ARRAY_INDEX as u64).saturating_add(1)
+            && scope.heap().object_is_array(out).unwrap_or(false)
+            && scope.heap().object_is_extensible(out)?
+            && scope.heap().array_length_writable(out)?;
+
+        if can_fast_elements {
+          let start = usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?;
+          let end = usize::try_from(new_n).map_err(|_| VmError::OutOfMemory)?;
+
+          // Avoid overwriting any pre-existing element descriptors in the target range (possible if
+          // `ArraySpeciesCreate` returned a pre-populated array).
+          {
+            let elements = scope.heap_mut().array_fast_elements_mut(out)?;
+            let scan_end = elements.len().min(end);
+            if start < scan_end && elements[start..scan_end].iter().any(|slot| slot.is_some()) {
+              can_fast_elements = false;
+            }
+          }
+
+          if can_fast_elements {
+            // Ensure the dense elements table is large enough for the entire [n, new_n) range.
+            {
+              let elements = scope.heap_mut().array_fast_elements_mut(out)?;
+              if elements.len() < end {
+                elements
+                  .try_reserve(end - elements.len())
+                  .map_err(|_| VmError::OutOfMemory)?;
+                elements.resize(end, None);
+              }
+            }
+
+            for k in 0..source_len {
+              if k % tick::DEFAULT_TICK_EVERY == 0 {
+                vm.tick()?;
+              }
+
+              if k < typed_len {
+                if let Some(value) = scope.heap().typed_array_get_element_value(source_obj, k)? {
+                  let out_index = usize::try_from(*n).map_err(|_| VmError::OutOfMemory)?;
+                  let desc = data_desc(value, true, true, true);
+                  let elements = scope.heap_mut().array_fast_elements_mut(out)?;
+                  let Some(slot) = elements.get_mut(out_index) else {
+                    return Err(VmError::InvariantViolation(
+                      "Array.prototype.concat: fast-elements index out of bounds",
+                    ));
+                  };
+                  *slot = Some(desc);
+                }
+              }
+
+              *n = (*n).checked_add(1).ok_or(VmError::OutOfMemory)?;
+            }
+
+            return Ok(());
+          }
+        }
+
+        // Fallback: generic property creation (Proxy-safe and supports indices beyond the dense
+        // fast-elements table).
+        for k in 0..source_len {
+          if k % tick::DEFAULT_TICK_EVERY == 0 {
+            vm.tick()?;
+          }
+
+          let value = if k < typed_len {
+            scope.heap().typed_array_get_element_value(source_obj, k)?
+          } else {
+            None
+          };
+          if let Some(value) = value {
+            let mut iter_scope = scope.reborrow();
+            iter_scope.push_root(value)?;
+
+            let to_s = match u32::try_from(*n) {
+              Ok(idx_u32) => iter_scope.alloc_u32_index_string(idx_u32)?,
+              Err(_) => alloc_string_from_u64(&mut iter_scope, *n)?,
+            };
+            iter_scope.push_root(Value::String(to_s))?;
+            let to_key = PropertyKey::from_string(to_s);
+            crate::spec_ops::create_data_property_or_throw_with_host_and_hooks(
+              vm,
+              &mut iter_scope,
+              host,
+              hooks,
+              out,
+              to_key,
+              value,
+            )?;
+          }
+          *n = (*n).checked_add(1).ok_or(VmError::OutOfMemory)?;
+        }
+
+        return Ok(());
+      }
+
       for k in 0..source_len {
-        if k % 1024 == 0 {
+        if k % tick::DEFAULT_TICK_EVERY == 0 {
           vm.tick()?;
         }
         let mut iter_scope = scope.reborrow();

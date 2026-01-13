@@ -799,6 +799,11 @@ glob = "built-ins/Array/prototype/concat/**"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js"
+status = "pass"
+reason = "vm-js optimizes Array.prototype.concat for @@isConcatSpreadable TypedArrays (fast element access + dense fast-elements writes)."
+
+[[expectations]]
 glob = "built-ins/Array/prototype/slice/**"
 status = "pass"
 
