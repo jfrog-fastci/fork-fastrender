@@ -6792,14 +6792,54 @@ impl HttpFetcher {
       }
     }?;
 
-    enforce_cors_on_network_response(
+    let res = enforce_cors_on_network_response(
       destination,
       effective_url,
       client_origin,
       referrer_url,
       credentials_mode,
       res,
-    )
+    )?;
+
+    // Partial fetches rely on the returned bytes being from the start of the resource. When the
+    // origin returns a 206 response, validate `Content-Range` so callers don't accidentally probe
+    // bytes from an unexpected offset.
+    if res.status == Some(206) {
+      let Some(content_range) = res.header_get_joined("content-range") else {
+        return Err(response_resource_error(
+          &res,
+          effective_url,
+          "received 206 Partial Content response without Content-Range header",
+        ));
+      };
+      let parsed = parse_content_range(&content_range).ok_or_else(|| {
+        response_resource_error(
+          &res,
+          effective_url,
+          format!("invalid Content-Range header: {content_range:?}"),
+        )
+      })?;
+      match parsed {
+        ParsedContentRange::Range { start, .. } => {
+          if start != 0 {
+            return Err(response_resource_error(
+              &res,
+              effective_url,
+              format!("Content-Range start mismatch: expected 0 but received {start}"),
+            ));
+          }
+        }
+        ParsedContentRange::Unsatisfied { size } => {
+          return Err(response_resource_error(
+            &res,
+            effective_url,
+            format!("received unsatisfied Content-Range for 206 response (size={size:?})"),
+          ));
+        }
+      }
+    }
+
+    Ok(res)
   }
 
   fn fetch_http_partial_inner_ureq(
@@ -21217,6 +21257,57 @@ mod tests {
     assert!(
       req.contains("referer: http://a.test/"),
       "expected Referer header derived from referrer for partial image, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_fetch_partial_rejects_content_range_mismatch() {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_fetch_partial_rejects_content_range_mismatch")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      // Return a 206 response, but for the wrong range start. The client must reject this instead
+      // of returning bytes from an unexpected offset.
+      let body = b"abc";
+      let headers = format!(
+        "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nContent-Range: bytes 5-7/10\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.bin", addr);
+    let err = fetcher
+      .fetch_partial(&url, 3)
+      .expect_err("expected mismatched content-range to be rejected");
+    handle.join().unwrap();
+
+    assert!(
+      matches!(err, Error::Resource(_)),
+      "expected Error::Resource, got: {err:?}"
+    );
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("range: bytes=0-2"),
+      "expected Range header to be sent, got: {req}"
     );
   }
 
