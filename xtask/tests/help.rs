@@ -201,6 +201,7 @@ fn browser_help_mentions_instrumentation_flags() {
   let stdout = String::from_utf8_lossy(&output.stdout);
   assert!(
     stdout.contains("--hud")
+      && stdout.contains("--no-hud")
       && stdout.contains("--perf-log")
       && stdout.contains("--perf-log-out")
       && stdout.contains("--trace-out"),

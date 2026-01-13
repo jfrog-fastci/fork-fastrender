@@ -187,7 +187,10 @@ enum Commands {
     generate_regexp_unicode_property_strings::GenerateRegExpUnicodePropertyStringsArgs,
   ),
   /// Regenerate the Unicode binary property tables used by the JavaScript RegExp engine.
-  #[command(name = "generate-regexp-unicode-tables", alias = "gen-regexp-unicode-tables")]
+  #[command(
+    name = "generate-regexp-unicode-tables",
+    alias = "gen-regexp-unicode-tables"
+  )]
   GenerateRegExpUnicodeTables(generate_regexp_unicode_tables::GenerateRegExpUnicodeTablesArgs),
   /// Fail CI if new panic sites are introduced in production code (`src/`, excluding `#[cfg(test)]`).
   LintNoPanics(lint_no_panics::LintNoPanicsArgs),
@@ -696,8 +699,12 @@ struct BrowserArgs {
   release: bool,
 
   /// Show the in-app HUD overlay (sets `FASTR_BROWSER_HUD=1`).
-  #[arg(long)]
+  #[arg(long, conflicts_with = "no_hud")]
   hud: bool,
+
+  /// Disable the HUD overlay even if `FASTR_BROWSER_HUD` is set.
+  #[arg(long = "no-hud", conflicts_with = "hud")]
+  no_hud: bool,
 
   /// Enable responsiveness/perf logging (sets `FASTR_PERF_LOG=1`).
   #[arg(long)]
@@ -706,6 +713,7 @@ struct BrowserArgs {
   /// Optional output path for responsiveness/perf logging (sets `FASTR_PERF_LOG_OUT=<path>`).
   ///
   /// When unset, perf-log output defaults to stdout so it can be piped/tee'd.
+  /// Passing this flag also enables perf logging.
   #[arg(long, value_name = "PATH")]
   perf_log_out: Option<PathBuf>,
 
@@ -975,7 +983,11 @@ fn run_tests(args: TestArgs) -> Result<()> {
       )?;
     }
     TestSuite::Style => {
-      run("style unit tests (--lib style::)", &args.extra, &["--lib", "style::"])?;
+      run(
+        "style unit tests (--lib style::)",
+        &args.extra,
+        &["--lib", "style::"],
+      )?;
     }
     TestSuite::Fixtures => {
       run(
@@ -2509,7 +2521,13 @@ fn run_browser(args: BrowserArgs) -> Result<()> {
     &xtask::browser::BrowserCommandArgs {
       url: args.url,
       release: args.release,
-      hud: args.hud,
+      hud: if args.hud {
+        Some(true)
+      } else if args.no_hud {
+        Some(false)
+      } else {
+        None
+      },
       perf_log: args.perf_log || args.perf_log_out.is_some(),
       perf_log_out: args.perf_log_out,
       trace_out: args.trace_out,

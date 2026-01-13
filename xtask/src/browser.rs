@@ -25,7 +25,8 @@ pub const FASTR_BROWSER_TRACE_OUT_ENV: &str = "FASTR_BROWSER_TRACE_OUT";
 pub struct BrowserCommandArgs {
   pub url: Option<String>,
   pub release: bool,
-  pub hud: bool,
+  /// When set, overrides `FASTR_BROWSER_HUD` for the spawned browser process.
+  pub hud: Option<bool>,
   pub perf_log: bool,
   pub perf_log_out: Option<PathBuf>,
   pub trace_out: Option<PathBuf>,
@@ -44,8 +45,8 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
   cmd.current_dir(repo_root);
 
   // Apply in-process guardrails / test hooks expected by `src/bin/browser.rs`.
-  if args.hud {
-    cmd.env(FASTR_BROWSER_HUD_ENV, "1");
+  if let Some(enabled) = args.hud {
+    cmd.env(FASTR_BROWSER_HUD_ENV, if enabled { "1" } else { "0" });
   }
   if args.perf_log || args.perf_log_out.is_some() {
     cmd.env(FASTR_PERF_LOG_ENV, "1");

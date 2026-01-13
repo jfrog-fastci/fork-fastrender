@@ -109,7 +109,7 @@ fn browser_command_supports_release_url_and_env_flags() {
     &BrowserCommandArgs {
       url: Some(url.clone()),
       release: true,
-      hud: true,
+      hud: Some(true),
       perf_log: true,
       perf_log_out: Some(perf_log_out.clone()),
       trace_out: Some(trace_out.clone()),
