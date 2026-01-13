@@ -4,7 +4,7 @@
 
 use crate::dom::DomNode;
 use crate::interaction::dom_index::DomIndex;
-use crate::interaction::{InteractionAction, InteractionEngine};
+use crate::interaction::{InteractionAction, InteractionEngine, InteractionState};
 use crate::{BrowserDocument, Error, FastRender, RenderOptions, Result};
 
 /// Stable `id=` attribute for the address bar `<input>`.
@@ -104,6 +104,10 @@ impl ChromeFrameDocument {
     let options = RenderOptions::new()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
+    Self::new_with_renderer_and_options(renderer, options)
+  }
+
+  pub fn new_with_renderer_and_options(renderer: FastRender, options: RenderOptions) -> Result<Self> {
     let mut document = BrowserDocument::new(renderer, CHROME_FRAME_HTML, options)?;
 
     let mut address_bar_node_id: Option<usize> = None;
@@ -138,12 +142,37 @@ impl ChromeFrameDocument {
     &mut self.document
   }
 
+  pub fn dom(&self) -> &DomNode {
+    self.document.dom()
+  }
+
   pub fn interaction(&self) -> &InteractionEngine {
     &self.interaction
   }
 
   pub fn interaction_mut(&mut self) -> &mut InteractionEngine {
     &mut self.interaction
+  }
+
+  pub fn interaction_state(&self) -> &InteractionState {
+    self.interaction.interaction_state()
+  }
+
+  /// Render a new frame if anything is dirty (DOM or interaction state).
+  pub fn render_if_needed(&mut self) -> Result<Option<crate::Pixmap>> {
+    self
+      .document
+      .render_if_needed_with_interaction_state(Some(self.interaction.interaction_state()))
+  }
+
+  /// Render a new frame unconditionally.
+  pub fn render_frame(&mut self) -> Result<crate::Pixmap> {
+    self
+      .document
+      .render_frame_with_scroll_state_and_interaction_state(Some(
+        self.interaction.interaction_state(),
+      ))
+      .map(|frame| frame.pixmap)
   }
 
   pub fn address_bar_value(&mut self) -> String {
@@ -208,8 +237,30 @@ impl ChromeFrameDocument {
     self.mutate_text_value(|engine, dom| engine.clipboard_paste(dom, text))
   }
 
+  /// Update the active IME preedit (composition) string for the focused text control.
+  pub fn ime_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) -> bool {
+    let mut changed = false;
+    let _ = self.document.mutate_dom(|dom| {
+      changed = self.interaction.ime_preedit(dom, text, cursor);
+      // IME preedit is non-DOM-visible state; do not mark the document dirty here.
+      false
+    });
+    changed
+  }
+
   pub fn ime_commit(&mut self, text: &str) -> Vec<ChromeFrameEvent> {
     self.mutate_text_value(|engine, dom| engine.ime_commit(dom, text))
+  }
+
+  /// Cancel any active IME preedit string without mutating the DOM value.
+  pub fn ime_cancel(&mut self) -> bool {
+    let mut changed = false;
+    let _ = self.document.mutate_dom(|dom| {
+      changed = self.interaction.ime_cancel(dom);
+      // IME cancel is non-DOM-visible state; do not mark the document dirty here.
+      false
+    });
+    changed
   }
 
   fn mutate_text_value(
