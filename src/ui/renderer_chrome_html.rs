@@ -6,21 +6,7 @@
 
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
-
-fn escape_html(text: &str) -> String {
-  let mut out = String::with_capacity(text.len());
-  for ch in text.chars() {
-    match ch {
-      '&' => out.push_str("&amp;"),
-      '<' => out.push_str("&lt;"),
-      '>' => out.push_str("&gt;"),
-      '"' => out.push_str("&quot;"),
-      '\'' => out.push_str("&#39;"),
-      other => out.push(other),
-    }
-  }
-  out
-}
+use crate::ui::html_escape::escape_html;
 
 /// Generate a minimal HTML tab strip.
 ///
@@ -46,4 +32,3 @@ pub fn tab_strip_html(app: &BrowserAppState) -> String {
   html.push_str("</div>");
   html
 }
-
