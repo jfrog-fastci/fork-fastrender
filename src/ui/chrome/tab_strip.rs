@@ -1,6 +1,6 @@
 use crate::ui::browser_app::{
-  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState, TabGroupColor, TabGroupId,
-  TabGroupState, UiFocusToken,
+  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState, TabGroupColor,
+  TabGroupId, TabGroupState, UiFocusToken,
 };
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::messages::TabId;
@@ -88,7 +88,7 @@ enum TabStripItemKey {
 struct TabStripLayoutSnapshot {
   pinned_tabs: Vec<TabId>,
   unpinned_items: Vec<TabStripItemKey>,
-  tab_rects: HashMap<TabId, Rect>,
+  tab_rects: Vec<(TabId, Rect)>,
   unpinned_tab_width: f32,
   scroll_offset_x: f32,
   pinned_count: usize,
@@ -1400,9 +1400,9 @@ fn group_chip_ui(
               }
             }
           });
-          change_color_menu
-            .response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change group color"));
+          change_color_menu.response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change group color")
+          });
 
           ui.separator();
 
@@ -1531,8 +1531,14 @@ fn tab_ui(
       response = response.on_hover_text(lines.join("\n"));
     }
   }
-  let a11y_label =
-    tab_a11y_label(title, is_active, tab.pinned, tab.loading, err.is_some(), warn.is_some());
+  let a11y_label = tab_a11y_label(
+    title,
+    is_active,
+    tab.pinned,
+    tab.loading,
+    err.is_some(),
+    warn.is_some(),
+  );
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
@@ -1888,8 +1894,14 @@ fn pinned_tab_ui(
       response = response.on_hover_text(lines.join("\n"));
     }
   }
-  let a11y_label =
-    tab_a11y_label(title, is_active, tab.pinned, tab.loading, err.is_some(), warn.is_some());
+  let a11y_label = tab_a11y_label(
+    title,
+    is_active,
+    tab.pinned,
+    tab.loading,
+    err.is_some(),
+    warn.is_some(),
+  );
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
@@ -2151,9 +2163,8 @@ pub(super) fn tab_strip_ui(
   let mut prev_snapshot: Option<TabStripLayoutSnapshot> = ctx.data_mut(|d| {
     std::mem::take(d.get_temp_mut_or_default::<Option<TabStripLayoutSnapshot>>(snapshot_key))
   });
-  let mut pin_anim: Option<TabPinAnim> = ctx.data_mut(|d| {
-    std::mem::take(d.get_temp_mut_or_default::<Option<TabPinAnim>>(anim_key))
-  });
+  let mut pin_anim: Option<TabPinAnim> =
+    ctx.data_mut(|d| std::mem::take(d.get_temp_mut_or_default::<Option<TabPinAnim>>(anim_key)));
 
   // If animations are disabled or the tab disappeared, snap to the new state.
   if !motion_enabled {
@@ -2179,63 +2190,66 @@ pub(super) fn tab_strip_ui(
       if prev_tab_count == tab_count {
         let prev_pinned_count = prev.pinned_count;
         let pinned_delta = pinned_count as isize - prev_pinned_count as isize;
-        let (tab_id, kind, source_index): (TabId, TabPinAnimKind, Option<usize>) = match pinned_delta
-        {
-          1 => {
-            // One tab was pinned: find the id present in the current pinned prefix that wasn't in
-            // the previous pinned set.
-            let mut added: Option<TabId> = None;
-            let mut added_count = 0usize;
-            for tab in app.tabs.iter().take(pinned_count) {
-              if !prev.pinned_tabs.iter().any(|id| *id == tab.id) {
-                added = Some(tab.id);
-                added_count += 1;
-                if added_count > 1 {
-                  break;
+        let (tab_id, kind, source_index): (TabId, TabPinAnimKind, Option<usize>) =
+          match pinned_delta {
+            1 => {
+              // One tab was pinned: find the id present in the current pinned prefix that wasn't in
+              // the previous pinned set.
+              let mut added: Option<TabId> = None;
+              let mut added_count = 0usize;
+              for tab in app.tabs.iter().take(pinned_count) {
+                if !prev.pinned_tabs.iter().any(|id| *id == tab.id) {
+                  added = Some(tab.id);
+                  added_count += 1;
+                  if added_count > 1 {
+                    break;
+                  }
                 }
               }
-            }
-            if added_count != 1 {
-              // Either no new pinned id (unexpected) or multiple changes: don't animate.
-              (TabId(0), TabPinAnimKind::Pin, None)
-            } else {
-              let tab_id = added.unwrap_or(TabId(0));
-              let source_index = prev.unpinned_items.iter().position(|item| match item {
-                TabStripItemKey::Tab(id) => *id == tab_id,
-                _ => false,
-              });
-              (tab_id, TabPinAnimKind::Pin, source_index)
-            }
-          }
-          -1 => {
-            // One tab was unpinned: find the id present in the previous pinned set that is no
-            // longer in the current pinned prefix.
-            let mut removed: Option<TabId> = None;
-            let mut removed_count = 0usize;
-            for id in &prev.pinned_tabs {
-              if !app.tabs.iter().take(pinned_count).any(|t| t.id == *id) {
-                removed = Some(*id);
-                removed_count += 1;
-                if removed_count > 1 {
-                  break;
-                }
+              if added_count != 1 {
+                // Either no new pinned id (unexpected) or multiple changes: don't animate.
+                (TabId(0), TabPinAnimKind::Pin, None)
+              } else {
+                let tab_id = added.unwrap_or(TabId(0));
+                let source_index = prev.unpinned_items.iter().position(|item| match item {
+                  TabStripItemKey::Tab(id) => *id == tab_id,
+                  _ => false,
+                });
+                (tab_id, TabPinAnimKind::Pin, source_index)
               }
             }
-            if removed_count != 1 {
-              (TabId(0), TabPinAnimKind::Unpin, None)
-            } else {
-              let tab_id = removed.unwrap_or(TabId(0));
-              let source_index = prev.pinned_tabs.iter().position(|id| *id == tab_id);
-              (tab_id, TabPinAnimKind::Unpin, source_index)
+            -1 => {
+              // One tab was unpinned: find the id present in the previous pinned set that is no
+              // longer in the current pinned prefix.
+              let mut removed: Option<TabId> = None;
+              let mut removed_count = 0usize;
+              for id in &prev.pinned_tabs {
+                if !app.tabs.iter().take(pinned_count).any(|t| t.id == *id) {
+                  removed = Some(*id);
+                  removed_count += 1;
+                  if removed_count > 1 {
+                    break;
+                  }
+                }
+              }
+              if removed_count != 1 {
+                (TabId(0), TabPinAnimKind::Unpin, None)
+              } else {
+                let tab_id = removed.unwrap_or(TabId(0));
+                let source_index = prev.pinned_tabs.iter().position(|id| *id == tab_id);
+                (tab_id, TabPinAnimKind::Unpin, source_index)
+              }
             }
-          }
-          _ => (TabId(0), TabPinAnimKind::Pin, None),
-        };
+            _ => (TabId(0), TabPinAnimKind::Pin, None),
+          };
 
         if tab_id != TabId(0) {
-          if let (Some(from_rect), Some(source_index)) =
-            (prev.tab_rects.get(&tab_id).copied(), source_index)
-          {
+          let from_rect = prev
+            .tab_rects
+            .iter()
+            .find(|(id, _)| *id == tab_id)
+            .map(|(_, rect)| *rect);
+          if let (Some(from_rect), Some(source_index)) = (from_rect, source_index) {
             pin_anim = Some(TabPinAnim {
               tab_id,
               kind,
@@ -2553,16 +2567,16 @@ pub(super) fn tab_strip_ui(
   let mut layout_snapshot = prev_snapshot.unwrap_or_else(|| TabStripLayoutSnapshot {
     pinned_tabs: Vec::new(),
     unpinned_items: Vec::new(),
-    tab_rects: HashMap::new(),
+    tab_rects: Vec::new(),
     unpinned_tab_width: 0.0,
     scroll_offset_x: 0.0,
     pinned_count: 0,
     unpinned_count: 0,
   });
 
-  let mut layout_rects = std::mem::take(&mut layout_snapshot.tab_rects);
-  layout_rects.clear();
-  layout_rects.reserve(tab_count);
+  let mut layout_tab_rects = std::mem::take(&mut layout_snapshot.tab_rects);
+  layout_tab_rects.clear();
+  layout_tab_rects.reserve(tab_count);
 
   let mut unpinned_items_for_snapshot = std::mem::take(&mut layout_snapshot.unpinned_items);
   unpinned_items_for_snapshot.clear();
@@ -2571,6 +2585,9 @@ pub(super) fn tab_strip_ui(
   let mut pinned_tabs_for_snapshot = std::mem::take(&mut layout_snapshot.pinned_tabs);
   pinned_tabs_for_snapshot.clear();
   pinned_tabs_for_snapshot.reserve(pinned_count);
+
+  // Index into `layout_tab_rects` where the pinned segment ends (unpinned tabs start).
+  let mut pinned_tab_rects_end: usize = 0;
 
   let mut ghost_dest_anchor_rect: Option<Rect> = None;
 
@@ -2746,7 +2763,7 @@ pub(super) fn tab_strip_ui(
                 (rect, Some(resp), action)
               };
 
-              layout_rects.insert(tab_id, tab_rect);
+              layout_tab_rects.push((tab_id, tab_rect));
 
               if is_active {
                 active_tab_rect = Some(tab_rect);
@@ -2770,8 +2787,12 @@ pub(super) fn tab_strip_ui(
                     chrome.dragging_tab_id = Some(tab_id);
                     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                     chrome.drag_start_pointer_pos = pointer_pos.map(|p| (p.x, p.y));
-                    chrome.drag_start_tab_rect =
-                      Some((tab_rect.min.x, tab_rect.min.y, tab_rect.max.x, tab_rect.max.y));
+                    chrome.drag_start_tab_rect = Some((
+                      tab_rect.min.x,
+                      tab_rect.min.y,
+                      tab_rect.max.x,
+                      tab_rect.max.y,
+                    ));
                     chrome.tab_drag_session = chrome.tab_drag_session.wrapping_add(1);
                   }
                 }
@@ -2848,6 +2869,9 @@ pub(super) fn tab_strip_ui(
           }
         }
       }
+      // Record the boundary between pinned and unpinned tab rects for this frame (used to slice
+      // `layout_tab_rects` when building the drag-to-reorder rect list).
+      pinned_tab_rects_end = layout_tab_rects.len();
     }
 
     if unpinned_count > 0
@@ -3144,7 +3168,7 @@ pub(super) fn tab_strip_ui(
                   );
                   (rect, Some(resp), action)
                 };
-                layout_rects.insert(tab_id, tab_rect);
+                layout_tab_rects.push((tab_id, tab_rect));
                 if is_active {
                   active_tab_rect = Some(tab_rect);
                   active_tab_is_pinned = false;
@@ -3171,8 +3195,12 @@ pub(super) fn tab_strip_ui(
                         app.chrome.dragging_tab_id = Some(tab_id);
                         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                         app.chrome.drag_start_pointer_pos = pointer_pos.map(|p| (p.x, p.y));
-                        app.chrome.drag_start_tab_rect =
-                          Some((tab_rect.min.x, tab_rect.min.y, tab_rect.max.x, tab_rect.max.y));
+                        app.chrome.drag_start_tab_rect = Some((
+                          tab_rect.min.x,
+                          tab_rect.min.y,
+                          tab_rect.max.x,
+                          tab_rect.max.y,
+                        ));
                         app.chrome.tab_drag_session = app.chrome.tab_drag_session.wrapping_add(1);
                       }
                     }
@@ -3268,7 +3296,7 @@ pub(super) fn tab_strip_ui(
                 );
                 (rect, Some(resp), action)
               };
-              layout_rects.insert(tab_id, tab_rect);
+              layout_tab_rects.push((tab_id, tab_rect));
               if is_active {
                 active_tab_rect = Some(tab_rect);
                 active_tab_is_pinned = false;
@@ -3297,8 +3325,12 @@ pub(super) fn tab_strip_ui(
                     app.chrome.dragging_tab_id = Some(tab_id);
                     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                     app.chrome.drag_start_pointer_pos = pointer_pos.map(|p| (p.x, p.y));
-                    app.chrome.drag_start_tab_rect =
-                      Some((tab_rect.min.x, tab_rect.min.y, tab_rect.max.x, tab_rect.max.y));
+                    app.chrome.drag_start_tab_rect = Some((
+                      tab_rect.min.x,
+                      tab_rect.min.y,
+                      tab_rect.max.x,
+                      tab_rect.max.y,
+                    ));
                     app.chrome.tab_drag_session = app.chrome.tab_drag_session.wrapping_add(1);
                   }
                 }
@@ -3337,7 +3369,7 @@ pub(super) fn tab_strip_ui(
               ui.add_space(end_spacer_x);
             }
           });
-      });
+        });
       let mut scroll_state = scroll_output.state;
       scroll_offset_x = scroll_state.offset.x;
       unpinned_max_scroll_x =
@@ -3526,25 +3558,32 @@ pub(super) fn tab_strip_ui(
   // allocating and populating these potentially-large vectors (hundreds of tabs) every frame.
   if let Some(dragging_tab_id) = app.chrome.dragging_tab_id {
     let dragging_is_pinned = app.tab(dragging_tab_id).map(|t| t.pinned).unwrap_or(false);
+    let split = pinned_tab_rects_end.min(layout_tab_rects.len());
+    let (pinned_rects, unpinned_rects) = layout_tab_rects.split_at(split);
+    let filter_closing = !close_progress.is_empty();
     if dragging_is_pinned {
-      pinned_tab_rects_for_drag.reserve(pinned_count);
-      for tab in app.tabs.iter().take(pinned_count) {
-        if close_progress.contains_key(&tab.id) {
-          continue;
+      pinned_tab_rects_for_drag.reserve(pinned_rects.len());
+      if filter_closing {
+        for (tab_id, rect) in pinned_rects.iter().copied() {
+          if close_progress.contains_key(&tab_id) {
+            continue;
+          }
+          pinned_tab_rects_for_drag.push((tab_id, rect));
         }
-        if let Some(rect) = layout_rects.get(&tab.id).copied() {
-          pinned_tab_rects_for_drag.push((tab.id, rect));
-        }
+      } else {
+        pinned_tab_rects_for_drag.extend(pinned_rects.iter().copied());
       }
     } else {
-      unpinned_tab_rects_for_drag.reserve(unpinned_count);
-      for tab in app.tabs.iter().skip(pinned_len) {
-        if close_progress.contains_key(&tab.id) {
-          continue;
+      unpinned_tab_rects_for_drag.reserve(unpinned_rects.len());
+      if filter_closing {
+        for (tab_id, rect) in unpinned_rects.iter().copied() {
+          if close_progress.contains_key(&tab_id) {
+            continue;
+          }
+          unpinned_tab_rects_for_drag.push((tab_id, rect));
         }
-        if let Some(rect) = layout_rects.get(&tab.id).copied() {
-          unpinned_tab_rects_for_drag.push((tab.id, rect));
-        }
+      } else {
+        unpinned_tab_rects_for_drag.extend(unpinned_rects.iter().copied());
       }
     }
   }
@@ -3553,7 +3592,7 @@ pub(super) fn tab_strip_ui(
   pinned_tabs_for_snapshot.extend(app.tabs.iter().take(pinned_len).map(|t| t.id));
   layout_snapshot.pinned_tabs = pinned_tabs_for_snapshot;
   layout_snapshot.unpinned_items = unpinned_items_for_snapshot;
-  layout_snapshot.tab_rects = layout_rects;
+  layout_snapshot.tab_rects = layout_tab_rects;
   layout_snapshot.unpinned_tab_width = sizing.tab_width;
   layout_snapshot.scroll_offset_x = scroll_offset_x;
   layout_snapshot.pinned_count = pinned_count;
@@ -4195,8 +4234,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
     let group_id = app.create_group_with_tabs(&[tab_a, tab_b]);
     assert_ne!(group_id, TabGroupId(0));
 
@@ -4245,7 +4290,10 @@ mod tests {
     let menu_open = ctx
       .data(|d| d.get_temp::<bool>(egui::Id::new("test_tab_group_context_menu_open")))
       .unwrap_or(false);
-    assert!(menu_open, "expected group context menu to be open after Shift+F10");
+    assert!(
+      menu_open,
+      "expected group context menu to be open after Shift+F10"
+    );
 
     let rename_id = ctx
       .data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_tab_group_rename_id")))
