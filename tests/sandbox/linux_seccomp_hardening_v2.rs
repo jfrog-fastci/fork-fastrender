@@ -1,5 +1,16 @@
 use std::process::Command;
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const SYS_IO_URING_SETUP: Option<libc::c_long> = Some(libc::SYS_io_uring_setup as libc::c_long);
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const SYS_IO_URING_SETUP: Option<libc::c_long> = None;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const SYS_OPEN_BY_HANDLE_AT: Option<libc::c_long> =
+  Some(libc::SYS_open_by_handle_at as libc::c_long);
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const SYS_OPEN_BY_HANDLE_AT: Option<libc::c_long> = None;
+
 fn assert_syscall_fails_with_errno(name: &str, rc: libc::c_long, expected_errno: i32) {
   assert_eq!(rc, -1, "expected `{name}` syscall to fail, got rc={rc}");
   let err = std::io::Error::last_os_error();
@@ -49,25 +60,25 @@ fn blocks_high_risk_syscalls() {
 
     // `io_uring_setup` should be blocked (returning EPERM) even though the arguments are invalid.
     // Without the seccomp filter, this would return something like `EFAULT`.
-    let rc = unsafe {
-      libc::syscall(
-        libc::SYS_io_uring_setup,
-        2 as libc::c_long,
-        std::ptr::null_mut::<libc::c_void>(),
-      )
-    };
-    assert_syscall_fails_with_errno("io_uring_setup", rc, libc::EPERM);
+    if let Some(nr) = SYS_IO_URING_SETUP {
+      let rc = unsafe {
+        libc::syscall(nr, 2 as libc::c_long, std::ptr::null_mut::<libc::c_void>())
+      };
+      assert_syscall_fails_with_errno("io_uring_setup", rc, libc::EPERM);
+    }
 
     // File-handle based path traversal primitives should be blocked as well.
-    let rc = unsafe {
-      libc::syscall(
-        libc::SYS_open_by_handle_at,
-        -1 as libc::c_long,
-        std::ptr::null_mut::<libc::c_void>(),
-        0 as libc::c_long,
-      )
-    };
-    assert_syscall_fails_with_errno("open_by_handle_at", rc, libc::EPERM);
+    if let Some(nr) = SYS_OPEN_BY_HANDLE_AT {
+      let rc = unsafe {
+        libc::syscall(
+          nr,
+          -1 as libc::c_long,
+          std::ptr::null_mut::<libc::c_void>(),
+          0 as libc::c_long,
+        )
+      };
+      assert_syscall_fails_with_errno("open_by_handle_at", rc, libc::EPERM);
+    }
     return;
   }
 
