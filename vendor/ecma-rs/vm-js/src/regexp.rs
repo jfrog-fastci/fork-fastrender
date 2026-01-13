@@ -31,6 +31,7 @@ use std::alloc::alloc;
 
 #[cfg(test)]
 mod unicode_string_property;
+pub(crate) use unicode_string_property::UnicodeStringProperty;
 #[cfg(test)]
 pub(crate) use unicode_string_property::resolve_unicode_string_property;
 

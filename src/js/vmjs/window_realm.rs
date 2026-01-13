@@ -26088,14 +26088,13 @@ fn node_get_root_node_native(
   let composed = match options {
     Value::Undefined | Value::Null => false,
     Value::Object(obj) => {
-      let composed_key = alloc_key(scope, "composed")?;
-      match scope
-        .heap()
-        .object_get_own_data_property_value(obj, &composed_key)?
-      {
-        Some(v) => scope.heap().to_boolean(v)?,
-        None => false,
-      }
+      // Root `options_obj` while allocating property keys: `alloc_key` can trigger GC.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(obj))?;
+
+      let composed_key = alloc_key(&mut scope, "composed")?;
+      let composed_value = vm.get(&mut scope, obj, composed_key)?;
+      scope.heap().to_boolean(composed_value)?
     }
     _ => false,
   };
@@ -49662,6 +49661,19 @@ mod tests {
         if (host.contains(inShadow)) return 'host.contains(shadow)';\n\
         if (document.contains(inShadow)) return 'document.contains(shadow)';\n\
         if (!shadow.contains(inShadow)) return 'shadow.contains(shadow)';\n\
+\n\
+        // Node.getRootNode must observe composed vs non-composed roots.\n\
+        if (inShadow.getRootNode() !== shadow) return 'inShadow.getRootNode';\n\
+        if (inShadow.getRootNode({ composed: true }) !== document) return 'inShadow.getRootNode composed';\n\
+        const protoOpts = Object.create({ composed: true });\n\
+        if (inShadow.getRootNode(protoOpts) !== document) return 'inShadow.getRootNode composed proto';\n\
+        let getterCalled = false;\n\
+        const getterOpts = {};\n\
+        Object.defineProperty(getterOpts, 'composed', { get() { getterCalled = true; return true; }});\n\
+        if (inShadow.getRootNode(getterOpts) !== document) return 'inShadow.getRootNode composed getter';\n\
+        if (!getterCalled) return 'inShadow.getRootNode composed getter not called';\n\
+        if (shadow.getRootNode() !== shadow) return 'shadow.getRootNode';\n\
+        if (shadow.getRootNode({ composed: true }) !== document) return 'shadow.getRootNode composed';\n\
 \n\
         return 'ok';\n\
       })()",
