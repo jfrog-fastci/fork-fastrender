@@ -1801,6 +1801,10 @@ status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
 
 [[expectations]]
+glob = "built-ins/Array/of/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/Array/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
