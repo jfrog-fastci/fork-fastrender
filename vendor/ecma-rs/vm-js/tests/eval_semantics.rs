@@ -370,3 +370,28 @@ fn shadowed_eval_with_awaited_argument_is_not_direct() -> Result<(), VmError> {
   assert_eq!(value, Value::Number(123.0));
   Ok(())
 }
+
+#[test]
+fn direct_eval_var_decl_creates_local_binding_across_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      var x = 2;
+      async function f() {
+        eval(await "var x = 1");
+        return x === 1 && globalThis.x === 2;
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

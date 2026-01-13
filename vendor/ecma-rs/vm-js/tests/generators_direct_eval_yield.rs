@@ -275,3 +275,31 @@ fn generator_direct_eval_with_yield_star_argument_is_direct() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_var_decl_creates_local_binding_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global `var` binding, visible to indirect eval.
+          var x = 2;
+          function* g(){
+            eval(yield 0);
+            // In sloppy direct eval, `var x = 1` must create a *local* var binding that shadows
+            // the global `x`, without mutating the global binding.
+            return x === 1 && globalThis.x === 2;
+          }
+          var it = g();
+          it.next();
+          var r = it.next("var x = 1");
+          ok = r.done === true && r.value === true;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
