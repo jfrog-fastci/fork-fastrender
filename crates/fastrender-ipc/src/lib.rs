@@ -809,6 +809,9 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 0,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
     };
 
     let out = composite_subframes(parent, [(&info, &child)]).unwrap();
@@ -894,6 +897,31 @@ pub struct WebSocketConnId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebSocketErrorKind {
   DuplicateConnId,
+  /// Renderer attempted to open more WebSockets than allowed for its IPC channel.
+  PerRendererLimitExceeded,
+  /// Global WebSocket connection limit for the network process was exceeded.
+  GlobalLimitExceeded,
+}
+
+/// Hard caps for network-process WebSocket bookkeeping.
+///
+/// These limits are enforced by [`NetworkWebSocketManager`] to ensure a compromised renderer cannot
+/// exhaust network-process resources by opening unbounded WebSockets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkWebSocketManagerLimits {
+  pub max_active_per_renderer: usize,
+  pub max_active_total: usize,
+}
+
+impl Default for NetworkWebSocketManagerLimits {
+  fn default() -> Self {
+    Self {
+      // Enough for most pages while still preventing resource exhaustion attacks.
+      max_active_per_renderer: 256,
+      // Backstop when many renderer processes are alive.
+      max_active_total: 4096,
+    }
+  }
 }
 
 /// Renderer → network-process WebSocket commands.
@@ -960,11 +988,20 @@ struct WebSocketConnEntry {
 #[derive(Debug, Default)]
 pub struct NetworkWebSocketManager {
   conns: HashMap<RendererId, HashMap<WebSocketConnId, WebSocketConnEntry>>,
+  limits: NetworkWebSocketManagerLimits,
+  active_total: usize,
 }
 
 impl NetworkWebSocketManager {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  pub fn new_with_limits(limits: NetworkWebSocketManagerLimits) -> Self {
+    Self {
+      limits,
+      ..Self::default()
+    }
   }
 
   /// Drop all WebSocket connections associated with `renderer_id`.
@@ -975,6 +1012,7 @@ impl NetworkWebSocketManager {
     let Some(conns) = self.conns.remove(&renderer_id) else {
       return Vec::new();
     };
+    self.active_total = self.active_total.saturating_sub(conns.len());
     // Return deterministic event ordering for tests/logging.
     let mut ids: Vec<WebSocketConnId> = conns.keys().copied().collect();
     ids.sort_by_key(|id| id.0);
@@ -995,14 +1033,51 @@ impl NetworkWebSocketManager {
   pub fn handle_command(&mut self, renderer_id: RendererId, cmd: WebSocketCommand) -> Vec<WebSocketEvent> {
     match cmd {
       WebSocketCommand::Connect { conn_id, url } => {
-        let renderer_conns = self.conns.entry(renderer_id).or_default();
+        let renderer_count = match self.conns.get(&renderer_id) {
+          Some(renderer_conns) => {
+            if renderer_conns.contains_key(&conn_id) {
+              // Deterministic behaviour: reject the duplicate without touching the existing entry.
+              return vec![
+                WebSocketEvent::Error {
+                  conn_id,
+                  kind: WebSocketErrorKind::DuplicateConnId,
+                },
+                WebSocketEvent::Close { conn_id },
+              ];
+            }
+            renderer_conns.len()
+          }
+          None => 0,
+        };
 
-        if renderer_conns.contains_key(&conn_id) {
-          // Deterministic behaviour: reject the duplicate without touching the existing entry.
+        if renderer_count >= self.limits.max_active_per_renderer {
           return vec![
             WebSocketEvent::Error {
               conn_id,
-              kind: WebSocketErrorKind::DuplicateConnId,
+              kind: WebSocketErrorKind::PerRendererLimitExceeded,
+            },
+            WebSocketEvent::Close { conn_id },
+          ];
+        }
+
+        if self.active_total >= self.limits.max_active_total {
+          return vec![
+            WebSocketEvent::Error {
+              conn_id,
+              kind: WebSocketErrorKind::GlobalLimitExceeded,
+            },
+            WebSocketEvent::Close { conn_id },
+          ];
+        }
+
+        let renderer_conns = self.conns.entry(renderer_id).or_default();
+        // Double-check in case the limits are zero; this also prevents any future refactors from
+        // inserting before checking counts.
+        if renderer_conns.len() >= self.limits.max_active_per_renderer {
+          return vec![
+            WebSocketEvent::Error {
+              conn_id,
+              kind: WebSocketErrorKind::PerRendererLimitExceeded,
             },
             WebSocketEvent::Close { conn_id },
           ];
@@ -1015,6 +1090,7 @@ impl NetworkWebSocketManager {
             state: WebSocketConnState::Connecting,
           },
         );
+        self.active_total = self.active_total.saturating_add(1);
 
         // Connection establishment is async in production; no immediate event is generated here.
         Vec::new()
@@ -1043,6 +1119,7 @@ impl NetworkWebSocketManager {
           return Vec::new();
         };
         conn.state = WebSocketConnState::Closed;
+        self.active_total = self.active_total.saturating_sub(1);
         if renderer_conns.is_empty() {
           self.conns.remove(&renderer_id);
         }
@@ -1200,5 +1277,167 @@ mod websocket_ipc_tests {
       },
     );
     assert!(ignored.is_empty());
+  }
+
+  #[test]
+  fn per_renderer_connection_cap_rejects_and_releases_on_close() {
+    let limits = NetworkWebSocketManagerLimits {
+      max_active_per_renderer: 2,
+      max_active_total: 100,
+    };
+    let mut mgr = NetworkWebSocketManager::new_with_limits(limits);
+    let renderer = RendererId(1);
+
+    assert!(mgr
+      .handle_command(
+        renderer,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(1),
+          url: "ws://example.invalid/1".to_string(),
+        },
+      )
+      .is_empty());
+    assert!(mgr
+      .handle_command(
+        renderer,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(2),
+          url: "ws://example.invalid/2".to_string(),
+        },
+      )
+      .is_empty());
+    assert_eq!(mgr.connection_count_for_test(renderer), 2);
+
+    let rejected = mgr.handle_command(
+      renderer,
+      WebSocketCommand::Connect {
+        conn_id: WebSocketConnId(3),
+        url: "ws://example.invalid/3".to_string(),
+      },
+    );
+    assert_eq!(
+      rejected,
+      vec![
+        WebSocketEvent::Error {
+          conn_id: WebSocketConnId(3),
+          kind: WebSocketErrorKind::PerRendererLimitExceeded
+        },
+        WebSocketEvent::Close {
+          conn_id: WebSocketConnId(3)
+        }
+      ]
+    );
+    assert_eq!(mgr.connection_count_for_test(renderer), 2);
+
+    let close = mgr.handle_command(
+      renderer,
+      WebSocketCommand::Close {
+        conn_id: WebSocketConnId(1),
+      },
+    );
+    assert_eq!(
+      close,
+      vec![WebSocketEvent::Close {
+        conn_id: WebSocketConnId(1)
+      }]
+    );
+    assert_eq!(mgr.connection_count_for_test(renderer), 1);
+
+    // After closing, a new connect should succeed.
+    assert!(mgr
+      .handle_command(
+        renderer,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(4),
+          url: "ws://example.invalid/4".to_string(),
+        },
+      )
+      .is_empty());
+    assert_eq!(mgr.connection_count_for_test(renderer), 2);
+  }
+
+  #[test]
+  fn global_connection_cap_is_enforced() {
+    let limits = NetworkWebSocketManagerLimits {
+      max_active_per_renderer: 10,
+      max_active_total: 2,
+    };
+    let mut mgr = NetworkWebSocketManager::new_with_limits(limits);
+    let r1 = RendererId(1);
+    let r2 = RendererId(2);
+
+    assert!(mgr
+      .handle_command(
+        r1,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(1),
+          url: "ws://example.invalid/a".to_string(),
+        },
+      )
+      .is_empty());
+    assert!(mgr
+      .handle_command(
+        r2,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(2),
+          url: "ws://example.invalid/b".to_string(),
+        },
+      )
+      .is_empty());
+
+    let rejected = mgr.handle_command(
+      r1,
+      WebSocketCommand::Connect {
+        conn_id: WebSocketConnId(3),
+        url: "ws://example.invalid/c".to_string(),
+      },
+    );
+    assert_eq!(
+      rejected,
+      vec![
+        WebSocketEvent::Error {
+          conn_id: WebSocketConnId(3),
+          kind: WebSocketErrorKind::GlobalLimitExceeded
+        },
+        WebSocketEvent::Close {
+          conn_id: WebSocketConnId(3)
+        }
+      ]
+    );
+    assert_eq!(mgr.connection_count_for_test(r1), 1);
+    assert_eq!(mgr.connection_count_for_test(r2), 1);
+  }
+
+  #[test]
+  fn spam_connect_over_limit_does_not_grow_state() {
+    let limits = NetworkWebSocketManagerLimits {
+      max_active_per_renderer: 1,
+      max_active_total: 1,
+    };
+    let mut mgr = NetworkWebSocketManager::new_with_limits(limits);
+    let renderer = RendererId(1);
+
+    assert!(mgr
+      .handle_command(
+        renderer,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(1),
+          url: "ws://example.invalid/1".to_string(),
+        },
+      )
+      .is_empty());
+    assert_eq!(mgr.connection_count_for_test(renderer), 1);
+
+    for i in 2..10_000u64 {
+      let _ = mgr.handle_command(
+        renderer,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(i),
+          url: format!("ws://example.invalid/{i}"),
+        },
+      );
+    }
+
+    assert_eq!(mgr.connection_count_for_test(renderer), 1);
   }
 }
