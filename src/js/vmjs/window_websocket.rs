@@ -756,7 +756,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
         ws_id,
         fetcher,
         resolved_url_string,
-        protocols_header,
+        protocols,
         cmd_rx,
         task_queue,
       )
@@ -1216,6 +1216,46 @@ fn make_simple_event(scope: &mut Scope<'_>, event_type: &str) -> Result<GcObject
   Ok(ev)
 }
 
+fn validate_ws_subprotocol_handshake_response(
+  requested_protocols: &[String],
+  response_headers: &http::HeaderMap,
+) -> Result<String, ()> {
+  let mut values = response_headers.get_all("Sec-WebSocket-Protocol").iter();
+  let Some(value) = values.next() else {
+    // No protocol selected.
+    return Ok(String::new());
+  };
+
+  // Multiple protocol headers are invalid for WebSocket subprotocol negotiation.
+  if values.next().is_some() {
+    return Err(());
+  }
+
+  let value = value.to_str().map_err(|_| ())?;
+  if value.is_empty() {
+    return Err(());
+  }
+
+  // The server's Sec-WebSocket-Protocol must be a single token (no commas/whitespace).
+  if value
+    .bytes()
+    .any(|b| b == b',' || b.is_ascii_whitespace())
+  {
+    return Err(());
+  }
+
+  if requested_protocols.is_empty() {
+    // If no subprotocols were requested, the server must not select one.
+    return Err(());
+  }
+
+  if !requested_protocols.iter().any(|p| p == value) {
+    return Err(());
+  }
+
+  Ok(value.to_string())
+}
+
 fn ensure_ipc_event_thread_started<Host: WindowRealmHost + 'static>(
   env_id: u64,
   task_queue: ExternalTaskQueueHandle<Host>,
@@ -1380,10 +1420,15 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
   ws_id: u64,
   fetcher: Arc<dyn ResourceFetcher>,
   url: String,
-  protocols_header: Option<String>,
+  requested_protocols: Vec<String>,
   cmd_rx: mpsc::Receiver<WsCommand>,
   task_queue: ExternalTaskQueueHandle<Host>,
 ) {
+  let protocols_header = if requested_protocols.is_empty() {
+    None
+  } else {
+    Some(requested_protocols.join(", "))
+  };
   let connect_result = crate::resource::websocket::connect_websocket_with_cookies(
     fetcher.as_ref(),
     &url,
@@ -1411,12 +1456,30 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
     }
   };
 
-  let selected_protocol = response
-    .headers()
-    .get("Sec-WebSocket-Protocol")
-    .and_then(|h| h.to_str().ok())
-    .unwrap_or("")
-    .to_string();
+  let selected_protocol =
+    match validate_ws_subprotocol_handshake_response(&requested_protocols, response.headers()) {
+      Ok(protocol) => protocol,
+      Err(()) => {
+        // RFC6455: If a server responds with a subprotocol not present in the requested list (or
+        // sends a protocol when none were requested), the connection must fail.
+        with_env_state_mut(env_id, |state| {
+          if let Some(ws) = state.sockets.get_mut(&ws_id) {
+            ws.ready_state = WS_CLOSED;
+          }
+          Ok(())
+        })
+        .ok();
+        queue_ws_task::<Host>(&task_queue, env_id, ws_id, |vm_host, heap, vm, hooks, ws_obj| {
+          let mut scope = heap.scope();
+          let ev = make_simple_event(&mut scope, "error")?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
+          let close_ev = make_simple_event(&mut scope, "close")?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+          Ok(())
+        });
+        return;
+      }
+    };
 
   with_env_state_mut(env_id, |state| {
     if let Some(ws) = state.sockets.get_mut(&ws_id) {
@@ -2195,6 +2258,303 @@ mod tests {
   }
 
   #[test]
+  fn websocket_rejects_unrequested_protocol_selected_by_server() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_rejects_unrequested_protocol_selected_by_server") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+            // Deliberately violate RFC6455 by returning a comma-separated protocol list even though
+            // the client requested a single protocol.
+            let _ws = tungstenite::accept_hdr(stream, |_req, mut resp| {
+              resp
+                .headers_mut()
+                .insert("Sec-WebSocket-Protocol", "chat, superchat".parse().unwrap());
+              Ok(resp)
+            })
+            .expect("accept websocket");
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__done = false;
+      globalThis.__opened = false;
+      globalThis.__error = false;
+      globalThis.__closed = false;
+      globalThis.__ws = new WebSocket("ws://{addr}/", ["chat"]);
+      const ws = globalThis.__ws;
+      ws.onopen = function () {{
+        globalThis.__opened = true;
+        globalThis.__done = true;
+      }};
+      ws.onerror = function () {{
+        globalThis.__error = true;
+      }};
+      ws.onclose = function () {{
+        globalThis.__closed = true;
+        globalThis.__done = true;
+      }};
+      "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__opened").as_deref(),
+      Some("false"),
+      "expected server-selected subprotocol to fail the connection",
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__error").as_deref(),
+      Some("true"),
+      "expected websocket error when server selects invalid protocol",
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__closed").as_deref(),
+      Some("true"),
+      "expected websocket close when server selects invalid protocol",
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_protocol_is_set_from_server_handshake_response() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_protocol_is_set_from_server_handshake_response") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let _ws = tungstenite::accept_hdr(stream, |_req, mut resp| {
+              resp
+                .headers_mut()
+                .insert("Sec-WebSocket-Protocol", "superchat".parse().unwrap());
+              Ok(resp)
+            })
+            .expect("accept websocket");
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(&format!(
+      r#"
+       globalThis.__done = false;
+       globalThis.__err = "";
+       globalThis.__protocol = "";
+       globalThis.__ws = new WebSocket("ws://{addr}/", ["chat", "superchat"]);
+       const ws = globalThis.__ws;
+       ws.onopen = function () {{
+         globalThis.__protocol = ws.protocol;
+         ws.close();
+       }};
+       ws.onerror = function () {{
+         globalThis.__err = "error";
+         globalThis.__done = true;
+       }};
+       ws.onclose = function () {{
+         globalThis.__done = true;
+       }};
+       "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      "",
+      "unexpected websocket error: {:?}",
+      get_global_prop_utf8(&mut host, "__err"),
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__protocol").as_deref(),
+      Some("superchat"),
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_rejects_protocol_when_none_were_requested() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_rejects_protocol_when_none_were_requested") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let _ws = tungstenite::accept_hdr(stream, |_req, mut resp| {
+              resp
+                .headers_mut()
+                .insert("Sec-WebSocket-Protocol", "chat".parse().unwrap());
+              Ok(resp)
+            })
+            .expect("accept websocket");
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(&format!(
+      r#"
+       globalThis.__done = false;
+       globalThis.__opened = false;
+       globalThis.__error = false;
+       globalThis.__closed = false;
+       globalThis.__ws = new WebSocket("ws://{addr}/");
+       const ws = globalThis.__ws;
+       ws.onopen = function () {{
+         globalThis.__opened = true;
+         globalThis.__done = true;
+       }};
+       ws.onerror = function () {{
+         globalThis.__error = true;
+       }};
+       ws.onclose = function () {{
+         globalThis.__closed = true;
+         globalThis.__done = true;
+       }};
+       "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__opened").as_deref(),
+      Some("false"),
+      "expected server-selected subprotocol to fail the connection",
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__error").as_deref(),
+      Some("true"),
+      "expected websocket error when server selects protocol without request",
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__closed").as_deref(),
+      Some("true"),
+      "expected websocket close when server selects protocol without request",
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
   fn websocket_buffered_amount_cap() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) = try_bind_localhost("websocket_buffered_amount_cap") else {
@@ -2612,7 +2972,7 @@ mod tests {
       ws_id,
       fetcher,
       "ws:/relative".to_string(),
-      None,
+      Vec::new(),
       cmd_rx,
       task_queue,
     );
