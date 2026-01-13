@@ -4626,11 +4626,11 @@ impl<'vm> HirEvaluator<'vm> {
             update_scope.push_root(Value::Object(home))?;
           }
 
-          let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
-          root_property_key(&mut update_scope, key)?;
-
           let this_value = self.resolve_this_binding(&mut update_scope)?;
           update_scope.push_root(this_value)?;
+
+          let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
+          root_property_key(&mut update_scope, key)?;
 
           let base = self.super_base_value(&mut update_scope)?;
           update_scope.push_root(base)?;
