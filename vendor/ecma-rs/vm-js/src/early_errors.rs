@@ -2643,14 +2643,6 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn is_valid_simple_assignment_target_expr(expr: &Node<Expr>) -> bool {
-    // Parenthesized expressions are not valid simple assignment targets.
-    //
-    // Examples:
-    // - `(a) = 1`
-    // - `++(a)`
-    if expr.assoc.get::<ParenthesizedExpr>().is_some() {
-      return false;
-    }
     match &*expr.stx {
       Expr::Id(_) | Expr::IdPat(_) => true,
       Expr::Member(member) => !member.stx.optional_chaining,

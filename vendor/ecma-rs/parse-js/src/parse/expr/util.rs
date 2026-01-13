@@ -32,28 +32,10 @@ pub fn lit_to_pat(node: Node<Expr>) -> SyntaxResult<Node<Pat>> {
 pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> SyntaxResult<Node<Pat>> {
   let loc = node.loc;
 
-  // In strict ECMAScript mode, parenthesized expressions are never valid assignment targets.
-  //
-  // Examples that must be SyntaxErrors:
-  // - `(a) = 1`
-  // - `for ((a) of b) {}`
-  // - `(obj.prop) = 1`
-  //
-  // We accept these in recovery mode so TypeScript-style parse errors can be surfaced by later
-  // semantic validation.
-  if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
-    return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
-  }
-
   // TypeScript: Accept member expressions for error recovery, even with optional chaining.
   // Check for member expressions first (without moving the value).
   let is_member = match node.stx.as_ref() {
     Expr::Member(member) => {
-      // Parenthesized expressions are never valid assignment targets in strict ECMAScript mode
-      // (e.g. `(a) = 1`, `(obj.prop) = 1`).
-      if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
-        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
-      }
       if !recover && member.stx.optional_chaining {
         return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
       }
@@ -66,9 +48,6 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
   }
   let is_computed_member = match node.stx.as_ref() {
     Expr::ComputedMember(member) => {
-      if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
-        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
-      }
       if !recover && member.stx.optional_chaining {
         return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
       }
@@ -253,11 +232,6 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
       Ok(Node::new(loc, ObjPat { properties, rest }).into_wrapped())
     }
     Expr::Id(n) => {
-      // Parenthesized identifiers are not valid assignment targets in strict ECMAScript mode
-      // (e.g. `(a) = 1`, `for ((a) of b) {}`).
-      if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
-        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
-      }
       Ok(
         Node::new(
           loc,

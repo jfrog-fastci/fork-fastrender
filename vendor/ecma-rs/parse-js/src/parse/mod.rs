@@ -1,6 +1,5 @@
 use crate::ast::expr::pat::Pat;
 use crate::ast::expr::Expr;
-use crate::ast::node::ParenthesizedExpr;
 use crate::ast::node::Node;
 use crate::error::SyntaxError;
 use crate::error::SyntaxErrorType;
@@ -410,9 +409,6 @@ impl<'a> Parser<'a> {
   /// This is stricter than `lhs_expr_to_assign_target_with_recover` because update expressions
   /// do not accept destructuring patterns.
   pub(crate) fn validate_update_target_expr(&self, expr: &Node<Expr>) -> SyntaxResult<()> {
-    if self.is_strict_ecmascript() && expr.assoc.get::<ParenthesizedExpr>().is_some() {
-      return Err(expr.error(SyntaxErrorType::InvalidAssigmentTarget));
-    }
     match expr.stx.as_ref() {
       Expr::Id(_) => Ok(()),
       Expr::Member(member) if !member.stx.optional_chaining => Ok(()),

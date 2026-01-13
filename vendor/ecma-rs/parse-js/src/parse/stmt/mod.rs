@@ -5,7 +5,6 @@ use super::expr::Asi;
 use super::ParseCtx;
 use super::Parser;
 use crate::ast::node::Node;
-use crate::ast::node::ParenthesizedExpr;
 use crate::ast::stmt::BlockStmt;
 use crate::ast::stmt::BreakStmt;
 use crate::ast::stmt::CatchBlock;
@@ -912,11 +911,6 @@ impl<'a> Parser<'a> {
         // then convert to pattern/assignment target
         use super::expr::util::lit_to_pat_with_recover;
         let expr = self.expr(ctx, [TT::KeywordIn, TT::KeywordOf])?;
-        // In strict ECMAScript, for-in/of heads require a valid assignment target. Parenthesized
-        // expressions are not valid for-in/of assignment targets (e.g. `for ((a) of b) {}`).
-        if self.is_strict_ecmascript() && expr.assoc.get::<ParenthesizedExpr>().is_some() {
-          return Err(expr.error(SyntaxErrorType::InvalidAssigmentTarget));
-        }
         let pat = lit_to_pat_with_recover(expr, self.should_recover())?;
         self.validate_strict_assignment_target_pat(&pat)?;
         ForInOfLhs::Assign(pat)

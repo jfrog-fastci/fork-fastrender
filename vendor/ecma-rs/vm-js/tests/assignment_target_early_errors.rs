@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -10,6 +10,15 @@ fn assert_syntax_error(src: &str) {
   let mut rt = new_runtime();
   let err = rt.exec_script(src).unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)), "expected syntax error, got {err:?}");
+}
+
+fn assert_execs_to_number(src: &str, expected: f64) {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(src).unwrap();
+  assert!(
+    matches!(value, Value::Number(n) if n == expected),
+    "expected number {expected}, got {value:?}"
+  );
 }
 
 #[test]
@@ -47,3 +56,22 @@ fn invalid_for_of_lhs_assignment_target() {
   assert_syntax_error("for (1 of [1]) {}");
 }
 
+#[test]
+fn parenthesized_identifier_is_valid_assignment_target() {
+  assert_execs_to_number("var a = 0; (a) = 1; a", 1.0);
+}
+
+#[test]
+fn parenthesized_identifier_is_valid_prefix_update_target() {
+  assert_execs_to_number("var a = 0; ++(a); a", 1.0);
+}
+
+#[test]
+fn parenthesized_identifier_is_valid_postfix_update_target() {
+  assert_execs_to_number("var a = 0; (a)++; a", 1.0);
+}
+
+#[test]
+fn parenthesized_member_is_valid_postfix_update_target() {
+  assert_execs_to_number("var o = { x: 0 }; (o.x)++; o.x", 1.0);
+}
