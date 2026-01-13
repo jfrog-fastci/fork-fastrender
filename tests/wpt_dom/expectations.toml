@@ -52,7 +52,7 @@ reason = "NodeList/HTMLCollection constructors are not exposed globally yet (col
 id = "dom/domimplementation_create_html_document.window.js"
 backend = "quickjs"
 status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; DOMImplementation.createHTMLDocument is not implemented."
+reason = "QuickJS backend does not implement multi-document DOMImplementation APIs yet (vm-js shim supports them)."
 
 [[expectations]]
 id = "dom/domimplementation_create_document_type.window.js"
@@ -64,19 +64,19 @@ reason = "DOMImplementation.createDocumentType is not implemented in the QuickJS
 id = "dom/domimplementation-createhtmldocument.window.js"
 backend = "quickjs"
 status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; Document.implementation/DOMImplementation.createHTMLDocument is not implemented."
+reason = "QuickJS backend does not implement multi-document DOMImplementation APIs yet (vm-js shim supports them)."
 
 [[expectations]]
 id = "dom/document-importnode.window.js"
 backend = "quickjs"
 status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; Document.importNode is not implemented."
+reason = "QuickJS backend does not implement multi-document Document.importNode yet (vm-js shim supports it)."
 
 [[expectations]]
 id = "dom/document-adoptnode.window.js"
 backend = "quickjs"
 status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; Document.adoptNode is not implemented."
+reason = "QuickJS backend does not implement multi-document Document.adoptNode yet (vm-js shim supports it)."
 
 [[expectations]]
 id = "dom/cross-document-appendchild-adopts.window.js"
@@ -107,36 +107,6 @@ id = "dom/cross-document-appendchild-fragment-adopts.window.js"
 backend = "quickjs"
 status = "xfail"
 reason = "QuickJS WebIDL runtime brand-checks Document methods; `Object.create(document)` is not treated as a Document wrapper (vm-js shim supports this aliasing for adoption tests)."
-
-[[expectations]]
-id = "dom/cross-document-appendchild-adopts.window.js"
-backend = "vmjs"
-status = "xfail"
-reason = "Test uses `Object.create(document)` as a stand-in for a second Document; vmjs bindings now enforce WebIDL brand checks. Update the test to use `document.implementation.createHTMLDocument()`."
-
-[[expectations]]
-id = "dom/cross-document-appendchild-fragment-adopts.window.js"
-backend = "vmjs"
-status = "xfail"
-reason = "Test uses `Object.create(document)` as a stand-in for a second Document; vmjs bindings now enforce WebIDL brand checks. Update the test to use `document.implementation.createHTMLDocument()`."
-
-[[expectations]]
-id = "dom/cross-document-insertadjacentelement-adopts.window.js"
-backend = "vmjs"
-status = "xfail"
-reason = "Test uses `Object.create(document)` as a stand-in for a second Document; vmjs bindings now enforce WebIDL brand checks. Update the test to use `document.implementation.createHTMLDocument()`."
-
-[[expectations]]
-id = "dom/cross-document-insertbefore-adopts.window.js"
-backend = "vmjs"
-status = "xfail"
-reason = "Test uses `Object.create(document)` as a stand-in for a second Document; vmjs bindings now enforce WebIDL brand checks. Update the test to use `document.implementation.createHTMLDocument()`."
-
-[[expectations]]
-id = "dom/cross-document-replacechild-adopts.window.js"
-backend = "vmjs"
-status = "xfail"
-reason = "Test uses `Object.create(document)` as a stand-in for a second Document; vmjs bindings now enforce WebIDL brand checks. Update the test to use `document.implementation.createHTMLDocument()`."
 
 [[expectations]]
 id = "dom/range_basics.window.js"

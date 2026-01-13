@@ -12584,13 +12584,12 @@ fn document_create_element_native(
     ));
   };
 
-  let document_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError(
-      "document.createElement must be called on a document object",
-    ))?
-    .require_document_handle(scope.heap(), Value::Object(document_obj))
-    .map_err(|_| VmError::TypeError("document.createElement must be called on a document object"))?
-    .document_id;
+  let document_id = ensure_document_handle_for_object(
+    vm,
+    scope,
+    document_obj,
+    "document.createElement must be called on a document object",
+  )?;
 
   let tag_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let tag_value = scope.heap_mut().to_string(tag_value)?;
@@ -12874,13 +12873,12 @@ fn document_create_text_node_native(
     ));
   };
 
-  let document_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError(
-      "document.createTextNode must be called on a document object",
-    ))?
-    .require_document_handle(scope.heap(), Value::Object(document_obj))
-    .map_err(|_| VmError::TypeError("document.createTextNode must be called on a document object"))?
-    .document_id;
+  let document_id = ensure_document_handle_for_object(
+    vm,
+    scope,
+    document_obj,
+    "document.createTextNode must be called on a document object",
+  )?;
 
   let data_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let data_value = scope.heap_mut().to_string(data_value)?;
@@ -12987,7 +12985,12 @@ fn document_create_document_fragment_native(
     ));
   };
 
-  let document_id = gc_object_id(document_obj);
+  let document_id = ensure_document_handle_for_object(
+    vm,
+    scope,
+    document_obj,
+    "document.createDocumentFragment must be called on a document object",
+  )?;
   let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
     "document.createDocumentFragment requires a DOM-backed document",
   ))?;
@@ -25869,7 +25872,6 @@ fn node_owner_document_get_native(
   let node_key = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
     .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
-
   // Document.ownerDocument is always null. The `dom2` document root is `NodeId(0)`, but detached
   // documents created by DOMParser (and cloned documents) have their own `NodeKind::Document` nodes
   // with non-zero ids.
@@ -27677,6 +27679,124 @@ fn is_host_document_id(vm: &mut Vm, document_id: DocumentId) -> bool {
     return false;
   };
   gc_object_id(document_obj) == document_id
+}
+
+fn ensure_document_handle_for_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  error_message: &'static str,
+) -> Result<DocumentId, VmError> {
+  let Some(platform) = dom_platform_mut(vm) else {
+    return Err(VmError::TypeError(error_message));
+  };
+  ensure_document_handle_for_object_with_platform(scope, platform, document_obj, error_message)
+}
+
+fn ensure_document_handle_for_object_with_platform(
+  scope: &mut Scope<'_>,
+  platform: &mut DomPlatform,
+  document_obj: GcObject,
+  error_message: &'static str,
+) -> Result<DocumentId, VmError> {
+  if let Ok(handle) = platform.require_document_handle(scope.heap(), Value::Object(document_obj)) {
+    return Ok(handle.document_id);
+  }
+
+  // Allow Object.create(document)-style "alias" Document wrappers.
+  //
+  // These are used by curated adoption tests to force cross-document wrapper remapping behavior
+  // without requiring a second `dom2::Document` allocation.
+  let mut proto = scope.object_get_prototype(document_obj)?;
+  let mut proto_document_obj = None;
+  while let Some(proto_obj) = proto {
+    if platform
+      .require_document_handle(scope.heap(), Value::Object(proto_obj))
+      .is_ok()
+    {
+      proto_document_obj = Some(proto_obj);
+      break;
+    }
+    proto = scope.object_get_prototype(proto_obj)?;
+  }
+
+  let Some(proto_document_obj) = proto_document_obj else {
+    return Err(VmError::TypeError(error_message));
+  };
+
+  // Register the alias wrapper as the `NodeId(0)` Document wrapper for its own DocumentId.
+  //
+  // This allows per-wrapper `ownerDocument` and cross-document adoption behavior to work even when
+  // multiple JS Document objects share the same underlying `dom2::Document`.
+  let base = scope.heap().stack_root_len();
+  scope.push_root(Value::Object(document_obj))?;
+  scope
+    .heap_mut()
+    .object_set_host_slots(document_obj, HostSlots { a: DOM_WRAPPER_HOST_TAG, b: 0 })?;
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  scope.define_property(document_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  scope.define_property(
+    document_obj,
+    wrapper_document_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(document_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Copy internal per-document prototypes from the canonical Document wrapper so that collection
+  // objects (NodeList, MutationRecord, etc) created under the alias document can be instantiated
+  // with the correct prototype chain.
+  //
+  // These are stored as own-properties (not inherited), so `Object.create(document)` would
+  // otherwise miss them.
+  let node_list_proto = node_list_prototype_from_document(scope, proto_document_obj)?;
+  let node_list_proto_internal_key = alloc_key(scope, NODE_LIST_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    node_list_proto_internal_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(node_list_proto),
+        writable: false,
+      },
+    },
+  )?;
+
+  let mutation_record_proto = mutation_record_prototype_from_document(scope, proto_document_obj)?;
+  let mutation_record_proto_internal_key = alloc_key(scope, MUTATION_RECORD_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    mutation_record_proto_internal_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(mutation_record_proto),
+        writable: false,
+      },
+    },
+  )?;
+
+  platform.register_wrapper(
+    scope.heap(),
+    document_obj,
+    vm_js::WeakGcObject::from(document_obj),
+    NodeId::from_index(0),
+    DomInterface::Document,
+  );
+
+  scope.heap_mut().truncate_stack_roots(base);
+  Ok(gc_object_id(document_obj))
 }
 
 fn element_handle_from_wrapper_obj(
