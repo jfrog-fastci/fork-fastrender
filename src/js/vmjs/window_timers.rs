@@ -3708,7 +3708,8 @@ mod tests {
     }
 
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<ClockHost>::with_clock(clock.clone());
+    let clock_dyn: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<ClockHost>::with_clock(clock_dyn);
     let mut host = ClockHost::new(Arc::clone(&clock));
 
     {
@@ -6119,8 +6120,8 @@ mod tests {
   fn interval_continues_after_uncaught_exception() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let clock = Arc::new(VirtualClock::new());
-    let clock_for_loop: Arc<dyn Clock> = clock.clone();
-    let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(clock_for_loop);
+    let clock_dyn: Arc<dyn Clock> = clock.clone();
+    let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(clock_dyn);
     let mut host =
       crate::js::WindowHost::new_with_fetcher_and_event_loop(
         dom,

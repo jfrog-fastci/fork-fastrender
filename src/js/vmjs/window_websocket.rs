@@ -3840,12 +3840,11 @@ pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 
   env: WindowWebSocketIpcEnv,
 ) -> Result<WindowWebSocketBindings, VmError> {
   let WindowWebSocketIpcEnv {
-    fetcher: _,
+    fetcher,
     document_url,
     cmd_tx,
     event_rx,
   } = env;
-  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(IpcNoopFetcher);
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
   let ipc_state = IpcEnvState {
     cmd_tx,

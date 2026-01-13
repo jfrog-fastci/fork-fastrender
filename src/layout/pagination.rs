@@ -1570,6 +1570,39 @@ pub fn paginate_fragment_tree(
 
       // Simple, fixed separator rule: 1px solid currentColor.
       let separator_block = 1.0;
+      let footnote_style = &page_style.footnote_style;
+
+      // Resolve @footnote border/padding along the page block axis. This consumes space on the page
+      // even though the footnote bodies themselves are positioned by pagination.
+      let viewport = page_style.total_size;
+      let cb_width = page_style.content_size.width.max(0.0);
+      let cb_height = page_style.content_size.height.max(0.0);
+      let resolve_x = |len: Length| resolve_len(footnote_style, len, Some(cb_width), viewport).max(0.0);
+      let resolve_y =
+        |len: Length| resolve_len(footnote_style, len, Some(cb_height), viewport).max(0.0);
+
+      let block_edges = if axis.block_is_horizontal {
+        resolve_x(footnote_style.padding_left)
+          + resolve_x(footnote_style.padding_right)
+          + resolve_x(footnote_style.used_border_left_width())
+          + resolve_x(footnote_style.used_border_right_width())
+      } else {
+        resolve_y(footnote_style.padding_top)
+          + resolve_y(footnote_style.padding_bottom)
+          + resolve_y(footnote_style.used_border_top_width())
+          + resolve_y(footnote_style.used_border_bottom_width())
+      };
+      let footnote_overhead_block = block_edges + separator_block;
+
+      // Resolve `@footnote { max-height: ... }` against the page content box block-size. This caps
+      // the *footnote area* border-box size on pages that also contain in-flow content.
+      let mut footnote_max_block_for_in_flow = page_block;
+      if let Some(max_height) = footnote_style.max_height {
+        let resolved = resolve_len(footnote_style, max_height, Some(page_block), viewport);
+        if resolved.is_finite() {
+          footnote_max_block_for_in_flow = resolved.max(0.0).min(page_block);
+        }
+      }
 
       if matches!(token, BreakToken::End) {
         // When the main-flow content is exhausted but deferred/oversize footnote bodies remain,
@@ -1586,11 +1619,12 @@ pub fn paginate_fragment_tree(
           .children_mut()
           .push(FragmentNode::new_block(content_bounds, Vec::new()));
 
-        let mut remaining = (page_block - separator_block).max(0.0);
+        let mut remaining = (page_block - footnote_overhead_block).max(0.0);
         let mut slices: Vec<FragmentNode> = Vec::new();
 
         // If the page content box is too small to fit even a single fragment of footnote content
-        // (after accounting for the separator), we must still drain `pending_footnotes` to avoid
+        // (after accounting for @footnote border/padding + separator), we must still drain
+        // `pending_footnotes` to avoid
         // emitting an infinite sequence of empty continuation pages.
         if remaining <= EPSILON {
           pending_footnotes.pop_front();
@@ -1694,7 +1728,10 @@ pub fn paginate_fragment_tree(
       } else {
         let mut reserved_pending_block = 0.0f32;
         if !pending_footnotes.is_empty() {
-          let mut budget = (page_block - separator_block).max(0.0);
+          // Reserve as much pending footnote body content as possible without exceeding the
+          // footnote area's max-height (or the page size), accounting for the separator and
+          // @footnote block-axis padding/border.
+          let mut budget = (footnote_max_block_for_in_flow - footnote_overhead_block).max(0.0);
           for pending in pending_footnotes.iter() {
             if budget <= EPSILON {
               break;
@@ -1714,6 +1751,9 @@ pub fn paginate_fragment_tree(
         }
 
         let page_block_for_content = (page_block - reserved_pending_block).max(1.0);
+        let footnote_max_block_for_content_page =
+          (footnote_max_block_for_in_flow - reserved_pending_block).max(0.0);
+        let has_pending_overhead = reserved_pending_block > EPSILON;
         let planner = break_planners
           .entry(key)
           .or_insert_with(|| PageBreakPlanner::new(layout, root_axes, page_block));
@@ -1766,26 +1806,14 @@ pub fn paginate_fragment_tree(
             &axis,
           );
           let provisional_footnotes = collect_footnotes_for_page(&provisional, &axis);
-          let mut adjustment_footnotes = provisional_footnotes.clone();
-          if reserved_pending_block > EPSILON {
-            // Reserve room for the footnote separator when we know we'll be placing deferred
-            // footnote bodies from previous pages. This uses a synthetic zero-height occurrence so
-            // the adjustment logic can reuse the existing separator reservation path.
-            adjustment_footnotes.insert(
-              0,
-              FootnoteOccurrence {
-                call_pos: 0.0,
-                defer_pos: 0.0,
-                snapshot: FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), Vec::new()),
-                policy: FootnotePolicy::Line,
-              },
-            );
-          }
           let adjusted_end = adjust_end_for_footnotes(
             start,
             end_candidate,
             page_block_for_content,
-            &adjustment_footnotes,
+            footnote_max_block_for_content_page,
+            footnote_overhead_block,
+            has_pending_overhead,
+            &provisional_footnotes,
             &axis,
           );
           // Re-run boundary selection against the reduced main-flow block-size so widows/orphans and
@@ -1884,7 +1912,10 @@ pub fn paginate_fragment_tree(
           // `footnote-policy: auto`, or because an oversized footnote body is being fragmented)
           // must be emitted in document order, and must never appear before their reference.
           let main_block = (end - start).max(0.0);
-          let mut remaining_for_bodies = (page_block - main_block - separator_block).max(0.0);
+          let max_body_by_page = (page_block - main_block - footnote_overhead_block).max(0.0);
+          let max_body_by_cap =
+            (footnote_max_block_for_in_flow - footnote_overhead_block).max(0.0);
+          let mut remaining_for_bodies = max_body_by_page.min(max_body_by_cap);
           let mut footnote_slices: Vec<FragmentNode> = Vec::new();
 
           // Helper to enqueue a deferred footnote body for placement on a later page.
@@ -1913,12 +1944,9 @@ pub fn paginate_fragment_tree(
 
           // Place deferred footnote content before considering new footnote calls for this page.
           if !pending_footnotes.is_empty() {
-            // If the page content box is too small to fit even a single fragment of footnote content
-            // (after accounting for the separator), we must still drain `pending_footnotes` to avoid
-            // emitting an infinite sequence of pages.
-            if remaining_for_bodies <= EPSILON {
-              pending_footnotes.pop_front();
-            }
+            // Pending footnote bodies are emitted before new footnote calls so bodies preserve
+            // document order. If the current page cannot fit any footnote body content (e.g. due to
+            // max-height), leave the pending footnotes queued for later pages.
             while remaining_for_bodies > EPSILON {
               let Some(pending) = pending_footnotes.front_mut() else {
                 break;
@@ -2034,17 +2062,16 @@ pub fn paginate_fragment_tree(
               }
 
               let body_block = axis.block_size(&snapshot.bounds).max(0.0);
-              let is_oversize = body_block + separator_block > page_block + EPSILON;
+              let is_oversize =
+                body_block + footnote_overhead_block > footnote_max_block_for_in_flow + EPSILON;
               if is_oversize {
                 // Avoid mixing additional footnotes onto the same page once an oversize footnote has
                 // started fragmenting; later footnotes should not overtake its continuation.
-                if remaining_for_bodies <= EPSILON && !footnote_slices.is_empty() {
+                if remaining_for_bodies <= EPSILON {
+                  // No space left for the oversize footnote on this page; defer the body.
                   enqueue_pending(&mut pending_footnotes, snapshot, root_axes, page_block);
                   defer_remaining = true;
                   continue;
-                }
-                if remaining_for_bodies <= EPSILON {
-                  remaining_for_bodies = (page_block - separator_block).max(0.0);
                 }
 
                 let analyzer = FragmentationAnalyzer::new(
@@ -2951,6 +2978,9 @@ fn adjust_end_for_footnotes(
   start: f32,
   end_candidate: f32,
   page_block: f32,
+  footnote_area_max_block: f32,
+  footnote_overhead_block: f32,
+  pending_overhead: bool,
   footnotes: &[FootnoteOccurrence],
   axis: &crate::layout::fragmentation::FragmentAxis,
 ) -> f32 {
@@ -2959,20 +2989,21 @@ fn adjust_end_for_footnotes(
     .filter(|occ| occ.policy != FootnotePolicy::Auto)
     .collect();
   if footnotes.is_empty() {
+    if pending_overhead {
+      let main_block = (page_block - footnote_overhead_block).max(0.0);
+      return (start + main_block).min(end_candidate);
+    }
     return end_candidate;
   }
-
-  // Simple, fixed separator rule: 1px solid currentColor.
-  let separator_block = 1.0;
 
   let mut included = 0usize;
   let mut total_footnote_block = 0.0f32;
   for occ in footnotes.iter() {
     let body_block = axis.block_size(&occ.snapshot.bounds).max(0.0);
     let next_total = total_footnote_block + body_block;
-    let next_with_separator = next_total + separator_block;
-    let main_block = page_block - next_with_separator;
-    if next_with_separator <= page_block && occ.call_pos < main_block {
+    let next_footnote_block = footnote_overhead_block + next_total;
+    let main_block = page_block - next_footnote_block;
+    if next_footnote_block <= footnote_area_max_block && occ.call_pos < main_block {
       included += 1;
       total_footnote_block = next_total;
       continue;
@@ -2982,15 +3013,24 @@ fn adjust_end_for_footnotes(
 
   let end = if included == 0 {
     let body_block = axis.block_size(&footnotes[0].snapshot.bounds).max(0.0);
-    let footnote_overflows_page = body_block + separator_block > page_block + EPSILON;
-    let footnote_consumes_page = body_block + separator_block >= page_block - EPSILON;
-    if (footnote_overflows_page || footnote_consumes_page) && footnotes[0].call_pos <= EPSILON {
+    let needed = footnote_overhead_block + body_block;
+    let footnote_overflows_page = needed > footnote_area_max_block + EPSILON;
+    let footnote_consumes_page = needed >= footnote_area_max_block - EPSILON;
+    if (footnote_overflows_page || footnote_consumes_page) && footnotes[0].defer_pos <= EPSILON {
       // If the call is already at the start of the page and the footnote would otherwise consume
       // the entire page, reserve some space so the footnote body can start and continue on
       // subsequent pages.
-      let min_footnote_content = 1.0;
-      let max_main_block = (page_block - separator_block - min_footnote_content).max(0.0);
-      let desired_main_block = (page_block * 0.5).min(max_main_block);
+      let desired_main_block = if footnote_area_max_block + EPSILON < page_block {
+        // When `@footnote { max-height }` is smaller than the page, reserve the full cap for the
+        // footnote area so the body can progress without creating a mostly-empty page.
+        (page_block - footnote_area_max_block).max(0.0)
+      } else {
+        // Without an explicit max-height, use a heuristic that avoids creating a page containing
+        // only footnotes while still ensuring the oversized footnote can start fragmenting.
+        let min_footnote_content = 1.0;
+        let max_main_block = (page_block - footnote_overhead_block - min_footnote_content).max(0.0);
+        (page_block * 0.5).min(max_main_block)
+      };
       let mut end = start + desired_main_block;
       // If there are additional footnote calls in this clipped slice, stop before the next call so
       // later footnotes are deferred until this overflowing footnote finishes. (When calls share
@@ -3004,7 +3044,7 @@ fn adjust_end_for_footnotes(
       start + footnotes[0].defer_pos
     }
   } else {
-    let footnote_block = separator_block + total_footnote_block;
+    let footnote_block = footnote_overhead_block + total_footnote_block;
     let main_block = (page_block - footnote_block).max(0.0);
     let mut end = start + main_block;
     if included < footnotes.len() {
@@ -3027,6 +3067,7 @@ fn build_footnote_area_fragment(
     return None;
   }
 
+  let footnote_style = &page_style.footnote_style;
   let page_block = if axis.block_is_horizontal {
     page_style.content_size.width
   } else {
@@ -3042,6 +3083,39 @@ fn build_footnote_area_fragment(
 
   // Simple, fixed separator rule: 1px solid currentColor.
   let separator_block = 1.0;
+
+  // Resolve the @footnote box model against the page content box. The resulting fragment is
+  // synthetic, so pagination is responsible for applying padding/border and stacking the separator
+  // + bodies inside the footnote area's content box.
+  let viewport = page_style.total_size;
+  let cb_width = page_style.content_size.width.max(0.0);
+  let cb_height = page_style.content_size.height.max(0.0);
+  let resolve_x = |len: Length| resolve_len(footnote_style, len, Some(cb_width), viewport).max(0.0);
+  let resolve_y =
+    |len: Length| resolve_len(footnote_style, len, Some(cb_height), viewport).max(0.0);
+
+  let padding_left = resolve_x(footnote_style.padding_left);
+  let padding_right = resolve_x(footnote_style.padding_right);
+  let padding_top = resolve_y(footnote_style.padding_top);
+  let padding_bottom = resolve_y(footnote_style.padding_bottom);
+  let border_left = resolve_x(footnote_style.used_border_left_width());
+  let border_right = resolve_x(footnote_style.used_border_right_width());
+  let border_top = resolve_y(footnote_style.used_border_top_width());
+  let border_bottom = resolve_y(footnote_style.used_border_bottom_width());
+
+  let content_offset = Point::new(border_left + padding_left, border_top + padding_top);
+  let inline_edges = if axis.block_is_horizontal {
+    border_top + padding_top + border_bottom + padding_bottom
+  } else {
+    border_left + padding_left + border_right + padding_right
+  };
+  let block_edges = if axis.block_is_horizontal {
+    border_left + padding_left + border_right + padding_right
+  } else {
+    border_top + padding_top + border_bottom + padding_bottom
+  };
+  let content_inline = (page_inline - inline_edges).max(0.0);
+
   let flow_box_start_to_physical = |flow_offset: f32, block_size: f32, parent_block_size: f32| {
     if axis.block_positive {
       flow_offset
@@ -3084,13 +3158,10 @@ fn build_footnote_area_fragment(
     });
   }
 
-  // Use the footnote area's *content* inline size for wrapping decisions so `@footnote` padding
-  // (when supported) reduces the available width for inline footnotes.
-  let available_inline = footnote_area_content_inline_size(page_style)
-    .unwrap_or(page_inline)
-    .max(0.0);
-  let available_inline = if available_inline.is_finite() {
-    available_inline
+  // Use the footnote area's *content* inline size for wrapping decisions so `@footnote` padding and
+  // border reduce the available width for inline footnotes.
+  let available_inline = if content_inline.is_finite() {
+    content_inline
   } else {
     page_inline
   };
@@ -3163,8 +3234,9 @@ fn build_footnote_area_fragment(
     flow_block_cursor += line_block_size;
   }
 
-  let footnote_block = flow_block_cursor;
-  if footnote_block <= EPSILON {
+  let content_block = flow_block_cursor;
+  let footnote_block = block_edges + content_block;
+  if footnote_block <= EPSILON || content_block <= EPSILON {
     return None;
   }
 
@@ -3197,19 +3269,29 @@ fn build_footnote_area_fragment(
   // Separator fragment.
   let mut separator_style = ComputedStyle::default();
   separator_style.display = Display::Block;
-  separator_style.writing_mode = page_style.page_style.writing_mode;
-  separator_style.direction = page_style.page_style.direction;
-  separator_style.color = page_style.page_style.color;
-  separator_style.background_color = page_style.page_style.color;
+  separator_style.writing_mode = footnote_style.writing_mode;
+  separator_style.direction = footnote_style.direction;
+  separator_style.color = footnote_style.color;
+  separator_style.background_color = footnote_style.color;
   let separator_style = Arc::new(separator_style);
 
   let separator_flow_offset = 0.0;
   let separator_block_start =
-    flow_box_start_to_physical(separator_flow_offset, separator_block, footnote_block);
+    flow_box_start_to_physical(separator_flow_offset, separator_block, content_block);
   let separator_bounds = if axis.block_is_horizontal {
-    Rect::from_xywh(separator_block_start, 0.0, separator_block, page_inline)
+    Rect::from_xywh(
+      content_offset.x + separator_block_start,
+      content_offset.y,
+      separator_block,
+      content_inline,
+    )
   } else {
-    Rect::from_xywh(0.0, separator_block_start, page_inline, separator_block)
+    Rect::from_xywh(
+      content_offset.x,
+      content_offset.y + separator_block_start,
+      content_inline,
+      separator_block,
+    )
   };
   children.push(FragmentNode::new_block_styled(
     separator_bounds,
@@ -3222,20 +3304,27 @@ fn build_footnote_area_fragment(
     let body_block_start = flow_box_start_to_physical(
       placement.flow_block_start,
       placement.block_size,
-      footnote_block,
+      content_block,
     );
-    let body_inline_start =
-      inline_box_start_to_physical(placement.flow_inline_start, placement.inline_size, page_inline);
+    let body_inline_start = inline_box_start_to_physical(
+      placement.flow_inline_start,
+      placement.inline_size,
+      content_inline,
+    );
     let translate = if axis.block_is_horizontal {
-      Point::new(body_block_start, body_inline_start)
+      Point::new(content_offset.x + body_block_start, content_offset.y + body_inline_start)
     } else {
-      Point::new(body_inline_start, body_block_start)
+      Point::new(content_offset.x + body_inline_start, content_offset.y + body_block_start)
     };
     placement.snapshot.translate_root_in_place(translate);
     children.push(placement.snapshot);
   }
 
-  Some(FragmentNode::new_block(bounds, children))
+  Some(FragmentNode::new_block_styled(
+    bounds,
+    children,
+    Arc::new(footnote_style.clone()),
+  ))
 }
 
 fn translate_fragment(node: &mut FragmentNode, dx: f32, dy: f32) {
@@ -4796,7 +4885,7 @@ mod tests {
       block_positive: true,
     };
     let footnotes = vec![footnote_occurrence(50.0, 10.0)];
-    let end = adjust_end_for_footnotes(0.0, 100.0, 100.0, &footnotes, &axis);
+    let end = adjust_end_for_footnotes(0.0, 100.0, 100.0, 100.0, 1.0, false, &footnotes, &axis);
     assert!(
       (end - 89.0).abs() < 0.01,
       "expected end=89 after reserving separator+body, got {end}"
@@ -4810,7 +4899,7 @@ mod tests {
       block_positive: true,
     };
     let footnotes = vec![footnote_occurrence(95.0, 10.0)];
-    let end = adjust_end_for_footnotes(0.0, 100.0, 100.0, &footnotes, &axis);
+    let end = adjust_end_for_footnotes(0.0, 100.0, 100.0, 100.0, 1.0, false, &footnotes, &axis);
     assert!(
       (end - 95.0).abs() < 0.01,
       "expected end=95 so the call moves to the next page, got {end}"

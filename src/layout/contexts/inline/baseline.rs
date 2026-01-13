@@ -360,10 +360,14 @@ impl LineBaselineAccumulator {
       }
 
       VerticalAlign::Super => {
-        // Raise baseline by ~0.4em (typical superscript offset)
+        // Raise baseline by ~0.3em (typical superscript offset).
+        //
+        // Note: This is intentionally conservative. Footnote call markers use the UA default
+        // `vertical-align: super`; if we raise too aggressively, tight `line-height` values can
+        // balloon the line box and unexpectedly force pagination breaks.
         let shift = parent_metrics
-          .map(|m| m.ascent * 0.4)
-          .unwrap_or(metrics.ascent * 0.4);
+          .map(|m| m.ascent * 0.3)
+          .unwrap_or(metrics.ascent * 0.3);
         -shift
       }
 

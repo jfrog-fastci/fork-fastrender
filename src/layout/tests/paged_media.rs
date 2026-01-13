@@ -7869,6 +7869,105 @@ fn footnote_display_compact_is_more_compact_than_block() {
 }
 
 #[test]
+fn footnote_area_background_and_padding_paint() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 100px 100px;
+            margin: 0;
+            background: rgb(255, 255, 255);
+            @footnote {
+              background: rgb(0, 255, 0);
+              padding-top: 10px;
+              border-top: 2px solid rgb(255, 0, 0);
+            }
+          }
+          html, body { margin: 0; background: transparent; }
+          body { font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; display: block; height: 10px; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">Footnote body</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(100, 100)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render footnote area paint");
+
+  // Above the footnote area should remain the page background.
+  assert_eq!(pixel(&pixmap, 50, 70), [255, 255, 255, 255]);
+  // The footnote area's border-top should be painted.
+  assert_eq!(pixel(&pixmap, 50, 78), [255, 0, 0, 255]);
+  // The padding area should be filled by the @footnote background.
+  assert_eq!(pixel(&pixmap, 50, 83), [0, 255, 0, 255]);
+}
+
+#[test]
+fn footnote_area_max_height_defers_excess_footnotes() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; @footnote { max-height: 20px; } }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; display: block; height: 10px; }
+        </style>
+      </head>
+      <body>
+        <p>Alpha<span class="note">Footnote one</span></p>
+        <p>Beta<span class="note">Footnote two</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected max-height to defer the second footnote to a new page"
+  );
+
+  let page1 = page_roots[0];
+  let wrapper1 = page_document_wrapper(page1);
+  assert_eq!(wrapper1.children.len(), 2);
+  let content1 = page_content(page1);
+  let footnote_area1 = wrapper1.children.get(1).expect("page 1 footnote area");
+  assert!(find_text(content1, "Alpha").is_some());
+  assert!(find_text(content1, "Beta").is_none());
+  assert!(find_text(footnote_area1, "Footnote one").is_some());
+  assert!(find_text(footnote_area1, "Footnote two").is_none());
+
+  let page2 = page_roots[1];
+  let wrapper2 = page_document_wrapper(page2);
+  assert_eq!(wrapper2.children.len(), 2);
+  let content2 = page_content(page2);
+  let footnote_area2 = wrapper2.children.get(1).expect("page 2 footnote area");
+  assert!(find_text(content2, "Beta").is_some());
+  assert!(find_text(content2, "Alpha").is_none());
+  assert!(find_text(footnote_area2, "Footnote two").is_some());
+  assert!(find_text(footnote_area2, "Footnote one").is_none());
+}
+
+#[test]
 fn footnote_overflow_defers_later_calls_to_next_page() {
   let html = r#"
     <html>
