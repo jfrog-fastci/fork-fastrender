@@ -33,6 +33,7 @@ mod preserve3d_env_var_disable_warp_test;
 mod rayon_global_pool_test;
 mod replaced_element_max_width_toggle;
 mod readable_stream_desired_size;
+mod sandbox_spawn_handle_inheritance_windows;
 mod streams_tee_uninitialized;
 mod text_decoder_stream;
 mod transition_behavior_property_test;
