@@ -1175,10 +1175,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     match lhs {
       ForInOfLhs::Assign(pat) => self.visit_assignment_target_pat(ctx, pat),
-      ForInOfLhs::Decl((_mode, pat)) => {
-        // Binding patterns: walk for nested patterns/defaults (if any).
-        self.visit_pat(ctx, &pat.stx.pat, PatRole::Binding)
-      }
+      ForInOfLhs::Decl((_mode, pat)) => self.visit_pat(ctx, &pat.stx.pat, PatRole::Binding),
     }
   }
 
@@ -1675,7 +1672,24 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_var_decl(&mut self, ctx: &mut ControlContext, decl: &VarDecl) -> Result<(), VmError> {
+    // ES early error (ECMA-262 13.3.1.1): It is a Syntax Error if the BoundNames of a
+    // LexicalDeclaration contains "let".
+    //
+    // This applies even in non-strict scripts where `let` is otherwise a valid IdentifierName.
+    let lexical_mode = matches!(
+      decl.mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    );
     for declarator in &decl.declarators {
+      if lexical_mode {
+        let mut names: Vec<(String, Loc)> = Vec::new();
+        Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names)?;
+        for (name, loc) in names {
+          if name == "let" {
+            self.push_error(loc, "lexical declarations may not declare a binding named 'let'")?;
+          }
+        }
+      }
       if declarator.initializer.is_none() {
         if decl.mode == VarDeclMode::Const {
           self.push_error(
