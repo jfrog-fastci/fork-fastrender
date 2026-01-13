@@ -213,6 +213,13 @@ struct IpcEnvState {
   thread: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueWsTaskOutcome {
+  Queued,
+  Skipped,
+  DeliveryFailed,
+}
+
 static NEXT_ENV_ID: AtomicU64 = AtomicU64::new(1);
 static ENVS: OnceLock<Mutex<HashMap<u64, EnvState>>> = OnceLock::new();
 
@@ -1153,7 +1160,7 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
     ) -> Result<(), VmError>
     + Send
     + 'static,
-) {
+) -> QueueWsTaskOutcome {
   // Enforce per-socket cap first.
   let allowed = with_env_state_mut(env_id, |state| {
     let Some(ws) = state.sockets.get_mut(&ws_id) else {
@@ -1229,7 +1236,7 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
   })
   .unwrap_or(false);
   if !allowed {
-    return;
+    return QueueWsTaskOutcome::Skipped;
   }
 
   let queue_result = queue.queue_task(TaskSource::Networking, move |host, event_loop| {
@@ -1302,7 +1309,47 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
         Ok(())
       });
     }
+
+    // Renderer-side callback delivery failed (external task queue is full/closed). Treat this as
+    // backpressure and close the connection to avoid buffering/dropping data indefinitely.
+    //
+    // This mirrors the per-socket event queue overflow path above, but is triggered by the global
+    // event loop queue being unable to accept work.
+    let _ = with_env_state_mut(env_id, |state| {
+      let Some(ws) = state.sockets.get_mut(&ws_id) else {
+        return Ok(());
+      };
+
+      // Idempotent: only request forced close once.
+      if ws.forced_close.is_none() && ws.ready_state != WS_CLOSED {
+        ws.ready_state = WS_CLOSING;
+        let reason = WS_CLOSE_EVENT_QUEUE_OVERFLOW_REASON.to_string();
+        ws.forced_close = Some((WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE, reason.clone()));
+
+        // Best-effort close request:
+        // - In-process backend: websocket thread observes `forced_close`.
+        // - IPC backend: notify the network process.
+        if let Some(ipc) = state.ipc.as_ref() {
+          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::Close {
+            ws_id,
+            code: Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE),
+            reason: Some(reason),
+          });
+        } else if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
+          let _ = cmd_tx.try_send(WsCommand::Close {
+            code: Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE),
+            reason: Some(reason),
+          });
+        }
+      }
+
+      Ok(())
+    });
+
+    return QueueWsTaskOutcome::DeliveryFailed;
   }
+
+  QueueWsTaskOutcome::Queued
 }
 
 fn dispatch_ws_event(
@@ -1630,14 +1677,20 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           Ok(())
         })
         .ok();
-        queue_ws_task::<Host>(&task_queue, env_id, ws_id, |vm_host, heap, vm, hooks, ws_obj| {
-          let mut scope = heap.scope();
-          let ev = make_simple_event(&mut scope, "error")?;
-          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
-          let close_ev = make_simple_event(&mut scope, "close")?;
-          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
-          Ok(())
-        });
+        queue_ws_task::<Host>(
+          &task_queue,
+          env_id,
+          ws_id,
+          WsTaskKind::Close,
+          |vm_host, heap, vm, hooks, ws_obj| {
+            let mut scope = heap.scope();
+            let ev = make_simple_event(&mut scope, "error")?;
+            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
+            let close_ev = make_simple_event(&mut scope, "close")?;
+            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+            Ok(())
+          },
+        );
         return;
       }
     };
@@ -1651,18 +1704,33 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
   })
   .ok();
 
-  queue_ws_task::<Host>(
+  let open_outcome = queue_ws_task::<Host>(
     &task_queue,
     env_id,
     ws_id,
     WsTaskKind::Normal,
     |vm_host, heap, vm, hooks, ws_obj| {
-    let mut scope = heap.scope();
-    let ev = make_simple_event(&mut scope, "open")?;
-    dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onopen")?;
-    Ok(())
-  },
+      let mut scope = heap.scope();
+      let ev = make_simple_event(&mut scope, "open")?;
+      dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onopen")?;
+      Ok(())
+    },
   );
+  if matches!(open_outcome, QueueWsTaskOutcome::DeliveryFailed) {
+    // The renderer is unable to enqueue callback delivery onto the JS event loop (e.g. external
+    // task queue is full/closed). Treat this as backpressure and close the connection to avoid
+    // buffering/dropping data indefinitely.
+    let _ = socket.close(None);
+    with_env_state_mut(env_id, |state| {
+      if let Some(ws) = state.sockets.get_mut(&ws_id) {
+        ws.ready_state = WS_CLOSED;
+        ws.buffered_amount = 0;
+      }
+      Ok(())
+    })
+    .ok();
+    return;
+  }
 
   // Keep the socket responsive to shutdown by using a small read timeout.
   //
@@ -1784,7 +1852,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           break;
         }
 
-        queue_ws_task::<Host>(
+        let outcome = queue_ws_task::<Host>(
           &task_queue,
           env_id,
           ws_id,
@@ -1800,6 +1868,11 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           Ok(())
         },
         );
+        if matches!(outcome, QueueWsTaskOutcome::DeliveryFailed) {
+          closing = Some((1001, "backpressure".to_string()));
+          let _ = socket.close(None);
+          break;
+        }
       }
       Ok(Message::Binary(bytes)) => {
         if bytes.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
@@ -1808,7 +1881,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           break;
         }
 
-        queue_ws_task::<Host>(
+        let outcome = queue_ws_task::<Host>(
           &task_queue,
           env_id,
           ws_id,
@@ -1830,6 +1903,11 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           Ok(())
         },
         );
+        if matches!(outcome, QueueWsTaskOutcome::DeliveryFailed) {
+          closing = Some((1001, "backpressure".to_string()));
+          let _ = socket.close(None);
+          break;
+        }
       }
       Ok(Message::Close(frame)) => {
         let (code, reason) = frame
@@ -2135,7 +2213,7 @@ mod tests {
   use super::*;
   use crate::dom2;
   use crate::error::Result;
-  use crate::js::{EventLoop, RunLimits, WindowHost, WindowHostState};
+  use crate::js::{EventLoop, JsExecutionOptions, RunLimits, WindowHost, WindowHostState};
   use crate::resource::{FetchedResource, HttpFetcher};
   use crate::testing::{net_test_lock, try_bind_localhost};
   use selectors::context::QuirksMode;
@@ -2403,6 +2481,117 @@ mod tests {
       get_global_prop_utf8(&mut host, "__messageCount").as_deref(),
       Some("0"),
       "ping/pong frames must not surface as JS message events"
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_external_task_queue_overflow_closes_connection() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) =
+      try_bind_localhost("websocket_external_task_queue_overflow_closes_connection")
+    else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let (server_tx, server_rx) = mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).expect("accept websocket");
+
+            // Keep the server responsive so the test can deterministically assert that the client
+            // closes promptly.
+            let _ = ws.get_mut().set_read_timeout(Some(Duration::from_millis(50)));
+
+            ws
+              .write_message(Message::Text("first".to_string()))
+              .expect("server write first");
+
+            // Wait for the client to close promptly after being unable to enqueue the message event.
+            let close_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+              match ws.read_message() {
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(ref err))
+                  if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                  ) =>
+                {
+                  if Instant::now() >= close_deadline {
+                    panic!("server timed out waiting for client close");
+                  }
+                }
+                Err(_err) => break,
+              }
+            }
+
+            let _ = server_tx.send(());
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let mut options = JsExecutionOptions::default();
+    // Keep the external task queue extremely small so we can deterministically force enqueue
+    // failures.
+    options.event_loop_queue_limits.max_pending_tasks = 2;
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host =
+      WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", options)?;
+    host.event_loop_mut().clear_all_pending_work();
+
+    // Fill the external task queue so the upcoming `open` event can enqueue, but the subsequent
+    // message cannot.
+    let ext = host.event_loop().external_task_queue_handle();
+    ext.queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))?;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__msg_count = 0;
+      globalThis.__ws = new WebSocket("ws://{addr}/");
+      globalThis.__ws.onmessage = function (_e) {{
+        globalThis.__msg_count++;
+      }};
+      "#,
+    ))?;
+
+    // Ensure the client closes promptly (otherwise this test could hang).
+    server_rx
+      .recv_timeout(Duration::from_secs(5))
+      .expect("server did not observe close");
+
+    // Drain the event loop: if a message event was successfully queued, it would run now.
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 100,
+      max_microtasks: 1000,
+      max_wall_time: Some(Duration::from_millis(200)),
+    })?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__msg_count").unwrap_or_default(),
+      "0",
+      "message handler should not have run after external queue overflow"
     );
 
     server.join().expect("server thread panicked");
@@ -3154,7 +3343,10 @@ mod tests {
                 }
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(ref err))
-                  if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) =>
+                  if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                  ) =>
                 {
                   if Instant::now() >= read_deadline {
                     panic!("server read timed out");
@@ -3164,6 +3356,7 @@ mod tests {
                 Err(err) => panic!("server read failed: {err}"),
               }
             }
+
             break;
           }
           Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
