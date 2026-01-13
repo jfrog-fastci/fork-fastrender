@@ -69,10 +69,10 @@ Important for implementers in other languages:
 - Most schema structs/enums (including `IpcRequest`, `IpcResponse`, `IpcFetchRequest`, `IpcHttpRequest`,
   `IpcFetchedResource`, `IpcError`, and `IpcResult<T>`) are `#[serde(deny_unknown_fields)]`: unknown
   fields must fail closed.
-- Some envelope/streaming types intentionally **do not** deny unknown fields today
-  (`BrowserToNetwork`, `NetworkToBrowser`, `IpcFetchedResourceMeta`) so newer servers can add fields
-  without breaking older clients. Other-language implementations should be aware of this difference
-  if they aim for wire-compatibility with the in-tree Rust decoder.
+- Note: the outer envelope/streaming types currently **do not** deny unknown fields
+  (`BrowserToNetwork`, `NetworkToBrowser`, `IpcFetchedResourceMeta`), so the in-tree Rust decoder will
+  ignore unknown fields on those messages. Other-language implementations should be aware of this
+  difference if they aim for wire-compatibility with the in-tree Rust decoder.
 
 ### Example JSON payloads (no length prefix shown)
 
