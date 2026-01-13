@@ -897,6 +897,7 @@ impl WorkerToUi {
       WorkerToUi::Stage { tab_id, .. }
       | WorkerToUi::Favicon { tab_id, .. }
       | WorkerToUi::FrameReady { tab_id, .. }
+      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::OpenSelectDropdown { tab_id, .. }
       | WorkerToUi::NavigationStarted { tab_id, .. }
       | WorkerToUi::NavigationCommitted { tab_id, .. }
