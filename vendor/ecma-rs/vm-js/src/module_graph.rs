@@ -1,10 +1,9 @@
 use crate::exec::{
-  instantiate_module_decls,
-  run_module,
-  resume_module_tla_evaluation,
-  start_module_tla_evaluation,
+  instantiate_module_decls, resume_module_tla_evaluation, run_module, start_module_tla_evaluation,
   ModuleTlaStepResult,
 };
+use crate::fallible_alloc::arc_try_new_vm;
+use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
 use crate::import_meta::{create_import_meta_object, VmImportMetaHostHooks};
 use crate::module_loading::DynamicImportState;
 use crate::module_record::ModuleNamespaceCache;
@@ -12,8 +11,6 @@ use crate::module_record::ModuleStatus;
 use crate::module_record::ResolveExportResult;
 use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
-use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
-use crate::fallible_alloc::arc_try_new_vm;
 use crate::{
   cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest,
   RealmId, RootId, Scope, ScriptId, StackFrame, Value, Vm, VmError,
@@ -108,7 +105,11 @@ fn format_rejection_stack_trace_limited(frames: &[StackFrame]) -> String {
   out
 }
 
-fn attach_stack_property_for_promise_rejection(scope: &mut Scope<'_>, reason: Value, err: &VmError) {
+fn attach_stack_property_for_promise_rejection(
+  scope: &mut Scope<'_>,
+  reason: Value,
+  err: &VmError,
+) {
   let Some(frames) = err.thrown_stack() else {
     return;
   };
@@ -375,10 +376,12 @@ impl ModuleGraph {
       self.script_loaded_modules.insert(script, Vec::new());
     }
     // Safe: we inserted the key above if it was missing.
-    Ok(self
-      .script_loaded_modules
-      .get_mut(&script)
-      .expect("script_loaded_modules missing key after insertion"))
+    Ok(
+      self
+        .script_loaded_modules
+        .get_mut(&script)
+        .expect("script_loaded_modules missing key after insertion"),
+    )
   }
 
   pub(crate) fn realm_loaded_modules_mut(
@@ -392,10 +395,12 @@ impl ModuleGraph {
         .map_err(|_| VmError::OutOfMemory)?;
       self.realm_loaded_modules.insert(realm, Vec::new());
     }
-    Ok(self
-      .realm_loaded_modules
-      .get_mut(&realm)
-      .expect("realm_loaded_modules missing key after insertion"))
+    Ok(
+      self
+        .realm_loaded_modules
+        .get_mut(&realm)
+        .expect("realm_loaded_modules missing key after insertion"),
+    )
   }
   pub fn set_global_lexical_env(&mut self, env: GcEnv) {
     self.global_lexical_env = Some(env);
@@ -465,8 +470,9 @@ impl ModuleGraph {
     }
 
     let id = self.next_pending_dynamic_import_evaluation_id;
-    self.next_pending_dynamic_import_evaluation_id =
-      self.next_pending_dynamic_import_evaluation_id.wrapping_add(1);
+    self.next_pending_dynamic_import_evaluation_id = self
+      .next_pending_dynamic_import_evaluation_id
+      .wrapping_add(1);
 
     self
       .pending_dynamic_import_evaluations
@@ -493,7 +499,10 @@ impl ModuleGraph {
   pub fn add_module(&mut self, record: SourceTextModuleRecord) -> Result<ModuleId, VmError> {
     // Pre-reserve capacity on all per-module vectors before mutating lengths so allocator OOM
     // reports `VmError::OutOfMemory` rather than aborting the process.
-    self.modules.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    self
+      .modules
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     self
       .tla_states
       .try_reserve(1)
@@ -850,13 +859,14 @@ impl ModuleGraph {
     });
 
     // Spec invariant: all elements are sorted by their integer order.
-    debug_assert!(exec_list
-      .windows(2)
-      .all(|w| match w {
-        [a, b] => self.module_async_evaluation_order(*a).cmp(&self.module_async_evaluation_order(*b))
+    debug_assert!(exec_list.windows(2).all(|w| match w {
+      [a, b] =>
+        self
+          .module_async_evaluation_order(*a)
+          .cmp(&self.module_async_evaluation_order(*b))
           != Ordering::Greater,
-        _ => true,
-      }));
+      _ => true,
+    }));
 
     Ok(exec_list)
   }
@@ -938,7 +948,13 @@ impl ModuleGraph {
       if let Some(roots) = self.modules[root_idx].top_level_capability.as_ref() {
         if let Some(cap) = roots.capability(scope.heap()) {
           let reject = cap.reject;
-          let _ = vm.call_with_host(&mut scope, &mut abort_hooks, reject, Value::Undefined, &[reason]);
+          let _ = vm.call_with_host(
+            &mut scope,
+            &mut abort_hooks,
+            reject,
+            Value::Undefined,
+            &[reason],
+          );
         }
       }
 
@@ -1014,7 +1030,9 @@ impl ModuleGraph {
     }
 
     {
-      let mut ctx = AbortJobCtx { heap: scope.heap_mut() };
+      let mut ctx = AbortJobCtx {
+        heap: scope.heap_mut(),
+      };
       abort_hooks.teardown(&mut ctx);
     }
   }
@@ -1084,15 +1102,16 @@ impl ModuleGraph {
     self.torn_down = false;
 
     // Populate the namespace's `[[Exports]]` list and %Symbol.toStringTag%.
-    let exports_sorted = match self.module_namespace_create(vm, scope, module, namespace_obj, unambiguous_names) {
-      Ok(exports_sorted) => exports_sorted,
-      Err(err) => {
-        // Roll back the placeholder cache so subsequent calls don't observe an incomplete namespace.
-        scope.heap_mut().remove_root(root);
-        self.modules[idx].namespace = None;
-        return Err(err);
-      }
-    };
+    let exports_sorted =
+      match self.module_namespace_create(vm, scope, module, namespace_obj, unambiguous_names) {
+        Ok(exports_sorted) => exports_sorted,
+        Err(err) => {
+          // Roll back the placeholder cache so subsequent calls don't observe an incomplete namespace.
+          scope.heap_mut().remove_root(root);
+          self.modules[idx].namespace = None;
+          return Err(err);
+        }
+      };
 
     // Charge external bytes for the cached `[[Exports]]` list. This can be large for modules with
     // many exports.
@@ -1249,9 +1268,12 @@ impl ModuleGraph {
   }
 
   /// Implements ECMA-262 `GetImportedModule(referrer, request)`.
-  pub fn get_imported_module(&self, referrer: ModuleId, request: &ModuleRequest) -> Option<ModuleId> {
-    self
-      .modules[module_index(referrer)]
+  pub fn get_imported_module(
+    &self,
+    referrer: ModuleId,
+    request: &ModuleRequest,
+  ) -> Option<ModuleId> {
+    self.modules[module_index(referrer)]
       .loaded_modules
       .iter()
       .find(|loaded| loaded.request.spec_equal(request))
@@ -1281,9 +1303,9 @@ impl ModuleGraph {
     // implementation (sorting does not require stability because export names are unique).
     exports.sort_unstable_by(|a, b| cmp_utf16(a, b));
 
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("module namespaces require intrinsics"))?;
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "module namespaces require intrinsics",
+    ))?;
     let getter_call = vm.module_namespace_getter_call_id()?;
 
     // Allocate the export list and capture binding resolution information.
@@ -1298,15 +1320,19 @@ impl ModuleGraph {
       .map_err(|_| VmError::OutOfMemory)?;
 
     for export_name in &exports {
-      let resolution =
-        match self.modules[module_index(module)].resolve_export_with_vm(vm, self, module, export_name)? {
-          ResolveExportResult::Resolved(res) => res,
-          _ => {
-            return Err(VmError::InvariantViolation(
-              "module namespace export list contains a missing/ambiguous name",
-            ))
-          }
-        };
+      let resolution = match self.modules[module_index(module)].resolve_export_with_vm(
+        vm,
+        self,
+        module,
+        export_name,
+      )? {
+        ResolveExportResult::Resolved(res) => res,
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "module namespace export list contains a missing/ambiguous name",
+          ))
+        }
+      };
 
       let export_key_s = inner.alloc_string(export_name)?;
       inner.push_root(Value::String(export_key_s))?;
@@ -1315,7 +1341,9 @@ impl ModuleGraph {
         crate::module_record::BindingName::Name(local_name) => {
           let env_root = self.modules[module_index(resolution.module)]
             .environment
-            .ok_or(VmError::Unimplemented("module namespace requires linked module environments"))?;
+            .ok_or(VmError::Unimplemented(
+              "module namespace requires linked module environments",
+            ))?;
           let env = inner
             .heap()
             .get_env_root(env_root)
@@ -1344,7 +1372,14 @@ impl ModuleGraph {
         }
       };
 
-      let getter = inner.alloc_native_function_with_slots_and_env(getter_call, None, export_key_s, 0, &getter_slots, getter_env)?;
+      let getter = inner.alloc_native_function_with_slots_and_env(
+        getter_call,
+        None,
+        export_key_s,
+        0,
+        &getter_slots,
+        getter_env,
+      )?;
       inner
         .heap_mut()
         .object_set_prototype(getter, Some(intr.function_prototype()))?;
@@ -1528,11 +1563,14 @@ impl ModuleGraph {
       // Avoid cloning attacker-controlled strings during linking: infallible `String::clone` can
       // abort the process under allocator OOM (see `oom_regressions` / `oom_harness` moduleLink).
       //
-      // We still clone `requested_modules` / `import_entries` here (borrow-splitting convenience)
-      // but keep `local_export_entries` and `indirect_export_entries` borrowed during their
-      // respective validation paths.
-      let requested_modules = self.modules[idx].requested_modules.clone();
-      let import_entries = self.modules[idx].import_entries.clone();
+      // In particular:
+      // - `requested_modules` can contain huge module specifiers / attribute strings,
+      // - `import_entries` can contain huge local binding names,
+      // - `indirect_export_entries` can contain huge export names / module specifiers.
+      //
+      // This function avoids cloning those lists and instead iterates them with scoped borrows,
+      // temporarily taking ownership of `import_entries` only when needed to avoid borrow conflicts
+      // while mutating the graph (creating namespace objects, linking dependencies, etc).
       let has_default_export = self.modules[idx]
         .local_export_entries
         .iter()
@@ -1548,13 +1586,17 @@ impl ModuleGraph {
 
       // Link dependencies first.
       const LINK_TICK_EVERY: usize = 32;
-      for (i, request) in requested_modules.into_iter().enumerate() {
+      let requested_len = self.modules[idx].requested_modules.len();
+      for i in 0..requested_len {
         if i % LINK_TICK_EVERY == 0 && i != 0 {
           vm.tick()?;
         }
-        let imported = self
-          .get_imported_module(module, &request)
-          .ok_or(VmError::Unimplemented("unlinked module request"))?;
+        let imported = {
+          let request = &self.modules[idx].requested_modules[i];
+          self
+            .get_imported_module(module, request)
+            .ok_or(VmError::Unimplemented("unlinked module request"))?
+        };
         self.link_inner(vm, scope, global_object, realm_id, imported)?;
       }
 
@@ -1606,99 +1648,117 @@ impl ModuleGraph {
 
       let env_root = self.modules[idx]
         .environment
-        .ok_or(VmError::InvariantViolation("module environment root missing"))?;
+        .ok_or(VmError::InvariantViolation(
+          "module environment root missing",
+        ))?;
       let module_env = scope
         .heap()
         .get_env_root(env_root)
         .ok_or_else(|| VmError::invalid_handle())?;
 
       // Create import bindings.
-      for (i, entry) in import_entries.into_iter().enumerate() {
-        if i % LINK_TICK_EVERY == 0 && i != 0 {
-          vm.tick()?;
-        }
-        let imported_module = self
-          .get_imported_module(module, &entry.module_request)
-          .ok_or(VmError::Unimplemented("unlinked module request"))?;
+      //
+      // Take ownership of the import entry list to avoid holding an immutable borrow of
+      // `self.modules[idx]` while calling into routines that require `&mut self` (namespace creation,
+      // module linking recursion, etc). Restore the list before returning so module records remain
+      // self-contained even when linking fails.
+      let import_entries = std::mem::take(&mut self.modules[idx].import_entries);
+      let import_bindings_result =
+        (|| -> Result<(), VmError> {
+          for (i, entry) in import_entries.iter().enumerate() {
+            if i % LINK_TICK_EVERY == 0 && i != 0 {
+              vm.tick()?;
+            }
+            let imported_module = self
+              .get_imported_module(module, &entry.module_request)
+              .ok_or(VmError::Unimplemented("unlinked module request"))?;
 
-        match entry.import_name {
-          crate::module_record::ImportName::All => {
-            let ns = self.get_module_namespace(imported_module, vm, scope)?;
-            let mut init_scope = scope.reborrow();
-            init_scope.push_root(Value::Object(ns))?;
-            init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
-            init_scope
-              .heap_mut()
-              .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
-          }
-          crate::module_record::ImportName::Name(import_name) => {
-            let resolution = self.modules[module_index(imported_module)]
-              .resolve_export_with_vm(vm, self, imported_module, &import_name)?;
-            let resolution = match resolution {
-              ResolveExportResult::Resolved(resolution) => resolution,
-              ResolveExportResult::NotFound => {
-                let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
-                  "module linking requires intrinsics to create SyntaxError objects",
-                ))?;
-                let message = crate::fallible_format::try_format_error_message2(
-                  "The requested module '",
-                  &entry.module_request.specifier,
-                  "' does not provide an export named '",
-                  &import_name,
-                  "'",
-                )?;
-                let err_obj =
-                  crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
-                return Err(VmError::Throw(err_obj));
-              }
-              ResolveExportResult::Ambiguous => {
-                let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
-                  "module linking requires intrinsics to create SyntaxError objects",
-                ))?;
-                let message = crate::fallible_format::try_format_error_message2(
-                  "The requested module '",
-                  &entry.module_request.specifier,
-                  "' provides an ambiguous export named '",
-                  &import_name,
-                  "'",
-                )?;
-                let err_obj =
-                  crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
-                return Err(VmError::Throw(err_obj));
-              }
-            };
-
-            match resolution.binding_name {
-              crate::module_record::BindingName::Namespace => {
-                let ns = self.get_module_namespace(resolution.module, vm, scope)?;
+            match &entry.import_name {
+              crate::module_record::ImportName::All => {
+                let ns = self.get_module_namespace(imported_module, vm, scope)?;
                 let mut init_scope = scope.reborrow();
                 init_scope.push_root(Value::Object(ns))?;
                 init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
-                init_scope
-                  .heap_mut()
-                  .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
-              }
-              crate::module_record::BindingName::Name(target_name) => {
-                let target_env_root = self.modules[module_index(resolution.module)]
-                  .environment
-                  .ok_or(VmError::InvariantViolation(
-                    "resolved export module missing environment",
-                  ))?;
-                let target_env = scope
-                  .heap()
-                  .get_env_root(target_env_root)
-                  .ok_or_else(|| VmError::invalid_handle())?;
-                scope.env_create_import_binding(
+                init_scope.heap_mut().env_initialize_binding(
                   module_env,
                   &entry.local_name,
-                  target_env,
-                  &target_name,
+                  Value::Object(ns),
                 )?;
+              }
+              crate::module_record::ImportName::Name(import_name) => {
+                let resolution = self.modules[module_index(imported_module)]
+                  .resolve_export_with_vm(vm, self, imported_module, import_name)?;
+                let resolution = match resolution {
+                  ResolveExportResult::Resolved(resolution) => resolution,
+                  ResolveExportResult::NotFound => {
+                    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+                      "module linking requires intrinsics to create SyntaxError objects",
+                    ))?;
+                    let message = crate::fallible_format::try_format_error_message2(
+                      "The requested module '",
+                      &entry.module_request.specifier,
+                      "' does not provide an export named '",
+                      import_name,
+                      "'",
+                    )?;
+                    let err_obj =
+                      crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
+                    return Err(VmError::Throw(err_obj));
+                  }
+                  ResolveExportResult::Ambiguous => {
+                    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+                      "module linking requires intrinsics to create SyntaxError objects",
+                    ))?;
+                    let message = crate::fallible_format::try_format_error_message2(
+                      "The requested module '",
+                      &entry.module_request.specifier,
+                      "' provides an ambiguous export named '",
+                      import_name,
+                      "'",
+                    )?;
+                    let err_obj =
+                      crate::error_object::new_syntax_error_object(scope, &intr, &message)?;
+                    return Err(VmError::Throw(err_obj));
+                  }
+                };
+
+                match resolution.binding_name {
+                  crate::module_record::BindingName::Namespace => {
+                    let ns = self.get_module_namespace(resolution.module, vm, scope)?;
+                    let mut init_scope = scope.reborrow();
+                    init_scope.push_root(Value::Object(ns))?;
+                    init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
+                    init_scope.heap_mut().env_initialize_binding(
+                      module_env,
+                      &entry.local_name,
+                      Value::Object(ns),
+                    )?;
+                  }
+                  crate::module_record::BindingName::Name(target_name) => {
+                    let target_env_root = self.modules[module_index(resolution.module)]
+                      .environment
+                      .ok_or(VmError::InvariantViolation(
+                        "resolved export module missing environment",
+                      ))?;
+                    let target_env = scope
+                      .heap()
+                      .get_env_root(target_env_root)
+                      .ok_or_else(|| VmError::invalid_handle())?;
+                    scope.env_create_import_binding(
+                      module_env,
+                      &entry.local_name,
+                      target_env,
+                      &target_name,
+                    )?;
+                  }
+                }
               }
             }
           }
-        }
-      }
+          Ok(())
+        })();
+      self.modules[idx].import_entries = import_entries;
+      import_bindings_result?;
 
       // Ensure `*default*` exists for `export default <expr>`.
       if has_default_export {
@@ -1708,7 +1768,15 @@ impl ModuleGraph {
       }
 
       // Instantiate local declarations (creates bindings + hoists function objects).
-      instantiate_module_decls(vm, scope, global_object, module, module_env, source, &ast.stx.body)?;
+      instantiate_module_decls(
+        vm,
+        scope,
+        global_object,
+        module,
+        module_env,
+        source,
+        &ast.stx.body,
+      )?;
       Ok(())
     })();
 
@@ -1781,7 +1849,10 @@ impl ModuleGraph {
             "module is evaluating-async but has no stored evaluation promise capability",
           ));
         };
-        let promise = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?.promise;
+        let promise = roots
+          .capability(scope.heap())
+          .ok_or_else(VmError::invalid_handle)?
+          .promise;
 
         // Keep the module graph pointer installed until the in-progress evaluation completes.
         // The async resume / dynamic-import callbacks restore the previous pointer once the module
@@ -1816,11 +1887,18 @@ impl ModuleGraph {
         .unwrap_or(module);
 
       // Ensure an evaluation promise exists for the SCC root and return it to the host.
-      let promise = self.ensure_scc_promise(&mut *vm_ctx, &mut eval_scope, host, hooks, scc_root)?;
+      let promise =
+        self.ensure_scc_promise(&mut *vm_ctx, &mut eval_scope, host, hooks, scc_root)?;
 
       // Link before evaluating. If linking fails (including the module already being in an errored
       // state), reject the evaluation promise with the thrown/cached value.
-      if let Err(err) = self.link_with_scope(&mut *vm_ctx, &mut eval_scope, global_object, realm_id, module) {
+      if let Err(err) = self.link_with_scope(
+        &mut *vm_ctx,
+        &mut eval_scope,
+        global_object,
+        realm_id,
+        module,
+      ) {
         let reason = if let Some(thrown) = err.thrown_value() {
           thrown
         } else {
@@ -1863,12 +1941,10 @@ impl ModuleGraph {
     // pointer as the "previous" value to restore. When dynamic import begins during this
     // synchronous evaluation, that value will be `self`. Overwrite it with the true outer previous
     // pointer before disarming the guard so completion restores correctly.
-    if result.is_ok()
-      && graph_guard.restore_on_drop
-      && self.module_graph_ptr_refcount > 0
-    {
+    if result.is_ok() && graph_guard.restore_on_drop && self.module_graph_ptr_refcount > 0 {
       let self_ptr: *mut ModuleGraph = self;
-      if self.module_graph_ptr_prev == Some(self_ptr) && graph_guard.prev_graph() != Some(self_ptr) {
+      if self.module_graph_ptr_prev == Some(self_ptr) && graph_guard.prev_graph() != Some(self_ptr)
+      {
         self.module_graph_ptr_prev = graph_guard.prev_graph();
       }
       graph_guard.disarm();
@@ -2092,13 +2168,15 @@ impl ModuleGraph {
       .ok_or_else(|| VmError::invalid_handle())?;
 
     if let Some(roots) = record.top_level_capability.as_ref() {
-      let cap = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?;
+      let cap = roots
+        .capability(scope.heap())
+        .ok_or_else(VmError::invalid_handle)?;
       return Ok(cap.promise);
     }
 
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "module evaluation requires intrinsics",
+    ))?;
     let cap = crate::builtins::new_promise_capability_with_host_and_hooks(
       vm,
       scope,
@@ -2128,7 +2206,9 @@ impl ModuleGraph {
     else {
       return Ok(());
     };
-    let cap = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?;
+    let cap = roots
+      .capability(scope.heap())
+      .ok_or_else(VmError::invalid_handle)?;
     let resolve = cap.resolve;
     let mut call_scope = scope.reborrow();
     call_scope.push_root(resolve)?;
@@ -2165,7 +2245,9 @@ impl ModuleGraph {
     else {
       return Ok(());
     };
-    let cap = roots.capability(scope.heap()).ok_or_else(VmError::invalid_handle)?;
+    let cap = roots
+      .capability(scope.heap())
+      .ok_or_else(VmError::invalid_handle)?;
     let reject = cap.reject;
     let mut call_scope = scope.reborrow();
     call_scope.push_roots(&[reject, reason])?;
@@ -2215,7 +2297,12 @@ impl ModuleGraph {
       _ => {}
     }
 
-    if self.scc_eval_states.get(root_idx).and_then(|s| s.as_ref()).is_some() {
+    if self
+      .scc_eval_states
+      .get(root_idx)
+      .and_then(|s| s.as_ref())
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -2407,7 +2494,9 @@ impl ModuleGraph {
               self.schedule_tla_resume(vm, scope, host, hooks, module, awaited_promise)
             {
               // Scheduling failed: reject the SCC promise.
-              self.tla_states[idx].take().map(|s| s.teardown(vm, scope.heap_mut()));
+              self.tla_states[idx]
+                .take()
+                .map(|s| s.teardown(vm, scope.heap_mut()));
 
               let reason = if let Some(thrown) = err.thrown_value() {
                 thrown
@@ -2695,7 +2784,8 @@ impl ModuleGraph {
     // pointer before disarming the guard so completion restores correctly.
     if graph_guard.restore_on_drop && self.module_graph_ptr_refcount > 0 {
       let self_ptr: *mut ModuleGraph = self;
-      if self.module_graph_ptr_prev == Some(self_ptr) && graph_guard.prev_graph() != Some(self_ptr) {
+      if self.module_graph_ptr_prev == Some(self_ptr) && graph_guard.prev_graph() != Some(self_ptr)
+      {
         self.module_graph_ptr_prev = graph_guard.prev_graph();
       }
       graph_guard.disarm();
@@ -2993,31 +3083,47 @@ impl ModuleGraph {
     let module_slot = Value::Number(module.to_raw() as f64);
     let slots = [module_slot];
 
-    let on_fulfilled =
-      scope.alloc_native_function_with_slots(on_fulfilled_call, None, on_fulfilled_name, 1, &slots)?;
-    scope.heap_mut().object_set_prototype(
-      on_fulfilled,
-      Some(intr.function_prototype()),
+    let on_fulfilled = scope.alloc_native_function_with_slots(
+      on_fulfilled_call,
+      None,
+      on_fulfilled_name,
+      1,
+      &slots,
     )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
     if let Some(global_object) = function_realm {
-      scope.heap_mut().set_function_realm(on_fulfilled, global_object)?;
+      scope
+        .heap_mut()
+        .set_function_realm(on_fulfilled, global_object)?;
     }
     if let Some(realm) = job_realm {
-      scope.heap_mut().set_function_job_realm(on_fulfilled, realm)?;
+      scope
+        .heap_mut()
+        .set_function_job_realm(on_fulfilled, realm)?;
     }
     scope.push_root(Value::Object(on_fulfilled))?;
 
-    let on_rejected =
-      scope.alloc_native_function_with_slots(on_rejected_call, None, on_rejected_name, 1, &slots)?;
-    scope.heap_mut().object_set_prototype(
-      on_rejected,
-      Some(intr.function_prototype()),
+    let on_rejected = scope.alloc_native_function_with_slots(
+      on_rejected_call,
+      None,
+      on_rejected_name,
+      1,
+      &slots,
     )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
     if let Some(global_object) = function_realm {
-      scope.heap_mut().set_function_realm(on_rejected, global_object)?;
+      scope
+        .heap_mut()
+        .set_function_realm(on_rejected, global_object)?;
     }
     if let Some(realm) = job_realm {
-      scope.heap_mut().set_function_job_realm(on_rejected, realm)?;
+      scope
+        .heap_mut()
+        .set_function_job_realm(on_rejected, realm)?;
     }
     scope.push_roots(&[Value::Object(on_rejected), awaited_promise])?;
     crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
@@ -3101,7 +3207,11 @@ fn module_id_from_native_slot(scope: &Scope<'_>, callee: GcObject) -> Result<Mod
   let slots = scope.heap().get_function_native_slots(callee)?;
   let raw = match slots.get(0).copied().unwrap_or(Value::Undefined) {
     Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => n as u64,
-    _ => return Err(VmError::InvariantViolation("module TLA callback missing module id slot")),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "module TLA callback missing module id slot",
+      ))
+    }
   };
   Ok(ModuleId::from_raw(raw))
 }
@@ -3231,9 +3341,7 @@ fn module_tla_resume_inner(
         }
       }
 
-      if let Err(err) =
-        graph.schedule_tla_resume(vm, scope, host, hooks, module, awaited_promise)
-      {
+      if let Err(err) = graph.schedule_tla_resume(vm, scope, host, hooks, module, awaited_promise) {
         // Scheduling failed: treat this as a module evaluation failure and reject the SCC's
         // evaluation promise.
         let Some(state) = graph.tla_states.get_mut(idx).and_then(|s| s.take()) else {
@@ -3488,8 +3596,9 @@ mod tests {
     // Create a pending promise to use as the awaited TLA promise.
     let awaited_promise_root = {
       let mut scope = heap.scope();
-      let cap =
-        crate::promise_ops::new_promise_capability_with_host_and_hooks(&mut vm, &mut scope, &mut host, &mut hooks)?;
+      let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+        &mut vm, &mut scope, &mut host, &mut hooks,
+      )?;
       scope.push_root(cap.promise)?;
       scope.heap_mut().add_root(cap.promise)?
     };
