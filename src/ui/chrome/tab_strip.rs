@@ -1855,6 +1855,11 @@ pub(super) fn tab_strip_ui(
   focus_ring: FocusRingStyle,
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
+
+  // Clone the egui context handle so we don't hold an `&Context` borrow of `ui` across later
+  // `&mut Ui` calls (e.g. `child_ui`), which would otherwise trip the borrow checker.
+  let ctx = ui.ctx().clone();
+  let motion_enabled = motion.enabled && ctx.style().animation_time > 0.0;
   let now = ui.input(|i| i.time);
 
   // Defensive: if the dragged tab was closed mid-drag, clear the drag state.
@@ -1875,6 +1880,14 @@ pub(super) fn tab_strip_ui(
       let exists = tabs.iter().any(|t| t.id == tab_id);
       if !exists {
         chrome.closing_tabs.remove(&tab_id);
+        continue;
+      }
+
+      if !motion_enabled {
+        // Animations disabled: treat any in-progress close animation as finished.
+        chrome.closing_tabs.remove(&tab_id);
+        close_progress.insert(tab_id, 1.0);
+        actions.push(ChromeAction::CloseTab(tab_id));
         continue;
       }
 
@@ -1921,13 +1934,6 @@ pub(super) fn tab_strip_ui(
   let active_changed = active_id != last_active_id;
   ui.ctx()
     .data_mut(|d| d.insert_temp(last_active_id_key, active_id));
-
-  // Clone the egui `Context` handle so we don't hold an immutable borrow of `ui` across later
-  // `child_ui` calls (which require `&mut Ui`).
-  let ctx = ui.ctx().clone();
-  let motion_enabled = motion.enabled && ctx.style().animation_time > 0.0;
-  let now = ui.input(|i| i.time);
-
   let snapshot_key = ui.make_persistent_id("tab_strip_layout_snapshot");
   let anim_key = ui.make_persistent_id("tab_strip_pin_anim");
 
@@ -3618,7 +3624,7 @@ pub(super) fn tab_strip_ui(
     actions.push(ChromeAction::NewTab);
   }
 
-  if any_closing_tab_animating {
+  if any_closing_tab_animating && motion_enabled {
     // Keep repainting while at least one tab is actively animating closed.
     ui.ctx().request_repaint_after(Duration::from_millis(16));
   }
