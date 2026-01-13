@@ -183,7 +183,7 @@ allows/denies.
 This tool is **macOS-only**.
 
 ```bash
-# From repo root (recommended for agent/CI-style environments)
+# From repo root (wrapper-safe; no raw `cargo`).
 bash scripts/cargo_agent.sh run --bin macos_sandbox_probe -- --mode strict
 ```
 

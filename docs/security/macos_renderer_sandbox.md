@@ -1,21 +1,129 @@
-# macOS renderer sandbox (App Sandbox entitlements)
+# macOS renderer sandboxing (Seatbelt now, App Sandbox later)
 
-When FastRender eventually ships as a macOS `.app`, we want the **renderer
-helper process** (untrusted web content) to run with **App Sandbox** enabled,
-with a deny-by-default posture:
+FastRender’s long-term multiprocess model assumes **renderer processes are untrusted** and must run
+inside an OS sandbox.
+
+On macOS we rely on two related mechanisms:
+
+- **Seatbelt** (what we use today for dev/CI and unsigned binaries): `sandbox_init(3)` /
+  `/usr/bin/sandbox-exec`
+- **App Sandbox** (future `.app` distribution): entitlement-based sandbox enforced by codesigning
+
+Canonical macOS sandbox guide (more detail + rationale): [`docs/macos_sandbox.md`](../macos_sandbox.md).
+
+Key code entrypoints:
+
+- Seatbelt profiles + `sandbox_init` wrappers: [`src/sandbox/macos.rs`](../../src/sandbox/macos.rs)
+- `/usr/bin/sandbox-exec` spawn helper: [`src/sandbox/macos_spawn.rs`](../../src/sandbox/macos_spawn.rs)
+
+---
+
+## Seatbelt basics (`sandbox_init` / `sandbox-exec`)
+
+On macOS, the kernel sandbox system is commonly referred to as **Seatbelt**. It can be applied:
+
+- in-process (`sandbox_init(3)`), or
+- at spawn time (`/usr/bin/sandbox-exec`).
+
+Why Seatbelt is the current baseline:
+
+- It does **not** require App Sandbox entitlements.
+- It does **not** require codesigning.
+- It works for unsigned local builds and CI.
+
+---
+
+## Default renderer profile (Seatbelt)
+
+FastRender’s strict baseline is the system-provided named profile:
+
+- **`pure-computation`**
+
+Repo reality detail: some macOS versions do not ship `pure-computation` (or treat it as invalid), so
+FastRender falls back to an embedded SBPL profile string. See:
+
+- `src/sandbox/macos.rs` (`apply_strict_sandbox` / `STRICT_FALLBACK_PROFILE`)
+
+There is also a renderer-friendly bring-up mode:
+
+- `MacosSandboxMode::RendererSystemFonts` (blocks network + user filesystem reads, allows limited
+  read-only access to system font/framework paths)
+
+---
+
+## Denied vs allowed surface (high level)
+
+Under `pure-computation` the renderer should be treated as:
+
+- **No network** (no socket create/bind/connect, even localhost).
+- **No filesystem** (no reads/writes, including system fonts).
+- **No process spawning** (`exec` should fail).
+
+Even strict sandboxes should still allow:
+
+- writes to inherited `stdout`/`stderr` (useful for crash/debug logs),
+- anonymous IPC primitives that do not require filesystem writes (`pipe()`, `socketpair()`), and
+- mapping inherited shared-memory file descriptors (even if `shm_open` is denied post-sandbox).
+
+For an exact IPC/shared-memory capability matrix, use `macos_sandbox_probe` (see below) or consult
+[`docs/macos_sandbox.md`](../macos_sandbox.md).
+
+---
+
+## Debugging Seatbelt denials
+
+Sandbox denials typically surface as `EPERM` / `Operation not permitted`. The authoritative signal
+is the macOS unified log (subsystem `com.apple.sandbox`).
+
+```bash
+# Replace <renderer-binary> with the renderer process name.
+log stream --style syslog --level debug --predicate \
+  'subsystem == "com.apple.sandbox" && process == "<renderer-binary>"'
+```
+
+To filter to denies:
+
+```bash
+log stream --style syslog --level debug --predicate \
+  'subsystem == "com.apple.sandbox" && eventMessage CONTAINS[c] "deny"'
+```
+
+---
+
+## Tooling + CI expectations
+
+Probe tool (macOS-only):
+
+```bash
+bash scripts/cargo_agent.sh run --bin macos_sandbox_probe -- --mode strict
+```
+
+macOS sandbox unit tests:
+
+```bash
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender sandbox::macos -- --nocapture
+```
+
+CI: GitHub Actions runs tests on **`macos-latest`** (see
+[`./.github/workflows/ci.yml`](../../.github/workflows/ci.yml)). Seatbelt tests apply the sandbox
+in a dedicated child process because it is irreversible per-process (`src/sandbox/macos.rs`).
+
+---
+
+## Future `.app` direction: App Sandbox entitlements
+
+When FastRender ships as a macOS `.app`, we want the **untrusted renderer helper process** (web
+content) to run with **App Sandbox** enabled, with a deny-by-default posture:
 
 - no direct network access
 - no direct filesystem access
-- all OS I/O brokered by the trusted browser/UI process (or a dedicated network
-  process) over IPC
+- all OS I/O brokered by the trusted browser/UI process (or a dedicated network process) over IPC
 
-This repository includes **placeholder entitlement files** for that future
-packaging step:
+This repository includes placeholder entitlement files for that future packaging step:
 
 - [`tools/macos/entitlements/browser.entitlements`](../../tools/macos/entitlements/browser.entitlements)
   - Intended for the trusted browser/UI process.
-  - **Does not enable** `com.apple.security.app-sandbox` (i.e. not sandboxed in
-    the first `.app` iteration).
+  - Does **not** enable `com.apple.security.app-sandbox` for the initial `.app` iteration.
 - [`tools/macos/entitlements/renderer.entitlements`](../../tools/macos/entitlements/renderer.entitlements)
   - Intended for the untrusted renderer helper process.
   - Enables `com.apple.security.app-sandbox`.
@@ -23,12 +131,9 @@ packaging step:
   - Reminder: App Sandbox entitlements are *additive* grants; “denied” is achieved by leaving
     entitlements out (not by writing explicit deny rules).
 
-## How these would be used (future `.app` bundling)
+### How these would be used (future `.app` bundling)
 
-On macOS, App Sandbox is enforced via **entitlements embedded in the code
-signature**. When we have a real `.app` bundle layout with separate executables,
-the build/packaging step would sign each executable with the appropriate
-entitlements, e.g.:
+On macOS, App Sandbox is enforced via entitlements embedded in the **code signature**.
 
 ```bash
 # Example paths only — the real bundle layout may differ.
@@ -44,21 +149,11 @@ codesign --force --sign "<identity>" \
 codesign -d --entitlements :- FastRender.app/Contents/MacOS/renderer
 ```
 
-## Why this is not active in dev builds yet
+### Why we can’t rely on App Sandbox for dev/CI builds
 
-Today, local development typically runs binaries produced by `cargo build` /
-`cargo run`, which are **not code-signed as `.app` bundle executables**.
-Without a signature embedding the entitlements, App Sandbox is not applied.
+App Sandbox requires **codesigning** and `.app`-style packaging. Typical development runs (and many
+CI harnesses) execute unsigned binaries, so entitlements are not available.
 
-Additionally, the current codebase is not yet structured so that the renderer
-does *zero* network/file I/O; turning on App Sandbox prematurely would break
-common development workflows (and would complicate debugging tools that rely on
-broader process permissions).
-
-For developer/CI sandbox testing on macOS, FastRender instead uses the
-**Seatbelt** sandbox interface (`sandbox_init` / `sandbox-exec`) which does not
-require entitlements or code signing; see [`docs/macos_sandbox.md`](../macos_sandbox.md).
-
-These files are therefore **preparatory**: they exist so that when `.app`
-packaging lands, we have a reviewed, deny-by-default entitlements baseline ready
-to wire into the signing step.
+Even after `.app` distribution exists, we still expect to use Seatbelt as a fine-grained,
+per-process sandbox layer for renderer isolation, because it works for unsigned binaries and can be
+tailored more narrowly than coarse app-level entitlements.

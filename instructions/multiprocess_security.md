@@ -152,7 +152,10 @@ invalid), so the implementation falls back to an embedded SBPL profile string wi
 - `(deny default)`
 - explicit denies for `file-read*`, `file-write*`, and `network*`
 
-See `src/sandbox/macos.rs` (`apply_strict_sandbox`) for details.
+See:
+- `src/sandbox/macos.rs` (`apply_strict_sandbox`) for implementation details.
+- [`docs/macos_sandbox.md`](../docs/macos_sandbox.md) for debugging tips and the `macos_sandbox_probe` tool.
+- Renderer-focused quick reference: [`docs/security/macos_renderer_sandbox.md`](../docs/security/macos_renderer_sandbox.md)
 
 App Sandbox note: when FastRender is eventually shipped as a macOS `.app`, we expect to sandbox
 the untrusted renderer helper process using **App Sandbox entitlements embedded in the code
