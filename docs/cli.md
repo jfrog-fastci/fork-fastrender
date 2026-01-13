@@ -571,6 +571,13 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Entry: `src/bin/dump_a11y.rs`
 - Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- --help`
 
+## `dump_accesskit`
+
+- Purpose: emit the AccessKit tree update produced by the **egui-based browser chrome** (OS-facing
+  accessibility).
+- Entry: `src/bin/dump_accesskit.rs`
+- Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help`
+
 ## Offline / cached captures
 
 - Use `bundle_page fetch` to save a single reproducible capture (HTML bytes, content-type + final URL, all fetched CSS/image/font subresources with HTTP metadata, and a manifest mapping original URLs to bundle paths). Bundles can be directories or `.tar` archives and are deterministic.

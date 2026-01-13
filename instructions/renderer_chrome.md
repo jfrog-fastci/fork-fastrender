@@ -156,6 +156,7 @@ Complete the transition.
 2. **Chrome CSS polish**
 3. **Platform-specific styling**
 4. **Accessibility for chrome**
+   - See: [`docs/chrome_accessibility.md`](../docs/chrome_accessibility.md)
 
 ## Technical approach
 

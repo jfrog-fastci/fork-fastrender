@@ -497,6 +497,9 @@ Scope note: the rendered page is currently an image; full document accessibility
 future project. Today, screen reader support is intended for chrome-only UI: tabs, toolbar buttons,
 address bar, and popups/menus.
 
+For a deeper architecture/debugging guide (AccessKit updates, node id stability, coordinate system
+notes, and future chrome+content composition), see [`docs/chrome_accessibility.md`](chrome_accessibility.md).
+
 Manual verification checklist:
 
 - macOS: VoiceOver can traverse toolbar controls (Back/Forward/Reload/Zoom, tab close, new tab) and
