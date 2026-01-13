@@ -11,10 +11,10 @@ use crate::iterator;
 use crate::promise_ops::promise_resolve_for_await_with_host_and_hooks;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
-  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, Heap, HostDefined,
-  ModuleGraph, ModuleId, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
+  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
+  GcSymbol, HostDefined, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
   PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule, SourceText, SourceTextModuleRecord,
-  StackFrame, ToPrimitiveHint, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  StackFrame, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, ToPrimitiveHint,
 };
 use core::cmp::Ordering;
 use diagnostics::{Diagnostic, FileId};
@@ -902,15 +902,8 @@ impl RuntimeEnv {
   fn new(heap: &mut Heap, global_object: GcObject, lexical_env: GcEnv) -> Result<Self, VmError> {
     // Root the global object and lexical environment across root registration in case it triggers
     // GC.
-    //
-    // Note: pushing the global-object root can grow `root_stack`, which may trigger a GC. Ensure
-    // `lexical_env` is treated as a root during that operation; otherwise a freshly-created
-    // environment record (not yet reachable from any other roots) could be collected before we
-    // register the persistent env root.
     let mut scope = heap.scope();
-    let values = [Value::Object(global_object)];
-    let envs = [lexical_env];
-    scope.push_roots_with_extra_roots(&values, &[], &envs)?;
+    scope.push_root(Value::Object(global_object))?;
     scope.push_env_root(lexical_env)?;
     let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
@@ -933,14 +926,9 @@ impl RuntimeEnv {
     lexical_env: GcEnv,
     var_env: GcEnv,
   ) -> Result<Self, VmError> {
-    // Root the global object and environments across root registration in case it triggers GC.
-    //
-    // See `RuntimeEnv::new` for why `lexical_env`/`var_env` must be treated as roots while growing
-    // `root_stack`.
+    // Root the global object across root registration in case it triggers GC.
     let mut scope = heap.scope();
-    let values = [Value::Object(global_object)];
-    let envs = [lexical_env, var_env];
-    scope.push_roots_with_extra_roots(&values, &[], &envs)?;
+    scope.push_root(Value::Object(global_object))?;
     scope.push_env_root(lexical_env)?;
     scope.push_env_root(var_env)?;
 
@@ -964,12 +952,9 @@ impl RuntimeEnv {
     global_object: GcObject,
     lexical_env: GcEnv,
   ) -> Result<Self, VmError> {
-    // Root the global object and lexical environment across root registration in case it triggers
-    // GC. See `RuntimeEnv::new`.
+    // Root the global object across root registration in case it triggers GC.
     let mut scope = heap.scope();
-    let values = [Value::Object(global_object)];
-    let envs = [lexical_env];
-    scope.push_roots_with_extra_roots(&values, &[], &envs)?;
+    scope.push_root(Value::Object(global_object))?;
     scope.push_env_root(lexical_env)?;
     let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
@@ -1809,11 +1794,9 @@ impl JsRuntime {
   pub fn new(vm: Vm, heap: Heap) -> Result<Self, VmError> {
     let mut vm = vm;
     let mut heap = heap;
-    // Allocate the module graph before other runtime initialization so we can deterministically
-    // simulate allocator failures for this box allocation in unit tests.
-    let mut modules = crate::fallible_alloc::box_try_new_vm(ModuleGraph::new())?;
     let realm = Realm::new(&mut vm, &mut heap)?;
     let env = RuntimeEnv::new(&mut heap, realm.global_object(), realm.global_lexical_env())?;
+    let mut modules = Box::new(ModuleGraph::new());
     modules.set_global_lexical_env(env.lexical_env());
     // Make the runtime-owned module graph available to nested ECMAScript function calls (and other
     // VM entry points that do not naturally thread an explicit `&mut ModuleGraph` parameter).
@@ -1976,14 +1959,12 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
-    if script.requires_ast_fallback {
-      // Generator / async-generator function bodies are not yet supported by the compiled (HIR)
-      // execution path.
+    if script.contains_async_generators {
+      // Async generator bodies are not yet supported by the compiled (HIR) execution path.
       //
       // Fall back to the AST interpreter path using the original `SourceText`. This ensures scripts
-      // containing `function*` or `async function*` can still execute correctly
-      // without partially executing any HIR code (which could introduce side effects before a
-      // retry).
+      // containing `async function*` can still execute correctly without partially executing any HIR
+      // code (which could introduce side effects before a retry).
       let source = script.source.clone();
       // Move the VM-owned microtask queue out so it can be passed as `hooks` while still holding
       // `&mut self`.
@@ -2087,9 +2068,9 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
-    if script.requires_ast_fallback {
-      // See `exec_compiled_script_with_host`: generator functions are not yet supported in the
-      // compiled (HIR) executor.
+    if script.contains_async_generators {
+      // See `exec_compiled_script_with_host`: async generator functions are not yet supported in
+      // the compiled (HIR) executor.
       let source = script.source.clone();
       return self.exec_script_source_with_host_and_hooks(host, hooks, source);
     }
@@ -2190,7 +2171,11 @@ impl JsRuntime {
         return Err(err);
       }
     };
-    self.exec_script_source_with_host_and_hooks(host, hooks, source)
+    self.exec_script_source_with_host_and_hooks(
+      host,
+      hooks,
+      source,
+    )
   }
 
   /// Parse and execute a classic script, using a custom host hook implementation.
@@ -2269,14 +2254,6 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    // Allocate a `ScriptId` up front so host embeddings can associate per-script metadata (e.g.
-    // referrer base URL) even if parsing fails before evaluation begins.
-    let script_id = self.vm.fresh_script_id()?;
-    let exec_ctx = crate::ExecutionContext {
-      realm: self.realm.id(),
-      script_or_module: Some(ScriptOrModule::Script(script_id)),
-    };
-
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -2304,6 +2281,12 @@ impl JsRuntime {
       source: source.name.clone(),
       line,
       col,
+    };
+
+    let script_id = self.vm.fresh_script_id()?;
+    let exec_ctx = crate::ExecutionContext {
+      realm: self.realm.id(),
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
@@ -2340,6 +2323,7 @@ impl JsRuntime {
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
             let global_this = Value::Object(global_object);
+
             if !has_await {
               let mut evaluator = Evaluator {
                 vm: &mut *vm_frame,
@@ -2355,7 +2339,9 @@ impl JsRuntime {
                 this_initialized: true,
                 this_root_idx: None,
               };
+
               evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+
               let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
               return match completion {
                 Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
@@ -2375,53 +2361,50 @@ impl JsRuntime {
               };
             }
 
-            // Async classic script execution: evaluate the statement list using the async evaluator and
-            // return a Promise representing completion.
-            let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
-              &mut *vm_frame,
-              &mut scope,
-              host,
-              &mut hooks,
-            )?;
-            let promise = cap.promise;
-            // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down
-            // their env roots on completion; classic scripts must not tear down the runtime's global
-            // env.
-            let mut env = RuntimeEnv::new_with_lexical_env(
-              scope.heap_mut(),
-              global_object,
-              self.env.lexical_env(),
-            )?;
-            env.set_source_info(source.clone(), 0, 0);
+          // Async classic script execution: evaluate the statement list using the async evaluator and
+          // return a Promise representing completion.
+          let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut scope,
+            host,
+            &mut hooks,
+          )?;
+          let promise = cap.promise;
 
-            // Capture the evaluator state after the async evaluation attempt.
-            //
-            // Some nested constructs can temporarily override runtime semantics (e.g. class
-            // definition evaluation forces strict mode; class static blocks override `this` /
-            // `new.target`) and may suspend. This state must be preserved in the async continuation
-            // so resumed execution uses the correct semantics.
-            let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value), VmError> = (|| {
-              let mut evaluator = Evaluator {
-                vm: &mut *vm_frame,
-                host,
-                hooks: &mut hooks,
-                env: &mut env,
-                strict,
-                this: global_this,
-                new_target: Value::Undefined,
-                home_object: None,
-                class_constructor: None,
-                derived_constructor: false,
-                this_initialized: true,
-                this_root_idx: None,
-              };
+      // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down their
+      // env roots on completion; classic scripts must not tear down the runtime's global env.
+      let mut env =
+        RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, self.env.lexical_env())?;
+      env.set_source_info(source.clone(), 0, 0);
 
-              evaluator.instantiate_script(&mut scope, &top.stx.body)?;
-              let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
-              Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target))
-            })();
+      // Capture the evaluator state after the async evaluation attempt.
+      //
+      // Some nested constructs can temporarily override runtime semantics (e.g. class definition
+      // evaluation forces strict mode; class static blocks override `this` / `new.target`) and may
+      // suspend. This state must be preserved in the async continuation so resumed execution uses
+      // the correct semantics.
+      let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value), VmError> = (|| {
+        let mut evaluator = Evaluator {
+          vm: &mut *vm_frame,
+          host,
+          hooks: &mut hooks,
+          env: &mut env,
+          strict,
+          this: global_this,
+          new_target: Value::Undefined,
+          home_object: None,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
+        };
 
-            match body_eval {
+        evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+        let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
+        Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target))
+      })();
+
+      match body_eval {
         Ok((
           AsyncEval::Complete(completion),
           _strict_at_suspend,
@@ -2517,8 +2500,9 @@ impl JsRuntime {
             host,
             &mut hooks,
             await_value,
-          )
-          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+          );
+          let resolve_res =
+            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -2744,14 +2728,6 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    // Allocate a `ScriptId` up front so host embeddings can associate per-script metadata (e.g.
-    // referrer base URL) even if parsing fails before evaluation begins.
-    let script_id = self.vm.fresh_script_id()?;
-    let exec_ctx = crate::ExecutionContext {
-      realm: self.realm.id(),
-      script_or_module: Some(ScriptOrModule::Script(script_id)),
-    };
-
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -2779,6 +2755,12 @@ impl JsRuntime {
       source: source.name.clone(),
       line,
       col,
+    };
+
+    let script_id = self.vm.fresh_script_id()?;
+    let exec_ctx = crate::ExecutionContext {
+      realm: self.realm.id(),
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
@@ -2981,14 +2963,10 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
-            &mut *vm_frame,
-            &mut root_scope,
-            host,
-            hooks,
-            await_value,
-          )
-          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+          let resolve_res =
+            promise_resolve_for_await_with_host_and_hooks(&mut *vm_frame, &mut root_scope, host, hooks, await_value);
+          let resolve_res =
+            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -4692,18 +4670,7 @@ impl<'a> Evaluator<'a> {
       }
     }
 
-    // Instantiate var bindings (undefined-initialized).
-    //
-    // In non-strict mode, `var_names` also includes Annex B block-level function declaration names,
-    // which require a corresponding var-environment binding.
-    if self.strict {
-      self.instantiate_var_decls(scope, stmts)?;
-    } else {
-      for name in &var_names {
-        self.tick()?;
-        self.env.declare_var(self.vm, scope, name)?;
-      }
-    }
+    self.instantiate_var_decls(scope, stmts)?;
     let lex = self.env.lexical_env;
     self.instantiate_lexical_decls_in_stmt_list(scope, lex, stmts)?;
     self.instantiate_var_scoped_function_decls_in_stmt_list(scope, stmts)?;
@@ -5156,7 +5123,7 @@ impl<'a> Evaluator<'a> {
     }
 
     for stmt in stmts {
-      self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, true, false)?;
+      self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, true)?;
     }
     Ok(())
   }
@@ -5180,24 +5147,14 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     stmt: &Stmt,
     in_stmt_list: bool,
-    in_block_stmt_list: bool,
   ) -> Result<(), VmError> {
     self.tick()?;
     match stmt {
       Stmt::FunctionDecl(decl) => {
         // In non-strict mode, Annex B allows certain block-level *ordinary* function declarations to
-        // be instantiated in the var environment.
-        //
-        // For function declarations that appear *directly* in a nested block statement list (e.g.
-        // `{ function f() {} }`), instantiating the function object here would capture the *outer*
-        // lexical environment instead of the block's lexical environment. Those declarations are
-        // instantiated at block entry by `instantiate_block_decls_in_stmt_list`.
-        //
-        // We still treat function declarations in "statement position" (e.g. `if (cond)
-        // function f() {}`) as var-scoped here, since they are not evaluated within an explicit
-        // block lexical environment in the current AST representation.
-        if in_stmt_list || (Self::is_annex_b_eligible_sloppy_function_decl(decl) && !in_block_stmt_list)
-        {
+        // be instantiated in the var environment. Non-Annex-B hoistables (generator/async) must not
+        // be treated as var-scoped when they appear in nested statement lists.
+        if in_stmt_list || Self::is_annex_b_eligible_sloppy_function_decl(decl) {
           self.instantiate_function_decl(scope, decl)
         } else {
           Ok(())
@@ -5205,7 +5162,7 @@ impl<'a> Evaluator<'a> {
       }
       Stmt::Block(block) => {
         for stmt in &block.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, false, true)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, false)?;
         }
         Ok(())
       }
@@ -5214,58 +5171,57 @@ impl<'a> Evaluator<'a> {
           scope,
           &stmt.stx.consequent.stx,
           false,
-          false,
         )?;
         if let Some(alt) = &stmt.stx.alternate {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &alt.stx, false, false)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &alt.stx, false)?;
         }
         Ok(())
       }
       Stmt::Try(stmt) => {
         for s in &stmt.stx.wrapped.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
         }
         if let Some(catch) = &stmt.stx.catch {
           for s in &catch.stx.body {
-            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
           }
         }
         if let Some(finally) = &stmt.stx.finally {
           for s in &finally.stx.body {
-            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
           }
         }
         Ok(())
       }
       Stmt::With(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false, false)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
       }
       Stmt::While(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false, false)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
       }
       Stmt::DoWhile(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false, false)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
       }
       Stmt::ForTriple(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
         }
         Ok(())
       }
       Stmt::ForIn(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
         }
         Ok(())
       }
       Stmt::ForOf(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
         }
         Ok(())
       }
       Stmt::Label(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx, false, false)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx, false)
       }
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
@@ -5274,7 +5230,7 @@ impl<'a> Evaluator<'a> {
             self.tick()?;
           }
           for s in &branch.stx.body {
-            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false, true)?;
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
           }
         }
         Ok(())
@@ -5754,7 +5710,9 @@ impl<'a> Evaluator<'a> {
       let Stmt::FunctionDecl(decl) = &*stmt.stx else {
         continue;
       };
-      self.instantiate_block_scoped_function_decl(scope, env, decl)?;
+      if self.strict || Self::is_non_annex_b_hoistable_decl(decl) {
+        self.instantiate_block_scoped_function_decl(scope, env, decl)?;
+      }
     }
     Ok(())
   }
@@ -5769,43 +5727,23 @@ impl<'a> Evaluator<'a> {
       return Err(VmError::Unimplemented("anonymous function declaration"));
     };
 
-    let has_binding = scope.heap().env_has_binding(env, &name.stx.name)?;
-    if has_binding {
-      // In non-strict mode, duplicate block-level *ordinary* function declarations are permitted
-      // (Annex B). Later declarations update the existing binding.
-      if self.strict || !Self::is_annex_b_eligible_sloppy_function_decl(decl) {
-        return Err(syntax_error(decl.loc, "Identifier has already been declared"));
-      }
-
-      // If the binding exists but is uninitialized, it must have come from a conflicting lexical
-      // declaration (`let`/`const`/`class`), which is an early error.
-      match scope
-        .heap()
-        .env_get_binding_value(env, &name.stx.name, /* strict */ false)
-      {
-        Ok(_) => {}
-        Err(VmError::Throw(Value::Null)) => {
-          return Err(syntax_error(decl.loc, "Identifier has already been declared"))
-        }
-        Err(err) => return Err(err),
-      }
-    } else {
-      scope.env_create_mutable_binding(env, &name.stx.name)?;
+    // Block-scoped functions are lexically scoped in strict mode.
+    if scope.heap().env_has_binding(env, &name.stx.name)? {
+      return Err(syntax_error(
+        decl.loc,
+        "Identifier has already been declared",
+      ));
     }
+
+    scope.env_create_mutable_binding(env, &name.stx.name)?;
 
     let func_obj = self.create_function_object_for_decl(scope, decl, &name.stx.name)?;
 
     let mut init_scope = scope.reborrow();
     init_scope.push_root(Value::Object(func_obj))?;
-    if has_binding {
-      init_scope
-        .heap_mut()
-        .env_set_mutable_binding(env, &name.stx.name, Value::Object(func_obj), /* strict */ false)?;
-    } else {
-      init_scope
-        .heap_mut()
-        .env_initialize_binding(env, &name.stx.name, Value::Object(func_obj))?;
-    }
+    init_scope
+      .heap_mut()
+      .env_initialize_binding(env, &name.stx.name, Value::Object(func_obj))?;
     Ok(())
   }
 
@@ -6502,9 +6440,7 @@ impl<'a> Evaluator<'a> {
     let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
       Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
       Stmt::ClassDecl(_) => true,
-      // Block-level function declarations are block-scoped (and must capture the block environment)
-      // in both strict mode and non-strict (Annex B) mode.
-      Stmt::FunctionDecl(_) => true,
+      Stmt::FunctionDecl(decl) => self.strict || Self::is_non_annex_b_hoistable_decl(decl),
       _ => false,
     });
     if !needs_lexical_env {
@@ -6521,57 +6457,6 @@ impl<'a> Evaluator<'a> {
 
     self.env.set_lexical_env(scope.heap_mut(), outer);
     result
-  }
-
-  fn eval_function_decl_stmt(
-    &mut self,
-    scope: &mut Scope<'_>,
-    decl: &Node<FuncDecl>,
-  ) -> Result<Completion, VmError> {
-    // Most function declarations are hoisted/instantiated during statement-list instantiation and
-    // have no runtime evaluation effect.
-    //
-    // Annex B block-level *ordinary* function declarations are special: they are instantiated in
-    // the current block's lexical environment (so they capture it), and when the declaration is
-    // evaluated it updates the corresponding var-environment binding.
-    if self.strict || !Self::is_annex_b_eligible_sloppy_function_decl(decl) {
-      return Ok(Completion::empty());
-    }
-
-    let Some(name) = &decl.stx.name else {
-      // `export default function() {}` has no binding name and is handled during module
-      // instantiation instead.
-      if decl.stx.export_default {
-        return Ok(Completion::empty());
-      }
-      return Err(VmError::Unimplemented("anonymous function declaration"));
-    };
-
-    // Only perform the Annex B var-environment update when a lexical binding for this function
-    // exists in the current lexical environment (i.e. we're evaluating a block-scoped function
-    // declaration).
-    if !scope
-      .heap()
-      .env_has_binding(self.env.lexical_env, &name.stx.name)?
-    {
-      return Ok(Completion::empty());
-    }
-
-    let f_obj = scope
-      .heap()
-      .env_get_binding_value(self.env.lexical_env, &name.stx.name, /* strict */ false)?;
-
-    let mut assign_scope = scope.reborrow();
-    assign_scope.push_root(f_obj)?;
-    self.env.set_var(
-      self.vm,
-      &mut *self.host,
-      &mut *self.hooks,
-      &mut assign_scope,
-      &name.stx.name,
-      f_obj,
-    )?;
-    Ok(Completion::empty())
   }
 
   fn eval_stmt(&mut self, scope: &mut Scope<'_>, stmt: &Node<Stmt>) -> Result<Completion, VmError> {
@@ -6635,7 +6520,7 @@ impl<'a> Evaluator<'a> {
       }
       Stmt::Label(stmt) => self.eval_label(scope, &stmt.stx, label_set),
       // Function declarations are instantiated during hoisting.
-      Stmt::FunctionDecl(decl) => self.eval_function_decl_stmt(scope, decl),
+      Stmt::FunctionDecl(_) => Ok(Completion::empty()),
       Stmt::Break(stmt) => Ok(Completion::Break(stmt.stx.label.clone(), None)),
       Stmt::Continue(stmt) => Ok(Completion::Continue(stmt.stx.label.clone(), None)),
 
@@ -7030,14 +6915,21 @@ impl<'a> Evaluator<'a> {
       len: super_root_len,
     };
 
-    // Count instance fields (including private fields) so the class constructor wrapper can
-    // preallocate its hidden native-slot storage.
+    // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
+    // native-slot storage.
     let mut instance_field_count: usize = 0;
     for member in members {
       if member.stx.static_ {
         continue;
       }
       if !matches!(&member.stx.val, ClassOrObjVal::Prop(_)) {
+        continue;
+      }
+      let is_private_field = matches!(
+        &member.stx.key,
+        ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+      );
+      if is_private_field {
         continue;
       }
       instance_field_count = instance_field_count
@@ -7087,106 +6979,109 @@ impl<'a> Evaluator<'a> {
       ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
     }
 
-    let mut ctor_length: u32 = 0;
-    let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
-      if func_node.stx.generator {
-        return Err(syntax_error(loc, "Class constructor may not be a generator"));
-      }
-
-      ctor_length = self.function_length(&func_node.stx)?;
-
-      let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
-      let rel_end = func_node
-        .loc
-        .end_u32()
-        .saturating_sub(self.env.prefix_len());
-      let span_start = self.env.base_offset().saturating_add(rel_start);
-      let span_end = self.env.base_offset().saturating_add(rel_end);
-
-      let code = self.vm.register_ecma_function(
-        self.env.source(),
-        span_start,
-        span_end,
-        EcmaFunctionKind::ClassMember,
-      )?;
-
-      // Class constructor bodies are always strict mode.
-      let is_strict = true;
-      let this_mode = if func_node.stx.arrow {
-        ThisMode::Lexical
-      } else {
-        ThisMode::Strict
-      };
-      let closure_env = Some(self.env.lexical_env);
-
-      let mut ctor_scope = scope.reborrow();
-      let name_string = ctor_scope.alloc_string("constructor")?;
-      let func_obj = ctor_scope.alloc_ecma_function(
-        code,
-        /* is_constructable */ true,
-        name_string,
-        ctor_length,
-        this_mode,
-        is_strict,
-        closure_env,
-      )?;
-
-      let intr = self
-        .vm
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-      ctor_scope
-        .heap_mut()
-        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
-      ctor_scope
-        .heap_mut()
-        .set_function_realm(func_obj, self.env.global_object())?;
-      if let Some(realm) = self.vm.current_realm() {
-        ctor_scope
-          .heap_mut()
-          .set_function_job_realm(func_obj, realm)?;
-      }
-      if let Some(script_or_module) = self.vm.get_active_script_or_module() {
-        let token = self.vm.intern_script_or_module(script_or_module)?;
-        ctor_scope
-          .heap_mut()
-          .set_function_script_or_module_token(func_obj, Some(token))?;
-      }
-      Some(func_obj)
-    } else {
-      None
-    };
-
-    let func_obj = self.create_class_constructor_object(
-      scope,
-      func_name,
-      ctor_length,
-      ctor_body_func,
-      super_value,
-      instance_field_count,
-    )?;
-
-    // ECMA-262 `NamedEvaluation` assigns inferred names to anonymous class expressions in specific
-    // syntactic positions (e.g. `{ key: class {} }`).
-    //
-    // This must happen *before* defining class elements: a class can define a `static name() {}`
-    // method which should override the constructor's initial `"name"` property. Setting the name
-    // after class evaluation would overwrite the method.
-    if func_name.is_empty() {
-      if let Some(name_key) = inferred_name {
-        let mut name_scope = scope.reborrow();
-        name_scope.push_root(Value::Object(func_obj))?;
-        match name_key {
-          PropertyKey::String(s) => {
-            name_scope.push_root(Value::String(s))?;
-          }
-          PropertyKey::Symbol(sym) => {
-            name_scope.push_root(Value::Symbol(sym))?;
-          }
+      let mut ctor_length: u32 = 0;
+      let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+        if func_node.stx.generator {
+          return Err(syntax_error(
+            loc,
+            "Class constructor may not be a generator",
+          ));
         }
-        crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
+
+        ctor_length = self.function_length(&func_node.stx)?;
+
+        let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
+        let rel_end = func_node
+          .loc
+          .end_u32()
+          .saturating_sub(self.env.prefix_len());
+        let span_start = self.env.base_offset().saturating_add(rel_start);
+        let span_end = self.env.base_offset().saturating_add(rel_end);
+
+        let code = self.vm.register_ecma_function(
+          self.env.source(),
+          span_start,
+          span_end,
+          EcmaFunctionKind::ClassMember,
+        )?;
+
+        // Class constructor bodies are always strict mode.
+        let is_strict = true;
+        let this_mode = if func_node.stx.arrow {
+          ThisMode::Lexical
+        } else {
+          ThisMode::Strict
+        };
+        let closure_env = Some(self.env.lexical_env);
+
+        let mut ctor_scope = scope.reborrow();
+        let name_string = ctor_scope.alloc_string("constructor")?;
+        let func_obj = ctor_scope.alloc_ecma_function(
+          code,
+          /* is_constructable */ true,
+          name_string,
+          ctor_length,
+          this_mode,
+          is_strict,
+          closure_env,
+        )?;
+
+        let intr = self
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        ctor_scope
+          .heap_mut()
+          .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        ctor_scope
+          .heap_mut()
+          .set_function_realm(func_obj, self.env.global_object())?;
+        if let Some(realm) = self.vm.current_realm() {
+          ctor_scope
+            .heap_mut()
+            .set_function_job_realm(func_obj, realm)?;
+        }
+        if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+          let token = self.vm.intern_script_or_module(script_or_module)?;
+          ctor_scope
+            .heap_mut()
+            .set_function_script_or_module_token(func_obj, Some(token))?;
+        }
+        Some(func_obj)
+      } else {
+        None
+      };
+
+      let func_obj = self.create_class_constructor_object(
+        scope,
+        func_name,
+        ctor_length,
+        ctor_body_func,
+        super_value,
+        instance_field_count,
+      )?;
+
+      // ECMA-262 `NamedEvaluation` assigns inferred names to anonymous class expressions in specific
+      // syntactic positions (e.g. `{ key: class {} }`).
+      //
+      // This must happen *before* defining class elements: a class can define a `static name() {}`
+      // method which should override the constructor's initial `"name"` property. Setting the name
+      // after class evaluation would overwrite the method.
+      if func_name.is_empty() {
+        if let Some(name_key) = inferred_name {
+          let mut name_scope = scope.reborrow();
+          name_scope.push_root(Value::Object(func_obj))?;
+          match name_key {
+            PropertyKey::String(s) => {
+              name_scope.push_root(Value::String(s))?;
+            }
+            PropertyKey::Symbol(sym) => {
+              name_scope.push_root(Value::Symbol(sym))?;
+            }
+          }
+          crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
+        }
       }
-    }
 
       // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
       // object so `[[Construct]]` can implement class-field initialization and derived `super()`
@@ -7754,7 +7649,10 @@ impl<'a> Evaluator<'a> {
             //
             // Private fields are handled separately so we can enforce the correct property
             // attributes (notably non-enumerable and non-configurable for private static fields).
-            if is_private_key && member.stx.static_ {
+            if is_private_key {
+              if !member.stx.static_ {
+                return Err(VmError::Unimplemented("private instance fields"));
+              }
               let PropertyKey::Symbol(sym) = key else {
                 return Err(VmError::InvariantViolation(
                   "private field key is not a symbol",
@@ -8327,7 +8225,7 @@ impl<'a> Evaluator<'a> {
             true
           }
           Stmt::ClassDecl(_) => true,
-          Stmt::FunctionDecl(_) => true,
+          Stmt::FunctionDecl(_) => self.strict,
           _ => false,
         });
         if !needs_lexical_env {
@@ -9067,7 +8965,7 @@ impl<'a> Evaluator<'a> {
     let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
       Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
       Stmt::ClassDecl(_) => true,
-      Stmt::FunctionDecl(_) => true,
+      Stmt::FunctionDecl(decl) => self.strict || Self::is_non_annex_b_hoistable_decl(decl),
       _ => false,
     });
     if !needs_lexical_env {
@@ -12696,11 +12594,7 @@ impl<'a> Evaluator<'a> {
                 OperatorName::BitwiseAnd => a.bitwise_and(b)?,
                 OperatorName::BitwiseOr => a.bitwise_or(b)?,
                 OperatorName::BitwiseXor => a.bitwise_xor(b)?,
-                _ => {
-                  return Err(VmError::InvariantViolation(
-                    "unexpected operator in bitwise BigInt binary op",
-                  ));
-                }
+                _ => unreachable!(),
               }
             };
             let out = rhs_scope.alloc_bigint(out)?;
@@ -12791,16 +12685,8 @@ impl<'a> Evaluator<'a> {
                     a.shr(shift)?
                   }
                 }
-                OperatorName::BitwiseUnsignedRightShift => {
-                  return Err(VmError::InvariantViolation(
-                    "unexpected unsigned right shift in BigInt shift op",
-                  ));
-                }
-                _ => {
-                  return Err(VmError::InvariantViolation(
-                    "unexpected operator in BigInt shift op",
-                  ));
-                }
+                OperatorName::BitwiseUnsignedRightShift => unreachable!(),
+                _ => unreachable!(),
               }
             };
             let out = rhs_scope.alloc_bigint(out)?;
@@ -12829,11 +12715,7 @@ impl<'a> Evaluator<'a> {
             OperatorName::Subtraction => Value::Number(a - b),
             OperatorName::Division => Value::Number(a / b),
             OperatorName::Remainder => Value::Number(a % b),
-            _ => {
-              return Err(VmError::InvariantViolation(
-                "unexpected operator in numeric arithmetic binary op",
-              ));
-            }
+            _ => unreachable!(),
           }),
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
             let out = {
@@ -12862,11 +12744,7 @@ impl<'a> Evaluator<'a> {
                   let (_, r) = a.div_mod_with_tick(b, &mut || self.tick())?;
                   r
                 }
-                _ => {
-                  return Err(VmError::InvariantViolation(
-                    "unexpected operator in BigInt arithmetic binary op",
-                  ));
-                }
+                _ => unreachable!(),
               }
             };
             let out = rhs_scope.alloc_bigint(out)?;
@@ -12878,11 +12756,11 @@ impl<'a> Evaluator<'a> {
             "Cannot mix BigInt and other types",
           )?),
         }
-    }
-    OperatorName::LessThan
-    | OperatorName::LessThanOrEqual
-    | OperatorName::GreaterThan
-    | OperatorName::GreaterThanOrEqual => {
+      }
+      OperatorName::LessThan
+      | OperatorName::LessThanOrEqual
+      | OperatorName::GreaterThan
+      | OperatorName::GreaterThanOrEqual => {
         let left = self.eval_expr(scope, &expr.left)?;
         // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
         let mut rhs_scope = scope.reborrow();
@@ -14139,8 +14017,7 @@ enum AsyncFrame {
     base_root: Option<RootId>,
     key_root: Option<RootId>,
   },
-  /// Continue a compound assignment (e.g. `+=`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `>>>=`)
-  /// after evaluating the RHS.
+  /// Continue an `+=` assignment after evaluating the RHS.
   AssignAddAfterRhs {
     expr: *const BinaryExpr,
     base_root: Option<RootId>,
@@ -14316,71 +14193,6 @@ pub(crate) enum GenFrame {
     left: Value,
   },
 
-  /// Continue an assignment expression after evaluating a member base expression.
-  AssignMemberAfterBase {
-    expr: *const BinaryExpr,
-    member: *const MemberExpr,
-  },
-  /// Continue an assignment expression after evaluating a computed member base expression.
-  AssignComputedMemberAfterBase {
-    expr: *const BinaryExpr,
-    member: *const ComputedMemberExpr,
-  },
-  /// Continue an assignment expression after evaluating a computed member key expression.
-  AssignComputedMemberAfterMember {
-    expr: *const BinaryExpr,
-    member: *const ComputedMemberExpr,
-    base: Value,
-  },
-  /// Continue a simple assignment after evaluating the RHS.
-  ///
-  /// For binding assignments, `base`/`key` are `None`. For property/private-name assignments, `base`
-  /// and `key` are set, where `key` is a `Value::String` or `Value::Symbol`.
-  AssignAfterRhs {
-    expr: *const BinaryExpr,
-    base: Option<Value>,
-    key: Option<Value>,
-  },
-  /// Continue a compound assignment (e.g. `+=`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `>>>=`)
-  /// after evaluating the RHS.
-  ///
-  /// `left` stores the original `GetValue` result of the reference before evaluating the RHS.
-  AssignAddAfterRhs {
-    expr: *const BinaryExpr,
-    base: Option<Value>,
-    key: Option<Value>,
-    left: Value,
-  },
-  /// Continue a `**=` assignment after evaluating the RHS.
-  ///
-  /// `left` stores the original `GetValue` result of the reference before evaluating the RHS.
-  AssignExpAfterRhs {
-    expr: *const BinaryExpr,
-    base: Option<Value>,
-    key: Option<Value>,
-    left: Value,
-  },
-
-  /// Continue an update expression after evaluating a member base expression.
-  UpdateMemberAfterBase {
-    member: *const MemberExpr,
-    delta: i8,
-    prefix: bool,
-  },
-  /// Continue an update expression after evaluating a computed member base expression.
-  UpdateComputedMemberAfterBase {
-    member: *const ComputedMemberExpr,
-    delta: i8,
-    prefix: bool,
-  },
-  /// Continue an update expression after evaluating a computed member key expression.
-  UpdateComputedMemberAfterMember {
-    member: *const ComputedMemberExpr,
-    base: Value,
-    delta: i8,
-    prefix: bool,
-  },
-
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
   CallMemberAfterBase {
@@ -14426,37 +14238,9 @@ impl Trace for GenFrame {
         tracer.trace_value(*v);
       }
       GenFrame::TryAfterFinally { pending } => pending.trace(tracer),
-      GenFrame::ComputedMemberAfterMember { base, .. }
-      | GenFrame::AssignComputedMemberAfterMember { base, .. }
-      | GenFrame::UpdateComputedMemberAfterMember { base, .. }
-      | GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::ComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
       GenFrame::BinaryAfterRight { left, .. } => tracer.trace_value(*left),
-      GenFrame::AssignAfterRhs { base, key, .. } => {
-        if let Some(v) = base {
-          tracer.trace_value(*v);
-        }
-        if let Some(v) = key {
-          tracer.trace_value(*v);
-        }
-      }
-      GenFrame::AssignAddAfterRhs { base, key, left, .. } => {
-        if let Some(v) = base {
-          tracer.trace_value(*v);
-        }
-        if let Some(v) = key {
-          tracer.trace_value(*v);
-        }
-        tracer.trace_value(*left);
-      }
-      GenFrame::AssignExpAfterRhs { base, key, left, .. } => {
-        if let Some(v) = base {
-          tracer.trace_value(*v);
-        }
-        if let Some(v) = key {
-          tracer.trace_value(*v);
-        }
-        tracer.trace_value(*left);
-      }
       GenFrame::CallArgs {
         callee, this, args, ..
       } => {
@@ -14897,9 +14681,9 @@ fn async_handle_body_result(
       res.map(|_| Value::Undefined)
     }
     Ok(AsyncBodyResult::Await {
+      kind: _,
       await_value,
       frames,
-      ..
     }) => {
       // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
       cont.frames = frames;
@@ -14917,14 +14701,9 @@ fn async_handle_body_result(
       // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
       // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
       // undefined)` is sufficient and avoids Promise species side effects.
-      let resolve_res = promise_resolve_for_await_with_host_and_hooks(
-        vm,
-        &mut await_scope,
-        host,
-        hooks,
-        await_value,
-      )
-      .map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
+      let resolve_res =
+        promise_resolve_for_await_with_host_and_hooks(vm, &mut await_scope, host, hooks, await_value);
+      let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
 
       let awaited_promise = match resolve_res {
         Ok(p) => p,
@@ -15899,7 +15678,7 @@ fn async_eval_block_stmt(
   let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(_) => true,
+    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
   });
   if !needs_lexical_env {
@@ -16002,7 +15781,7 @@ fn async_eval_catch(
       let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
         Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
         Stmt::ClassDecl(_) => true,
-        Stmt::FunctionDecl(_) => true,
+        Stmt::FunctionDecl(_) => evaluator.strict,
         _ => false,
       });
       if needs_lexical_env {
@@ -16381,9 +16160,7 @@ fn async_eval_throw_stmt(
   stmt: &Node<ThrowStmt>,
 ) -> Result<AsyncEval<Completion>, VmError> {
   match async_eval_expr(evaluator, scope, &stmt.stx.value) {
-    Ok(AsyncEval::Complete(v)) => {
-      Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v)))
-    }
+    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v))),
     Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,
@@ -17565,53 +17342,6 @@ fn async_eval_class(
       }
     }
 
-    // Create the class's private-name environment.
-    //
-    // Mirrors `Evaluator::eval_class`. All class element bodies capture the class lexical
-    // environment, so private member expressions can resolve the correct per-class symbols.
-    let mut private_names: Vec<String> = Vec::new();
-    let mut private_name_set: HashSet<&str> = HashSet::new();
-    for member in members {
-      if let ClassOrObjKey::Direct(key) = &member.stx.key {
-        if key.stx.tt == TT::PrivateMember {
-          let name = key.stx.key.as_str();
-          if private_name_set.contains(name) {
-            continue;
-          }
-          private_name_set
-            .try_reserve(1)
-            .map_err(|_| VmError::OutOfMemory)?;
-          private_name_set.insert(name);
-          private_names
-            .try_reserve(1)
-            .map_err(|_| VmError::OutOfMemory)?;
-          private_names.push(try_clone_string(name)?);
-        }
-      }
-    }
-    if !private_names.is_empty() {
-      let mut entries: Vec<crate::env::PrivateNameEntry> = Vec::new();
-      entries
-        .try_reserve_exact(private_names.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-
-      // Keep all allocated symbols rooted until the mapping is installed into the environment
-      // record, so intermediate allocations cannot collect them.
-      let mut priv_scope = scope.reborrow();
-      for name in private_names {
-        let desc = priv_scope.alloc_string(&name)?;
-        let sym = priv_scope.new_internal_symbol(Some(desc))?;
-        priv_scope.push_root(Value::Symbol(sym))?;
-        entries.push(crate::env::PrivateNameEntry {
-          name: name.into_boxed_str(),
-          sym,
-        });
-      }
-      priv_scope
-        .heap_mut()
-        .env_set_private_names(class_env, entries.into_boxed_slice())?;
-    }
-
     // Evaluate `extends` (class heritage), if present.
     let super_value = match extends {
       None => Value::Undefined,
@@ -17654,9 +17384,7 @@ fn async_eval_class(
     Ok(AsyncEval::Suspend(mut suspend)) => {
       // Preserve strict-mode semantics across the suspension; restore strictness only after the
       // class definition evaluation completes.
-      if let Err(err) =
-        async_frames_push(&mut suspend.frames, AsyncFrame::RestoreStrict { saved_strict })
-      {
+      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreStrict { saved_strict }) {
         // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
         for mut frame in suspend.frames {
           async_teardown_frame(scope.heap_mut(), &mut frame);
@@ -17718,28 +17446,6 @@ fn async_eval_class_after_super(
   let mut class_scope = scope.reborrow();
   class_scope.push_root(super_value)?;
 
-  // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
-  // native-slot storage.
-  let mut instance_field_count: usize = 0;
-  for member in members {
-    if member.stx.static_ {
-      continue;
-    }
-    if !matches!(&member.stx.val, ClassOrObjVal::Prop(_)) {
-      continue;
-    }
-    let is_private_field = matches!(
-      &member.stx.key,
-      ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
-    );
-    if is_private_field {
-      continue;
-    }
-    instance_field_count = instance_field_count
-      .checked_add(1)
-      .ok_or(VmError::OutOfMemory)?;
-  }
-
   // Find an explicit `constructor(...) { ... }` method, if present.
   let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
   for member in members {
@@ -17782,21 +17488,25 @@ fn async_eval_class_after_super(
     ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
   }
 
-  let mut ctor_length: u32 = 0;
-  let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
-    if func_node.stx.generator {
-      return Err(syntax_error(loc, "Class constructor may not be a generator"));
-    }
+    let mut ctor_length: u32 = 0;
+    let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+      if func_node.stx.generator {
+        return Err(syntax_error(
+          loc,
+          "Class constructor may not be a generator",
+        ));
+      }
 
-    ctor_length = evaluator.function_length(&func_node.stx)?;
+      ctor_length = evaluator.function_length(&func_node.stx)?;
 
-    let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
-    let rel_end = func_node
-      .loc
-      .end_u32()
-      .saturating_sub(evaluator.env.prefix_len());
-    let span_start = evaluator.env.base_offset().saturating_add(rel_start);
-    let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+      let rel_end = func_node
+        .loc
+        .end_u32()
+        .saturating_sub(evaluator.env.prefix_len());
+      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+      let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
     let code = evaluator.vm.register_ecma_function(
       evaluator.env.source(),
       span_start,
@@ -17855,7 +17565,7 @@ fn async_eval_class_after_super(
     ctor_length,
     ctor_body_func,
     super_value,
-    instance_field_count,
+    /* instance_field_count */ 0,
   )?;
 
   // Create a persistent root for the class constructor object so it remains GC-safe across `await`
@@ -17867,8 +17577,7 @@ fn async_eval_class_after_super(
   };
 
   // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
-  // object so `[[Construct]]` can implement class-field initialization and derived `super()`
-  // semantics.
+  // object so `[[Construct]]` can implement derived `super()` semantics.
   if let Some(body_func) = ctor_body_func {
     if let Err(err) = class_scope.heap_mut().set_function_data(
       body_func,
@@ -17904,38 +17613,49 @@ fn async_eval_class_after_super(
   }
 
   // Extract the prototype object created by `make_constructor`.
-  let (prototype_key, prototype_obj) = match (|| -> Result<(PropertyKey, GcObject), VmError> {
-    let mut proto_scope = class_scope.reborrow();
-    proto_scope.push_root(Value::Object(func_obj))?;
-    let prototype_key_s = proto_scope.alloc_string("prototype")?;
-    proto_scope.push_root(Value::String(prototype_key_s))?;
-    let prototype_key = PropertyKey::from_string(prototype_key_s);
-    let Some(prototype_desc) = proto_scope
-      .heap()
-      .get_own_property(func_obj, prototype_key)?
-    else {
-      return Err(VmError::InvariantViolation(
-        "class constructor missing prototype property",
-      ));
+  let (prototype_key, prototype_obj) =
+    match (|| -> Result<(PropertyKey, GcObject), VmError> {
+      let mut proto_scope = class_scope.reborrow();
+      proto_scope.push_root(Value::Object(func_obj))?;
+      let prototype_key_s = proto_scope.alloc_string("prototype")?;
+      proto_scope.push_root(Value::String(prototype_key_s))?;
+      let prototype_key = PropertyKey::from_string(prototype_key_s);
+      let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)? else {
+        return Err(VmError::InvariantViolation(
+          "class constructor missing prototype property",
+        ));
+      };
+      let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not a data property",
+        ));
+      };
+      let Value::Object(prototype_obj) = value else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not an object",
+        ));
+      };
+      Ok((prototype_key, prototype_obj))
+    })() {
+      Ok(v) => v,
+      Err(e) => {
+        class_scope.heap_mut().remove_root(func_root);
+        return Err(e);
+      }
     };
-    let PropertyKind::Data { value, .. } = prototype_desc.kind else {
-      return Err(VmError::InvariantViolation(
-        "class constructor prototype property is not a data property",
-      ));
-    };
-    let Value::Object(prototype_obj) = value else {
-      return Err(VmError::InvariantViolation(
-        "class constructor prototype property is not an object",
-      ));
-    };
-    Ok((prototype_key, prototype_obj))
-  })() {
-    Ok(v) => v,
-    Err(e) => {
+
+  // Class constructor bodies (the hidden function object invoked via `[[Construct]]`) use the
+  // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against
+  // `super.prototype`.
+  if let Some(body_func) = ctor_body_func {
+    if let Err(err) = class_scope
+      .heap_mut()
+      .set_function_home_object(body_func, Some(prototype_obj))
+    {
       class_scope.heap_mut().remove_root(func_root);
-      return Err(e);
+      return Err(err);
     }
-  };
+  }
 
   // Per ECMAScript, class constructors have a non-writable `prototype` property.
   let patch_res = (|| -> Result<(), VmError> {
@@ -17980,7 +17700,7 @@ fn async_eval_class_after_super(
       Value::Null => class_scope.heap_mut().object_set_prototype(prototype_obj, None),
       Value::Object(super_ctor) => {
         let proto_parent: Option<GcObject> = {
-          // `Get(superCtor, \"prototype\")` (Proxy-aware / accessor-aware).
+          // `Get(superCtor, "prototype")` (Proxy-aware / accessor-aware).
           let mut proto_scope = class_scope.reborrow();
           proto_scope.push_root(Value::Object(super_ctor))?;
           let proto_key_s = proto_scope.alloc_string("prototype")?;
@@ -18023,22 +17743,9 @@ fn async_eval_class_after_super(
     return Err(err);
   }
 
-  // Class constructor bodies use the prototype object as their `[[HomeObject]]` so `super.prop`
-  // can resolve against `super.prototype`.
-  if let Some(body_func) = ctor_body_func {
-    if let Err(err) = class_scope
-      .heap_mut()
-      .set_function_home_object(body_func, Some(prototype_obj))
-    {
-      class_scope.heap_mut().remove_root(func_root);
-      return Err(err);
-    }
-  }
-
   // Define prototype and static methods.
   async_eval_class_members_from(evaluator, &mut class_scope, members, 0, func_root)
 }
-
 
 fn async_eval_class_members_from(
   evaluator: &mut Evaluator<'_>,
@@ -19022,7 +18729,7 @@ fn async_eval_for_body(
   let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(_) => true,
+    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
   });
   if !needs_lexical_env {
@@ -21410,9 +21117,7 @@ fn async_eval_expr_chain(
             Ok(AsyncEval::Suspend(suspend))
           }
         },
-        _ => Err(VmError::InvariantViolation(
-          "unexpected unary operator in async await/yield evaluation",
-        )),
+        _ => unreachable!(),
       }
     }
     Expr::Unary(unary) if unary.stx.operator == OperatorName::New => {
@@ -24454,11 +24159,7 @@ fn async_apply_binary_operator(
             OperatorName::BitwiseAnd => a & b,
             OperatorName::BitwiseOr => a | b,
             OperatorName::BitwiseXor => a ^ b,
-            _ => {
-              return Err(VmError::InvariantViolation(
-                "unexpected operator in bitwise int32 binary op",
-              ));
-            }
+            _ => unreachable!(),
           };
           Ok(Value::Number(out as f64))
         }
@@ -24470,9 +24171,7 @@ fn async_apply_binary_operator(
               OperatorName::BitwiseAnd => a.bitwise_and(b),
               OperatorName::BitwiseOr => a.bitwise_or(b),
               OperatorName::BitwiseXor => a.bitwise_xor(b),
-              _ => Err(VmError::InvariantViolation(
-                "unexpected operator in bitwise BigInt binary op",
-              )),
+              _ => unreachable!(),
             }
           }
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -24512,9 +24211,7 @@ fn async_apply_binary_operator(
               let a = to_uint32(a);
               Ok(Value::Number((a >> shift) as f64))
             }
-            _ => Err(VmError::InvariantViolation(
-              "unexpected operator in bitwise shift numeric op",
-            )),
+            _ => unreachable!(),
           }
         }
         (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
@@ -24560,12 +24257,8 @@ fn async_apply_binary_operator(
                   a.shr(shift)
                 }
               }
-              OperatorName::BitwiseUnsignedRightShift => Err(VmError::InvariantViolation(
-                "unexpected unsigned right shift in BigInt shift op",
-              )),
-              _ => Err(VmError::InvariantViolation(
-                "unexpected operator in BigInt shift op",
-              )),
+              OperatorName::BitwiseUnsignedRightShift => unreachable!(),
+              _ => unreachable!(),
             }
           }
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -24592,11 +24285,7 @@ fn async_apply_binary_operator(
           OperatorName::Subtraction => Value::Number(a - b),
           OperatorName::Division => Value::Number(a / b),
           OperatorName::Remainder => Value::Number(a % b),
-          _ => {
-            return Err(VmError::InvariantViolation(
-              "unexpected operator in numeric arithmetic binary op",
-            ));
-          }
+          _ => unreachable!(),
         }),
         (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
           let out = {
@@ -24621,9 +24310,7 @@ fn async_apply_binary_operator(
                 let (_, r) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
                 Ok(r)
               }
-              _ => Err(VmError::InvariantViolation(
-                "unexpected operator in BigInt arithmetic binary op",
-              )),
+              _ => unreachable!(),
             }
           }
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -24707,7 +24394,12 @@ fn async_apply_binary_operator(
       Ok(Value::Bool(ok))
     }
     // Assignment operators are handled separately (they require reference semantics).
-    op if op.is_assignment() => Err(VmError::InvariantViolation(
+    OperatorName::Assignment
+    | OperatorName::AssignmentAddition
+    | OperatorName::AssignmentSubtraction
+    | OperatorName::AssignmentMultiplication
+    | OperatorName::AssignmentDivision
+    | OperatorName::AssignmentRemainder => Err(VmError::InvariantViolation(
       "internal error: assignment operator in async_apply_binary_operator",
     )),
     _ => Err(VmError::Unimplemented("binary operator")),
@@ -24881,22 +24573,10 @@ fn async_call_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let reference = if member.right.starts_with('#') {
-      let sym = key_scope
-        .heap()
-        .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
-        .ok_or(VmError::InvariantViolation("unresolved private name"))?;
-      Reference::Private {
-        base,
-        sym,
-        name: &member.right,
-      }
-    } else {
-      let key_s = key_scope.alloc_string(&member.right)?;
-      Reference::Property {
-        base,
-        key: PropertyKey::from_string(key_s),
-      }
+    let key_s = key_scope.alloc_string(&member.right)?;
+    let reference = Reference::Property {
+      base,
+      key: PropertyKey::from_string(key_s),
     };
     evaluator
       .get_value_from_reference(&mut key_scope, &reference)
@@ -25550,23 +25230,21 @@ fn async_resume_from_frames(
       },
 
       AsyncFrame::YieldStarAfterOperand => match state {
-        AsyncState::Expr(Ok(iterable)) => {
-          match async_yield_star_begin(evaluator, scope, iterable) {
-            Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
-            Ok(AsyncEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
-              return Ok(AsyncBodyResult::Await {
-                kind: suspend.kind,
-                await_value: suspend.await_value,
-                frames: suspend.frames,
-              });
-            }
-            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-              state = AsyncState::Expr(Err(err))
-            }
-            Err(err) => return Err(err),
+        AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
+          Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+          Ok(AsyncEval::Suspend(mut suspend)) => {
+            suspend.frames.append(&mut frames);
+            return Ok(AsyncBodyResult::Await {
+              kind: suspend.kind,
+              await_value: suspend.await_value,
+              frames: suspend.frames,
+            });
           }
-        }
+          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+            state = AsyncState::Expr(Err(err))
+          }
+          Err(err) => return Err(err),
+        },
         AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
@@ -26135,7 +25813,7 @@ fn async_resume_from_frames(
                 Err(err) => return Err(err),
               };
 
-                  match async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value) {
+              match async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
@@ -28090,13 +27768,7 @@ fn async_resume_from_frames(
                       }
                       _ => unreachable!(),
                     };
-                    async_apply_binary_operator(
-                      evaluator,
-                      &mut compound_scope,
-                      shift_op,
-                      left,
-                      right,
-                    )?
+                    async_apply_binary_operator(evaluator, &mut compound_scope, shift_op, left, right)?
                   }
                   _ => {
                     return Err(VmError::InvariantViolation(
@@ -30847,7 +30519,7 @@ fn gen_eval_block_stmt(
   let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(_) => true,
+    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
   });
   if !needs_lexical_env {
@@ -30918,7 +30590,7 @@ fn gen_eval_catch(
       let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
         Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
         Stmt::ClassDecl(_) => true,
-        Stmt::FunctionDecl(_) => true,
+        Stmt::FunctionDecl(_) => evaluator.strict,
         _ => false,
       });
       if needs_lexical_env {
@@ -30977,11 +30649,7 @@ fn gen_try_after_wrapped(
     if let Some(catch) = &stmt.catch {
       let (thrown_value, thrown_stack) = match result {
         Completion::Throw(thrown) => (thrown.value, thrown.stack),
-        _ => {
-          return Err(VmError::InvariantViolation(
-            "expected Throw completion for catch clause",
-          ));
-        }
+        _ => unreachable!(),
       };
       crate::error_object::attach_stack_property_for_throw(scope, thrown_value, &thrown_stack);
       match gen_eval_catch(evaluator, scope, &catch.stx, thrown_value)? {
@@ -31511,7 +31179,7 @@ fn gen_eval_for_body(
   let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(_) => true,
+    Stmt::FunctionDecl(_) => evaluator.strict,
     _ => false,
   });
   if !needs_lexical_env {
@@ -32062,14 +31730,6 @@ fn gen_eval_expr(
         }
       }
     }
-    Expr::Unary(unary)
-      if matches!(
-        unary.stx.operator,
-        OperatorName::PrefixIncrement | OperatorName::PrefixDecrement
-      ) =>
-    {
-      gen_eval_update_expression(evaluator, scope, &unary.stx.argument, unary.stx.operator)
-    }
     // For now, defer to the async-style continuation evaluator for expression forms that can nest
     // yield within larger expressions.
     Expr::Unary(unary) => match gen_eval_expr(evaluator, scope, &unary.stx.argument)? {
@@ -32098,14 +31758,6 @@ fn gen_eval_expr(
         Ok(GenEval::Suspend(suspend))
       }
     },
-    Expr::UnaryPostfix(unary)
-      if matches!(
-        unary.stx.operator,
-        OperatorName::PostfixIncrement | OperatorName::PostfixDecrement
-      ) =>
-    {
-      gen_eval_update_expression(evaluator, scope, &unary.stx.argument, unary.stx.operator)
-    }
     Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
@@ -32173,16 +31825,6 @@ fn gen_eval_expr(
         Ok(GenEval::Suspend(suspend))
       }
     },
-    Expr::Binary(binary)
-      if matches!(
-        binary.stx.operator,
-        OperatorName::Assignment
-          | OperatorName::AssignmentAddition
-          | OperatorName::AssignmentExponentiation
-      ) =>
-    {
-      gen_eval_assignment_expr(evaluator, scope, &binary.stx)
-    }
     Expr::Binary(binary) => match gen_eval_expr(evaluator, scope, &binary.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
@@ -32459,14 +32101,6 @@ fn gen_binary_after_left(
   left: Value,
 ) -> Result<GenEval<Completion>, VmError> {
   match expr.operator {
-    OperatorName::Comma => {
-      // Spec: `a, b` evaluates `a` (discarding its value) and then evaluates `b`, returning `b`.
-      //
-      // Generator continuation semantics: `a` has already been evaluated before entering this
-      // function (possibly yielding). The comma operator does not need to preserve the `a` value
-      // across yields, so we can directly evaluate the RHS and forward its completion.
-      gen_eval_expr(evaluator, scope, &expr.right)
-    }
     OperatorName::LogicalAnd => {
       if !to_boolean(scope.heap(), left)? {
         return Ok(GenEval::Complete(Completion::normal(left)));
@@ -32511,644 +32145,10 @@ fn gen_binary_after_left(
         Ok(GenEval::Suspend(suspend))
       }
     },
-    OperatorName::Comma => {
-      let _ = left;
-      gen_eval_expr(evaluator, scope, &expr.right)
-    }
     _ => Err(VmError::Unimplemented("yield in binary operator")),
   }
 }
 
-fn gen_apply_update_to_reference(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  reference: &Reference<'_>,
-  delta: i8,
-  prefix: bool,
-) -> Result<Value, VmError> {
-  let mut update_scope = scope.reborrow();
-  evaluator.root_reference(&mut update_scope, reference)?;
-
-  let old_value = evaluator.get_value_from_reference(&mut update_scope, reference)?;
-  update_scope.push_root(old_value)?;
-
-  let old_numeric = evaluator.to_numeric(&mut update_scope, old_value)?;
-  let delta_bigint = JsBigInt::from_i128(delta as i128)?;
-
-  let (old_out, new_value) = match old_numeric {
-    NumericValue::Number(n) => {
-      let new_n = n + f64::from(delta);
-      (Value::Number(n), Value::Number(new_n))
-    }
-    NumericValue::BigInt(b) => {
-      update_scope.push_root(Value::BigInt(b))?;
-      let bi = update_scope.heap().get_bigint(b)?;
-      let out = bi.add(&delta_bigint)?;
-      let out = update_scope.alloc_bigint(out)?;
-      (Value::BigInt(b), Value::BigInt(out))
-    }
-  };
-
-  update_scope.push_root(new_value)?;
-  evaluator.put_value_to_reference(&mut update_scope, reference, new_value)?;
-
-  if prefix {
-    Ok(new_value)
-  } else {
-    Ok(old_out)
-  }
-}
-
-fn gen_eval_update_expression(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  argument: &Node<Expr>,
-  operator: OperatorName,
-) -> Result<GenEval<Completion>, VmError> {
-  let (delta, prefix) = match operator {
-    OperatorName::PrefixIncrement => (1, true),
-    OperatorName::PrefixDecrement => (-1, true),
-    OperatorName::PostfixIncrement => (1, false),
-    OperatorName::PostfixDecrement => (-1, false),
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "generator update evaluator called for non-update operator",
-      ))
-    }
-  };
-
-  match &*argument.stx {
-    Expr::Id(id) => {
-      let reference = Reference::Binding(&id.stx.name);
-      let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
-      Ok(GenEval::Complete(Completion::normal(value)))
-    }
-    Expr::IdPat(id) => {
-      let reference = Reference::Binding(&id.stx.name);
-      let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
-      Ok(GenEval::Complete(Completion::normal(value)))
-    }
-    Expr::Member(member) => {
-      let member = &*member.stx;
-      if member.optional_chaining {
-        return Err(VmError::InvariantViolation(
-          "optional chaining used in update target",
-        ));
-      }
-
-      match gen_eval_expr(evaluator, scope, &member.left)? {
-        GenEval::Complete(c) => match c {
-          Completion::Normal(v) => {
-            let base = v.unwrap_or(Value::Undefined);
-            let reference = gen_reference_from_member(evaluator, scope, member, base)?;
-            let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
-            Ok(GenEval::Complete(Completion::normal(value)))
-          }
-          abrupt => Ok(GenEval::Complete(abrupt)),
-        },
-        GenEval::Suspend(mut suspend) => {
-          gen_frames_push(
-            &mut suspend.frames,
-            GenFrame::UpdateMemberAfterBase {
-              member: member as *const MemberExpr,
-              delta,
-              prefix,
-            },
-          )?;
-          Ok(GenEval::Suspend(suspend))
-        }
-      }
-    }
-    Expr::ComputedMember(member) => {
-      let member = &*member.stx;
-      if member.optional_chaining {
-        return Err(VmError::InvariantViolation(
-          "optional chaining used in update target",
-        ));
-      }
-
-      match gen_eval_expr(evaluator, scope, &member.object)? {
-        GenEval::Complete(c) => match c {
-          Completion::Normal(v) => {
-            gen_update_computed_member_after_base(evaluator, scope, member, v.unwrap_or(Value::Undefined), delta, prefix)
-          }
-          abrupt => Ok(GenEval::Complete(abrupt)),
-        },
-        GenEval::Suspend(mut suspend) => {
-          gen_frames_push(
-            &mut suspend.frames,
-            GenFrame::UpdateComputedMemberAfterBase {
-              member: member as *const ComputedMemberExpr,
-              delta,
-              prefix,
-            },
-          )?;
-          Ok(GenEval::Suspend(suspend))
-        }
-      }
-    }
-    _ => Err(VmError::Unimplemented("expression is not a reference")),
-  }
-}
-
-fn gen_update_computed_member_after_base(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  member: &ComputedMemberExpr,
-  base: Value,
-  delta: i8,
-  prefix: bool,
-) -> Result<GenEval<Completion>, VmError> {
-  let mut member_scope = scope.reborrow();
-  member_scope.push_root(base)?;
-
-  match gen_eval_expr(evaluator, &mut member_scope, &member.member)? {
-    GenEval::Complete(c) => match c {
-      Completion::Normal(v) => {
-        gen_update_computed_member_after_member(evaluator, &mut member_scope, member, base, v.unwrap_or(Value::Undefined), delta, prefix)
-      }
-      abrupt => Ok(GenEval::Complete(abrupt)),
-    },
-    GenEval::Suspend(mut suspend) => {
-      drop(member_scope);
-      // Root the base value so it survives until the next yield boundary.
-      scope.push_root(base)?;
-      gen_frames_push(
-        &mut suspend.frames,
-        GenFrame::UpdateComputedMemberAfterMember {
-          member: member as *const ComputedMemberExpr,
-          base,
-          delta,
-          prefix,
-        },
-      )?;
-      Ok(GenEval::Suspend(suspend))
-    }
-  }
-}
-
-fn gen_update_computed_member_after_member(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  _member: &ComputedMemberExpr,
-  base: Value,
-  member_value: Value,
-  delta: i8,
-  prefix: bool,
-) -> Result<GenEval<Completion>, VmError> {
-  let mut key_scope = scope.reborrow();
-  key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-
-  if is_nullish(base) {
-    return Err(throw_type_error(
-      evaluator.vm,
-      &mut key_scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  }
-
-  let reference = Reference::Property { base, key };
-  let value = gen_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)?;
-  Ok(GenEval::Complete(Completion::normal(value)))
-}
-
-fn gen_eval_assignment_expr(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  expr: &BinaryExpr,
-) -> Result<GenEval<Completion>, VmError> {
-  match expr.operator {
-    OperatorName::Assignment
-    | OperatorName::AssignmentAddition
-    | OperatorName::AssignmentExponentiation => {}
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "generator assignment evaluator called for non-assignment operator",
-      ))
-    }
-  }
-
-  // Destructuring assignment with yield in the RHS is not yet supported in the generator
-  // continuation path.
-  if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
-    return Err(VmError::Unimplemented(
-      "yield in destructuring assignment expression",
-    ));
-  }
-
-  match &*expr.left.stx {
-    Expr::Id(id) => gen_eval_assignment_apply_reference(
-      evaluator,
-      scope,
-      expr,
-      Reference::Binding(&id.stx.name),
-      None,
-      None,
-    ),
-    Expr::IdPat(id) => gen_eval_assignment_apply_reference(
-      evaluator,
-      scope,
-      expr,
-      Reference::Binding(&id.stx.name),
-      None,
-      None,
-    ),
-    Expr::Member(member) => gen_eval_assignment_to_member(evaluator, scope, expr, &member.stx),
-    Expr::ComputedMember(member) => {
-      gen_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
-    }
-    _ => Err(VmError::Unimplemented("expression is not a reference")),
-  }
-}
-
-fn gen_eval_assignment_to_member(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  expr: &BinaryExpr,
-  member: &MemberExpr,
-) -> Result<GenEval<Completion>, VmError> {
-  if member.optional_chaining {
-    return Err(VmError::InvariantViolation(
-      "optional chaining used in assignment target",
-    ));
-  }
-
-  match gen_eval_expr(evaluator, scope, &member.left)? {
-    GenEval::Complete(c) => match c {
-      Completion::Normal(v) => gen_eval_assignment_to_member_after_base(
-        evaluator,
-        scope,
-        expr,
-        member,
-        v.unwrap_or(Value::Undefined),
-      ),
-      abrupt => Ok(GenEval::Complete(abrupt)),
-    },
-    GenEval::Suspend(mut suspend) => {
-      gen_frames_push(
-        &mut suspend.frames,
-        GenFrame::AssignMemberAfterBase {
-          expr: expr as *const BinaryExpr,
-          member: member as *const MemberExpr,
-        },
-      )?;
-      Ok(GenEval::Suspend(suspend))
-    }
-  }
-}
-
-fn gen_eval_assignment_to_member_after_base(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  expr: &BinaryExpr,
-  member: &MemberExpr,
-  base: Value,
-) -> Result<GenEval<Completion>, VmError> {
-  if is_nullish(base) {
-    return Err(throw_type_error(
-      evaluator.vm,
-      scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  }
-
-  let (reference, key_value) = if member.right.starts_with('#') {
-    let sym = scope
-      .heap()
-      .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
-      .ok_or(VmError::InvariantViolation("unresolved private name"))?;
-    (
-      Reference::Private {
-        base,
-        sym,
-        name: &member.right,
-      },
-      Value::Symbol(sym),
-    )
-  } else {
-    let mut key_scope = scope.reborrow();
-    key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&member.right)?;
-    (
-      Reference::Property {
-        base,
-        key: PropertyKey::from_string(key_s),
-      },
-      Value::String(key_s),
-    )
-  };
-
-  gen_eval_assignment_apply_reference(
-    evaluator,
-    scope,
-    expr,
-    reference,
-    Some(base),
-    Some(key_value),
-  )
-}
-
-fn gen_eval_assignment_to_computed_member(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  expr: &BinaryExpr,
-  member: &ComputedMemberExpr,
-) -> Result<GenEval<Completion>, VmError> {
-  if member.optional_chaining {
-    return Err(VmError::InvariantViolation(
-      "optional chaining used in assignment target",
-    ));
-  }
-
-  match gen_eval_expr(evaluator, scope, &member.object)? {
-    GenEval::Complete(c) => match c {
-      Completion::Normal(v) => gen_eval_assignment_to_computed_member_after_base(
-        evaluator,
-        scope,
-        expr,
-        member,
-        v.unwrap_or(Value::Undefined),
-      ),
-      abrupt => Ok(GenEval::Complete(abrupt)),
-    },
-    GenEval::Suspend(mut suspend) => {
-      gen_frames_push(
-        &mut suspend.frames,
-        GenFrame::AssignComputedMemberAfterBase {
-          expr: expr as *const BinaryExpr,
-          member: member as *const ComputedMemberExpr,
-        },
-      )?;
-      Ok(GenEval::Suspend(suspend))
-    }
-  }
-}
-
-fn gen_eval_assignment_to_computed_member_after_base(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  expr: &BinaryExpr,
-  member: &ComputedMemberExpr,
-  base: Value,
-) -> Result<GenEval<Completion>, VmError> {
-  let mut member_scope = scope.reborrow();
-  member_scope.push_root(base)?;
-
-  match gen_eval_expr(evaluator, &mut member_scope, &member.member)? {
-    GenEval::Complete(c) => match c {
-      Completion::Normal(v) => gen_eval_assignment_to_computed_member_after_member(
-        evaluator,
-        &mut member_scope,
-        expr,
-        member,
-        base,
-        v.unwrap_or(Value::Undefined),
-      ),
-      abrupt => Ok(GenEval::Complete(abrupt)),
-    },
-    GenEval::Suspend(mut suspend) => {
-      drop(member_scope);
-      // Root the base value so it survives until the next yield boundary.
-      scope.push_root(base)?;
-      gen_frames_push(
-        &mut suspend.frames,
-        GenFrame::AssignComputedMemberAfterMember {
-          expr: expr as *const BinaryExpr,
-          member: member as *const ComputedMemberExpr,
-          base,
-        },
-      )?;
-      Ok(GenEval::Suspend(suspend))
-    }
-  }
-}
-
-fn gen_eval_assignment_to_computed_member_after_member(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  expr: &BinaryExpr,
-  _member: &ComputedMemberExpr,
-  base: Value,
-  member_value: Value,
-) -> Result<GenEval<Completion>, VmError> {
-  let mut key_scope = scope.reborrow();
-  key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-  if is_nullish(base) {
-    return Err(throw_type_error(
-      evaluator.vm,
-      &mut key_scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  }
-
-  let reference = Reference::Property { base, key };
-  let key_value = match key {
-    PropertyKey::String(s) => Value::String(s),
-    PropertyKey::Symbol(s) => Value::Symbol(s),
-  };
-
-  gen_eval_assignment_apply_reference(
-    evaluator,
-    &mut key_scope,
-    expr,
-    reference,
-    Some(base),
-    Some(key_value),
-  )
-}
-
-fn gen_eval_assignment_apply_reference(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  expr: &BinaryExpr,
-  reference: Reference<'_>,
-  base: Option<Value>,
-  key: Option<Value>,
-) -> Result<GenEval<Completion>, VmError> {
-  match expr.operator {
-    OperatorName::Assignment => {
-      let mut rhs_scope = scope.reborrow();
-      evaluator.root_reference(&mut rhs_scope, &reference)?;
-
-      match gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)? {
-        GenEval::Complete(c) => match c {
-          Completion::Normal(v) => {
-            let value = v.unwrap_or(Value::Undefined);
-            rhs_scope.push_root(value)?;
-            evaluator.maybe_set_anonymous_function_name_for_assignment(
-              &mut rhs_scope,
-              &reference,
-              value,
-            )?;
-            evaluator.put_value_to_reference(&mut rhs_scope, &reference, value)?;
-            Ok(GenEval::Complete(Completion::normal(value)))
-          }
-          abrupt => Ok(GenEval::Complete(abrupt)),
-        },
-        GenEval::Suspend(mut suspend) => {
-          drop(rhs_scope);
-          // Root the assignment target across the yield boundary.
-          if let (Some(base), Some(key)) = (base, key) {
-            scope.push_roots(&[base, key])?;
-            gen_frames_push(
-              &mut suspend.frames,
-              GenFrame::AssignAfterRhs {
-                expr: expr as *const BinaryExpr,
-                base: Some(base),
-                key: Some(key),
-              },
-            )?;
-          } else {
-            gen_frames_push(
-              &mut suspend.frames,
-              GenFrame::AssignAfterRhs {
-                expr: expr as *const BinaryExpr,
-                base: None,
-                key: None,
-              },
-            )?;
-          }
-          Ok(GenEval::Suspend(suspend))
-        }
-      }
-    }
-    OperatorName::AssignmentAddition => {
-      let mut op_scope = scope.reborrow();
-      evaluator.root_reference(&mut op_scope, &reference)?;
-
-      let left = evaluator.get_value_from_reference(&mut op_scope, &reference)?;
-      op_scope.push_root(left)?;
-
-      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
-        GenEval::Complete(c) => match c {
-          Completion::Normal(v) => {
-            let right = v.unwrap_or(Value::Undefined);
-            let mut add_scope = op_scope.reborrow();
-            add_scope.push_root(right)?;
-            let value = evaluator.addition_operator(&mut add_scope, left, right)?;
-            add_scope.push_root(value)?;
-            evaluator.put_value_to_reference(&mut add_scope, &reference, value)?;
-            Ok(GenEval::Complete(Completion::normal(value)))
-          }
-          abrupt => Ok(GenEval::Complete(abrupt)),
-        },
-        GenEval::Suspend(mut suspend) => {
-          drop(op_scope);
-          // Root the assignment target + left operand across the yield boundary.
-          let mut roots: Vec<Value> = Vec::new();
-          roots.try_reserve_exact(3).map_err(|_| VmError::OutOfMemory)?;
-          if let (Some(base), Some(key)) = (base.as_ref(), key.as_ref()) {
-            roots.push(*base);
-            roots.push(*key);
-          }
-          roots.push(left);
-          scope.push_roots(&roots)?;
-
-          gen_frames_push(
-            &mut suspend.frames,
-            GenFrame::AssignAddAfterRhs {
-              expr: expr as *const BinaryExpr,
-              base,
-              key,
-              left,
-            },
-          )?;
-          Ok(GenEval::Suspend(suspend))
-        }
-      }
-    }
-    OperatorName::AssignmentExponentiation => {
-      let mut op_scope = scope.reborrow();
-      evaluator.root_reference(&mut op_scope, &reference)?;
-
-      let left = evaluator.get_value_from_reference(&mut op_scope, &reference)?;
-      op_scope.push_root(left)?;
-
-      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
-        GenEval::Complete(c) => match c {
-          Completion::Normal(v) => {
-            let right = v.unwrap_or(Value::Undefined);
-            let mut exp_scope = op_scope.reborrow();
-            exp_scope.push_root(right)?;
-            let value = evaluator.exponentiation_operator(&mut exp_scope, left, right)?;
-            exp_scope.push_root(value)?;
-            evaluator.put_value_to_reference(&mut exp_scope, &reference, value)?;
-            Ok(GenEval::Complete(Completion::normal(value)))
-          }
-          abrupt => Ok(GenEval::Complete(abrupt)),
-        },
-        GenEval::Suspend(mut suspend) => {
-          drop(op_scope);
-          // Root the assignment target + left operand across the yield boundary.
-          let mut roots: Vec<Value> = Vec::new();
-          roots.try_reserve_exact(3).map_err(|_| VmError::OutOfMemory)?;
-          if let (Some(base), Some(key)) = (base.as_ref(), key.as_ref()) {
-            roots.push(*base);
-            roots.push(*key);
-          }
-          roots.push(left);
-          scope.push_roots(&roots)?;
-
-          gen_frames_push(
-            &mut suspend.frames,
-            GenFrame::AssignExpAfterRhs {
-              expr: expr as *const BinaryExpr,
-              base,
-              key,
-              left,
-            },
-          )?;
-          Ok(GenEval::Suspend(suspend))
-        }
-      }
-    }
-    _ => Err(VmError::InvariantViolation(
-      "generator assignment apply called for unsupported operator",
-    )),
-  }
-}
-
-fn gen_reference_from_member<'a>(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  member: &'a MemberExpr,
-  base: Value,
-) -> Result<Reference<'a>, VmError> {
-  if member.optional_chaining {
-    return Err(VmError::InvariantViolation(
-      "optional chaining used in reference position",
-    ));
-  }
-  if is_nullish(base) {
-    return Err(throw_type_error(
-      evaluator.vm,
-      scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  }
-
-  if member.right.starts_with('#') {
-    let sym = scope
-      .heap()
-      .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
-      .ok_or(VmError::InvariantViolation("unresolved private name"))?;
-    Ok(Reference::Private {
-      base,
-      sym,
-      name: &member.right,
-    })
-  } else {
-    let mut key_scope = scope.reborrow();
-    key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&member.right)?;
-    Ok(Reference::Property {
-      base,
-      key: PropertyKey::from_string(key_s),
-    })
-  }
-}
 fn gen_eval_call(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -34047,342 +33047,6 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::AssignMemberAfterBase { expr, member } => match state {
-        Completion::Normal(v) => {
-          let expr = unsafe { &*expr };
-          let member = unsafe { &*member };
-          match gen_eval_assignment_to_member_after_base(
-            evaluator,
-            scope,
-            expr,
-            member,
-            v.unwrap_or(Value::Undefined),
-          ) {
-            Ok(GenEval::Complete(c)) => state = c,
-            Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
-              return Ok(GenEval::Suspend(suspend));
-            }
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::AssignComputedMemberAfterBase { expr, member } => match state {
-        Completion::Normal(v) => {
-          let expr = unsafe { &*expr };
-          let member = unsafe { &*member };
-          match gen_eval_assignment_to_computed_member_after_base(
-            evaluator,
-            scope,
-            expr,
-            member,
-            v.unwrap_or(Value::Undefined),
-          ) {
-            Ok(GenEval::Complete(c)) => state = c,
-            Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
-              return Ok(GenEval::Suspend(suspend));
-            }
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::AssignComputedMemberAfterMember { expr, member, base } => match state {
-        Completion::Normal(v) => {
-          let expr = unsafe { &*expr };
-          let member = unsafe { &*member };
-          match gen_eval_assignment_to_computed_member_after_member(
-            evaluator,
-            scope,
-            expr,
-            member,
-            base,
-            v.unwrap_or(Value::Undefined),
-          ) {
-            Ok(GenEval::Complete(c)) => state = c,
-            Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
-              return Ok(GenEval::Suspend(suspend));
-            }
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::AssignAfterRhs { expr, base, key } => match state {
-        Completion::Normal(v) => {
-          let expr = unsafe { &*expr };
-          let value = v.unwrap_or(Value::Undefined);
-
-          let reference = match (base, key) {
-            (None, None) => match &*expr.left.stx {
-              Expr::Id(id) => Reference::Binding(&id.stx.name),
-              Expr::IdPat(id) => Reference::Binding(&id.stx.name),
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "AssignAfterRhs used for non-binding LHS without base/key",
-                ))
-              }
-            },
-            (Some(base), Some(key_value)) => match key_value {
-              Value::String(s) => Reference::Property {
-                base,
-                key: PropertyKey::from_string(s),
-              },
-              Value::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
-                let name = match &*expr.left.stx {
-                  Expr::Member(member) => member.stx.right.as_str(),
-                  _ => "",
-                };
-                Reference::Private { base, sym, name }
-              }
-              Value::Symbol(sym) => Reference::Property {
-                base,
-                key: PropertyKey::from_symbol(sym),
-              },
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "assignment key should be a string or symbol",
-                ))
-              }
-            },
-            _ => {
-              return Err(VmError::InvariantViolation(
-                "AssignAfterRhs has mismatched base/key values",
-              ))
-            }
-          };
-
-          let mut put_scope = scope.reborrow();
-          evaluator.root_reference(&mut put_scope, &reference)?;
-          put_scope.push_root(value)?;
-          if let Err(err) = evaluator.maybe_set_anonymous_function_name_for_assignment(
-            &mut put_scope,
-            &reference,
-            value,
-          ) {
-            state = gen_error_to_completion(evaluator, &mut put_scope, err)?;
-          } else {
-            match evaluator.put_value_to_reference(&mut put_scope, &reference, value) {
-              Ok(()) => state = Completion::normal(value),
-              Err(err) => state = gen_error_to_completion(evaluator, &mut put_scope, err)?,
-            }
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::AssignAddAfterRhs {
-        expr,
-        base,
-        key,
-        left,
-      } => match state {
-        Completion::Normal(v) => {
-          let expr = unsafe { &*expr };
-          let right = v.unwrap_or(Value::Undefined);
-
-          let reference = match (base, key) {
-            (None, None) => match &*expr.left.stx {
-              Expr::Id(id) => Reference::Binding(&id.stx.name),
-              Expr::IdPat(id) => Reference::Binding(&id.stx.name),
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "AssignAddAfterRhs used for non-binding LHS without base/key",
-                ))
-              }
-            },
-            (Some(base), Some(key_value)) => match key_value {
-              Value::String(s) => Reference::Property {
-                base,
-                key: PropertyKey::from_string(s),
-              },
-              Value::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
-                let name = match &*expr.left.stx {
-                  Expr::Member(member) => member.stx.right.as_str(),
-                  _ => "",
-                };
-                Reference::Private { base, sym, name }
-              }
-              Value::Symbol(sym) => Reference::Property {
-                base,
-                key: PropertyKey::from_symbol(sym),
-              },
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "assignment key should be a string or symbol",
-                ))
-              }
-            },
-            _ => {
-              return Err(VmError::InvariantViolation(
-                "AssignAddAfterRhs has mismatched base/key values",
-              ))
-            }
-          };
-
-          let mut op_scope = scope.reborrow();
-          evaluator.root_reference(&mut op_scope, &reference)?;
-          op_scope.push_roots(&[left, right])?;
-          match evaluator.addition_operator(&mut op_scope, left, right) {
-            Ok(value) => {
-              op_scope.push_root(value)?;
-              match evaluator.put_value_to_reference(&mut op_scope, &reference, value) {
-                Ok(()) => state = Completion::normal(value),
-                Err(err) => state = gen_error_to_completion(evaluator, &mut op_scope, err)?,
-              }
-            }
-            Err(err) => state = gen_error_to_completion(evaluator, &mut op_scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::AssignExpAfterRhs {
-        expr,
-        base,
-        key,
-        left,
-      } => match state {
-        Completion::Normal(v) => {
-          let expr = unsafe { &*expr };
-          let right = v.unwrap_or(Value::Undefined);
-
-          let reference = match (base, key) {
-            (None, None) => match &*expr.left.stx {
-              Expr::Id(id) => Reference::Binding(&id.stx.name),
-              Expr::IdPat(id) => Reference::Binding(&id.stx.name),
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "AssignExpAfterRhs used for non-binding LHS without base/key",
-                ))
-              }
-            },
-            (Some(base), Some(key_value)) => match key_value {
-              Value::String(s) => Reference::Property {
-                base,
-                key: PropertyKey::from_string(s),
-              },
-              Value::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
-                let name = match &*expr.left.stx {
-                  Expr::Member(member) => member.stx.right.as_str(),
-                  _ => "",
-                };
-                Reference::Private { base, sym, name }
-              }
-              Value::Symbol(sym) => Reference::Property {
-                base,
-                key: PropertyKey::from_symbol(sym),
-              },
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "assignment key should be a string or symbol",
-                ))
-              }
-            },
-            _ => {
-              return Err(VmError::InvariantViolation(
-                "AssignExpAfterRhs has mismatched base/key values",
-              ))
-            }
-          };
-
-          let mut op_scope = scope.reborrow();
-          evaluator.root_reference(&mut op_scope, &reference)?;
-          op_scope.push_roots(&[left, right])?;
-          match evaluator.exponentiation_operator(&mut op_scope, left, right) {
-            Ok(value) => {
-              op_scope.push_root(value)?;
-              match evaluator.put_value_to_reference(&mut op_scope, &reference, value) {
-                Ok(()) => state = Completion::normal(value),
-                Err(err) => state = gen_error_to_completion(evaluator, &mut op_scope, err)?,
-              }
-            }
-            Err(err) => state = gen_error_to_completion(evaluator, &mut op_scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::UpdateMemberAfterBase {
-        member,
-        delta,
-        prefix,
-      } => match state {
-        Completion::Normal(v) => {
-          let member = unsafe { &*member };
-          let base = v.unwrap_or(Value::Undefined);
-          match gen_reference_from_member(evaluator, scope, member, base) {
-            Ok(reference) => match gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix) {
-              Ok(v) => state = Completion::normal(v),
-              Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-            },
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::UpdateComputedMemberAfterBase {
-        member,
-        delta,
-        prefix,
-      } => match state {
-        Completion::Normal(v) => {
-          let member = unsafe { &*member };
-          match gen_update_computed_member_after_base(
-            evaluator,
-            scope,
-            member,
-            v.unwrap_or(Value::Undefined),
-            delta,
-            prefix,
-          ) {
-            Ok(GenEval::Complete(c)) => state = c,
-            Ok(GenEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
-              return Ok(GenEval::Suspend(suspend));
-            }
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::UpdateComputedMemberAfterMember {
-        member,
-        base,
-        delta,
-        prefix,
-      } => match state {
-        Completion::Normal(v) => {
-          let member = unsafe { &*member };
-          match gen_update_computed_member_after_member(
-            evaluator,
-            scope,
-            member,
-            base,
-            v.unwrap_or(Value::Undefined),
-            delta,
-            prefix,
-          ) {
-            Ok(GenEval::Complete(c)) => state = c,
-            Ok(GenEval::Suspend(_)) => {
-              return Err(VmError::InvariantViolation(
-                "UpdateComputedMemberAfterMember should not suspend",
-              ))
-            }
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
       GenFrame::CallAfterCallee { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
@@ -34820,27 +33484,8 @@ fn gen_root_values_for_continuation(
         }
       }
       GenFrame::ComputedMemberAfterMember { base, .. }
-      | GenFrame::AssignComputedMemberAfterMember { base, .. }
-      | GenFrame::UpdateComputedMemberAfterMember { base, .. }
       | GenFrame::CallComputedMemberAfterMember { base, .. } => values.push(*base),
       GenFrame::BinaryAfterRight { left, .. } => values.push(*left),
-      GenFrame::AssignAfterRhs { base, key, .. } => {
-        if let Some(base) = base {
-          values.push(*base);
-        }
-        if let Some(key) = key {
-          values.push(*key);
-        }
-      }
-      GenFrame::AssignAddAfterRhs { base, key, left, .. } => {
-        if let Some(base) = base {
-          values.push(*base);
-        }
-        if let Some(key) = key {
-          values.push(*key);
-        }
-        values.push(*left);
-      }
       GenFrame::CallArgs {
         callee, this, args, ..
       } => {
@@ -35327,8 +33972,9 @@ pub(crate) fn run_ecma_function(
           &mut *evaluator.host,
           &mut *evaluator.hooks,
           await_value,
-        )
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
+        );
+        let resolve_res =
+          resolve_res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
 
         let awaited_promise = match resolve_res {
           Ok(p) => p,
@@ -35862,9 +34508,7 @@ pub(crate) fn start_module_tla_evaluation(
         return match next {
           AsyncBodyResult::CompleteOk(_) => Ok(ModuleTlaStepResult::Completed),
           AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
-          AsyncBodyResult::Await { .. } => Err(VmError::InvariantViolation(
-            "unexpected AsyncBodyResult::Await in non-await module TLA branch",
-          )),
+          AsyncBodyResult::Await { .. } => unreachable!(),
         };
       };
 
@@ -36264,9 +34908,7 @@ pub(crate) fn run_module_async_start(
     });
     cont
       .as_mut()
-      .ok_or(VmError::InvariantViolation(
-        "module async continuation missing after creation",
-      ))?
+      .expect("just inserted")
       .env
       .set_source_info(source.clone(), 0, 0);
 
@@ -36281,9 +34923,7 @@ pub(crate) fn run_module_async_start(
       let mut vm_frame = vm.enter_frame(frame)?;
 
       let async_eval = {
-        let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
-          "module async continuation missing",
-        ))?;
+        let cont = cont.as_mut().expect("module async continuation missing");
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
           host,
@@ -36306,40 +34946,50 @@ pub(crate) fn run_module_async_start(
       };
 
       match async_eval {
-        (AsyncEval::Complete(completion), _this_at_suspend, _new_target_at_suspend) => match completion {
-          Completion::Normal(_) => {
-            // Completed without suspension: immediately tear down the continuation (it owns the
-            // module env roots).
-            let cont = cont.take().ok_or(VmError::InvariantViolation(
-              "module async continuation missing",
-            ))?;
-            module_async_teardown_continuation(scope, cont);
-            Ok(ModuleAsyncStep::Completed)
+        (AsyncEval::Complete(completion), _this_at_suspend, _new_target_at_suspend) => {
+          match completion {
+            Completion::Normal(_) => {
+              // Completed without suspension: immediately tear down the continuation (it owns the
+              // module env roots).
+              let cont = cont.take().expect("module async continuation missing");
+              module_async_teardown_continuation(scope, cont);
+              Ok(ModuleAsyncStep::Completed)
+            }
+            Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+              value: thrown.value,
+              stack: thrown.stack,
+            }),
+            Completion::Return(_) => Err(VmError::InvariantViolation(
+              "module evaluation produced Return completion (early errors should prevent this)",
+            )),
+            Completion::Break(..) => Err(VmError::InvariantViolation(
+              "module evaluation produced Break completion (early errors should prevent this)",
+            )),
+            Completion::Continue(..) => Err(VmError::InvariantViolation(
+              "module evaluation produced Continue completion (early errors should prevent this)",
+            )),
           }
-          Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
-            value: thrown.value,
-            stack: thrown.stack,
-          }),
-          Completion::Return(_) => Err(VmError::InvariantViolation(
-            "module evaluation produced Return completion (early errors should prevent this)",
-          )),
-          Completion::Break(..) => Err(VmError::InvariantViolation(
-            "module evaluation produced Break completion (early errors should prevent this)",
-          )),
-          Completion::Continue(..) => Err(VmError::InvariantViolation(
-            "module evaluation produced Continue completion (early errors should prevent this)",
-          )),
-        },
+        }
         (AsyncEval::Suspend(mut suspend), this_at_suspend, new_target_at_suspend) => {
           async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)?;
-          {
-            let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
-              "module async continuation missing",
-            ))?;
-            scope.heap_mut().set_root(cont.this_root, this_at_suspend);
-            scope.heap_mut().set_root(cont.new_target_root, new_target_at_suspend);
-            cont.frames = suspend.frames;
-          }
+          scope.heap_mut().set_root(
+            cont
+              .as_ref()
+              .expect("module async continuation missing")
+              .this_root,
+            this_at_suspend,
+          );
+          scope.heap_mut().set_root(
+            cont
+              .as_ref()
+              .expect("module async continuation missing")
+              .new_target_root,
+            new_target_at_suspend,
+          );
+          cont
+            .as_mut()
+            .expect("module async continuation missing")
+            .frames = suspend.frames;
 
           // `Await` uses `? PromiseResolve(%Promise%, value)`.
           let mut await_scope = scope.reborrow();
@@ -36354,16 +35004,12 @@ pub(crate) fn run_module_async_start(
           .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?;
           await_scope.push_root(awaited_promise)?;
           let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
-          {
-            let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
-              "module async continuation missing",
-            ))?;
-            cont.awaited_promise_root = Some(awaited_root);
-          }
+          cont
+            .as_mut()
+            .expect("module async continuation missing")
+            .awaited_promise_root = Some(awaited_root);
 
-          let continuation = cont.take().ok_or(VmError::InvariantViolation(
-            "module async continuation missing",
-          ))?;
+          let continuation = cont.take().expect("module async continuation missing");
           Ok(ModuleAsyncStep::Await {
             promise: awaited_promise,
             continuation,
@@ -36420,7 +35066,7 @@ pub(crate) fn run_module_async_resume(
 
   let source = cont
     .as_ref()
-    .ok_or(VmError::InvariantViolation("module async continuation missing"))?
+    .expect("module async continuation missing")
     .env
     .source()
     .clone();
@@ -36436,9 +35082,7 @@ pub(crate) fn run_module_async_resume(
     let mut vm_frame = vm.enter_frame(frame)?;
 
     let body_result = {
-      let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
-        "module async continuation missing",
-      ))?;
+      let cont = cont.as_mut().expect("module async continuation missing");
       let this = scope
         .heap()
         .get_root(cont.this_root)
@@ -36479,22 +35123,16 @@ pub(crate) fn run_module_async_resume(
 
     match body_result {
       AsyncBodyResult::CompleteOk(_) => {
-        let cont = cont.take().ok_or(VmError::InvariantViolation(
-          "module async continuation missing",
-        ))?;
+        let cont = cont.take().expect("module async continuation missing");
         module_async_teardown_continuation(scope, cont);
         Ok(ModuleAsyncStep::Completed)
       }
-      AsyncBodyResult::CompleteThrow(reason) => {
-        Err(VmError::Throw(reason))
-      }
+      AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
       AsyncBodyResult::Await { await_value, frames, .. } => {
-        {
-          let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
-            "module async continuation missing",
-          ))?;
-          cont.frames = frames;
-        }
+        cont
+          .as_mut()
+          .expect("module async continuation missing")
+          .frames = frames;
 
         let mut await_scope = scope.reborrow();
         await_scope.push_root(await_value)?;
@@ -36508,16 +35146,12 @@ pub(crate) fn run_module_async_resume(
         .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?;
         await_scope.push_root(awaited_promise)?;
         let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
-        {
-          let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
-            "module async continuation missing",
-          ))?;
-          cont.awaited_promise_root = Some(awaited_root);
-        }
+        cont
+          .as_mut()
+          .expect("module async continuation missing")
+          .awaited_promise_root = Some(awaited_root);
 
-        let continuation = cont.take().ok_or(VmError::InvariantViolation(
-          "module async continuation missing",
-        ))?;
+        let continuation = cont.take().expect("module async continuation missing");
         Ok(ModuleAsyncStep::Await {
           promise: awaited_promise,
           continuation,
@@ -36676,24 +35310,7 @@ fn strict_equal(heap: &Heap, a: Value, b: Value) -> Result<bool, VmError> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::test_alloc::FailNextMatchingAllocGuard;
   use crate::{HeapLimits, VmOptions};
-  use std::alloc::Layout;
-
-  #[test]
-  fn jsruntime_new_module_graph_alloc_failure_surfaces_out_of_memory() {
-    let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-
-    let layout = Layout::new::<ModuleGraph>();
-    let _guard = FailNextMatchingAllocGuard::new(layout.size(), layout.align());
-
-    let err = match JsRuntime::new(vm, heap) {
-      Ok(_) => panic!("expected JsRuntime::new to fail with OOM"),
-      Err(err) => err,
-    };
-    assert!(matches!(err, VmError::OutOfMemory));
-  }
 
   fn assert_module_instantiate_syntax_error(stmts: Vec<Node<Stmt>>) -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
