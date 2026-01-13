@@ -15819,6 +15819,16 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           ctx.request_repaint();
         }
 
+        // If the chrome document contains time-based effects (CSS animations/transitions), drive
+        // its timeline via real-time sampling. This mirrors the worker tick pipeline used for page
+        // rendering.
+        if doc.wants_ticks() {
+          // `tick(None)` enables real-time animation sampling and returns true only when the clock
+          // advanced since the last paint. We still call `render_if_needed()` unconditionally below
+          // so DOM/state changes continue to repaint even when the clock is idle.
+          let _ = doc.tick(None);
+        }
+
         match doc.render_if_needed() {
           Ok(Some(pixmap)) => {
             if let Some(tex) = self.chrome_frame_texture.as_mut() {
@@ -15832,6 +15842,12 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           Err(err) => {
             eprintln!("renderer-chrome render failed: {err}");
           }
+        }
+
+        // Keep egui repainting at ~60Hz while the chrome document has time-based effects so it can
+        // advance animations smoothly.
+        if doc.wants_ticks() {
+          ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
         if let Some(tex) = self.chrome_frame_texture.as_ref() {

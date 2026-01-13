@@ -106,6 +106,41 @@ impl ChromeFrameDocument {
     self.doc.render_if_needed()
   }
 
+  /// Returns `true` when the most recently prepared fragment tree contains any time-based effects
+  /// (currently CSS animations/transitions) that require periodic ticking.
+  pub fn wants_ticks(&self) -> bool {
+    self.doc.prepared().is_some_and(|prepared| {
+      let tree = prepared.fragment_tree();
+      !tree.keyframes.is_empty() || tree.transition_state.is_some()
+    })
+  }
+
+  /// Advance the chrome document's animation timeline.
+  ///
+  /// This mirrors the UI↔worker tick protocol used by the page renderer:
+  /// - When `now_ms` is `Some(t)`, CSS animations/transitions are sampled at `t` milliseconds since
+  ///   load by calling [`BrowserDocumentDom2::set_animation_time_ms`]. This only invalidates paint,
+  ///   so the next render can repaint from cached layout artifacts.
+  /// - When `now_ms` is `None`, real-time animation sampling is enabled and callers should only
+  ///   repaint when [`BrowserDocumentDom2::needs_animation_frame`] reports that the animation clock
+  ///   has advanced.
+  ///
+  /// Returns `true` when callers should render a new frame.
+  pub fn tick(&mut self, now_ms: Option<f32>) -> bool {
+    match now_ms {
+      Some(ms) => {
+        self.doc.set_animation_time_ms(ms);
+        true
+      }
+      None => {
+        // Ensure explicit timelines are cleared so real-time sampling is active.
+        self.doc.set_animation_time(None);
+        self.doc.set_realtime_animations_enabled(true);
+        self.doc.needs_animation_frame()
+      }
+    }
+  }
+
   /// True when a pointer-down on a tab is currently active (candidate or active drag).
   pub fn has_active_drag(&self) -> bool {
     self.drag.is_some()
@@ -372,6 +407,16 @@ mod tests {
   use super::*;
   use crate::ui::BrowserTabState;
   use crate::FontConfig;
+  use std::collections::hash_map::DefaultHasher;
+  use std::hash::{Hash, Hasher};
+
+  fn pixmap_hash(pixmap: &crate::Pixmap) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    pixmap.width().hash(&mut hasher);
+    pixmap.height().hash(&mut hasher);
+    pixmap.data().hash(&mut hasher);
+    hasher.finish()
+  }
 
   #[test]
   fn chrome_frame_drag_emits_reorder_event() {
@@ -415,6 +460,71 @@ mod tests {
       )),
       "expected drag to emit reorder output, got: {outputs:?}"
     );
+  }
+
+  #[test]
+  fn chrome_frame_wants_ticks_and_tick_advances_css_keyframes_animation() -> Result<()> {
+    let _lock = crate::testing::global_test_lock();
+
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()?;
+
+    let mut chrome = ChromeFrameDocument::new_with_renderer(renderer, (32, 32), 1.0)?;
+
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #box {
+        width: 32px;
+        height: 32px;
+        background: rgb(255, 0, 0);
+        animation: bg 1000ms linear infinite;
+      }
+      @keyframes bg {
+        from { background: rgb(255, 0, 0); }
+        to   { background: rgb(0, 0, 255); }
+      }
+    </style>
+  </head>
+  <body><div id="box"></div></body>
+</html>"#;
+
+    let options = chrome.doc.options().clone();
+    chrome.doc.reset_with_html(html, options)?;
+
+    assert!(
+      !chrome.wants_ticks(),
+      "expected wants_ticks to be false before first render (no prepared fragment tree)"
+    );
+
+    let _ = chrome.render_if_needed()?;
+    assert!(
+      chrome.wants_ticks(),
+      "expected wants_ticks to be true after first render for document containing @keyframes"
+    );
+
+    assert!(chrome.tick(Some(0.0)), "tick(Some) should request a repaint");
+    let first = chrome
+      .render_if_needed()?
+      .expect("expected repaint after tick(Some(0.0))");
+    let first_hash = pixmap_hash(&first);
+
+    assert!(chrome.tick(Some(500.0)), "tick(Some) should request a repaint");
+    let second = chrome
+      .render_if_needed()?
+      .expect("expected repaint after tick(Some(500.0))");
+    let second_hash = pixmap_hash(&second);
+
+    assert_ne!(
+      first_hash, second_hash,
+      "expected keyframes animation sampling to change rendered output between two times"
+    );
+
+    Ok(())
   }
 
   #[test]
