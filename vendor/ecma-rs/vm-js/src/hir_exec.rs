@@ -2377,11 +2377,12 @@ impl<'vm> HirEvaluator<'vm> {
         let mut update_scope = scope.reborrow();
         // Root the original base across `ToObject`, key allocation, `[[Get]]` and `[[Set]]`.
         update_scope.push_root(base)?;
-        let obj = update_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
-        update_scope.push_root(Value::Object(obj))?;
 
         let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
         root_property_key(&mut update_scope, key)?;
+
+        let obj = update_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+        update_scope.push_root(Value::Object(obj))?;
 
         let receiver = base;
         let old_value = update_scope.get_with_host_and_hooks(
@@ -3074,11 +3075,12 @@ impl<'vm> HirEvaluator<'vm> {
             // Root base across `ToObject`, key evaluation, `[[Get]]` and `[[Set]]`. Compound
             // assignment evaluates the property reference once and then performs both a get and set.
             scope.push_root(base)?;
-            let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
-            scope.push_root(Value::Object(obj))?;
 
             let key = self.eval_object_key(&mut scope, body, &member.property)?;
             root_property_key(&mut scope, key)?;
+
+            let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+            scope.push_root(Value::Object(obj))?;
             let receiver = base;
 
             let left = scope.get_with_host_and_hooks(
@@ -3371,11 +3373,11 @@ impl<'vm> HirEvaluator<'vm> {
     // allocates / triggers GC.
     scope.push_root(base)?;
 
-    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
-    scope.push_root(Value::Object(obj))?;
-
     let key = self.eval_object_key(&mut scope, body, &member.property)?;
     root_property_key(&mut scope, key)?;
+
+    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+    scope.push_root(Value::Object(obj))?;
     // Spec: `GetV` uses the original base value as the receiver (`this` value) for `[[Get]]`.
     let receiver = base;
 
@@ -3396,11 +3398,11 @@ impl<'vm> HirEvaluator<'vm> {
     // accessors/proxy traps and allocate).
     scope.push_roots(&[base, value])?;
 
-    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
-    scope.push_root(Value::Object(obj))?;
-
     let key = self.eval_object_key(&mut scope, body, &member.property)?;
     root_property_key(&mut scope, key)?;
+
+    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+    scope.push_root(Value::Object(obj))?;
 
     // Spec: `PutValue` uses the original base value as the receiver (`this` value) for `[[Set]]`.
     let receiver = base;
@@ -3585,10 +3587,11 @@ impl<'vm> HirEvaluator<'vm> {
         // triggers GC.
         scope.push_root(base)?;
 
-        let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
-        scope.push_root(Value::Object(obj))?;
         let key = self.eval_object_key(&mut scope, body, &member.property)?;
         root_property_key(&mut scope, key)?;
+
+        let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+        scope.push_root(Value::Object(obj))?;
 
         // Property access (`[[Get]]`) uses the original base value as the receiver.
         let receiver = base;

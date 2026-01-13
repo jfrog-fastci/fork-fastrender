@@ -466,6 +466,48 @@ fn compiled_member_assignment_to_primitive_throws_in_strict_mode() -> Result<(),
   Ok(())
 }
 
+#[test]
+fn compiled_computed_member_key_evaluates_before_nullish_base_error() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // In `null[expr]`, `expr` is evaluated (and ToPropertyKey is applied) before the `null` base is
+  // coerced via `ToObject` and throws a TypeError.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      try { null[(ok = 1, 'x')] } catch(e) {}
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_computed_member_assignment_key_evaluates_before_nullish_base_error() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      try { null[(ok = 1, 'x')] = 2; } catch(e) {}
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
 fn proxy_get_trap(
   _vm: &mut Vm,
   _scope: &mut vm_js::Scope<'_>,
