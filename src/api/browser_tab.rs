@@ -5444,6 +5444,20 @@ impl BrowserTab {
     Ok(true)
   }
 
+  /// Drive the tab's HTML-like event loop until it becomes idle (or a run limit is hit).
+  ///
+  /// This drains:
+  /// - queued tasks and their post-task microtask checkpoints,
+  /// - queued microtasks,
+  /// - timers that are already due at the current event-loop time (time is *not* advanced).
+  ///
+  /// This intentionally does **not**:
+  /// - render (call [`BrowserTab::render_if_needed`] / [`BrowserTab::render_frame`] yourself, or use
+  ///   [`BrowserTab::tick_frame`] / [`BrowserTab::run_until_stable`]),
+  /// - run `requestAnimationFrame` callbacks (rAF runs on the frame schedule, not as normal tasks).
+  ///
+  /// For the intended long-lived interactive embedding loop (`tick_frame` + `next_wake_time`), see
+  /// [`docs/live_rendering_loop.md`](../../docs/live_rendering_loop.md).
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     let trace = self.trace.clone();
     let diagnostics = self.diagnostics.clone();
@@ -5486,6 +5500,24 @@ impl BrowserTab {
       .set_queue_limits(options.event_loop_queue_limits);
   }
 
+  /// Drive tasks + `requestAnimationFrame` + rendering until the tab reaches a quiescent state.
+  ///
+  /// This is a deterministic convergence helper intended for "load then screenshot" workflows and
+  /// for tests. It does **not** sleep in real time; instead it repeats a bounded "frame" loop until
+  /// no further work remains.
+  ///
+  /// Each iteration:
+  ///
+  /// 1. drains tasks/microtasks/timers until idle (bounded by `RunLimits`),
+  /// 2. runs one `requestAnimationFrame` turn (if callbacks are queued),
+  /// 3. runs the microtask checkpoint after rAF callbacks,
+  /// 4. renders if needed.
+  ///
+  /// The outer loop is bounded by `max_frames`; if callbacks keep re-queueing work the method will
+  /// stop with [`RunUntilStableStopReason::MaxFrames`].
+  ///
+  /// For interactive/live use, prefer driving [`BrowserTab::tick_frame`] repeatedly and sleeping
+  /// until the next wake-up time; see [`docs/live_rendering_loop.md`](../../docs/live_rendering_loop.md).
   pub fn run_until_stable(&mut self, max_frames: usize) -> Result<RunUntilStableOutcome> {
     self.run_until_stable_with_run_limits(
       self.host.js_execution_options.event_loop_run_limits,
@@ -5621,6 +5653,21 @@ impl BrowserTab {
 
   /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
   /// rendered frame when the document becomes dirty.
+  ///
+  /// This is the intended primitive for interactive/live embedding: call it repeatedly, present
+  /// any returned `Pixmap`, and then sleep until the next wake-up time.
+  ///
+  /// - If microtasks are pending, this performs a "microtask checkpoint" only (no tasks).
+  /// - Otherwise it runs exactly one task turn (one task + post-task microtask checkpoint).
+  /// - It then commits any pending navigation and renders if needed.
+  ///
+  /// Returns `Some(Pixmap)` when a new frame was produced, or `None` when no rendering invalidation
+  /// occurred.
+  ///
+  /// Note: `requestAnimationFrame` callbacks are queued separately from tasks/microtasks.
+  /// `run_event_loop_until_idle` will never run rAF callbacks; `run_until_stable` will. `tick_frame`
+  /// is expected to integrate rAF on a frame schedule as the live-rendering loop API evolves; see
+  /// [`docs/live_rendering_loop.md`](../../docs/live_rendering_loop.md).
   pub fn tick_frame(&mut self) -> Result<Option<Pixmap>> {
     {
       // Ensure dynamically inserted scripts are discovered even if the event loop is currently
