@@ -101,6 +101,11 @@ pub struct GlobalHistoryStore {
   pub entries: Vec<GlobalHistoryEntry>,
   #[serde(skip)]
   capacity: usize,
+  /// Monotonic revision counter incremented on every mutation of `entries`.
+  ///
+  /// This allows UI layers to cheaply detect whether cached search results are still valid.
+  #[serde(skip)]
+  revision: u64,
 }
 
 impl PartialEq for GlobalHistoryStore {
@@ -150,17 +155,20 @@ impl<'de> Deserialize<'de> for GlobalHistoryStore {
           schema_version: v1.schema_version,
           entries: v1.entries,
           capacity: DEFAULT_GLOBAL_HISTORY_CAPACITY,
+          revision: 0,
         }
       }
       GlobalHistoryStoreFile::Legacy(legacy) => GlobalHistoryStore {
         schema_version: GLOBAL_HISTORY_SCHEMA_VERSION,
         entries: legacy.entries,
         capacity: DEFAULT_GLOBAL_HISTORY_CAPACITY,
+        revision: 0,
       },
       GlobalHistoryStoreFile::LegacyVec(entries) => GlobalHistoryStore {
         schema_version: GLOBAL_HISTORY_SCHEMA_VERSION,
         entries,
         capacity: DEFAULT_GLOBAL_HISTORY_CAPACITY,
+        revision: 0,
       },
     };
 
@@ -181,7 +189,17 @@ impl GlobalHistoryStore {
       schema_version: GLOBAL_HISTORY_SCHEMA_VERSION,
       entries: Vec::new(),
       capacity,
+      revision: 0,
     }
+  }
+
+  /// Monotonic revision counter incremented on every mutation of the history store.
+  pub fn revision(&self) -> u64 {
+    self.revision
+  }
+
+  fn bump_revision(&mut self) {
+    self.revision = self.revision.wrapping_add(1);
   }
 
   pub fn len(&self) -> usize {
@@ -223,6 +241,7 @@ impl GlobalHistoryStore {
       }
       self.entries.push(existing);
       // Existing entries do not increase store length; no capacity trim required.
+      self.bump_revision();
       return true;
     }
 
@@ -233,6 +252,7 @@ impl GlobalHistoryStore {
       visit_count: 1,
     });
     self.enforce_capacity();
+    self.bump_revision();
     true
   }
 
@@ -243,11 +263,7 @@ impl GlobalHistoryStore {
   }
 
   /// Search history entries, ordered by recency (most recent first).
-  pub fn search<'a>(
-    &'a self,
-    query: &str,
-    limit: usize,
-  ) -> Vec<(usize, &'a GlobalHistoryEntry)> {
+  pub fn search<'a>(&'a self, query: &str, limit: usize) -> Vec<(usize, &'a GlobalHistoryEntry)> {
     if limit == 0 {
       return Vec::new();
     }
@@ -295,13 +311,16 @@ impl GlobalHistoryStore {
       return false;
     };
     self.entries.remove(idx);
+    self.bump_revision();
     true
   }
 
   /// Delete an entry by its index in [`GlobalHistoryStore::entries`].
   pub fn remove_at(&mut self, index: usize) -> Option<GlobalHistoryEntry> {
     if index < self.entries.len() {
-      Some(self.entries.remove(index))
+      let removed = self.entries.remove(index);
+      self.bump_revision();
+      Some(removed)
     } else {
       None
     }
@@ -309,7 +328,11 @@ impl GlobalHistoryStore {
 
   /// Remove all global history entries.
   pub fn clear_all(&mut self) {
+    if self.entries.is_empty() {
+      return;
+    }
     self.entries.clear();
+    self.bump_revision();
   }
 
   /// Legacy alias for [`GlobalHistoryStore::clear_all`].
@@ -322,12 +345,20 @@ impl GlobalHistoryStore {
   /// Entries with unknown timestamps (`visited_at_ms == 0`) are preserved unless `since_ms == 0`.
   pub fn clear_since(&mut self, since_ms: u64) {
     if since_ms == 0 {
+      if self.entries.is_empty() {
+        return;
+      }
       self.entries.clear();
+      self.bump_revision();
       return;
     }
+    let before = self.entries.len();
     self
       .entries
       .retain(|e| e.visited_at_ms == 0 || e.visited_at_ms < since_ms);
+    if self.entries.len() != before {
+      self.bump_revision();
+    }
   }
 
   /// Clear entries visited within `range` (`start_ms..end_ms`, end-exclusive).
@@ -338,12 +369,16 @@ impl GlobalHistoryStore {
     if range.start >= range.end {
       return;
     }
+    let before = self.entries.len();
     self.entries.retain(|e| {
       if e.visited_at_ms == 0 && range.start > 0 {
         return true;
       }
       e.visited_at_ms < range.start || e.visited_at_ms >= range.end
     });
+    if self.entries.len() != before {
+      self.bump_revision();
+    }
   }
 
   pub fn clear_browsing_data_range(&mut self, range: ClearBrowsingDataRange) {
@@ -353,7 +388,7 @@ impl GlobalHistoryStore {
   pub fn clear_browsing_data_range_at_ms(&mut self, range: ClearBrowsingDataRange, now_ms: u64) {
     match range {
       ClearBrowsingDataRange::AllTime => {
-        self.entries.clear();
+        self.clear_all();
       }
       ClearBrowsingDataRange::LastHour
       | ClearBrowsingDataRange::Last24Hours
@@ -376,6 +411,10 @@ impl GlobalHistoryStore {
   /// older versions of the browser stored one entry per visit, potentially including fragments.
   pub fn normalize_in_place(&mut self) {
     self.schema_version = GLOBAL_HISTORY_SCHEMA_VERSION;
+    // This is a potentially large mutation (dedupe + reorder). It's also called on load, so treat
+    // it as a logical revision bump for cache invalidation even if the end result happens to match
+    // the existing ordering.
+    self.bump_revision();
 
     if self.capacity == 0 {
       self.entries.clear();
@@ -442,7 +481,12 @@ impl GlobalHistoryStore {
       .collect();
 
     // Ensure deterministic ordering and recency semantics after migration: oldest → newest.
-    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.url.cmp(&b.2.url)));
+    entries.sort_by(|a, b| {
+      a.0
+        .cmp(&b.0)
+        .then_with(|| a.1.cmp(&b.1))
+        .then_with(|| a.2.url.cmp(&b.2.url))
+    });
 
     self.entries = entries.into_iter().map(|(_, _, e)| e).collect();
     self.enforce_capacity();
@@ -539,6 +583,120 @@ where
   Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or(0))
 }
 
+/// Cached search helper for [`GlobalHistoryStore`].
+///
+/// This is intended for UI callers (like the History panel) that re-run the same search query every
+/// frame. When both the query string and the history store revision are unchanged, the per-call
+/// work is O(1) (returning a slice of cached match indices).
+#[derive(Debug, Default, Clone)]
+pub struct GlobalHistorySearcher {
+  last_query: String,
+  /// Cached lowercase tokens for `last_query`.
+  ///
+  /// Tokens are ASCII-lowercased so they can be passed directly to
+  /// [`contains_ascii_case_insensitive`].
+  last_tokens_lower: Vec<String>,
+  last_revision: u64,
+  cached_limit: usize,
+  cached_complete: bool,
+  cached_match_indices: Vec<usize>,
+}
+
+impl GlobalHistorySearcher {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Search `store` for `query`, returning indices into [`GlobalHistoryStore::entries`] ordered by
+  /// recency (most recent first).
+  ///
+  /// - When `query` and `store.revision()` are unchanged, this returns cached indices without
+  ///   re-tokenizing or rescanning the history store.
+  /// - `limit == 0` always returns an empty slice.
+  pub fn search_indices<'a>(
+    &'a mut self,
+    store: &GlobalHistoryStore,
+    query: &str,
+    limit: usize,
+  ) -> &'a [usize] {
+    if limit == 0 {
+      self.cached_match_indices.clear();
+      self.cached_limit = 0;
+      self.cached_complete = true;
+      // Keep `last_query`/`last_revision` as-is; `limit == 0` is not a meaningful cache state.
+      return &self.cached_match_indices;
+    }
+
+    let store_revision = store.revision();
+    let query_changed = query != self.last_query;
+    let store_changed = store_revision != self.last_revision;
+    let needs_more = limit > self.cached_limit && !self.cached_complete;
+    if query_changed || store_changed || needs_more {
+      // Only re-tokenize when the query itself changes; if history mutates while the query stays
+      // stable we can reuse the cached tokens.
+      if query_changed {
+        self.last_query = query.to_string();
+        let query_lower = query.to_ascii_lowercase();
+        self.last_tokens_lower = query_lower
+          .split_whitespace()
+          .filter(|t| !t.is_empty())
+          .map(|t| t.to_string())
+          .collect();
+      }
+      self.last_revision = store_revision;
+
+      let (indices, complete) =
+        compute_search_match_indices(store, &self.last_tokens_lower, limit);
+      self.cached_match_indices = indices;
+      self.cached_complete = complete;
+      self.cached_limit = limit;
+    }
+
+    let n = limit.min(self.cached_match_indices.len());
+    &self.cached_match_indices[..n]
+  }
+}
+
+fn compute_search_match_indices(
+  store: &GlobalHistoryStore,
+  tokens: &[String],
+  limit: usize,
+) -> (Vec<usize>, bool) {
+  if limit == 0 {
+    return (Vec::new(), true);
+  }
+
+  if tokens.is_empty() {
+    let indices: Vec<usize> = store
+      .iter_recent()
+      .take(limit)
+      .map(|(idx, _)| idx)
+      .collect();
+    let complete = store.entries.len() <= limit;
+    return (indices, complete);
+  }
+
+  let mut out = Vec::with_capacity(limit.min(store.entries.len()));
+  'entries: for (idx, entry) in store.iter_recent() {
+    for token in tokens {
+      let in_url = contains_ascii_case_insensitive(&entry.url, token);
+      let in_title = entry
+        .title
+        .as_deref()
+        .is_some_and(|t| contains_ascii_case_insensitive(t, token));
+      if !in_url && !in_title {
+        continue 'entries;
+      }
+    }
+
+    out.push(idx);
+    if out.len() >= limit {
+      return (out, false);
+    }
+  }
+
+  (out, true)
+}
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -586,7 +744,11 @@ mod tests {
 
     let a = store.get("https://a.example/").unwrap();
     assert_eq!(a.visit_count, 2);
-    assert_eq!(a.title.as_deref(), Some("A"), "title should not be clobbered");
+    assert_eq!(
+      a.title.as_deref(),
+      Some("A"),
+      "title should not be clobbered"
+    );
     assert_eq!(a.visited_at_ms, 3);
   }
 
@@ -594,7 +756,12 @@ mod tests {
   fn ignores_about_pages() {
     let mut store = GlobalHistoryStore::with_capacity(10);
 
-    for url in ["about:newtab", "about:help", "about:history", "ABOUT:BOOKMARKS"] {
+    for url in [
+      "about:newtab",
+      "about:help",
+      "about:history",
+      "ABOUT:BOOKMARKS",
+    ] {
       assert!(!store.record_at_ms(url.to_string(), None, 1));
     }
 
@@ -605,11 +772,7 @@ mod tests {
   fn records_file_urls() {
     let mut store = GlobalHistoryStore::with_capacity(10);
 
-    assert!(store.record_at_ms(
-      "file:///tmp/a.html#section".to_string(),
-      None,
-      10
-    ));
+    assert!(store.record_at_ms("file:///tmp/a.html#section".to_string(), None, 10));
     assert_eq!(store.entries.len(), 1);
     assert_eq!(store.entries[0].url, "file:///tmp/a.html");
     assert_eq!(store.entries[0].visit_count, 1);
@@ -638,7 +801,11 @@ mod tests {
       1,
     );
     store.record_at_ms("https://example.test/".to_string(), None, 2);
-    store.record_at_ms("https://example.test/".to_string(), Some("   ".to_string()), 3);
+    store.record_at_ms(
+      "https://example.test/".to_string(),
+      Some("   ".to_string()),
+      3,
+    );
 
     let entry = store.get("https://example.test/").unwrap();
     assert_eq!(entry.title.as_deref(), Some("Title"));
@@ -802,9 +969,21 @@ mod tests {
     let now_ms = 1_000_000_000_000_u64;
 
     let mut history = GlobalHistoryStore::default();
-    history.record_at_ms("https://old.example/".to_string(), None, now_ms - 8 * DAY_MS);
-    history.record_at_ms("https://days.example/".to_string(), None, now_ms - 2 * DAY_MS);
-    history.record_at_ms("https://hours.example/".to_string(), None, now_ms - 2 * HOUR_MS);
+    history.record_at_ms(
+      "https://old.example/".to_string(),
+      None,
+      now_ms - 8 * DAY_MS,
+    );
+    history.record_at_ms(
+      "https://days.example/".to_string(),
+      None,
+      now_ms - 2 * DAY_MS,
+    );
+    history.record_at_ms(
+      "https://hours.example/".to_string(),
+      None,
+      now_ms - 2 * HOUR_MS,
+    );
     history.record_at_ms(
       "https://recent.example/".to_string(),
       None,
@@ -844,7 +1023,10 @@ mod tests {
 
     history.clear_browsing_data_range_at_ms(ClearBrowsingDataRange::Last7Days, now_ms);
     let urls: Vec<&str> = history.entries.iter().map(|e| e.url.as_str()).collect();
-    assert_eq!(urls, vec!["https://old.example/", "https://unknown.example/"]);
+    assert_eq!(
+      urls,
+      vec!["https://old.example/", "https://unknown.example/"]
+    );
 
     history.clear_browsing_data_range_at_ms(ClearBrowsingDataRange::AllTime, now_ms);
     assert!(history.entries.is_empty());
@@ -853,12 +1035,90 @@ mod tests {
   #[test]
   fn search_returns_results_ordered_by_recency() {
     let mut history = GlobalHistoryStore::default();
-    history.record_at_ms("https://example.com/a".to_string(), Some("First".to_string()), 1);
-    history.record_at_ms("https://example.com/b".to_string(), Some("Second".to_string()), 2);
-    history.record_at_ms("https://example.com/a".to_string(), Some("Third".to_string()), 3);
+    history.record_at_ms(
+      "https://example.com/a".to_string(),
+      Some("First".to_string()),
+      1,
+    );
+    history.record_at_ms(
+      "https://example.com/b".to_string(),
+      Some("Second".to_string()),
+      2,
+    );
+    history.record_at_ms(
+      "https://example.com/a".to_string(),
+      Some("Third".to_string()),
+      3,
+    );
 
     let results = history.search("example", 10);
     let titles: Vec<Option<&str>> = results.iter().map(|(_, e)| e.title.as_deref()).collect();
     assert_eq!(titles, vec![Some("Third"), Some("Second")]);
+  }
+
+  #[test]
+  fn searcher_invalidates_cache_on_query_change() {
+    let mut history = GlobalHistoryStore::with_capacity(10);
+    history.record_at_ms(
+      "https://example.com/one".to_string(),
+      Some("Example One".to_string()),
+      1,
+    );
+    history.record_at_ms(
+      "https://rust-lang.org/".to_string(),
+      Some("Rust".to_string()),
+      2,
+    );
+
+    let mut searcher = GlobalHistorySearcher::default();
+    let example = searcher.search_indices(&history, "example", 10).to_vec();
+    assert_eq!(example.len(), 1);
+    assert_eq!(history.entries[example[0]].url, "https://example.com/one");
+
+    let rust = searcher.search_indices(&history, "rust", 10).to_vec();
+    assert_eq!(rust.len(), 1);
+    assert_eq!(history.entries[rust[0]].url, "https://rust-lang.org/");
+  }
+
+  #[test]
+  fn searcher_invalidates_cache_on_history_mutation() {
+    let mut history = GlobalHistoryStore::with_capacity(10);
+    history.record_at_ms(
+      "https://example.com/one".to_string(),
+      Some("One".to_string()),
+      1,
+    );
+    history.record_at_ms(
+      "https://example.com/two".to_string(),
+      Some("Two".to_string()),
+      2,
+    );
+
+    let mut searcher = GlobalHistorySearcher::default();
+    let before = searcher.search_indices(&history, "example", 10).to_vec();
+    assert_eq!(before.len(), 2);
+    assert_eq!(history.entries[before[0]].url, "https://example.com/two");
+
+    // Mutation: add a newer matching entry.
+    history.record_at_ms(
+      "https://example.com/three".to_string(),
+      Some("Three".to_string()),
+      3,
+    );
+
+    let after_add = searcher.search_indices(&history, "example", 10).to_vec();
+    assert_eq!(after_add.len(), 3);
+    assert_eq!(
+      history.entries[after_add[0]].url,
+      "https://example.com/three"
+    );
+
+    // Mutation: delete a matching entry.
+    assert!(history.delete_entry("https://example.com/two"));
+    let after_delete = searcher.search_indices(&history, "example", 10).to_vec();
+    assert_eq!(after_delete.len(), 2);
+    assert!(after_delete
+      .iter()
+      .all(|idx| history.entries[*idx].url != "https://example.com/two"));
   }
 }

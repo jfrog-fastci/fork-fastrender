@@ -18,8 +18,8 @@ use crate::ui::untrusted::{
   validate_untrusted_navigation_url,
 };
 use crate::ui::{
-  resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore,
-  OmniboxSuggestion, VisitedUrlStore,
+  resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistorySearcher,
+  GlobalHistoryStore, OmniboxSuggestion, VisitedUrlStore,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -846,6 +846,8 @@ pub struct ChromeState {
   pub history_panel_open: bool,
   /// Search/filter query for the History panel.
   pub history_search_text: String,
+  /// Cached search state for the History panel.
+  pub history_searcher: GlobalHistorySearcher,
   /// Whether the chrome Bookmarks Manager side panel is currently visible.
   pub bookmarks_manager_open: bool,
   /// Search/filter query for the Bookmarks Manager panel.

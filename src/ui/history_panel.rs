@@ -8,7 +8,7 @@
 
 use super::{
   a11y_labels, history_timestamp, icon_button, panel_empty_state, panel_header_with_actions,
-  panel_list_row, panel_search_field, BrowserIcon, GlobalHistoryEntry, GlobalHistoryStore,
+  panel_list_row, panel_search_field, BrowserIcon, GlobalHistorySearcher, GlobalHistoryStore,
 };
 
 use lru::LruCache;
@@ -28,6 +28,7 @@ pub struct HistoryPanelOutput {
 pub fn history_panel_ui(
   ctx: &egui::Context,
   history: &GlobalHistoryStore,
+  searcher: &mut GlobalHistorySearcher,
   search_text: &mut String,
   request_focus_search: &mut bool,
 ) -> HistoryPanelOutput {
@@ -100,12 +101,11 @@ pub fn history_panel_ui(
       const HISTORY_PANEL_LIMIT: usize = 500;
       // Avoid holding an `&str` borrow into `search_text` across UI closures, since some empty
       // states mutate `search_text` (e.g. "Clear search").
-      let query = search_text.trim().to_string();
-      let query_is_empty = query.is_empty();
-      let results: Vec<(usize, &GlobalHistoryEntry)> = if query_is_empty {
-        history.iter_recent().take(HISTORY_PANEL_LIMIT).collect()
-      } else {
-        history.search(&query, HISTORY_PANEL_LIMIT)
+      let mut query_is_empty = false;
+      let results = {
+        let query = search_text.trim();
+        query_is_empty = query.is_empty();
+        searcher.search_indices(history, query, HISTORY_PANEL_LIMIT)
       };
 
       if results.is_empty() {
@@ -143,7 +143,8 @@ pub fn history_panel_ui(
         .auto_shrink([false, false])
         .show(ui, |ui| {
           ui.spacing_mut().item_spacing.y = 6.0;
-          for (idx, entry) in results {
+          for &idx in results {
+            let entry = &history.entries[idx];
             let title = entry
               .title
               .as_deref()

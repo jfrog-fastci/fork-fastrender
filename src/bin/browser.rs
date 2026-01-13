@@ -14903,6 +14903,7 @@ impl App {
         &ctx,
         fastrender::ui::panels::HistoryPanelInput {
           history: &self.browser_state.history,
+          searcher: &mut self.browser_state.chrome.history_searcher,
           search_text: &mut self.browser_state.chrome.history_search_text,
           request_focus_search: &mut self.history_panel_request_focus_search,
         },
