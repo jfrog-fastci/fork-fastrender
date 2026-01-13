@@ -18,6 +18,8 @@ fn main() {
         println!("cargo:rerun-if-env-changed={var}");
         println!("cargo:rerun-if-env-changed={var}_{target_key}");
     }
+    // Used to infer the libvpx Visual Studio toolchain (vsNN) when targeting MSVC.
+    println!("cargo:rerun-if-env-changed=VisualStudioVersion");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS not set");
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH not set");
