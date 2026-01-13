@@ -2601,8 +2601,7 @@ impl ModuleGraph {
     // Ensure dynamic `import()` expressions executed during module evaluation can resolve the active
     // module graph even when the embedding uses the low-level `ModuleGraph::{link,evaluate}` APIs
     // directly (without constructing a `JsRuntime`, which sets this pointer at runtime creation).
-    let prev_graph = vm.module_graph_ptr();
-    vm.set_module_graph(self);
+    let mut graph_guard = ModuleGraphPtrGuard::install(vm, self);
 
     let result = (|| -> Result<(), VmError> {
       self.link_with_scope(vm, scope, global_object, realm_id, module)?;
@@ -2615,12 +2614,19 @@ impl ModuleGraph {
       self.eval_inner(vm, scope, global_object, realm_id, module, host, hooks)
     })();
 
-    // Restore any previous module graph pointer.
-    match prev_graph {
-      Some(ptr) => unsafe {
-        vm.set_module_graph(&mut *ptr);
-      },
-      None => vm.clear_module_graph(),
+    // If module evaluation initiated an async continuation whose Promise reactions are still
+    // pending (dynamic import), keep `vm.module_graph_ptr` installed until those reactions run.
+    //
+    // Note: `insert_pending_dynamic_import_evaluation` captures the VM's current module graph
+    // pointer as the "previous" value to restore. When dynamic import begins during this
+    // synchronous evaluation, that value will be `self`. Overwrite it with the true outer previous
+    // pointer before disarming the guard so completion restores correctly.
+    if graph_guard.restore_on_drop && self.module_graph_ptr_refcount > 0 {
+      let self_ptr: *mut ModuleGraph = self;
+      if self.module_graph_ptr_prev == Some(self_ptr) && graph_guard.prev_graph() != Some(self_ptr) {
+        self.module_graph_ptr_prev = graph_guard.prev_graph();
+      }
+      graph_guard.disarm();
     }
 
     result
