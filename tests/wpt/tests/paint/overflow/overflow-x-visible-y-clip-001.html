@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>overflow-y:hidden clips vertically but not horizontally</title>
+<title>overflow-y:clip clips vertically but not horizontally</title>
 <style>
   html, body {
     margin: 0;
@@ -14,7 +14,7 @@
     width: 60px;
     height: 60px;
     overflow-x: visible;
-    overflow-y: hidden;
+    overflow-y: clip;
   }
 
   .child {

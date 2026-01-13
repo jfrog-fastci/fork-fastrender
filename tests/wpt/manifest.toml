@@ -1854,11 +1854,11 @@ width = 120
 height = 120
 
 [[tests]]
-id = "paint/overflow/overflow-x-hidden-y-visible-001"
-path = "paint/overflow/overflow-x-hidden-y-visible-001.html"
-reference = "paint/overflow/overflow-x-hidden-y-visible-001-ref.html"
+id = "paint/overflow/overflow-x-clip-y-visible-001"
+path = "paint/overflow/overflow-x-clip-y-visible-001.html"
+reference = "paint/overflow/overflow-x-clip-y-visible-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 
@@ -1867,11 +1867,11 @@ width = 120
 height = 120
 
 [[tests]]
-id = "paint/overflow/overflow-x-visible-y-hidden-001"
-path = "paint/overflow/overflow-x-visible-y-hidden-001.html"
-reference = "paint/overflow/overflow-x-visible-y-hidden-001-ref.html"
+id = "paint/overflow/overflow-x-visible-y-clip-001"
+path = "paint/overflow/overflow-x-visible-y-clip-001.html"
+reference = "paint/overflow/overflow-x-visible-y-clip-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 
@@ -1897,7 +1897,7 @@ id = "paint/overflow/overflow-hidden-border-radius-clips-001"
 path = "paint/overflow/overflow-hidden-border-radius-clips-001.html"
 reference = "paint/overflow/overflow-hidden-border-radius-clips-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 

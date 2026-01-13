@@ -2227,8 +2227,19 @@ impl Canvas {
     if sa == 0 {
       return true;
     }
-    // Keep existing code paths for opaque fills (they include snapping to avoid seams).
-    if sa == 255 {
+
+    // Keep existing code paths for opaque fills (they include snapping to avoid seams) unless a
+    // clip mask is present.
+    //
+    // For opaque draws with an anti-aliased clip (e.g. `overflow:hidden` + `border-radius`), the
+    // clip edge behaves like a per-pixel source alpha of `coverage`. tiny-skia's internal
+    // compositing uses slightly different rounding than Chrome/Skia, often resulting in ±1 channel
+    // differences along the edge. Using the truncating `mul/255` math here keeps clipped opaque
+    // content consistent with `draw_rounded_rect` / `fill_rounded_rect` fast paths.
+    let clip_mask = self.current_state.clip_mask.as_deref();
+    let clip_mask_data = clip_mask.map(|mask| mask.data());
+    let clip_mask_stride = clip_mask.map(|mask| mask.width() as usize).unwrap_or(0);
+    if sa == 255 && clip_mask_data.is_none() {
       return false;
     }
 
@@ -2302,10 +2313,6 @@ impl Canvas {
     full_x1 = full_x1.clamp(0, pix_w);
     full_y0 = full_y0.clamp(0, pix_h);
     full_y1 = full_y1.clamp(0, pix_h);
-
-    let clip_mask = self.current_state.clip_mask.as_deref();
-    let clip_mask_data = clip_mask.map(|mask| mask.data());
-    let clip_mask_stride = clip_mask.map(|mask| mask.width() as usize).unwrap_or(0);
     let stride = self.pixmap.width() as usize * 4;
     let data = self.pixmap.data_mut();
 
