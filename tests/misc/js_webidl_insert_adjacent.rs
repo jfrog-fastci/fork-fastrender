@@ -104,7 +104,34 @@ fn window_realm_webidl_element_insert_adjacent_apis_mutate_dom() -> Result<(), V
          if (t.firstChild !== p) return false;
  
          t.insertAdjacentText('beforeend', 'y');
-         return t.textContent === 'xzy';
+         if (t.textContent !== 'xzy') return false;
+
+         // Detached element insertAdjacentElement beforebegin/afterend is a no-op that returns null.
+         const s = document.createElement('span');
+         if (t.insertAdjacentElement('beforebegin', s) !== null) return false;
+         if (s.parentNode !== null) return false;
+
+         // Detached element insertAdjacentText beforebegin/afterend is a no-op.
+         t.insertAdjacentText('afterend', 'nope');
+         if (t.textContent !== 'xzy') return false;
+
+         // Invalid position throws SyntaxError.
+         try {
+           t.insertAdjacentText('bogus', 'x');
+           return false;
+         } catch (e) {
+           if (!e || e.name !== 'SyntaxError') return false;
+         }
+
+         // Detached element insertAdjacentHTML beforebegin/afterend throws NoModificationAllowedError.
+         try {
+           t.insertAdjacentHTML('beforebegin', '<em></em>');
+           return false;
+         } catch (e) {
+           if (!e || e.name !== 'NoModificationAllowedError') return false;
+         }
+
+         return true;
        })()
      "#,
    )?;
