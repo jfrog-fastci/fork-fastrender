@@ -923,6 +923,26 @@ fn gpu_html() -> String {
   )
 }
 
+fn best_effort_site_for_url(url: &str) -> String {
+  let trimmed = url.trim();
+  if trimmed.is_empty() {
+    return "unknown".to_string();
+  }
+  let parsed = match url::Url::parse(trimmed) {
+    Ok(url) => url,
+    Err(_) => return "unknown".to_string(),
+  };
+
+  match parsed.scheme() {
+    "http" | "https" => parsed
+      .host_str()
+      .map(str::to_string)
+      .unwrap_or_else(|| "unknown".to_string()),
+    "file" => "file".to_string(),
+    other => other.to_string(),
+  }
+}
+
 fn processes_html() -> String {
   let snapshot = about_page_snapshot();
 
@@ -982,10 +1002,13 @@ fn processes_html() -> String {
         .site_key
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty());
-      let site_cell = match site {
-        Some(site) => format!("<code>{}</code>", escape_html(site)),
-        None => "<span class=\"muted\">(unknown)</span>".to_string(),
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| best_effort_site_for_url(&tab.url));
+      let site_cell = if site == "unknown" {
+        "<span class=\"muted\">unknown</span>".to_string()
+      } else {
+        format!("<code>{}</code>", escape_html(&site))
       };
       let renderer = match tab.renderer_process {
         Some(id) => format!("<code>{id}</code>"),
@@ -1018,8 +1041,8 @@ fn processes_html() -> String {
         Some(process) => {
           let group = renderer_processes.entry(process).or_default();
           group.tabs.push((tab.window_id.clone(), tab.tab_id));
-          if let Some(site) = site {
-            group.sites.insert(site.to_string());
+          if site != "unknown" {
+            group.sites.insert(site.clone());
           }
         }
         None => {
@@ -1667,7 +1690,6 @@ mod tests {
     Some(&html[start..end])
   }
 
-  #[cfg(feature = "browser_ui")]
   static SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
   #[cfg(not(feature = "browser_ui"))]
@@ -1738,6 +1760,61 @@ mod tests {
         "about:bookmarks unexpectedly contained snapshot needle {needle:?} without browser_ui"
       );
     }
+  }
+
+  #[test]
+  fn about_processes_site_column_shows_best_effort_site_for_open_tabs() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    struct RestoreOpenTabs(Vec<OpenTabSnapshot>);
+    impl Drop for RestoreOpenTabs {
+      fn drop(&mut self) {
+        sync_about_page_snapshot_open_tabs(std::mem::take(&mut self.0));
+      }
+    }
+
+    let before_open_tabs = about_page_snapshot().open_tabs;
+    let _restore = RestoreOpenTabs(before_open_tabs);
+
+    sync_about_page_snapshot_open_tabs(vec![
+      OpenTabSnapshot {
+        window_id: None,
+        tab_id: 1,
+        url: "https://example.com/a".to_string(),
+        site_key: None,
+        renderer_process: None,
+      },
+      OpenTabSnapshot {
+        window_id: None,
+        tab_id: 2,
+        url: "file:///tmp/a.html".to_string(),
+        site_key: None,
+        renderer_process: None,
+      },
+      OpenTabSnapshot {
+        window_id: None,
+        tab_id: 3,
+        url: "about:newtab".to_string(),
+        site_key: None,
+        renderer_process: None,
+      },
+    ]);
+
+    let html = html_for_about_url(ABOUT_PROCESSES).unwrap();
+    assert!(
+      html.contains("</a></td>\n           <td><code>example.com</code></td>"),
+      "expected about:processes to render site column for https URLs, got: {html}"
+    );
+    assert!(
+      html.contains("</a></td>\n           <td><code>file</code></td>"),
+      "expected about:processes to render site column for file URLs, got: {html}"
+    );
+    assert!(
+      html.contains("</a></td>\n           <td><code>about</code></td>"),
+      "expected about:processes to render site column for about URLs, got: {html}"
+    );
   }
 
   #[test]
