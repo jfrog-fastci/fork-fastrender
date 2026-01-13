@@ -527,6 +527,30 @@ fn regexp_control_escape_cx_matches_control_character() {
 }
 
 #[test]
+fn regexp_constructor_pattern_string_allows_line_terminators() {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(r#"new RegExp("\n").test("\n")"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  let value = rt
+    .exec_script(r#"new RegExp("\u2028").test("\u2028")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_dot_does_not_match_line_terminators_without_dotall() {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(r#"new RegExp(".").test("\n")"#).unwrap();
+  assert_eq!(value, Value::Bool(false));
+
+  let value = rt.exec_script(r#"new RegExp(".", "s").test("\n")"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn regexp_prototype_source_escapes_slash_and_line_terminators() {
   let mut rt = new_runtime();
 
