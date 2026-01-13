@@ -69,13 +69,14 @@ impl DomExceptionClass {
 
     // Minimal `DOMException` constructor: `new DOMException(message, name)`.
     let constructor = rt.alloc_function_value(move |rt, _this, args| {
+      // WebIDL default arguments apply when the argument is missing OR explicitly `undefined`.
       let message = match args.get(0).copied() {
+        None | Some(Value::Undefined) => rt.alloc_string_value("")?,
         Some(v) => rt.to_string(v)?,
-        None => rt.alloc_string_value("")?,
       };
       let name = match args.get(1).copied() {
+        None | Some(Value::Undefined) => rt.alloc_string_value("Error")?,
         Some(v) => rt.to_string(v)?,
-        None => rt.alloc_string_value("Error")?,
       };
 
       let obj = rt.alloc_object_value()?;
@@ -349,6 +350,26 @@ mod tests {
     let obj2 = rt.call(ctor, Value::Undefined, &[msg2, name2])?;
     let code2 = rt.get(obj2, code_key)?;
     assert_eq!(code2, Value::Number(25.0));
+
+    // Default arguments should behave like WebIDL defaults: missing/undefined args apply defaults.
+    let obj3 = rt.call(ctor, Value::Undefined, &[Value::Undefined, Value::Undefined])?;
+    let name3 = rt.get(obj3, name_key)?;
+    assert_str(&mut rt, name3, "Error")?;
+    let message3 = rt.get(obj3, message_key)?;
+    assert_str(&mut rt, message3, "")?;
+    let code3 = rt.get(obj3, code_key)?;
+    assert_eq!(code3, Value::Number(0.0));
+
+    let to_string_fn3 = rt.get(obj3, to_string_key)?;
+    let out3 = rt.call(to_string_fn3, obj3, &[])?;
+    assert_str(&mut rt, out3, "Error")?;
+
+    // `toString` should return `message` if `name` is the empty string.
+    let empty = rt.alloc_string_value("")?;
+    let obj4 = rt.call(ctor, Value::Undefined, &[msg, empty])?;
+    let to_string_fn4 = rt.get(obj4, to_string_key)?;
+    let out4 = rt.call(to_string_fn4, obj4, &[])?;
+    assert_str(&mut rt, out4, "m")?;
 
     Ok(())
   }
