@@ -4734,6 +4734,26 @@ fn compiled_function_creates_arguments_object() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_arguments_length_counts_all_passed_arguments() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(a){ return arguments.length; }
+      f(1, 2, 3)
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_function_default_initializer_can_read_arguments() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
@@ -4750,6 +4770,29 @@ fn compiled_function_default_initializer_can_read_arguments() -> Result<(), VmEr
 
   let result = rt.exec_compiled_script(script)?;
   assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_first_param_default_initializer_can_read_arguments_object() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The first parameter default initializer runs before any parameter binding is initialized.
+  // It must still be able to read the `arguments` object, including indices that are beyond the
+  // formal parameter list.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(a = arguments[2], b){ return a; }
+      f(undefined, 1, 7)
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(7.0));
   Ok(())
 }
 
