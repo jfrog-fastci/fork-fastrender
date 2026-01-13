@@ -389,9 +389,6 @@ fn compute_state_signature(app: &BrowserAppState) -> u64 {
     match &suggestion.action {
       OmniboxAction::NavigateToUrl => {
         0u8.hash(&mut hasher);
-        // Preserve previous behaviour where URL suggestions contributed their URL to the action
-        // hash. The canonical URL is stored on the suggestion itself.
-        suggestion.url.hash(&mut hasher);
       }
       OmniboxAction::Search(query) => {
         1u8.hash(&mut hasher);
