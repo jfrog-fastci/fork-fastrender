@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use xtask::js_string_literal::decode_js_string_literal_to_utf16;
+
 #[derive(Debug, Args)]
 pub struct GenerateRegExpUnicodePropertyStringsArgs {
   /// Verify that the checked-in tables are up-to-date (do not modify files).
@@ -100,16 +102,31 @@ struct TrieNode {
   terminal_mask: u8,
 }
 
+#[derive(Debug)]
+struct ParsedPropertyFile {
+  match_strings: Vec<Vec<u16>>,
+  non_match_strings: Vec<Vec<u16>>,
+}
+
+#[derive(Debug)]
+struct PropertyData {
+  name: &'static str,
+  bit: u8,
+  match_strings: Vec<Vec<u16>>,
+  non_match_strings: Vec<Vec<u16>>,
+}
+
 fn generate(input_dir: &Path) -> Result<String> {
   let mut union: BTreeMap<Vec<u16>, u8> = BTreeMap::new();
+  let mut property_data: Vec<PropertyData> = Vec::new();
 
   for spec in PROPERTY_SPECS {
     let path = input_dir.join(format!("{}.js", spec.js_name));
-    let strings = parse_property_file(&path)
+    let parsed = parse_property_file(&path)
       .with_context(|| format!("parsing property-of-strings list from {path:?}"))?;
 
     let mut set: BTreeSet<Vec<u16>> = BTreeSet::new();
-    for s in &strings {
+    for s in &parsed.match_strings {
       if !set.insert(s.clone()) {
         bail!("duplicate string literal in {}: {:?}", spec.js_name, Utf16Debug(s));
       }
@@ -119,14 +136,20 @@ fn generate(input_dir: &Path) -> Result<String> {
       union.entry(s.clone()).and_modify(|mask| *mask |= spec.bit).or_insert(spec.bit);
     }
 
+    property_data.push(PropertyData {
+      name: spec.js_name,
+      bit: spec.bit,
+      match_strings: set.iter().cloned().collect(),
+      non_match_strings: parsed.non_match_strings,
+    });
   }
 
   // Validate that `RGI_Emoji` (the union property) matches the union of the base properties.
   let rgi_path = input_dir.join("RGI_Emoji.js");
-  let rgi_strings =
+  let rgi_parsed =
     parse_property_file(&rgi_path).with_context(|| format!("parsing {rgi_path:?}"))?;
   let mut rgi_set: BTreeSet<Vec<u16>> = BTreeSet::new();
-  for s in &rgi_strings {
+  for s in &rgi_parsed.match_strings {
     if !rgi_set.insert(s.clone()) {
       bail!("duplicate string literal in RGI_Emoji: {:?}", Utf16Debug(s));
     }
@@ -146,6 +169,13 @@ fn generate(input_dir: &Path) -> Result<String> {
       extra_example
     );
   }
+
+  property_data.push(PropertyData {
+    name: "RGI_Emoji",
+    bit: ALL_PROPERTY_MASK,
+    match_strings: rgi_set.iter().cloned().collect(),
+    non_match_strings: rgi_parsed.non_match_strings,
+  });
 
   // All terminal masks should be within the base property bitset.
   for (s, mask) in &union {
@@ -201,6 +231,16 @@ fn generate(input_dir: &Path) -> Result<String> {
       );
     }
   }
+
+  validate_flat_trie(
+    &property_data,
+    &union,
+    &node_edge_start,
+    &node_edge_len,
+    &node_terminal_mask,
+    &edge_code_unit,
+    &edge_target,
+  )?;
 
   let mut out = String::new();
   out.push_str("//! @generated\n");
@@ -404,6 +444,157 @@ fn compute_max_terminal_prefixes(nodes: &[TrieNode]) -> usize {
   max_matches.saturating_sub(usize::from(nodes.first().map_or(false, |n| n.terminal_mask != 0)))
 }
 
+fn validate_flat_trie(
+  props: &[PropertyData],
+  union: &BTreeMap<Vec<u16>, u8>,
+  node_edge_start: &[u32],
+  node_edge_len: &[u16],
+  node_terminal_mask: &[u8],
+  edge_code_unit: &[u16],
+  edge_target: &[u32],
+) -> Result<()> {
+  if node_edge_start.len() != node_edge_len.len()
+    || node_edge_start.len() != node_terminal_mask.len()
+  {
+    bail!(
+      "invalid trie table: node arrays have mismatched lengths (start={}, len={}, mask={})",
+      node_edge_start.len(),
+      node_edge_len.len(),
+      node_terminal_mask.len()
+    );
+  }
+  if edge_code_unit.len() != edge_target.len() {
+    bail!(
+      "invalid trie table: edge arrays have mismatched lengths (code_unit={}, target={})",
+      edge_code_unit.len(),
+      edge_target.len()
+    );
+  }
+
+  // Validate that the flattened trie encodes every union entry with the expected terminal mask.
+  for (seq, expected_mask) in union {
+    let Some(found) = lookup_terminal_mask(
+      node_edge_start,
+      node_edge_len,
+      node_terminal_mask,
+      edge_code_unit,
+      edge_target,
+      seq,
+    )? else {
+      bail!("trie missing union entry {:?} (expected mask {expected_mask:#x})", Utf16Debug(seq));
+    };
+    if found != *expected_mask {
+      bail!(
+        "trie mask mismatch for {:?}: expected {expected_mask:#x}, got {found:#x}",
+        Utf16Debug(seq)
+      );
+    }
+  }
+
+  // Validate matchStrings / nonMatchStrings for each property file.
+  for prop in props {
+    for seq in &prop.match_strings {
+      let Some(found) = lookup_terminal_mask(
+        node_edge_start,
+        node_edge_len,
+        node_terminal_mask,
+        edge_code_unit,
+        edge_target,
+        seq,
+      )? else {
+        bail!(
+          "trie missing matchStrings entry for {}: {:?}",
+          prop.name,
+          Utf16Debug(seq)
+        );
+      };
+      if (found & prop.bit) == 0 {
+        bail!(
+          "trie terminal mask missing bit for {} (bit={:#x}): {:?} (mask={found:#x})",
+          prop.name,
+          prop.bit,
+          Utf16Debug(seq),
+        );
+      }
+    }
+
+    for seq in &prop.non_match_strings {
+      if let Some(found) = lookup_terminal_mask(
+        node_edge_start,
+        node_edge_len,
+        node_terminal_mask,
+        edge_code_unit,
+        edge_target,
+        seq,
+      )? {
+        if (found & prop.bit) != 0 {
+          bail!(
+            "trie unexpectedly matches nonMatchStrings entry for {}: {:?} (mask={found:#x})",
+            prop.name,
+            Utf16Debug(seq)
+          );
+        }
+      }
+    }
+  }
+
+  Ok(())
+}
+
+fn lookup_terminal_mask(
+  node_edge_start: &[u32],
+  node_edge_len: &[u16],
+  node_terminal_mask: &[u8],
+  edge_code_unit: &[u16],
+  edge_target: &[u32],
+  seq: &[u16],
+) -> Result<Option<u8>> {
+  let mut node = 0usize;
+  for (depth, &cu) in seq.iter().enumerate() {
+    if node >= node_edge_start.len() {
+      bail!("invalid trie node index {node} at depth {depth} for {:?}", Utf16Debug(seq));
+    }
+    let start = node_edge_start[node] as usize;
+    let len = node_edge_len[node] as usize;
+    let end = start.saturating_add(len);
+    if end > edge_code_unit.len() || end > edge_target.len() {
+      bail!(
+        "invalid trie edge range [{start}, {end}) for node {node} (edges={}); input {:?}",
+        edge_code_unit.len(),
+        Utf16Debug(seq)
+      );
+    }
+
+    let mut lo = 0usize;
+    let mut hi = len;
+    let mut next: Option<usize> = None;
+    while lo < hi {
+      let mid = (lo + hi) / 2;
+      let idx = start + mid;
+      let mid_cu = edge_code_unit[idx];
+      if cu < mid_cu {
+        hi = mid;
+      } else if cu > mid_cu {
+        lo = mid + 1;
+      } else {
+        next = Some(edge_target[idx] as usize);
+        break;
+      }
+    }
+
+    match next {
+      Some(n) => node = n,
+      None => return Ok(None),
+    }
+  }
+
+  node_terminal_mask
+    .get(node)
+    .copied()
+    .ok_or_else(|| anyhow!("invalid trie node index {node} after traversing {:?}", Utf16Debug(seq)))
+    .map(Some)
+}
+
 fn write_array_u8(out: &mut String, name: &str, values: &[u8]) {
   out.push_str("#[rustfmt::skip]\n");
   out.push_str(&format!("const {name}: &[u8] = &[\n"));
@@ -441,15 +632,20 @@ fn write_values<T: std::fmt::Display>(out: &mut String, values: &[T], per_line: 
   }
 }
 
-fn parse_property_file(path: &Path) -> Result<Vec<Vec<u16>>> {
+fn parse_property_file(path: &Path) -> Result<ParsedPropertyFile> {
   let contents = fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
-  parse_match_strings_array(&contents)
+  let match_strings = parse_strings_array(&contents, "matchStrings")?;
+  let non_match_strings = parse_strings_array(&contents, "nonMatchStrings")?;
+  Ok(ParsedPropertyFile {
+    match_strings,
+    non_match_strings,
+  })
 }
 
-fn parse_match_strings_array(contents: &str) -> Result<Vec<Vec<u16>>> {
-  let anchor = "matchStrings:";
+fn parse_strings_array(contents: &str, key: &str) -> Result<Vec<Vec<u16>>> {
+  let anchor = format!("{key}:");
   let start = contents
-    .find(anchor)
+    .find(&anchor)
     .ok_or_else(|| anyhow!("missing {anchor:?}"))?;
   let after = &contents[start + anchor.len()..];
   let open = after
@@ -463,23 +659,18 @@ fn parse_match_strings_array(contents: &str) -> Result<Vec<Vec<u16>>> {
   loop {
     skip_ws(bytes, &mut idx);
     if idx >= bytes.len() {
-      bail!("unexpected EOF while parsing matchStrings array");
+      bail!("unexpected EOF while parsing {key} array");
     }
     match bytes[idx] {
-      b']' => {
-        break;
-      }
+      b']' => break,
       b',' => {
         idx += 1;
-        continue;
       }
       b'"' => {
         let s = parse_js_string_literal(contents, &mut idx)?;
         out.push(s);
       }
-      other => {
-        bail!("unexpected byte {other:?} while parsing matchStrings array");
-      }
+      other => bail!("unexpected byte {other:?} while parsing {key} array"),
     }
   }
 
@@ -497,122 +688,34 @@ fn skip_ws(bytes: &[u8], idx: &mut usize) {
 
 fn parse_js_string_literal(input: &str, idx: &mut usize) -> Result<Vec<u16>> {
   let bytes = input.as_bytes();
-  if *idx >= bytes.len() || bytes[*idx] != b'"' {
+  let start = *idx;
+  if start >= bytes.len() || bytes[start] != b'"' {
     bail!("expected opening '\"' for string literal");
   }
-  *idx += 1;
 
-  let mut out: Vec<u16> = Vec::new();
-  while *idx < bytes.len() {
-    let b = bytes[*idx];
-    match b {
-      b'"' => {
-        *idx += 1;
-        return Ok(out);
-      }
+  let mut i = start + 1;
+  while i < bytes.len() {
+    match bytes[i] {
       b'\\' => {
-        *idx += 1;
-        if *idx >= bytes.len() {
+        i += 1;
+        if i >= bytes.len() {
           bail!("unexpected EOF in string escape");
         }
-        let esc = bytes[*idx];
-        *idx += 1;
-        match esc {
-          b'u' => parse_unicode_escape(input, idx, &mut out)?,
-          b'x' => parse_hex_escape(input, idx, &mut out)?,
-          b'\\' => out.push(b'\\' as u16),
-          b'"' => out.push(b'"' as u16),
-          b'n' => out.push(b'\n' as u16),
-          b'r' => out.push(b'\r' as u16),
-          b't' => out.push(b'\t' as u16),
-          b'b' => out.push(0x08),
-          b'f' => out.push(0x0C),
-          b'v' => out.push(0x0B),
-          b'0' => out.push(0x0000),
-          b'\n' => {}
-          b'\r' => {
-            // Handle Windows-style line continuation: `\\\r\n`.
-            if *idx < bytes.len() && bytes[*idx] == b'\n' {
-              *idx += 1;
-            }
-          }
-          other => bail!("unsupported JS escape sequence: \\{}", other as char),
-        }
+        i += 1;
       }
-      _ => {
-        let ch = input[*idx..]
-          .chars()
-          .next()
-          .ok_or_else(|| anyhow!("unexpected EOF decoding UTF-8"))?;
-        *idx += ch.len_utf8();
-        let mut buf = [0u16; 2];
-        let encoded = ch.encode_utf16(&mut buf);
-        out.extend_from_slice(encoded);
+      b'"' => {
+        let lit = input
+          .get(start..=i)
+          .ok_or_else(|| anyhow!("slice string literal"))?;
+        *idx = i + 1;
+        return decode_js_string_literal_to_utf16(lit)
+          .with_context(|| format!("decoding JS string literal {lit:?}"));
       }
+      _ => i += 1,
     }
   }
 
-  bail!("unexpected EOF in string literal");
-}
-
-fn parse_hex_escape(input: &str, idx: &mut usize, out: &mut Vec<u16>) -> Result<()> {
-  let bytes = input.as_bytes();
-  if *idx + 2 > bytes.len() {
-    bail!("unexpected EOF in \\x escape");
-  }
-  let hex = &input[*idx..*idx + 2];
-  let value = u8::from_str_radix(hex, 16).with_context(|| format!("invalid \\x escape {hex:?}"))?;
-  out.push(value as u16);
-  *idx += 2;
-  Ok(())
-}
-
-fn parse_unicode_escape(input: &str, idx: &mut usize, out: &mut Vec<u16>) -> Result<()> {
-  let bytes = input.as_bytes();
-  if *idx >= bytes.len() {
-    bail!("unexpected EOF in \\u escape");
-  }
-
-  if bytes[*idx] == b'{' {
-    *idx += 1;
-    let start = *idx;
-    while *idx < bytes.len() && bytes[*idx] != b'}' {
-      *idx += 1;
-    }
-    if *idx >= bytes.len() {
-      bail!("unexpected EOF in \\u{{...}} escape");
-    }
-    let hex = &input[start..*idx];
-    *idx += 1; // consume '}'
-    let cp = u32::from_str_radix(hex, 16).with_context(|| format!("invalid \\u{{...}} escape {hex:?}"))?;
-    if cp > 0x10FFFF {
-      bail!("code point out of range in \\u{{...}} escape: {cp:#x}");
-    }
-    push_code_point_utf16(out, cp);
-    return Ok(());
-  }
-
-  if *idx + 4 > bytes.len() {
-    bail!("unexpected EOF in \\uXXXX escape");
-  }
-  let hex = &input[*idx..*idx + 4];
-  let value = u16::from_str_radix(hex, 16).with_context(|| format!("invalid \\u escape {hex:?}"))?;
-  out.push(value);
-  *idx += 4;
-  Ok(())
-}
-
-fn push_code_point_utf16(out: &mut Vec<u16>, cp: u32) {
-  if let Some(ch) = char::from_u32(cp) {
-    let mut buf = [0u16; 2];
-    let encoded = ch.encode_utf16(&mut buf);
-    out.extend_from_slice(encoded);
-    return;
-  }
-
-  // `\u{...}` allows any code point up to 0x10FFFF, including surrogate code points. Encode those
-  // directly as a UTF-16 code unit (spec matches JS behaviour).
-  out.push(cp as u16);
+  bail!("unterminated string literal");
 }
 
 struct Utf16Debug<'a>(&'a [u16]);
