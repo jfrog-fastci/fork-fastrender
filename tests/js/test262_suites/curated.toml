@@ -101,6 +101,12 @@ include = [
   "language/statements/class/elements/field-declaration.js",
   "language/statements/class/elements/static-field-declaration.js",
   "language/statements/class/elements/intercalated-static-non-static-computed-fields.js",
+  # Direct eval inside field initializers (`PerformEval` grammar parameters).
+  "language/statements/class/elements/derived-cls-direct-eval-contains-superproperty-1.js",
+  "language/statements/class/elements/derived-cls-direct-eval-contains-superproperty-2.js",
+  "language/statements/class/elements/arrow-body-derived-cls-direct-eval-contains-superproperty-1.js",
+  "language/statements/class/elements/derived-cls-direct-eval-err-contains-supercall.js",
+  "language/statements/class/elements/arrow-body-derived-cls-direct-eval-err-contains-supercall.js",
   "language/statements/class/elements/privatefieldget-typeerror-4.js",
   "language/statements/class/elements/private-methods/prod-private-method.js",
   "language/statements/class/elements/private-methods/prod-private-method-initialize-order.js",

@@ -15,6 +15,14 @@ tests = [
   # Computed names + evaluation ordering across static/instance field lists.
   "language/statements/class/elements/intercalated-static-non-static-computed-fields.js",
 
+  # --- Direct eval inside field initializers (`PerformEval` grammar parameters) ---
+  # `super.x` is allowed in direct eval inside field initializers, but `super()` is a syntax error.
+  "language/statements/class/elements/derived-cls-direct-eval-contains-superproperty-1.js",
+  "language/statements/class/elements/derived-cls-direct-eval-contains-superproperty-2.js",
+  "language/statements/class/elements/arrow-body-derived-cls-direct-eval-contains-superproperty-1.js",
+  "language/statements/class/elements/derived-cls-direct-eval-err-contains-supercall.js",
+  "language/statements/class/elements/arrow-body-derived-cls-direct-eval-err-contains-supercall.js",
+
   # --- Private names ---
   # Brand checks (accessing with the wrong receiver throws).
   "language/statements/class/elements/privatefieldget-typeerror-4.js",

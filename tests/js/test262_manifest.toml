@@ -504,6 +504,28 @@ id = "language/statements/class/static-init-sequence.js"
 status = "xfail"
 reason = "vm-js does not yet implement class fields/static initialization blocks."
 
+[[expectations]]
+id = "language/statements/class/elements/derived-cls-direct-eval-contains-superproperty-1.js"
+status = "pass"
+reason = "Direct eval inside class field initializers should allow `super` property references (PerformEval grammar parameters)."
+
+[[expectations]]
+id = "language/statements/class/elements/derived-cls-direct-eval-contains-superproperty-2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/class/elements/arrow-body-derived-cls-direct-eval-contains-superproperty-1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/class/elements/derived-cls-direct-eval-err-contains-supercall.js"
+status = "pass"
+reason = "Direct eval inside class field initializers must reject `super()` via early errors."
+
+[[expectations]]
+id = "language/statements/class/elements/arrow-body-derived-cls-direct-eval-err-contains-supercall.js"
+status = "pass"
+
 # --- class/subclass (partial) ---
 [[expectations]]
 id = "language/statements/class/subclass/class-definition-null-proto.js"
