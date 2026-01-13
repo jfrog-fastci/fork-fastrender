@@ -288,22 +288,21 @@ pub fn classify_warning_toast(warning: Option<&str>) -> Option<WarningToastPrese
     return None;
   }
 
-  let title = derive_warning_toast_title(warning);
-
   // Known warning patterns: special-case icons/summaries when possible.
   if warning.starts_with("Viewport clamped:") || warning == "Viewport clamped" {
     return Some(WarningToastPresentation {
-      title,
+      title: "Viewport clamped".to_string(),
       summary: viewport_clamped_summary(warning)
         .or_else(|| Some("Viewport was reduced to stay within safety limits.".to_string())),
       icon: WarningToastIcon::ViewportClamp,
     });
   }
 
+  let summary = derive_warning_toast_title(warning);
   Some(WarningToastPresentation {
-    title,
-    summary: None,
-    icon: WarningToastIcon::WarningInsecure,
+    title: "Warning".to_string(),
+    summary: Some(summary),
+    icon: WarningToastIcon::Info,
   })
 }
 
@@ -408,7 +407,7 @@ mod tests {
   fn classify_warning_toast_viewport_clamped() {
     let input = "Viewport clamped: requested viewport_css=(800, 600) dpr=2.000 → viewport_css=(800, 600) dpr=1.000 (pixmap_px=800x600; limits: max_dim_px=8192 max_pixels=50000000)";
     let presentation = classify_warning_toast(Some(input)).unwrap();
-    assert_eq!(presentation.title, derive_warning_toast_title(input));
+    assert_eq!(presentation.title, "Viewport clamped");
     assert_eq!(
       presentation.summary.as_deref(),
       Some("800×600 @ 2 → 800×600 @ 1")
@@ -419,9 +418,9 @@ mod tests {
   #[test]
   fn classify_warning_toast_generic() {
     let presentation = classify_warning_toast(Some("Something went wrong")).unwrap();
-    assert_eq!(presentation.title, "Something went wrong");
-    assert_eq!(presentation.summary, None);
-    assert_eq!(presentation.icon, WarningToastIcon::WarningInsecure);
+    assert_eq!(presentation.title, "Warning");
+    assert_eq!(presentation.summary.as_deref(), Some("Something went wrong"));
+    assert_eq!(presentation.icon, WarningToastIcon::Info);
   }
 
   #[test]

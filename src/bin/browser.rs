@@ -5327,12 +5327,17 @@ impl App {
           let title_color = Self::with_alpha(theme_colors.text_primary, open_opacity);
           let summary_color = Self::with_alpha(theme_colors.text_secondary, open_opacity);
           let accent_color = Self::with_alpha(theme_colors.warn, open_opacity);
+          let a11y_context = summary_text
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|summary| format!("{title_text}: {summary}"))
+            .unwrap_or_else(|| title_text.clone());
 
           ui.vertical(|ui| {
             ui.horizontal(|ui| {
               let icon_side = ui.spacing().icon_width;
               let icon_resp = fastrender::ui::icon_tinted(ui, icon, icon_side, accent_color);
-              let icon_a11y_label = format!("Warning: {title_text}");
+              let icon_a11y_label = a11y_context.clone();
               icon_resp.widget_info({
                 let label = icon_a11y_label.clone();
                 move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
@@ -5380,9 +5385,9 @@ impl App {
               // Expose the title as an expand/collapse control to assistive tech (AccessKit) so
               // screen readers can announce the expanded/collapsed state.
               let title_a11y_label = if expanded {
-                format!("Hide warning details: {title_text}")
+                format!("Hide warning details: {a11y_context}")
               } else {
-                format!("Show warning details: {title_text}")
+                format!("Show warning details: {a11y_context}")
               };
               title_resp.widget_info({
                 let label = title_a11y_label.clone();
