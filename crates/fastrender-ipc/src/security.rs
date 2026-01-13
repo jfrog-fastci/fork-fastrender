@@ -30,6 +30,10 @@ pub enum FrameOwnershipViolation {
     parent_frame_id: FrameId,
     token: SubframeToken,
   },
+  DuplicateSubframeChild {
+    parent_frame_id: FrameId,
+    child_frame_id: FrameId,
+  },
   InvalidDiscoveredSubframeRect {
     parent_frame_id: FrameId,
     token: SubframeToken,
@@ -61,6 +65,12 @@ pub enum FrameOwnershipViolation {
   InvalidPaintPlan {
     frame_id: FrameId,
     error: crate::CompositeError,
+  },
+  OversizedString {
+    frame_id: FrameId,
+    field: &'static str,
+    len: usize,
+    max: usize,
   },
 }
 
@@ -225,24 +235,126 @@ impl BrowserIpcSecurityState {
           RendererToBrowserKind::SubframesDiscovered,
         );
       }
-      RendererToBrowser::NavigationCommitted { frame_id, .. } => {
-        let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationCommitted);
+      RendererToBrowser::NavigationCommitted {
+        frame_id,
+        url,
+        base_url,
+        csp: _csp,
+      } => {
+        if !self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationCommitted) {
+          return;
+        }
+        if !self.check_string_len(
+          sender,
+          frame_id,
+          RendererToBrowserKind::NavigationCommitted,
+          "NavigationCommitted.url",
+          &url,
+          crate::MAX_UNTRUSTED_URL_BYTES,
+        ) {
+          return;
+        }
+        if let Some(base) = base_url.as_deref() {
+          let _ = self.check_string_len(
+            sender,
+            frame_id,
+            RendererToBrowserKind::NavigationCommitted,
+            "NavigationCommitted.base_url",
+            base,
+            crate::MAX_UNTRUSTED_URL_BYTES,
+          );
+        }
       }
-      RendererToBrowser::NavigationFailed { frame_id, .. } => {
-        let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationFailed);
+      RendererToBrowser::NavigationFailed { frame_id, url, error } => {
+        if !self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationFailed) {
+          return;
+        }
+        if !self.check_string_len(
+          sender,
+          frame_id,
+          RendererToBrowserKind::NavigationFailed,
+          "NavigationFailed.url",
+          &url,
+          crate::MAX_UNTRUSTED_URL_BYTES,
+        ) {
+          return;
+        }
+        let _ = self.check_string_len(
+          sender,
+          frame_id,
+          RendererToBrowserKind::NavigationFailed,
+          "NavigationFailed.error",
+          &error,
+          crate::MAX_UNTRUSTED_URL_BYTES,
+        );
       }
-      RendererToBrowser::HoverChanged { frame_id, .. } => {
-        let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::HoverChanged);
+      RendererToBrowser::HoverChanged {
+        frame_id,
+        seq: _seq,
+        hovered_url,
+        cursor: _cursor,
+      } => {
+        if !self.check_frame(sender, frame_id, RendererToBrowserKind::HoverChanged) {
+          return;
+        }
+        if let Some(url) = hovered_url.as_deref() {
+          let _ = self.check_string_len(
+            sender,
+            frame_id,
+            RendererToBrowserKind::HoverChanged,
+            "HoverChanged.hovered_url",
+            url,
+            crate::MAX_UNTRUSTED_URL_BYTES,
+          );
+        }
       }
       RendererToBrowser::InputAck { frame_id, .. } => {
         let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::InputAck);
       }
-      RendererToBrowser::Error { frame_id, .. } => {
+      RendererToBrowser::Error { frame_id, message } => {
+        let frame_for_event = frame_id.unwrap_or(FrameId(0));
+        if !self.check_string_len(
+          sender,
+          frame_for_event,
+          RendererToBrowserKind::Error,
+          "Error.message",
+          &message,
+          crate::MAX_UNTRUSTED_URL_BYTES,
+        ) {
+          return;
+        }
         if let Some(frame_id) = frame_id {
           let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::Error);
         }
       }
     }
+  }
+
+  fn check_string_len(
+    &mut self,
+    sender: RendererId,
+    frame_id: FrameId,
+    message: RendererToBrowserKind,
+    field: &'static str,
+    value: &str,
+    max: usize,
+  ) -> bool {
+    if value.len() <= max {
+      return true;
+    }
+
+    self.protocol_violation(
+      sender,
+      frame_id,
+      message,
+      FrameOwnershipViolation::OversizedString {
+        frame_id,
+        field,
+        len: value.len(),
+        max,
+      },
+    );
+    false
   }
 
   fn check_frame(
@@ -298,8 +410,37 @@ impl BrowserIpcSecurityState {
       );
       return false;
     }
+    let mut seen_children = HashSet::<FrameId>::new();
     for subframe in subframes {
       let child = subframe.child;
+      if !seen_children.insert(child) {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::DuplicateSubframeChild {
+            parent_frame_id,
+            child_frame_id: child,
+          },
+        );
+        return false;
+      }
+      if let Some(src) = subframe.src.as_deref() {
+        if src.len() > crate::MAX_UNTRUSTED_URL_BYTES {
+          self.protocol_violation(
+            sender,
+            parent_frame_id,
+            message,
+            FrameOwnershipViolation::OversizedString {
+              frame_id: parent_frame_id,
+              field: "SubframeInfo.src",
+              len: src.len(),
+              max: crate::MAX_UNTRUSTED_URL_BYTES,
+            },
+          );
+          return false;
+        }
+      }
       if subframe.clip_stack.len() > crate::MAX_SUBFRAME_CLIP_STACK_DEPTH {
         self.protocol_violation(
           sender,
@@ -389,6 +530,23 @@ impl BrowserIpcSecurityState {
           },
         );
         return false;
+      }
+
+      if let crate::IframeNavigation::Url(url) = &subframe.navigation {
+        if url.len() > crate::MAX_UNTRUSTED_URL_BYTES {
+          self.protocol_violation(
+            sender,
+            parent_frame_id,
+            message,
+            FrameOwnershipViolation::OversizedString {
+              frame_id: parent_frame_id,
+              field: "DiscoveredSubframe.navigation",
+              len: url.len(),
+              max: crate::MAX_UNTRUSTED_URL_BYTES,
+            },
+          );
+          return false;
+        }
       }
 
       let rect = subframe.rect;
@@ -1248,6 +1406,191 @@ mod tests {
         } if *process_id == renderer && *frame_id == parent
       )),
       "expected InvalidSubframeTransform protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_ready_with_duplicate_child_subframes_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    let child = FrameId(2);
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    let slot = simple_slot(child);
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: solid_buffer([0, 0, 0, 255]),
+        subframes: vec![slot.clone(), slot],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::DuplicateSubframeChild { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected DuplicateSubframeChild protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_ready_with_oversized_src_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    let child = FrameId(2);
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    let mut info = simple_slot(child);
+    info.src = Some("a".repeat(crate::MAX_UNTRUSTED_URL_BYTES + 1));
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: solid_buffer([0, 0, 0, 255]),
+        subframes: vec![info],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::OversizedString { field: "SubframeInfo.src", .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected OversizedString protocol event for SubframeInfo.src (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn subframes_discovered_with_oversized_url_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(10);
+    browser.assign_frame(parent, renderer);
+
+    let long = "a".repeat(crate::MAX_UNTRUSTED_URL_BYTES + 1);
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![crate::DiscoveredSubframe {
+          token: crate::SubframeToken(1),
+          navigation: crate::IframeNavigation::Url(long),
+          rect: crate::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+          },
+          hit_testable: true,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags::NONE,
+          opaque_origin: false,
+        }],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::SubframesDiscovered,
+          violation: FrameOwnershipViolation::OversizedString { field: "DiscoveredSubframe.navigation", .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected OversizedString protocol event for DiscoveredSubframe.navigation (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn navigation_committed_with_oversized_url_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let frame = FrameId(1);
+    browser.assign_frame(frame, renderer);
+
+    let long = "a".repeat(crate::MAX_UNTRUSTED_URL_BYTES + 1);
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::NavigationCommitted {
+        frame_id: frame,
+        url: long,
+        base_url: None,
+        csp: Vec::new(),
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::NavigationCommitted,
+          violation: FrameOwnershipViolation::OversizedString { field: "NavigationCommitted.url", .. },
+        } if *process_id == renderer && *frame_id == frame
+      )),
+      "expected OversizedString protocol event for NavigationCommitted.url (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn hover_changed_with_oversized_url_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let frame = FrameId(1);
+    browser.assign_frame(frame, renderer);
+
+    let long = "a".repeat(crate::MAX_UNTRUSTED_URL_BYTES + 1);
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::HoverChanged {
+        frame_id: frame,
+        seq: 1,
+        hovered_url: Some(long),
+        cursor: crate::CursorKind::Default,
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::HoverChanged,
+          violation: FrameOwnershipViolation::OversizedString { field: "HoverChanged.hovered_url", .. },
+        } if *process_id == renderer && *frame_id == frame
+      )),
+      "expected OversizedString protocol event for HoverChanged.hovered_url (events={events:?})"
     );
   }
 }

@@ -12,6 +12,10 @@ use crate::{DocumentOrigin, FrameId};
 use std::collections::HashMap;
 use url::Url;
 
+const MAX_CSP_VALUES_PER_DOCUMENT: usize = 32;
+const MAX_CSP_VALUE_BYTES: usize = 32 * 1024;
+const MAX_CSP_TOTAL_BYTES: usize = 128 * 1024;
+
 /// CSP directives supported by the multiprocess browser prototype.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CspDirective {
@@ -96,6 +100,14 @@ impl CspPolicy {
       .policies
       .iter()
       .all(|set| set_allows_url(set, directive, document_origin, url))
+  }
+}
+
+fn deny_all_frame_src_policy() -> CspPolicy {
+  let mut directives = HashMap::<CspDirective, Vec<CspSource>>::new();
+  directives.insert(CspDirective::FrameSrc, vec![CspSource::None]);
+  CspPolicy {
+    policies: vec![CspDirectiveSet { directives }],
   }
 }
 
@@ -465,15 +477,42 @@ impl FrameNode {
 
   /// Update the frame with the committed URL and raw CSP header/meta values.
   pub fn navigation_committed(&mut self, url: String, csp_values: Vec<String>) {
+    if url.len() > crate::MAX_UNTRUSTED_URL_BYTES {
+      // Treat pathological/oversized URLs as a protocol violation: fail closed by blocking all
+      // out-of-process iframe navigations from this document.
+      self.url = None;
+      self.base_url = None;
+      self.origin = None;
+      self.csp = Some(deny_all_frame_src_policy());
+      return;
+    }
+
     self.origin = DocumentOrigin::from_url_str(&url);
     self.base_url = Some(url.clone());
     self.url = Some(url);
-    self.csp = CspPolicy::from_values(csp_values.iter().map(|s| s.as_str()));
+    let mut total = 0usize;
+    let mut oversized = csp_values.len() > MAX_CSP_VALUES_PER_DOCUMENT;
+    if !oversized {
+      for value in &csp_values {
+        total = total.saturating_add(value.len());
+        if value.len() > MAX_CSP_VALUE_BYTES || total > MAX_CSP_TOTAL_BYTES {
+          oversized = true;
+          break;
+        }
+      }
+    }
+    self.csp = if oversized {
+      Some(deny_all_frame_src_policy())
+    } else {
+      CspPolicy::from_values(csp_values.iter().map(|s| s.as_str()))
+    };
   }
 
   /// Override the base URL used for resolving relative iframe URLs.
   pub fn set_base_url(&mut self, base_url: String) {
-    self.base_url = Some(base_url);
+    if base_url.len() <= crate::MAX_UNTRUSTED_URL_BYTES {
+      self.base_url = Some(base_url);
+    }
   }
 
   /// Configure the subset of `ResourceAccessPolicy` needed to enforce embedder restrictions for
@@ -1027,5 +1066,39 @@ mod tests {
       .check_frame_src("child")
       .expect("expected base URL to influence iframe URL resolution");
     assert_eq!(resolved.as_str(), "https://allowed.example/base/child");
+  }
+
+  #[test]
+  fn oversized_csp_value_fails_closed_by_blocking_frame_src() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://example.com/".to_string(),
+      vec!["a".repeat(MAX_CSP_VALUE_BYTES + 1)],
+    );
+
+    let err = frame
+      .check_frame_src("https://example.com/child")
+      .expect_err("expected oversized CSP value to fail closed");
+    assert_eq!(
+      err,
+      "Blocked by Content-Security-Policy (frame-src) for requested URL: https://example.com/child"
+    );
+  }
+
+  #[test]
+  fn oversized_committed_url_fails_closed_by_blocking_frame_src() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "a".repeat(crate::MAX_UNTRUSTED_URL_BYTES + 1),
+      Vec::new(),
+    );
+
+    let err = frame
+      .check_frame_src("https://example.com/child")
+      .expect_err("expected oversized committed URL to fail closed");
+    assert_eq!(
+      err,
+      "Blocked by Content-Security-Policy (frame-src) for requested URL: https://example.com/child"
+    );
   }
 }
