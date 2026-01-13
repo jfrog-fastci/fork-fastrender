@@ -87,9 +87,15 @@ struct PageProperties {
   margin_right: Option<Length>,
   margin_bottom: Option<Length>,
   margin_left: Option<Length>,
-  bleed: Option<Length>,
+  bleed: Option<PageBleedValue>,
   trim: Option<Length>,
   marks: Option<PageMarks>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PageBleedValue {
+  Auto,
+  Length(Length),
 }
 
 /// Resolved page box metrics after applying @page rules.
@@ -302,18 +308,34 @@ pub fn resolve_page_style(
   page_style.font_size = root_font_size;
 
   let (page_width, page_height) = resolve_page_size(&props, fallback_size, root_font_size);
-  let bleed = props
-    .bleed
-    .and_then(|l| {
-      resolve_length_on_axis(
-        &l,
-        page_width.max(page_height),
-        fallback_size,
-        root_font_size,
-      )
-    })
-    .unwrap_or(0.0)
-    .max(0.0);
+  let marks = props.marks.unwrap_or_default();
+  let bleed = match props.bleed.unwrap_or(PageBleedValue::Auto) {
+    PageBleedValue::Length(l) => resolve_length_on_axis(
+      &l,
+      page_width.max(page_height),
+      fallback_size,
+      root_font_size,
+    )
+    .unwrap_or(0.0),
+    // CSS Page 3: https://drafts.csswg.org/css-page-3/#bleed
+    // "auto" computes to:
+    // - 6pt when crop marks are requested
+    // - otherwise 0
+    PageBleedValue::Auto => {
+      if marks.crop {
+        resolve_length_on_axis(
+          &Length::pt(6.0),
+          page_width.max(page_height),
+          fallback_size,
+          root_font_size,
+        )
+        .unwrap_or(0.0)
+      } else {
+        0.0
+      }
+    }
+  };
+  let bleed = bleed.is_finite().then_some(bleed).unwrap_or(0.0);
   let trim = props
     .trim
     .and_then(|l| {
@@ -454,7 +476,7 @@ pub fn resolve_page_style(
     margin_left,
     bleed,
     trim,
-    marks: props.marks.unwrap_or_default(),
+    marks,
     margin_boxes: margin_styles,
     footnote_style,
     page_style,
@@ -572,8 +594,8 @@ fn apply_page_declaration(
       true
     }
     "bleed" => {
-      if let Some(len) = length_from_value(&decl.value) {
-        props.bleed = Some(len);
+      if let Some(bleed) = parse_page_bleed_value(&decl.value) {
+        props.bleed = Some(bleed);
       }
       true
     }
@@ -734,6 +756,13 @@ fn length_from_value(value: &PropertyValue) -> Option<Length> {
     PropertyValue::Percentage(p) => Some(Length::percent(*p)),
     PropertyValue::Keyword(k) if k.eq_ignore_ascii_case("auto") => Some(Length::px(0.0)),
     _ => None,
+  }
+}
+
+fn parse_page_bleed_value(value: &PropertyValue) -> Option<PageBleedValue> {
+  match value {
+    PropertyValue::Keyword(k) if k.eq_ignore_ascii_case("auto") => Some(PageBleedValue::Auto),
+    other => length_from_value(other).map(PageBleedValue::Length),
   }
 }
 
@@ -1010,6 +1039,8 @@ fn in_to_px(inches: f32) -> f32 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::css::parser::parse_stylesheet;
+  use crate::style::media::MediaContext;
   use std::collections::BTreeMap;
 
   #[test]
@@ -1166,6 +1197,105 @@ mod tests {
       height,
       dims.height,
       dims.width
+    );
+  }
+
+  #[test]
+  fn page_bleed_auto_resolves_to_6pt_when_crop_marks_requested() {
+    let css = "@page { marks: crop; }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    let media = MediaContext::print(800.0, 600.0);
+    let collected = sheet.collect_page_rules(&media);
+
+    let resolved = resolve_page_style(
+      &collected,
+      0,
+      None,
+      PageSide::Right,
+      false,
+      Size::new(800.0, 600.0),
+      16.0,
+      None,
+    );
+
+    let expected = resolve_length_on_axis(&Length::pt(6.0), 800.0, Size::new(800.0, 600.0), 16.0)
+      .expect("resolve 6pt");
+    assert!(
+      (resolved.bleed - expected).abs() < 0.01,
+      "expected bleed to resolve to 6pt ({}px), got {}",
+      expected,
+      resolved.bleed
+    );
+    assert!(
+      (resolved.total_size.width - (resolved.page_size.width + 2.0 * resolved.bleed)).abs() < 0.01
+        && (resolved.total_size.height - (resolved.page_size.height + 2.0 * resolved.bleed)).abs()
+          < 0.01,
+      "expected total_size to expand by 2*bleed, got {:?} for page {:?} bleed {}",
+      resolved.total_size,
+      resolved.page_size,
+      resolved.bleed
+    );
+  }
+
+  #[test]
+  fn page_bleed_auto_resolves_to_zero_without_crop_marks() {
+    let css = "@page { marks: none; }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    let media = MediaContext::print(800.0, 600.0);
+    let collected = sheet.collect_page_rules(&media);
+
+    let resolved = resolve_page_style(
+      &collected,
+      0,
+      None,
+      PageSide::Right,
+      false,
+      Size::new(800.0, 600.0),
+      16.0,
+      None,
+    );
+
+    assert_eq!(resolved.bleed, 0.0);
+  }
+
+  #[test]
+  fn page_bleed_allows_negative_lengths() {
+    let fallback = Size::new(800.0, 600.0);
+    let base = resolve_page_style(&[], 0, None, PageSide::Right, false, fallback, 16.0, None);
+
+    let css = "@page { bleed: -5px; }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    let media = MediaContext::print(800.0, 600.0);
+    let collected = sheet.collect_page_rules(&media);
+    let resolved = resolve_page_style(
+      &collected,
+      0,
+      None,
+      PageSide::Right,
+      false,
+      fallback,
+      16.0,
+      None,
+    );
+
+    assert!(
+      (resolved.bleed + 5.0).abs() < 0.01,
+      "expected negative bleed (-5px), got {}",
+      resolved.bleed
+    );
+    assert!(
+      (resolved.total_size.width - (base.total_size.width - 10.0)).abs() < 0.01
+        && (resolved.total_size.height - (base.total_size.height - 10.0)).abs() < 0.01,
+      "expected total_size to shrink by 10px, base {:?}, got {:?}",
+      base.total_size,
+      resolved.total_size
+    );
+    assert!(
+      (resolved.content_origin.x - (base.content_origin.x - 5.0)).abs() < 0.01
+        && (resolved.content_origin.y - (base.content_origin.y - 5.0)).abs() < 0.01,
+      "expected content_origin to shift by bleed (-5px), base {:?}, got {:?}",
+      base.content_origin,
+      resolved.content_origin
     );
   }
 }
