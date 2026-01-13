@@ -5,7 +5,8 @@
 //! Policy. This module implements a deliberately small-but-useful subset:
 //!
 //! - Directives: `default-src`, `style-src`, `style-src-elem`, `style-src-attr`, `img-src`,
-//!   `font-src`, `connect-src`, `frame-src`, `script-src`, `script-src-elem`, `script-src-attr`
+//!   `media-src`, `font-src`, `connect-src`, `frame-src`, `script-src`, `script-src-elem`,
+//!   `script-src-attr`
 //! - Source expressions:
 //!   - `'self'`, `'none'`
 //!   - `'unsafe-inline'` (inline `<script>`/`<style>` and `style=""` attributes; ignored when a nonce/hash is
@@ -50,6 +51,7 @@ pub enum CspDirective {
   StyleSrcElem,
   StyleSrcAttr,
   ImgSrc,
+  MediaSrc,
   FontSrc,
   ConnectSrc,
   FrameSrc,
@@ -66,6 +68,7 @@ impl CspDirective {
       CspDirective::StyleSrcElem => "style-src-elem",
       CspDirective::StyleSrcAttr => "style-src-attr",
       CspDirective::ImgSrc => "img-src",
+      CspDirective::MediaSrc => "media-src",
       CspDirective::FontSrc => "font-src",
       CspDirective::ConnectSrc => "connect-src",
       CspDirective::FrameSrc => "frame-src",
@@ -167,6 +170,14 @@ impl CspPolicy {
       .policies
       .iter()
       .all(|set| set_allows_url(set, directive, document_origin, url))
+  }
+
+  /// True if this policy allows a media resource URL (e.g. `<video src>` / `<audio src>`).
+  ///
+  /// Semantics: `media-src` takes precedence and falls back to `default-src` when absent, mirroring
+  /// how `img-src` behaves for images.
+  pub fn allows_media_url(&self, document_origin: Option<&DocumentOrigin>, url: &Url) -> bool {
+    self.allows_url(CspDirective::MediaSrc, document_origin, url)
   }
 
   /// True if this policy allows an inline classic `<script>` element to execute.
@@ -485,6 +496,8 @@ fn match_lower_directive(name: &str) -> Option<CspDirective> {
     Some(CspDirective::StyleSrcAttr)
   } else if name.eq_ignore_ascii_case("img-src") {
     Some(CspDirective::ImgSrc)
+  } else if name.eq_ignore_ascii_case("media-src") {
+    Some(CspDirective::MediaSrc)
   } else if name.eq_ignore_ascii_case("font-src") {
     Some(CspDirective::FontSrc)
   } else if name.eq_ignore_ascii_case("connect-src") {
@@ -1159,6 +1172,11 @@ mod tests {
     policy.allows_url(directive, Some(&doc_origin(doc)), &url)
   }
 
+  fn allows_media(policy: &CspPolicy, doc: &str, url: &str) -> bool {
+    let url = Url::parse(url).expect("url");
+    policy.allows_media_url(Some(&doc_origin(doc)), &url)
+  }
+
   #[test]
   fn none_blocks() {
     let policy = CspPolicy::from_values(["img-src 'none'"]).expect("parse");
@@ -1167,6 +1185,45 @@ mod tests {
       CspDirective::ImgSrc,
       "https://example.com/",
       "https://example.com/a.png"
+    ));
+  }
+
+  #[test]
+  fn media_src_none_blocks() {
+    let policy = CspPolicy::from_values(["media-src 'none'"]).expect("parse");
+    assert!(
+      !allows_media(&policy, "https://example.com/", "https://example.com/a.mp4"),
+      "expected media-src 'none' to block media loads"
+    );
+  }
+
+  #[test]
+  fn media_src_scheme_source_allows_https_only() {
+    let policy = CspPolicy::from_values(["media-src https:"]).expect("parse");
+    assert!(allows_media(
+      &policy,
+      "https://example.com/",
+      "https://example.com/a.mp4"
+    ));
+    assert!(!allows_media(
+      &policy,
+      "https://example.com/",
+      "http://example.com/a.mp4"
+    ));
+  }
+
+  #[test]
+  fn media_src_falls_back_to_default_src() {
+    let policy = CspPolicy::from_values(["default-src https:"]).expect("parse");
+    assert!(allows_media(
+      &policy,
+      "https://example.com/",
+      "https://example.com/a.mp4"
+    ));
+    assert!(!allows_media(
+      &policy,
+      "https://example.com/",
+      "http://example.com/a.mp4"
     ));
   }
 
