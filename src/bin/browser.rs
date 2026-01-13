@@ -5951,6 +5951,12 @@ impl App {
     let was_resizing = self.resize_burst_active;
     self.resize_burst_active = is_resizing;
 
+    // When entering/leaving resize mode, drop the page-upload rate limiter so the next frame can
+    // upload immediately (either the first low-quality resize frame or the restored full-quality
+    // frame).
+    self.last_page_upload_at = None;
+    self.next_page_upload_redraw = None;
+
     // When a resize burst ends, flush any pending low-quality viewport update immediately before
     // returning to the normal throttle/DPR.
     if was_resizing && !is_resizing {
