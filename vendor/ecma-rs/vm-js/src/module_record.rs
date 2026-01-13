@@ -1,4 +1,5 @@
 use crate::execution_context::ModuleId;
+use crate::fallible_alloc::arc_try_new_vm;
 use crate::module_graph::ModuleGraph;
 use crate::ImportAttribute;
 use crate::LoadedModuleRequest;
@@ -353,7 +354,7 @@ impl SourceTextModuleRecord {
   /// This corresponds to the spec's `ParseModule` abstract operation, but only models the export
   /// entry lists and `[[RequestedModules]]`.
   pub fn parse(heap: &mut Heap, source: &str) -> Result<Self, VmError> {
-    let source = Arc::new(SourceText::new_charged(heap, "<inline>", source)?);
+    let source = arc_try_new_vm(SourceText::new_charged(heap, "<inline>", source)?)?;
     Self::parse_source(source)
   }
 
@@ -376,13 +377,13 @@ impl SourceTextModuleRecord {
     let mut cancel = || Ok(());
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
-    record.ast = Some(Arc::new(top));
+    record.ast = Some(arc_try_new_vm(top)?);
     Ok(record)
   }
 
   /// Parses a source text module using VM budget/interrupt state.
   pub fn parse_with_vm(heap: &mut Heap, vm: &mut Vm, source: &str) -> Result<Self, VmError> {
-    let source = Arc::new(SourceText::new_charged(heap, "<inline>", source)?);
+    let source = arc_try_new_vm(SourceText::new_charged(heap, "<inline>", source)?)?;
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
@@ -396,7 +397,7 @@ impl SourceTextModuleRecord {
     )?;
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
-    record.ast = Some(Arc::new(top));
+    record.ast = Some(arc_try_new_vm(top)?);
     Ok(record)
   }
 
@@ -416,7 +417,7 @@ impl SourceTextModuleRecord {
     )?;
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
-    record.ast = Some(Arc::new(top));
+    record.ast = Some(arc_try_new_vm(top)?);
     Ok(record)
   }
 

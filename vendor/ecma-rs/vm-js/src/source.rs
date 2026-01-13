@@ -1,4 +1,5 @@
 use crate::heap::ExternalMemoryToken;
+use crate::fallible_alloc::arc_try_new_vm;
 use crate::fallible_format::MAX_ERROR_MESSAGE_BYTES;
 use crate::{Heap, VmError};
 use core::mem;
@@ -138,7 +139,7 @@ impl SourceText {
       .saturating_add(source.text.len())
       .saturating_add(line_starts_bytes);
     let token = heap.charge_external(bytes)?;
-    source.external_memory = Some(Arc::new(token));
+    source.external_memory = Some(arc_try_new_vm(token)?);
     Ok(source)
   }
 

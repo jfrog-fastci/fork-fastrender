@@ -1,6 +1,6 @@
 use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
 use crate::error_object::new_error;
-use crate::fallible_alloc::box_try_new_vm;
+use crate::fallible_alloc::{arc_try_new_vm, box_try_new_vm};
 use crate::for_in::ForInEnumerator;
 use crate::heap::{
   AsyncGeneratorContinuation, AsyncGeneratorState, GeneratorContinuation, GeneratorState, Trace,
@@ -296,11 +296,11 @@ pub(crate) fn perform_indirect_eval(
 ) -> Result<Value, VmError> {
   // If the input is not a String, `eval` returns it unchanged (caller handles this for direct eval).
   let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
-  let source = Arc::new(SourceText::new_charged(
+  let source = arc_try_new_vm(SourceText::new_charged(
     scope.heap_mut(),
     "<eval>",
     source_text,
-  )?);
+  )?)?;
 
   let opts = ParseOptions {
     dialect: Dialect::Ecma,
@@ -449,11 +449,11 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
   ])?;
 
   let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
-  let source = Arc::new(SourceText::new_charged(
+  let source = arc_try_new_vm(SourceText::new_charged(
     scope.heap_mut(),
     "<eval>",
     source_text,
-  )?);
+  )?)?;
   let opts = ParseOptions {
     dialect: Dialect::Ecma,
     source_type: SourceType::Script,
@@ -623,11 +623,11 @@ pub fn eval_script_with_host_and_hooks(
   scope.push_env_root(global_lexical_env)?;
 
   let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
-  let source = Arc::new(SourceText::new_charged(
+  let source = arc_try_new_vm(SourceText::new_charged(
     scope.heap_mut(),
     "<evalScript>",
     source_text,
-  )?);
+  )?)?;
 
   let (line, col) = source.line_col(0);
   let frame = StackFrame {
@@ -883,6 +883,7 @@ impl RuntimeEnv {
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global_object))?;
     scope.push_env_root(lexical_env)?;
+    let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
 
     Ok(Self {
@@ -891,7 +892,7 @@ impl RuntimeEnv {
       lexical_root,
       var_env: VarEnv::GlobalObject,
       global_var_deletable: false,
-      source: Arc::new(SourceText::new("<init>", "")),
+      source,
       base_offset: 0,
       prefix_len: 0,
     })
@@ -909,6 +910,7 @@ impl RuntimeEnv {
     scope.push_env_root(lexical_env)?;
     scope.push_env_root(var_env)?;
 
+    let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
 
     Ok(Self {
@@ -917,7 +919,7 @@ impl RuntimeEnv {
       lexical_root,
       var_env: VarEnv::Env(var_env),
       global_var_deletable: false,
-      source: Arc::new(SourceText::new("<init>", "")),
+      source,
       base_offset: 0,
       prefix_len: 0,
     })
@@ -932,6 +934,7 @@ impl RuntimeEnv {
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global_object))?;
     scope.push_env_root(lexical_env)?;
+    let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);
 
     Ok(Self {
@@ -940,7 +943,7 @@ impl RuntimeEnv {
       lexical_root,
       var_env: VarEnv::GlobalObject,
       global_var_deletable: false,
-      source: Arc::new(SourceText::new("<init>", "")),
+      source,
       base_offset: 0,
       prefix_len: 0,
     })
@@ -2098,7 +2101,7 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(SourceText::new_charged(&mut self.heap, "<inline>", source)?);
+    let source = arc_try_new_vm(SourceText::new_charged(&mut self.heap, "<inline>", source)?)?;
     self.exec_script_source_with_host_and_hooks(
       host,
       hooks,
@@ -2125,7 +2128,7 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(SourceText::new_charged(&mut self.heap, "<inline>", source)?);
+    let source = arc_try_new_vm(SourceText::new_charged(&mut self.heap, "<inline>", source)?)?;
     self.exec_script_source_with_hooks(hooks, source)
   }
 
@@ -2151,7 +2154,7 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(SourceText::new_charged(&mut self.heap, "<inline>", source)?);
+    let source = arc_try_new_vm(SourceText::new_charged(&mut self.heap, "<inline>", source)?)?;
     self.exec_script_source_with_host(host, source)
   }
 
@@ -2166,7 +2169,7 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = Arc::new(self.vm.parse_top_level_with_budget(&source.text, opts)?);
+    let top = arc_try_new_vm(self.vm.parse_top_level_with_budget(&source.text, opts)?)?;
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -2610,7 +2613,7 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = Arc::new(self.vm.parse_top_level_with_budget(&source.text, opts)?);
+    let top = arc_try_new_vm(self.vm.parse_top_level_with_budget(&source.text, opts)?)?;
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -33677,5 +33680,36 @@ mod tests {
 
     assert_eq!(value, Value::Number(1.0));
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod oom_arc_tests {
+  use super::*;
+  use crate::{HeapLimits, VmOptions};
+  use crate::test_alloc::FailNextMatchingAllocGuard;
+  use std::sync::atomic::AtomicUsize;
+
+  // Mirror the allocation layout used by `arc_try_new_vm` (`AtomicUsize` refcounts followed by the
+  // payload). This allows the OOM harness to precisely target the `Arc<SourceText>` allocation.
+  #[repr(C)]
+  struct ArcInner<T> {
+    strong: AtomicUsize,
+    weak: AtomicUsize,
+    data: T,
+  }
+
+  #[test]
+  fn exec_script_returns_out_of_memory_on_source_arc_alloc_failure() {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap).expect("JsRuntime::new");
+
+    let size = std::mem::size_of::<ArcInner<SourceText>>();
+    let align = std::mem::align_of::<ArcInner<SourceText>>();
+    let _guard = FailNextMatchingAllocGuard::new(size, align);
+
+    let err = rt.exec_script("1").expect_err("expected OOM error");
+    assert!(matches!(err, VmError::OutOfMemory));
   }
 }

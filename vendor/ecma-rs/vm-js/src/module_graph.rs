@@ -13,6 +13,7 @@ use crate::module_record::ResolveExportResult;
 use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
+use crate::fallible_alloc::arc_try_new_vm;
 use crate::{
   cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest,
   RealmId, RootId, Scope, StackFrame, Value, Vm, VmError,
@@ -20,7 +21,6 @@ use crate::{
 use crate::{Heap, VmHost, VmHostHooks};
 use core::mem;
 use std::cmp::Ordering;
-use std::sync::Arc;
 use std::collections::HashMap;
 
 const MAX_REJECTION_STACK_FRAMES: usize = 32;
@@ -1058,6 +1058,16 @@ impl ModuleGraph {
       }
     };
 
+    let token_arc = match arc_try_new_vm(token) {
+      Ok(token_arc) => token_arc,
+      Err(err) => {
+        // Avoid leaving the graph in a partially-cached state.
+        scope.heap_mut().remove_root(root);
+        self.modules[idx].namespace = None;
+        return Err(err);
+      }
+    };
+
     // Update the cached export list and keep the external memory charge token alive.
     let Some(cache) = self.modules[idx].namespace.as_mut() else {
       return Err(VmError::InvariantViolation(
@@ -1065,7 +1075,7 @@ impl ModuleGraph {
       ));
     };
     cache.exports = exports_sorted;
-    cache.external_memory = Some(Arc::new(token));
+    cache.external_memory = Some(token_arc);
 
     Ok(namespace_obj)
   }

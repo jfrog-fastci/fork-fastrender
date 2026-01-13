@@ -1,5 +1,6 @@
 use crate::source::format_stack_trace;
 use crate::property::{PropertyKey, PropertyKind};
+use crate::fallible_alloc::arc_try_new_vm;
 use crate::fallible_format;
 use crate::{Budget, Heap, HeapLimits, JsRuntime, Realm, SourceText, Termination, Value, Vm, VmError, VmOptions};
 use std::sync::Arc;
@@ -244,7 +245,7 @@ impl Agent {
     budget: Budget,
     mut host_hooks: Option<&mut dyn HostHooks>,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(SourceText::new_charged(self.heap_mut(), source_name, source_text)?);
+    let source = arc_try_new_vm(SourceText::new_charged(self.heap_mut(), source_name, source_text)?)?;
 
     // Swap the VM budget in/out without holding a borrow across `exec_script`.
     let prev_budget = self.runtime.vm.swap_budget_state(budget);

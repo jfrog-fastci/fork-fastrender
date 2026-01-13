@@ -1,5 +1,6 @@
 use crate::bigint::JsBigInt;
 use crate::exec::{generator_resume, GeneratorResumeInput, GeneratorResumeOutcome};
+use crate::fallible_alloc::arc_try_new_vm;
 use crate::function::{CallHandler, FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::regexp::{
@@ -19,7 +20,6 @@ use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
-use std::sync::Arc;
 use crate::tick;
 
 fn strict_mode_stmts_contain_with(
@@ -5231,7 +5231,7 @@ pub fn function_constructor_construct(
 
   let this_mode = if is_strict { ThisMode::Strict } else { ThisMode::Global };
 
-  let source = Arc::new(SourceText::new_charged(scope.heap_mut(), "<Function>", source)?);
+  let source = arc_try_new_vm(SourceText::new_charged(scope.heap_mut(), "<Function>", source)?)?;
   let span_end = u32::try_from(source.text.len()).unwrap_or(u32::MAX);
   let code_id = vm.register_ecma_function(source, 0, span_end, crate::vm::EcmaFunctionKind::Decl)?;
 
@@ -5480,11 +5480,11 @@ pub fn generator_function_constructor_construct(
 
   let this_mode = if is_strict { ThisMode::Strict } else { ThisMode::Global };
 
-  let source = Arc::new(SourceText::new_charged(
+  let source = arc_try_new_vm(SourceText::new_charged(
     scope.heap_mut(),
     "<GeneratorFunction>",
     source,
-  )?);
+  )?)?;
   let span_end = u32::try_from(source.text.len()).unwrap_or(u32::MAX);
   let code_id = vm.register_ecma_function(source, 0, span_end, crate::vm::EcmaFunctionKind::Decl)?;
 
@@ -5746,11 +5746,11 @@ pub fn async_generator_function_constructor_construct(
 
   let this_mode = if is_strict { ThisMode::Strict } else { ThisMode::Global };
 
-  let source = Arc::new(SourceText::new_charged(
+  let source = arc_try_new_vm(SourceText::new_charged(
     scope.heap_mut(),
     "<AsyncGeneratorFunction>",
     source,
-  )?);
+  )?)?;
   let span_end = u32::try_from(source.text.len()).unwrap_or(u32::MAX);
   let code_id = vm.register_ecma_function(source, 0, span_end, crate::vm::EcmaFunctionKind::Decl)?;
 

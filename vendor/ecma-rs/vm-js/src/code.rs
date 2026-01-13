@@ -9,6 +9,7 @@
 //! [`crate::Heap::charge_external`].
 
 use crate::heap::ExternalMemoryToken;
+use crate::fallible_alloc::arc_try_new_vm;
 use crate::source::SourceText;
 use crate::Heap;
 use crate::VmError;
@@ -50,7 +51,7 @@ impl CompiledScript {
     name: impl Into<Arc<str>>,
     text: impl Into<Arc<str>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
-    let source = Arc::new(SourceText::new_charged(heap, name, text)?);
+    let source = arc_try_new_vm(SourceText::new_charged(heap, name, text)?)?;
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -86,13 +87,14 @@ impl CompiledScript {
     // heap limits apply to compiled code.
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
-    Ok(Arc::new(Self {
+    let hir = arc_try_new_vm(hir)?;
+    Ok(arc_try_new_vm(Self {
       source,
-      hir: Arc::new(hir),
+      hir,
       contains_async_generators,
       source_type: SourceType::Script,
       external_memory,
-    }))
+    })?)
   }
 
   /// Parse and lower a source text module (ECMAScript dialect, `SourceType::Module`).
@@ -101,7 +103,7 @@ impl CompiledScript {
     name: impl Into<Arc<str>>,
     text: impl Into<Arc<str>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
-    let source = Arc::new(SourceText::new_charged(heap, name, text)?);
+    let source = arc_try_new_vm(SourceText::new_charged(heap, name, text)?)?;
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
@@ -130,13 +132,14 @@ impl CompiledScript {
 
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
-    Ok(Arc::new(Self {
+    let hir = arc_try_new_vm(hir)?;
+    Ok(arc_try_new_vm(Self {
       source,
-      hir: Arc::new(hir),
+      hir,
       contains_async_generators,
       source_type: SourceType::Module,
       external_memory,
-    }))
+    })?)
   }
 
   /// Parse and lower a classic script using a VM's budget/interrupt checks.
@@ -149,7 +152,7 @@ impl CompiledScript {
     name: impl Into<Arc<str>>,
     text: impl Into<Arc<str>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
-    let source = Arc::new(SourceText::new_charged(heap, name, text)?);
+    let source = arc_try_new_vm(SourceText::new_charged(heap, name, text)?)?;
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -178,13 +181,14 @@ impl CompiledScript {
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
-    Ok(Arc::new(Self {
+    let hir = arc_try_new_vm(hir)?;
+    Ok(arc_try_new_vm(Self {
       source,
-      hir: Arc::new(hir),
+      hir,
       contains_async_generators,
       source_type: SourceType::Script,
       external_memory,
-    }))
+    })?)
   }
 
   /// Parse and lower a source text module using a VM's budget/interrupt checks.
@@ -194,7 +198,7 @@ impl CompiledScript {
     name: impl Into<Arc<str>>,
     text: impl Into<Arc<str>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
-    let source = Arc::new(SourceText::new_charged(heap, name, text)?);
+    let source = arc_try_new_vm(SourceText::new_charged(heap, name, text)?)?;
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
@@ -213,13 +217,14 @@ impl CompiledScript {
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
-    Ok(Arc::new(Self {
+    let hir = arc_try_new_vm(hir)?;
+    Ok(arc_try_new_vm(Self {
       source,
-      hir: Arc::new(hir),
+      hir,
       contains_async_generators,
       source_type: SourceType::Module,
       external_memory,
-    }))
+    })?)
   }
 }
 

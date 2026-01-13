@@ -2,8 +2,7 @@ use crate::VmError;
 use core::alloc::Layout;
 use core::mem;
 use core::ptr;
-use std::alloc::alloc;
-use std::alloc::dealloc;
+use std::alloc::{alloc, dealloc};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -43,9 +42,12 @@ struct ArcInner<T> {
 }
 
 /// Fallible `Arc<T>` allocation that reports `VmError::OutOfMemory` instead of aborting.
+///
+/// Rust's standard `Arc::new` will abort the process on allocator OOM. `vm-js` frequently stores
+/// attacker-controlled structures (source text, parsed ASTs, compiled scripts) inside `Arc` in hot
+/// runtime paths; those allocations must be recoverable under memory pressure.
 pub(crate) fn arc_try_new_vm<T>(value: T) -> Result<Arc<T>, VmError> {
   let layout = Layout::new::<ArcInner<T>>();
-
   // SAFETY: We allocate enough space for `ArcInner<T>` and initialise all fields before converting
   // it into an `Arc<T>` via `Arc::from_raw`.
   unsafe {
@@ -84,7 +86,6 @@ pub(crate) fn arc_try_new_vm<T>(value: T) -> Result<Arc<T>, VmError> {
       layout,
       data_init: false,
     };
-
     // `Arc::new` initialises both counts to 1 (the implicit weak count).
     ptr::addr_of_mut!((*raw).strong).write(AtomicUsize::new(1));
     ptr::addr_of_mut!((*raw).weak).write(AtomicUsize::new(1));

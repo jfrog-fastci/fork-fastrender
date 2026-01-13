@@ -5,6 +5,7 @@ use crate::exec::{AsyncContinuation, RuntimeEnv};
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptOrModule;
+use crate::fallible_alloc::arc_try_new_vm;
 use crate::function::{
   CallHandler, ConstructHandler, EcmaFunctionId, FunctionData, NativeConstructId, NativeFunctionId, ThisMode,
 };
@@ -2059,7 +2060,7 @@ impl Vm {
       },
     };
 
-    let func = Arc::new(func);
+    let func = arc_try_new_vm(func)?;
 
     let slot = self
       .ecma_functions
