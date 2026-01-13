@@ -3562,88 +3562,111 @@ mod tests {
       }
     }
 
-    let mut tree = TestTree::new();
-
-    let leaf_style = Style {
-      size: Size {
-        width: auto(),
-        height: length(10.0),
-      },
-      ..Default::default()
-    };
-
     // Use a larger number of children so this test is sensitive to measure-call fanout.
     // If min-content sizing accidentally regresses to performing duplicate measurements, the
     // overage scales with the number of items and will reliably trip the assertion.
     const NUM_CHILDREN: usize = 64;
-    let children: Vec<NodeId> = (0..NUM_CHILDREN)
-      .map(|_| tree.new_leaf(leaf_style.clone()))
-      .collect();
-    let root = tree.new_with_children(
-      Style {
-        display: Display::Flex,
-        flex_direction: FlexDirection::Row,
-        ..Default::default()
-      },
-      &children,
-    );
+    for (flex_direction, leaf_style) in [
+      (
+        FlexDirection::Row,
+        // For row-direction flex containers, make the leaf's cross-size (height) definite so we
+        // don't trigger cross-axis measurement probes. Keep the main size auto so the flex-basis
+        // path performs a min-content measurement.
+        Style {
+          size: Size {
+            width: auto(),
+            height: length(10.0),
+          },
+          ..Default::default()
+        },
+      ),
+      (
+        FlexDirection::Column,
+        // For column-direction flex containers, the cross axis is width. Make width definite to
+        // avoid cross-axis probes, and keep height auto so the flex-basis path measures under the
+        // min-content constraint.
+        Style {
+          size: Size {
+            width: length(10.0),
+            height: auto(),
+          },
+          ..Default::default()
+        },
+      ),
+    ] {
+      let mut tree = TestTree::new();
+      let children: Vec<NodeId> = (0..NUM_CHILDREN)
+        .map(|_| tree.new_leaf(leaf_style.clone()))
+        .collect();
+      let root = tree.new_with_children(
+        Style {
+          display: Display::Flex,
+          flex_direction,
+          ..Default::default()
+        },
+        &children,
+      );
 
-    // Mirror `TaffyTree::compute_layout_with_measure` by calling into the root layout function,
-    // but *without* using any caching. This ensures identical min-content queries are observable
-    // as multiple measure callbacks.
-    compute_root_layout(&mut tree, root, Size::MIN_CONTENT);
+      // Mirror `TaffyTree::compute_layout_with_measure` by calling into the root layout function,
+      // but *without* using any caching. This ensures identical min-content queries are observable
+      // as multiple measure callbacks.
+      compute_root_layout(&mut tree, root, Size::MIN_CONTENT);
 
-    // Each leaf is measured:
-    //  - once for flex-basis under min-content,
-    //  - once for the final PerformLayout pass.
-    //
-    // The automatic minimum size computation should reuse the flex-basis min-content measurement,
-    // rather than triggering an identical extra measure.
-    let expected_max_calls = children.len() * 2;
-    assert!(
-      tree.measure_call_count <= expected_max_calls,
-      "expected at most {expected_max_calls} measure calls for {} items, got {}",
-      children.len(),
-      tree.measure_call_count
-    );
+      // Each leaf is measured:
+      //  - once for flex-basis under min-content,
+      //  - once for the final PerformLayout pass.
+      //
+      // The automatic minimum size computation should reuse the flex-basis min-content measurement,
+      // rather than triggering an identical extra measure.
+      let expected_max_calls = children.len() * 2;
+      assert!(
+        tree.measure_call_count <= expected_max_calls,
+        "flex_direction={flex_direction:?}: expected at most {expected_max_calls} measure calls for {} items, got {}",
+        children.len(),
+        tree.measure_call_count
+      );
+    }
   }
 
   #[test]
   fn flexbox_min_content_auto_min_size_reuses_flex_basis_measurement() {
-    // Reset test-only counter.
-    super::MIN_CONTENT_AUTOMATIC_MIN_SIZE_MEASURE_CALLS.with(|count| count.set(0));
+    for flex_direction in [FlexDirection::Row, FlexDirection::Column] {
+      // Reset test-only counter.
+      super::MIN_CONTENT_AUTOMATIC_MIN_SIZE_MEASURE_CALLS.with(|count| count.set(0));
 
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
+      let mut taffy: TaffyTree<()> = TaffyTree::new();
 
-    let children: Vec<NodeId> =
-      (0..5).map(|_| taffy.new_leaf(Style::default()).unwrap()).collect();
+      let children: Vec<NodeId> =
+        (0..5).map(|_| taffy.new_leaf(Style::default()).unwrap()).collect();
 
-    let root = taffy
-      .new_with_children(
-        Style {
-          display: Display::Flex,
-          ..Default::default()
-        },
-        &children,
-      )
-      .unwrap();
+      let root = taffy
+        .new_with_children(
+          Style {
+            display: Display::Flex,
+            flex_direction,
+            ..Default::default()
+          },
+          &children,
+        )
+        .unwrap();
 
-    // Run layout under a min-content constraint so that the flex-basis measurement and the
-    // automatic-min-size min-content measurement would otherwise be identical.
-    taffy.compute_layout(root, Size::MIN_CONTENT).unwrap();
+      // Run layout under a min-content constraint so that the flex-basis measurement and the
+      // automatic-min-size min-content measurement would otherwise be identical.
+      taffy.compute_layout(root, Size::MIN_CONTENT).unwrap();
 
-    let calls =
-      super::MIN_CONTENT_AUTOMATIC_MIN_SIZE_MEASURE_CALLS.with(|count| count.get());
-    assert_eq!(calls, 0);
+      let calls =
+        super::MIN_CONTENT_AUTOMATIC_MIN_SIZE_MEASURE_CALLS.with(|count| count.get());
+      assert_eq!(calls, 0, "flex_direction={flex_direction:?}");
 
-    // Sanity: ensure we produced finite layouts (no NaNs).
-    let root_layout = taffy.layout(root).unwrap();
-    assert!(root_layout.size.width.is_finite());
-    assert!(root_layout.size.height.is_finite());
-    for child in children {
-      let layout = taffy.layout(child).unwrap();
-      assert!(layout.size.width.is_finite());
-      assert!(layout.size.height.is_finite());
+      // Sanity: ensure we produced finite layouts (no NaNs).
+      let root_layout = taffy.layout(root).unwrap();
+      assert!(root_layout.size.width.is_finite());
+      assert!(root_layout.size.height.is_finite());
+      for child in children {
+        let layout = taffy.layout(child).unwrap();
+        assert!(layout.size.width.is_finite());
+        assert!(layout.size.height.is_finite());
+      }
     }
   }
-}
+} 
