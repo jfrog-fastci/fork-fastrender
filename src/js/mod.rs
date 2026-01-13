@@ -39,11 +39,6 @@ pub mod dom2_bindings;
 pub mod dom_host;
 pub mod dom_scripts;
 pub mod console_sink;
-// Dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
-//
-// This is not part of the canonical `vm-js` WindowRealm pipeline, but remains useful while bindings
-// and streaming execution are still being integrated.
-pub mod browser_tab;
 pub mod clock;
 pub mod document_lifecycle;
 pub mod document_write;
@@ -200,7 +195,6 @@ pub mod ecma_embed;
 #[path = "legacy/ecma_vm_runtime.rs"]
 pub mod ecma_vm_runtime;
 pub use crate::web::dom::DocumentReadyState;
-pub use browser_tab::{BrowserTab, BrowserTabHost};
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost, LoadBlockerKind};
 pub use document_write::{with_document_write_state, DocumentWriteLimitError, DocumentWriteState};
