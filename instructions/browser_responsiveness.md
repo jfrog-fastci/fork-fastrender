@@ -69,6 +69,8 @@ A change counts if it lands at least one of:
 # - Scroll: `scroll_latency_p50_ms` / `scroll_latency_p95_ms` (ScrollTo → next frame)
 # - Resize: `resize_latency_p50_ms` / `resize_latency_p95_ms` (ViewportChanged → next frame)
 # - Input: `input_latency_p50_ms` / `input_latency_p95_ms` (TextInput/Backspace → next frame)
+# Note: scroll/resize scenarios run against `about:test-layout-stress` so measurements include
+# non-trivial, width-sensitive reflow/layout work.
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
 
 # Windowed perf-log capture + summary (p50/p95/max) from an interactive session.
