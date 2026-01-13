@@ -29,6 +29,11 @@ const PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: usize = 0x0002_000F
 // Value for `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (winbase.h).
 const PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK: u32 = 1;
 
+// `ERROR_NOT_SUPPORTED` / `ERROR_INVALID_PARAMETER` are stable Win32 error codes commonly returned
+// when a `STARTUPINFOEX` attribute is not supported by the host OS.
+const ERROR_NOT_SUPPORTED: u32 = 50;
+const ERROR_INVALID_PARAMETER: u32 = 87;
+
 /// Configuration for spawning a sandboxed Windows child process.
 #[derive(Debug)]
 pub struct SpawnConfig<'a> {
