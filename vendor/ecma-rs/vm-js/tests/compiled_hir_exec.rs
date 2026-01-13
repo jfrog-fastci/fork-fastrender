@@ -4855,6 +4855,72 @@ fn compiled_for_of_break_closes_iterator() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_for_of_step_error_does_not_close_iterator() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let it = {
+        closed: 0,
+        [Symbol.iterator]: function() { return this; },
+        next: function() { throw 1; },
+        return: function() {
+          this.closed = this.closed + 1;
+          return { done: true };
+        },
+      };
+      try {
+        for (let x of it) {}
+      } catch (e) {}
+      it.closed
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_of_body_throw_closes_iterator() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let it = {
+        i: 0,
+        closed: 0,
+        [Symbol.iterator]: function() { return this; },
+        next: function() {
+          this.i = this.i + 1;
+          return { value: 1, done: this.i > 1 };
+        },
+        return: function() {
+          this.closed = this.closed + 1;
+          return { done: true };
+        },
+      };
+      try {
+        for (let x of it) { throw 1; }
+      } catch (e) {}
+      it.closed
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_destructuring_decl_default_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
