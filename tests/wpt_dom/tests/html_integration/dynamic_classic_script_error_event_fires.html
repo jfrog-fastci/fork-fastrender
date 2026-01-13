@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML integration: dynamic classic script fires error</title>
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/fastrender_testharness_report.js"></script>
+
+<script>
+  async_test((t) => {
+    var s = document.createElement("script");
+    // Use setAttribute so the offline corpus validator doesn't treat this as a static `src=...`
+    // reference. The resource is intentionally missing to exercise the network-error path.
+    s.setAttribute("src", "resources/missing.js");
+
+    s.addEventListener("load", t.unreached_func("missing script should not fire load"));
+    s.addEventListener(
+      "error",
+      t.step_func(() => {
+        // Defer completion one task so a buggy implementation that fires `load` after `error`
+        // is still caught by the `load` unreached listener.
+        t.step_timeout(() => {
+          t.done();
+        }, 0);
+      })
+    );
+
+    document.head.appendChild(s);
+  }, "dynamically inserted missing classic script fires error (no hang)");
+</script>

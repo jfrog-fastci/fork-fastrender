@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML integration: src="" suppresses inline + fires error</title>
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/fastrender_testharness_report.js"></script>
+
+<script>
+  async_test((t) => {
+    globalThis.inline_ran = false;
+
+    var s = document.createElement("script");
+    // Setting `src` to the empty string still counts as having a `src` attribute and therefore:
+    // - the inline text must be suppressed, and
+    // - the script should fail to load and fire `error` (no `load`).
+    s.src = "";
+    s.textContent = "globalThis.inline_ran = true;";
+
+    s.addEventListener("load", t.unreached_func("load should not fire for src=''"));
+    s.addEventListener(
+      "error",
+      t.step_func(() => {
+        // Defer completion one task so a buggy implementation that fires `load` after `error`
+        // is still caught by the `load` unreached listener.
+        t.step_timeout(() => {
+          assert_false(
+            globalThis.inline_ran,
+            "inline text must be suppressed when the src attribute is present (even if empty)"
+          );
+          t.done();
+        }, 0);
+      })
+    );
+
+    document.head.appendChild(s);
+  }, "dynamic classic script with empty src attribute fires error and suppresses inline text");
+</script>

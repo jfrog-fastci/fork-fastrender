@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "foo": "./module_mapped.js"
+  }
+}
+

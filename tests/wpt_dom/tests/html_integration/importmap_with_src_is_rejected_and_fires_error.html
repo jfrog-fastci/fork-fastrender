@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML integration: import maps with src are rejected</title>
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/fastrender_testharness_report.js"></script>
+
+<script>
+  async_test((t) => {
+    globalThis.resolve_threw = false;
+    globalThis.resolved_foo = "";
+
+    var importmap = document.createElement("script");
+    importmap.type = "importmap";
+    importmap.src = "resources/importmap_valid.json";
+
+    importmap.addEventListener(
+      "load",
+      t.unreached_func("import maps with src should be rejected (no load event)")
+    );
+    importmap.addEventListener(
+      "error",
+      t.step_func(() => {
+        // Now that the invalid import map has errored, verify that it was not applied by checking
+        // that a bare specifier still fails to resolve via `import.meta.resolve`.
+        var mod = document.createElement("script");
+        mod.type = "module";
+        mod.src = "resources/import_meta_resolve_foo.js";
+        mod.addEventListener("error", t.unreached_func("module helper should load"));
+        mod.addEventListener(
+          "load",
+          t.step_func_done(() => {
+            assert_true(
+              globalThis.resolve_threw,
+              "import.meta.resolve('foo') should throw because the src import map must not be applied"
+            );
+            assert_equals(
+              globalThis.resolved_foo,
+              "",
+              "no resolved URL should be produced when import.meta.resolve throws"
+            );
+          })
+        );
+        document.head.appendChild(mod);
+      })
+    );
+
+    document.head.appendChild(importmap);
+  }, "import map script with a src attribute fires error and does not apply mappings");
+</script>

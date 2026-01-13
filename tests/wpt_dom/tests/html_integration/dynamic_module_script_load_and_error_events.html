@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML integration: dynamic module script load/error</title>
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/fastrender_testharness_report.js"></script>
+
+<script>
+  async_test((t) => {
+    globalThis.module_ok_ran = false;
+
+    var s = document.createElement("script");
+    s.type = "module";
+    s.src = "resources/module_ok.js";
+
+    s.addEventListener("error", t.unreached_func("module_ok.js should not fire error"));
+    s.addEventListener(
+      "load",
+      t.step_func_done(() => {
+        assert_true(
+          globalThis.module_ok_ran,
+          "module script should run before the load event fires"
+        );
+      })
+    );
+
+    document.head.appendChild(s);
+  }, "dynamic module script executes and fires load");
+
+  async_test((t) => {
+    globalThis.module_missing_ran = false;
+
+    var s = document.createElement("script");
+    s.type = "module";
+    // Use setAttribute so the offline corpus validator doesn't treat this as a static `src=...`
+    // reference. The resource is intentionally missing to exercise the network-error path.
+    s.setAttribute("src", "resources/missing_module.js");
+
+    s.addEventListener("load", t.unreached_func("missing module script should not fire load"));
+    s.addEventListener(
+      "error",
+      t.step_func(() => {
+        t.step_timeout(() => {
+          assert_false(globalThis.module_missing_ran, "missing module script must not run");
+          t.done();
+        }, 0);
+      })
+    );
+
+    document.head.appendChild(s);
+  }, "dynamic missing module script fires error and does not execute");
+</script>
