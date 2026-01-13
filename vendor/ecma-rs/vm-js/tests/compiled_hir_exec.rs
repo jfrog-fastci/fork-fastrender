@@ -510,6 +510,23 @@ fn compiled_for_triple_let_restores_lexical_env_on_break() -> Result<(), VmError
 }
 
 #[test]
+fn compiled_for_loop_let_restores_lexical_env_after_normal_completion() -> Result<(), VmError> {
+  // The loop variable binding must not leak into the surrounding scope after the loop completes
+  // normally.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        for (let i = 0; i < 1; i = i + 1) {}
+        return typeof i === 'undefined';
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_for_loop_let_restores_lexical_env_after_throw() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
