@@ -602,6 +602,41 @@ mod tests {
   }
 
   #[test]
+  fn interaction_hash_paint_only_mutation_changes_paint_not_css() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    let css_before = engine.interaction_state().interaction_css_hash();
+    let paint_before = engine.interaction_state().interaction_paint_hash();
+
+    // Paint-only: caret/selection update inside the already-focused control.
+    engine.set_text_selection_caret(input_id, 1);
+
+    let css_after = engine.interaction_state().interaction_css_hash();
+    let paint_after = engine.interaction_state().interaction_paint_hash();
+
+    assert_eq!(css_before, css_after, "paint-only mutations must not affect css hash");
+    assert_ne!(paint_before, paint_after, "paint-only mutations must affect paint hash");
+  }
+
+  #[test]
+  fn interaction_hash_repeated_reads_are_stable_without_mutation() {
+    let state = InteractionState::default();
+
+    let css_a = state.interaction_css_hash();
+    let css_b = state.interaction_css_hash();
+    assert_eq!(css_a, css_b);
+
+    let paint_a = state.interaction_paint_hash();
+    let paint_b = state.interaction_paint_hash();
+    assert_eq!(paint_a, paint_b);
+  }
+
+  #[test]
   fn style_for_styled_node_id_ignores_pseudo_boxes() {
     let styled_node_id = 42;
 
@@ -5171,6 +5206,7 @@ impl InteractionEngine {
   /// external per-tab visited URL store without mutating the DOM.
   pub fn set_visited_links(&mut self, visited_links: FxHashSet<usize>) {
     self.state.visited_links = visited_links;
+    self.state.mark_css_hash_dirty();
   }
 
   /// Return the kind of *active* drag-and-drop gesture, if any.
@@ -5351,7 +5387,11 @@ impl InteractionEngine {
   }
 
   fn mark_user_validity(&mut self, node_id: usize) -> bool {
-    self.state.user_validity.insert(node_id)
+    let changed = self.state.user_validity.insert(node_id);
+    if changed {
+      self.state.mark_css_hash_dirty();
+    }
+    changed
   }
 
   fn record_text_undo_snapshot(&mut self, node_id: usize, value: &str, edit: &TextEditState) {
@@ -5543,6 +5583,7 @@ impl InteractionEngine {
 
       if self.state.form_state.file_inputs.remove(&node_id).is_some() {
         changed = true;
+        self.state.mark_paint_hash_dirty();
       }
       if let Some(node_mut) = index.node_mut(node_id) {
         changed |= remove_node_attr(node_mut, "data-fastr-file-value");
@@ -5591,6 +5632,9 @@ impl InteractionEngine {
       if self.state.user_validity.remove(&node_id) {
         cleared_user_validity = true;
       }
+    }
+    if cleared_user_validity {
+      self.state.mark_css_hash_dirty();
     }
     changed |= cleared_user_validity;
 
@@ -5973,6 +6017,9 @@ impl InteractionEngine {
       });
     let changed = self.state.text_edit != next;
     self.state.text_edit = next;
+    if changed {
+      self.state.mark_paint_hash_dirty();
+    }
     changed
   }
 
@@ -6074,6 +6121,8 @@ impl InteractionEngine {
   ) -> bool {
     let prev_focused = self.state.focused;
     let prev_focus_visible = self.state.focus_visible;
+    let prev_preedit = self.state.ime_preedit.is_some();
+    let prev_document_selection = self.state.document_selection.is_some();
     let mut changed = false;
 
     // Any focus change cancels an in-progress IME composition and resets text-editing state.
@@ -6091,6 +6140,9 @@ impl InteractionEngine {
       self.pending_text_drop_move = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
       self.state.document_selection = None;
+      if prev_document_selection {
+        self.state.mark_paint_hash_dirty();
+      }
     }
 
     self.state.focused = new_focused;
@@ -6137,6 +6189,19 @@ impl InteractionEngine {
 
     // Keep caret/selection paint state in sync with the internal text editing state.
     changed |= self.sync_text_edit_paint_state();
+
+    // Focus state participates in selector matching.
+    let css_changed = prev_focused != self.state.focused
+      || prev_focus_visible != self.state.focus_visible
+      || focus_chain_changed;
+    if css_changed {
+      self.state.mark_css_hash_dirty();
+    }
+
+    // IME preedit cancellation is paint-only.
+    if prev_preedit && self.state.ime_preedit.is_none() {
+      self.state.mark_paint_hash_dirty();
+    }
 
     changed
       || prev_focused != self.state.focused
@@ -6702,6 +6767,7 @@ impl InteractionEngine {
             ranges.normalize();
             if *ranges != before {
               dom_changed = true;
+              self.state.mark_paint_hash_dirty();
             }
           }
         }
@@ -7283,7 +7349,11 @@ impl InteractionEngine {
         self.state.document_selection = None;
       }
     }
-    dom_changed |= prev_doc_selection != self.state.document_selection;
+    let selection_changed = prev_doc_selection != self.state.document_selection;
+    if selection_changed {
+      self.state.mark_paint_hash_dirty();
+    }
+    dom_changed |= selection_changed;
     (dom_changed, down_hit)
   }
 
@@ -7673,6 +7743,10 @@ impl InteractionEngine {
     // Ensure the paint-only caret/selection state stays in sync with the remapped internal edit
     // state.
     let _ = self.sync_text_edit_paint_state();
+
+    // Node ids used by both CSS selector matching and paint-only state may have been remapped above.
+    // Ensure cached interaction digests are recomputed before the next render.
+    self.state.mark_all_hashes_dirty();
   }
   /// Like [`InteractionEngine::pointer_up_with_scroll`], but also returns the hit-test result used
   /// to resolve the pointer-up target.
@@ -7903,7 +7977,34 @@ impl InteractionEngine {
                   if is_focusable_interactive_element(&index, target_id) {
                     dom_changed |= self.set_focus(&mut index, Some(target_id), false);
                     // Restore the document selection for copy semantics.
+                    let before_selection = self.state.document_selection.clone();
                     self.state.document_selection = preserved_selection.clone();
+                    if before_selection != self.state.document_selection {
+                      self.state.mark_paint_hash_dirty();
+                    }
+
+                    // Place caret/selection state for the pending drop so `apply_text_drop` inserts
+                    // at the drop location.
+                    if self.state.focused == Some(target_id) {
+                      match self.text_edit.as_mut().filter(|edit| edit.node_id == target_id) {
+                        Some(edit) => {
+                          edit.caret = caret;
+                          edit.caret_affinity = affinity;
+                          edit.selection_anchor = None;
+                          edit.preferred_x = None;
+                        }
+                        None => {
+                          self.text_edit = Some(TextEditState {
+                            node_id: target_id,
+                            caret,
+                            caret_affinity: affinity,
+                            selection_anchor: None,
+                            preferred_x: None,
+                          });
+                        }
+                      }
+                      dom_changed |= self.sync_text_edit_paint_state();
+                    }
                   }
 
                   // Defer default insertion until `apply_text_drop` is called.
@@ -7944,7 +8045,11 @@ impl InteractionEngine {
           } else {
             self.state.document_selection = None;
           }
-          dom_changed |= before != self.state.document_selection;
+          let selection_changed = before != self.state.document_selection;
+          if selection_changed {
+            self.state.mark_paint_hash_dirty();
+          }
+          dom_changed |= selection_changed;
         }
       }
     }
@@ -8196,6 +8301,7 @@ impl InteractionEngine {
               if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
                 if self.state.visited_links.insert(target_id) {
                   dom_changed = true;
+                  self.state.mark_css_hash_dirty();
                 }
 
                 let download_attr = index
@@ -8663,6 +8769,7 @@ impl InteractionEngine {
       } else {
         self.state.form_state.file_inputs.insert(target_id, selected);
       }
+      self.state.mark_paint_hash_dirty();
 
       // Selecting files flips HTML user validity so `:user-invalid` can match after interaction.
       changed |= self.mark_user_validity(target_id);
@@ -8735,6 +8842,7 @@ impl InteractionEngine {
       } else {
         self.state.form_state.file_inputs.insert(input_node_id, selected);
       }
+      self.state.mark_paint_hash_dirty();
 
       // Selecting files flips HTML user validity so `:user-invalid` can match after interaction.
       changed |= self.mark_user_validity(input_node_id);
@@ -9237,6 +9345,9 @@ impl InteractionEngine {
   fn ime_cancel_internal(&mut self) -> bool {
     let changed = self.state.ime_preedit.is_some();
     self.state.ime_preedit = None;
+    if changed {
+      self.state.mark_paint_hash_dirty();
+    }
     changed
   }
 
@@ -9280,13 +9391,14 @@ impl InteractionEngine {
     }
 
     // Update internal state.
+    let mut preedit_changed = false;
     match self.state.ime_preedit.as_mut() {
       Some(existing) if existing.node_id == focused => {
         if existing.text != text || existing.cursor != cursor {
           existing.text.clear();
           existing.text.push_str(text);
           existing.cursor = cursor;
-          changed = true;
+          preedit_changed = true;
         }
       }
       _ => {
@@ -9295,8 +9407,12 @@ impl InteractionEngine {
           text: text.to_string(),
           cursor,
         });
-        changed = true;
+        preedit_changed = true;
       }
+    }
+    if preedit_changed {
+      self.state.mark_paint_hash_dirty();
+      changed = true;
     }
 
     changed
@@ -9398,6 +9514,7 @@ impl InteractionEngine {
             // Text-control selection is distinct from document selection.
             if self.state.document_selection.is_some() {
               self.state.document_selection = None;
+              self.state.mark_paint_hash_dirty();
               changed = true;
             }
           }
@@ -9413,6 +9530,7 @@ impl InteractionEngine {
     let prev_doc = self.state.document_selection.clone();
     self.state.document_selection = Some(DocumentSelectionState::All);
     if prev_doc != self.state.document_selection {
+      self.state.mark_paint_hash_dirty();
       changed = true;
     }
 
@@ -10724,6 +10842,7 @@ impl InteractionEngine {
           if let Some(resolved) = resolve_url(base_url, href) {
             if self.state.visited_links.insert(focused) {
               changed = true;
+              self.state.mark_css_hash_dirty();
             }
             let download_attr = index.node(focused).and_then(|node| node.get_attribute_ref("download"));
             let is_download = download_attr.is_some();
@@ -11181,6 +11300,7 @@ impl InteractionEngine {
           if let Some(resolved) = resolve_url(base_url, href) {
             if self.state.visited_links.insert(focused) {
               changed = true;
+              self.state.mark_css_hash_dirty();
             }
             let target_blank = index
               .node(focused)

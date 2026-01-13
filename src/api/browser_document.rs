@@ -9,7 +9,7 @@ use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -65,12 +65,6 @@ pub struct BrowserDocument {
   last_painted_animation_clock: Option<Duration>,
 }
 
-fn hash_usize_set(hasher: &mut DefaultHasher, set: &FxHashSet<usize>) {
-  let mut values: Vec<usize> = set.iter().copied().collect();
-  values.sort_unstable();
-  values.hash(hasher);
-}
-
 fn interaction_state_css_fingerprint(state: Option<&InteractionState>) -> u64 {
   let mut hasher = DefaultHasher::new();
   match state {
@@ -79,13 +73,8 @@ fn interaction_state_css_fingerprint(state: Option<&InteractionState>) -> u64 {
     }
     Some(state) => {
       1u8.hash(&mut hasher);
-      state.focused.hash(&mut hasher);
-      state.focus_visible.hash(&mut hasher);
-      state.focus_chain().hash(&mut hasher);
-      state.hover_chain().hash(&mut hasher);
-      state.active_chain().hash(&mut hasher);
-      hash_usize_set(&mut hasher, &state.visited_links);
-      hash_usize_set(&mut hasher, &state.user_validity);
+      // Avoid per-frame hashing/sorting of large sets by using the cached interaction digest.
+      state.interaction_css_hash().hash(&mut hasher);
     }
   }
   hasher.finish()
@@ -99,51 +88,8 @@ fn interaction_state_paint_fingerprint(state: Option<&InteractionState>) -> u64 
     }
     Some(state) => {
       1u8.hash(&mut hasher);
-
-      // File input state is stored out-of-DOM, so include it in the paint fingerprint so file drops
-      // trigger a repaint (label updates and submission semantics).
-      if !state.form_state.file_inputs.is_empty() {
-        let mut keys: Vec<usize> = state.form_state.file_inputs.keys().copied().collect();
-        keys.sort_unstable();
-        for node_id in keys {
-          node_id.hash(&mut hasher);
-          if let Some(files) = state.form_state.file_inputs.get(&node_id) {
-            files.len().hash(&mut hasher);
-            for file in files {
-              file.path.to_string_lossy().as_ref().hash(&mut hasher);
-              file.filename.hash(&mut hasher);
-              file.bytes.len().hash(&mut hasher);
-              file.content_type.hash(&mut hasher);
-            }
-          }
-        }
-      }
-
-      if let Some(preedit) = &state.ime_preedit {
-        1u8.hash(&mut hasher);
-        preedit.node_id.hash(&mut hasher);
-        preedit.text.hash(&mut hasher);
-        preedit.cursor.hash(&mut hasher);
-      } else {
-        0u8.hash(&mut hasher);
-      }
-
-      if let Some(edit) = &state.text_edit {
-        1u8.hash(&mut hasher);
-        edit.node_id.hash(&mut hasher);
-        edit.caret.hash(&mut hasher);
-        edit.caret_affinity.hash(&mut hasher);
-        edit.selection.hash(&mut hasher);
-      } else {
-        0u8.hash(&mut hasher);
-      }
-
-      if let Some(selection) = &state.document_selection {
-        1u8.hash(&mut hasher);
-        selection.hash(&mut hasher);
-      } else {
-        0u8.hash(&mut hasher);
-      }
+      // Avoid per-frame hashing/sorting of large sets/maps by using the cached interaction digest.
+      state.interaction_paint_hash().hash(&mut hasher);
     }
   }
   hasher.finish()

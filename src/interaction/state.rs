@@ -6,7 +6,10 @@ use crate::interaction::selection_serialize::{
 use crate::text::caret::CaretAffinity;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 
 /// Live (non-DOM) form control state.
 ///
@@ -405,7 +408,7 @@ pub(crate) fn document_selection_contains_point_dom2(
 /// represent dynamic user interaction state (hover/active/focus/visited/user validity/IME preedit).
 /// Keeping this state out of the DOM avoids observable author CSS/DOM side effects and reduces DOM
 /// churn.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct InteractionState {
   /// Currently focused element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
   pub focused: Option<usize>,
@@ -448,6 +451,20 @@ pub struct InteractionState {
   ///
   /// This gates `:user-valid` / `:user-invalid` pseudo-classes.
   pub user_validity: FxHashSet<usize>,
+
+  /// Cached hash of interaction state that can affect CSS selector matching.
+  ///
+  /// This is derived from fields such as focus/hover/active state, visited links, and user validity.
+  /// The value is recomputed lazily when [`css_hash_dirty`](Self::css_hash_dirty) is set.
+  cached_css_hash: AtomicU64,
+  /// Cached hash of interaction state that affects paint-only output (caret/selection/IME, etc).
+  ///
+  /// The value is recomputed lazily when [`paint_hash_dirty`](Self::paint_hash_dirty) is set.
+  cached_paint_hash: AtomicU64,
+  /// Whether [`cached_css_hash`](Self::cached_css_hash) needs recomputation.
+  css_hash_dirty: AtomicBool,
+  /// Whether [`cached_paint_hash`](Self::cached_paint_hash) needs recomputation.
+  paint_hash_dirty: AtomicBool,
 }
 
 impl InteractionState {
@@ -467,45 +484,69 @@ impl InteractionState {
   }
 
   pub fn set_focus_chain(&mut self, chain: Vec<usize>) {
+    if self.focus_chain == chain {
+      return;
+    }
     self.focus_chain_membership.clear();
     self.focus_chain_membership.reserve(chain.len());
     for &id in &chain {
       self.focus_chain_membership.insert(id);
     }
     self.focus_chain = chain;
+    self.mark_css_hash_dirty();
   }
 
   pub fn set_hover_chain(&mut self, chain: Vec<usize>) {
+    if self.hover_chain == chain {
+      return;
+    }
     self.hover_chain_membership.clear();
     self.hover_chain_membership.reserve(chain.len());
     for &id in &chain {
       self.hover_chain_membership.insert(id);
     }
     self.hover_chain = chain;
+    self.mark_css_hash_dirty();
   }
 
   pub fn set_active_chain(&mut self, chain: Vec<usize>) {
+    if self.active_chain == chain {
+      return;
+    }
     self.active_chain_membership.clear();
     self.active_chain_membership.reserve(chain.len());
     for &id in &chain {
       self.active_chain_membership.insert(id);
     }
     self.active_chain = chain;
+    self.mark_css_hash_dirty();
   }
 
   pub fn clear_focus_chain(&mut self) {
+    if self.focus_chain.is_empty() {
+      return;
+    }
     self.focus_chain.clear();
     self.focus_chain_membership.clear();
+    self.mark_css_hash_dirty();
   }
 
   pub fn clear_hover_chain(&mut self) {
+    if self.hover_chain.is_empty() {
+      return;
+    }
     self.hover_chain.clear();
     self.hover_chain_membership.clear();
+    self.mark_css_hash_dirty();
   }
 
   pub fn clear_active_chain(&mut self) {
+    if self.active_chain.is_empty() {
+      return;
+    }
     self.active_chain.clear();
     self.active_chain_membership.clear();
+    self.mark_css_hash_dirty();
   }
 
   pub(crate) fn mutate_focus_chain(&mut self, f: impl FnOnce(&mut Vec<usize>)) {
@@ -515,6 +556,7 @@ impl InteractionState {
     for &id in &self.focus_chain {
       self.focus_chain_membership.insert(id);
     }
+    self.mark_css_hash_dirty();
   }
 
   pub(crate) fn mutate_hover_chain(&mut self, f: impl FnOnce(&mut Vec<usize>)) {
@@ -524,6 +566,7 @@ impl InteractionState {
     for &id in &self.hover_chain {
       self.hover_chain_membership.insert(id);
     }
+    self.mark_css_hash_dirty();
   }
 
   pub(crate) fn mutate_active_chain(&mut self, f: impl FnOnce(&mut Vec<usize>)) {
@@ -535,6 +578,7 @@ impl InteractionState {
     for &id in &self.active_chain {
       self.active_chain_membership.insert(id);
     }
+    self.mark_css_hash_dirty();
   }
 
   #[inline]
@@ -583,6 +627,180 @@ impl InteractionState {
   pub fn has_user_validity(&self, node_id: usize) -> bool {
     self.user_validity.contains(&node_id)
   }
+
+  /// Mark the cached CSS interaction hash as dirty.
+  ///
+  /// Callers that mutate focus/hover/active/visited/user-validity state must invoke this so render
+  /// caching can observe the change without re-hashing large sets every frame.
+  #[inline]
+  pub(crate) fn mark_css_hash_dirty(&self) {
+    self.css_hash_dirty.store(true, AtomicOrdering::Release);
+  }
+
+  /// Mark the cached paint interaction hash as dirty.
+  ///
+  /// Callers that mutate IME preedit, caret/selection state, document selection, or out-of-DOM file
+  /// input state must invoke this so render caching can observe the change without re-hashing large
+  /// structures every frame.
+  #[inline]
+  pub(crate) fn mark_paint_hash_dirty(&self) {
+    self.paint_hash_dirty.store(true, AtomicOrdering::Release);
+  }
+
+  #[inline]
+  pub(crate) fn mark_all_hashes_dirty(&self) {
+    self.mark_css_hash_dirty();
+    self.mark_paint_hash_dirty();
+  }
+
+  /// Stable interaction hash for fields that can affect CSS selector matching.
+  ///
+  /// This is intended for render caching: it avoids per-frame sorting of large sets by caching the
+  /// computed digest and only recomputing when the interaction state mutates.
+  pub fn interaction_css_hash(&self) -> u64 {
+    if self.css_hash_dirty.load(AtomicOrdering::Acquire) {
+      let hash = compute_css_hash(self);
+      // Store the computed hash before clearing the dirty flag so readers never observe
+      // `css_hash_dirty=false` with a stale `cached_css_hash`.
+      self.cached_css_hash.store(hash, AtomicOrdering::Relaxed);
+      self.css_hash_dirty.store(false, AtomicOrdering::Release);
+      return hash;
+    }
+    self.cached_css_hash.load(AtomicOrdering::Relaxed)
+  }
+
+  /// Stable interaction hash for fields that only affect paint output.
+  ///
+  /// This is intended for render caching: it avoids per-frame sorting of large sets/maps by caching
+  /// the computed digest and only recomputing when the interaction state mutates.
+  pub fn interaction_paint_hash(&self) -> u64 {
+    if self.paint_hash_dirty.load(AtomicOrdering::Acquire) {
+      let hash = compute_paint_hash(self);
+      self.cached_paint_hash.store(hash, AtomicOrdering::Relaxed);
+      self.paint_hash_dirty.store(false, AtomicOrdering::Release);
+      return hash;
+    }
+    self.cached_paint_hash.load(AtomicOrdering::Relaxed)
+  }
+}
+
+impl Default for InteractionState {
+  fn default() -> Self {
+    Self {
+      focused: None,
+      focus_visible: false,
+      focus_chain: Vec::new(),
+      focus_chain_membership: FxHashSet::default(),
+      hover_chain: Vec::new(),
+      hover_chain_membership: FxHashSet::default(),
+      active_chain: Vec::new(),
+      active_chain_membership: FxHashSet::default(),
+      visited_links: FxHashSet::default(),
+      ime_preedit: None,
+      text_edit: None,
+      form_state: FormState::default(),
+      document_selection: None,
+      user_validity: FxHashSet::default(),
+      cached_css_hash: AtomicU64::new(0),
+      cached_paint_hash: AtomicU64::new(0),
+      css_hash_dirty: AtomicBool::new(true),
+      paint_hash_dirty: AtomicBool::new(true),
+    }
+  }
+}
+
+impl Clone for InteractionState {
+  fn clone(&self) -> Self {
+    Self {
+      focused: self.focused,
+      focus_visible: self.focus_visible,
+      focus_chain: self.focus_chain.clone(),
+      focus_chain_membership: self.focus_chain_membership.clone(),
+      hover_chain: self.hover_chain.clone(),
+      hover_chain_membership: self.hover_chain_membership.clone(),
+      active_chain: self.active_chain.clone(),
+      active_chain_membership: self.active_chain_membership.clone(),
+      visited_links: self.visited_links.clone(),
+      ime_preedit: self.ime_preedit.clone(),
+      text_edit: self.text_edit,
+      form_state: self.form_state.clone(),
+      document_selection: self.document_selection.clone(),
+      user_validity: self.user_validity.clone(),
+      cached_css_hash: AtomicU64::new(self.cached_css_hash.load(AtomicOrdering::Relaxed)),
+      cached_paint_hash: AtomicU64::new(self.cached_paint_hash.load(AtomicOrdering::Relaxed)),
+      css_hash_dirty: AtomicBool::new(self.css_hash_dirty.load(AtomicOrdering::Relaxed)),
+      paint_hash_dirty: AtomicBool::new(self.paint_hash_dirty.load(AtomicOrdering::Relaxed)),
+    }
+  }
+}
+
+fn hash_usize_set(hasher: &mut DefaultHasher, set: &FxHashSet<usize>) {
+  let mut values: Vec<usize> = set.iter().copied().collect();
+  values.sort_unstable();
+  values.hash(hasher);
+}
+
+fn compute_css_hash(state: &InteractionState) -> u64 {
+  let mut hasher = DefaultHasher::new();
+  state.focused.hash(&mut hasher);
+  state.focus_visible.hash(&mut hasher);
+  state.focus_chain.hash(&mut hasher);
+  state.hover_chain.hash(&mut hasher);
+  state.active_chain.hash(&mut hasher);
+  hash_usize_set(&mut hasher, &state.visited_links);
+  hash_usize_set(&mut hasher, &state.user_validity);
+  hasher.finish()
+}
+
+fn compute_paint_hash(state: &InteractionState) -> u64 {
+  let mut hasher = DefaultHasher::new();
+
+  // File input state is stored out-of-DOM, so include it so file drops trigger repaints (label
+  // updates and form submission semantics).
+  if !state.form_state.file_inputs.is_empty() {
+    let mut keys: Vec<usize> = state.form_state.file_inputs.keys().copied().collect();
+    keys.sort_unstable();
+    for node_id in keys {
+      node_id.hash(&mut hasher);
+      if let Some(files) = state.form_state.file_inputs.get(&node_id) {
+        files.len().hash(&mut hasher);
+        for file in files {
+          file.path.to_string_lossy().as_ref().hash(&mut hasher);
+          file.filename.hash(&mut hasher);
+          file.bytes.len().hash(&mut hasher);
+          file.content_type.hash(&mut hasher);
+        }
+      }
+    }
+  }
+
+  if let Some(preedit) = &state.ime_preedit {
+    1u8.hash(&mut hasher);
+    preedit.node_id.hash(&mut hasher);
+    preedit.text.hash(&mut hasher);
+    preedit.cursor.hash(&mut hasher);
+  } else {
+    0u8.hash(&mut hasher);
+  }
+
+  if let Some(edit) = &state.text_edit {
+    1u8.hash(&mut hasher);
+    edit.node_id.hash(&mut hasher);
+    edit.caret.hash(&mut hasher);
+    edit.caret_affinity.hash(&mut hasher);
+    edit.selection.hash(&mut hasher);
+  } else {
+    0u8.hash(&mut hasher);
+  }
+
+  if let Some(selection) = &state.document_selection {
+    1u8.hash(&mut hasher);
+    selection.hash(&mut hasher);
+  } else {
+    0u8.hash(&mut hasher);
+  }
+
+  hasher.finish()
 }
 
 /// In-progress IME (Input Method Editor) composition state for a focused control.
