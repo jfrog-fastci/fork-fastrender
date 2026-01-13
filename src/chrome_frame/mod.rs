@@ -780,15 +780,19 @@ impl ChromeFrameDocument {
           popup.children.clear();
           for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
             let href = match &suggestion.action {
-              OmniboxAction::NavigateToUrl => ChromeActionUrl::Navigate {
-                url: suggestion.url.clone().unwrap_or_default(),
+              OmniboxAction::NavigateToUrl => {
+                let url = suggestion.url.clone().unwrap_or_default();
+                ChromeActionUrl::Navigate { url }.to_url_string()
               }
-              .to_url_string(),
-              OmniboxAction::Search(query) => ChromeActionUrl::Navigate { url: query.clone() }.to_url_string(),
-              OmniboxAction::ActivateTab(tab_id) => ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string(),
+              OmniboxAction::Search(query) => {
+                ChromeActionUrl::Navigate { url: query.clone() }.to_url_string()
+              }
+              OmniboxAction::ActivateTab(tab_id) => {
+                ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string()
+              }
             };
 
-            let type_class = match suggestion.action {
+            let type_class = match &suggestion.action {
               OmniboxAction::NavigateToUrl => "omnibox-type-url",
               OmniboxAction::Search(_) => "omnibox-type-search",
               OmniboxAction::ActivateTab(_) => "omnibox-type-tab",

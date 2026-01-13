@@ -12,7 +12,6 @@ use crate::media::{MediaFrameProvider, MediaFrameSizeHint};
 use crate::paint::display_list::ImageData;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::mpsc;
 
@@ -245,32 +244,26 @@ fn video_entry_mut<'a>(
   box_id: Option<usize>,
   src: &str,
 ) -> &'a mut VideoEntry {
-  use std::collections::hash_map::RawEntryMut;
-
-  let mut hasher = map.hasher().build_hasher();
-  box_id.hash(&mut hasher);
-  src.hash(&mut hasher);
-  let hash = hasher.finish();
-
-  match map
-    .raw_entry_mut()
-    .from_hash(hash, |k| k.box_id == box_id && k.src.as_ref() == src)
+  // `std::collections::HashMap` does not expose `raw_entry_mut`/`RawEntryMut` on stable Rust.
+  //
+  // We want to avoid allocating a new `Arc<str>` when the entry already exists, so we scan the
+  // (typically tiny) map first. Only allocate/insert on a miss.
+  if let Some((_, entry)) = map
+    .iter_mut()
+    .find(|(k, _)| k.box_id == box_id && k.src.as_ref() == src)
   {
-    RawEntryMut::Occupied(entry) => entry.into_mut(),
-    RawEntryMut::Vacant(entry) => {
-      let src_arc: Arc<str> = Arc::from(src);
-      entry
-        .insert_hashed_nocheck(
-          hash,
-          VideoKey {
-            box_id,
-            src: Arc::clone(&src_arc),
-          },
-          VideoEntry::new(src_arc),
-        )
-        .1
-    }
+    return entry;
   }
+
+  let src_arc: Arc<str> = Arc::from(src);
+  let key = VideoKey {
+    box_id,
+    src: Arc::clone(&src_arc),
+  };
+  map.insert(key.clone(), VideoEntry::new(src_arc));
+  map
+    .get_mut(&key)
+    .expect("video_entry_mut inserted key but could not retrieve it")
 }
 
 fn clamp_target_dimension(value: f32) -> Option<u32> {
