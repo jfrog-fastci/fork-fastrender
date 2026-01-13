@@ -3746,6 +3746,74 @@ fn restore_text_for_box_ids(root: &mut BoxNode, text_by_box_id: &FxHashMap<usize
   }
 }
 
+fn build_incremental_restyle_scope(
+  renderer_dom: &crate::dom::DomNode,
+  mapping: &crate::dom2::RendererDomMapping,
+  dom2: &crate::dom2::Document,
+  dirty_style_nodes: &FxHashSet<crate::dom2::NodeId>,
+) -> Option<std::collections::HashSet<usize>> {
+  let dom2_root = dom2.root();
+  let mut restyle_roots: std::collections::HashSet<usize> = std::collections::HashSet::new();
+  let mut ancestors: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+  for &dirty in dirty_style_nodes {
+    let restyle_root = dom2.parent_node(dirty).unwrap_or(dom2_root);
+    let restyle_root_preorder = mapping.preorder_for_node_id(restyle_root)?;
+    restyle_roots.insert(restyle_root_preorder);
+
+    let mut current = restyle_root;
+    loop {
+      let preorder = mapping.preorder_for_node_id(current)?;
+      ancestors.insert(preorder);
+      if current == dom2_root {
+        break;
+      }
+      current = dom2.parent_node(current)?;
+    }
+  }
+
+  enum Frame<'a> {
+    Enter(&'a crate::dom::DomNode),
+    Exit(usize),
+  }
+
+  let mut out: std::collections::HashSet<usize> = std::collections::HashSet::new();
+  let mut stack: Vec<Frame<'_>> = vec![Frame::Enter(renderer_dom)];
+  let mut next_id: usize = 1;
+  let mut active_restyle_roots: usize = 0;
+
+  while let Some(frame) = stack.pop() {
+    match frame {
+      Frame::Enter(node) => {
+        let node_id = next_id;
+        next_id = next_id.saturating_add(1);
+
+        let mut decrement_on_exit = 0;
+        if restyle_roots.contains(&node_id) {
+          active_restyle_roots = active_restyle_roots.saturating_add(1);
+          decrement_on_exit = 1;
+        }
+
+        if active_restyle_roots > 0 || ancestors.contains(&node_id) {
+          out.insert(node_id);
+        }
+
+        if decrement_on_exit > 0 {
+          stack.push(Frame::Exit(decrement_on_exit));
+        }
+        for child in node.children.iter().rev() {
+          stack.push(Frame::Enter(child));
+        }
+      }
+      Frame::Exit(dec) => {
+        active_restyle_roots = active_restyle_roots.saturating_sub(dec);
+      }
+    }
+  }
+
+  Some(out)
+}
+
 impl crate::js::DomHost for BrowserDocumentDom2 {
   fn with_dom<R, F>(&self, f: F) -> R
   where
@@ -4204,6 +4272,74 @@ mod tests {
     assert_eq!(hits.first().map(|hit| hit.node), Some(b_id));
     assert!(hits.iter().any(|hit| hit.node == a_id));
     Ok(())
+  }
+
+  #[test]
+  fn incremental_restyle_scope_includes_wbr_synthetic_zwsp() {
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <div id="scope">
+            <span id="dirty"></span>
+            <wbr id="w">
+          </div>
+        </body>
+      </html>"#;
+
+    let initial = crate::dom::parse_html(html).expect("parse html");
+    let dom2 = crate::dom2::Document::from_renderer_dom(&initial);
+    let snapshot = dom2.to_renderer_dom_with_mapping();
+
+    let dirty_node = dom2.get_element_by_id("dirty").expect("dirty element");
+    let mut dirty_style_nodes: FxHashSet<crate::dom2::NodeId> = FxHashSet::default();
+    dirty_style_nodes.insert(dirty_node);
+
+    let scope = build_incremental_restyle_scope(
+      &snapshot.dom,
+      &snapshot.mapping,
+      &dom2,
+      &dirty_style_nodes,
+    )
+    .expect("incremental restyle scope");
+
+    assert!(
+      scope.contains(&1),
+      "incremental restyle scope must always include the renderer root id when dirty nodes exist"
+    );
+
+    let wbr_id = dom2.get_element_by_id("w").expect("wbr element");
+    let wbr_node = find_renderer_element_by_id(&snapshot.dom, "w").expect("wbr node in snapshot");
+    assert_eq!(
+      wbr_node.children.len(),
+      1,
+      "<wbr> should have a synthetic ZWSP child in renderer snapshots"
+    );
+    let zwsp_node = &wbr_node.children[0];
+    assert_eq!(zwsp_node.text_content(), Some("\u{200B}"));
+
+    let renderer_ids = crate::dom::enumerate_dom_ids(&snapshot.dom);
+    let wbr_preorder = *renderer_ids
+      .get(&(wbr_node as *const crate::dom::DomNode))
+      .expect("preorder for <wbr>");
+    let zwsp_preorder = *renderer_ids
+      .get(&(zwsp_node as *const crate::dom::DomNode))
+      .expect("preorder for ZWSP node");
+
+    assert_eq!(
+      snapshot.mapping.preorder_for_node_id(wbr_id),
+      Some(wbr_preorder),
+      "<wbr> node id should map to its element preorder id"
+    );
+    assert_eq!(
+      snapshot.mapping.node_id_for_preorder(zwsp_preorder),
+      Some(wbr_id),
+      "ZWSP preorder id must map back to the parent `<wbr>` dom2 node id"
+    );
+
+    assert!(
+      scope.contains(&zwsp_preorder),
+      "restyle scope must include synthetic ZWSP child inside restyle roots"
+    );
   }
 
   #[test]
