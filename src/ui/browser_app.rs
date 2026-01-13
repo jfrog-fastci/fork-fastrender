@@ -2,6 +2,7 @@ use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::appearance::AppearanceSettings;
+use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
   CursorKind, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame, ScrollMetrics, TabId,
@@ -26,6 +27,8 @@ use url::Url;
 
 const DEBUG_LOG_CAPACITY: usize = 256;
 const CLOSED_TAB_STACK_CAPACITY: usize = 20;
+// Keep in sync with `src/ui/render_worker.rs`'s `FAVICON_MAX_EDGE_PX`.
+const FAVICON_MAX_EDGE_PX: u32 = 32;
 
 static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -660,6 +663,100 @@ mod tab_tests {
     assert!(tab.loading);
   }
 }
+
+#[cfg(test)]
+mod worker_message_validation_tests {
+  use super::{BrowserAppState, BrowserTabState, FAVICON_MAX_EDGE_PX};
+  use crate::scroll::{ScrollBounds, ScrollState};
+  use crate::ui::browser_limits::BrowserLimits;
+  use crate::ui::messages::{RenderedFrame, ScrollMetrics, TabId, WorkerToUi};
+
+  fn app_with_single_tab(tab_id: TabId) -> BrowserAppState {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    app
+  }
+
+  #[test]
+  fn invalid_favicon_byte_length_is_rejected() {
+    let tab_id = TabId(1);
+    let mut app = app_with_single_tab(tab_id);
+
+    let update = app.apply_worker_msg(WorkerToUi::Favicon {
+      tab_id,
+      rgba: vec![0u8; 15],
+      width: 2,
+      height: 2,
+    });
+
+    assert!(update.favicon_ready.is_none());
+    assert!(app.tab(tab_id).unwrap().favicon_meta.is_none());
+    assert!(!update.request_redraw);
+  }
+
+  #[test]
+  fn oversized_favicon_dimensions_are_rejected() {
+    let tab_id = TabId(1);
+    let mut app = app_with_single_tab(tab_id);
+
+    let width = FAVICON_MAX_EDGE_PX + 1;
+    let height = 1;
+    let rgba_len = (width as usize) * (height as usize) * 4;
+
+    let update = app.apply_worker_msg(WorkerToUi::Favicon {
+      tab_id,
+      rgba: vec![0u8; rgba_len],
+      width,
+      height,
+    });
+
+    assert!(update.favicon_ready.is_none());
+    assert!(app.tab(tab_id).unwrap().favicon_meta.is_none());
+    assert!(!update.request_redraw);
+  }
+
+  #[test]
+  fn absurd_pixmap_size_is_rejected_and_does_not_update_latest_frame_meta() {
+    let tab_id = TabId(1);
+    let mut app = app_with_single_tab(tab_id);
+
+    let limits = BrowserLimits::default();
+    // Exceed the dimension limit without allocating a huge buffer.
+    let pix_w = limits.max_dim_px + 1;
+    let pix_h = 1;
+    let pixmap = tiny_skia::Pixmap::new(pix_w, pix_h).expect("pixmap");
+    let viewport_css = (pix_w, pix_h);
+
+    let frame = RenderedFrame {
+      pixmap,
+      viewport_css,
+      dpr: 1.0,
+      scroll_state: ScrollState::default(),
+      scroll_metrics: ScrollMetrics {
+        viewport_css,
+        scroll_css: (0.0, 0.0),
+        bounds_css: ScrollBounds {
+          min_x: 0.0,
+          min_y: 0.0,
+          max_x: 0.0,
+          max_y: 0.0,
+        },
+        content_css: (0.0, 0.0),
+      },
+      wants_ticks: false,
+    };
+
+    let update = app.apply_worker_msg(WorkerToUi::FrameReady { tab_id, frame });
+
+    assert!(update.frame_ready.is_none());
+    assert!(app.tab(tab_id).unwrap().latest_frame_meta.is_none());
+    assert!(!update.request_redraw);
+  }
+}
+
 #[derive(Debug, Default)]
 pub struct ChromeState {
   pub address_bar_text: String,
@@ -1763,24 +1860,51 @@ impl BrowserAppState {
         } = frame;
         let pixmap_px = (pixmap.width(), pixmap.height());
 
-        if let Some(tab) = self.tab_mut(tab_id) {
-          tab.scroll_state = scroll_state;
-          tab.scroll_metrics = Some(scroll_metrics);
-          tab.latest_frame_meta = Some(LatestFrameMeta {
-            pixmap_px,
-            viewport_css,
-            dpr,
-            wants_ticks,
-          });
-        }
+        // The renderer process is treated as untrusted in multiprocess builds. Validate payload
+        // invariants defensively before storing metadata or asking the UI to upload a GPU texture.
+        let limits = BrowserLimits::default();
+        let (pix_w, pix_h) = pixmap_px;
+        let (vp_w, vp_h) = viewport_css;
 
-        update.request_redraw = true;
-        update.frame_ready = Some(FrameReadyUpdate {
-          tab_id,
-          pixmap,
-          viewport_css,
-          dpr,
-        });
+        let pixmap_nonzero = pix_w != 0 && pix_h != 0;
+        let pixmap_within_limits = pix_w <= limits.max_dim_px
+          && pix_h <= limits.max_dim_px
+          && (pix_w as u64).saturating_mul(pix_h as u64) <= limits.max_pixels;
+        let viewport_nonzero = vp_w != 0 && vp_h != 0;
+
+        let mut dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
+        // Keep in sync with `src/ui/browser_limits.rs`'s renderer DPR clamp range.
+        dpr = dpr.clamp(0.1, limits.max_dpr);
+
+        let expected_w = ((vp_w as f64) * (dpr as f64)).round();
+        let expected_h = ((vp_h as f64) * (dpr as f64)).round();
+        let expected_w = expected_w.max(1.0).min(u32::MAX as f64) as u32;
+        let expected_h = expected_h.max(1.0).min(u32::MAX as f64) as u32;
+
+        let tolerance_px = 1u32;
+        let dims_match = pix_w.abs_diff(expected_w) <= tolerance_px
+          && pix_h.abs_diff(expected_h) <= tolerance_px;
+
+        if pixmap_nonzero && pixmap_within_limits && viewport_nonzero && dims_match {
+          if let Some(tab) = self.tab_mut(tab_id) {
+            tab.scroll_state = scroll_state;
+            tab.scroll_metrics = Some(scroll_metrics);
+            tab.latest_frame_meta = Some(LatestFrameMeta {
+              pixmap_px,
+              viewport_css,
+              dpr,
+              wants_ticks,
+            });
+
+            update.request_redraw = true;
+            update.frame_ready = Some(FrameReadyUpdate {
+              tab_id,
+              pixmap,
+              viewport_css,
+              dpr,
+            });
+          }
+        }
       }
       WorkerToUi::OpenSelectDropdown {
         tab_id,
@@ -1976,19 +2100,27 @@ impl BrowserAppState {
         width,
         height,
       } => {
-        if validate_untrusted_favicon_rgba(rgba.len(), width, height) {
+        // Validate favicon payload invariants before storing metadata or asking the UI to upload a
+        // GPU texture. In multiprocess builds, the renderer process is treated as untrusted.
+        //
+        // Note: enforce both total byte length and per-axis dimension limits (see
+        // `FAVICON_MAX_EDGE_PX`).
+        if validate_untrusted_favicon_rgba(rgba.len(), width, height)
+          && width <= FAVICON_MAX_EDGE_PX
+          && height <= FAVICON_MAX_EDGE_PX
+        {
           if let Some(tab) = self.tab_mut(tab_id) {
             tab.favicon_meta = Some(FaviconMeta {
               size_px: (width, height),
             });
+            update.request_redraw = true;
+            update.favicon_ready = Some(FaviconReadyUpdate {
+              tab_id,
+              rgba,
+              width,
+              height,
+            });
           }
-          update.request_redraw = true;
-          update.favicon_ready = Some(FaviconReadyUpdate {
-            tab_id,
-            rgba,
-            width,
-            height,
-          });
         }
       }
       WorkerToUi::RequestOpenInNewTab { .. } | WorkerToUi::RequestOpenInNewTabRequest { .. } => {
