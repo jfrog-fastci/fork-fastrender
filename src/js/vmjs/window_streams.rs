@@ -1313,8 +1313,12 @@ fn resolve_async_iterator_done_promise(
   let promise = scope.push_root(cap.promise)?;
   let resolve = scope.push_root(cap.resolve)?;
 
+  let intr = require_intrinsics(vm, "ReadableStream requires intrinsics")?;
   let result = scope.alloc_object()?;
   scope.push_root(Value::Object(result))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(result, Some(intr.object_prototype()))?;
   let value_key = alloc_key(scope, "value")?;
   let done_key = alloc_key(scope, "done")?;
   scope.define_property(result, value_key, result_data_desc(Value::Undefined))?;
@@ -4252,6 +4256,9 @@ fn settle_read_promise(
         // Resolve to `{ value, done }`.
         let result = scope.alloc_object()?;
         scope.push_root(Value::Object(result))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(result, Some(intr.object_prototype()))?;
 
         let value_key = alloc_key(scope, "value")?;
         let done_key = alloc_key(scope, "done")?;
@@ -4274,6 +4281,9 @@ fn settle_read_promise(
 
         let result = scope.alloc_object()?;
         scope.push_root(Value::Object(result))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(result, Some(intr.object_prototype()))?;
 
         let value_key = alloc_key(scope, "value")?;
         let done_key = alloc_key(scope, "done")?;
@@ -4302,6 +4312,9 @@ fn settle_read_promise(
         let settle_result = (|| {
           let result = scope.alloc_object()?;
           scope.push_root(Value::Object(result))?;
+          scope
+            .heap_mut()
+            .object_set_prototype(result, Some(intr.object_prototype()))?;
 
           let value_key = alloc_key(scope, "value")?;
           let done_key = alloc_key(scope, "done")?;
@@ -4331,6 +4344,9 @@ fn settle_read_promise(
     ReadOutcome::Done => {
       let result = scope.alloc_object()?;
       scope.push_root(Value::Object(result))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(result, Some(intr.object_prototype()))?;
 
       let value_key = alloc_key(scope, "value")?;
       let done_key = alloc_key(scope, "done")?;
@@ -8673,6 +8689,185 @@ mod tests {
       assert_eq!(done, Value::Bool(true));
       let value = read_result_prop(&mut scope, result2_obj, "value")?;
       assert!(matches!(value, Value::Undefined));
+    }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_read_results_have_object_prototype() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let object_proto = realm.realm().intrinsics().object_prototype();
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue('x');
+            controller.close();
+          }
+        });
+        globalThis.reader = stream.getReader();
+        globalThis.readPromise1 = reader.read();
+        globalThis.readPromise2 = reader.read();
+      "#,
+    )?;
+
+    let read_p1 = realm.exec_script("readPromise1")?;
+    let Value::Object(read_p1_obj) = read_p1 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    let read_p2 = realm.exec_script("readPromise2")?;
+    let Value::Object(read_p2_obj) = read_p2 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+
+    assert_eq!(
+      realm.heap().promise_state(read_p1_obj)?,
+      PromiseState::Fulfilled
+    );
+    assert_eq!(
+      realm.heap().promise_state(read_p2_obj)?,
+      PromiseState::Fulfilled
+    );
+
+    let Some(result1_val) = realm.heap().promise_result(read_p1_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Some(result2_val) = realm.heap().promise_result(read_p2_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+
+    let Value::Object(result1_obj) = result1_val else {
+      return Err(VmError::InvariantViolation(
+        "read() must resolve to an object",
+      ));
+    };
+    let Value::Object(result2_obj) = result2_val else {
+      return Err(VmError::InvariantViolation(
+        "read() must resolve to an object",
+      ));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+      assert_eq!(scope.object_get_prototype(result1_obj)?, Some(object_proto));
+      assert_eq!(scope.object_get_prototype(result2_obj)?, Some(object_proto));
+
+      let done1 = read_result_prop(&mut scope, result1_obj, "done")?;
+      assert_eq!(done1, Value::Bool(false));
+      let done2 = read_result_prop(&mut scope, result2_obj, "done")?;
+      assert_eq!(done2, Value::Bool(true));
+    }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_values_results_have_object_prototype() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let object_proto = realm.realm().intrinsics().object_prototype();
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue('x');
+            controller.close();
+          }
+        });
+        globalThis.iter = stream.values();
+        globalThis.nextPromise1 = iter.next();
+      "#,
+    )?;
+
+    realm.perform_microtask_checkpoint()?;
+
+    let next_p1 = realm.exec_script("nextPromise1")?;
+    let Value::Object(next_p1_obj) = next_p1 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream async iterator next must return a Promise",
+      ));
+    };
+    assert_eq!(
+      realm.heap().promise_state(next_p1_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result1_val) = realm.heap().promise_result(next_p1_obj)? else {
+      return Err(VmError::InvariantViolation("iterator next promise missing result"));
+    };
+    let Value::Object(result1_obj) = result1_val else {
+      return Err(VmError::InvariantViolation(
+        "iterator next promise must resolve to an object",
+      ));
+    };
+
+    let _ = realm.exec_script("globalThis.nextPromise2 = iter.next();")?;
+    realm.perform_microtask_checkpoint()?;
+
+    let next_p2 = realm.exec_script("nextPromise2")?;
+    let Value::Object(next_p2_obj) = next_p2 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream async iterator next must return a Promise",
+      ));
+    };
+    assert_eq!(
+      realm.heap().promise_state(next_p2_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result2_val) = realm.heap().promise_result(next_p2_obj)? else {
+      return Err(VmError::InvariantViolation("iterator next promise missing result"));
+    };
+    let Value::Object(result2_obj) = result2_val else {
+      return Err(VmError::InvariantViolation(
+        "iterator next promise must resolve to an object",
+      ));
+    };
+
+    // After completion, `.next()` should still resolve to `{ value: undefined, done: true }`.
+    let _ = realm.exec_script("globalThis.nextPromise3 = iter.next();")?;
+    realm.perform_microtask_checkpoint()?;
+
+    let next_p3 = realm.exec_script("nextPromise3")?;
+    let Value::Object(next_p3_obj) = next_p3 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream async iterator next must return a Promise",
+      ));
+    };
+    assert_eq!(
+      realm.heap().promise_state(next_p3_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result3_val) = realm.heap().promise_result(next_p3_obj)? else {
+      return Err(VmError::InvariantViolation("iterator next promise missing result"));
+    };
+    let Value::Object(result3_obj) = result3_val else {
+      return Err(VmError::InvariantViolation(
+        "iterator next promise must resolve to an object",
+      ));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+
+      assert_eq!(scope.object_get_prototype(result1_obj)?, Some(object_proto));
+      assert_eq!(scope.object_get_prototype(result2_obj)?, Some(object_proto));
+      assert_eq!(scope.object_get_prototype(result3_obj)?, Some(object_proto));
+
+      let done1 = read_result_prop(&mut scope, result1_obj, "done")?;
+      assert_eq!(done1, Value::Bool(false));
+      let done2 = read_result_prop(&mut scope, result2_obj, "done")?;
+      assert_eq!(done2, Value::Bool(true));
+      let done3 = read_result_prop(&mut scope, result3_obj, "done")?;
+      assert_eq!(done3, Value::Bool(true));
     }
 
     realm.teardown();
