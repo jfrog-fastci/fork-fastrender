@@ -1181,9 +1181,10 @@ impl<'vm> HirEvaluator<'vm> {
           let result = (|| -> Result<Flow, VmError> {
             // Create a loop-scoped declarative environment for the lexical declaration and evaluate
             // the initializer with TDZ semantics.
-            let loop_env = scope.env_create(Some(outer_lex))?;
-            self.env.set_lexical_env(scope.heap_mut(), loop_env);
+          let loop_env = scope.env_create(Some(outer_lex))?;
+          self.env.set_lexical_env(scope.heap_mut(), loop_env);
 
+            // Bind names in TDZ before evaluating initializers (only identifier patterns for now).
             // Bind names in TDZ before evaluating initializers (only identifier patterns for now).
             for declarator in &init_decl.declarators {
               self.vm.tick()?;
