@@ -428,6 +428,17 @@ pub(crate) fn document_selection_contains_point_dom2(
 /// represent dynamic user interaction state (hover/active/focus/visited/user validity/IME preedit).
 /// Keeping this state out of the DOM avoids observable author CSS/DOM side effects and reduces DOM
 /// churn.
+///
+/// ## Cached interaction hashes
+///
+/// `InteractionState` caches two digests used by render invalidation:
+/// - [`interaction_css_hash`](Self::interaction_css_hash): affects selector matching / cascade.
+/// - [`interaction_paint_hash`](Self::interaction_paint_hash): paint-only state (caret/selection/IME,
+///   file-input labels, etc).
+///
+/// When mutating public fields directly (i.e. outside [`InteractionEngine`](crate::interaction::InteractionEngine)),
+/// callers must mark the appropriate digest dirty via [`mark_css_hash_dirty`](Self::mark_css_hash_dirty)
+/// and/or [`mark_paint_hash_dirty`](Self::mark_paint_hash_dirty).
 #[derive(Debug)]
 pub struct InteractionState {
   /// Currently focused element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
