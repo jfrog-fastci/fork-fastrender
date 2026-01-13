@@ -373,6 +373,10 @@ fn csp_values_from_html_meta(html: &str) -> Vec<String> {
   out
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn parse_tag_attributes(tag: &str) -> HashMap<String, String> {
   fn is_name_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':'
@@ -613,7 +617,7 @@ pub fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
       let attrs = parse_tag_attributes(tag);
       let src = attrs
         .get("src")
-        .map(|v| v.to_string())
+        .map(|v| trim_ascii_whitespace(v).to_string())
         .filter(|v| !v.is_empty());
       let referrer_policy = attrs
         .get("referrerpolicy")
@@ -1186,6 +1190,14 @@ mod tests {
       !subframes[1].opaque_origin,
       "allow-same-origin should disable opaque-origin forcing"
     );
+  }
+
+  #[test]
+  fn iframe_src_is_trimmed_like_html_url_attributes() {
+    let html = r#"<!doctype html><iframe src="   /frame.html	 "></iframe>"#;
+    let subframes = subframes_from_html(FrameId(1), html);
+    assert_eq!(subframes.len(), 1);
+    assert_eq!(subframes[0].src.as_deref(), Some("/frame.html"));
   }
 
   #[test]
