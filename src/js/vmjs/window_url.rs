@@ -50,6 +50,19 @@ fn data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn idl_data_desc(value: Value) -> PropertyDescriptor {
+  // WebIDL interface members are enumerable by default for string-named properties.
+  // (Symbol-named members like @@iterator are typically non-enumerable.)
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
 fn proto_data_desc(value: Value) -> PropertyDescriptor {
   // Prototype properties are usually non-enumerable, writable, configurable.
   data_desc(value)
@@ -70,6 +83,14 @@ fn ctor_link_desc(value: Value) -> PropertyDescriptor {
 fn accessor_desc(get: Value, set: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Accessor { get, set },
+  }
+}
+
+fn idl_accessor_desc(get: Value, set: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
     configurable: true,
     kind: PropertyKind::Accessor { get, set },
   }
@@ -385,7 +406,7 @@ fn install_method(
     .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(func))?;
   let key = alloc_key(scope, name)?;
-  scope.define_property(proto, key, proto_data_desc(Value::Object(func)))?;
+  scope.define_property(proto, key, idl_data_desc(Value::Object(func)))?;
   Ok(())
 }
 
@@ -427,7 +448,7 @@ fn install_accessor(
   scope.define_property(
     proto,
     key,
-    accessor_desc(Value::Object(get_func), set_value),
+    idl_accessor_desc(Value::Object(get_func), set_value),
   )?;
   Ok(())
 }
@@ -2612,7 +2633,7 @@ pub fn install_window_url_bindings(
     scope.define_property(
       iter_proto,
       next_key,
-      proto_data_desc(Value::Object(next_fn)),
+      idl_data_desc(Value::Object(next_fn)),
     )?;
 
     let iter_id = vm.register_native_call(urlsp_iterator_iterator_native)?;
@@ -2648,7 +2669,7 @@ pub fn install_window_url_bindings(
   scope.define_property(
     params_proto,
     entries_key,
-    proto_data_desc(Value::Object(entries_fn)),
+    idl_data_desc(Value::Object(entries_fn)),
   )?;
 
   let keys_id = vm.register_native_call(urlsp_keys_native)?;
@@ -2669,7 +2690,7 @@ pub fn install_window_url_bindings(
   scope.define_property(
     params_proto,
     keys_key,
-    proto_data_desc(Value::Object(keys_fn)),
+    idl_data_desc(Value::Object(keys_fn)),
   )?;
 
   let values_id = vm.register_native_call(urlsp_values_native)?;
@@ -2690,7 +2711,7 @@ pub fn install_window_url_bindings(
   scope.define_property(
     params_proto,
     values_key,
-    proto_data_desc(Value::Object(values_fn)),
+    idl_data_desc(Value::Object(values_fn)),
   )?;
 
   // [Symbol.iterator] is an alias for entries().
@@ -2946,6 +2967,35 @@ mod tests {
 
     let has_create_object_url = realm.exec_script("typeof webkitURL.createObjectURL === 'function'")?;
     assert!(get_bool(has_create_object_url));
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_members_are_enumerable() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let href_enum =
+      realm.exec_script("Object.getOwnPropertyDescriptor(URL.prototype,'href').enumerable")?;
+    assert!(get_bool(href_enum));
+
+    let can_parse_enum = realm.exec_script("Object.getOwnPropertyDescriptor(URL,'canParse').enumerable")?;
+    assert!(get_bool(can_parse_enum));
+
+    let append_enum = realm
+      .exec_script("Object.getOwnPropertyDescriptor(URLSearchParams.prototype,'append').enumerable")?;
+    assert!(get_bool(append_enum));
+
+    let sym_iter_enum = realm.exec_script(
+      "Object.getOwnPropertyDescriptor(URLSearchParams.prototype, Symbol.iterator).enumerable",
+    )?;
+    assert!(!get_bool(sym_iter_enum));
+
+    let iter_next_enum = realm.exec_script(
+      "Object.getOwnPropertyDescriptor(Object.getPrototypeOf(new URLSearchParams('a=1').entries()), 'next').enumerable",
+    )?;
+    assert!(get_bool(iter_next_enum));
 
     realm.teardown();
     Ok(())
