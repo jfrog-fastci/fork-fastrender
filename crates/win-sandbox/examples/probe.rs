@@ -42,20 +42,20 @@ mod windows {
   use std::time::Duration;
   use std::time::{SystemTime, UNIX_EPOCH};
 
+  use windows_sys::core::BOOL;
   use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, SetHandleInformation, BOOL, ERROR_ACCESS_DENIED, FALSE,
-    HANDLE_FLAG_INHERIT,
+    CloseHandle, GetLastError, SetHandleInformation, ERROR_ACCESS_DENIED, FALSE, HANDLE_FLAG_INHERIT,
     INVALID_HANDLE_VALUE, TRUE,
   };
   use windows_sys::Win32::Security::{
-    ConvertSidToStringSidW, GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation,
-    OpenProcessToken, TokenIntegrityLevel, TokenIsAppContainer, PSID, SECURITY_CAPABILITIES,
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
+    TokenIsAppContainer, NO_INHERITANCE, PSID, SECURITY_CAPABILITIES,
     DACL_SECURITY_INFORMATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
-    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
-    NO_MULTIPLE_TRUSTEE, NO_INHERITANCE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
-    TRUSTEE_W,
+    ConvertSidToStringSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
   };
   use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
   use windows_sys::Win32::System::Console::{
@@ -68,9 +68,8 @@ mod windows {
     ProcessDynamicCodePolicy, ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy,
     ProcessStrictHandleCheckPolicy, ProcessSystemCallDisablePolicy, ResumeThread, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED,
-    EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_MITIGATION_POLICY, STARTUPINFOEXW,
-    STARTUPINFOW, LPPROC_THREAD_ATTRIBUTE_LIST,
+    EXTENDED_STARTUPINFO_PRESENT, OpenProcessToken, PROCESS_INFORMATION, PROCESS_MITIGATION_POLICY,
+    STARTUPINFOEXW, STARTUPINFOW, LPPROC_THREAD_ATTRIBUTE_LIST,
   };
 
   use win_sandbox::{mitigations, AppContainerProfile, Job, RestrictedToken, WinSandboxError};
@@ -107,6 +106,10 @@ mod windows {
   ///
   /// This matches `ProcThreadAttributeValue(7, FALSE, TRUE, FALSE)` from the Windows SDK headers.
   const PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY: usize = 0x0002_0007;
+  // `PROC_THREAD_ATTRIBUTE_*` values are stable ABI constants from winbase.h:
+  //   ProcThreadAttributeValue(Number, Thread, Input, Additive)
+  const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
+  const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
 
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
   enum SandboxMode {
@@ -629,7 +632,7 @@ mod windows {
     let status = unsafe { SetEntriesInAclW(1, &mut ea, dacl, &mut new_dacl) };
     if status != 0 {
       unsafe {
-        windows_sys::Win32::Foundation::LocalFree(sd as isize);
+        windows_sys::Win32::Foundation::LocalFree(sd.cast());
       }
       return Err(io::Error::from_raw_os_error(status as i32));
     }
@@ -647,8 +650,8 @@ mod windows {
     };
 
     unsafe {
-      windows_sys::Win32::Foundation::LocalFree(sd as isize);
-      windows_sys::Win32::Foundation::LocalFree(new_dacl as isize);
+      windows_sys::Win32::Foundation::LocalFree(sd.cast());
+      windows_sys::Win32::Foundation::LocalFree(new_dacl.cast());
     }
 
     if status != 0 {
@@ -995,7 +998,7 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
     let std_err = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
     let mut inherit = Vec::new();
     for h in [std_in, std_out, std_err] {
-      if h == 0 || h == INVALID_HANDLE_VALUE {
+      if h.is_null() || h == INVALID_HANDLE_VALUE {
         continue;
       }
       // Ensure the handle is inheritable so the sandbox spawner can forward it via
@@ -1038,7 +1041,7 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
   impl Drop for HandleGuard {
     fn drop(&mut self) {
       unsafe {
-        if self.0 != 0 {
+        if !self.0.is_null() {
           CloseHandle(self.0);
         }
       }
@@ -1046,12 +1049,12 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
   }
 
   fn open_process_token_query() -> io::Result<HandleGuard> {
-    let mut token: windows_sys::Win32::Foundation::HANDLE = 0;
+    let mut token: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
     let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
     if ok == 0 {
       return Err(io::Error::last_os_error());
     }
-    if token == 0 {
+    if token.is_null() {
       return Err(io::Error::new(
         io::ErrorKind::Other,
         "OpenProcessToken returned null handle",
@@ -1202,13 +1205,13 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
     }
     let wide = std::slice::from_raw_parts(sid_str, len);
     let out = String::from_utf16_lossy(wide);
-    windows_sys::Win32::Foundation::LocalFree(sid_str as isize);
+    windows_sys::Win32::Foundation::LocalFree(sid_str.cast());
     Ok(out)
   }
 
   fn current_process_in_job() -> io::Result<bool> {
     let mut in_job: BOOL = 0;
-    let ok = unsafe { IsProcessInJob(GetCurrentProcess(), 0, &mut in_job) };
+    let ok = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) };
     if ok == 0 {
       return Err(io::Error::last_os_error());
     }
