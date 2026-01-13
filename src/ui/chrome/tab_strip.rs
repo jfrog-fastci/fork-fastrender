@@ -7,6 +7,7 @@ use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
 use crate::ui::{icon_button, BrowserIcon};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2};
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -110,6 +111,45 @@ struct TabStripPerfSample {
 fn tab_strip_perf_enabled() -> bool {
   static ENABLED: OnceLock<bool> = OnceLock::new();
   *ENABLED.get_or_init(|| std::env::var_os("FASTR_TAB_STRIP_PERF").is_some())
+}
+
+#[derive(Debug, Default)]
+struct GroupChipWidthCache {
+  /// Cache invalidation: group chip widths depend on the button font. If egui style changes the
+  /// resolved `TextStyle::Button` font, recompute all cached widths.
+  font_id: Option<FontId>,
+  widths: FxHashMap<TabGroupId, GroupChipWidthCacheEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct GroupChipWidthCacheEntry {
+  title: String,
+  width: f32,
+}
+
+impl GroupChipWidthCache {
+  fn width(&mut self, ui: &egui::Ui, group_id: TabGroupId, title: &str, font_id: &FontId) -> f32 {
+    if self.font_id.as_ref() != Some(font_id) {
+      self.font_id = Some(font_id.clone());
+      self.widths.clear();
+    }
+
+    if let Some(entry) = self.widths.get(&group_id) {
+      if entry.title == title {
+        return entry.width;
+      }
+    }
+
+    let width = group_chip_width_with_font(ui, title, font_id);
+    self.widths.insert(
+      group_id,
+      GroupChipWidthCacheEntry {
+        title: title.to_string(),
+        width,
+      },
+    );
+    width
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1097,14 +1137,23 @@ fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visu
   painter.rect_stroke(rect, rounding, stroke);
 }
 
-fn group_chip_width(ui: &egui::Ui, label: &str) -> f32 {
-  let font_id = egui::TextStyle::Button.resolve(ui.style());
-  let galley =
-    ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, ui.visuals().text_color()));
+fn group_chip_width_with_font(ui: &egui::Ui, label: &str, font_id: &FontId) -> f32 {
+  let galley = ui.fonts(|f| {
+    f.layout_no_wrap(
+      label.to_string(),
+      font_id.clone(),
+      ui.visuals().text_color(),
+    )
+  });
   // Reserve fixed space for the collapse/expand affordance icon so the chip width remains stable
   // across collapsed/expanded states.
   (galley.size().x + GROUP_CHIP_PADDING_X * 2.0 + GROUP_CHIP_ICON_SIZE + GROUP_CHIP_ICON_GAP)
     .clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH)
+}
+
+fn group_chip_width(ui: &egui::Ui, label: &str) -> f32 {
+  let font_id = egui::TextStyle::Button.resolve(ui.style());
+  group_chip_width_with_font(ui, label, &font_id)
 }
 
 fn group_chip_title(group: &TabGroupState) -> &str {
@@ -2146,6 +2195,7 @@ pub(super) fn tab_strip_ui(
   let snapshot_key = ui.make_persistent_id("tab_strip_layout_snapshot");
   let anim_key = ui.make_persistent_id("tab_strip_pin_anim");
   let drag_lift_out_key = ui.make_persistent_id("tab_strip_drag_lift_out");
+  let group_chip_width_cache_key = ui.make_persistent_id("tab_strip_group_chip_width_cache");
 
   // `TabStripLayoutSnapshot` contains per-tab vectors + hashmaps. Cloning it each frame (via
   // `egui::Data::get_temp`) becomes a dominant allocation + CPU cost once tab counts reach
@@ -2158,6 +2208,9 @@ pub(super) fn tab_strip_ui(
   });
   let mut pin_anim: Option<TabPinAnim> =
     ctx.data_mut(|d| std::mem::take(d.get_temp_mut_or_default::<Option<TabPinAnim>>(anim_key)));
+  let mut group_chip_width_cache: GroupChipWidthCache = ctx.data_mut(|d| {
+    std::mem::take(d.get_temp_mut_or_default::<GroupChipWidthCache>(group_chip_width_cache_key))
+  });
 
   // If animations are disabled or the tab disappeared, snap to the new state.
   if !motion_enabled {
@@ -2353,43 +2406,6 @@ pub(super) fn tab_strip_ui(
   );
   let unpinned_viewport_width = unpinned_viewport_rect.width().max(0.0);
 
-  // Tab group collapse/expand animation state. This is computed up front so sizing + layout can
-  // account for groups that are mid-transition.
-  let mut group_expand_t: HashMap<TabGroupId, f32> = HashMap::new();
-  let mut group_animating = false;
-  {
-    for tab in app.tabs.iter().skip(pinned_len) {
-      let Some(group_id) = tab.group else {
-        continue;
-      };
-      if group_expand_t.contains_key(&group_id) {
-        continue;
-      }
-      let Some(group) = app.tab_groups.get(&group_id) else {
-        continue;
-      };
-      let collapsed = group.collapsed;
-      let id = ui.make_persistent_id(("tab_group_expand", group_id.0));
-      let t = motion.animate_bool(
-        ui.ctx(),
-        id,
-        !collapsed,
-        motion.durations.tab_group_collapse,
-      );
-      let target = if collapsed { 0.0 } else { 1.0 };
-      if motion.enabled
-        && ui.ctx().style().animation_time > 0.0
-        && (t - target).abs() > GROUP_COLLAPSE_HIDE_EPS
-      {
-        group_animating = true;
-      }
-      group_expand_t.insert(group_id, t);
-    }
-  }
-  if group_animating {
-    ui.ctx().request_repaint();
-  }
-
   // Precompute tab strip sizing for the unpinned segment.
   //
   // While a tab group is collapsing/expanding we treat its member tabs as "fractional tabs" so the
@@ -2397,15 +2413,19 @@ pub(super) fn tab_strip_ui(
   // jumping at the end of the animation.
   let mut tab_units: f32 = 0.0;
   let mut group_chip_total_width: f32 = 0.0;
-  let mut group_chip_widths: HashMap<TabGroupId, f32> = HashMap::new();
+  let group_chip_font_id = egui::TextStyle::Button.resolve(ui.style());
   let mut total_gap_width: f32 = 0.0;
   let mut first_item = true;
+  let mut group_animating = false;
   // Gap scaling is driven by the *previous* item: gaps after group-member tabs shrink with the
   // group, while gaps after chips/normal tabs remain full. This avoids a chip→next-item "pop" at
   // the end of collapse while still shrinking intra-group gaps.
   let mut prev_gap_scale: Option<f32> = None;
   {
     let mut idx = pinned_len;
+    let mut current_group_id: Option<TabGroupId> = None;
+    let mut current_group_t: f32 = 1.0;
+    let mut current_group_collapsed = false;
     while idx < app.tabs.len() {
       let tab = &app.tabs[idx];
       let Some(group_id) = tab.group else {
@@ -2446,24 +2466,51 @@ pub(super) fn tab_strip_ui(
       let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
       if is_first {
         let title = group_chip_title(group);
-        let w = group_chip_width(ui, title);
+        let w = group_chip_width_cache.width(ui, group_id, title, &group_chip_font_id);
         group_chip_total_width += w;
-        group_chip_widths.insert(group_id, w);
         if !first_item {
           total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0).clamp(0.0, 1.0);
         }
         first_item = false;
         // Chips never scale the gap after them.
         prev_gap_scale = None;
+
+        current_group_id = Some(group_id);
+        current_group_collapsed = group.collapsed;
+        let expand_id = ui.make_persistent_id(("tab_group_expand", group_id.0));
+        let t = motion.animate_bool(
+          ui.ctx(),
+          expand_id,
+          !group.collapsed,
+          motion.durations.tab_group_collapse,
+        );
+        current_group_t = t.clamp(0.0, 1.0);
+        let target = if group.collapsed { 0.0 } else { 1.0 };
+        if motion.enabled
+          && ui.ctx().style().animation_time > 0.0
+          && (current_group_t - target).abs() > GROUP_COLLAPSE_HIDE_EPS
+        {
+          group_animating = true;
+        }
+      } else if current_group_id != Some(group_id) {
+        // Groups are expected to be contiguous. If we encounter a non-contiguous group, re-seed the
+        // cached animation value so sizing remains robust.
+        current_group_id = Some(group_id);
+        current_group_collapsed = group.collapsed;
+        let expand_id = ui.make_persistent_id(("tab_group_expand", group_id.0));
+        let t = motion.animate_bool(
+          ui.ctx(),
+          expand_id,
+          !group.collapsed,
+          motion.durations.tab_group_collapse,
+        );
+        current_group_t = t.clamp(0.0, 1.0);
       }
 
-      let group_t = group_expand_t
-        .get(&group_id)
-        .copied()
-        .unwrap_or(if group.collapsed { 0.0 } else { 1.0 })
-        .clamp(0.0, 1.0);
+      let group_t = current_group_t;
+      let collapsed = current_group_collapsed;
 
-      if group.collapsed && group_t <= GROUP_COLLAPSE_HIDE_EPS {
+      if collapsed && group_t <= GROUP_COLLAPSE_HIDE_EPS {
         while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
           idx += 1;
         }
@@ -2485,6 +2532,9 @@ pub(super) fn tab_strip_ui(
       prev_gap_scale = Some(scale);
       idx += 1;
     }
+  }
+  if group_animating {
+    ui.ctx().request_repaint();
   }
   let sizing_target = compute_tab_strip_sizing_with_scaled_tabs(
     final_unpinned_viewport_width,
@@ -3076,6 +3126,10 @@ pub(super) fn tab_strip_ui(
               };
             }
 
+            let mut current_group_id: Option<TabGroupId> = None;
+            let mut current_group_t: f32 = 1.0;
+            let mut current_group_collapsed = false;
+
             while idx < app.tabs.len() {
               maybe_insert_source_placeholder!(false);
 
@@ -3096,20 +3150,52 @@ pub(super) fn tab_strip_ui(
                     GapKind::Normal,
                     false,
                   );
-                  let chip_width = group_chip_widths.get(&group_id).copied();
-                  group_chip_ui(ui, motion, app, group_id, &mut ops, focus_ring, chip_width);
+                  let chip_width = {
+                    let group = app
+                      .tab_groups
+                      .get(&group_id)
+                      .expect("tab_group is filtered to existing groups");
+                    group_chip_width_cache.width(
+                      ui,
+                      group_id,
+                      group_chip_title(group),
+                      &group_chip_font_id,
+                    )
+                  };
+                  group_chip_ui(
+                    ui,
+                    motion,
+                    app,
+                    group_id,
+                    &mut ops,
+                    focus_ring,
+                    Some(chip_width),
+                  );
                   unpinned_items_for_snapshot.push(TabStripItemKey::GroupChip(group_id));
                   prev_kind = GapKind::Normal;
                   prev_gap_scale = None;
                   item_pos += 1;
                 }
 
-                let collapsed = app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed);
-                let group_t = group_expand_t
-                  .get(&group_id)
-                  .copied()
-                  .unwrap_or(1.0)
-                  .clamp(0.0, 1.0);
+                if is_first || current_group_id != Some(group_id) {
+                  let collapsed = app
+                    .tab_groups
+                    .get(&group_id)
+                    .is_some_and(|group| group.collapsed);
+                  let expand_id = ui.make_persistent_id(("tab_group_expand", group_id.0));
+                  current_group_t = motion
+                    .animate_bool(
+                      ui.ctx(),
+                      expand_id,
+                      !collapsed,
+                      motion.durations.tab_group_collapse,
+                    )
+                    .clamp(0.0, 1.0);
+                  current_group_collapsed = collapsed;
+                  current_group_id = Some(group_id);
+                }
+                let collapsed = current_group_collapsed;
+                let group_t = current_group_t;
                 if collapsed && group_t <= GROUP_COLLAPSE_HIDE_EPS {
                   // Fully collapsed: hide all member tabs (but keep the chip visible).
                   while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
@@ -3613,6 +3699,7 @@ pub(super) fn tab_strip_ui(
     if let Some(sample) = perf_sample {
       d.insert_temp(egui::Id::new("tab_strip_perf_sample"), sample);
     }
+    d.insert_temp(group_chip_width_cache_key, group_chip_width_cache);
     d.insert_temp(snapshot_key, Some(layout_snapshot));
     d.insert_temp(anim_key, pin_anim_render.cloned());
   });

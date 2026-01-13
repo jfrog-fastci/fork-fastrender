@@ -4529,24 +4529,14 @@ fn is_labelable(node: &DomNode) -> bool {
 // -----------------------------------------------------------------------------
 //
 // FastRender's renderer/UI uses AccessKit (via `accesskit_winit`) to expose accessibility metadata
-// to native assistive technologies. When available, propagate HTML language (`lang`) and direction
-// (`dir`) into AccessKit nodes so screen readers can pronounce text correctly and present the right
-// navigation order.
+// to native assistive technologies. When available, propagate HTML language (`lang`) into AccessKit
+// nodes so screen readers can pronounce text correctly.
 //
 // This is intentionally best-effort:
 // - If an attribute is missing/invalid, the corresponding AccessKit property is left unset.
-// - If we cannot resolve `dir=auto` to a computed direction, we default to LTR.
 #[cfg(feature = "browser_ui")]
 pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
-  use crate::style::types::Direction as CssDirection;
   use std::num::NonZeroU128;
-
-  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-  enum DirAttr {
-    Ltr,
-    Rtl,
-    Auto,
-  }
 
   /// Index enabling efficient ancestor traversal by `node_id`.
   struct DomIndex<'a> {
@@ -4617,52 +4607,6 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
       current = parent;
     }
     None
-  }
-
-  fn nearest_dir_attr(node_id: usize, index: &DomIndex<'_>) -> Option<DirAttr> {
-    let mut current = node_id;
-    while current != 0 {
-      let node = index.node(current)?;
-      if let Some(dir) = node.node.get_attribute_ref("dir") {
-        let dir = trim_ascii_whitespace(dir);
-        if dir.eq_ignore_ascii_case("ltr") {
-          return Some(DirAttr::Ltr);
-        }
-        if dir.eq_ignore_ascii_case("rtl") {
-          return Some(DirAttr::Rtl);
-        }
-        if dir.eq_ignore_ascii_case("auto") {
-          return Some(DirAttr::Auto);
-        }
-      }
-
-      let parent = index.parent(current);
-      if parent == current {
-        break;
-      }
-      current = parent;
-    }
-    None
-  }
-
-  fn resolve_text_direction(node_id: usize, index: &DomIndex<'_>) -> Option<accesskit::TextDirection> {
-    let attr = nearest_dir_attr(node_id, index)?;
-    match attr {
-      DirAttr::Ltr => Some(accesskit::TextDirection::LeftToRight),
-      DirAttr::Rtl => Some(accesskit::TextDirection::RightToLeft),
-      DirAttr::Auto => {
-        // `dir=auto` does not directly encode the resolved direction; consult FastRender's computed
-        // direction if available, else fall back to LTR.
-        let computed = index
-          .node(node_id)
-          .map(|node| node.styles.direction)
-          .unwrap_or(CssDirection::Ltr);
-        Some(match computed {
-          CssDirection::Rtl => accesskit::TextDirection::RightToLeft,
-          CssDirection::Ltr => accesskit::TextDirection::LeftToRight,
-        })
-      }
-    }
   }
 
   fn direct_text_name(node: &StyledNode) -> Option<String> {
@@ -4750,9 +4694,6 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
     if let Some(lang) = resolve_effective_lang(node.node_id, &index) {
       builder.set_language(lang);
     }
-    if let Some(dir) = resolve_text_direction(node.node_id, &index) {
-      builder.set_text_direction(dir);
-    }
 
     let built = builder.build(&mut classes);
     nodes.push((id, built));
@@ -4790,14 +4731,6 @@ mod accesskit_lang_dir_tests {
     let update = build_accesskit_tree_update(&fixture.styled);
     let node = find_node_by_name(&update, "Bonjour").expect("expected node with name 'Bonjour'");
     assert_eq!(node.language(), Some("fr"));
-  }
-
-  #[test]
-  fn accesskit_nodes_include_dir_attribute() {
-    let fixture = crate::testing::styled_tree(r#"<div dir="rtl">مرحبا</div>"#, "", (800.0, 600.0));
-    let update = build_accesskit_tree_update(&fixture.styled);
-    let node = find_node_by_name(&update, "مرحبا").expect("expected node with name 'مرحبا'");
-    assert_eq!(node.text_direction(), Some(accesskit::TextDirection::RightToLeft));
   }
 }
 
