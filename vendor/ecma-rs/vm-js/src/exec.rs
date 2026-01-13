@@ -7,7 +7,7 @@ use crate::fallible_alloc::box_try_new_vm;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
   EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
-  NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm,
+  GcSymbol, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm,
   RealmId, RootId, Scope, ScriptOrModule, SourceText, StackFrame, Value, Vm, VmError, VmHost,
   VmHostHooks, VmJobContext, ToPrimitiveHint,
 };
@@ -3025,6 +3025,17 @@ enum Reference<'a> {
     base: Value,
     key: PropertyKey,
   },
+  /// A private-name reference (`obj.#x`).
+  ///
+  /// Private-name references:
+  /// - never perform `ToObject` on the base value (the base must be an Object at dereference time),
+  /// - never consult the prototype chain,
+  /// - never dispatch to Proxy traps.
+  Private {
+    base: Value,
+    sym: GcSymbol,
+    name: &'a str,
+  },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -5880,6 +5891,47 @@ impl<'a> Evaluator<'a> {
       }
     }
 
+    // Create the class's private-name environment.
+    //
+    // `parse-js` represents private names as strings like `"#x"`. To enforce per-class privacy, we
+    // allocate a fresh internal symbol for each declared private name and store the mapping on the
+    // class's lexical environment record. All class element bodies capture that environment, so
+    // private member expressions can resolve the correct symbol even if the class binding is
+    // passed around.
+    let mut private_names: Vec<String> = Vec::new();
+    let mut private_name_set: HashSet<String> = HashSet::new();
+    for member in members {
+      if let ClassOrObjKey::Direct(key) = &member.stx.key {
+        if key.stx.tt == TT::PrivateMember && private_name_set.insert(key.stx.key.clone()) {
+          private_names
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          private_names.push(key.stx.key.clone());
+        }
+      }
+    }
+    if !private_names.is_empty() {
+      let mut entries: Vec<crate::env::PrivateNameEntry> = Vec::new();
+      entries
+        .try_reserve_exact(private_names.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      // Keep all allocated symbols rooted until the mapping is installed into the class environment
+      // record, so intermediate allocations cannot collect them.
+      let mut priv_scope = scope.reborrow();
+      for name in private_names {
+        let desc = priv_scope.alloc_string(&name)?;
+        let sym = priv_scope.new_internal_symbol(Some(desc))?;
+        priv_scope.push_root(Value::Symbol(sym))?;
+        entries.push(crate::env::PrivateNameEntry {
+          name: name.into_boxed_str(),
+          sym,
+        });
+      }
+      priv_scope
+        .heap_mut()
+        .env_set_private_names(class_env, entries.into_boxed_slice())?;
+    }
+
     // Find an explicit `constructor(...) { ... }` method, if present.
     let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
     for member in members {
@@ -6053,10 +6105,20 @@ impl<'a> Evaluator<'a> {
 
     // Define prototype and static methods.
     //
-    // While defining methods, collect class static blocks so we can evaluate them *after* all
-    // methods have been defined (ECMA-262 `ClassDefinitionEvaluation`: static blocks are evaluated
-    // after the element definition pass).
-    let mut static_blocks: Vec<&[Node<Stmt>]> = Vec::new();
+    // While defining methods, collect static initialization elements (static fields and static
+    // blocks) so we can evaluate them *after* all methods have been defined.
+    //
+    // This matches ECMA-262 `ClassDefinitionEvaluation`, which performs an element definition pass
+    // to install methods/accessors, then runs static field initializers and static blocks in source
+    // order.
+    enum StaticElement<'a> {
+      Block(&'a [Node<Stmt>]),
+      PrivateField {
+        sym: GcSymbol,
+        init: Option<&'a Node<Expr>>,
+      },
+    }
+    let mut static_elements: Vec<StaticElement<'_>> = Vec::new();
     for member in members {
       self.tick()?;
 
@@ -6090,10 +6152,38 @@ impl<'a> Evaluator<'a> {
       // Static initialization blocks are not properties on the class/prototype. Record them for
       // later evaluation and continue to the next element.
       if let ClassOrObjVal::StaticBlock(block) = &member.stx.val {
-        static_blocks
+        static_elements
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
-        static_blocks.push(&block.stx.body);
+        static_elements.push(StaticElement::Block(&block.stx.body));
+        continue;
+      }
+
+      // Static fields are evaluated after the element definition pass (after all methods are
+      // defined).
+      if let ClassOrObjVal::Prop(init) = &member.stx.val {
+        // We currently implement **only static private fields**.
+        if !member.stx.static_ {
+          return Err(VmError::Unimplemented("class fields"));
+        }
+        let ClassOrObjKey::Direct(direct) = &member.stx.key else {
+          return Err(VmError::Unimplemented("computed class fields"));
+        };
+        if direct.stx.tt != TT::PrivateMember {
+          return Err(VmError::Unimplemented("class fields"));
+        }
+
+        let sym = class_scope
+          .heap()
+          .resolve_private_name_symbol(class_env, &direct.stx.key)?
+          .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+        static_elements
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        static_elements.push(StaticElement::PrivateField {
+          sym,
+          init: init.as_ref(),
+        });
         continue;
       }
 
@@ -6108,19 +6198,29 @@ impl<'a> Evaluator<'a> {
       let mut member_scope = class_scope.reborrow();
       member_scope.push_root(Value::Object(target_obj))?;
 
+      let is_private_key = matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember);
+
       let key = match &member.stx.key {
         ClassOrObjKey::Direct(direct) => {
-          let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
-            member_scope.alloc_string_from_code_units(units)?
-          } else if direct.stx.tt == TT::LiteralNumber {
-            let mut tick = || self.tick();
-            let n = crate::ops::parse_ascii_decimal_to_f64_str(&direct.stx.key, &mut tick)?
-              .ok_or(VmError::Unimplemented("numeric literal property name parse"))?;
-            member_scope.heap_mut().to_string(Value::Number(n))?
+          if direct.stx.tt == TT::PrivateMember {
+            let sym = member_scope
+              .heap()
+              .resolve_private_name_symbol(class_env, &direct.stx.key)?
+              .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+            PropertyKey::from_symbol(sym)
           } else {
-            member_scope.alloc_string(&direct.stx.key)?
-          };
-          PropertyKey::from_string(key_s)
+            let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
+              member_scope.alloc_string_from_code_units(units)?
+            } else if direct.stx.tt == TT::LiteralNumber {
+              let mut tick = || self.tick();
+              let n = crate::ops::parse_ascii_decimal_to_f64_str(&direct.stx.key, &mut tick)?
+                .ok_or(VmError::Unimplemented("numeric literal property name parse"))?;
+              member_scope.heap_mut().to_string(Value::Number(n))?
+            } else {
+              member_scope.alloc_string(&direct.stx.key)?
+            };
+            PropertyKey::from_string(key_s)
+          }
         }
         ClassOrObjKey::Computed(expr) => {
           let value = self.eval_expr(&mut member_scope, expr)?;
@@ -6238,9 +6338,9 @@ impl<'a> Evaluator<'a> {
             key,
             PropertyDescriptorPatch {
               value: Some(Value::Object(func_obj)),
-              writable: Some(true),
+              writable: Some(!is_private_key),
               enumerable: Some(false),
-              configurable: Some(true),
+              configurable: Some(!is_private_key),
               ..Default::default()
             },
           )?;
@@ -6320,6 +6420,10 @@ impl<'a> Evaluator<'a> {
             PropertyDescriptorPatch {
               get: Some(Value::Object(func_obj)),
               enumerable: Some(false),
+              // Private accessors may appear as a getter/setter pair, defined as distinct class
+              // elements in source order. Using `configurable: false` would reject the second
+              // definition via `DefineOwnProperty` invariants, so keep private accessors
+              // configurable.
               configurable: Some(true),
               ..Default::default()
             },
@@ -6416,12 +6520,16 @@ impl<'a> Evaluator<'a> {
       }
     }
 
-    // Evaluate class static blocks in source order.
-    //
-    // Note: We currently reject public/private static fields (`class fields`) earlier in the
-    // element loop, so this list contains only blocks.
-    for stmts in static_blocks {
-      self.eval_class_static_block(&mut class_scope, func_obj, stmts)?;
+    // Evaluate class static elements in source order.
+    for elem in static_elements {
+      match elem {
+        StaticElement::Block(stmts) => {
+          self.eval_class_static_block(&mut class_scope, func_obj, stmts)?;
+        }
+        StaticElement::PrivateField { sym, init } => {
+          self.eval_class_static_private_field(&mut class_scope, func_obj, sym, init)?;
+        }
+      }
     }
 
     Ok(func_obj)
@@ -6490,6 +6598,51 @@ impl<'a> Evaluator<'a> {
         "class static block produced Continue completion (early errors should prevent this)",
       )),
     }
+  }
+
+  fn eval_class_static_private_field(
+    &mut self,
+    scope: &mut Scope<'_>,
+    receiver: GcObject,
+    sym: GcSymbol,
+    init: Option<&Node<Expr>>,
+  ) -> Result<(), VmError> {
+    // Static field initializers run with `this` bound to the class constructor object and
+    // `new.target` set to `undefined`.
+    let mut field_scope = scope.reborrow();
+    field_scope.push_roots(&[Value::Object(receiver), Value::Symbol(sym)])?;
+
+    let saved_this = self.this;
+    let saved_new_target = self.new_target;
+    self.this = Value::Object(receiver);
+    self.new_target = Value::Undefined;
+
+    let res: Result<(), VmError> = (|| {
+      let value = match init {
+        Some(expr) => self.eval_expr(&mut field_scope, expr)?,
+        None => Value::Undefined,
+      };
+      field_scope.push_root(value)?;
+
+      // Evaluate the initializer before adding the private field (matching `DefineField` semantics).
+      let key = PropertyKey::from_symbol(sym);
+      field_scope.define_property_or_throw(
+        receiver,
+        key,
+        PropertyDescriptorPatch {
+          value: Some(value),
+          writable: Some(true),
+          enumerable: Some(false),
+          configurable: Some(false),
+          ..Default::default()
+        },
+      )?;
+      Ok(())
+    })();
+
+    self.this = saved_this;
+    self.new_target = saved_new_target;
+    res
   }
 
   fn eval_class_decl(
@@ -7833,10 +7986,22 @@ impl<'a> Evaluator<'a> {
     // the original base value can be preserved as the call/receiver `this`.
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&expr.right)?;
-    let reference = Reference::Property {
-      base,
-      key: PropertyKey::from_string(key_s),
+    let reference = if expr.right.starts_with('#') {
+      let sym = key_scope
+        .heap()
+        .resolve_private_name_symbol(self.env.lexical_env, &expr.right)?
+        .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+      Reference::Private {
+        base,
+        sym,
+        name: &expr.right,
+      }
+    } else {
+      let key_s = key_scope.alloc_string(&expr.right)?;
+      Reference::Property {
+        base,
+        key: PropertyKey::from_string(key_s),
+      }
     };
     let value = self.get_value_from_reference(&mut key_scope, &reference)?;
     Ok(OptionalChainEval::Value(value))
@@ -7892,13 +8057,25 @@ impl<'a> Evaluator<'a> {
             "Cannot convert undefined or null to object",
           )?);
         }
-        let mut key_scope = scope.reborrow();
-        key_scope.push_root(base)?;
-        let key_s = key_scope.alloc_string(&member.stx.right)?;
-        Ok(Reference::Property {
-          base,
-          key: PropertyKey::from_string(key_s),
-        })
+        if member.stx.right.starts_with('#') {
+          let sym = scope
+            .heap()
+            .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
+            .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+          Ok(Reference::Private {
+            base,
+            sym,
+            name: &member.stx.right,
+          })
+        } else {
+          let mut key_scope = scope.reborrow();
+          key_scope.push_root(base)?;
+          let key_s = key_scope.alloc_string(&member.stx.right)?;
+          Ok(Reference::Property {
+            base,
+            key: PropertyKey::from_string(key_s),
+          })
+        }
       }
       Expr::ComputedMember(member) => {
         if member.stx.optional_chaining {
@@ -7930,19 +8107,24 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     reference: &Reference<'_>,
   ) -> Result<(), VmError> {
-    let Reference::Property { base, key } = *reference else {
-      return Ok(());
-    };
-    // Root both base and key together so a GC triggered by root-stack growth cannot collect the
-    // not-yet-pushed entry.
-    let roots = [
-      base,
-      match key {
-        PropertyKey::String(s) => Value::String(s),
-        PropertyKey::Symbol(s) => Value::Symbol(s),
-      },
-    ];
-    scope.push_roots(&roots)?;
+    match *reference {
+      Reference::Binding(_) => {}
+      Reference::Property { base, key } => {
+        // Root both base and key together so a GC triggered by root-stack growth cannot collect the
+        // not-yet-pushed entry.
+        let roots = [
+          base,
+          match key {
+            PropertyKey::String(s) => Value::String(s),
+            PropertyKey::Symbol(s) => Value::Symbol(s),
+          },
+        ];
+        scope.push_roots(&roots)?;
+      }
+      Reference::Private { base, sym, .. } => {
+        scope.push_roots(&[base, Value::Symbol(sym)])?;
+      }
+    }
     Ok(())
   }
 
@@ -7968,6 +8150,9 @@ impl<'a> Evaluator<'a> {
         // Root the boxed object so host hooks/accessors can allocate freely.
         get_scope.push_root(Value::Object(object))?;
         get_scope.get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, base)
+      }
+      Reference::Private { base, sym, name } => {
+        self.private_get(scope, base, sym, name)
       }
     }
   }
@@ -8017,6 +8202,116 @@ impl<'a> Evaluator<'a> {
           // Sloppy-mode assignment to a non-writable/non-extensible target fails silently.
           Ok(())
         }
+      }
+      Reference::Private { base, sym, name } => {
+        self.private_set(scope, base, sym, name, value)
+      }
+    }
+  }
+
+  fn private_get(
+    &mut self,
+    scope: &mut Scope<'_>,
+    base: Value,
+    sym: GcSymbol,
+    name: &str,
+  ) -> Result<Value, VmError> {
+    let Value::Object(obj) = base else {
+      return Err(throw_type_error(
+        self.vm,
+        scope,
+        "Cannot read private member from non-object",
+      )?);
+    };
+    // Private fields are not accessible through Proxy objects.
+    if scope.heap().is_proxy_object(obj) {
+      return Err(throw_type_error(
+        self.vm,
+        scope,
+        "Cannot read private member from Proxy object",
+      )?);
+    }
+
+    let key = PropertyKey::from_symbol(sym);
+    let Some(desc) = scope.heap().get_own_property(obj, key)? else {
+      // Brand check failure.
+      let msg =
+        crate::fallible_format::try_format_error_message("Cannot read private member ", name, "")?;
+      return Err(throw_type_error(self.vm, scope, &msg)?);
+    };
+
+    match desc.kind {
+      PropertyKind::Data { value, .. } => Ok(value),
+      PropertyKind::Accessor { get, .. } => {
+        if get == Value::Undefined {
+          return Ok(Value::Undefined);
+        }
+        let mut call_scope = scope.reborrow();
+        call_scope.push_roots(&[get, base])?;
+        self.call(&mut call_scope, get, base, &[])
+      }
+    }
+  }
+
+  fn private_set(
+    &mut self,
+    scope: &mut Scope<'_>,
+    base: Value,
+    sym: GcSymbol,
+    name: &str,
+    value: Value,
+  ) -> Result<(), VmError> {
+    let Value::Object(obj) = base else {
+      return Err(throw_type_error(
+        self.vm,
+        scope,
+        "Cannot write private member to non-object",
+      )?);
+    };
+    if scope.heap().is_proxy_object(obj) {
+      return Err(throw_type_error(
+        self.vm,
+        scope,
+        "Cannot write private member to Proxy object",
+      )?);
+    }
+
+    let key = PropertyKey::from_symbol(sym);
+    let Some(desc) = scope.heap().get_own_property(obj, key)? else {
+      let msg =
+        crate::fallible_format::try_format_error_message("Cannot write private member ", name, "")?;
+      return Err(throw_type_error(self.vm, scope, &msg)?);
+    };
+
+    match desc.kind {
+      PropertyKind::Data { writable, .. } => {
+        if !writable {
+          return Err(throw_type_error(
+            self.vm,
+            scope,
+            "Cannot assign to read-only private member",
+          )?);
+        }
+        // Root the RHS value across any internal allocations that might occur while updating the
+        // property table.
+        let mut set_scope = scope.reborrow();
+        set_scope.push_root(value)?;
+        set_scope
+          .heap_mut()
+          .object_set_existing_data_property_value(obj, &key, value)?;
+        Ok(())
+      }
+      PropertyKind::Accessor { set, .. } => {
+        if set == Value::Undefined {
+          return Err(throw_type_error(
+            self.vm,
+            scope,
+            "Cannot set private member (no setter)",
+          )?);
+        }
+        let mut call_scope = scope.reborrow();
+        call_scope.push_roots(&[set, base, value])?;
+        self.call(&mut call_scope, set, base, &[value]).map(|_| ())
       }
     }
   }
@@ -8068,6 +8363,8 @@ impl<'a> Evaluator<'a> {
         PropertyKey::String(name_s)
       }
       Reference::Property { key, .. } => key,
+      // Private field assignment does not participate in anonymous function name inference.
+      Reference::Private { .. } => return Ok(()),
     };
 
     crate::function_properties::set_function_name(scope, func_obj, key, None)?;
@@ -8586,7 +8883,7 @@ impl<'a> Evaluator<'a> {
       Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
         let reference = self.eval_reference(scope, &expr.stx.function)?;
         let this_value = match reference {
-          Reference::Property { base, .. } => base,
+          Reference::Property { base, .. } | Reference::Private { base, .. } => base,
           _ => Value::Undefined,
         };
 
@@ -9825,10 +10122,22 @@ impl<'a> Evaluator<'a> {
         // Optional chaining member call: preserve the base value for the call `this` binding.
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
-        let key_s = key_scope.alloc_string(&member.stx.right)?;
-        let reference = Reference::Property {
-          base,
-          key: PropertyKey::from_string(key_s),
+        let reference = if member.stx.right.starts_with('#') {
+          let sym = key_scope
+            .heap()
+            .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
+            .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+          Reference::Private {
+            base,
+            sym,
+            name: &member.stx.right,
+          }
+        } else {
+          let key_s = key_scope.alloc_string(&member.stx.right)?;
+          Reference::Property {
+            base,
+            key: PropertyKey::from_string(key_s),
+          }
         };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, base)
@@ -9870,10 +10179,22 @@ impl<'a> Evaluator<'a> {
 
             let mut key_scope = scope.reborrow();
             key_scope.push_root(base)?;
-            let key_s = key_scope.alloc_string(&member.stx.right)?;
-            let reference = Reference::Property {
-              base,
-              key: PropertyKey::from_string(key_s),
+            let reference = if member.stx.right.starts_with('#') {
+              let sym = key_scope
+                .heap()
+                .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
+                .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+              Reference::Private {
+                base,
+                sym,
+                name: &member.stx.right,
+              }
+            } else {
+              let key_s = key_scope.alloc_string(&member.stx.right)?;
+              Reference::Property {
+                base,
+                key: PropertyKey::from_string(key_s),
+              }
             };
             let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
             (callee_value, base)
@@ -19400,6 +19721,16 @@ fn async_eval_assignment_apply_reference(
 
               (Some(base_root), Some(key_root))
             }
+            Reference::Private { base, sym, .. } => {
+              let mut root_scope = rhs_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              let key_value = Value::Symbol(sym);
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+              (Some(base_root), Some(key_root))
+            }
           };
 
           async_frames_push(
@@ -19448,6 +19779,17 @@ fn async_eval_assignment_apply_reference(
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(s) => Value::Symbol(s),
               };
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root))
+            }
+            Reference::Private { base, sym, .. } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              let key_value = Value::Symbol(sym);
               root_scope.push_root(key_value)?;
               let key_root = root_scope.heap_mut().add_root(key_value)?;
 
@@ -23792,7 +24134,18 @@ fn async_resume_from_frames(
                         ))
                       }
                     };
-                    Reference::Property { base, key }
+                    match key {
+                      PropertyKey::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
+                        // Internal symbols are not observable from JS, so an internal symbol key
+                        // here corresponds to a private-name reference.
+                        let name = match &*expr.left.stx {
+                          Expr::Member(member) => member.stx.right.as_str(),
+                          _ => "",
+                        };
+                        Reference::Private { base, sym, name }
+                      }
+                      other => Reference::Property { base, key: other },
+                    }
                   }
                   _ => {
                     return Err(VmError::InvariantViolation(

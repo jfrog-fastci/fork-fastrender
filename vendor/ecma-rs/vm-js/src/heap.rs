@@ -1,4 +1,4 @@
-use crate::env::{DeclarativeEnvRecord, EnvBinding, EnvBindingValue, EnvRecord, ObjectEnvRecord};
+use crate::env::{DeclarativeEnvRecord, EnvBinding, EnvBindingValue, EnvRecord, ObjectEnvRecord, PrivateNameEntry};
 use crate::exec::{GenFrame, RuntimeEnv};
 use crate::function::{
   CallHandler, ConstructHandler, EcmaFunctionId, FunctionData, JsFunction, NativeConstructId,
@@ -5617,7 +5617,7 @@ impl Heap {
     // by GC and stable across realms.
     let mut scope = self.scope();
     let desc = scope.alloc_string(description)?;
-    let sym = scope.new_symbol(Some(desc))?;
+    let sym = scope.new_internal_symbol(Some(desc))?;
     set(&mut scope.heap.internal_symbols, sym);
     Ok(sym)
   }
@@ -5836,31 +5836,11 @@ impl Heap {
     )
   }
 
-  fn is_internal_symbol(&self, sym: GcSymbol) -> bool {
-    let internal = &self.internal_symbols;
-    let sym = Some(sym);
-    sym == internal.string_data
-      || sym == internal.symbol_data
-      || sym == internal.boolean_data
-      || sym == internal.number_data
-      || sym == internal.bigint_data
-      || sym == internal.array_iterator_array
-      || sym == internal.array_iterator_index
-      || sym == internal.array_iterator_kind
-      || sym == internal.map_iterator_map
-      || sym == internal.map_iterator_index
-      || sym == internal.map_iterator_kind
-      || sym == internal.set_iterator_set
-      || sym == internal.set_iterator_index
-      || sym == internal.set_iterator_kind
-      || sym == internal.string_iterator_iterated_string
-      || sym == internal.string_iterator_next_index
-      || sym == internal.regexp_string_iterator_iterating_regexp
-      || sym == internal.regexp_string_iterator_iterated_string
-      || sym == internal.regexp_string_iterator_global
-      || sym == internal.regexp_string_iterator_unicode
-      || sym == internal.regexp_string_iterator_done
-      || sym == internal.is_raw_json
+  pub(crate) fn is_internal_symbol(&self, sym: GcSymbol) -> bool {
+    match self.get_heap_object(sym.0) {
+      Ok(HeapObject::Symbol(sym)) => sym.is_internal(),
+      _ => false,
+    }
   }
 
   /// Gets an object's own property descriptor.
@@ -6028,6 +6008,50 @@ impl Heap {
         .find_binding_index(self, name)?
         .is_some(),
     )
+  }
+
+  pub(crate) fn env_set_private_names(
+    &mut self,
+    env: GcEnv,
+    private_names: Box<[PrivateNameEntry]>,
+  ) -> Result<(), VmError> {
+    let rec = self.get_declarative_env_mut(env)?;
+    rec.private_names = Some(private_names);
+    Ok(())
+  }
+
+  /// Resolves a private name within the innermost active private-name environment.
+  ///
+  /// Private names are lexically scoped to the nearest enclosing class body and are not inherited
+  /// across class boundaries. Therefore this resolves against the first environment record in the
+  /// chain that contains private-name metadata, and does **not** continue searching outer
+  /// environments.
+  pub(crate) fn resolve_private_name_symbol(
+    &self,
+    env: GcEnv,
+    name: &str,
+  ) -> Result<Option<GcSymbol>, VmError> {
+    let mut current = Some(env);
+    while let Some(e) = current {
+      match self.get_env(e)? {
+        EnvRecord::Declarative(rec) => {
+          if let Some(private_names) = rec.private_names.as_deref() {
+            for entry in private_names {
+              if entry.name.as_ref() == name {
+                return Ok(Some(entry.sym));
+              }
+            }
+            // Stop at the first private-name environment boundary.
+            return Ok(None);
+          }
+          current = rec.outer;
+        }
+        EnvRecord::Object(rec) => {
+          current = rec.outer;
+        }
+      }
+    }
+    Ok(None)
   }
 
   pub(crate) fn env_initialize_binding(
@@ -7780,7 +7804,28 @@ impl<'a> Scope<'a> {
     let id = scope.heap.next_symbol_id;
     scope.heap.next_symbol_id = scope.heap.next_symbol_id.wrapping_add(1);
 
-    let obj = HeapObject::Symbol(JsSymbol::new(id, description));
+    let obj = HeapObject::Symbol(JsSymbol::new(id, description, /* internal */ false));
+    Ok(GcSymbol(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  /// Allocates an **engine-internal** JavaScript symbol on the heap.
+  ///
+  /// Internal symbols are used to model spec internal slots and private names as symbol-keyed
+  /// properties while ensuring they remain unreachable and unobservable from JavaScript.
+  pub(crate) fn new_internal_symbol(&mut self, description: Option<GcString>) -> Result<GcSymbol, VmError> {
+    // Root the description string during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(desc) = description {
+      scope.push_root(Value::String(desc))?;
+    }
+ 
+    let new_bytes = 0;
+    scope.heap.ensure_can_allocate(new_bytes)?;
+ 
+    let id = scope.heap.next_symbol_id;
+    scope.heap.next_symbol_id = scope.heap.next_symbol_id.wrapping_add(1);
+ 
+    let obj = HeapObject::Symbol(JsSymbol::new(id, description, /* internal */ true));
     Ok(GcSymbol(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 

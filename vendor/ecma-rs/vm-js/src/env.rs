@@ -1,7 +1,19 @@
 use crate::heap::{Trace, Tracer};
-use crate::{GcEnv, GcObject, GcString, Heap, Value, VmError};
+use crate::{GcEnv, GcObject, GcString, GcSymbol, Heap, Value, VmError};
 use core::mem;
 use semantic_js::js::SymbolId;
+
+#[derive(Debug)]
+pub(crate) struct PrivateNameEntry {
+  pub(crate) name: Box<str>,
+  pub(crate) sym: GcSymbol,
+}
+
+impl Trace for PrivateNameEntry {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    tracer.trace_value(Value::Symbol(self.sym));
+  }
+}
 
 #[derive(Debug)]
 pub(crate) struct DeclarativeEnvRecord {
@@ -9,6 +21,7 @@ pub(crate) struct DeclarativeEnvRecord {
   pub(crate) bindings: Box<[EnvBinding]>,
   pub(crate) this_value: Option<Value>,
   pub(crate) new_target: Option<Value>,
+  pub(crate) private_names: Option<Box<[PrivateNameEntry]>>,
 }
 
 impl DeclarativeEnvRecord {
@@ -18,6 +31,7 @@ impl DeclarativeEnvRecord {
       bindings: Box::default(),
       this_value: None,
       new_target: None,
+      private_names: None,
     }
   }
 
@@ -27,6 +41,7 @@ impl DeclarativeEnvRecord {
       bindings,
       this_value: None,
       new_target: None,
+      private_names: None,
     }
   }
 
@@ -203,6 +218,11 @@ impl Trace for EnvRecord {
         }
         if let Some(new_target) = env.new_target {
           tracer.trace_value(new_target);
+        }
+        if let Some(private_names) = env.private_names.as_deref() {
+          for entry in private_names {
+            entry.trace(tracer);
+          }
         }
       }
       EnvRecord::Object(env) => {
