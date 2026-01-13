@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use crate::ui::a11y;
 use crate::ui::about_pages;
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::ChromeAction;
@@ -332,7 +333,7 @@ pub fn menu_bar_ui(
               egui::Button::new("Find in Page").shortcut_text(SHORTCUT_FIND_IN_PAGE),
             );
             find_in_page_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Find in page")
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::FIND_IN_PAGE_LABEL)
             });
             if find_in_page_resp.clicked() {
               commands.push(MenuCommand::FindInPage);

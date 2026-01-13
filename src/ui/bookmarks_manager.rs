@@ -13,7 +13,7 @@ use crate::ui::bookmarks_io_job::{BookmarksIoJob, BookmarksIoJobUpdate};
 use crate::ui::motion::UiMotion;
 
 use super::{
-  icon_button, icon_tinted, panel_empty_state, panel_header, panel_search_field, BookmarkId,
+  a11y, icon_button, icon_tinted, panel_empty_state, panel_header, panel_search_field, BookmarkId,
   BookmarkDelta, BookmarkNode, BookmarkStore, BrowserIcon,
 };
 
@@ -616,7 +616,7 @@ fn search_bar(
     &mut state.search,
     "Search bookmarks…",
     &mut state.request_focus_search,
-    "Search bookmarks",
+    a11y::BOOKMARKS_MANAGER_SEARCH_LABEL,
   );
 
   if search_out.focus_requested

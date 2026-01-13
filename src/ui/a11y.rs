@@ -14,6 +14,10 @@
 /// This module contains shared labels for non-icon widgets.
 
 pub const ADDRESS_BAR_LABEL: &str = "Address bar";
+pub const TAB_SEARCH_LABEL: &str = "Search tabs";
+pub const FIND_IN_PAGE_LABEL: &str = "Find in page";
+pub const HISTORY_PANEL_SEARCH_LABEL: &str = "Search history";
+pub const BOOKMARKS_MANAGER_SEARCH_LABEL: &str = "Search bookmarks";
 
 #[cfg(test)]
 mod tests {
@@ -28,5 +32,9 @@ mod tests {
   #[test]
   fn a11y_shared_labels_are_non_empty() {
     assert!(!super::ADDRESS_BAR_LABEL.trim().is_empty());
+    assert!(!super::TAB_SEARCH_LABEL.trim().is_empty());
+    assert!(!super::FIND_IN_PAGE_LABEL.trim().is_empty());
+    assert!(!super::HISTORY_PANEL_SEARCH_LABEL.trim().is_empty());
+    assert!(!super::BOOKMARKS_MANAGER_SEARCH_LABEL.trim().is_empty());
   }
 }

@@ -7,7 +7,7 @@
 //! caller (typically `src/bin/browser.rs`).
 
 use super::{
-  a11y_labels, history_timestamp, icon_button, panel_empty_state, panel_header_with_actions,
+  a11y, a11y_labels, history_timestamp, icon_button, panel_empty_state, panel_header_with_actions,
   panel_list_row, panel_search_field, BrowserIcon, GlobalHistorySearcher, GlobalHistoryStore,
 };
 
@@ -78,7 +78,7 @@ pub fn history_panel_ui(
         search_text,
         "Search history…",
         request_focus_search,
-        "Search history",
+        a11y::HISTORY_PANEL_SEARCH_LABEL,
       );
       if search_out.focus_requested
         || search_out.response.has_focus()

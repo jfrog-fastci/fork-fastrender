@@ -482,7 +482,9 @@ fn tab_search_overlay_ui(
           .desired_width(f32::INFINITY)
           .hint_text("Search tabs…"),
       );
-      input.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search tabs"));
+      input.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, a11y::TAB_SEARCH_LABEL)
+      });
       // Keep focus in the search box while the overlay is open.
       if app.chrome.tab_search.open && shortcuts_enabled {
         input.request_focus();
@@ -2953,8 +2955,9 @@ pub fn chrome_ui_with_bookmarks(
               .desired_width(220.0)
               .hint_text("Find in page…"),
           );
-          response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Find in page"));
+          response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, a11y::FIND_IN_PAGE_LABEL)
+          });
 
           let match_count = tab.find.match_count;
           let active_idx = tab.find.active_match_index.map(|i| i + 1).unwrap_or(0);
