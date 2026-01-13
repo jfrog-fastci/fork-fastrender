@@ -42,7 +42,7 @@ attributes = [
   "previousSibling",
   "textContent",
 ]
-operations = ["appendChild", "insertBefore", "removeChild", "replaceChild", "cloneNode"]
+operations = ["appendChild", "insertBefore", "removeChild", "replaceChild", "cloneNode", "isEqualNode"]
 
 [[interface]]
 name = "NodeFilter"

@@ -221,6 +221,8 @@ pub(crate) fn is_equal_node_from_dom(
   dom_b: &crate::dom2::Document,
   b_id: NodeId,
 ) -> bool {
+  const MAX_NODE_EQUALITY_VISITS: usize = 100_000;
+
   fn normalize_namespace(ns: &str) -> Option<&str> {
     if ns == NULL_NAMESPACE {
       return None;
@@ -229,6 +231,44 @@ pub(crate) fn is_equal_node_from_dom(
       return Some(HTML_NAMESPACE);
     }
     Some(ns)
+  }
+
+  fn local_name_eq(
+    dom_a: &crate::dom2::Document,
+    a_ns: &str,
+    a_local: &str,
+    dom_b: &crate::dom2::Document,
+    b_ns: &str,
+    b_local: &str,
+  ) -> bool {
+    let a_html = dom_a.is_html_case_insensitive_namespace(a_ns);
+    let b_html = dom_b.is_html_case_insensitive_namespace(b_ns);
+    match (a_html, b_html) {
+      (true, true) => a_local.eq_ignore_ascii_case(b_local),
+      (false, false) => a_local == b_local,
+      (true, false) => a_local.to_ascii_lowercase() == b_local,
+      (false, true) => a_local == b_local.to_ascii_lowercase(),
+    }
+  }
+
+  fn attr_local_name_eq(
+    dom_a: &crate::dom2::Document,
+    a_el_ns: &str,
+    a_local: &str,
+    dom_b: &crate::dom2::Document,
+    b_el_ns: &str,
+    b_local: &str,
+  ) -> bool {
+    // Match the DOM Standard's casing model for HTML documents: attribute local names are
+    // ASCII-lowercased for HTML elements.
+    let a_html = dom_a.is_html_case_insensitive_namespace(a_el_ns);
+    let b_html = dom_b.is_html_case_insensitive_namespace(b_el_ns);
+    match (a_html, b_html) {
+      (true, true) => a_local.eq_ignore_ascii_case(b_local),
+      (false, false) => a_local == b_local,
+      (true, false) => a_local.to_ascii_lowercase() == b_local,
+      (false, true) => a_local == b_local.to_ascii_lowercase(),
+    }
   }
 
   fn element_like<'a>(
@@ -255,7 +295,14 @@ pub(crate) fn is_equal_node_from_dom(
     }
   }
 
-  fn attrs_equal(a: &[Attribute], b: &[Attribute]) -> bool {
+  fn attrs_equal(
+    dom_a: &crate::dom2::Document,
+    a_el_ns: &str,
+    a: &[Attribute],
+    dom_b: &crate::dom2::Document,
+    b_el_ns: &str,
+    b: &[Attribute],
+  ) -> bool {
     if a.len() != b.len() {
       return false;
     }
@@ -267,7 +314,7 @@ pub(crate) fn is_equal_node_from_dom(
           continue;
         }
         if ns_a == normalize_namespace(&attr_b.namespace)
-          && attr_a.local_name == attr_b.local_name
+          && attr_local_name_eq(dom_a, a_el_ns, &attr_a.local_name, dom_b, b_el_ns, &attr_b.local_name)
           && attr_a.value == attr_b.value
         {
           matched[idx] = true;
@@ -279,13 +326,13 @@ pub(crate) fn is_equal_node_from_dom(
     true
   }
 
-  fn light_tree_children(dom: &crate::dom2::Document, node_id: NodeId) -> Vec<NodeId> {
+  fn light_tree_children(dom: &crate::dom2::Document, node_id: NodeId, out: &mut Vec<NodeId>) {
+    out.clear();
     let Some(node) = dom.nodes().get(node_id.index()) else {
-      return Vec::new();
+      return;
     };
     let filter_shadow_roots = !matches!(&node.kind, NodeKind::ShadowRoot { .. });
 
-    let mut children: Vec<NodeId> = Vec::with_capacity(node.children.len());
     for &child in node.children.iter() {
       if child.index() >= dom.nodes_len() {
         continue;
@@ -299,17 +346,29 @@ pub(crate) fn is_equal_node_from_dom(
       if filter_shadow_roots && matches!(&child_node.kind, NodeKind::ShadowRoot { .. }) {
         continue;
       }
-      children.push(child);
+      out.push(child);
     }
-    children
   }
 
   if a_id.index() >= dom_a.nodes_len() || b_id.index() >= dom_b.nodes_len() {
     return false;
   }
 
+  let mut remaining = dom_a
+    .nodes_len()
+    .saturating_add(dom_b.nodes_len())
+    .saturating_add(1)
+    .min(MAX_NODE_EQUALITY_VISITS);
+
   let mut stack: Vec<(NodeId, NodeId)> = vec![(a_id, b_id)];
+  let mut a_children: Vec<NodeId> = Vec::new();
+  let mut b_children: Vec<NodeId> = Vec::new();
   while let Some((a_id, b_id)) = stack.pop() {
+    if remaining == 0 {
+      return false;
+    }
+    remaining -= 1;
+
     if a_id.index() >= dom_a.nodes_len() || b_id.index() >= dom_b.nodes_len() {
       return false;
     }
@@ -373,18 +432,21 @@ pub(crate) fn is_equal_node_from_dom(
         if a_prefix != b_prefix {
           return false;
         }
-        if a_local != b_local {
+        if !local_name_eq(dom_a, a_ns, a_local, dom_b, b_ns, b_local) {
           return false;
         }
-        if !attrs_equal(a_attrs, b_attrs) {
+        if !attrs_equal(dom_a, a_ns, a_attrs, dom_b, b_ns, b_attrs) {
           return false;
         }
       }
     }
 
-    let a_children = light_tree_children(dom_a, a_id);
-    let b_children = light_tree_children(dom_b, b_id);
+    light_tree_children(dom_a, a_id, &mut a_children);
+    light_tree_children(dom_b, b_id, &mut b_children);
     if a_children.len() != b_children.len() {
+      return false;
+    }
+    if stack.len().saturating_add(a_children.len()) > remaining {
       return false;
     }
     for idx in (0..a_children.len()).rev() {

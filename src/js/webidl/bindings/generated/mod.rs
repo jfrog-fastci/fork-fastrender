@@ -4430,6 +4430,47 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn node_is_equal_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Null | Value::Undefined) {
+        Value::Null
+      } else {
+        v0
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Node",
+        "isEqualNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn node_remove_child(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -10137,6 +10178,23 @@ pub mod window {
         rt.define_data_property_str(
           proto_node,
           "insertBefore",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("isEqualNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(node_is_equal_node, None, "isEqualNode", 1)?;
+        rt.define_data_property_str(
+          proto_node,
+          "isEqualNode",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;

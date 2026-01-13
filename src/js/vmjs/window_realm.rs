@@ -31351,7 +31351,6 @@ fn node_compare_document_position_native(
   };
   Ok(Value::Number(mask as f64))
 }
-
 fn node_is_equal_node_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -31365,18 +31364,23 @@ fn node_is_equal_node_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let this_handle = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+  let this_handle = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    platform.require_node_handle(scope.heap(), Value::Object(wrapper_obj))?
+  };
 
   let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(other_value, Value::Null | Value::Undefined) {
     return Ok(Value::Bool(false));
   }
 
-  let other_handle = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), other_value)?;
+  let other_handle = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    match platform.require_node_handle(scope.heap(), other_value) {
+      Ok(handle) => handle,
+      Err(_) => return Ok(Value::Bool(false)),
+    }
+  };
 
   let dom_a_ptr = dom_ptr_for_document_id_read(vm, host, this_handle.document_id)
     .ok_or(VmError::TypeError("Illegal invocation"))?;

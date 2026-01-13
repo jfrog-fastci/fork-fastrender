@@ -4194,7 +4194,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         if matches!(other_value, Value::Null | Value::Undefined) {
           return Ok(Value::Bool(false));
         }
-        let other_handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), other_value)?;
+        let other_handle = match require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), other_value) {
+          Ok(handle) => handle,
+          Err(_) => return Ok(Value::Bool(false)),
+        };
 
         let result = with_active_vm_host_and_hooks(vm, |vm, host, _hooks| {
           let dom_a_ptr = dom_ptr_for_document_id_read(vm, host, this_handle.document_id)
