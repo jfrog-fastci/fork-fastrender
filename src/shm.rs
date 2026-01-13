@@ -1,8 +1,15 @@
-//! Shared memory utilities for multiprocess IPC.
+//! Shared-memory buffers used by multiprocess FastRender.
 //!
-//! The initial implementation targets Linux and uses `memfd` so buffers can be passed across
-//! processes without hitting the filesystem. A producer can fill the buffer and then apply
-//! write-seals before handing it to an untrusted consumer.
+//! On Linux we use `memfd_create` so large buffers (frame pixels, response bodies) can be passed
+//! across processes without copying them through a control channel.
+//!
+//! ## Security: seal mutation is a persistent DoS
+//!
+//! Linux file seals are *persistent* for the lifetime of the underlying memfd. When a buffer is
+//! reused (pooled) across IPC boundaries, an untrusted peer could add restrictive seals such as
+//! `F_SEAL_WRITE`, permanently turning the buffer read-only and breaking reuse. Locking the seal set
+//! (`F_SEAL_SEAL`) after applying the required size seals prevents this class of long-lived
+//! denial-of-service.
 
 use std::io;
 
@@ -30,6 +37,18 @@ pub enum SharedMemoryError {
   #[error("failed to write shared memory contents: {0}")]
   Write(#[source] io::Error),
 
+  #[error("failed to apply required shared memory size seals: {0}")]
+  SealSize(#[source] io::Error),
+
+  #[error("failed to add shared memory seals: {0}")]
+  SealAdd(#[source] io::Error),
+
+  #[error("failed to lock shared memory seals: {0}")]
+  SealLock(#[source] io::Error),
+
+  #[error("failed to query shared memory seals: {0}")]
+  SealQuery(#[source] io::Error),
+
   #[error(
     "cannot seal shared memory as read-only while writable mappings exist (unmap writable views before sealing): {0}"
   )]
@@ -52,6 +71,8 @@ mod imp {
   use std::os::unix::fs::FileExt;
   use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 
+  const SIZE_SEALS: libc::c_int = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
+
   /// A Linux `memfd`-backed shared memory buffer.
   #[derive(Debug)]
   pub struct SharedMemory {
@@ -61,6 +82,8 @@ mod imp {
 
   impl SharedMemory {
     /// Create a new anonymous shared memory buffer of `len` bytes.
+    ///
+    /// The returned memfd is always size-sealed with `F_SEAL_SHRINK | F_SEAL_GROW`.
     pub fn new(len: u64) -> Result<Self, SharedMemoryError> {
       // Use a constant C string so we don't allocate.
       let name = CStr::from_bytes_with_nul(b"fastrender-shm\0").expect("nul-terminated");
@@ -81,7 +104,37 @@ mod imp {
         .set_len(len)
         .map_err(|source| SharedMemoryError::Resize { size: len, source })?;
 
-      Ok(Self { file, len })
+      let shm = Self { file, len };
+      shm
+        .add_seals_raw(SIZE_SEALS)
+        .map_err(SharedMemoryError::SealSize)?;
+      Ok(shm)
+    }
+
+    /// Create a new shared memory buffer and optionally lock its seal set.
+    ///
+    /// This always applies the required size seals (`F_SEAL_SHRINK | F_SEAL_GROW`). Callers can add
+    /// additional `F_SEAL_*` bits via `seals_to_add` (e.g. `F_SEAL_WRITE`) and then optionally lock
+    /// further seal mutations with `F_SEAL_SEAL`.
+    pub fn create_with_seals(
+      len: u64,
+      seals_to_add: libc::c_int,
+      lock_seals: bool,
+    ) -> Result<Self, SharedMemoryError> {
+      let shm = Self::new(len)?;
+
+      let extra = seals_to_add & !(SIZE_SEALS | libc::F_SEAL_SEAL);
+      if extra != 0 {
+        shm
+          .add_seals_raw(extra)
+          .map_err(SharedMemoryError::SealAdd)?;
+      }
+
+      if lock_seals {
+        shm.lock_seals()?;
+      }
+
+      Ok(shm)
     }
 
     /// Create a sealed read-only shared memory buffer containing `data`.
@@ -105,6 +158,16 @@ mod imp {
     #[must_use]
     pub fn as_raw_fd(&self) -> RawFd {
       self.file.as_raw_fd()
+    }
+
+    /// Query the current `F_SEAL_*` bitmask.
+    pub fn seals(&self) -> Result<libc::c_int, SharedMemoryError> {
+      // SAFETY: `fcntl(F_GET_SEALS)` takes no extra args.
+      let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_GET_SEALS) };
+      if rc < 0 {
+        return Err(SharedMemoryError::SealQuery(io::Error::last_os_error()));
+      }
+      Ok(rc)
     }
 
     /// Copy `data` into this shared memory buffer at `offset`.
@@ -159,7 +222,16 @@ mod imp {
     /// 1. Map the buffer writable (`PROT_WRITE`) and fill it.
     /// 2. Drop/unmap all writable mappings.
     /// 3. Call `seal_read_only()`.
+    ///
+    /// This function also locks the seal set with `F_SEAL_SEAL` so untrusted peers cannot mutate the
+    /// seal set after handoff.
     pub fn seal_read_only(&self) -> Result<(), SharedMemoryError> {
+      let seals = self.seals()?;
+      if (seals & libc::F_SEAL_WRITE) != 0 {
+        // Already read-only; ensure the seal set is locked.
+        return self.lock_seals();
+      }
+
       let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_WRITE) };
       if rc == -1 {
         let err = io::Error::last_os_error();
@@ -167,6 +239,36 @@ mod imp {
           return Err(SharedMemoryError::SealReadOnlyBusy(err));
         }
         return Err(SharedMemoryError::SealReadOnly(err));
+      }
+
+      self.lock_seals()
+    }
+
+    /// Lock the seal set with `F_SEAL_SEAL`.
+    ///
+    /// This is used for pooled/shared buffers so untrusted peers cannot persistently mutate seals.
+    pub fn lock_seals(&self) -> Result<(), SharedMemoryError> {
+      let seals = self.seals()?;
+      if (seals & libc::F_SEAL_SEAL) != 0 {
+        return Ok(());
+      }
+
+      // Ensure the size seals are present before locking.
+      if (seals & SIZE_SEALS) != SIZE_SEALS {
+        self
+          .add_seals_raw(SIZE_SEALS)
+          .map_err(SharedMemoryError::SealSize)?;
+      }
+
+      self
+        .add_seals_raw(libc::F_SEAL_SEAL)
+        .map_err(SharedMemoryError::SealLock)
+    }
+
+    fn add_seals_raw(&self, seals: libc::c_int) -> io::Result<()> {
+      let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+      if rc == -1 {
+        return Err(io::Error::last_os_error());
       }
       Ok(())
     }
@@ -177,7 +279,6 @@ mod imp {
       self.file.as_raw_fd()
     }
   }
-
 }
 
 // ============================================================================
@@ -198,6 +299,14 @@ mod imp {
       Err(SharedMemoryError::Unsupported)
     }
 
+    pub fn create_with_seals(
+      _len: u64,
+      _seals_to_add: libc::c_int,
+      _lock_seals: bool,
+    ) -> Result<Self, SharedMemoryError> {
+      Err(SharedMemoryError::Unsupported)
+    }
+
     pub fn from_bytes(_data: &[u8]) -> Result<Self, SharedMemoryError> {
       Err(SharedMemoryError::Unsupported)
     }
@@ -214,14 +323,71 @@ mod imp {
       ))
     }
 
+    pub fn seals(&self) -> Result<libc::c_int, SharedMemoryError> {
+      Err(SharedMemoryError::Unsupported)
+    }
+
     pub fn seal_read_only(&self) -> Result<(), SharedMemoryError> {
       Err(SharedMemoryError::Unsupported)
     }
-  }
 
+    pub fn lock_seals(&self) -> Result<(), SharedMemoryError> {
+      Err(SharedMemoryError::Unsupported)
+    }
+  }
 }
 
 pub use imp::SharedMemory;
+
+/// A simple pool for reusable shared memory buffers.
+#[derive(Debug, Default)]
+pub struct SharedMemoryPool {
+  buffers: Vec<SharedMemory>,
+}
+
+impl SharedMemoryPool {
+  pub fn new() -> Self {
+    Self { buffers: Vec::new() }
+  }
+
+  pub fn len(&self) -> usize {
+    self.buffers.len()
+  }
+
+  pub fn take(&mut self) -> Option<SharedMemory> {
+    self.buffers.pop()
+  }
+
+  /// Return a buffer to the pool if it is still reusable.
+  ///
+  /// Buffers are accepted only when the seal set is locked (`F_SEAL_SEAL`) and the buffer is *not*
+  /// write-sealed (`F_SEAL_WRITE`). This prevents untrusted peers from permanently breaking reuse
+  /// by mutating seals.
+  pub fn put(&mut self, buffer: SharedMemory) {
+    #[cfg(target_os = "linux")]
+    {
+      let Ok(seals) = buffer.seals() else {
+        return;
+      };
+
+      if (seals & libc::F_SEAL_WRITE) != 0 {
+        return;
+      }
+
+      if (seals & libc::F_SEAL_SEAL) == 0 {
+        return;
+      }
+
+      self.buffers.push(buffer);
+      return;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+      let _ = buffer;
+    }
+  }
+}
 
 // ============================================================================
 // Tests
@@ -229,9 +395,37 @@ pub use imp::SharedMemory;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-  use super::{SharedMemory, SharedMemoryError};
+  use super::{SharedMemory, SharedMemoryError, SharedMemoryPool};
   use std::io;
   use std::os::unix::io::AsRawFd;
+
+  #[test]
+  fn shm_seal_policy_locked_buffer_prevents_adding_write_seal() {
+    let shm = SharedMemory::create_with_seals(4096, 0, true).unwrap();
+
+    let rc = unsafe { libc::fcntl(shm.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_WRITE) };
+    assert_eq!(rc, -1);
+    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+  }
+
+  #[test]
+  fn shm_seal_policy_pool_drops_unlocked_or_write_sealed_buffers() {
+    let mut pool = SharedMemoryPool::new();
+
+    let ok = SharedMemory::create_with_seals(4096, 0, true).unwrap();
+    pool.put(ok);
+    assert_eq!(pool.len(), 1);
+    let _ = pool.take().expect("pooled buffer");
+
+    let unlocked = SharedMemory::new(4096).unwrap();
+    pool.put(unlocked);
+    assert_eq!(pool.len(), 0);
+
+    let write_sealed = SharedMemory::new(4096).unwrap();
+    write_sealed.seal_read_only().unwrap();
+    pool.put(write_sealed);
+    assert_eq!(pool.len(), 0);
+  }
 
   #[test]
   fn shm_seal_write_write_and_pwrite_fail_with_eperm() {
@@ -245,10 +439,7 @@ mod tests {
     let rc =
       unsafe { libc::write(shm.as_raw_fd(), byte.as_ptr().cast::<libc::c_void>(), byte.len()) };
     assert_eq!(rc, -1);
-    assert_eq!(
-      io::Error::last_os_error().raw_os_error(),
-      Some(libc::EPERM)
-    );
+    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
 
     // `pwrite(2)` should also fail.
     let rc = unsafe {
@@ -260,10 +451,7 @@ mod tests {
       )
     };
     assert_eq!(rc, -1);
-    assert_eq!(
-      io::Error::last_os_error().raw_os_error(),
-      Some(libc::EPERM)
-    );
+    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
   }
 
   #[test]
@@ -282,10 +470,7 @@ mod tests {
         0,
       );
       assert_eq!(addr, libc::MAP_FAILED);
-      assert_eq!(
-        io::Error::last_os_error().raw_os_error(),
-        Some(libc::EPERM)
-      );
+      assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
     }
   }
 
