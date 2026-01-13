@@ -534,13 +534,10 @@ pub struct BrowserTabState {
 impl BrowserTabState {
   pub fn new(tab_id: TabId, initial_url: String) -> Self {
     let committed_url = initial_url.clone();
-    let site_key = Url::parse(&committed_url)
-      .ok()
-      .map(|url| SiteKey::from_url(&url));
     Self {
       id: tab_id,
       renderer_process: None,
-      renderer_site_key: site_key,
+      renderer_site_key: None,
       pinned: false,
       group: None,
       cancel: CancelGens::new(),
