@@ -1036,15 +1036,32 @@ mod tests {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
 
-    let app = BrowserAppState::new();
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
     let output = open_menu_for_accesskit(&ctx, &app, "File");
 
     let names = a11y_test_util::accesskit_names_from_full_output(&output);
     let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
-    for expected in ["Open new tab", "Close current tab", "Quit browser"] {
+    for expected in [
+      "Open new tab",
+      "Save page",
+      "Print page",
+      "Close current tab",
+      "Quit browser",
+    ] {
       assert!(
         names.iter().any(|n| n == expected),
         "expected AccessKit name {expected:?} in File menu output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
+
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let roles_snapshot =
+      a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+    for expected in ["Save page", "Print page"] {
+      assert!(
+        nodes.iter().any(|n| n.role == "Button" && n.name == expected),
+        "expected File menu item {expected:?} to appear as a Button in AccessKit output.\n\nsnapshot:\n{roles_snapshot}"
       );
     }
   }
