@@ -89,6 +89,8 @@ impl MicrotaskQueue {
   ///
   /// - Once a job returns `Err(VmError::Termination(..))`, the checkpoint stops executing any
   ///   further jobs.
+  /// - [`VmError::OutOfMemory`] is also treated as a hard stop: it represents a fatal VM/resource
+  ///   condition that must not be suppressed by continuing to run additional jobs.
   /// - Any remaining queued jobs (including jobs enqueued by the failing job) are discarded via
   ///   [`MicrotaskQueue::teardown`] so persistent roots are cleaned up.
   pub fn perform_microtask_checkpoint(&mut self, ctx: &mut dyn VmJobContext) -> Vec<VmError> {
@@ -100,9 +102,18 @@ impl MicrotaskQueue {
     let mut errors = Vec::new();
     while let Some((_realm, job)) = self.queue.pop_front() {
       if let Err(err) = job.run(ctx, self) {
-        let is_termination = matches!(err, VmError::Termination(_));
+        let is_hard_stop = matches!(err, VmError::Termination(_) | VmError::OutOfMemory);
+
+        // `Vec::push` can abort the process on allocator OOM. Reserve fallibly and treat allocation
+        // failure as a best-effort stop: tear down remaining jobs so persistent roots are cleaned
+        // up, and return the errors collected so far.
+        if errors.try_reserve(1).is_err() {
+          self.teardown(ctx);
+          return errors;
+        }
+
         errors.push(err);
-        if is_termination {
+        if is_hard_stop {
           // Termination is a hard stop: discard any remaining queued jobs (and any jobs enqueued by
           // the failing job) so we don't leak persistent roots.
           self.teardown(ctx);

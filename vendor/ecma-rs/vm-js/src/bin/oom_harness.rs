@@ -1,14 +1,59 @@
 use std::process;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use vm_js::{
-  Agent, Budget, HeapLimits, LoadedModuleRequest, ModuleGraph, ModuleRequest, ModuleStatus,
-  PropertyDescriptor, PropertyKey, PropertyKind, SourceTextModuleRecord, Value, VmError, VmOptions,
-  MAX_PROTOTYPE_CHAIN,
+  Agent, Budget, HeapLimits, Job, JobKind, LoadedModuleRequest, MicrotaskQueue, ModuleGraph,
+  ModuleRequest, ModuleStatus, PropertyDescriptor, PropertyKey, PropertyKind, RootId,
+  SourceTextModuleRecord, Value, VmError, VmHostHooks, VmJobContext, VmOptions, MAX_PROTOTYPE_CHAIN,
 };
+
+static MICROTASK_ERRORS_REMAINING: AtomicUsize = AtomicUsize::new(0);
+
+fn microtask_job_erroring(
+  _ctx: &mut dyn VmJobContext,
+  host: &mut dyn VmHostHooks,
+) -> Result<(), VmError> {
+  let remaining = MICROTASK_ERRORS_REMAINING.fetch_sub(1, Ordering::Relaxed);
+  if remaining > 1 {
+    host.host_enqueue_promise_job(Job::new(JobKind::Promise, microtask_job_erroring), None);
+  }
+  Err(VmError::TypeError("microtask job error"))
+}
+
+struct DummyJobContext;
+
+impl VmJobContext for DummyJobContext {
+  fn call(
+    &mut self,
+    _host: &mut dyn VmHostHooks,
+    _callee: Value,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented("oom_harness: DummyJobContext::call"))
+  }
+
+  fn construct(
+    &mut self,
+    _host: &mut dyn VmHostHooks,
+    _callee: Value,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented("oom_harness: DummyJobContext::construct"))
+  }
+
+  fn add_root(&mut self, _value: Value) -> Result<RootId, VmError> {
+    Err(VmError::Unimplemented("oom_harness: DummyJobContext::add_root"))
+  }
+
+  fn remove_root(&mut self, _id: RootId) {
+  }
+}
 
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors"
   );
   process::exit(2);
 }
@@ -66,6 +111,30 @@ fn main() {
       process::exit(1);
     }
     filler.resize(filler_bytes, 0);
+  }
+
+  if scenario == "microtask_checkpoint_errors" {
+    // Keep `filler` alive for the duration of the run.
+    let _keep = &filler;
+
+    // Run a large number of jobs that each return an error. `MicrotaskQueue::perform_microtask_checkpoint`
+    // collects errors into a `Vec`, which must grow fallibly under allocator OOM.
+    MICROTASK_ERRORS_REMAINING.store(len_code_units, Ordering::Relaxed);
+
+    let mut queue = MicrotaskQueue::new();
+    if len_code_units != 0 {
+      queue.enqueue_promise_job(Job::new(JobKind::Promise, microtask_job_erroring), None);
+    }
+
+    let mut ctx = DummyJobContext;
+    let _errors = queue.perform_microtask_checkpoint(&mut ctx);
+
+    if !queue.is_empty() {
+      eprintln!("oom_harness: microtask queue not empty after checkpoint");
+      process::exit(1);
+    }
+
+    process::exit(0);
   }
 
   if scenario == "moduleGraph" {

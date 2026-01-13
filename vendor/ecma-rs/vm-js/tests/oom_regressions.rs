@@ -11,7 +11,12 @@ static OOM_TEST_LOCK: Mutex<()> = Mutex::new(());
 const LIMIT_AS_BYTES: libc::rlim_t = 192 * 1024 * 1024;
 const FILLER_BYTES: usize = 120 * 1024 * 1024;
 
-fn run_oom_harness(scenario: &str, len_code_units: usize) {
+fn run_oom_harness_with_limits(
+  scenario: &str,
+  len_code_units: usize,
+  limit_as_bytes: libc::rlim_t,
+  filler_bytes: usize,
+) {
   // Avoid running multiple memory-pressure subprocesses in parallel (tests run in multiple
   // threads by default).
   let _guard = OOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -21,12 +26,12 @@ fn run_oom_harness(scenario: &str, len_code_units: usize) {
     let mut cmd = Command::new(exe);
     cmd.arg(scenario);
     cmd.arg(len_code_units.to_string());
-    cmd.arg(FILLER_BYTES.to_string());
+    cmd.arg(filler_bytes.to_string());
 
-    cmd.pre_exec(|| {
+    cmd.pre_exec(move || {
       let lim = libc::rlimit {
-        rlim_cur: LIMIT_AS_BYTES,
-        rlim_max: LIMIT_AS_BYTES,
+        rlim_cur: limit_as_bytes,
+        rlim_max: limit_as_bytes,
       };
       if libc::setrlimit(libc::RLIMIT_AS, &lim) != 0 {
         return Err(io::Error::last_os_error());
@@ -44,6 +49,10 @@ fn run_oom_harness(scenario: &str, len_code_units: usize) {
     stdout = String::from_utf8_lossy(&output.stdout),
     stderr = String::from_utf8_lossy(&output.stderr),
   );
+}
+
+fn run_oom_harness(scenario: &str, len_code_units: usize) {
+  run_oom_harness_with_limits(scenario, len_code_units, LIMIT_AS_BYTES, FILLER_BYTES);
 }
 
 #[test]
@@ -135,4 +144,21 @@ fn label_early_error_large_label_does_not_abort_on_oom() {
   // Early-error diagnostics that embed attacker-controlled label identifiers must use bounded,
   // fallible formatting and must not abort on allocator OOM.
   run_oom_harness("labelEarlyError", 25_000_000);
+}
+
+#[test]
+fn microtask_checkpoint_many_errors_does_not_abort_on_oom() {
+  // `MicrotaskQueue::perform_microtask_checkpoint` collects job errors into a Rust `Vec`. Under a
+  // tight RLIMIT_AS, growing that vector must use fallible reservations to avoid aborting the
+  // process when many jobs fail.
+  //
+  // Use a slightly larger filler buffer than the string tests so the checkpoint hits allocator OOM
+  // after a moderate number of failing microtasks.
+  const MICROTASK_FILLER_BYTES: usize = 140 * 1024 * 1024;
+  run_oom_harness_with_limits(
+    "microtask_checkpoint_errors",
+    10_000_000,
+    LIMIT_AS_BYTES,
+    MICROTASK_FILLER_BYTES,
+  );
 }
