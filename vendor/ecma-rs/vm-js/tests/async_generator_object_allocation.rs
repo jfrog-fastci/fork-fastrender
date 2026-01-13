@@ -40,7 +40,18 @@ fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> 
 }
 
 fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  match rt.exec_script("async function* __ag_support() {}") {
+  // Async generator syntax is supported, but full semantics (including allocating an async generator
+  // object on invocation) may not be implemented yet. Feature-detect by actually calling an async
+  // generator function.
+  match rt.exec_script(
+    r#"
+      (() => {
+        async function* __ag_support() {}
+        __ag_support();
+        return true;
+      })()
+    "#,
+  ) {
     Ok(_) => Ok(true),
     Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
     Err(err) => Err(err),
