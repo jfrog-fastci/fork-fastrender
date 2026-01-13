@@ -1036,3 +1036,47 @@ fn union_sequence_string_object_special_case_does_not_probe_iterator() {
   assert_eq!(*member_ty, IdlType::String(StringType::DomString));
   assert_eq!(*value, ConvertedValue::String("hello".to_string()));
 }
+
+#[test]
+fn union_record_string_object_special_case_does_not_probe_properties() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let union_ty = IdlType::Union(vec![
+    IdlType::Record(
+      Box::new(IdlType::String(StringType::DomString)),
+      Box::new(IdlType::Any),
+    ),
+    IdlType::String(StringType::DomString),
+  ]);
+
+  // Create a String object wrapper.
+  let s = rt.alloc_string_value("hello").unwrap();
+  let string_obj = rt.to_object(s).unwrap();
+
+  // If the union conversion tried to treat the value as a record/object and enumerate properties,
+  // it would access this enumerable accessor and throw. The special-case (d) must treat String
+  // objects as strings when a string member is present.
+  let throwing_getter = rt
+    .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+    .unwrap();
+  let key_value = rt.alloc_string_value("x").unwrap();
+  let Value::String(key) = key_value else {
+    panic!("expected string key");
+  };
+  rt.define_accessor_property(
+    string_obj,
+    PropertyKey::String(key),
+    throwing_getter,
+    Value::Undefined,
+    true,
+  )
+  .unwrap();
+
+  let converted = convert_to_idl(&mut rt, string_obj, &union_ty, &ctx).unwrap();
+  let ConvertedValue::Union { member_ty, value } = converted else {
+    panic!("expected union, got {converted:?}");
+  };
+  assert_eq!(*member_ty, IdlType::String(StringType::DomString));
+  assert_eq!(*value, ConvertedValue::String("hello".to_string()));
+}

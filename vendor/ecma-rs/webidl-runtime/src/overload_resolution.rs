@@ -533,6 +533,73 @@ mod tests {
   }
 
   #[test]
+  fn string_object_prefers_domstring_over_record_overload_without_probing_properties() {
+    let mut rt = VmJsRuntime::new();
+
+    // Overloads: f(record<DOMString, any>) vs f(DOMString)
+    let overloads = vec![
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::Record(
+            Box::new(IdlType::String(StringType::DomString)),
+            Box::new(IdlType::Any),
+          ),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 0,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+      OverloadSig {
+        args: vec![OverloadArg {
+          ty: IdlType::String(StringType::DomString),
+          optionality: Optionality::Required,
+          default: None,
+        }],
+        decl_index: 1,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+    ];
+
+    // Create a String object wrapper.
+    let s = rt.alloc_string_value("hello").unwrap();
+    let string_obj = rt.to_object(s).unwrap();
+
+    // If overload resolution tried to treat the value as a record/object and enumerate properties,
+    // it would access this enumerable accessor and throw. The special-case (d) must treat String
+    // objects as strings when a string overload is present.
+    let throwing_getter = rt
+      .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+      .unwrap();
+    let key_value = rt.alloc_string_value("x").unwrap();
+    let Value::String(key) = key_value else {
+      panic!("expected string key");
+    };
+    rt.define_accessor_property(
+      string_obj,
+      PropertyKey::String(key),
+      throwing_getter,
+      Value::Undefined,
+      true,
+    )
+    .unwrap();
+
+    let out = resolve_overload(&mut rt, &overloads, &[string_obj]).unwrap();
+    assert_eq!(out.overload_index, 1);
+
+    let [ConvertedArgument::Value(WebIdlValue::String(v))] = out.values.as_slice() else {
+      panic!("expected exactly one converted DOMString argument");
+    };
+    let Value::String(handle) = *v else {
+      panic!("expected JS string value");
+    };
+    assert_eq!(
+      rt.heap().get_string(handle).unwrap().to_utf8_lossy(),
+      "hello"
+    );
+  }
+
+  #[test]
   fn sequence_conversion_rejects_non_object_primitives_in_overload_resolution() {
     let mut rt = VmJsRuntime::new();
 
