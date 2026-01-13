@@ -63,7 +63,9 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
     .selected
     .filter(|idx| *idx < omnibox.suggestions.len());
 
-  out.push_str("      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\">\n");
+  out.push_str(
+    "      <div id=\"omnibox-popup\" class=\"omnibox-popup\" role=\"listbox\" aria-label=\"Suggestions\">\n",
+  );
 
   for (idx, suggestion) in omnibox.suggestions.iter().enumerate() {
     let href = omnibox_suggestion_href(suggestion).unwrap_or_default();
@@ -140,6 +142,13 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     None => (false, false, false),
   };
 
+  let omnibox_open = app.chrome.omnibox.open && !app.chrome.omnibox.suggestions.is_empty();
+  let omnibox_selected_idx = app
+    .chrome
+    .omnibox
+    .selected
+    .filter(|idx| *idx < app.chrome.omnibox.suggestions.len());
+
   let mut out = String::new();
   out.push_str("<!DOCTYPE html>\n");
   out.push_str("<html class=\"chrome-frame\">\n");
@@ -154,12 +163,13 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   out.push_str("<body>\n");
 
   // Tab strip.
-  out.push_str("  <div class=\"tab-strip\" id=\"tab-strip\">\n");
+  out.push_str("  <div class=\"tab-strip\" id=\"tab-strip\" role=\"tablist\" aria-label=\"Tabs\">\n");
   for tab in &app.tabs {
     let tab_id = escape_html(&tab.id.0.to_string());
     let title = escape_html(&tab.display_title());
     let favicon_url = ChromeDynamicAssetFetcher::favicon_url(tab.id);
     let is_active = active_tab_id == Some(tab.id);
+    let aria_selected = if is_active { "true" } else { "false" };
     out.push_str("    <div class=\"tab");
     if is_active {
       out.push_str(" active");
@@ -171,7 +181,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("\">\n");
 
     // "Activate tab" link.
-    out.push_str("      <a class=\"tab-activate\" href=\"chrome-action:activate-tab?tab=");
+    out.push_str("      <a class=\"tab-activate\" role=\"tab\" aria-selected=\"");
+    out.push_str(aria_selected);
+    out.push_str("\" href=\"chrome-action:activate-tab?tab=");
     out.push_str(&tab_id);
     out.push_str("\">");
     out.push_str("<img class=\"tab-favicon\" src=\"");
@@ -264,7 +276,20 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   );
   out.push_str("        <input id=\"address-bar\" class=\"address-input\" name=\"url\" type=\"text\" value=\"");
   out.push_str(&escape_html(&app.chrome.address_bar_text));
-  out.push_str("\">\n");
+  out.push_str("\" aria-label=\"Address bar\" role=\"combobox\" aria-autocomplete=\"list\" aria-haspopup=\"listbox\" aria-expanded=\"");
+  out.push_str(if omnibox_open { "true" } else { "false" });
+  out.push('"');
+  if omnibox_open {
+    out.push_str(" aria-controls=\"omnibox-popup\"");
+    if let Some(selected_idx) = omnibox_selected_idx {
+      write!(
+        out,
+        " aria-activedescendant=\"omnibox-suggestion-{selected_idx}\""
+      )
+      .expect("write omnibox aria-activedescendant");
+    }
+  }
+  out.push_str(">\n");
   // A submit button is useful for keyboard-less environments; CSS can hide it if desired.
   out.push_str("        <button class=\"address-bar-submit\" type=\"submit\">Go</button>\n");
   out.push_str("      </form>\n");
@@ -346,6 +371,12 @@ mod tests {
     // Stop-loading uses the canonical chrome-action name (not `stop`).
     assert!(html.contains("chrome-action:stop-loading"));
 
+    // Tab strip uses ARIA tab roles so the FastRender accessibility tree can expose tab semantics
+    // (useful when chrome is rendered by FastRender itself).
+    assert!(html.contains("id=\"tab-strip\" role=\"tablist\""));
+    assert_eq!(html.matches("role=\"tab\"").count(), 3);
+    assert_eq!(html.matches("role=\"tab\" aria-selected=\"true\"").count(), 1);
+
     // The chrome frame should include the content-frame placeholder exactly once so the host can
     // reliably target it for compositing/sync.
     assert_eq!(
@@ -353,6 +384,12 @@ mod tests {
       1,
       "expected exactly one #content-frame placeholder"
     );
+
+    // Address bar uses combobox semantics (collapsed when no omnibox popup is open).
+    assert!(html.contains("id=\"address-bar\""));
+    assert!(html.contains("role=\"combobox\""));
+    assert!(html.contains("aria-expanded=\"false\""));
+    assert!(!html.contains("aria-controls=\"omnibox-popup\""));
   }
 
   #[test]
@@ -392,6 +429,9 @@ mod tests {
       html.contains(r#"id="omnibox-popup""#) && html.contains(r#"role="listbox""#),
       "expected omnibox popup element in HTML"
     );
+    assert!(html.contains(r#"aria-label="Suggestions""#));
+    assert!(html.contains(r#"aria-controls="omnibox-popup""#));
+    assert!(html.contains(r#"aria-activedescendant="omnibox-suggestion-1""#));
 
     let expected_href_0 = format!(
       r#"href="{}""#,

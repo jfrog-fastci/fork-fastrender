@@ -8407,10 +8407,10 @@ mod tests {
   use super::*;
 
   use crate::api::FastRender;
+  use crate::api::VmJsBrowserTabExecutor;
   use crate::js::window_timers::{event_loop_mut_from_hooks, VmJsEventLoopHooks};
   use crate::js::{Clock, VirtualClock, WindowRealm, WindowRealmConfig, WindowRealmHost};
   use crate::resource::{FetchedResource, ResourceFetcher};
-  use crate::ui::repaint_scheduler::MIN_EGUI_REPAINT_INTERVAL;
 
   use std::cell::RefCell;
   use std::collections::HashMap;
