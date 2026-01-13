@@ -103,6 +103,8 @@ Or set `FASTR_TEST262_NO_GATE=1`.
   - Presets live under `tests/js/test262_suites/`:
     - `curated` (default): union of the curated thematic suites below.
     - `smoke`: minimal always-green suite for quick local wiring checks.
+    - `regexp`: RegExp engine conformance focused subset (named groups, indices, lookbehind, etc).
+    - `regexp_lookbehind`: targeted suite for `regexp-lookbehind` support.
     - `language_statements`: control-flow + declaration statements.
     - `language_functions`: function declarations + generators + async.
     - `language_classes`: basic class declarations + inheritance.
