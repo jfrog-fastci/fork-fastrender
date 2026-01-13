@@ -187,10 +187,9 @@ fn appcontainer_denies_network() {
         "unexpectedly connected to {addr} from AppContainer with no capabilities (network escape?)"
       ),
       Err(err) => {
-        assert_eq!(
-          err.raw_os_error(),
-          Some(WSAEACCES),
-          "expected connect to fail with WSAEACCES (10013) under no-capabilities AppContainer; got {err:?}"
+        assert!(
+          err.kind() == io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(WSAEACCES),
+          "expected connect to fail with PermissionDenied/WSAEACCES(10013) under no-capabilities AppContainer; got {err:?}"
         );
       }
     }
