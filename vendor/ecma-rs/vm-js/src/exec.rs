@@ -1988,7 +1988,8 @@ impl JsRuntime {
           );
 
           match res {
-            Err(err) if err.is_throw_completion() => {
+            Ok(v) => Ok(v),
+            Err(err) => {
               let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
               match err {
                 VmError::Throw(value) => Err(VmError::ThrowWithStack {
@@ -1998,7 +1999,6 @@ impl JsRuntime {
                 other => Err(other),
               }
             }
-            other => other,
           }
         })()
       };
@@ -2076,7 +2076,8 @@ impl JsRuntime {
           );
 
           match res {
-            Err(err) if err.is_throw_completion() => {
+            Ok(v) => Ok(v),
+            Err(err) => {
               let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
               match err {
                 VmError::Throw(value) => Err(VmError::ThrowWithStack {
@@ -2086,7 +2087,6 @@ impl JsRuntime {
                 other => Err(other),
               }
             }
-            other => other,
           }
         })()
       };
@@ -2293,6 +2293,7 @@ impl JsRuntime {
           // In classic scripts, top-level `this` is the global object (even in strict mode).
           let global_this = Value::Object(global_object);
 
+          let res: Result<Value, VmError> = (|| {
           if !has_await {
             let mut evaluator = Evaluator {
               vm: &mut *vm_frame,
@@ -2655,12 +2656,27 @@ impl JsRuntime {
 
           Ok(promise)
         }
-        Err(err) => {
-          env.teardown(scope.heap_mut());
-          Err(err)
-        }
-        }
-      })()
+          Err(err) => {
+            env.teardown(scope.heap_mut());
+            Err(err)
+          }
+          }
+          })();
+
+          match res {
+            Ok(v) => Ok(v),
+            Err(err) => {
+              let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
+              match err {
+                VmError::Throw(value) => Err(VmError::ThrowWithStack {
+                  value,
+                  stack: vm_frame.capture_stack(),
+                }),
+                other => Err(other),
+              }
+            }
+          }
+        })()
       };
 
       // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
@@ -2755,6 +2771,7 @@ impl JsRuntime {
       // In classic scripts, top-level `this` is the global object (even in strict mode).
       let global_this = Value::Object(global_object);
 
+      let res: Result<Value, VmError> = (|| {
       if !has_await {
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
@@ -3120,6 +3137,21 @@ impl JsRuntime {
         Err(err) => {
           env.teardown(scope.heap_mut());
           Err(err)
+        }
+      }
+      })();
+
+      match res {
+        Ok(v) => Ok(v),
+        Err(err) => {
+          let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
+          match err {
+            VmError::Throw(value) => Err(VmError::ThrowWithStack {
+              value,
+              stack: vm_frame.capture_stack(),
+            }),
+            other => Err(other),
+          }
         }
       }
         })()
@@ -34239,6 +34271,64 @@ mod tests {
     )?;
 
     assert_eq!(value, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn unimplemented_errors_are_coerced_to_throw_with_stack() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // `import()` expressions require an embedding-provided module graph. Clear the runtime's module
+    // graph pointer so this hits a known `VmError::Unimplemented` path.
+    rt.vm.clear_module_graph();
+    let err = rt.exec_script("import('./x');").unwrap_err();
+
+    let VmError::ThrowWithStack { value, .. } = err else {
+      panic!("expected ThrowWithStack, got {err:?}");
+    };
+    let Value::Object(thrown_obj) = value else {
+      panic!("expected thrown value to be an object, got {value:?}");
+    };
+
+    let error_prototype = rt.realm().intrinsics().error_prototype();
+
+    // Root the thrown value while allocating property keys / walking the prototype chain.
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(value)?;
+
+    // Verify `%Error.prototype%` is in the thrown object's prototype chain.
+    let mut current = Some(thrown_obj);
+    let mut found = false;
+    for _ in 0..32 {
+      let Some(obj) = current else {
+        break;
+      };
+      let proto = scope.heap().object_prototype(obj)?;
+      if proto == Some(error_prototype) {
+        found = true;
+        break;
+      }
+      current = proto;
+    }
+    assert!(found, "expected Error.prototype in prototype chain");
+
+    // Verify `message` includes the unimplemented reason.
+    let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+    let message = scope
+      .heap()
+      .object_get_own_data_property_value(thrown_obj, &message_key)?
+      .expect("expected own message property");
+    let Value::String(message_string) = message else {
+      panic!("expected Error.message to be a string, got {message:?}");
+    };
+    let msg = scope.heap().get_string(message_string)?.to_utf8_lossy();
+    assert!(
+      msg.contains("dynamic import requires a module graph"),
+      "expected message to include unimplemented reason, got {msg:?}"
+    );
+
     Ok(())
   }
 }

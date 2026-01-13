@@ -83,6 +83,25 @@ pub(crate) fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError
     return err;
   };
   match err {
+    VmError::Unimplemented(reason) => {
+      let message =
+        match crate::fallible_format::try_format_error_message("unimplemented: ", reason, "") {
+          Ok(m) => m,
+          Err(err) => return err,
+        };
+      match crate::error_object::new_error(
+        scope,
+        intr.error_prototype(),
+        "Error",
+        message.as_str(),
+      ) {
+        Ok(value) => VmError::ThrowWithStack {
+          value,
+          stack: vm.capture_stack(),
+        },
+        Err(err) => err,
+      }
+    }
     VmError::TypeError(message) => crate::throw_type_error(scope, intr, message),
     VmError::RangeError(message) => crate::throw_range_error(scope, intr, message),
     VmError::NotCallable => crate::throw_type_error(scope, intr, "value is not callable"),

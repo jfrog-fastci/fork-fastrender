@@ -29654,10 +29654,6 @@ mod async_generator_unit_tests {
     JsRuntime::new(vm, heap).unwrap()
   }
 
-  fn is_unimplemented_async_generator_error(err: &VmError) -> bool {
-    matches!(err, VmError::Unimplemented(msg) if msg.contains("async generator functions"))
-  }
-
   fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
     match rt.exec_script(
       r#"
@@ -29670,8 +29666,50 @@ mod async_generator_unit_tests {
         rt.teardown_microtasks();
         Ok(true)
       }
-      Err(err) if is_unimplemented_async_generator_error(&err) => Ok(false),
-      Err(err) => Err(err),
+      Err(err) => {
+        // Async generators are currently stubbed and may surface as either a raw `VmError::Unimplemented`
+        // (internal callers) or a coerced `Throw*` at host boundaries.
+        if is_unimplemented_async_generator_error(rt, &err)? {
+          Ok(false)
+        } else {
+          Err(err)
+        }
+      }
+    }
+  }
+
+  fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
+    match err {
+      VmError::Unimplemented(msg) => Ok(msg.contains("async generator functions")),
+      VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+        let Some(thrown) = err.thrown_value() else {
+          return Ok(false);
+        };
+        let Value::Object(thrown_obj) = thrown else {
+          return Ok(false);
+        };
+
+        // Root the thrown value while allocating property keys.
+        let mut scope = rt.heap.scope();
+        scope.push_root(thrown)?;
+
+        let message_key = crate::PropertyKey::from_string(scope.alloc_string("message")?);
+        let Some(message) = scope
+          .heap()
+          .object_get_own_data_property_value(thrown_obj, &message_key)?
+        else {
+          return Ok(false);
+        };
+        let Value::String(message_string) = message else {
+          return Ok(false);
+        };
+        Ok(scope
+          .heap()
+          .get_string(message_string)?
+          .to_utf8_lossy()
+          .contains("async generator functions"))
+      }
+      _ => Ok(false),
     }
   }
 
