@@ -160,22 +160,31 @@ Examples:
 
 ```bash
 # Local HTML file (optionally with a sidecar .meta file)
-cargo run --bin dump_a11y -- tests/pages/fixtures/apple.com/index.html
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
+    tests/pages/fixtures/apple.com/index.html
 
 # URL
-cargo run --bin dump_a11y -- https://example.com/
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
+    https://example.com/
 
 # Change viewport / DPR
-cargo run --bin dump_a11y -- --viewport 800x600 --dpr 2.0 https://example.com/
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
+    --viewport 800x600 --dpr 2.0 https://example.com/
 
 # Pipe into jq for quick inspection
-cargo run --bin dump_a11y -- https://example.com/ | jq '.role, .children[0].role'
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
+    https://example.com/ | jq '.role, .children[0].role'
 ```
 
 Worked example (stable fixture + expected output):
 
 ```bash
-cargo run --bin dump_a11y -- tests/fixtures/accessibility/headings_links.html \
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
+  tests/fixtures/accessibility/headings_links.html \
   | jq '.. | objects | select(.id? == "title") | {role,name,level,html_tag,id,states,children}'
 ```
 
@@ -212,7 +221,9 @@ Notes:
   - In release builds, build with `--features a11y_debug` to include the debug fields:
 
     ```bash
-    cargo run --release --features a11y_debug --bin dump_a11y -- https://example.com/
+    bash scripts/run_limited.sh --as 64G -- \
+      bash scripts/cargo_agent.sh run --release --features a11y_debug --bin dump_a11y -- \
+        https://example.com/
     ```
 
 ### `dump_a11y --include-bounds` (Task 141 / optional)
@@ -239,7 +250,9 @@ Coordinate conventions to expect (and to keep consistent with the UI/input pipel
 Example (when available):
 
 ```bash
-cargo run --bin dump_a11y -- --include-bounds tests/fixtures/accessibility/headings_links.html | jq '.children[0]'
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- \
+  --include-bounds tests/fixtures/accessibility/headings_links.html \
+  | jq '.children[0]'
 ```
 
 If you need bounds today and the flag is not available:
@@ -304,7 +317,7 @@ These tests are compiled into the unified integration test binary (`tests/integr
 them via:
 
 ```bash
-cargo test --test integration accessibility::
+bash scripts/cargo_agent.sh test --test integration accessibility::
 ```
 
 Helpful patterns:
@@ -324,7 +337,7 @@ Accessibility semantics are validated by unit tests in:
 Run a focused subset:
 
 ```bash
-cargo test accessibility_
+bash scripts/cargo_agent.sh test accessibility_
 ```
 
 ### Unit tests: geometry (bounds + mapping)
@@ -339,8 +352,8 @@ Geometry/bounds logic is validated separately from semantics:
 Focused runs:
 
 ```bash
-cargo test absolute_bounds_for_box_id
-cargo test input_mapping
+bash scripts/cargo_agent.sh test absolute_bounds_for_box_id
+bash scripts/cargo_agent.sh test input_mapping
 ```
 
 ### AccessKit tests (browser chrome)
@@ -354,7 +367,7 @@ compiled with `browser_ui`):
 Run:
 
 ```bash
-cargo test --features browser_ui accesskit
+bash scripts/cargo_agent.sh test --features browser_ui accesskit
 ```
 
 ### Browser integration tests (a11y interaction plumbing)
@@ -363,14 +376,14 @@ Some browser-level tests exercise accessibility-adjacent interaction paths (e.g.
 used by native controls / eventual AT action routing):
 
 ```bash
-cargo test --test integration browser_integration::a11y_select_action
+bash scripts/cargo_agent.sh test --test integration browser_integration::a11y_select_action
 ```
 
 The UI worker also has an integration test that asserts it emits the `WorkerToUi::PageAccessibility`
 snapshot (semantic tree + bounds) after navigating:
 
 ```bash
-cargo test --features browser_ui --test integration browser_integration::ui_worker_page_accessibility
+bash scripts/cargo_agent.sh test --features browser_ui --test integration browser_integration::ui_worker_page_accessibility
 ```
 
 There are also focused AccessKit bridge tests:
@@ -379,8 +392,8 @@ There are also focused AccessKit bridge tests:
 - `tests/accesskit_scroll.rs` (requires `--features browser_ui`)
 
 ```bash
-cargo test --features a11y_accesskit --test accesskit_dom2_node_ids
-cargo test --features browser_ui --test accesskit_scroll
+bash scripts/cargo_agent.sh test --features a11y_accesskit --test accesskit_dom2_node_ids
+bash scripts/cargo_agent.sh test --features browser_ui --test accesskit_scroll
 ```
 
 ## Known limitations (current gaps)
