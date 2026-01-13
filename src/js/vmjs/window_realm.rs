@@ -31217,7 +31217,7 @@ fn element_class_list_toggle_native(
     } else {
       false
     };
- 
+
     let Some(host_dom) = crate::js::dom_host::dom_host_vmjs(host) else {
       return Ok(None);
     };

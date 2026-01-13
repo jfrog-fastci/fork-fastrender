@@ -41,6 +41,11 @@ const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
+const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
+// Must match `window_realm::NODE_ID_KEY`.
+const INTERNAL_NODE_ID_KEY: &str = "__fastrender_node_id";
+// Must match `window_realm::WRAPPER_DOCUMENT_KEY`.
+const INTERNAL_WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -4088,11 +4093,225 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         )?;
         Ok(Value::Object(class_list))
       }
+      ("Element", "style", 0) => {
+        let Some(Value::Object(obj)) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+
+        // Receiver validation: require an Element wrapper.
+        let (document_id, element_id, document_wrapper_from_platform) = {
+          let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+          let handle = platform.require_element_handle(scope.heap(), Value::Object(obj))?;
+          let document_wrapper = platform.get_existing_wrapper_for_document_id(
+            scope.heap(),
+            handle.document_id,
+            NodeId::from_index(0),
+          );
+          (handle.document_id, handle.node_id, document_wrapper)
+        };
+
+        // Stable identity: return cached own data property if present.
+        let style_key = key_from_str(scope, "style")?;
+        match scope.heap().object_get_own_data_property_value(obj, &style_key) {
+          Ok(Some(Value::Object(existing))) => return Ok(Value::Object(existing)),
+          Ok(_) => {}
+          Err(VmError::PropertyNotData) => {}
+          Err(err) => return Err(err),
+        }
+
+        let document_obj = if let Some(doc) = document_wrapper_from_platform {
+          doc
+        } else {
+          // Fallback: if this element belongs to the main document, use the cached `window.document`.
+          let Some(doc) = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .and_then(|data| data.document_obj())
+          else {
+            return Err(VmError::InvariantViolation(
+              "Element.style: missing document object",
+            ));
+          };
+          let key = WeakGcObject::from(doc);
+          let main_document_id = (key.index() as u64) | ((key.generation() as u64) << 32);
+          if main_document_id != document_id {
+            return Err(VmError::InvariantViolation(
+              "Element.style: missing document wrapper for element",
+            ));
+          }
+          doc
+        };
+
+        // Allocate style object and keep it alive across property definitions.
+        let style_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(style_obj))?;
+        scope.push_root(Value::Object(document_obj))?;
+        scope.heap_mut().object_set_host_slots(
+          style_obj,
+          HostSlots {
+            a: element_id.index() as u64,
+            b: CSS_STYLE_DECL_HOST_TAG,
+          },
+        )?;
+
+        // Optionally set prototype so `el.style instanceof CSSStyleDeclaration` works.
+        let proto_key = key_from_str(scope, "__fastrender_css_style_declaration_prototype")?;
+        if let Some(Value::Object(proto)) =
+          scope
+            .heap()
+            .object_get_own_data_property_value(document_obj, &proto_key)?
+        {
+          scope
+            .heap_mut()
+            .object_set_prototype(style_obj, Some(proto))
+            .map_err(|_| VmError::TypeError("failed to set CSSStyleDeclaration prototype"))?;
+        }
+
+        // Hidden bookkeeping properties expected by the shared style native functions.
+        let node_id_key = key_from_str(scope, INTERNAL_NODE_ID_KEY)?;
+        scope.define_property(
+          style_obj,
+          node_id_key,
+          data_property(Value::Number(element_id.index() as f64), true, false, true),
+        )?;
+
+        let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+        scope.define_property(
+          style_obj,
+          wrapper_document_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Object(document_obj),
+              writable: false,
+            },
+          },
+        )?;
+
+        // Reuse shared method/accessor functions stored on the document wrapper.
+        let get_property_value = {
+          let key = key_from_str(scope, "__fastrender_style_get_property_value")?;
+          match scope
+            .heap()
+            .object_get_own_data_property_value(document_obj, &key)?
+          {
+            Some(Value::Object(obj)) => obj,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "Element.style: missing __fastrender_style_get_property_value",
+              ))
+            }
+          }
+        };
+        let set_property = {
+          let key = key_from_str(scope, "__fastrender_style_set_property")?;
+          match scope
+            .heap()
+            .object_get_own_data_property_value(document_obj, &key)?
+          {
+            Some(Value::Object(obj)) => obj,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "Element.style: missing __fastrender_style_set_property",
+              ))
+            }
+          }
+        };
+        let remove_property = {
+          let key = key_from_str(scope, "__fastrender_style_remove_property")?;
+          match scope
+            .heap()
+            .object_get_own_data_property_value(document_obj, &key)?
+          {
+            Some(Value::Object(obj)) => obj,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "Element.style: missing __fastrender_style_remove_property",
+              ))
+            }
+          }
+        };
+
+        let get_property_value_key = key_from_str(scope, "getPropertyValue")?;
+        scope.define_property(
+          style_obj,
+          get_property_value_key,
+          data_property(Value::Object(get_property_value), true, false, true),
+        )?;
+
+        let set_property_key = key_from_str(scope, "setProperty")?;
+        scope.define_property(
+          style_obj,
+          set_property_key,
+          data_property(Value::Object(set_property), true, false, true),
+        )?;
+
+        let remove_property_key = key_from_str(scope, "removeProperty")?;
+        scope.define_property(
+          style_obj,
+          remove_property_key,
+          data_property(Value::Object(remove_property), true, false, true),
+        )?;
+
+        for (prop, hidden_get, hidden_set) in [
+          ("cssText", "__fastrender_style_css_text_get", "__fastrender_style_css_text_set"),
+          ("display", "__fastrender_style_display_get", "__fastrender_style_display_set"),
+          ("cursor", "__fastrender_style_cursor_get", "__fastrender_style_cursor_set"),
+          ("height", "__fastrender_style_height_get", "__fastrender_style_height_set"),
+          ("width", "__fastrender_style_width_get", "__fastrender_style_width_set"),
+        ] {
+          let get_key = key_from_str(scope, hidden_get)?;
+          let get = match scope
+            .heap()
+            .object_get_own_data_property_value(document_obj, &get_key)?
+          {
+            Some(Value::Object(obj)) => obj,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "Element.style: missing style property getter",
+              ))
+            }
+          };
+          let set_key = key_from_str(scope, hidden_set)?;
+          let set = match scope
+            .heap()
+            .object_get_own_data_property_value(document_obj, &set_key)?
+          {
+            Some(Value::Object(obj)) => obj,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "Element.style: missing style property setter",
+              ))
+            }
+          };
+          let prop_key = key_from_str(scope, prop)?;
+          scope.define_property(
+            style_obj,
+            prop_key,
+            PropertyDescriptor {
+              enumerable: false,
+              configurable: true,
+              kind: PropertyKind::Accessor {
+                get: Value::Object(get),
+                set: Value::Object(set),
+              },
+            },
+          )?;
+        }
+
+        // Cache on element wrapper so subsequent accesses are fast and stable.
+        scope.define_property(
+          obj,
+          style_key,
+          data_property(Value::Object(style_obj), true, false, true),
+        )?;
+        Ok(Value::Object(style_obj))
+      }
       ("Element", "getAttribute", 0) => {
         let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
         let name =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
- 
+
         let value: Result<Option<String>, DomError> = with_active_vm_host(vm, |host| {
           let any = host.as_any_mut();
           let get = |dom: &crate::dom2::Document| {
@@ -4108,7 +4327,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             Err(VmError::TypeError("DOM host not available"))
           }
         })?;
- 
+
         match value {
           Ok(Some(value)) => {
             let js = scope.alloc_string(&value)?;
@@ -4128,7 +4347,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
         let value =
           js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
- 
+
         let result: Result<bool, DomError> = with_active_vm_host(vm, |host| {
           let any = host.as_any_mut();
           if let Some(host) = any.downcast_mut::<DocumentHostState>() {
@@ -4152,7 +4371,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
         let name =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
- 
+
         let result: Result<bool, DomError> = with_active_vm_host(vm, |host| {
           let any = host.as_any_mut();
           if let Some(host) = any.downcast_mut::<DocumentHostState>() {
@@ -4628,6 +4847,53 @@ mod document_node_creation_tests {
       return Err(VmError::TypeError("expected DOMException property to be a string"));
     };
     Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+  }
+
+  #[test]
+  fn element_style_webidl_backend_returns_stable_css_style_declaration_like_object(
+  ) -> Result<(), VmError> {
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut dom_host = DocumentHostState::new(crate::dom2::Document::new(QuirksMode::NoQuirks));
+    let mut dispatch =
+      VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new(window.global_object());
+
+    let mut hooks = TestHooks::default();
+    hooks.payload.set_vm_host(&mut dom_host);
+    // Expose the dispatch host to WebIDL binding shims.
+    hooks
+      .payload
+      .webidl_bindings_host_slot_mut()
+      .set(&mut dispatch);
+
+    let ok = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        const s = el.style;\n\
+        if (!(s && s === el.style)) return false;\n\
+        if (!(s instanceof CSSStyleDeclaration)) return false;\n\
+        s.setProperty('cursor', 'pointer');\n\
+        let attr = el.getAttribute('style');\n\
+        if (attr === null || !attr.includes('cursor: pointer')) return false;\n\
+        el.style.display = 'none';\n\
+        attr = el.getAttribute('style');\n\
+        if (attr === null || !attr.includes('display: none')) return false;\n\
+        const removed = el.style.removeProperty('cursor');\n\
+        if (removed !== 'pointer') return false;\n\
+        if (el.style.getPropertyValue('cursor') !== '') return false;\n\
+        el.style.cssText = 'width: 10px; height: 5px;';\n\
+        if (el.style.width !== '10px') return false;\n\
+        if (el.style.height !== '5px') return false;\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    Ok(())
   }
 
   #[test]
