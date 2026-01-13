@@ -122,3 +122,42 @@ fn teardown_microtasks_aborts_async_continuations() -> Result<(), VmError> {
 
   Ok(())
 }
+
+#[test]
+fn module_termination_tears_down_pending_microtasks_and_async_continuations() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // Module execution allocates module records + Promise/job machinery; give it some headroom.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut runtime = JsRuntime::new(vm, heap)?;
+
+  assert_eq!(runtime.vm.async_continuation_count(), 0);
+
+  runtime.vm.set_budget(Budget {
+    fuel: Some(2_000),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = runtime
+    .exec_module(
+      "m.js",
+      "async function f() { await 0; } f(); while (true) {}",
+    )
+    .unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  assert!(
+    runtime.vm.microtask_queue().is_empty(),
+    "hard-stop termination should discard queued Promise jobs from module execution"
+  );
+  assert_eq!(
+    runtime.vm.async_continuation_count(),
+    0,
+    "hard-stop termination should tear down suspended async continuations from module execution"
+  );
+
+  Ok(())
+}
