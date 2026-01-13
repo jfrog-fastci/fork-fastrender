@@ -206,10 +206,11 @@ impl Drop for OwnedHandle {
 ///
 /// # Allocation / free contract
 ///
-/// Windows isn't consistent about which deallocator is used for returned SIDs:
-/// some APIs require `FreeSid` (for example, AppContainer SIDs returned from
-/// `CreateAppContainerProfile` / `DeriveAppContainerSidFromAppContainerName`),
-/// while others require `LocalFree` (for example, `ConvertStringSidToSidW`).
+/// Win32 isn't consistent about which deallocator is used for returned SIDs.
+/// Some APIs require `FreeSid` (for example `AllocateAndInitializeSid` and
+/// AppContainer SIDs returned from `CreateAppContainerProfile` /
+/// `DeriveAppContainerSidFromAppContainerName`), while others require
+/// `LocalFree` (for example `ConvertStringSidToSidW`).
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct OwnedSid {
