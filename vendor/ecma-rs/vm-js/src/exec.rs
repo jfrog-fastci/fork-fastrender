@@ -1813,6 +1813,11 @@ impl JsRuntime {
   /// aborting execution or returning early on an error) while still leaving the VM/heap in a
   /// reusable state.
   ///
+  /// Note: this also tears down any in-progress async continuations stored in the VM. Async
+  /// continuations are resumed exclusively via Promise jobs; if the host discards the microtask
+  /// queue, keeping suspended continuations around would leak their persistent roots and leave the
+  /// VM in an inconsistent state for heap reuse.
+  ///
   /// This tears down jobs via [`MicrotaskQueue::teardown`](crate::MicrotaskQueue::teardown), which
   /// calls [`Job::discard`](crate::Job::discard) for each queued job to ensure any persistent roots
   /// owned by those jobs are unregistered.
