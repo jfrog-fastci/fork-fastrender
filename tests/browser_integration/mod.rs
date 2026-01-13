@@ -85,6 +85,7 @@ mod ui_context_menu_bookmarks;
 mod ui_context_menu_prevent_default;
 mod ui_context_menu_image_srcset;
 mod ui_file_drop;
+mod ui_file_drop_label_for;
 mod ui_fragment_navigation;
 mod ui_frame_upload_coalescing;
 mod ui_input_routing;
