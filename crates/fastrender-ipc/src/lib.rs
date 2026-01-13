@@ -2577,7 +2577,7 @@ mod hover_router_tests {
     let mut tester = FrameHitTester::new(root);
     tester.set_frame_size(root, 100, 100);
     tester.set_frame_size(child, 10, 10);
-    tester.set_subframes(
+      tester.set_subframes(
       root,
       vec![SubframeInfo {
         child,
@@ -2626,7 +2626,7 @@ mod hover_router_tests {
     let mut tester = FrameHitTester::new(root);
     tester.set_frame_size(root, 100, 100);
     tester.set_frame_size(child, 10, 10);
-    tester.set_subframes(
+      tester.set_subframes(
       root,
       vec![SubframeInfo {
         child,
