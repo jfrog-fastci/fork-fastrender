@@ -92,6 +92,7 @@ const WRITABLE_STREAM_SINK_KEY: &str = "__fastrender_writable_stream_sink";
 const WRITABLE_STREAM_SINK_WRITE_KEY: &str = "__fastrender_writable_stream_sink_write";
 const WRITABLE_STREAM_SINK_CLOSE_KEY: &str = "__fastrender_writable_stream_sink_close";
 const WRITABLE_STREAM_SINK_ABORT_KEY: &str = "__fastrender_writable_stream_sink_abort";
+const WRITABLE_STREAM_LOCKED_KEY: &str = "__fastrender_writable_stream_locked";
 
 const WRITABLE_STREAM_WRITER_BRAND_KEY: &str = "__fastrender_writable_stream_default_writer";
 const WRITABLE_STREAM_WRITER_STREAM_KEY: &str =
@@ -4458,6 +4459,13 @@ fn create_writable_stream_from_sink(
   set_data_prop(
     scope,
     obj,
+    WRITABLE_STREAM_LOCKED_KEY,
+    Value::Bool(false),
+    false,
+  )?;
+  set_data_prop(
+    scope,
+    obj,
     WRITABLE_STREAM_SINK_KEY,
     Value::Object(sink_obj),
     false,
@@ -4547,6 +4555,13 @@ fn writable_stream_ctor_construct(
     Value::Bool(true),
     false,
   )?;
+  set_data_prop(
+    scope,
+    obj,
+    WRITABLE_STREAM_LOCKED_KEY,
+    Value::Bool(false),
+    false,
+  )?;
 
   let sink_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let sink_obj = match sink_val {
@@ -4627,6 +4642,15 @@ fn writable_stream_get_writer_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let stream_obj = require_writable_stream(scope, this)?;
+  let locked = matches!(
+    get_data_prop(scope, stream_obj, WRITABLE_STREAM_LOCKED_KEY)?,
+    Value::Bool(true)
+  );
+  if locked {
+    return Err(VmError::TypeError(
+      "WritableStream.getWriter: stream is locked",
+    ));
+  }
 
   let slots = scope.heap().get_function_native_slots(callee)?;
   let writer_proto = match slots
@@ -4669,8 +4693,37 @@ fn writable_stream_get_writer_native(
     Value::Object(stream_obj),
     false,
   )?;
+  set_data_prop(
+    scope,
+    stream_obj,
+    WRITABLE_STREAM_LOCKED_KEY,
+    Value::Bool(true),
+    false,
+  )?;
 
   Ok(Value::Object(writer_obj))
+}
+
+fn writable_stream_locked_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let stream_obj = require_host_tag(
+    scope,
+    this,
+    WRITABLE_STREAM_HOST_TAG,
+    "WritableStream.locked: illegal invocation",
+  )?;
+  let locked = matches!(
+    get_data_prop(scope, stream_obj, WRITABLE_STREAM_LOCKED_KEY)?,
+    Value::Bool(true)
+  );
+  Ok(Value::Bool(locked))
 }
 
 fn writer_call_sink(
@@ -4801,6 +4854,41 @@ fn writer_abort_native(
 
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
   writer_call_sink(vm, scope, host, hooks, sink_obj, sink_abort, &[reason])
+}
+
+fn writer_release_lock_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let writer_obj = require_writable_stream_writer(scope, this)?;
+  let stream = match get_data_prop(scope, writer_obj, WRITABLE_STREAM_WRITER_STREAM_KEY)? {
+    Value::Object(obj) => obj,
+    _ => {
+      // Already released.
+      return Ok(Value::Undefined);
+    }
+  };
+  set_data_prop(
+    scope,
+    stream,
+    WRITABLE_STREAM_LOCKED_KEY,
+    Value::Bool(false),
+    false,
+  )?;
+  // Disconnect the writer from the stream.
+  set_data_prop(
+    scope,
+    writer_obj,
+    WRITABLE_STREAM_WRITER_STREAM_KEY,
+    Value::Undefined,
+    false,
+  )?;
+  Ok(Value::Undefined)
 }
 
 // === TransformStream ==========================================================
@@ -6327,6 +6415,27 @@ pub fn install_window_streams_bindings(
     data_desc(Value::Object(writer_abort_fn), true),
   )?;
 
+  let writer_release_lock_call_id: NativeFunctionId =
+    vm.register_native_call(writer_release_lock_native)?;
+  let writer_release_lock_name = scope.alloc_string("releaseLock")?;
+  scope.push_root(Value::String(writer_release_lock_name))?;
+  let writer_release_lock_fn = scope.alloc_native_function(
+    writer_release_lock_call_id,
+    None,
+    writer_release_lock_name,
+    0,
+  )?;
+  scope.push_root(Value::Object(writer_release_lock_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(writer_release_lock_fn, Some(intr.function_prototype()))?;
+  let writer_release_lock_key = alloc_key(&mut scope, "releaseLock")?;
+  scope.define_property(
+    writer_proto,
+    writer_release_lock_key,
+    data_desc(Value::Object(writer_release_lock_fn), true),
+  )?;
+
   let writer_tag_key = PropertyKey::from_symbol(to_string_tag);
   let writer_tag_val = scope.alloc_string("WritableStreamDefaultWriter")?;
   scope.push_root(Value::String(writer_tag_val))?;
@@ -6359,6 +6468,35 @@ pub fn install_window_streams_bindings(
     writable_stream_proto,
     get_writer_key,
     data_desc(Value::Object(get_writer_fn), true),
+  )?;
+
+  let writable_stream_locked_get_call_id: NativeFunctionId =
+    vm.register_native_call(writable_stream_locked_get_native)?;
+  let writable_stream_locked_get_name = scope.alloc_string("get locked")?;
+  scope.push_root(Value::String(writable_stream_locked_get_name))?;
+  let writable_stream_locked_get_fn = scope.alloc_native_function(
+    writable_stream_locked_get_call_id,
+    None,
+    writable_stream_locked_get_name,
+    0,
+  )?;
+  scope.push_root(Value::Object(writable_stream_locked_get_fn))?;
+  scope.heap_mut().object_set_prototype(
+    writable_stream_locked_get_fn,
+    Some(intr.function_prototype()),
+  )?;
+  let writable_stream_locked_key = alloc_key(&mut scope, "locked")?;
+  scope.define_property(
+    writable_stream_proto,
+    writable_stream_locked_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(writable_stream_locked_get_fn),
+        set: Value::Undefined,
+      },
+    },
   )?;
 
   let writable_stream_tag_key = PropertyKey::from_symbol(to_string_tag);
@@ -7685,6 +7823,40 @@ mod tests {
       ));
     };
     assert_eq!(realm.heap().promise_state(p_obj)?, PromiseState::Fulfilled);
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn writable_stream_locking_and_writer_release_lock() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let _ = realm.exec_script("globalThis.ws = new WritableStream();")?;
+    let _ = realm.exec_script("globalThis.w1 = ws.getWriter();")?;
+
+    let locked = realm.exec_script("ws.locked")?;
+    assert_eq!(locked, Value::Bool(true));
+
+    let second_get_writer_threw = realm.exec_script(
+      "(() => { try { ws.getWriter(); return false; } catch (e) { return e instanceof TypeError; } })()",
+    )?;
+    assert_eq!(second_get_writer_threw, Value::Bool(true));
+
+    let _ = realm.exec_script("w1.releaseLock();")?;
+
+    let locked_after_release = realm.exec_script("ws.locked")?;
+    assert_eq!(locked_after_release, Value::Bool(false));
+
+    let get_writer_after_release_ok = realm.exec_script(
+      "(() => { try { ws.getWriter(); return true; } catch (e) { return false; } })()",
+    )?;
+    assert_eq!(get_writer_after_release_ok, Value::Bool(true));
+
+    let write_after_release_threw = realm.exec_script(
+      "(() => { try { w1.write('x'); return false; } catch (e) { return e instanceof TypeError; } })()",
+    )?;
+    assert_eq!(write_after_release_threw, Value::Bool(true));
 
     realm.teardown();
     Ok(())
