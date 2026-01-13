@@ -4995,6 +4995,13 @@ impl BrowserRuntime {
       } => {
         self.handle_a11y_set_value(tab_id, node_id, &value);
       }
+      UiToWorker::A11ySetExpanded {
+        tab_id,
+        node_id,
+        expanded,
+      } => {
+        self.handle_a11y_set_expanded(tab_id, node_id, expanded);
+      }
       UiToWorker::SetDownloadDirectory { path } => {
         self.set_download_directory(path);
       }
@@ -10316,6 +10323,113 @@ impl BrowserRuntime {
       tab.request_non_scroll_repaint();
     }
   }
+
+  fn handle_a11y_set_expanded(&mut self, tab_id: TabId, node_id: Option<usize>, expanded: bool) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let node_id = node_id.or(tab.interaction.interaction_state().focused);
+    let Some(node_id) = node_id else {
+      return;
+    };
+
+    // Prefer direct DOM mutation rather than synthesizing pointer/keyboard activation, so callers
+    // can request explicit Expand vs Collapse semantics (i.e. avoid blindly toggling `<details>`).
+    let changed = doc.mutate_dom(|dom| {
+      use crate::interaction::dom_index::DomIndex;
+
+      fn is_html_element_tag(node: &crate::dom::DomNode, tag: &str) -> bool {
+        node
+          .tag_name()
+          .is_some_and(|t| t.eq_ignore_ascii_case(tag))
+          && node
+            .namespace()
+            .is_some_and(|ns| ns.is_empty() || ns == crate::dom::HTML_NAMESPACE)
+      }
+
+      /// Returns `Some(details_id)` if `summary_id` is the *details summary* for its parent
+      /// `<details>`.
+      fn details_owner_for_summary(index: &DomIndex, summary_id: usize) -> Option<usize> {
+        let summary = index.node(summary_id)?;
+        if !is_html_element_tag(summary, "summary") {
+          return None;
+        }
+
+        let details_id = index.parent.get(summary_id).copied().unwrap_or(0);
+        if details_id == 0 {
+          return None;
+        }
+        let details = index.node(details_id)?;
+        if !is_html_element_tag(details, "details") {
+          return None;
+        }
+
+        // Only the first `<summary>` element child of the `<details>` participates in toggling.
+        let first_summary = details
+          .children
+          .iter()
+          .find(|child| is_html_element_tag(child, "summary"))?;
+        let summary_ptr = summary as *const crate::dom::DomNode;
+        let first_ptr = first_summary as *const crate::dom::DomNode;
+        (summary_ptr == first_ptr).then_some(details_id)
+      }
+
+      fn nearest_details_owner(index: &DomIndex, mut node_id: usize) -> Option<usize> {
+        while node_id != 0 {
+          if let Some(details_id) = details_owner_for_summary(index, node_id) {
+            return Some(details_id);
+          }
+          node_id = index.parent.get(node_id).copied().unwrap_or(0);
+        }
+        None
+      }
+
+      let mut index = DomIndex::build(dom);
+
+      let details_id = index
+        .node(node_id)
+        .is_some_and(|node| is_html_element_tag(node, "details"))
+        .then_some(node_id)
+        .or_else(|| nearest_details_owner(&index, node_id));
+
+      if let Some(details_id) = details_id {
+        let Some(details_node) = index.node_mut(details_id) else {
+          return false;
+        };
+        let currently_open = details_node.get_attribute_ref("open").is_some();
+        if currently_open == expanded {
+          return false;
+        }
+        details_node.toggle_bool_attribute("open", expanded);
+        return true;
+      }
+
+      // Best-effort fallback: if the target itself uses `aria-expanded`, update the attribute value
+      // (without creating it when absent).
+      let Some(node) = index.node_mut(node_id) else {
+        return false;
+      };
+      if node.get_attribute_ref("aria-expanded").is_some() {
+        let value = if expanded { "true" } else { "false" };
+        if node.get_attribute_ref("aria-expanded") == Some(value) {
+          return false;
+        }
+        node.set_attribute("aria-expanded", value);
+        return true;
+      }
+
+      false
+    });
+
+    if changed {
+      tab.cancel.bump_paint();
+      tab.request_non_scroll_repaint();
+    }
+  }
   fn handle_a11y_activate(&mut self, tab_id: TabId, node_id: usize) {
     self.handle_a11y_set_focus(tab_id, node_id);
 
@@ -14805,6 +14919,113 @@ mod js_tab_navigation_deadlines_tests {
       saw_timeout_log,
       "expected a DebugLog describing the timeout; got: {msgs:?}"
     );
+  }
+}
+
+#[cfg(all(test, feature = "a11y_accesskit"))]
+mod accesskit_expand_collapse_tests {
+  use super::*;
+
+  fn details_open(doc: &BrowserDocument, details_node_id: usize) -> bool {
+    dom_node_by_preorder_id(doc.dom(), details_node_id)
+      .and_then(|node| node.get_attribute_ref("open"))
+      .is_some()
+  }
+
+  fn find_details_and_summary_ids(doc: &BrowserDocument) -> (usize, usize) {
+    let ids = crate::dom::enumerate_dom_ids(doc.dom());
+    let mut details_id = None;
+    let mut summary_id = None;
+
+    let mut stack: Vec<&crate::dom::DomNode> = Vec::new();
+    stack.push(doc.dom());
+    while let Some(node) = stack.pop() {
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("details"))
+      {
+        details_id = ids.get(&(node as *const crate::dom::DomNode)).copied();
+      }
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("summary"))
+      {
+        summary_id = ids.get(&(node as *const crate::dom::DomNode)).copied();
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+
+    (
+      details_id.expect("details preorder id"),
+      summary_id.expect("summary preorder id"),
+    )
+  }
+
+  #[test]
+  fn accesskit_expand_collapse_updates_details_open_state() {
+    let html = "<details><summary>More</summary><p>Hi</p></details>";
+    let doc = BrowserDocument::from_html(html, RenderOptions::default()).expect("parse doc");
+    let (details_id, summary_id) = find_details_and_summary_ids(&doc);
+
+    let (_ui_tx, ui_rx) = std::sync::mpsc::channel();
+    let (worker_to_ui_tx, _worker_to_ui_rx) = std::sync::mpsc::channel();
+    let factory = default_ui_worker_factory().expect("factory");
+    let downloads = Arc::new(Mutex::new(HashMap::new()));
+    let mut runtime = BrowserRuntime::new(ui_rx, worker_to_ui_tx, factory, downloads);
+
+    let tab_id = TabId(1);
+    let mut tab = TabState::new(CancelGens::new());
+    tab.document = Some(doc);
+    runtime.tabs.insert(tab_id, tab);
+
+    runtime.handle_message(UiToWorker::A11ySetExpanded {
+      tab_id,
+      node_id: Some(summary_id),
+      expanded: true,
+    });
+    {
+      let tab = runtime.tabs.get(&tab_id).expect("tab");
+      assert!(tab.needs_repaint, "expected Expand to schedule repaint");
+      assert!(details_open(tab.document.as_ref().unwrap(), details_id));
+    }
+
+    runtime.tabs.get_mut(&tab_id).unwrap().needs_repaint = false;
+    runtime.handle_message(UiToWorker::A11ySetExpanded {
+      tab_id,
+      node_id: Some(summary_id),
+      expanded: false,
+    });
+    {
+      let tab = runtime.tabs.get(&tab_id).expect("tab");
+      assert!(tab.needs_repaint, "expected Collapse to schedule repaint");
+      assert!(!details_open(tab.document.as_ref().unwrap(), details_id));
+    }
+
+    runtime.tabs.get_mut(&tab_id).unwrap().needs_repaint = false;
+    runtime.handle_message(UiToWorker::A11ySetExpanded {
+      tab_id,
+      node_id: Some(details_id),
+      expanded: true,
+    });
+    {
+      let tab = runtime.tabs.get(&tab_id).expect("tab");
+      assert!(tab.needs_repaint, "expected Expand on <details> to schedule repaint");
+      assert!(details_open(tab.document.as_ref().unwrap(), details_id));
+    }
+
+    runtime.tabs.get_mut(&tab_id).unwrap().needs_repaint = false;
+    runtime.handle_message(UiToWorker::A11ySetExpanded {
+      tab_id,
+      node_id: Some(details_id),
+      expanded: false,
+    });
+    {
+      let tab = runtime.tabs.get(&tab_id).expect("tab");
+      assert!(tab.needs_repaint, "expected Collapse on <details> to schedule repaint");
+      assert!(!details_open(tab.document.as_ref().unwrap(), details_id));
+    }
   }
 }
 

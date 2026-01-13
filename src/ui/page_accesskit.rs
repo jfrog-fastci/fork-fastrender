@@ -66,6 +66,16 @@ pub fn action_request_to_ui_message(req: &accesskit::ActionRequest) -> Option<Ui
     // "Default" is AccessKit's generic "activate" action (click/press).
     accesskit::Action::Default => Some(UiToWorker::A11yActivate { tab_id, node_id }),
     accesskit::Action::ScrollIntoView => Some(UiToWorker::A11yScrollIntoView { tab_id, node_id }),
+    accesskit::Action::Expand => Some(UiToWorker::A11ySetExpanded {
+      tab_id,
+      node_id: Some(node_id),
+      expanded: true,
+    }),
+    accesskit::Action::Collapse => Some(UiToWorker::A11ySetExpanded {
+      tab_id,
+      node_id: Some(node_id),
+      expanded: false,
+    }),
     accesskit::Action::ShowContextMenu => Some(UiToWorker::A11yShowContextMenu {
       tab_id,
       node_id: Some(node_id),
@@ -177,6 +187,25 @@ mod tests {
       Some(UiToWorker::A11yScrollIntoView {
         tab_id: got_tab,
         node_id: 123
+      }) if got_tab == tab_id
+    ));
+  }
+
+  #[test]
+  fn action_request_to_ui_message_expand_maps_to_set_expanded() {
+    let tab_id = TabId(7);
+    let target = crate::ui::encode_page_node_id(tab_id, 1, 50);
+    let req = accesskit::ActionRequest {
+      action: accesskit::Action::Expand,
+      target,
+      data: None,
+    };
+    assert!(matches!(
+      action_request_to_ui_message(&req),
+      Some(UiToWorker::A11ySetExpanded {
+        tab_id: got_tab,
+        node_id: Some(50),
+        expanded: true
       }) if got_tab == tab_id
     ));
   }

@@ -870,6 +870,22 @@ pub enum UiToWorker {
     node_id: usize,
     value: String,
   },
+  /// Accessibility action: expand/collapse a disclosure widget.
+  ///
+  /// This is intended for platform accessibility backends (e.g. AccessKit `Action::Expand` /
+  /// `Action::Collapse`) and should map to the same internal behavior as user interactions:
+  /// - `<details>` uses its `open` attribute,
+  /// - the first `<summary>` child can be used as an affordance for the owning `<details>`,
+  /// - and `aria-expanded` can be updated when present.
+  ///
+  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
+  ///
+  /// When `None`, workers may fall back to the currently focused node.
+  A11ySetExpanded {
+    tab_id: TabId,
+    node_id: Option<usize>,
+    expanded: bool,
+  },
   /// Send a user action to a media element (play/pause, seek, volume, mute).
   MediaCommand {
     tab_id: TabId,

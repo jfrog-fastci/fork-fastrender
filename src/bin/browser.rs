@@ -30824,6 +30824,16 @@ fn route_page_accesskit_action_request(
         node_id: dom_node_id,
       })
     }
+    accesskit::Action::Expand => Some(fastrender::ui::UiToWorker::A11ySetExpanded {
+      tab_id,
+      node_id: Some(dom_node_id),
+      expanded: true,
+    }),
+    accesskit::Action::Collapse => Some(fastrender::ui::UiToWorker::A11ySetExpanded {
+      tab_id,
+      node_id: Some(dom_node_id),
+      expanded: false,
+    }),
     accesskit::Action::ShowContextMenu => Some(fastrender::ui::UiToWorker::A11yShowContextMenu {
       tab_id,
       node_id: Some(dom_node_id),
