@@ -9,14 +9,14 @@ fn new_agent() -> Agent {
 }
 
 #[test]
-fn agent_can_be_created_and_dropped_without_leaking_realm_roots() {
+fn agent_facade_can_be_created_and_dropped_without_leaking_realm_roots() {
   // If `Agent` forgets to teardown the realm, `Realm`'s drop assertion will trip in debug builds.
   let agent = new_agent();
   drop(agent);
 }
 
 #[test]
-fn persistent_root_raii_releases_root() -> Result<(), VmError> {
+fn agent_facade_persistent_root_raii_releases_root() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
   // Allocate a string so we can prove the root keeps it alive across GC.
@@ -37,7 +37,7 @@ fn persistent_root_raii_releases_root() -> Result<(), VmError> {
 }
 
 #[test]
-fn run_script_restores_budget_after_success_and_termination() {
+fn agent_facade_run_script_restores_budget_after_success_and_termination() {
   let mut agent = new_agent();
 
   // Start with a non-default budget so we can detect whether `run_script` restores it.
@@ -78,7 +78,7 @@ fn run_script_restores_budget_after_success_and_termination() {
 }
 
 #[test]
-fn prototype_cycle_throws_type_error_with_stack() {
+fn agent_facade_prototype_cycle_throws_type_error_with_stack() {
   let mut agent = new_agent();
 
   let err = agent
@@ -103,7 +103,7 @@ fn prototype_cycle_throws_type_error_with_stack() {
 }
 
 #[test]
-fn format_vm_error_formats_native_error_objects() {
+fn agent_facade_format_vm_error_formats_native_error_objects() {
   let mut agent = new_agent();
 
   let err = agent
@@ -123,7 +123,7 @@ fn format_vm_error_formats_native_error_objects() {
 }
 
 #[test]
-fn format_vm_error_formats_thrown_string_values() {
+fn agent_facade_format_vm_error_formats_thrown_string_values() {
   let mut agent = new_agent();
 
   let err = agent
@@ -136,7 +136,7 @@ fn format_vm_error_formats_thrown_string_values() {
 }
 
 #[test]
-fn format_vm_error_appends_stack_trace_for_throw_with_stack() {
+fn agent_facade_format_vm_error_appends_stack_trace_for_throw_with_stack() {
   let mut agent = new_agent();
 
   let err = agent
