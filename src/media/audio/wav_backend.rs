@@ -270,6 +270,7 @@ mod tests {
   use std::convert::TryInto;
   use std::time::Duration;
 
+  use super::AudioBackend;
   use super::WavAudioBackend;
   use crate::media::audio::test_signal;
 

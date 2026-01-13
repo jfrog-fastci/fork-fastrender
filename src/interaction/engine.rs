@@ -2252,6 +2252,7 @@ mod tests {
       Point::new(5.0, 5.0),
       PointerButton::Primary,
       PointerModifiers::NONE,
+      false,
       "https://example.com/",
       "https://example.com/",
     );
@@ -2314,6 +2315,7 @@ mod tests {
       Point::new(5.0, 5.0),
       PointerButton::Primary,
       PointerModifiers::NONE,
+      false,
       "https://example.com/",
       "https://example.com/",
     );
