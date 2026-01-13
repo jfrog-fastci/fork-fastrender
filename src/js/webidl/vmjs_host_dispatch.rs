@@ -5468,7 +5468,7 @@ mod dom_dispatch_tests {
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
       .and_then(|data| data.document_obj())
-      .ok_or(VmError::TypeError("missing document object"))?;
+      .ok_or(VmError::TypeError("missing window.document"))?;
     scope.push_root(Value::Object(document_obj))?;
     let document_key = WeakGcObject::from(document_obj);
     let parent_wrapper = {
@@ -5566,7 +5566,7 @@ mod dom_dispatch_tests {
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
       .and_then(|data| data.document_obj())
-      .ok_or(VmError::TypeError("missing document object"))?;
+      .ok_or(VmError::TypeError("missing window.document"))?;
     scope.push_root(Value::Object(document_obj))?;
     let document_key = WeakGcObject::from(document_obj);
     let parent_wrapper = {
@@ -5618,7 +5618,7 @@ mod dom_dispatch_tests {
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
       .and_then(|data| data.document_obj())
-      .ok_or(VmError::TypeError("missing document object"))?;
+      .ok_or(VmError::TypeError("missing window.document"))?;
     scope.push_root(Value::Object(document_obj))?;
     let document_key = WeakGcObject::from(document_obj);
     let text_wrapper = {
