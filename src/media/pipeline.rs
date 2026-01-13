@@ -15,6 +15,17 @@ pub struct MediaDecodePipeline {
   preroll_drop_until_ns: Option<u64>,
 }
 
+impl std::fmt::Debug for MediaDecodePipeline {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    // Avoid requiring `Debug` on the demuxer/decoder trait objects; this is mainly used by tests.
+    f.debug_struct("MediaDecodePipeline")
+      .field("has_video_track", &self.video_track.is_some())
+      .field("has_audio_track", &self.audio_track.is_some())
+      .field("pending_len", &self.pending.len())
+      .finish_non_exhaustive()
+  }
+}
+
 impl MediaDecodePipeline {
   pub fn new(demuxer: Box<dyn MediaDemuxer>) -> MediaResult<Self> {
     let mut pipeline = Self {

@@ -86,6 +86,10 @@ impl<E> ExecutorWithWindow<E> {
 }
 
 impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
+  fn on_document_referrer_policy_updated(&mut self, policy: fastrender::resource::ReferrerPolicy) {
+    self.inner.on_document_referrer_policy_updated(policy)
+  }
+
   fn execute_classic_script(
     &mut self,
     script_text: &str,
@@ -97,6 +101,25 @@ impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
     self
       .inner
       .execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_id: HtmlScriptId,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<ModuleScriptExecutionStatus> {
+    self.inner.execute_module_script(
+      script_id,
+      script_text,
+      spec,
+      current_script,
+      document,
+      event_loop,
+    )
   }
 }
 
@@ -1001,6 +1024,450 @@ fn crossorigin_use_credentials_blocks_without_allow_credentials_or_with_wildcard
     assert!(
       cookie.contains("session=abc"),
       "expected credentialed script requests to include Cookie; {path} headers={headers:?}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
+fn module_scripts_enforce_cors_and_block_on_missing_acao() -> Result<()> {
+  let _net_lock = net_test_lock();
+  let Some(doc_listener) = try_bind_localhost("module cors script document server") else {
+    return Ok(());
+  };
+  let Some(script_listener) = try_bind_localhost("module cors script asset server") else {
+    return Ok(());
+  };
+
+  let doc_addr = doc_listener.local_addr().expect("doc addr");
+  let script_addr = script_listener.local_addr().expect("script addr");
+  let doc_url = format!("http://{}/page.html", doc_addr);
+  let script_url = format!("http://{}/module.js", script_addr);
+
+  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> =
+    Arc::new(Mutex::new(None));
+  let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
+
+  let doc_thread = std::thread::spawn(move || {
+    let (mut stream, _) = doc_listener.accept().expect("accept doc");
+    let (_path, _headers) = read_http_request(&mut stream);
+    let body = format!(
+      r#"<!doctype html><html><head>
+        <script type="module" src="{script_url}"></script>
+        <script>INLINE</script>
+      </head><body></body></html>"#
+    );
+    write_http_response(stream, "200 OK", "text/html", &body, &[]);
+  });
+
+  let script_thread = std::thread::spawn(move || {
+    use std::time::{Duration, Instant};
+
+    script_listener
+      .set_nonblocking(true)
+      .expect("script nonblocking");
+    let start = Instant::now();
+    let (mut stream, _) = loop {
+      match script_listener.accept() {
+        Ok(pair) => break pair,
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+          assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "timed out waiting for module script request"
+          );
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(err) => panic!("accept script: {err}"),
+      }
+    };
+
+    let (_path, headers) = read_http_request(&mut stream);
+    *captured_script_headers_for_thread
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(headers);
+    // Intentionally omit `Access-Control-Allow-Origin` so CORS enforcement blocks the module script.
+    write_http_response(stream, "200 OK", "application/javascript", "EXTERNAL", &[]);
+  });
+
+  let executor = LogExecutor::default();
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FETCH_ENFORCE_CORS".to_string(),
+    "1".to_string(),
+  )])));
+  with_thread_runtime_toggles(toggles, || -> Result<()> {
+    let mut tab = BrowserTab::from_html(
+      "",
+      RenderOptions::default(),
+      ExecutorWithWindow::new(executor.clone()),
+    )?;
+    let mut js_options = tab.js_execution_options();
+    js_options.supports_module_scripts = true;
+    tab.set_js_execution_options(js_options);
+    tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    Ok(())
+  })?;
+
+  doc_thread.join().expect("join doc thread");
+  script_thread.join().expect("join script thread");
+
+  assert_eq!(
+    executor.take_log(),
+    vec!["INLINE".to_string()],
+    "expected module script CORS failure to block execution without aborting parsing"
+  );
+
+  let headers = captured_script_headers
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone()
+    .unwrap_or_default();
+
+  assert_eq!(
+    headers.get("sec-fetch-mode").map(String::as_str),
+    Some("cors"),
+    "expected module scripts to always use CORS mode; headers={headers:?}"
+  );
+  assert_eq!(
+    headers.get("sec-fetch-dest").map(String::as_str),
+    Some("script"),
+    "expected script fetch destination; headers={headers:?}"
+  );
+  let expected_origin = format!("http://{}", doc_addr);
+  assert_eq!(
+    headers.get("origin").map(String::as_str),
+    Some(expected_origin.as_str()),
+    "expected Origin to match document origin; headers={headers:?}"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn module_crossorigin_use_credentials_includes_cookies_and_honors_same_origin_default() -> Result<()> {
+  let _net_lock = net_test_lock();
+  let Some(doc_listener) = try_bind_localhost("module cors credentials document server") else {
+    return Ok(());
+  };
+  let Some(script_listener) = try_bind_localhost("module cors credentials asset server") else {
+    return Ok(());
+  };
+
+  let doc_addr = doc_listener.local_addr().expect("doc addr");
+  let script_addr = script_listener.local_addr().expect("script addr");
+  let doc_url = format!("http://{}/page.html", doc_addr);
+  let anon_url = format!("http://{}/anon.mjs", script_addr);
+  let cred_url = format!("http://{}/cred.mjs", script_addr);
+  let expected_origin = format!("http://{}", doc_addr);
+  let expected_origin_for_thread = expected_origin.clone();
+
+  let captured_script_headers: Arc<Mutex<HashMap<String, HashMap<String, String>>>> =
+    Arc::new(Mutex::new(HashMap::new()));
+  let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
+
+  let doc_thread = std::thread::spawn(move || {
+    let (mut stream, _) = doc_listener.accept().expect("accept doc");
+    let (_path, _headers) = read_http_request(&mut stream);
+    let body = format!(
+      r#"<!doctype html><html><head>
+        <script type="module" src="{anon_url}"></script>
+        <script type="module" src="{cred_url}" crossorigin="use-credentials"></script>
+      </head><body></body></html>"#
+    );
+    // Host-only cookies ignore port, so a cookie set by `doc_url` can still be attached to the
+    // cross-origin (different port) module script request when the credentials mode is `include`.
+    write_http_response(
+      stream,
+      "200 OK",
+      "text/html",
+      &body,
+      &[("Set-Cookie", "session=abc; Path=/")],
+    );
+  });
+
+  let script_thread = std::thread::spawn(move || {
+    use std::time::{Duration, Instant};
+
+    let expected_origin = expected_origin_for_thread;
+    script_listener
+      .set_nonblocking(true)
+      .expect("script nonblocking");
+    let mut handled = 0usize;
+    while handled < 2 {
+      let start = Instant::now();
+      let (mut stream, _) = loop {
+        match script_listener.accept() {
+          Ok(pair) => break pair,
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            assert!(
+              start.elapsed() < Duration::from_secs(2),
+              "timed out waiting for module script request {handled}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(err) => panic!("accept script: {err}"),
+        }
+      };
+
+      let (path, headers) = read_http_request(&mut stream);
+      captured_script_headers_for_thread
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.clone(), headers);
+
+      match path.as_str() {
+        "/anon.mjs" => {
+          write_http_response(
+            stream,
+            "200 OK",
+            "application/javascript",
+            "ANON",
+            &[("Access-Control-Allow-Origin", "*")],
+          );
+        }
+        "/cred.mjs" => {
+          write_http_response(
+            stream,
+            "200 OK",
+            "application/javascript",
+            "CRED",
+            &[
+              ("Access-Control-Allow-Origin", expected_origin.as_str()),
+              ("Access-Control-Allow-Credentials", "true"),
+            ],
+          );
+        }
+        _ => {
+          write_http_response(stream, "404 Not Found", "text/plain", "not found", &[]);
+        }
+      }
+
+      handled += 1;
+    }
+  });
+
+  let executor = LogExecutor::default();
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FETCH_ENFORCE_CORS".to_string(),
+    "1".to_string(),
+  )])));
+  with_thread_runtime_toggles(toggles, || -> Result<()> {
+    let mut js_options = fastrender::js::JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      "",
+      RenderOptions::default(),
+      ExecutorWithWindow::new(executor.clone()),
+      js_options,
+    )?;
+    tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    Ok(())
+  })?;
+
+  doc_thread.join().expect("join doc thread");
+  script_thread.join().expect("join script thread");
+
+  assert_eq!(executor.take_log(), vec!["ANON".to_string(), "CRED".to_string()]);
+
+  let headers_by_path = captured_script_headers
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone();
+
+  let anon_headers = headers_by_path.get("/anon.mjs").cloned().unwrap_or_default();
+  let cred_headers = headers_by_path.get("/cred.mjs").cloned().unwrap_or_default();
+
+  assert_eq!(
+    anon_headers.get("sec-fetch-mode").map(String::as_str),
+    Some("cors"),
+    "expected module scripts to use CORS mode; headers={anon_headers:?}"
+  );
+  assert_eq!(
+    cred_headers.get("sec-fetch-mode").map(String::as_str),
+    Some("cors"),
+    "expected module scripts to use CORS mode; headers={cred_headers:?}"
+  );
+  assert_eq!(
+    anon_headers.get("origin").map(String::as_str),
+    Some(expected_origin.as_str()),
+    "expected anonymous module script Origin header to match document origin; headers={anon_headers:?}"
+  );
+  assert_eq!(
+    cred_headers.get("origin").map(String::as_str),
+    Some(expected_origin.as_str()),
+    "expected credentialed module script Origin header to match document origin; headers={cred_headers:?}"
+  );
+
+  assert!(
+    !anon_headers.contains_key("cookie"),
+    "expected default (no crossorigin attribute) module scripts to omit Cookie on cross-origin requests; headers={anon_headers:?}"
+  );
+  let cookie = cred_headers.get("cookie").cloned().unwrap_or_default();
+  assert!(
+    cookie.contains("session=abc"),
+    "expected crossorigin=use-credentials module scripts to include Cookie on cross-origin requests; headers={cred_headers:?}"
+  );
+  Ok(())
+}
+
+#[test]
+fn module_crossorigin_use_credentials_blocks_without_allow_credentials_or_with_wildcard_acao(
+) -> Result<()> {
+  let _net_lock = net_test_lock();
+  let Some(doc_listener) = try_bind_localhost("module cors credentials failures document server")
+  else {
+    return Ok(());
+  };
+  let Some(script_listener) = try_bind_localhost("module cors credentials failures asset server")
+  else {
+    return Ok(());
+  };
+
+  let doc_addr = doc_listener.local_addr().expect("doc addr");
+  let script_addr = script_listener.local_addr().expect("script addr");
+  let doc_url = format!("http://{}/page.html", doc_addr);
+  let missing_cred_url = format!("http://{}/missing.mjs", script_addr);
+  let wildcard_url = format!("http://{}/wildcard.mjs", script_addr);
+  let expected_origin = format!("http://{}", doc_addr);
+  let expected_origin_for_thread = expected_origin.clone();
+
+  let captured_script_headers: Arc<Mutex<HashMap<String, HashMap<String, String>>>> =
+    Arc::new(Mutex::new(HashMap::new()));
+  let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
+
+  let doc_thread = std::thread::spawn(move || {
+    let (mut stream, _) = doc_listener.accept().expect("accept doc");
+    let (_path, _headers) = read_http_request(&mut stream);
+    let body = format!(
+      r#"<!doctype html><html><head>
+        <script type="module" src="{missing_cred_url}" crossorigin="use-credentials"></script>
+        <script>INLINE1</script>
+        <script type="module" src="{wildcard_url}" crossorigin="use-credentials"></script>
+        <script>INLINE2</script>
+      </head><body></body></html>"#
+    );
+    write_http_response(
+      stream,
+      "200 OK",
+      "text/html",
+      &body,
+      &[("Set-Cookie", "session=abc; Path=/")],
+    );
+  });
+
+  let script_thread = std::thread::spawn(move || {
+    use std::time::{Duration, Instant};
+
+    let expected_origin = expected_origin_for_thread;
+    script_listener
+      .set_nonblocking(true)
+      .expect("script nonblocking");
+
+    let mut handled = 0usize;
+    while handled < 2 {
+      let start = Instant::now();
+      let (mut stream, _) = loop {
+        match script_listener.accept() {
+          Ok(pair) => break pair,
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            assert!(
+              start.elapsed() < Duration::from_secs(2),
+              "timed out waiting for module script request {handled}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(err) => panic!("accept script: {err}"),
+        }
+      };
+
+      let (path, headers) = read_http_request(&mut stream);
+      captured_script_headers_for_thread
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.clone(), headers);
+
+      match path.as_str() {
+        "/missing.mjs" => {
+          write_http_response(
+            stream,
+            "200 OK",
+            "application/javascript",
+            "MISSING",
+            &[("Access-Control-Allow-Origin", expected_origin.as_str())],
+          );
+        }
+        "/wildcard.mjs" => {
+          write_http_response(
+            stream,
+            "200 OK",
+            "application/javascript",
+            "WILDCARD",
+            &[
+              ("Access-Control-Allow-Origin", "*"),
+              ("Access-Control-Allow-Credentials", "true"),
+            ],
+          );
+        }
+        _ => {
+          write_http_response(stream, "404 Not Found", "text/plain", "not found", &[]);
+        }
+      }
+
+      handled += 1;
+    }
+  });
+
+  let executor = LogExecutor::default();
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FETCH_ENFORCE_CORS".to_string(),
+    "1".to_string(),
+  )])));
+  with_thread_runtime_toggles(toggles, || -> Result<()> {
+    let mut js_options = fastrender::js::JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      "",
+      RenderOptions::default(),
+      ExecutorWithWindow::new(executor.clone()),
+      js_options,
+    )?;
+    tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    Ok(())
+  })?;
+
+  doc_thread.join().expect("join doc thread");
+  script_thread.join().expect("join script thread");
+
+  assert_eq!(
+    executor.take_log(),
+    vec!["INLINE1".to_string(), "INLINE2".to_string()],
+    "expected credentialed module scripts to be blocked by CORS failures without aborting parsing"
+  );
+
+  let headers_by_path = captured_script_headers
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone();
+
+  for path in ["/missing.mjs", "/wildcard.mjs"] {
+    let headers = headers_by_path.get(path).cloned().unwrap_or_default();
+    assert_eq!(
+      headers.get("sec-fetch-mode").map(String::as_str),
+      Some("cors"),
+      "expected {path} to use CORS mode; headers={headers:?}"
+    );
+    assert_eq!(
+      headers.get("origin").map(String::as_str),
+      Some(expected_origin.as_str()),
+      "expected {path} Origin header to match document origin; headers={headers:?}"
+    );
+    let cookie = headers.get("cookie").cloned().unwrap_or_default();
+    assert!(
+      cookie.contains("session=abc"),
+      "expected credentialed module script requests to include Cookie; {path} headers={headers:?}"
     );
   }
 
