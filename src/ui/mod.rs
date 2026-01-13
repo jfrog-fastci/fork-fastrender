@@ -55,6 +55,10 @@ pub mod a11y_labels;
 #[cfg(feature = "browser_ui")]
 pub mod a11y;
 
+// Test-only helpers for extracting egui/AccessKit accessibility output.
+#[cfg(all(test, feature = "browser_ui"))]
+pub mod a11y_test_util;
+
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
 #[cfg(feature = "browser_ui")]
 pub mod chrome;
