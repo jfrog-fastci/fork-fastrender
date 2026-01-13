@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use parking_lot::Mutex;
 
+use super::{
+  audio_engine_config, AudioBackend, AudioEngineConfig, AudioOutputInfo, AudioSink, AudioStreamConfig,
+};
 use crate::debug::trace::TraceHandle;
-use super::{audio_engine_config, AudioBackend, AudioEngineConfig, AudioSink, AudioStreamConfig};
+use crate::media::clock::MediaClock;
 
 /// Identifier for a logical group of sinks (e.g. a browser tab).
 ///
@@ -140,6 +143,7 @@ impl GroupingState {
 pub struct AudioEngine {
   config: Arc<AudioEngineConfig>,
   backend: Arc<dyn AudioBackend>,
+  device_clock: Arc<dyn MediaClock>,
   grouping: Arc<GroupingState>,
 }
 
@@ -163,9 +167,11 @@ impl AudioEngine {
   /// This is primarily intended for deterministic unit tests.
   #[must_use]
   pub fn new_with_backend(config: Arc<AudioEngineConfig>, backend: Arc<dyn AudioBackend>) -> Self {
+    let device_clock: Arc<dyn MediaClock> = Arc::new(backend.clock());
     Self {
       config,
       backend,
+      device_clock,
       grouping: Arc::new(GroupingState::new()),
     }
   }
@@ -185,6 +191,35 @@ impl AudioEngine {
     Self::new_best_effort_with_trace(audio_engine_config(), trace)
   }
 
+  /// Returns the process-global [`AudioEngine`] instance.
+  ///
+  /// This is initialized on first use using [`Self::init_from_env`].
+  #[must_use]
+  pub fn global() -> Arc<Self> {
+    if let Some(engine) = ENGINE_OVERRIDE
+      .get_or_init(|| Mutex::new(None))
+      .lock()
+      .clone()
+    {
+      return engine;
+    }
+
+    ENGINE
+      .get_or_init(|| Arc::new(AudioEngine::init_from_env()))
+      .clone()
+  }
+
+  /// Overrides [`Self::global`] for the lifetime of the returned guard.
+  ///
+  /// This is intended for unit tests that need deterministic backends/configs without mutating
+  /// process environment variables.
+  pub fn init_for_test(engine: AudioEngine) -> AudioEngineTestGuard {
+    let lock = ENGINE_OVERRIDE.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock();
+    let previous = guard.replace(Arc::new(engine));
+    AudioEngineTestGuard { previous }
+  }
+
   #[must_use]
   pub fn config(&self) -> &AudioEngineConfig {
     &self.config
@@ -198,6 +233,16 @@ impl AudioEngine {
   #[must_use]
   pub fn output_config(&self) -> AudioStreamConfig {
     self.backend.output_config()
+  }
+
+  #[must_use]
+  pub fn output_info(&self) -> AudioOutputInfo {
+    self.backend.output_info()
+  }
+
+  #[must_use]
+  pub fn device_clock(&self) -> Arc<dyn MediaClock> {
+    self.device_clock.clone()
   }
 
   /// Create a new group (e.g. a browser tab).
@@ -216,13 +261,13 @@ impl AudioEngine {
   ///
   /// This is intended for callers that do not care about grouping semantics.
   #[must_use]
-  pub fn create_sink(&self) -> AudioEngineSink {
+  pub fn create_sink(&self) -> AudioSinkHandle {
     self.create_sink_in_group(DEFAULT_GROUP)
   }
 
   /// Create a new sink within an existing group.
   #[must_use]
-  pub fn create_sink_in_group(&self, group: AudioGroupId) -> AudioEngineSink {
+  pub fn create_sink_in_group(&self, group: AudioGroupId) -> AudioSinkHandle {
     let group_state = {
       let groups = self.grouping.groups.lock();
       groups
@@ -291,6 +336,9 @@ pub struct AudioEngineSink {
   inner: Arc<AudioEngineSinkInner>,
 }
 
+/// Per-element sink handle returned by [`AudioEngine::create_sink`].
+pub type AudioSinkHandle = AudioEngineSink;
+
 impl std::fmt::Debug for AudioEngineSink {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("AudioEngineSink")
@@ -355,10 +403,26 @@ fn sanitize_volume(volume: f32) -> f32 {
   }
 }
 
+/// Guard that restores the previous [`AudioEngine::global`] override when dropped.
+pub struct AudioEngineTestGuard {
+  previous: Option<Arc<AudioEngine>>,
+}
+
+impl Drop for AudioEngineTestGuard {
+  fn drop(&mut self) {
+    let lock = ENGINE_OVERRIDE.get_or_init(|| Mutex::new(None));
+    *lock.lock() = self.previous.take();
+  }
+}
+
+static ENGINE: OnceLock<Arc<AudioEngine>> = OnceLock::new();
+static ENGINE_OVERRIDE: OnceLock<Mutex<Option<Arc<AudioEngine>>>> = OnceLock::new();
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::media::audio::NullAudioBackend;
+  use crate::testing::global_test_lock;
 
   fn all_near(samples: &[f32], expected: f32) -> bool {
     samples
@@ -440,5 +504,31 @@ mod tests {
 
     let out = backend.render(frames);
     assert!(all_near(&out, 0.125));
+  }
+
+  #[test]
+  fn audio_engine_global_returns_singleton() {
+    let _lock = global_test_lock();
+    let a = AudioEngine::global();
+    let b = AudioEngine::global();
+    assert!(Arc::ptr_eq(&a, &b));
+  }
+
+  #[test]
+  fn audio_engine_test_override_is_scoped_and_restores_global() {
+    let _lock = global_test_lock();
+    let base = AudioEngine::global();
+
+    {
+      let backend = Arc::new(NullAudioBackend::new_deterministic());
+      let engine = AudioEngine::new_with_backend(audio_engine_config(), backend);
+      let _guard = AudioEngine::init_for_test(engine);
+
+      let overridden = AudioEngine::global();
+      assert!(!Arc::ptr_eq(&base, &overridden));
+    }
+
+    let after = AudioEngine::global();
+    assert!(Arc::ptr_eq(&base, &after));
   }
 }
