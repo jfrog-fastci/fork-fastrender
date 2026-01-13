@@ -4305,6 +4305,41 @@ fn compiled_arrow_function_use_strict_is_strict_but_preserves_lexical_this() -> 
 }
 
 #[test]
+fn compiled_arrow_function_inherits_strictness_from_strict_parent() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        "use strict";
+        return (() => { x = 1; })();
+      }
+      f();
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  let Value::Object(thrown_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+
+  let intr = rt
+    .vm
+    .intrinsics()
+    .expect("intrinsics should be initialized for JsRuntime");
+  let thrown_proto = rt.heap().object_prototype(thrown_obj)?;
+  assert_eq!(thrown_proto, Some(intr.reference_error_prototype()));
+  Ok(())
+}
+
+#[test]
 fn compiled_strict_block_function_decls_are_block_scoped() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
