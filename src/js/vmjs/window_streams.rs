@@ -128,6 +128,8 @@ const READABLE_STREAM_TEE_SLOT_READER: usize = 1;
 const READABLE_STREAM_TEE_SLOT_BRANCH0: usize = 2;
 const READABLE_STREAM_TEE_SLOT_BRANCH1: usize = 3;
 
+const READABLE_STREAM_START_REJECTED_SLOT_STREAM: usize = 1;
+
 const READABLE_STREAM_TEE_BRANCH_CANCEL_SLOT_READER: usize = 1;
 const READABLE_STREAM_TEE_BRANCH_CANCEL_SLOT_OTHER_BRANCH: usize = 2;
 
@@ -413,6 +415,7 @@ struct StreamRealmState {
   readable_stream_pipe_to_write_rejected_call_id: NativeFunctionId,
   readable_stream_pipe_to_close_fulfilled_call_id: NativeFunctionId,
   readable_stream_pipe_to_close_rejected_call_id: NativeFunctionId,
+  readable_stream_start_rejected_call_id: NativeFunctionId,
   readable_stream_tee_read_fulfilled_call_id: NativeFunctionId,
   readable_stream_tee_read_rejected_call_id: NativeFunctionId,
   readable_stream_tee_branch_cancel_call_id: NativeFunctionId,
@@ -730,44 +733,132 @@ fn readable_stream_ctor_construct(
       receiver,
       &[Value::Object(controller_obj)],
     );
-    if let Err(err) = start_result {
-      // Per WHATWG Streams `SetUpReadableStreamDefaultController`, exceptions thrown by the
-      // `startAlgorithm` should error the stream, but not throw from the `ReadableStream`
-      // constructor.
-      let msg: String = match err {
-        VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
-          // Root the thrown value across allocations in `to_string`.
-          scope.push_root(reason)?;
-          match scope.heap_mut().to_string(reason) {
-            Ok(reason_string) => match scope.heap().get_string(reason_string) {
-              Ok(s) => s.to_utf8_lossy(),
-              Err(_) => "ReadableStream start threw".to_string(),
-            },
-            Err(_) => "ReadableStream start threw".to_string(),
+    match start_result {
+      Ok(start_val) => {
+        // If `start()` returned a promise, ensure rejections error the stream (spec shape) instead
+        // of surfacing as unhandled rejections / leaving the stream readable.
+        if let Value::Object(promise_obj) = start_val {
+          if scope.heap().is_promise_object(promise_obj) {
+            let rejected_call_id = with_realm_state_mut(vm, scope, callee, |state, _heap| {
+              Ok(state.readable_stream_start_rejected_call_id)
+            })?;
+            let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
+            let realm_slot = Value::Number(realm_id.to_raw() as f64);
+
+            // Root captured values + promise across callback allocation.
+            let mut scope = scope.reborrow();
+            scope.push_root(Value::Object(obj))?;
+            scope.push_root(start_val)?;
+            scope.push_root(realm_slot)?;
+
+            let on_rejected_name = scope.alloc_string("ReadableStream start rejected")?;
+            scope.push_root(Value::String(on_rejected_name))?;
+            let on_rejected = scope.alloc_native_function_with_slots(
+              rejected_call_id,
+              None,
+              on_rejected_name,
+              1,
+              &[realm_slot, Value::Object(obj)],
+            )?;
+            scope.push_root(Value::Object(on_rejected))?;
+
+            let derived = perform_promise_then_with_host_and_hooks(
+              vm,
+              &mut scope,
+              host,
+              hooks,
+              Value::Object(promise_obj),
+              None,
+              Some(Value::Object(on_rejected)),
+            )?;
+            // The derived promise is internal; mark it handled so internal failures do not trigger
+            // `unhandledrejection`.
+            mark_promise_handled(&mut scope, derived)?;
           }
         }
-        VmError::TypeError(message) => message.to_string(),
-        VmError::NotCallable => "value is not callable".to_string(),
-        VmError::NotConstructable => "value is not a constructor".to_string(),
-        other => return Err(other),
-      };
+      }
+      Err(err) => {
+        // Per WHATWG Streams `SetUpReadableStreamDefaultController`, exceptions thrown by the
+        // `startAlgorithm` should error the stream, but not throw from the `ReadableStream`
+        // constructor.
+        let msg: String = match err {
+          VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
+            // Root the thrown value across allocations in `to_string`.
+            scope.push_root(reason)?;
+            match scope.heap_mut().to_string(reason) {
+              Ok(reason_string) => match scope.heap().get_string(reason_string) {
+                Ok(s) => s.to_utf8_lossy(),
+                Err(_) => "ReadableStream start threw".to_string(),
+              },
+              Err(_) => "ReadableStream start threw".to_string(),
+            }
+          }
+          VmError::TypeError(message) => message.to_string(),
+          VmError::NotCallable => "value is not callable".to_string(),
+          VmError::NotConstructable => "value is not a constructor".to_string(),
+          other => return Err(other),
+        };
 
-      let pending = error_readable_stream(vm, scope, callee, obj, msg)?;
-      if let Some(pending) = pending {
-        settle_pending_read(
-          vm,
-          scope,
-          host,
-          hooks,
-          pending.reader,
-          pending.roots,
-          pending.outcome,
-        )?;
+        let pending = error_readable_stream(vm, scope, callee, obj, msg)?;
+        if let Some(pending) = pending {
+          settle_pending_read(
+            vm,
+            scope,
+            host,
+            hooks,
+            pending.reader,
+            pending.roots,
+            pending.outcome,
+          )?;
+        }
       }
     }
   }
 
   Ok(Value::Object(obj))
+}
+
+fn readable_stream_start_rejected_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let stream_obj = match slots
+    .get(READABLE_STREAM_START_REJECTED_SLOT_STREAM)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "ReadableStream start rejected callback missing stream slot",
+      ))
+    }
+  };
+
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  let reason_string = scope.heap_mut().to_string(reason)?;
+  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+
+  let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
+  if let Some(pending) = pending {
+    settle_pending_read(
+      vm,
+      scope,
+      host,
+      hooks,
+      pending.reader,
+      pending.roots,
+      pending.outcome,
+    )?;
+  }
+
+  Ok(Value::Undefined)
 }
 
 fn readable_stream_get_reader_native(
@@ -6463,6 +6554,9 @@ pub fn install_window_streams_bindings(
   let readable_stream_pipe_to_close_rejected_call_id: NativeFunctionId =
     vm.register_native_call(readable_stream_pipe_to_close_rejected_native)?;
 
+  let readable_stream_start_rejected_call_id: NativeFunctionId =
+    vm.register_native_call(readable_stream_start_rejected_native)?;
+
   // tee pump callbacks.
   let readable_stream_tee_read_fulfilled_call_id: NativeFunctionId =
     vm.register_native_call(readable_stream_tee_read_fulfilled_native)?;
@@ -7254,6 +7348,7 @@ pub fn install_window_streams_bindings(
       readable_stream_pipe_to_write_rejected_call_id,
       readable_stream_pipe_to_close_fulfilled_call_id,
       readable_stream_pipe_to_close_rejected_call_id,
+      readable_stream_start_rejected_call_id,
       readable_stream_tee_read_fulfilled_call_id,
       readable_stream_tee_read_rejected_call_id,
       readable_stream_tee_branch_cancel_call_id,
