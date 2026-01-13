@@ -5572,6 +5572,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut open_tabs = Vec::new();
         for (window_id, win) in windows.iter() {
           let window_debug = format!("{window_id:?}");
+          let active_tab_id = win.app.browser_state.active_tab_id().map(|id| id.0);
           for tab in &win.app.browser_state.tabs {
             let url = tab
               .current_url
@@ -5586,12 +5587,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               .ok()
               .map(|key| key.to_string());
             let renderer_process = tab.renderer_process.map(|id| id.raw());
+            let is_active = active_tab_id == Some(tab.id.0);
+            let title = tab
+              .committed_title
+              .as_deref()
+              .or(tab.title.as_deref())
+              .map(str::trim)
+              .filter(|s| !s.is_empty())
+              .map(str::to_string);
             open_tabs.push(fastrender::ui::about_pages::OpenTabSnapshot {
               window_id: Some(window_debug.clone()),
               tab_id: tab.id.0,
               url: url.to_string(),
+              title,
               site_key,
               renderer_process,
+              is_active,
               loading: tab.loading,
               crashed: tab.crashed,
               unresponsive: tab.unresponsive,

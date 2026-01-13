@@ -83,10 +83,14 @@ pub struct OpenTabSnapshot {
   pub window_id: Option<String>,
   pub tab_id: u64,
   pub url: String,
+  /// Best-effort tab title (sanitized by the UI).
+  pub title: Option<String>,
   /// Derived site key for the current URL (best-effort).
   pub site_key: Option<String>,
   /// Renderer process identifier assigned to this tab (if multiprocess is enabled).
   pub renderer_process: Option<u64>,
+  /// Whether this tab is currently the active tab in its owning window.
+  pub is_active: bool,
   /// Whether the UI believes this tab is currently loading.
   pub loading: bool,
   /// Whether the tab is currently in a crashed state (user-visible crash page).
@@ -1026,14 +1030,21 @@ fn processes_html(full_url: &str) -> String {
     .filter(|t| !t.is_empty())
     .collect();
   let safe_query = escape_html(&query);
+  let filter_href = |q: &str| -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("q", q);
+    format!("{ABOUT_PROCESSES}?{}", serializer.finish())
+  };
 
   let process_model = crate::ui::process_assignment_config::process_model_from_env();
   let process_model_label = match process_model {
     crate::ui::process_assignment::ProcessModel::PerTab => "tab",
     crate::ui::process_assignment::ProcessModel::PerSiteKey => "site",
   };
-  let site_isolation_enabled =
-    matches!(process_model, crate::ui::process_assignment::ProcessModel::PerSiteKey);
+  let site_isolation_enabled = matches!(
+    process_model,
+    crate::ui::process_assignment::ProcessModel::PerSiteKey
+  );
   let network_mode_html = if cfg!(feature = "direct_network") {
     "<code>direct</code> <span class=\"muted\">(direct_network)</span>"
   } else {
@@ -1066,9 +1077,7 @@ fn processes_html(full_url: &str) -> String {
   let registry_stats_html = {
     let live = crate::multiprocess::renderer_process_count_for_test();
     let spawned = crate::multiprocess::renderer_process_spawn_count_for_test();
-    format!(
-      " · Registry live: <code>{live}</code> · Registry spawned: <code>{spawned}</code>"
-    )
+    format!(" · Registry live: <code>{live}</code> · Registry spawned: <code>{spawned}</code>")
   };
   #[cfg(not(any(test, feature = "browser_ui")))]
   let registry_stats_html = String::new();
@@ -1105,29 +1114,68 @@ fn processes_html(full_url: &str) -> String {
     for tab in &snapshot.open_tabs {
       let safe_window = escape_html(tab.window_id.as_deref().unwrap_or("-"));
       let safe_url = escape_html(&tab.url);
-      let site = best_effort_site_for_url(&tab.url);
+      let title = tab
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+      let site = tab
+        .site_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| best_effort_site_for_url(&tab.url));
       let site_cell = if site == "unknown" {
         "<span class=\"muted\">unknown</span>".to_string()
       } else {
         format!("<code>{}</code>", escape_html(&site))
       };
-      let renderer = "<span class=\"muted\">(not implemented)</span>".to_string();
-      let network_cell = "<span class=\"muted\">(not implemented)</span>".to_string();
+      let renderer = match tab.renderer_process {
+        Some(id) => format!("<code>{id}</code>"),
+        None => "<span class=\"muted\">(unassigned)</span>".to_string(),
+      };
+      let url_cell = match title {
+        Some(title) => format!(
+          "<div class=\"tab-title\">{}</div>\
+           <div><a href=\"{}\"><code>{}</code></a></div>",
+          escape_html(title),
+          safe_url,
+          safe_url
+        ),
+        None => format!("<a href=\"{}\"><code>{}</code></a>", safe_url, safe_url),
+      };
+      let network_cell = if cfg!(feature = "direct_network") {
+        "<span class=\"muted\">in-process</span>".to_string()
+      } else {
+        "<span class=\"muted\">(not implemented)</span>".to_string()
+      };
       if !tokens.is_empty() {
         use std::fmt::Write;
         let mut searchable = String::new();
+        let renderer_id = tab
+          .renderer_process
+          .map(|id| id.to_string())
+          .unwrap_or_else(|| "unassigned".to_string());
         let _ = write!(
           searchable,
-          "{} {} {} {} {}",
+          "{} {} {} {} {} {}",
           tab.window_id.as_deref().unwrap_or(""),
           tab.tab_id,
           tab.url,
           site,
-          tab.renderer_process
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "unassigned".to_string()),
+          renderer_id,
+          title.unwrap_or(""),
         );
+        searchable.push_str(&format!(
+          " window:{} tab:{} site:{} renderer:{}",
+          tab.window_id.as_deref().unwrap_or(""),
+          tab.tab_id,
+          site,
+          renderer_id
+        ));
         for (enabled, label) in [
+          (tab.is_active, "active"),
           (tab.loading, "loading"),
           (tab.unresponsive, "unresponsive"),
           (tab.crashed, "crashed"),
@@ -1162,6 +1210,7 @@ fn processes_html(full_url: &str) -> String {
         let mut out = String::new();
         let mut any_flag = false;
         for (enabled, label) in [
+          (tab.is_active, "active"),
           (tab.loading, "loading"),
           (tab.unresponsive, "unresponsive"),
           (tab.crashed, "crashed"),
@@ -1203,17 +1252,22 @@ fn processes_html(full_url: &str) -> String {
         }
         out
       };
+      let row_class = if tab.is_active {
+        " class=\"active\""
+      } else {
+        ""
+      };
       rows.push_str(&format!(
-        "<tr>
+        "<tr{row_class}>
           <td><code>{safe_window}</code></td>
           <td><code>{}</code></td>
-          <td><a href=\"{}\"><code>{}</code></a></td>
+          <td>{url_cell}</td>
           <td>{site_cell}</td>
           <td>{renderer}</td>
           <td>{state}</td>
           <td>{network_cell}</td>
         </tr>",
-        tab.tab_id, safe_url, safe_url
+        tab.tab_id
       ));
 
       if tab.loading {
@@ -1288,13 +1342,17 @@ fn processes_html(full_url: &str) -> String {
       } else {
         ""
       };
+      let process_href = escape_html(&filter_href(&format!("renderer:{process_id}")));
       let mut tabs_cell = String::new();
       for (idx, (window_id, tab_id)) in group.tabs.iter().enumerate() {
         if idx > 0 {
           tabs_cell.push_str("<br>");
         }
         let safe_window = escape_html(window_id.as_deref().unwrap_or("-"));
-        tabs_cell.push_str(&format!("<code>{safe_window}:{tab_id}</code>"));
+        let tab_href = escape_html(&filter_href(&format!("tab:{tab_id}")));
+        tabs_cell.push_str(&format!(
+          "<a href=\"{tab_href}\"><code>{safe_window}:{tab_id}</code></a>"
+        ));
       }
 
       let sites_cell = if group.sites.is_empty() {
@@ -1308,14 +1366,18 @@ fn processes_html(full_url: &str) -> String {
           if idx > 0 {
             sites_cell.push_str("<br>");
           }
-          sites_cell.push_str(&format!("<code>{}</code>", escape_html(site)));
+          let site_href = escape_html(&filter_href(&format!("site:{site}")));
+          sites_cell.push_str(&format!(
+            "<a href=\"{site_href}\"><code>{}</code></a>",
+            escape_html(site)
+          ));
         }
         sites_cell
       };
 
       process_rows.push_str(&format!(
         "<tr{row_class}>
-          <td><code>{process_id}</code></td>
+          <td><a href=\"{process_href}\"><code>{process_id}</code></a></td>
           <td>{tabs_cell}</td>
           <td>{sites_cell}</td>
         </tr>"
@@ -1333,7 +1395,8 @@ fn processes_html(full_url: &str) -> String {
     .count();
   let mut site_rows = String::new();
   if site_groups.is_empty() {
-    site_rows.push_str("<tr><td colspan=\"3\" class=\"empty\">No site snapshot is available.</td></tr>");
+    site_rows
+      .push_str("<tr><td colspan=\"3\" class=\"empty\">No site snapshot is available.</td></tr>");
   } else {
     for (site, group) in site_groups.iter() {
       let row_class = if site_isolation_enabled
@@ -1347,7 +1410,11 @@ fn processes_html(full_url: &str) -> String {
       let site_cell = if site == "unknown" {
         "<span class=\"muted\">unknown</span>".to_string()
       } else {
-        format!("<code>{}</code>", escape_html(site))
+        let site_href = escape_html(&filter_href(&format!("site:{site}")));
+        format!(
+          "<a href=\"{site_href}\"><code>{}</code></a>",
+          escape_html(site)
+        )
       };
 
       let mut renderer_cell = String::new();
@@ -1361,13 +1428,19 @@ fn processes_html(full_url: &str) -> String {
           if idx > 0 {
             renderer_cell.push_str("<br>");
           }
-          renderer_cell.push_str(&format!("<code>{process}</code>"));
+          let renderer_href = escape_html(&filter_href(&format!("renderer:{process}")));
+          renderer_cell.push_str(&format!(
+            "<a href=\"{renderer_href}\"><code>{process}</code></a>"
+          ));
         }
         if group.has_unassigned {
           if !group.renderer_processes.is_empty() {
             renderer_cell.push_str("<br>");
           }
-          renderer_cell.push_str("<span class=\"muted\">(unassigned)</span>");
+          let renderer_href = escape_html(&filter_href("renderer:unassigned"));
+          renderer_cell.push_str(&format!(
+            "<a href=\"{renderer_href}\"><span class=\"muted\">(unassigned)</span></a>"
+          ));
         }
       }
 
@@ -1377,7 +1450,10 @@ fn processes_html(full_url: &str) -> String {
           tabs_cell.push_str("<br>");
         }
         let safe_window = escape_html(window_id.as_deref().unwrap_or("-"));
-        tabs_cell.push_str(&format!("<code>{safe_window}:{tab_id}</code>"));
+        let tab_href = escape_html(&filter_href(&format!("tab:{tab_id}")));
+        tabs_cell.push_str(&format!(
+          "<a href=\"{tab_href}\"><code>{safe_window}:{tab_id}</code></a>"
+        ));
       }
 
       site_rows.push_str(&format!(
@@ -1395,9 +1471,7 @@ fn processes_html(full_url: &str) -> String {
   let tabs_suffix = if tokens.is_empty() {
     String::new()
   } else {
-    format!(
-      " <span class=\"muted\">(filtered from {total_tabs})</span>"
-    )
+    format!(" <span class=\"muted\">(filtered from {total_tabs})</span>")
   };
   let clear_filter = if tokens.is_empty() {
     String::new()
@@ -1527,6 +1601,16 @@ fn processes_html(full_url: &str) -> String {
 }
 .proc-table code {
   word-break: break-all;
+}
+.tab-title {
+  font-weight: 650;
+  margin-bottom: 2px;
+}
+.proc-table tr.active td {
+  background: var(--about-accent-bg);
+}
+.proc-table tr.active td:first-child {
+  box-shadow: inset 4px 0 0 var(--about-accent-border);
 }
 .proc-table tr.warn td {
   background: rgba(239, 68, 68, 0.10);
@@ -1913,7 +1997,9 @@ fn test_heavy_html() -> String {
   // Large DOM used by cancellation tests. Keep this deterministic and offline.
   let mut out = String::with_capacity(256 * 1024);
   out.push_str("<!doctype html><html><head><meta charset=\"utf-8\"><title>Heavy Test</title>");
-  out.push_str(&format!("<link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">"));
+  out.push_str(&format!(
+    "<link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">"
+  ));
   out.push_str("<style>");
   out.push_str(
     "body{margin:0;padding:0;font:14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif;}\
@@ -1948,7 +2034,9 @@ fn test_layout_stress_html() -> String {
   out.push_str("<!doctype html><html><head><meta charset=\"utf-8\">");
   out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
   out.push_str("<title>Layout Stress Test</title>");
-  out.push_str(&format!("<link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">"));
+  out.push_str(&format!(
+    "<link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">"
+  ));
   out.push_str("<style>");
   out.push_str(
     "body{margin:0;padding:0;font:14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;}\
@@ -2004,11 +2092,7 @@ fn test_layout_stress_html() -> String {
     out.push_str("</div>");
     out.push_str("<div class=\"tags\">");
     for t in 0..TAG_COUNT {
-      let _ = write!(
-        out,
-        "<span class=\"tag\">tag-{}</span>",
-        (i + t) % 32
-      );
+      let _ = write!(out, "<span class=\"tag\">tag-{}</span>", (i + t) % 32);
     }
     out.push_str("</div></div></article>");
   }
@@ -2147,8 +2231,10 @@ mod tests {
         window_id: None,
         tab_id: 1,
         url: "https://example.com/a".to_string(),
+        title: None,
         site_key: None,
         renderer_process: None,
+        is_active: false,
         loading: false,
         crashed: false,
         unresponsive: false,
@@ -2160,8 +2246,10 @@ mod tests {
         window_id: None,
         tab_id: 2,
         url: "file:///tmp/a.html".to_string(),
+        title: None,
         site_key: None,
         renderer_process: None,
+        is_active: false,
         loading: false,
         crashed: false,
         unresponsive: false,
@@ -2173,8 +2261,10 @@ mod tests {
         window_id: None,
         tab_id: 3,
         url: "about:newtab".to_string(),
+        title: None,
         site_key: None,
         renderer_process: None,
+        is_active: false,
         loading: false,
         crashed: false,
         unresponsive: false,
