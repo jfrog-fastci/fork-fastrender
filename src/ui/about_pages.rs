@@ -1,5 +1,6 @@
 pub const ABOUT_BLANK: &str = "about:blank";
 pub const ABOUT_NEWTAB: &str = "about:newtab";
+pub const ABOUT_SETTINGS: &str = "about:settings";
 pub const ABOUT_HELP: &str = "about:help";
 pub const ABOUT_VERSION: &str = "about:version";
 pub const ABOUT_GPU: &str = "about:gpu";
@@ -17,6 +18,7 @@ pub const ABOUT_TEST_FORM: &str = "about:test-form";
 pub const ABOUT_PAGE_URLS: &[&str] = &[
   ABOUT_BLANK,
   ABOUT_NEWTAB,
+  ABOUT_SETTINGS,
   ABOUT_HELP,
   ABOUT_VERSION,
   ABOUT_GPU,
@@ -33,7 +35,7 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
-use crate::ui::theme_parsing::RgbaColor;
+use crate::ui::theme_parsing::{RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_HIGH_CONTRAST, ENV_BROWSER_THEME};
 use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
 
 #[derive(Debug, Clone, Default)]
@@ -375,6 +377,7 @@ fn about_header_html(current: &str) -> String {
     (ABOUT_NEWTAB, "New tab"),
     (ABOUT_HISTORY, "History"),
     (ABOUT_BOOKMARKS, "Bookmarks"),
+    (ABOUT_SETTINGS, "Settings"),
     (ABOUT_HELP, "Help"),
     (ABOUT_VERSION, "Version"),
     (ABOUT_GPU, "GPU"),
@@ -402,13 +405,14 @@ fn about_footer_html() -> String {
   )
 }
 
+// Default accent (matches the legacy about-page palette).
+const DEFAULT_ABOUT_ACCENT: RgbaColor = RgbaColor::new(10, 132, 255, 0xFF);
+
 fn about_theme_css() -> String {
-  // Default accent (matches the legacy about-page palette).
-  const DEFAULT_ACCENT: RgbaColor = RgbaColor::new(10, 132, 255, 0xFF);
   let accent = about_page_snapshot_lock()
     .read()
     .chrome_accent
-    .unwrap_or(DEFAULT_ACCENT);
+    .unwrap_or(DEFAULT_ABOUT_ACCENT);
   let r = accent.r;
   let g = accent.g;
   let b = accent.b;
@@ -527,6 +531,7 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
   match lower.as_str() {
     ABOUT_BLANK => Some(blank_html().to_string()),
     ABOUT_NEWTAB => Some(newtab_html()),
+    ABOUT_SETTINGS => Some(settings_html(url)),
     ABOUT_HELP => Some(help_html()),
     ABOUT_VERSION => Some(version_html()),
     ABOUT_GPU => Some(gpu_html()),
@@ -828,6 +833,104 @@ fn newtab_html() -> String {
 }
 .about-search button { cursor: pointer; }
 "#,
+  )
+}
+
+const ABOUT_SETTINGS_CSS: &str = r#"
+.settings-table td { padding: 6px 10px 6px 0; vertical-align: middle; }
+.muted { color: var(--about-muted); }
+.swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  border: 1px solid var(--about-border);
+  background: var(--swatch, var(--about-focus-ring));
+  margin-right: 8px;
+  vertical-align: -2px;
+}
+"#;
+
+fn settings_html(_full_url: &str) -> String {
+  let snapshot = about_page_snapshot();
+  let effective_accent = snapshot.chrome_accent.unwrap_or(DEFAULT_ABOUT_ACCENT);
+  let accent_source = if snapshot.chrome_accent.is_some() {
+    "browser"
+  } else {
+    "default"
+  };
+
+  let hex = effective_accent.to_hex_string();
+  let safe_hex = escape_html(&hex);
+  let alpha = (effective_accent.a as f64) / 255.0;
+  let rgba = format!(
+    "rgba({}, {}, {}, {:.3})",
+    effective_accent.r, effective_accent.g, effective_accent.b, alpha
+  );
+  let safe_rgba = escape_html(&rgba);
+  let safe_accent_source = escape_html(accent_source);
+
+  let safe_env_theme = escape_html(ENV_BROWSER_THEME);
+  let safe_env_accent = escape_html(ENV_BROWSER_ACCENT);
+  let safe_env_high_contrast = escape_html(ENV_BROWSER_HIGH_CONTRAST);
+
+  let pages = [
+    (ABOUT_NEWTAB, "New tab"),
+    (ABOUT_HISTORY, "History"),
+    (ABOUT_BOOKMARKS, "Bookmarks"),
+    (ABOUT_HELP, "Help"),
+    (ABOUT_VERSION, "Version"),
+    (ABOUT_GPU, "GPU"),
+  ];
+  use std::fmt::Write;
+  let mut page_links = String::new();
+  for (url, label) in pages {
+    let safe_url = escape_html(url);
+    let safe_label = escape_html(label);
+    let _ = write!(
+      page_links,
+      r#"<a class="about-tile" href="{safe_url}"><div class="label">{safe_label}</div><div class="url">{safe_url}</div></a>"#
+    );
+  }
+
+  about_layout_html(
+    "Settings",
+    ABOUT_SETTINGS,
+    &format!(
+      r#"<h1>Settings</h1>
+      <p>This is an offline <code>{ABOUT_SETTINGS}</code> page.</p>
+
+      <h2>Appearance</h2>
+      <table class="settings-table">
+        <tr>
+          <td>Accent color</td>
+          <td><span class="swatch" style="--swatch: {rgba};"></span><code>{safe_hex}</code> <span class="muted">({safe_accent_source})</span></td>
+        </tr>
+        <tr><td>RGBA</td><td><code>{safe_rgba}</code></td></tr>
+      </table>
+
+      <h2>Overrides</h2>
+      <p class="muted">
+        Appearance can be overridden via environment variables:
+      </p>
+      <ul>
+        <li><code>{safe_env_theme}</code> — <code>system</code>/<code>light</code>/<code>dark</code></li>
+        <li><code>{safe_env_accent}</code> — hex color (<code>#RRGGBB</code> or <code>#RRGGBBAA</code>)</li>
+        <li><code>{safe_env_high_contrast}</code> — enable high-contrast UI</li>
+      </ul>
+
+      <h2>Built-in pages</h2>
+      <div class="about-actions" aria-label="Built-in pages">{page_links}</div>"#,
+      rgba = rgba,
+      safe_hex = safe_hex,
+      safe_rgba = safe_rgba,
+      safe_accent_source = safe_accent_source,
+      safe_env_theme = safe_env_theme,
+      safe_env_accent = safe_env_accent,
+      safe_env_high_contrast = safe_env_high_contrast,
+      page_links = page_links,
+    ),
+    ABOUT_SETTINGS_CSS,
   )
 }
 
@@ -1478,6 +1581,7 @@ mod tests {
     let cases = [
       (ABOUT_BLANK, None),
       (ABOUT_NEWTAB, Some("New Tab")),
+      (ABOUT_SETTINGS, Some("Settings")),
       (ABOUT_HELP, Some("Help")),
       (ABOUT_VERSION, Some("Version")),
       (ABOUT_GPU, Some("GPU")),
@@ -1499,6 +1603,14 @@ mod tests {
         );
       }
     }
+  }
+
+  #[test]
+  fn about_page_urls_list_includes_about_settings() {
+    assert!(
+      ABOUT_PAGE_URLS.contains(&ABOUT_SETTINGS),
+      "expected ABOUT_PAGE_URLS to include {ABOUT_SETTINGS}"
+    );
   }
 
   #[test]
@@ -1775,6 +1887,7 @@ mod tests {
   fn about_pages_include_shared_css_marker() {
     for url in [
       ABOUT_NEWTAB,
+      ABOUT_SETTINGS,
       ABOUT_HISTORY,
       ABOUT_BOOKMARKS,
       ABOUT_HELP,
