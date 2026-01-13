@@ -8514,6 +8514,14 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
   }
 
+  pub(crate) fn get_function_home_object(&self, func: GcObject) -> Result<Option<GcObject>, VmError> {
+    // `[[HomeObject]]` is stored on the actual function object and is **not** proxy-aware.
+    match self.get_heap_object(func.0)? {
+      HeapObject::Function(f) => Ok(f.home_object),
+      _ => Err(VmError::NotCallable),
+    }
+  }
+
   pub(crate) fn get_function_job_realm(&self, func: GcObject) -> Option<RealmId> {
     // Promise job callbacks may be Proxy objects; follow the proxy chain to the underlying target.
     let mut obj = func;
@@ -8584,6 +8592,21 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         Ok(())
       }
       _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub(crate) fn set_function_home_object(
+    &mut self,
+    func: GcObject,
+    home: Option<GcObject>,
+  ) -> Result<(), VmError> {
+    // `[[HomeObject]]` is stored on the actual function object and is **not** proxy-aware.
+    match self.get_heap_object_mut(func.0)? {
+      HeapObject::Function(f) => {
+        f.home_object = home;
+        Ok(())
+      }
+      _ => Err(VmError::NotCallable),
     }
   }
 
@@ -11599,6 +11622,7 @@ pub(crate) struct GeneratorContinuation {
   pub(crate) strict: bool,
   pub(crate) this: Value,
   pub(crate) new_target: Value,
+  pub(crate) home_object: Option<GcObject>,
   pub(crate) func: Arc<Node<Func>>,
   pub(crate) args: Box<[Value]>,
   pub(crate) frames: VecDeque<GenFrame>,
@@ -11629,6 +11653,9 @@ impl Trace for GeneratorContinuation {
     self.env.trace(tracer);
     tracer.trace_value(self.this);
     tracer.trace_value(self.new_target);
+    if let Some(home_object) = self.home_object {
+      tracer.trace_value(Value::Object(home_object));
+    }
     for v in self.args.iter().copied() {
       tracer.trace_value(v);
     }
@@ -11644,6 +11671,7 @@ pub(crate) struct AsyncGeneratorContinuation {
   pub(crate) strict: bool,
   pub(crate) this: Value,
   pub(crate) new_target: Value,
+  pub(crate) home_object: Option<GcObject>,
   pub(crate) func: Arc<Node<Func>>,
   pub(crate) args: Box<[Value]>,
 }
@@ -11667,6 +11695,9 @@ impl Trace for AsyncGeneratorContinuation {
     self.env.trace(tracer);
     tracer.trace_value(self.this);
     tracer.trace_value(self.new_target);
+    if let Some(home_object) = self.home_object {
+      tracer.trace_value(Value::Object(home_object));
+    }
     for v in self.args.iter().copied() {
       tracer.trace_value(v);
     }
@@ -12542,6 +12573,7 @@ mod generator_object_tests {
           strict: false,
           this: Value::Object(this_obj),
           new_target: Value::Undefined,
+          home_object: None,
           func: dummy_generator_func(),
           args: vec![Value::Object(arg_obj)].into_boxed_slice(),
           frames: VecDeque::new(),
@@ -13381,6 +13413,7 @@ mod generator_object_gc_tests {
         strict: false,
         this: Value::Object(this_obj),
         new_target: Value::Undefined,
+        home_object: None,
         func,
         args: vec![Value::Object(arg_obj)].into_boxed_slice(),
         frames: VecDeque::new(),

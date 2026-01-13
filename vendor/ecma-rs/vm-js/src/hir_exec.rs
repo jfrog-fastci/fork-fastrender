@@ -55,7 +55,7 @@ fn compiled_constructor_body_construct(
     ));
   };
 
-  let (func_ref, is_strict, realm, outer) = {
+  let (func_ref, is_strict, realm, outer, home_object) = {
     let call_handler = scope.heap().get_function_call_handler(body_func)?;
     let crate::function::CallHandler::User(func_ref) = call_handler else {
       return Err(VmError::InvariantViolation(
@@ -63,7 +63,7 @@ fn compiled_constructor_body_construct(
       ));
     };
     let f = scope.heap().get_function(body_func)?;
-    (func_ref, f.is_strict, f.realm, f.closure_env)
+    (func_ref, f.is_strict, f.realm, f.closure_env, f.home_object)
   };
 
   // Determine the global object for the constructor body.
@@ -115,6 +115,7 @@ fn compiled_constructor_body_construct(
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
 
+<<<<<<< HEAD
     let result = run_compiled_function(
       vm,
       &mut scope,
@@ -128,6 +129,21 @@ fn compiled_constructor_body_construct(
       new_target,
       args,
     );
+=======
+  let result = run_compiled_function(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    &mut env,
+    func_ref,
+    is_strict,
+    Value::Object(this_obj),
+    new_target,
+    home_object,
+    args,
+  );
+>>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 
     env.teardown(scope.heap_mut());
 
@@ -457,6 +473,7 @@ struct HirEvaluator<'vm> {
   /// `super()` returns. Accessing `this` before initialization must throw a ReferenceError.
   this_initialized: bool,
   new_target: Value,
+  home_object: Option<GcObject>,
   script: Arc<CompiledScript>,
 }
 
@@ -735,6 +752,9 @@ impl<'vm> HirEvaluator<'vm> {
     scope.push_env_root(outer_env)?;
     scope.push_root(self.this)?;
     scope.push_root(self.new_target)?;
+    if let Some(home) = self.home_object {
+      scope.push_root(Value::Object(home))?;
+    }
 
     // Named function expressions introduce an inner immutable binding for their name so the body
     // can reliably reference itself (for recursion) even if the outer binding is reassigned.
@@ -811,6 +831,9 @@ impl<'vm> HirEvaluator<'vm> {
       scope
         .heap_mut()
         .set_function_bound_new_target(func_obj, self.new_target)?;
+      scope
+        .heap_mut()
+        .set_function_home_object(func_obj, self.home_object)?;
     }
 
     // Constructable functions get a `.prototype` object so `instanceof` works per spec.
@@ -7488,7 +7511,12 @@ impl<'vm> HirEvaluator<'vm> {
 
       // Allocate the optional hidden constructable constructor body.
       let mut ctor_length: u32 = 0;
+<<<<<<< HEAD
        let ctor_body_func = if let Some(member) = ctor_member {
+=======
+      let mut ctor_body_inner_func: Option<GcObject> = None;
+      let ctor_body_func = if let Some(member) = ctor_member {
+>>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
         let hir_js::ClassMemberKind::Constructor { body, .. } = &member.kind else {
           unreachable!();
         };
@@ -7504,6 +7532,7 @@ impl<'vm> HirEvaluator<'vm> {
               /* name_binding */ None,
               EcmaFunctionKind::ClassMember,
             )?;
+          ctor_body_inner_func = Some(body_func);
           ctor_length = scope.heap().get_function(body_func)?.length;
 
           // Wrap it in a constructable native function so `class_constructor_construct` can delegate
@@ -7623,10 +7652,23 @@ impl<'vm> HirEvaluator<'vm> {
        };
        class_scope.push_root(Value::Object(prototype_obj))?;
 
+<<<<<<< HEAD
        // Per ECMAScript, class constructors have a non-writable `prototype` property.
        class_scope.define_property_or_throw(
          func_obj,
          prototype_key,
+=======
+      if let Some(body_func) = ctor_body_inner_func {
+        class_scope
+          .heap_mut()
+          .set_function_home_object(body_func, Some(prototype_obj))?;
+      }
+
+      // Per ECMAScript, class constructors have a non-writable `prototype` property.
+      class_scope.define_property_or_throw(
+        func_obj,
+        prototype_key,
+>>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
         PropertyDescriptorPatch {
           writable: Some(false),
           ..Default::default()
@@ -7741,6 +7783,9 @@ impl<'vm> HirEvaluator<'vm> {
               /* name_binding */ None,
               EcmaFunctionKind::ClassMember,
             )?;
+            member_scope
+              .heap_mut()
+              .set_function_home_object(func_obj_member, Some(target_obj))?;
 
             match kind {
               hir_js::ClassMethodKind::Method => {
@@ -8175,6 +8220,7 @@ pub(crate) fn run_compiled_function(
   this: Value,
   this_initialized: bool,
   new_target: Value,
+  home_object: Option<GcObject>,
   args: &[Value],
 ) -> Result<Value, VmError> {
   env.set_source_info(func.script.source.clone(), 0, 0);
@@ -8210,6 +8256,7 @@ pub(crate) fn run_compiled_function(
     this,
     this_initialized,
     new_target,
+    home_object,
     script: func.script.clone(),
   };
 
@@ -8247,6 +8294,7 @@ pub(crate) fn run_compiled_script(
     this: Value::Object(global_object),
     this_initialized: true,
     new_target: Value::Undefined,
+    home_object: None,
     script: script.clone(),
   };
 

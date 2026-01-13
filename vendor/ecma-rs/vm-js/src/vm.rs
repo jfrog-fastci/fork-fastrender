@@ -4100,6 +4100,8 @@ impl Vm {
       ThisMode::Strict | ThisMode::Global => Value::Undefined,
     };
 
+    let home_object = scope.heap().get_function_home_object(callee)?;
+
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
 
@@ -4114,6 +4116,7 @@ impl Vm {
       this,
       /* this_initialized */ true,
       new_target,
+      home_object,
       args,
     );
 
@@ -4191,6 +4194,8 @@ impl Vm {
     let mut env =
       RuntimeEnv::new_with_var_env(this_scope.heap_mut(), global_object, func_env, func_env)?;
 
+    let home_object = this_scope.heap().get_function_home_object(callee)?;
+
     let result = crate::hir_exec::run_compiled_function(
       self,
       &mut this_scope,
@@ -4202,6 +4207,7 @@ impl Vm {
       Value::Object(this_obj),
       /* this_initialized */ true,
       new_target,
+      home_object,
       args,
     );
 

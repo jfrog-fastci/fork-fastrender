@@ -777,7 +777,7 @@ mod tests {
   #[test]
   fn well_known_symbols_are_agent_wide_while_realms_are_alive() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
 
     let mut realm_a = Realm::new(&mut vm, &mut heap)?;
     let mut realm_b = Realm::new(&mut vm, &mut heap)?;

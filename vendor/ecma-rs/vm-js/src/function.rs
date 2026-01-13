@@ -147,6 +147,8 @@ pub(crate) struct JsFunction {
   /// functions that share one captured value (e.g. a small heap object acting as the
   /// `alreadyResolved` record) and each capture the target promise.
   pub(crate) native_slots: Option<Box<[Value]>>,
+  /// ECMAScript `[[HomeObject]]` internal slot.
+  pub(crate) home_object: Option<GcObject>,
   /// The function's `[[Realm]]` internal slot.
   ///
   /// For now this is represented as the Realm's global object.
@@ -213,6 +215,7 @@ impl JsFunction {
       bound_new_target: None,
       bound_args: None,
       native_slots: None,
+      home_object: None,
       realm: None,
       job_realm: 0,
       script_or_module_token: None,
@@ -258,6 +261,7 @@ impl JsFunction {
       bound_new_target: None,
       bound_args: None,
       native_slots,
+      home_object: None,
       realm: None,
       job_realm: 0,
       script_or_module_token: None,
@@ -292,6 +296,7 @@ impl JsFunction {
       bound_new_target: None,
       bound_args: None,
       native_slots: None,
+      home_object: None,
       realm: None,
       job_realm: 0,
       script_or_module_token: None,
@@ -330,6 +335,7 @@ impl JsFunction {
       bound_new_target: None,
       bound_args: None,
       native_slots: None,
+      home_object: None,
       realm: None,
       job_realm: 0,
       script_or_module_token: None,
@@ -412,6 +418,9 @@ impl Trace for JsFunction {
       for value in native_slots.iter().copied() {
         tracer.trace_value(value);
       }
+    }
+    if let Some(home_object) = self.home_object {
+      tracer.trace_value(Value::Object(home_object));
     }
     if let Some(realm) = self.realm {
       tracer.trace_value(Value::Object(realm));

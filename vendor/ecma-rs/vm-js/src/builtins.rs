@@ -28960,7 +28960,7 @@ mod regexp_unicode_sets_tests {
   #[test]
   fn regexp_prototype_unicode_sets_cross_realm_uses_getter_realm() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
 
     // Create two realms on the same heap; this mimics `$262.createRealm()` by sharing a symbol
     // registry but requiring builtins to remain realm-correct.
@@ -29079,7 +29079,7 @@ mod regexp_unicode_sets_tests {
   #[test]
   fn regexp_prototype_source_cross_realm_uses_getter_realm() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
 
     let mut realm_a = Realm::new(&mut vm, &mut heap).unwrap();
     let intr_a = *realm_a.intrinsics();
