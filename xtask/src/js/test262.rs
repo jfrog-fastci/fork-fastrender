@@ -17,6 +17,9 @@ const DEFAULT_LANGUAGE_SCOPES_SUITE_PATH: &str = "tests/js/test262_suites/langua
 const DEFAULT_BUILTINS_CORE_SUITE_PATH: &str = "tests/js/test262_suites/builtins_core.toml";
 const DEFAULT_BUILTINS_JSON_MATH_SUITE_PATH: &str = "tests/js/test262_suites/builtins_json_math.toml";
 const DEFAULT_REGEXP_SUITE_PATH: &str = "tests/js/test262_suites/regexp.toml";
+const DEFAULT_REGEXP_UNICODE_SETS_SUITE_PATH: &str = "tests/js/test262_suites/regexp_unicode_sets.toml";
+const DEFAULT_REGEXP_PROPERTY_ESCAPES_GENERATED_SUITE_PATH: &str =
+  "tests/js/test262_suites/regexp_property_escapes_generated.toml";
 const DEFAULT_REGEXP_LOOKBEHIND_SUITE_PATH: &str = "tests/js/test262_suites/regexp_lookbehind.toml";
 const DEFAULT_BASELINE_PATH: &str = "progress/test262/baseline.json";
 
@@ -60,6 +63,10 @@ pub enum Test262Suite {
   Smoke,
   /// RegExp engine focused subset (named groups, indices, lookbehind, property escapes, etc).
   Regexp,
+  /// RegExp `/v` (Unicode sets) focused subset.
+  RegexpUnicodeSets,
+  /// RegExp Unicode property escapes (generated corpus) focused subset.
+  RegexpPropertyEscapesGenerated,
   /// Targeted suite for RegExp lookbehind support (regexp-lookbehind).
   #[value(aliases = ["regexplookbehind"])]
   RegexpLookbehind,
@@ -172,6 +179,8 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
     Test262Suite::Curated => DEFAULT_CURATED_SUITE_PATH,
     Test262Suite::Smoke => DEFAULT_SMOKE_SUITE_PATH,
     Test262Suite::Regexp => DEFAULT_REGEXP_SUITE_PATH,
+    Test262Suite::RegexpUnicodeSets => DEFAULT_REGEXP_UNICODE_SETS_SUITE_PATH,
+    Test262Suite::RegexpPropertyEscapesGenerated => DEFAULT_REGEXP_PROPERTY_ESCAPES_GENERATED_SUITE_PATH,
     Test262Suite::RegexpLookbehind => DEFAULT_REGEXP_LOOKBEHIND_SUITE_PATH,
     Test262Suite::LanguageStatements => DEFAULT_LANGUAGE_STATEMENTS_SUITE_PATH,
     Test262Suite::LanguageFunctions => DEFAULT_LANGUAGE_FUNCTIONS_SUITE_PATH,

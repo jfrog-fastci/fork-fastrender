@@ -1,0 +1,25 @@
+# RegExp Unicode sets (`/v` flag) focused test262 semantic suite.
+#
+# This suite is intentionally separate from `regexp.toml` because the unicodeSets corpus is
+# generated and can be relatively expensive. Keeping it isolated makes it easier to track `/v`
+# progress without slowing down the main RegExp suite.
+#
+# Run it with the upstream-style harness:
+#
+# ```bash
+# # from repo root
+# timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+#   --harness test262 \
+#   --suite-path ../../tests/js/test262_suites/regexp_unicode_sets.toml \
+#   --manifest ../../tests/js/test262_manifest.toml \
+#   --timeout-secs 10 \
+#   --jobs 4 \
+#   --report-path ../../target/js/test262_regexp_unicode_sets.json \
+#   --fail-on new
+# ```
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  "built-ins/RegExp/unicodeSets/**/*.js",
+]
+

@@ -104,6 +104,8 @@ Or set `FASTR_TEST262_NO_GATE=1`.
     - `curated` (default): union of the curated thematic suites below.
     - `smoke`: minimal always-green suite for quick local wiring checks.
     - `regexp`: RegExp engine conformance focused subset (named groups, indices, lookbehind, etc).
+    - `regexp_unicode_sets`: RegExp `/v` (Unicode sets) focused subset.
+    - `regexp_property_escapes_generated`: generated Unicode property escape corpus (large).
     - `regexp_lookbehind`: targeted suite for `regexp-lookbehind` support.
     - `language_statements`: control-flow + declaration statements.
     - `language_functions`: function declarations + generators + async.

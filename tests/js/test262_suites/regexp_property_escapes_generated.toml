@@ -1,0 +1,25 @@
+# RegExp Unicode property escape (generated) focused test262 semantic suite.
+#
+# The generated property escape corpus is large; keep it isolated so the main RegExp suite
+# (`regexp.toml`) stays fast while still allowing targeted progress tracking when working on
+# `regexp-unicode-property-escapes`.
+#
+# Run it with the upstream-style harness:
+#
+# ```bash
+# # from repo root
+# timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+#   --harness test262 \
+#   --suite-path ../../tests/js/test262_suites/regexp_property_escapes_generated.toml \
+#   --manifest ../../tests/js/test262_manifest.toml \
+#   --timeout-secs 10 \
+#   --jobs 4 \
+#   --report-path ../../target/js/test262_regexp_property_escapes_generated.json \
+#   --fail-on new
+# ```
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  "built-ins/RegExp/property-escapes/generated/**/*.js",
+]
+
