@@ -39,6 +39,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Linux IPC (shared memory + FD passing checklist): [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md)
 - Sandboxing overview (renderer process): [sandboxing.md](sandboxing.md)
 - Windows renderer sandboxing: [windows_sandbox.md](windows_sandbox.md)
+- Windows renderer sandbox quick reference: [security/windows_renderer_sandbox.md](security/windows_renderer_sandbox.md)
 - Linux seccomp allowlist maintenance: [seccomp_allowlist.md](seccomp_allowlist.md)
 - macOS Seatbelt sandboxing (overview + probe tool): [macos_sandbox.md](macos_sandbox.md)
 - macOS renderer sandboxing (Seatbelt now, App Sandbox later): [security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md)
