@@ -641,7 +641,6 @@ impl<'vm> HirEvaluator<'vm> {
     // executed.
     self.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
     self.instantiate_function_decls(scope, body, body.root_stmts.as_slice())?;
-
     // Create `let` / `const` bindings for the entire function body statement list up-front so TDZ
     // + shadowing semantics are correct.
     self.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), self.env.lexical_env())?;
@@ -955,7 +954,6 @@ impl<'vm> HirEvaluator<'vm> {
     }
     Ok(())
   }
-
   fn eval_stmt_list(
     &mut self,
     scope: &mut Scope<'_>,
