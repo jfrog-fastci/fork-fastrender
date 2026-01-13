@@ -33,20 +33,20 @@ fn main() {
     }
   }
 
-  let Some(allowed_raw) = allowed else {
-    std::process::exit(2);
-  };
   let Some(denied_raw) = denied else {
     std::process::exit(2);
   };
+  let allowed_raw = allowed.unwrap_or(0);
 
   let allowed_handle: HANDLE = allowed_raw as isize;
   let denied_handle: HANDLE = denied_raw as isize;
 
   unsafe {
     // Allowed handle must be inherited and usable.
-    if SetEvent(allowed_handle) == 0 {
-      std::process::exit(3);
+    if allowed_raw != 0 {
+      if SetEvent(allowed_handle) == 0 {
+        std::process::exit(3);
+      }
     }
 
     // Denied handle must NOT be inherited. It should fail with invalid handle / access denied.

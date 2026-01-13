@@ -20,6 +20,25 @@ use windows_sys::Win32::System::Threading::{
 };
 
 #[cfg(windows)]
+fn assert_child_exited_successfully(child: &fastrender::sandbox::windows::SandboxedChild) {
+  unsafe {
+    let proc_handle = child.process.as_raw_handle() as HANDLE;
+    let exit_wait = WaitForSingleObject(proc_handle, 10_000);
+    assert_eq!(
+      exit_wait, WAIT_OBJECT_0,
+      "child process did not exit cleanly; WaitForSingleObject returned {exit_wait}"
+    );
+    let mut exit_code: u32 = 0;
+    assert!(
+      GetExitCodeProcess(proc_handle, &mut exit_code) != 0,
+      "GetExitCodeProcess failed: {}",
+      GetLastError()
+    );
+    assert_eq!(exit_code, 0, "child process exited with code {exit_code}");
+  }
+}
+
+#[cfg(windows)]
 struct HandleGuard(HANDLE);
 
 #[cfg(windows)]
@@ -91,22 +110,40 @@ fn sandbox_spawn_selective_handle_inheritance_proc_thread_attribute_handle_list(
       denied_wait, WAIT_TIMEOUT,
       "denied event should not be signaled by child"
     );
-
-    let proc_handle = child.process.as_raw_handle() as HANDLE;
-    let exit_wait = WaitForSingleObject(proc_handle, 10_000);
-    assert_eq!(
-      exit_wait, WAIT_OBJECT_0,
-      "child process did not exit cleanly; WaitForSingleObject returned {exit_wait}"
-    );
-    let mut exit_code: u32 = 0;
-    assert!(
-      GetExitCodeProcess(proc_handle, &mut exit_code) != 0,
-      "GetExitCodeProcess failed: {}",
-      GetLastError()
-    );
-    assert_eq!(exit_code, 0, "child process exited with code {exit_code}");
   }
+  assert_child_exited_successfully(&child);
 
   // Keep the handles alive until after the child has exited (dropping closes them).
   let _ = (allowed, denied);
+}
+
+#[cfg(windows)]
+#[test]
+fn sandbox_spawn_empty_inherit_handle_list_does_not_leak_inheritable_handles() {
+  // When no handles are requested, the spawn helper must not enable blanket inheritance.
+  // (bInheritHandles must be FALSE; otherwise all inheritable handles in the broker could leak.)
+
+  let _padding: Vec<HandleGuard> = (0..512).map(|_| create_event(false)).collect();
+  let denied = create_event(true);
+
+  let child_exe = Path::new(env!("CARGO_BIN_EXE_sandbox_spawn_handle_inheritance_child"));
+  let args: Vec<OsString> = vec![
+    "--allowed".into(),
+    "0".into(),
+    "--denied".into(),
+    (denied.0 as u64).to_string().into(),
+  ];
+
+  let child = spawn_sandboxed(child_exe, &args, &[]).expect("spawn sandboxed child");
+
+  unsafe {
+    let denied_wait = WaitForSingleObject(denied.0, 200);
+    assert_eq!(
+      denied_wait, WAIT_TIMEOUT,
+      "inheritable handle should not be inherited when inherit_handles is empty"
+    );
+  }
+  assert_child_exited_successfully(&child);
+
+  let _ = denied;
 }
