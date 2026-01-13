@@ -419,6 +419,7 @@ struct DirectWebSocketStream {
   protocol: String,
 }
 
+#[cfg(feature = "direct_websocket")]
 fn normalize_close_code_for_frame(code: u16) -> u16 {
   // Renderer-provided close codes are untrusted. Never allow codes that RFC 6455 forbids on the wire
   // (e.g. 1005/1006/1015) or out-of-range values that tungstenite may reject.
@@ -440,6 +441,7 @@ fn map_tungstenite_err(err: TungsteniteError) -> Error {
   }
 }
 
+#[cfg(feature = "direct_websocket")]
 fn validate_ws_subprotocol_handshake_response(
   requested_protocols: &[String],
   response_headers: &http::HeaderMap,

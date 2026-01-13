@@ -158,11 +158,6 @@ status = "xfail"
 reason = "QuickJS backend does not implement Document/Element.getElementsByTagNameNS yet."
 
 [[expectations]]
-id = "dom/queryselector_invalid_selector_domexception.window.js"
-status = "xfail"
-reason = "querySelector currently throws a non-DOMException error; should be a DOMException SyntaxError once DOMException is implemented."
-
-[[expectations]]
 id = "dom/traversal_basics.window.js"
 status = "xfail"
 reason = "NodeIterator/TreeWalker/NodeFilter not implemented yet"
