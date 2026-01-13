@@ -11121,20 +11121,20 @@ impl App {
           }
 
           let new_active = self.browser_state.active_tab_id();
-            if new_active != prev_active {
-              if let Some(new_active) = new_active {
-                self.viewport_cache_tab = None;
-                self.last_page_upload_at = None;
-                self.next_page_upload_redraw = None;
-                self.pointer_captured = false;
-                self.captured_button = fastrender::ui::PointerButton::None;
-                self.cursor_in_page = false;
-                self.hover_sync_pending = true;
-                self.pending_pointer_move = None;
-                self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
-                self.send_worker_msg(UiToWorker::RequestRepaint {
-                  tab_id: new_active,
-                  reason: RepaintReason::Explicit,
+          if new_active != prev_active {
+            if let Some(new_active) = new_active {
+              self.viewport_cache_tab = None;
+              self.last_page_upload_at = None;
+              self.next_page_upload_redraw = None;
+              self.pointer_captured = false;
+              self.captured_button = fastrender::ui::PointerButton::None;
+              self.cursor_in_page = false;
+              self.hover_sync_pending = true;
+              self.pending_pointer_move = None;
+              self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+              self.send_worker_msg(UiToWorker::RequestRepaint {
+                tab_id: new_active,
+                reason: RepaintReason::Explicit,
               });
             }
           }
@@ -11169,20 +11169,20 @@ impl App {
           }
 
           let new_active = self.browser_state.active_tab_id();
-            if new_active != prev_active {
-              if let Some(new_active) = new_active {
-                self.viewport_cache_tab = None;
-                self.last_page_upload_at = None;
-                self.next_page_upload_redraw = None;
-                self.pointer_captured = false;
-                self.captured_button = fastrender::ui::PointerButton::None;
-                self.cursor_in_page = false;
-                self.hover_sync_pending = true;
-                self.pending_pointer_move = None;
-                self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
-                self.send_worker_msg(UiToWorker::RequestRepaint {
-                  tab_id: new_active,
-                  reason: RepaintReason::Explicit,
+          if new_active != prev_active {
+            if let Some(new_active) = new_active {
+              self.viewport_cache_tab = None;
+              self.last_page_upload_at = None;
+              self.next_page_upload_redraw = None;
+              self.pointer_captured = false;
+              self.captured_button = fastrender::ui::PointerButton::None;
+              self.cursor_in_page = false;
+              self.hover_sync_pending = true;
+              self.pending_pointer_move = None;
+              self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+              self.send_worker_msg(UiToWorker::RequestRepaint {
+                tab_id: new_active,
+                reason: RepaintReason::Explicit,
               });
             }
           }
