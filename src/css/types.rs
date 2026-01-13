@@ -736,6 +736,15 @@ impl StyleSheet {
     collect_css_metadata_recursive(&self.rules, media_ctx, cache, true, true, out);
   }
 
+  /// Returns true when this stylesheet contains any `:has(...)` selector.
+  ///
+  /// This walks all rules (including nested rules inside `@media`, `@supports`, `@layer`, and style
+  /// rule nesting blocks), and recursively inspects selector arguments (`:is()`, `:not()`,
+  /// `:where()`, `:nth-child(... of ...)`, etc).
+  pub fn contains_has_selectors(&self) -> bool {
+    stylesheet_rules_contain_has_selectors(&self.rules)
+  }
+
   /// Collects all @counter-style rules that apply to the current media context.
   pub fn collect_counter_style_rules(
     &self,
@@ -1060,6 +1069,74 @@ impl StyleSheet {
 
     walk(&self.rules)
   }
+}
+
+fn stylesheet_rules_contain_has_selectors(rules: &[CssRule]) -> bool {
+  rules.iter().any(|rule| css_rule_contains_has_selectors(rule))
+}
+
+fn css_rule_contains_has_selectors(rule: &CssRule) -> bool {
+  match rule {
+    CssRule::Style(rule) => {
+      selector_list_contains_has_selectors(&rule.selectors)
+        || stylesheet_rules_contain_has_selectors(&rule.nested_rules)
+    }
+    CssRule::Media(rule) => stylesheet_rules_contain_has_selectors(&rule.rules),
+    CssRule::Container(rule) => stylesheet_rules_contain_has_selectors(&rule.rules),
+    CssRule::Supports(rule) => stylesheet_rules_contain_has_selectors(&rule.rules),
+    CssRule::Layer(rule) => stylesheet_rules_contain_has_selectors(&rule.rules),
+    CssRule::StartingStyle(rule) => stylesheet_rules_contain_has_selectors(&rule.rules),
+    CssRule::Scope(rule) => {
+      rule
+        .start
+        .as_ref()
+        .is_some_and(selector_list_contains_has_selectors)
+        || rule
+          .end
+          .as_ref()
+          .is_some_and(selector_list_contains_has_selectors)
+        || stylesheet_rules_contain_has_selectors(&rule.rules)
+    }
+    _ => false,
+  }
+}
+
+fn selector_list_contains_has_selectors(list: &SelectorList<FastRenderSelectorImpl>) -> bool {
+  list.slice().iter().any(selector_contains_has_selectors)
+}
+
+fn selector_contains_has_selectors(
+  selector: &selectors::parser::Selector<FastRenderSelectorImpl>,
+) -> bool {
+  use selectors::parser::Component;
+
+  let mut stack: Vec<&selectors::parser::Selector<FastRenderSelectorImpl>> = vec![selector];
+  while let Some(selector) = stack.pop() {
+    for component in selector.iter_raw_match_order() {
+      match component {
+        Component::Has(_) => return true,
+        Component::NonTSPseudoClass(pseudo) => match pseudo {
+          PseudoClass::Has(_) => return true,
+          PseudoClass::Host(Some(list)) => stack.extend(list.slice()),
+          PseudoClass::HostContext(list) => stack.extend(list.slice()),
+          PseudoClass::NthChild(_, _, Some(list)) | PseudoClass::NthLastChild(_, _, Some(list)) => {
+            stack.extend(list.slice());
+          }
+          _ => {}
+        },
+        Component::Negation(list) | Component::Is(list) | Component::Where(list) => {
+          stack.extend(list.slice());
+        }
+        Component::NthOf(data) => {
+          stack.extend(data.selectors());
+        }
+        Component::Slotted(inner) => stack.push(inner),
+        Component::Host(Some(inner)) => stack.push(inner),
+        _ => {}
+      }
+    }
+  }
+  false
 }
 
 /// Helper to recursively collect style rules from nested @media/@layer blocks

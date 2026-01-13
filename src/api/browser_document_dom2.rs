@@ -136,6 +136,11 @@ pub struct BrowserDocumentDom2 {
   /// paths that patch an existing box tree (e.g. for text node changes) do not currently update that
   /// projected state, so we must force a full pipeline run when it changes.
   form_state_dirty: bool,
+  /// Whether the author stylesheet contains any `:has(...)` selectors.
+  ///
+  /// `:has()` introduces reverse dependencies (ancestors/previous siblings) that our current dom2
+  /// dirty sets do not model, so incremental restyle reuse must be disabled when present.
+  author_stylesheet_has_has_selectors: bool,
   invalidation_counters: BrowserDocumentDom2InvalidationCounters,
   last_seen_dom_mutation_generation: u64,
   realtime_animations_enabled: bool,
@@ -205,6 +210,7 @@ impl BrowserDocumentDom2 {
       dirty_text_nodes: FxHashSet::default(),
       dirty_structure_nodes: FxHashSet::default(),
       form_state_dirty: false,
+      author_stylesheet_has_has_selectors: false,
       invalidation_counters: BrowserDocumentDom2InvalidationCounters::default(),
       last_seen_dom_mutation_generation,
       realtime_animations_enabled: false,
@@ -371,6 +377,7 @@ impl BrowserDocumentDom2 {
     self.last_dom_mapping = None;
     self.interaction_state = None;
     self.interaction_state_hash = interaction_state_fingerprint(None);
+    self.author_stylesheet_has_has_selectors = false;
     // Reset per-document CSP state. `reset_with_dom` replaces the entire document, so any previously
     // captured CSP headers/meta should not leak into the new DOM.
     self.renderer.document_csp = None;
@@ -386,6 +393,7 @@ impl BrowserDocumentDom2 {
   /// cascade/layout.
   pub fn reset_with_prepared(&mut self, prepared: PreparedDocument, options: RenderOptions) {
     self.current_script.reset();
+    let author_has_has = prepared.stylesheet().contains_has_selectors();
     let dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
     self.last_seen_dom_mutation_generation = dom.mutation_generation();
     let dom = Box::new(dom);
@@ -405,6 +413,7 @@ impl BrowserDocumentDom2 {
     self.form_state_dirty = false;
     self.animation_timeline_origin = None;
     self.last_painted_animation_clock = None;
+    self.author_stylesheet_has_has_selectors = author_has_has;
   }
 
   /// Parses HTML using the internal renderer and resets the document state.
@@ -2259,12 +2268,16 @@ impl BrowserDocumentDom2 {
     let toggles = self.renderer.resolve_runtime_toggles(&options);
     let incremental_restyle_enabled = toggles.truthy("FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE");
 
+    // `:has()` selectors introduce reverse dependencies (ancestors and previous siblings) that our
+    // current dom2 dirty sets do not model. Until we have selector dependency tracking, disable
+    // incremental restyle reuse whenever the author stylesheet contains `:has()`.
     // `reuse_map` uses renderer preorder ids as stable keys. Those ids are derived from a DOM
     // preorder traversal and are only stable across snapshots when the preorder → dom2-node mapping
     // is identical, including entries for synthetic nodes (e.g. the implicit ZWSP child for
     // `<wbr>`). When the mapping differs we must disable reuse to avoid reusing a previous
     // `StyledNode` subtree for the wrong DOM nodes.
     let can_attempt_incremental_restyle = incremental_restyle_enabled
+      && !self.author_stylesheet_has_has_selectors
       && prev_prepared.is_some()
       && prev_mapping.is_some()
       && (!self.dirty_style_nodes.is_empty() || !self.dirty_structure_nodes.is_empty())
@@ -2382,6 +2395,7 @@ impl BrowserDocumentDom2 {
     // `mutate_dom` call to see the old entries in `take_mutations()` and potentially force an
     // unnecessary full restyle.
     self.dom.clear_mutations();
+    self.author_stylesheet_has_has_selectors = prepared.stylesheet().contains_has_selectors();
     Ok((prepared, did_incremental_restyle))
   }
 
@@ -4614,6 +4628,64 @@ mod tests {
     let after_insert = doc.invalidation_counters();
     assert_eq!(after_insert.full_restyles, after_attr.full_restyles + 1);
     assert_eq!(after_insert.incremental_restyles, after_attr.incremental_restyles);
+
+    Ok(())
+  }
+
+  #[test]
+  fn has_selectors_disable_incremental_restyle_reuse() -> Result<()> {
+    use crate::debug::runtime::RuntimeToggles;
+    use std::collections::HashMap;
+
+    let renderer = renderer_for_tests();
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE".to_string(),
+      "1".to_string(),
+    )]));
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            #container { background: rgb(255, 255, 255); }
+            /* Reverse dependency: ancestor style depends on a descendant. */
+            #container:has(#child[data-state="on"]) { background: rgb(0, 0, 0); }
+          </style>
+        </head>
+        <body>
+          <div id="container">
+            <div id="child"></div>
+          </div>
+        </body>
+      </html>
+    "#;
+
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      RenderOptions::new()
+        .with_viewport(32, 32)
+        .with_runtime_toggles(toggles),
+    )?;
+
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+    assert_eq!(before.full_restyles, 1);
+    assert_eq!(before.incremental_restyles, 0);
+
+    let child = doc.dom().get_element_by_id("child").expect("#child");
+    let changed =
+      doc.mutate_dom(|dom| dom.set_attribute(child, "data-state", "on").expect("set attribute"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(
+      after.full_restyles,
+      before.full_restyles + 1,
+      "attribute mutation must trigger a full restyle when :has() is present"
+    );
+    assert_eq!(after.incremental_restyles, before.incremental_restyles);
 
     Ok(())
   }
