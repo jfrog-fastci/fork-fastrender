@@ -115,6 +115,10 @@ pub fn macos_use_sandbox_exec_from_env() -> bool {
 /// Conditionally wrap `cmd` under `sandbox-exec` when `FASTR_MACOS_USE_SANDBOX_EXEC` is enabled.
 #[cfg(target_os = "macos")]
 pub fn maybe_wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Result<()> {
+  if renderer_sandbox_disabled_via_env() {
+    log_sandbox_disabled_once();
+    return Ok(());
+  }
   if macos_use_sandbox_exec_from_env() {
     wrap_command_with_sandbox_exec(cmd, sbpl)?;
   }
@@ -407,6 +411,35 @@ mod tests {
     assert_eq!(args, vec![OsStr::new("--hello")]);
 
     match prev {
+      Some(value) => std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, value),
+      None => std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX),
+    }
+  }
+
+  #[test]
+  fn maybe_wrap_is_noop_when_renderer_sandbox_disabled_even_if_env_gate_enabled() {
+    let _guard = env_lock().lock().unwrap();
+    let prev_disable = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+    let prev_gate = std::env::var_os(ENV_MACOS_USE_SANDBOX_EXEC);
+    std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, "1");
+    std::env::set_var(ENV_MACOS_USE_SANDBOX_EXEC, "1");
+
+    let mut cmd = Command::new("/usr/bin/true");
+    cmd.arg("--hello");
+
+    // Even though the env gate is enabled, disabling the renderer sandbox should bypass wrapping.
+    // The SBPL is intentionally invalid; if wrapping happened we would get an error.
+    maybe_wrap_command_with_sandbox_exec(&mut cmd, "")
+      .expect("maybe_wrap should be a no-op when sandbox is disabled");
+    assert_eq!(cmd.get_program(), OsStr::new("/usr/bin/true"));
+    let args: Vec<_> = cmd.get_args().collect();
+    assert_eq!(args, vec![OsStr::new("--hello")]);
+
+    match prev_gate {
+      Some(value) => std::env::set_var(ENV_MACOS_USE_SANDBOX_EXEC, value),
+      None => std::env::remove_var(ENV_MACOS_USE_SANDBOX_EXEC),
+    }
+    match prev_disable {
       Some(value) => std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, value),
       None => std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX),
     }
