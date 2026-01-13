@@ -28,6 +28,11 @@ const INTERNAL_TYPES_KEY: &str = "__fastrender_data_transfer_types";
 const INTERNAL_ITEMS_CACHE_KEY: &str = "__fastrender_data_transfer_items";
 const INTERNAL_FILES_CACHE_KEY: &str = "__fastrender_data_transfer_files";
 const INTERNAL_ITEMS_OWNER_KEY: &str = "__fastrender_data_transfer_items_owner";
+// Host-only cache: a non-configurable, non-writable reference to the installed `DataTransfer.prototype`.
+//
+// This lets embedding code create `DataTransfer` instances without reading the (mutable) global
+// `DataTransfer` constructor (which hostile scripts can overwrite).
+const INTERNAL_PROTO_CACHE_KEY: &str = "__fastrender_data_transfer_proto";
 
 // Native slot indices for the `items` getter.
 const ITEMS_GETTER_PROTO_SLOT: usize = 0;
@@ -1037,5 +1042,85 @@ pub fn install_window_data_transfer_bindings(
   let ctor_key = alloc_key(&mut scope, "DataTransfer")?;
   scope.define_property(global, ctor_key, data_desc(Value::Object(ctor), true))?;
 
+  // Cache the prototype for host-only creation paths. Keep it non-configurable/non-writable so JS
+  // cannot replace it (it may still mutate the object itself, like `DataTransfer.prototype`).
+  let proto_cache_key = alloc_key(&mut scope, INTERNAL_PROTO_CACHE_KEY)?;
+  scope.define_property(
+    global,
+    proto_cache_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(proto),
+        writable: false,
+      },
+    },
+  )?;
+
   Ok(())
+}
+
+/// Creates a new `DataTransfer` instance and initializes `text/plain`.
+///
+/// This is intended for host integrations (drag-and-drop, clipboard-like flows) that need a
+/// `DataTransfer` payload without executing arbitrary JS (e.g. without calling overridden globals).
+pub fn create_data_transfer_with_text_plain(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut Heap,
+  text_plain: &str,
+) -> Result<GcObject, VmError> {
+  let mut scope = heap.scope();
+
+  let global = realm.global_object();
+  scope.push_root(Value::Object(global))?;
+
+  let proto_value = get_own_data_prop(&mut scope, global, INTERNAL_PROTO_CACHE_KEY)?;
+  let Value::Object(proto) = proto_value else {
+    return Err(VmError::InvariantViolation(
+      "DataTransfer bindings missing internal prototype cache (install_window_data_transfer_bindings must run first)",
+    ));
+  };
+
+  // Allocate the JS wrapper object and brand it so `DataTransfer.prototype` methods can
+  // brand-check it.
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: DATA_TRANSFER_HOST_TAG,
+      b: 0,
+    },
+  )?;
+
+  // Reasonable defaults for these mutable string attributes.
+  let drop_effect_s = scope.alloc_string("none")?;
+  scope.push_root(Value::String(drop_effect_s))?;
+  let drop_key = alloc_key(&mut scope, "dropEffect")?;
+  scope.define_property(
+    obj,
+    drop_key,
+    data_desc(Value::String(drop_effect_s), true),
+  )?;
+
+  let effect_allowed_s = scope.alloc_string("all")?;
+  scope.push_root(Value::String(effect_allowed_s))?;
+  let effect_key = alloc_key(&mut scope, "effectAllowed")?;
+  scope.define_property(
+    obj,
+    effect_key,
+    data_desc(Value::String(effect_allowed_s), true),
+  )?;
+
+  // Seed `text/plain`.
+  let type_s = scope.alloc_string("text/plain")?;
+  scope.push_root(Value::String(type_s))?;
+  let data_s = scope.alloc_string(text_plain)?;
+  scope.push_root(Value::String(data_s))?;
+  data_transfer_set_data_strings(vm, &mut scope, obj, type_s, data_s)?;
+
+  Ok(obj)
 }

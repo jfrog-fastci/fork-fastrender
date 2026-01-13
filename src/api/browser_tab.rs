@@ -6459,37 +6459,16 @@ impl BrowserTab {
 
       realm.reset_interrupt();
 
-      // Use JSON string escaping so the payload is safe to embed into a JS string literal.
-      let text_json =
-        serde_json::to_string(text).map_err(|err| Error::Other(err.to_string()))?;
-
-      // Minimal DataTransfer stub sufficient for common drag-and-drop handlers.
-      let script = format!(
-        r#"(function () {{
-  var dt = {{}};
-  dt._store = Object.create(null);
-  dt.setData = function (type, data) {{ this._store[String(type)] = String(data); }};
-  dt.getData = function (type) {{
-    type = String(type);
-    var v = this._store[type];
-    return v === undefined ? "" : v;
-  }};
-  dt.setData("text/plain", {text_json});
-  return dt;
-}})()"#
-      );
-
-      let value = realm
-        .exec_script(&script)
-        .map_err(|err| Error::Other(err.to_string()))?;
-      let vm_js::Value::Object(obj) = value else {
-        return Err(Error::Other(format!(
-          "create_data_transfer_for_text produced non-object value: {value:?}"
-        )));
-      };
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let obj = crate::js::window_data_transfer::create_data_transfer_with_text_plain(
+        vm,
+        realm_ref,
+        heap,
+        text,
+      )
+      .map_err(|err| Error::Other(err.to_string()))?;
 
       let root_id = {
-        let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
         let mut scope = heap.scope();
         scope
           .push_root(vm_js::Value::Object(obj))
