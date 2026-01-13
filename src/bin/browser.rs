@@ -9249,8 +9249,13 @@ impl App {
             // being forwarded to the page when winit batches the click + keypress before the next
             // `RedrawRequested`.
             if fastrender::ui::input_routing::should_clear_page_focus_on_pointer_press(
-              self.page_rect_points,
-              pos_points,
+              self.page_rect_points.map(|rect| {
+                fastrender::Rect::from_points(
+                  fastrender::Point::new(rect.min.x, rect.min.y),
+                  fastrender::Point::new(rect.max.x, rect.max.y),
+                )
+              }),
+              fastrender::Point::new(pos_points.x, pos_points.y),
             ) {
               self.page_has_focus = false;
             }

@@ -1,5 +1,4 @@
-#[cfg(feature = "browser_ui")]
-use egui::{Pos2, Rect};
+use crate::geometry::{Point, Rect};
 
 /// Returns whether a pointer press should clear page (rendered content) focus.
 ///
@@ -9,15 +8,14 @@ use egui::{Pos2, Rect};
 /// events to the page *even before* the next egui frame runs. Otherwise the first typed character
 /// after a click can be misrouted to the page when the click and keypress arrive in a single winit
 /// event batch.
-#[cfg(feature = "browser_ui")]
 pub fn should_clear_page_focus_on_pointer_press(
   page_rect_points: Option<Rect>,
-  pos_points: Pos2,
+  pos_points: Point,
 ) -> bool {
   let Some(rect) = page_rect_points else {
     return false;
   };
-  !rect.contains(pos_points)
+  !rect.contains_point(pos_points)
 }
 
 #[cfg(test)]
@@ -26,19 +24,19 @@ mod tests {
 
   #[test]
   fn click_outside_page_rect_clears_focus() {
-    let rect = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
+    let rect = Rect::from_points(Point::new(0.0, 0.0), Point::new(100.0, 100.0));
     assert!(should_clear_page_focus_on_pointer_press(
       Some(rect),
-      Pos2::new(150.0, 10.0)
+      Point::new(150.0, 10.0)
     ));
   }
 
   #[test]
   fn click_inside_page_rect_keeps_focus() {
-    let rect = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
+    let rect = Rect::from_points(Point::new(0.0, 0.0), Point::new(100.0, 100.0));
     assert!(!should_clear_page_focus_on_pointer_press(
       Some(rect),
-      Pos2::new(50.0, 50.0)
+      Point::new(50.0, 50.0)
     ));
   }
 
@@ -46,8 +44,7 @@ mod tests {
   fn unknown_page_rect_does_not_clear_focus() {
     assert!(!should_clear_page_focus_on_pointer_press(
       None,
-      Pos2::new(0.0, 0.0)
+      Point::new(0.0, 0.0)
     ));
   }
 }
-
