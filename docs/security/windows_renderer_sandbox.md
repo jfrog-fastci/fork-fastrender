@@ -7,6 +7,9 @@ Detailed Windows sandbox boundary doc (recommended reading): [`docs/windows_sand
 
 Canonical sandboxing overview (all platforms): [`docs/sandboxing.md`](../sandboxing.md).
 
+More detailed Windows sandbox boundary doc (threat model + invariants + code map):
+[`docs/windows_sandbox.md`](../windows_sandbox.md).
+
 Key Windows code entrypoints:
 
 - Windows sandbox spawn helper: [`src/sandbox/windows.rs`](../../src/sandbox/windows.rs)
