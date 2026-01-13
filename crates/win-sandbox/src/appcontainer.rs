@@ -4,7 +4,9 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE, ERROR_PROC_NOT_FOUND};
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows_sys::Win32::System::LibraryLoader::{
+  GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+};
 
 type HRESULT = i32;
 
@@ -74,9 +76,14 @@ impl UserenvAvailability {
 impl UserenvApis {
   unsafe fn load() -> Result<Self> {
     let dll_w = wide_null("dll_name", "userenv.dll")?;
-    let module = LoadLibraryW(dll_w.as_ptr());
+    // Load from `System32` explicitly to avoid DLL search order hijacking.
+    let module = LoadLibraryExW(
+      dll_w.as_ptr(),
+      std::ptr::null_mut(),
+      LOAD_LIBRARY_SEARCH_SYSTEM32,
+    );
     if module == 0 as HMODULE {
-      return Err(WinSandboxError::last("LoadLibraryW(userenv.dll)"));
+      return Err(WinSandboxError::last("LoadLibraryExW(userenv.dll)"));
     }
 
     let create_app_container_profile = match get_proc::<CreateAppContainerProfileFn>(
