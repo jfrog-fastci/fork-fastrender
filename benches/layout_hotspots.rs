@@ -1397,7 +1397,7 @@ fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
   // This benchmark tends to be heavier than the other "micro" hotspots. Keep its measurement
   // window smaller so `cargo bench --bench layout_hotspots` stays quick.
   group.warm_up_time(Duration::from_millis(100));
-  group.measurement_time(Duration::from_millis(400));
+  group.measurement_time(Duration::from_millis(800));
   // Use flat sampling so Criterion doesn't vary the iterations/sample across samples. That keeps
   // the per-iteration counter resets + measure fanout easier to interpret.
   group.sampling_mode(SamplingMode::Flat);
