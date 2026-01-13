@@ -8589,13 +8589,13 @@ impl GridFormattingContext {
       // derive track offsets from the nearest ancestor grid that does provide them, then map
       // local grid line numbers into the ancestor grid's line space.
       let maybe_axis_ctx = |axis_is_columns: bool| -> Option<SubgridAxisContext> {
-        let axis_is_physical_x = if axes_swapped {
-          !axis_is_columns
-        } else {
-          axis_is_columns
-        };
         let mut line_offset: i32 = 0;
-        let mut node_offset: f32 = 0.0;
+        // Translation from the ancestor grid into the origin subgrid's coordinate space.
+        //
+        // Accumulate both physical components and select the relevant one once we know which
+        // physical axis the ancestor grid uses for this CSS grid axis.
+        let mut node_offset_x: f32 = 0.0;
+        let mut node_offset_y: f32 = 0.0;
         let mut current = node_id;
         // Number of grid lines (tracks + 1) for the *origin* subgrid node in this axis. Used to
         // compute the spanned region so axis mirroring is performed relative to the subgrid rather
@@ -8633,7 +8633,7 @@ impl GridFormattingContext {
             // case, recover the resolved placement from the parent grid's detailed layout info so
             // we can still map local line numbers into the ancestor grid's line space.
             let (resolved_start, resolved_end) =
-              resolved_grid_item_range_from_parent_layout(taffy, current, axis, axes_swapped)?;
+              resolved_grid_item_range_from_parent_layout(taffy, current, axis)?;
             if start_line <= 0 {
               start_line = resolved_start as i32;
             }
@@ -8650,17 +8650,26 @@ impl GridFormattingContext {
           line_offset = line_offset.saturating_add(start_line.saturating_sub(1) as i32);
 
           let layout = taffy.layout(current).ok()?;
-          node_offset += if axis_is_physical_x {
-            layout.location.x
-          } else {
-            layout.location.y
-          };
+          node_offset_x += layout.location.x;
+          node_offset_y += layout.location.y;
 
           let parent = taffy.parent(current)?;
           current = parent;
 
           if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(current) {
             let container_style = taffy.style(current).ok()?;
+            // Map this CSS grid axis onto the ancestor grid's physical axis using the ancestor's
+            // `axes_swapped` value (which is derived from its effective writing-mode).
+            let axis_is_physical_x = if container_style.axes_swapped {
+              !axis_is_columns
+            } else {
+              axis_is_columns
+            };
+            let node_offset = if axis_is_physical_x {
+              node_offset_x
+            } else {
+              node_offset_y
+            };
             let ancestor_layout = taffy.layout(current).ok()?;
             let ancestor_bounds = Rect::from_xywh(
               ancestor_layout.location.x,
@@ -8811,7 +8820,6 @@ impl GridFormattingContext {
           taffy,
           node_id,
           CssGridAxis::Column,
-          axes_swapped,
         )
       })
       .flatten();
@@ -8821,7 +8829,6 @@ impl GridFormattingContext {
           taffy,
           node_id,
           CssGridAxis::Row,
-          axes_swapped,
         )
       })
       .flatten();
@@ -13439,9 +13446,9 @@ fn resolved_grid_item_range_from_parent_layout(
   taffy: &TaffyTree<*const BoxNode>,
   node_id: TaffyNodeId,
   axis: CssGridAxis,
-  axes_swapped: bool,
 ) -> Option<(u16, u16)> {
   let parent_id = taffy.parent(node_id)?;
+  let parent_axes_swapped = taffy.style(parent_id).ok()?.axes_swapped;
   let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(parent_id) else {
     return None;
   };
@@ -13450,7 +13457,10 @@ fn resolved_grid_item_range_from_parent_layout(
   let idx = (0..child_count).find(|&idx| taffy.get_child_id(parent_id, idx) == node_id)?;
   let item = info.items.get(idx)?;
 
-  let (start_line, end_line) = match (axis, axes_swapped) {
+  // `DetailedLayoutInfo` stores item placement in Taffy's physical axes (columns=x, rows=y).
+  // Map those back into CSS grid axes using *the parent grid's* `axes_swapped` value (which is
+  // derived from the parent's effective grid axis style).
+  let (start_line, end_line) = match (axis, parent_axes_swapped) {
     (CssGridAxis::Column, false) => (item.column_start, item.column_end),
     (CssGridAxis::Column, true) => (item.row_start, item.row_end),
     (CssGridAxis::Row, false) => (item.row_start, item.row_end),
@@ -13513,9 +13523,9 @@ impl CssGridAxis {
     self,
     taffy: &TaffyTree<*const BoxNode>,
     node_id: TaffyNodeId,
-    axes_swapped: bool,
   ) -> Option<u16> {
     if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
+      let axes_swapped = taffy.style(node_id).ok()?.axes_swapped;
       let track_count = match (self, axes_swapped) {
         // When axes are swapped, CSS columns map to physical Y (Taffy rows) and CSS rows map to
         // physical X (Taffy columns).
@@ -13554,17 +13564,16 @@ fn resolve_effective_grid_line_names_for_node_axis(
   taffy: &TaffyTree<*const BoxNode>,
   node_id: TaffyNodeId,
   axis: CssGridAxis,
-  axes_swapped: bool,
 ) -> Option<Vec<Vec<String>>> {
   fn taffy_expanded_line_names_for_axis(
     taffy: &TaffyTree<*const BoxNode>,
     node_id: TaffyNodeId,
     axis: CssGridAxis,
-    axes_swapped: bool,
   ) -> Option<Vec<Vec<String>>> {
     let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) else {
       return None;
     };
+    let axes_swapped = taffy.style(node_id).ok()?.axes_swapped;
     // Taffy stores named line data in physical axes (columns=x, rows=y). Map CSS axes to the
     // appropriate physical axis based on whether the grid axes are swapped by the writing mode.
     let names = match (axis, axes_swapped) {
@@ -13580,14 +13589,13 @@ fn resolve_effective_grid_line_names_for_node_axis(
     taffy: &TaffyTree<*const BoxNode>,
     node_id: TaffyNodeId,
     axis: CssGridAxis,
-    axes_swapped: bool,
     depth: usize,
   ) -> Option<Vec<Vec<String>>> {
     if depth >= MAX_SUBGRID_LINE_NAME_INHERITANCE_DEPTH {
       return None;
     }
 
-    if let Some(names) = taffy_expanded_line_names_for_axis(taffy, node_id, axis, axes_swapped) {
+    if let Some(names) = taffy_expanded_line_names_for_axis(taffy, node_id, axis) {
       return Some(names);
     }
 
@@ -13599,15 +13607,15 @@ fn resolve_effective_grid_line_names_for_node_axis(
 
     let parent_id = taffy.parent(node_id)?;
 
-    let parent_names = inner(taffy, parent_id, axis, axes_swapped, depth + 1)?;
+    let parent_names = inner(taffy, parent_id, axis, depth + 1)?;
 
     let parent_line_count = axis
-      .node_line_count(taffy, parent_id, axes_swapped)
+      .node_line_count(taffy, parent_id)
       .or_else(|| u16::try_from(parent_names.len()).ok())
       .filter(|count| *count > 0);
 
     let resolved_from_parent =
-      resolved_grid_item_range_from_parent_layout(taffy, node_id, axis, axes_swapped);
+      resolved_grid_item_range_from_parent_layout(taffy, node_id, axis);
     let (start_line, end_line) = match resolved_from_parent {
       Some((start_line, end_line)) => (start_line, end_line),
       None => {
@@ -13691,7 +13699,7 @@ fn resolve_effective_grid_line_names_for_node_axis(
     Some(result)
   }
 
-  inner(taffy, node_id, axis, axes_swapped, 0)
+  inner(taffy, node_id, axis, 0)
 }
 
 fn resolve_css_grid_line_to_u16(line: i32, line_count: Option<u16>) -> Option<u16> {
@@ -15388,26 +15396,24 @@ impl FormattingContext for GridFormattingContext {
               .iter()
               .any(|child| child.style.grid_row_raw.is_some());
 
-            let effective_column_line_names = needs_column_effective_names
-              .then(|| {
-                resolve_effective_grid_line_names_for_node_axis(
-                  &taffy,
-                  root_id,
-                  CssGridAxis::Column,
-                  axes_swapped,
-                )
-              })
-              .flatten();
-            let effective_row_line_names = needs_row_effective_names
-              .then(|| {
-                resolve_effective_grid_line_names_for_node_axis(
-                  &taffy,
-                  root_id,
-                  CssGridAxis::Row,
-                  axes_swapped,
-                )
-              })
-              .flatten();
+              let effective_column_line_names = needs_column_effective_names
+                .then(|| {
+                  resolve_effective_grid_line_names_for_node_axis(
+                    &taffy,
+                    root_id,
+                    CssGridAxis::Column,
+                  )
+                })
+                .flatten();
+              let effective_row_line_names = needs_row_effective_names
+                .then(|| {
+                  resolve_effective_grid_line_names_for_node_axis(
+                    &taffy,
+                    root_id,
+                    CssGridAxis::Row,
+                  )
+                })
+                .flatten();
 
             for child in &positioned_children {
               let mut pos = Point::ZERO;

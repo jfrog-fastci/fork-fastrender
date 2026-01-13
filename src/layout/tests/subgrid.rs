@@ -3686,3 +3686,155 @@ fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
   );
   assert_approx(b_fragment.bounds.width(), 42.0, "second column width");
 }
+
+#[test]
+fn abspos_named_lines_resolve_in_subgrid_with_writing_mode_mismatch() {
+  // Regression: absolute-positioned items are excluded from the Taffy tree, so their grid-based
+  // static positions must resolve named lines using reconstructed (inherited) line-name vectors.
+  // Ensure this still works when the subgrid overrides `writing-mode`.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.position = Position::Relative;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(50.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Auto];
+  parent_style.width = Some(Length::px(100.0));
+  parent_style.grid_column_line_names = vec![
+    vec!["one".into()],
+    vec!["two".into()],
+    vec!["three".into()],
+    vec!["four".into()],
+  ];
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.writing_mode = WritingMode::VerticalRl;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.grid_column_start = 2;
+  subgrid_style.grid_column_end = 4;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+  abs_style.grid_column_raw = Some("three / four".into());
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![abs_child],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let abs_fragment = fragment
+    .iter_fragments()
+    .find(|node| matches!(node.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .expect("absolute fragment present");
+
+  assert_approx(
+    abs_fragment.bounds.x(),
+    30.0,
+    "named line placement resolves to the second inherited track within the subgrid",
+  );
+}
+
+#[test]
+fn abspos_named_lines_resolve_through_nested_subgrids_with_writing_mode_mismatch() {
+  // Like the single-subgrid case above, but ensure line-name inheritance works across a subgrid
+  // chain (subgrid -> subgrid -> grid) in a vertical writing mode (axes swapped).
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.position = Position::Relative;
+  parent_style.writing_mode = WritingMode::VerticalRl;
+  // In vertical writing modes, CSS grid columns map to physical Y. Choose sizes that make the
+  // expected offsets easy to assert.
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(40.0)),
+  ];
+  // CSS grid rows map to physical X.
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(100.0))];
+  parent_style.width = Some(Length::px(100.0));
+  parent_style.height = Some(Length::px(90.0));
+  parent_style.grid_column_line_names = vec![
+    vec!["one".into()],
+    vec!["two".into()],
+    vec!["three".into()],
+    vec!["four".into()],
+  ];
+
+  let mut outer_subgrid_style = ComputedStyle::default();
+  outer_subgrid_style.display = Display::Grid;
+  outer_subgrid_style.writing_mode = WritingMode::HorizontalTb;
+  outer_subgrid_style.grid_column_subgrid = true;
+  outer_subgrid_style.grid_column_start = 2;
+  outer_subgrid_style.grid_column_end = 4;
+  outer_subgrid_style.grid_row_start = 1;
+  outer_subgrid_style.grid_row_end = 2;
+
+  let mut inner_subgrid_style = ComputedStyle::default();
+  inner_subgrid_style.display = Display::Grid;
+  inner_subgrid_style.writing_mode = WritingMode::HorizontalTb;
+  inner_subgrid_style.grid_column_subgrid = true;
+  inner_subgrid_style.grid_column_start = 1;
+  inner_subgrid_style.grid_column_end = 3;
+  inner_subgrid_style.grid_row_start = 1;
+  inner_subgrid_style.grid_row_end = 2;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+  // Outer subgrid spans parent lines 2-4, so "three / four" should select the second inherited
+  // track within the nested subgrid chain.
+  abs_style.grid_column_raw = Some("three / four".into());
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let inner_subgrid = BoxNode::new_block(
+    Arc::new(inner_subgrid_style),
+    FormattingContextType::Grid,
+    vec![abs_child],
+  );
+  let outer_subgrid = BoxNode::new_block(
+    Arc::new(outer_subgrid_style),
+    FormattingContextType::Grid,
+    vec![inner_subgrid],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![outer_subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let abs_fragment = fragment
+    .iter_fragments()
+    .find(|node| matches!(node.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .expect("absolute fragment present");
+
+  assert_approx(
+    abs_fragment.bounds.y(),
+    30.0,
+    "named line placement resolves to the second inherited column track on the physical Y axis",
+  );
+}
