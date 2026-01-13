@@ -2914,7 +2914,9 @@ fn collect_footnote_occurrences(
   if let FragmentContent::FootnoteAnchor { snapshot, policy } = &node.content {
     let call_pos = current_line_start.unwrap_or(abs_block);
     let defer_pos = match policy {
-      FootnotePolicy::Block => current_paragraph_start.unwrap_or(call_pos),
+      FootnotePolicy::Block => current_paragraph_start
+        .filter(|pos| *pos > EPSILON)
+        .unwrap_or(call_pos),
       _ => call_pos,
     };
     out.push(FootnoteOccurrence {
@@ -2975,7 +2977,7 @@ fn adjust_end_for_footnotes(
     let body_block = axis.block_size(&footnotes[0].snapshot.bounds).max(0.0);
     let footnote_overflows_page = body_block + separator_block > page_block + EPSILON;
     let footnote_consumes_page = body_block + separator_block >= page_block - EPSILON;
-    if (footnote_overflows_page || footnote_consumes_page) && footnotes[0].defer_pos <= EPSILON {
+    if (footnote_overflows_page || footnote_consumes_page) && footnotes[0].call_pos <= EPSILON {
       // If the call is already at the start of the page and the footnote would otherwise consume
       // the entire page, reserve some space so the footnote body can start and continue on
       // subsequent pages.

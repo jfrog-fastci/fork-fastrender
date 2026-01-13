@@ -6776,10 +6776,10 @@ fn footnote_policy_block_forces_break_before_paragraph() {
     <html>
       <head>
         <style>
-          @page { size: 200px 60px; margin: 0; }
+          @page { size: 200px 80px; margin: 0; }
           body { margin: 0; font-size: 10px; line-height: 9px; }
-          p { margin: 0; }
-          .header { height: 20px; }
+          p { margin: 0; widows: 1; orphans: 1; }
+          .header { height: 35px; }
           .note { float: footnote; footnote-policy: block; display: inline-block; height: 30px; }
         </style>
       </head>
@@ -6793,7 +6793,7 @@ fn footnote_policy_block_forces_break_before_paragraph() {
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
   let tree = renderer
-    .layout_document_for_media(&dom, 200, 60, MediaType::Print)
+    .layout_document_for_media(&dom, 200, 80, MediaType::Print)
     .unwrap();
   let page_roots = pages(&tree);
 
@@ -6831,10 +6831,10 @@ fn footnote_policy_line_forces_break_at_reference_line() {
     <html>
       <head>
         <style>
-          @page { size: 200px 60px; margin: 0; }
+          @page { size: 200px 80px; margin: 0; }
           body { margin: 0; font-size: 10px; line-height: 9px; }
-          p { margin: 0; }
-          .header { height: 20px; }
+          p { margin: 0; widows: 1; orphans: 1; }
+          .header { height: 35px; }
           .note { float: footnote; footnote-policy: line; display: inline-block; height: 30px; }
         </style>
       </head>
@@ -6848,7 +6848,7 @@ fn footnote_policy_line_forces_break_at_reference_line() {
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
   let tree = renderer
-    .layout_document_for_media(&dom, 200, 60, MediaType::Print)
+    .layout_document_for_media(&dom, 200, 80, MediaType::Print)
     .unwrap();
   let page_roots = pages(&tree);
 
