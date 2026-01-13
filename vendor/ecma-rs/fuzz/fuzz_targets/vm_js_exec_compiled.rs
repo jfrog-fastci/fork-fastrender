@@ -19,6 +19,15 @@ const VM_DEADLINE: Duration = Duration::from_millis(20);
 const HEAP_MAX_BYTES: usize = 16 * 1024 * 1024;
 const HEAP_GC_THRESHOLD: usize = 8 * 1024 * 1024;
 
+#[inline]
+fn string_from_str_best_effort(s: &str) -> String {
+  let mut out = String::new();
+  if out.try_reserve_exact(s.len()).is_ok() {
+    out.push_str(s);
+  }
+  out
+}
+
 fn panic_on_vm_bug(err: VmError) {
   // The fuzz harness should treat "engine bug" error variants as crashes so they are minimized and
   // preserved as libFuzzer findings.
@@ -46,7 +55,7 @@ fn js_string_literal(s: &str) -> String {
     .try_reserve_exact(2usize.saturating_add(6usize.saturating_mul(s.len())))
     .is_err()
   {
-    return "\"\"".to_string();
+    return string_from_str_best_effort("\"\"");
   }
   out.push('"');
   for c in s.chars() {
@@ -77,13 +86,17 @@ fn wrapper_script(input: &str) -> String {
   // NOTE: Potentially-terminating calls (`eval`, `Function`) are intentionally at the end because
   // budget termination is not JS-catchable and would prevent earlier builtins from being exercised.
   let quoted = js_string_literal(input);
+  if quoted.is_empty() {
+    // If we couldn't allocate the string literal, don't try to build the wrapper around it.
+    return string_from_str_best_effort("0;");
+  }
   let mut s = String::new();
   if s
     .try_reserve(256usize.saturating_add(quoted.len()))
     .is_err()
   {
     // Best-effort: if we can't allocate the wrapper, still return a valid script.
-    return "0;".to_string();
+    return string_from_str_best_effort("0;");
   }
   s.push_str("(function(){\n");
   s.push_str("  const src = ");

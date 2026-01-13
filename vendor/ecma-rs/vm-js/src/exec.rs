@@ -24307,6 +24307,7 @@ fn async_resume_from_frames(
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
                   return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
                     await_value: suspend.await_value,
                     frames: suspend.frames,
                   });
