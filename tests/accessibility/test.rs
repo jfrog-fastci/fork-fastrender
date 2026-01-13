@@ -82,6 +82,124 @@ fn snapshot_subset(root: &Value, ids: &[&str]) -> Value {
 }
 
 #[test]
+fn accessibility_section_form_landmark_role_requires_resolved_author_name() {
+  let html = r##"
+    <html><body>
+      <section id="sec-missing" aria-labelledby="missing">Section text</section>
+      <form id="form-missing" aria-labelledby="missing"><input /></form>
+
+      <span id="empty-label">   </span>
+      <section id="sec-empty" aria-labelledby="empty-label">Content</section>
+
+      <span id="label">Named</span>
+      <section id="sec-named" aria-labelledby="label">X</section>
+      <form id="form-named" aria-labelledby="label"><input /></form>
+    </body></html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let subset = snapshot_subset(
+    &tree,
+    &["sec-missing", "form-missing", "sec-empty", "sec-named", "form-named"],
+  );
+
+  assert_eq!(
+    subset,
+    json!({
+      "sec-missing": {
+        "role": "generic",
+        "name": "",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "section",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "form-missing": {
+        "role": "generic",
+        "name": "",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "form",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "sec-empty": {
+        "role": "generic",
+        "name": "",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "section",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        },
+        "relations": {
+          "labelled_by": ["empty-label"]
+        }
+      },
+      "sec-named": {
+        "role": "region",
+        "name": "Named",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "section",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        },
+        "relations": {
+          "labelled_by": ["label"]
+        }
+      },
+      "form-named": {
+        "role": "form",
+        "name": "Named",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "form",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        },
+        "relations": {
+          "labelled_by": ["label"]
+        }
+      }
+    })
+  );
+}
+
+#[test]
 fn accessibility_roles_and_states_basic() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"

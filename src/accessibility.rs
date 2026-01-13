@@ -1718,13 +1718,18 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
         {
           children
         } else {
-          // HTML-AAM: `section` and `form` only expose implicit landmark roles when they have an
-          // author-provided accessible name (not a name derived from their content).
-          if !role_from_attr
-            && matches!(role.as_deref(), Some("region") | Some("form"))
-            && !has_accessible_name_attr(&node.node)
-          {
-            role = None;
+          // HTML-AAM: `section` and `form` only expose implicit landmark roles when they have a
+          // non-empty author-provided accessible name (not a name derived from their content).
+          //
+          // In particular, `aria-labelledby` blocks name-from-content fallback; if it resolves to an
+          // empty string (missing IDs, referenced nodes hidden from AT, or whitespace-only text),
+          // then the element is considered unnamed and must not expose the implicit landmark role.
+          if !role_from_attr && matches!(role.as_deref(), Some("region") | Some("form")) {
+            let author_name = compute_name(node, ctx, /*allow_name_from_content=*/ false);
+            let named = author_name.as_ref().is_some_and(|s| !s.is_empty());
+            if !named {
+              role = None;
+            }
           }
 
           let role_description = compute_role_description(role.as_deref(), &node.node);
