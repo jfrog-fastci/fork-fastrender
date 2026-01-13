@@ -6607,6 +6607,37 @@ impl<'vm> HirEvaluator<'vm> {
           method,
           ..
         } => {
+          // `__proto__` in object literals is a special-cased data property definition that sets
+          // the newly created object's prototype instead of defining an own `"__proto__"` property.
+          //
+          // This only applies to non-computed keys and non-method definitions. Computed
+          // `["__proto__"]` keys always define a normal data property.
+          let is_proto_key = !*method
+            && match key {
+              hir_js::ObjectKey::Ident(name_id) => self.hir().names.resolve(*name_id) == Some("__proto__"),
+              hir_js::ObjectKey::String(s) => s == "__proto__",
+              _ => false,
+            };
+          if is_proto_key {
+            // Evaluate the RHS for side effects, then:
+            // - if it's an object or null, update the object's [[Prototype]]
+            // - otherwise, ignore it (no own "__proto__" property is created)
+            let proto_value = self.eval_expr(&mut member_scope, body, *value)?;
+            member_scope.push_root(proto_value)?;
+            match proto_value {
+              Value::Object(proto_obj) => {
+                member_scope
+                  .heap_mut()
+                  .object_set_prototype(obj_val, Some(proto_obj))?;
+              }
+              Value::Null => {
+                member_scope.heap_mut().object_set_prototype(obj_val, None)?;
+              }
+              _ => {}
+            }
+            continue;
+          }
+
           // Spec-ish name inference: for methods and anonymous function definitions used as property
           // values, apply `SetFunctionName` with the property key.
           //
@@ -6617,6 +6648,7 @@ impl<'vm> HirEvaluator<'vm> {
             let expr = self.get_expr(body, *value)?;
             match &expr.kind {
               hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
+              hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
               _ => false,
             }
           };
