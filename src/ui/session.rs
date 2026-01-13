@@ -1163,6 +1163,56 @@ mod tests {
   }
 
   #[test]
+  fn load_session_recovers_from_backup_when_primary_is_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let backup_path = session_backup_path(&path);
+
+    let session_v1 = BrowserSession::single("about:blank".to_string());
+    save_session_atomic(&path, &session_v1).unwrap();
+
+    // Second save should create/update the backup with the previous contents.
+    let session_v2 = BrowserSession::single("about:newtab".to_string());
+    save_session_atomic(&path, &session_v2).unwrap();
+
+    assert!(
+      backup_path.exists(),
+      "expected backup session file to exist at {}",
+      backup_path.display()
+    );
+
+    // Corrupt the primary session file (parse error), leaving a valid backup.
+    std::fs::write(&path, "not valid json").unwrap();
+
+    let recovered = load_session(&path).unwrap().unwrap();
+    assert_eq!(recovered, session_v1.sanitized());
+  }
+
+  #[test]
+  fn save_session_atomic_creates_and_updates_backup_on_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let backup_path = session_backup_path(&path);
+
+    let session_v1 = BrowserSession::single("about:blank".to_string());
+    save_session_atomic(&path, &session_v1).unwrap();
+
+    let session_v2 = BrowserSession::single("https://example.com/".to_string());
+    save_session_atomic(&path, &session_v2).unwrap();
+
+    let backup_data = std::fs::read_to_string(&backup_path).expect("read backup session");
+    let backup_session = parse_session_json(&backup_data).expect("parse backup session");
+    assert_eq!(backup_session, session_v1.sanitized());
+
+    let session_v3 = BrowserSession::single("about:newtab".to_string());
+    save_session_atomic(&path, &session_v3).unwrap();
+
+    let backup_data = std::fs::read_to_string(&backup_path).expect("read updated backup session");
+    let backup_session = parse_session_json(&backup_data).expect("parse updated backup session");
+    assert_eq!(backup_session, session_v2.sanitized());
+  }
+
+  #[test]
   fn session_roundtrips_appearance_settings() {
     use crate::ui::theme_parsing::BrowserTheme;
 
@@ -1367,6 +1417,15 @@ pub fn session_path() -> PathBuf {
   PathBuf::from(format!("./{SESSION_FILE_NAME}"))
 }
 
+fn session_backup_path(path: &Path) -> PathBuf {
+  let Some(file_name) = path.file_name() else {
+    return path.with_extension("bak");
+  };
+  let mut backup_name = file_name.to_os_string();
+  backup_name.push(".bak");
+  path.with_file_name(backup_name)
+}
+
 /// Attempt to read + parse a session file. Missing file is not an error.
 pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
   let data = match std::fs::read_to_string(path) {
@@ -1383,6 +1442,11 @@ pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
               backup.display()
             )
           })?;
+          eprintln!(
+            "failed to read session file {} ({err}); recovered from backup {}",
+            path.display(),
+            backup.display()
+          );
           return Ok(Some(session));
         }
         Err(backup_err) if backup_err.kind() == std::io::ErrorKind::NotFound => {
@@ -1401,30 +1465,37 @@ pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
 
   match parse_session_json(&data) {
     Ok(session) => Ok(Some(session)),
-    Err(err) => {
-      let backup = session_backup_path(path);
-      let backup_data = match std::fs::read_to_string(&backup) {
+    Err(primary_err) => {
+      let backup_path = session_backup_path(path);
+      let backup_data = match std::fs::read_to_string(&backup_path) {
         Ok(data) => data,
-        Err(backup_err) if backup_err.kind() == std::io::ErrorKind::NotFound => {
-          return Err(format!("failed to parse {}: {err}", path.display()))
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+          return Err(format!("failed to parse {}: {primary_err}", path.display()));
         }
-        Err(backup_err) => {
+        Err(err) => {
           return Err(format!(
-            "failed to parse {}: {err}; also failed to read backup {}: {backup_err}",
+            "failed to parse {}: {primary_err}; also failed to read backup {}: {err}",
             path.display(),
-            backup.display()
-          ))
+            backup_path.display()
+          ));
         }
       };
 
-      let session = parse_session_json(&backup_data).map_err(|backup_err| {
-        format!(
-          "failed to parse {}: {err}; also failed to parse backup {}: {backup_err}",
+      match parse_session_json(&backup_data) {
+        Ok(session) => {
+          eprintln!(
+            "session file {} was unreadable ({primary_err}); recovered from backup {}",
+            path.display(),
+            backup_path.display()
+          );
+          Ok(Some(session))
+        }
+        Err(backup_err) => Err(format!(
+          "failed to parse {}: {primary_err}; also failed to parse backup {}: {backup_err}",
           path.display(),
-          backup.display()
-        )
-      })?;
-      Ok(Some(session))
+          backup_path.display()
+        )),
+      }
     }
   }
 }
@@ -1439,6 +1510,18 @@ pub fn save_session_atomic(path: &Path, session: &BrowserSession) -> Result<(), 
     .unwrap_or_else(|| Path::new("."));
   std::fs::create_dir_all(parent_dir)
     .map_err(|err| format!("failed to create {}: {err}", parent_dir.display()))?;
+
+  // Best-effort safety net: preserve the existing session (when it parses successfully) as a backup
+  // before overwriting it.
+  //
+  // This allows recovery from disk corruption or manual edits that make `session.json` unreadable.
+  // We intentionally do *not* fail the save if updating the backup fails.
+  if let Ok(existing) = std::fs::read_to_string(path) {
+    if parse_session_json(&existing).is_ok() {
+      let backup_path = session_backup_path(path);
+      let _ = std::fs::write(&backup_path, existing);
+    }
+  }
 
   let data = serde_json::to_vec_pretty(&session).map_err(|err| err.to_string())?;
 
