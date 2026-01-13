@@ -239,7 +239,7 @@ rfd = { version = "0.12", optional = true }
 
 [[bin]]
 name = "macos_sandbox_probe"
-path = "src/bin/macos_sandbox_probe/probe.rs"
+path = "src/bin/macos_sandbox_probe.rs"
 test = false
 bench = false
 required-features = ["macos_sandbox_probe"]
