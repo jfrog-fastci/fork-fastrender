@@ -656,6 +656,24 @@ mod tests {
   }
 
   #[test]
+  fn interaction_hash_set_visited_links_changes_css_not_paint() {
+    let mut engine = InteractionEngine::new();
+
+    let css_before = engine.interaction_state().interaction_css_hash();
+    let paint_before = engine.interaction_state().interaction_paint_hash();
+
+    let mut visited = rustc_hash::FxHashSet::default();
+    visited.insert(42);
+    engine.set_visited_links(visited);
+
+    let css_after = engine.interaction_state().interaction_css_hash();
+    let paint_after = engine.interaction_state().interaction_paint_hash();
+
+    assert_ne!(css_before, css_after, "visited links must affect css hash");
+    assert_eq!(paint_before, paint_after, "visited links must not affect paint hash");
+  }
+
+  #[test]
   fn style_for_styled_node_id_ignores_pseudo_boxes() {
     let styled_node_id = 42;
 
