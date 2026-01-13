@@ -826,6 +826,37 @@ fn p3_load_event_waits_for_stylesheets_and_async_external_script_execution() -> 
 }
 
 #[test]
+fn p3_load_event_waits_for_async_module_script_execution() -> Result<()> {
+  let js_options = JsExecutionOptions {
+    supports_module_scripts: true,
+    ..Default::default()
+  };
+  let mut h = Harness::new("https://example.invalid/p3_load_module.html", js_options)?;
+
+  h.register_html_source(
+    r#"<!doctype html><html><head>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => console.log("dcl"));
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+      <script type="module" async src="https://example.invalid/amod.js"></script>
+    </head><body></body></html>"#,
+  );
+
+  // Register the async module script only after navigation begins so DOMContentLoaded can run
+  // first.
+  h.navigate()?;
+  h.register_script_source("https://example.invalid/amod.js", r#"console.log("module");"#);
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["dcl".to_string(), "module".to_string(), "load".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn p3_unhandledrejection_event_fires_for_unhandled_promise_rejections() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p3_unhandled.html", js_options)?;
