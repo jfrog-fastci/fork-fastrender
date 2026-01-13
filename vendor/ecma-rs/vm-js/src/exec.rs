@@ -7065,9 +7065,10 @@ impl<'a> Evaluator<'a> {
     label_set: &[String],
   ) -> Result<Completion, VmError> {
     // ECMA-262 `ForIn/OfHeadEvaluation`:
-    // If the loop uses a `ForDeclaration` with lexical bindings (`let` / `const`), create a TDZ
-    // lexical environment for the bound names while evaluating the RHS. Closures created during
-    // RHS evaluation must capture this TDZ environment (not the loop body envs).
+    // If the loop uses a `ForDeclaration` with lexical bindings (`let` / `const` / `using` /
+    // `await using`), create a TDZ lexical environment for the bound names while evaluating the
+    // RHS. Closures created during RHS evaluation must capture this TDZ environment (not the loop
+    // body envs).
     let rhs_value = self.eval_for_in_of_rhs_with_tdz_env(scope, &stmt.lhs, &stmt.rhs)?;
     // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
     // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw).
@@ -7087,8 +7088,8 @@ impl<'a> Evaluator<'a> {
     iter_scope.push_root(Value::Undefined)?;
     let mut v = Value::Undefined;
 
-    // If the loop uses a lexical declaration (`let`/`const`), we emulate per-iteration lexical
-    // environments by creating a fresh env record per iteration.
+    // If the loop uses a lexical declaration (`let`/`const`/`using`/`await using`), we emulate
+    // per-iteration lexical environments by creating a fresh env record per iteration.
     let outer_lex = self.env.lexical_env;
 
     loop {
@@ -7215,9 +7216,10 @@ impl<'a> Evaluator<'a> {
     }
 
     // ECMA-262 `ForIn/OfHeadEvaluation`:
-    // If the loop uses a `ForDeclaration` with lexical bindings (`let` / `const`), create a TDZ
-    // lexical environment for the bound names while evaluating the RHS. Closures created during
-    // RHS evaluation must capture this TDZ environment (not the loop body envs).
+    // If the loop uses a `ForDeclaration` with lexical bindings (`let` / `const` / `using` /
+    // `await using`), create a TDZ lexical environment for the bound names while evaluating the
+    // RHS. Closures created during RHS evaluation must capture this TDZ environment (not the loop
+    // body envs).
     let iterable = self.eval_for_in_of_rhs_with_tdz_env(scope, &stmt.lhs, &stmt.rhs)?;
 
     // Root the iterable + iterator record while evaluating the loop body, which may allocate and
@@ -7239,8 +7241,8 @@ impl<'a> Evaluator<'a> {
     iter_scope.push_root(Value::Undefined)?;
     let mut v = Value::Undefined;
 
-    // If the loop uses a lexical declaration (`let`/`const`), we emulate per-iteration lexical
-    // environments by creating a fresh env record per iteration.
+    // If the loop uses a lexical declaration (`let`/`const`/`using`/`await using`), we emulate
+    // per-iteration lexical environments by creating a fresh env record per iteration.
     let outer_lex = self.env.lexical_env;
 
     loop {
@@ -7359,7 +7361,10 @@ impl<'a> Evaluator<'a> {
     let ForInOfLhs::Decl((mode, pat_decl)) = lhs else {
       return self.eval_expr(scope, rhs);
     };
-    if !matches!(*mode, VarDeclMode::Let | VarDeclMode::Const) {
+    if !matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
       return self.eval_expr(scope, rhs);
     }
 
