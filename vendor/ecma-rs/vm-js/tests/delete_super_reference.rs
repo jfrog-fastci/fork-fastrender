@@ -24,48 +24,38 @@ fn assert_value_is_number(value: Value, expected: f64) {
 }
 
 #[test]
-fn delete_super_property_instance_method_throws_reference_error() -> Result<(), VmError> {
+fn delete_super_property_base_instance_method_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
-    class B { m(){} }
-    class D extends B {
+    class C {
       del() {
         try { delete super.m; return "no"; }
         catch (e) { return e.name; }
       }
     }
-    new D().del()
+    new C().del()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(VmError::Unimplemented("class inheritance")) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
 
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }
 
 #[test]
-fn delete_super_property_static_method_throws_reference_error() -> Result<(), VmError> {
+fn delete_super_property_base_static_method_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
-    class B { static m(){} }
-    class D extends B {
+    class C {
       static del() {
         try { delete super.m; return "no"; }
         catch (e) { return e.name; }
       }
     }
-    D.del()
+    C.del()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(VmError::Unimplemented("class inheritance")) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
 
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
@@ -74,22 +64,17 @@ fn delete_super_property_static_method_throws_reference_error() -> Result<(), Vm
 #[test]
 fn delete_super_property_computed_member_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
-    class B { m(){} }
-    class D extends B {
+    class C {
       del() {
         try { delete super["m"]; return "no"; }
         catch (e) { return e.name; }
       }
     }
-    new D().del()
+    new C().del()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(VmError::Unimplemented("class inheritance")) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
 
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
@@ -98,23 +83,18 @@ fn delete_super_property_computed_member_throws_reference_error() -> Result<(), 
 #[test]
 fn delete_super_property_computed_member_evaluates_key_expression() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
-    class B { m(){} }
-    class D extends B {
+    class C {
       del() {
         let side = 0;
         try { delete super[(side = 1, "m")]; return "no"; }
         catch (e) { return side; }
       }
     }
-    new D().del()
+    new C().del()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(VmError::Unimplemented("class inheritance")) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
 
   assert_value_is_number(value, 1.0);
   Ok(())
@@ -123,10 +103,9 @@ fn delete_super_property_computed_member_evaluates_key_expression() -> Result<()
 #[test]
 fn delete_super_property_computed_member_propagates_to_property_key_errors() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
-    class B { m(){} }
-    class D extends B {
+    class C {
       del() {
         try {
           delete super[{ toString() { throw "x"; } }];
@@ -136,13 +115,9 @@ fn delete_super_property_computed_member_propagates_to_property_key_errors() -> 
         }
       }
     }
-    new D().del()
+    new C().del()
     "#,
-  ) {
-    Ok(v) => v,
-    Err(VmError::Unimplemented("class inheritance")) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
 
   assert_value_is_utf8(&rt, value, "x");
   Ok(())
@@ -152,11 +127,10 @@ fn delete_super_property_computed_member_propagates_to_property_key_errors() -> 
 fn delete_super_property_computed_member_with_await_in_key_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  let value = match rt.exec_script(
+  let value = rt.exec_script(
     r#"
       var out = "";
-      class B { m(){} }
-      class D extends B {
+      class C {
         async del() {
           let side = 0;
           try {
@@ -167,14 +141,10 @@ fn delete_super_property_computed_member_with_await_in_key_throws_reference_erro
           }
         }
       }
-      new D().del().then(function (v) { out = v; });
+      new C().del().then(function (v) { out = v; });
       out
     "#,
-  ) {
-    Ok(v) => v,
-    Err(VmError::Unimplemented("class inheritance")) => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
 
   // Promise not resolved yet.
   assert_value_is_utf8(&rt, value, "");
@@ -183,5 +153,61 @@ fn delete_super_property_computed_member_with_await_in_key_throws_reference_erro
 
   let value = rt.exec_script("out")?;
   assert_value_is_utf8(&rt, value, "1:ReferenceError");
+  Ok(())
+}
+
+fn exec_or_skip_class_inheritance(rt: &mut JsRuntime, script: &str) -> Result<Option<Value>, VmError> {
+  match rt.exec_script(script) {
+    Ok(v) => Ok(Some(v)),
+    Err(VmError::Unimplemented(msg)) if msg.contains("class inheritance") => Ok(None),
+    Err(err) => Err(err),
+  }
+}
+
+#[test]
+fn delete_super_property_derived_instance_method_throws_reference_error() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_or_skip_class_inheritance(
+    &mut rt,
+    r#"
+      class B { m(){} }
+      class D extends B {
+        del() {
+          try { delete super.m; return "no"; }
+          catch (e) { return e.name; }
+        }
+      }
+      new D().del()
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn delete_super_property_derived_static_method_throws_reference_error() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_or_skip_class_inheritance(
+    &mut rt,
+    r#"
+      class B { static m(){} }
+      class D extends B {
+        static del() {
+          try { delete super.m; return "no"; }
+          catch (e) { return e.name; }
+        }
+      }
+      D.del()
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }
