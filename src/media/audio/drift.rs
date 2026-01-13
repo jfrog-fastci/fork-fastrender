@@ -12,6 +12,8 @@
 //! controller.playback_rate()`. The controller is designed for the real-time audio callback path:
 //! it is allocation-free and uses bounded, slew-rate limited adjustments.
 
+#[cfg(test)]
+use std::time::Duration;
 use super::queue::PcmF32QueueConsumer;
 
 #[derive(Debug, Clone, Copy)]
