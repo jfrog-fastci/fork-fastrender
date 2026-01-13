@@ -796,9 +796,10 @@ pub fn discover_image_prefetch_requests(
             break;
           }
           image_elements += 1;
+          let crossorigin = parse_crossorigin_attr(node);
           push_unique_request(
             ctx,
-            CrossOriginAttribute::None,
+            crossorigin,
             &mut seen_requests,
             &mut requests,
             poster,
@@ -1261,6 +1262,47 @@ mod tests {
     assert_eq!(
       out.requests[1].crossorigin,
       CrossOriginAttribute::UseCredentials
+    );
+  }
+
+  #[test]
+  fn discovers_crossorigin_attribute_for_video_poster() {
+    let html = r#"
+      <video poster="poster.png" crossorigin></video>
+      <video poster="poster.png" crossorigin="use-credentials"></video>
+      <video poster="poster.png"></video>
+    "#;
+    let dom = parse_html(html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_requests(
+      &dom,
+      ctx,
+      ImagePrefetchLimits {
+        max_image_elements: 10,
+        max_urls_per_element: 1,
+      },
+    );
+
+    assert_eq!(out.image_elements, 3);
+    assert!(!out.limited);
+    assert_eq!(
+      out.requests,
+      vec![
+        ImagePrefetchRequest {
+          url: "https://example.com/poster.png".to_string(),
+          crossorigin: CrossOriginAttribute::Anonymous,
+        },
+        ImagePrefetchRequest {
+          url: "https://example.com/poster.png".to_string(),
+          crossorigin: CrossOriginAttribute::UseCredentials,
+        },
+        ImagePrefetchRequest {
+          url: "https://example.com/poster.png".to_string(),
+          crossorigin: CrossOriginAttribute::None,
+        },
+      ]
     );
   }
 
