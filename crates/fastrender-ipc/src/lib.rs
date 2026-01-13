@@ -1743,19 +1743,20 @@ impl HoverRouter {
     self.hit_frame
   }
 
-  /// Update the router with a pointer move in the root coordinate space.
+  /// Notify the router that the hit testing tree changed (e.g. iframe geometry/subframe list was
+  /// updated) while the pointer is stationary.
   ///
-  /// Returns:
-  /// - a list of `(frame_id, x_css, y_css)` targets that should receive the pointer move (root +
-  ///   deepest hit-tested frame), and
-  /// - an optional effective [`HoverState`] to emit to the UI (when the chosen state changed).
-  pub fn on_pointer_move(
+  /// This recomputes the deepest frame under the last known pointer position and returns:
+  /// - pointer-move targets (root + deepest frame) that should receive a synthetic `PointerMove`,
+  /// - and an optional effective hover state to emit to UI (currently a conservative reset to
+  ///   `Default` when the hit-tested frame changed).
+  pub fn on_frame_tree_changed(
     &mut self,
     hit_tester: &FrameHitTester,
-    x: f32,
-    y: f32,
   ) -> (Vec<(FrameId, f32, f32)>, Option<HoverState>) {
-    self.pointer_root = Some((x, y));
+    let Some((x, y)) = self.pointer_root else {
+      return (Vec::new(), None);
+    };
 
     let hit = hit_tester.hit_test_with_coords(x, y);
     let prev_hit_frame = self.hit_frame;
@@ -1766,9 +1767,6 @@ impl HoverRouter {
       targets.push((hit.frame_id, hit.x, hit.y));
     }
 
-    // When the hit-tested frame changes (e.g. moving into/out of an OOPIF), any cached hover state
-    // for the newly hit frame may be stale (from a prior pointer position). Emit a conservative
-    // reset to the default cursor and wait for a fresh `HoverChanged` from the new deepest frame.
     let emit = if self.hit_frame != prev_hit_frame {
       let effective = HoverState::default();
       if effective != self.last_effective {
@@ -1782,6 +1780,22 @@ impl HoverRouter {
     };
 
     (targets, emit)
+  }
+
+  /// Update the router with a pointer move in the root coordinate space.
+  ///
+  /// Returns:
+  /// - a list of `(frame_id, x_css, y_css)` targets that should receive the pointer move (root +
+  ///   deepest hit-tested frame), and
+  /// - an optional effective [`HoverState`] to emit to the UI (when the chosen state changed).
+  pub fn on_pointer_move(
+    &mut self,
+    hit_tester: &FrameHitTester,
+    x: f32,
+    y: f32,
+  ) -> (Vec<(FrameId, f32, f32)>, Option<HoverState>) {
+    self.pointer_root = Some((x, y));
+    self.on_frame_tree_changed(hit_tester)
   }
 
   /// Update the router with a hover change reported by a renderer for `frame_id`.
@@ -2692,6 +2706,51 @@ mod hover_router_tests {
       .on_hover_changed(root, 11, None, CursorKind::Text)
       .expect("expected newer hover update to be forwarded");
     assert_eq!(second.cursor, CursorKind::Text);
+  }
+
+  #[test]
+  fn frame_tree_update_recomputes_hit_frame_for_stationary_pointer() {
+    let root = FrameId(1);
+    let child = FrameId(2);
+
+    let mut tester = FrameHitTester::new(root);
+    tester.set_frame_size(root, 100, 100);
+
+    let mut router = HoverRouter::new(root);
+    let _ = router.on_pointer_move(&tester, 1.0, 1.0);
+
+    // Root reports a non-default hover state (e.g. hovering a link).
+    let _ = router
+      .on_hover_changed(root, 1, None, CursorKind::Pointer)
+      .expect("expected root hover update");
+
+    // Now an iframe appears under the stationary pointer position.
+    tester.set_frame_size(child, 10, 10);
+    tester.set_subframes(
+      root,
+      vec![SubframeInfo {
+        child,
+        src: None,
+        transform: AffineTransform::IDENTITY,
+        clip_stack: vec![],
+        z_index: 0,
+        hit_testable: true,
+        referrer_policy: None,
+        sandbox_flags: SandboxFlags::NONE,
+        opaque_origin: false,
+        effects: SubframeEffects::default(),
+      }],
+    );
+
+    let (targets, emit) = router.on_frame_tree_changed(&tester);
+    assert_eq!(router.hit_frame(), child);
+    assert!(
+      targets.iter().any(|(id, _, _)| *id == child),
+      "expected updated targets to include the newly hit child frame"
+    );
+    let emitted = emit.expect("expected conservative reset on hit frame change");
+    assert_eq!(emitted.cursor, CursorKind::Default);
+    assert_eq!(emitted.hovered_url, None);
   }
 }
 
