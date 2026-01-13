@@ -49228,14 +49228,19 @@ mod tests {
         const b = document.getElementById('b');\n\
         return host1.firstChild === null\n\
           && host1.lastChild === null\n\
+          && host1.childNodes.length === 0\n\
           && host2.firstChild === a\n\
           && host2.lastChild === b\n\
+          && host2.childNodes.length === 2\n\
+          && host2.childNodes[0] === a\n\
+          && host2.childNodes[1] === b\n\
           && a.previousSibling === null\n\
           && a.nextSibling === b\n\
           && b.previousSibling === a\n\
           && b.nextSibling === null\n\
           && host3.firstChild === null\n\
-          && host3.lastChild === null;\n\
+          && host3.lastChild === null\n\
+          && host3.childNodes.length === 0;\n\
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
@@ -49266,14 +49271,19 @@ mod tests {
         const b = document.getElementById('b');\n\
         return host1.firstChild === null\n\
           && host1.lastChild === null\n\
+          && host1.childNodes.length === 0\n\
           && host2.firstChild === a\n\
           && host2.lastChild === b\n\
+          && host2.childNodes.length === 2\n\
+          && host2.childNodes[0] === a\n\
+          && host2.childNodes[1] === b\n\
           && a.previousSibling === null\n\
           && a.nextSibling === b\n\
           && b.previousSibling === a\n\
           && b.nextSibling === null\n\
           && host3.firstChild === null\n\
-          && host3.lastChild === null;\n\
+          && host3.lastChild === null\n\
+          && host3.childNodes.length === 0;\n\
       })()",
     )?;
 
