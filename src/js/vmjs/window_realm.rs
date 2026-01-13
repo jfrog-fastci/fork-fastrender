@@ -37309,104 +37309,49 @@ fn init_window_globals(
 
     // ShadowRoot core attributes.
     //
-    // In the WebIDL backend, these are expected to be installed by generated bindings.
-    if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
-      // ShadowRoot.host
-      let shadow_root_host_get_call_id = vm.register_native_call(shadow_root_host_get_native)?;
-      let shadow_root_host_get_name = scope.alloc_string("get host")?;
-      scope.push_root(Value::String(shadow_root_host_get_name))?;
-      let shadow_root_host_get_func = scope.alloc_native_function(
-        shadow_root_host_get_call_id,
-        None,
-        shadow_root_host_get_name,
-        0,
-      )?;
-      scope.heap_mut().object_set_prototype(
-        shadow_root_host_get_func,
-        Some(realm.intrinsics().function_prototype()),
-      )?;
-      scope.push_root(Value::Object(shadow_root_host_get_func))?;
-      let host_key = alloc_key(&mut scope, "host")?;
-      scope.define_property(
-        shadow_root_proto,
-        host_key,
-        idl_attribute_desc(Value::Object(shadow_root_host_get_func), Value::Undefined),
-      )?;
+    // In the WebIDL backend these should come from generated bindings. However, the current
+    // WebIDL installer set does not yet include ShadowRoot members, so install the native getters
+    // opportunistically when they are missing. This keeps ShadowRoot observable/usable in both
+    // backends while remaining non-clobbering for future generated bindings.
+    let mut install_shadow_root_attr_if_missing = |prop: &str,
+                                                   native: vm_js::NativeCall|
+     -> Result<(), VmError> {
+      let key = alloc_key(&mut scope, prop)?;
+      if scope
+        .heap()
+        .object_get_own_property(shadow_root_proto, &key)?
+        .is_some()
+      {
+        return Ok(());
+      }
 
-      // ShadowRoot.mode
-      let shadow_root_mode_get_call_id = vm.register_native_call(shadow_root_mode_get_native)?;
-      let shadow_root_mode_get_name = scope.alloc_string("get mode")?;
-      scope.push_root(Value::String(shadow_root_mode_get_name))?;
-      let shadow_root_mode_get_func = scope.alloc_native_function(
-        shadow_root_mode_get_call_id,
-        None,
-        shadow_root_mode_get_name,
-        0,
-      )?;
+      let call_id = vm.register_native_call(native)?;
+      let get_name = scope.alloc_string(&format!("get {prop}"))?;
+      scope.push_root(Value::String(get_name))?;
+      let get_func = scope.alloc_native_function(call_id, None, get_name, 0)?;
       scope.heap_mut().object_set_prototype(
-        shadow_root_mode_get_func,
+        get_func,
         Some(realm.intrinsics().function_prototype()),
       )?;
-      scope.push_root(Value::Object(shadow_root_mode_get_func))?;
-      let mode_key = alloc_key(&mut scope, "mode")?;
+      scope.push_root(Value::Object(get_func))?;
       scope.define_property(
         shadow_root_proto,
-        mode_key,
-        idl_attribute_desc(Value::Object(shadow_root_mode_get_func), Value::Undefined),
+        key,
+        idl_attribute_desc(Value::Object(get_func), Value::Undefined),
       )?;
+      Ok(())
+    };
 
-      // ShadowRoot.delegatesFocus
-      let shadow_root_delegates_focus_get_call_id =
-        vm.register_native_call(shadow_root_delegates_focus_get_native)?;
-      let shadow_root_delegates_focus_get_name = scope.alloc_string("get delegatesFocus")?;
-      scope.push_root(Value::String(shadow_root_delegates_focus_get_name))?;
-      let shadow_root_delegates_focus_get_func = scope.alloc_native_function(
-        shadow_root_delegates_focus_get_call_id,
-        None,
-        shadow_root_delegates_focus_get_name,
-        0,
-      )?;
-      scope.heap_mut().object_set_prototype(
-        shadow_root_delegates_focus_get_func,
-        Some(realm.intrinsics().function_prototype()),
-      )?;
-      scope.push_root(Value::Object(shadow_root_delegates_focus_get_func))?;
-      let delegates_focus_key = alloc_key(&mut scope, "delegatesFocus")?;
-      scope.define_property(
-        shadow_root_proto,
-        delegates_focus_key,
-        idl_attribute_desc(
-          Value::Object(shadow_root_delegates_focus_get_func),
-          Value::Undefined,
-        ),
-      )?;
-
-      // ShadowRoot.slotAssignment
-      let shadow_root_slot_assignment_get_call_id =
-        vm.register_native_call(shadow_root_slot_assignment_get_native)?;
-      let shadow_root_slot_assignment_get_name = scope.alloc_string("get slotAssignment")?;
-      scope.push_root(Value::String(shadow_root_slot_assignment_get_name))?;
-      let shadow_root_slot_assignment_get_func = scope.alloc_native_function(
-        shadow_root_slot_assignment_get_call_id,
-        None,
-        shadow_root_slot_assignment_get_name,
-        0,
-      )?;
-      scope.heap_mut().object_set_prototype(
-        shadow_root_slot_assignment_get_func,
-        Some(realm.intrinsics().function_prototype()),
-      )?;
-      scope.push_root(Value::Object(shadow_root_slot_assignment_get_func))?;
-      let slot_assignment_key = alloc_key(&mut scope, "slotAssignment")?;
-      scope.define_property(
-        shadow_root_proto,
-        slot_assignment_key,
-        idl_attribute_desc(
-          Value::Object(shadow_root_slot_assignment_get_func),
-          Value::Undefined,
-        ),
-      )?;
-    }
+    install_shadow_root_attr_if_missing("host", shadow_root_host_get_native)?;
+    install_shadow_root_attr_if_missing("mode", shadow_root_mode_get_native)?;
+    install_shadow_root_attr_if_missing(
+      "delegatesFocus",
+      shadow_root_delegates_focus_get_native,
+    )?;
+    install_shadow_root_attr_if_missing(
+      "slotAssignment",
+      shadow_root_slot_assignment_get_native,
+    )?;
 
     // Slottable.assignedSlot (Element + Text).
     let assigned_slot_get_call_id = vm.register_native_call(slottable_assigned_slot_get_native)?;
