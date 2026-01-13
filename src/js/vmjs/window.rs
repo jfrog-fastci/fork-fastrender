@@ -1821,6 +1821,52 @@ mod tests {
   }
 
   #[test]
+  fn window_realm_webidl_dom_backend_does_not_clobber_element_child_accessors() -> Result<()> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+
+    let mut exec = |source: &str| -> Result<Value> {
+      match realm.exec_script(source) {
+        Ok(value) => Ok(value),
+        Err(err) => Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
+      }
+    };
+
+    exec("document.body.innerHTML = '<div id=\"p\"><span></span><b></b></div>'")?;
+
+    assert_eq!(
+      exec("document.getElementById('p').firstElementChild.tagName === 'SPAN'")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      exec("document.getElementById('p').lastElementChild.tagName === 'B'")?,
+      Value::Bool(true)
+    );
+    assert_eq!(exec("document.getElementById('p').childElementCount")?, Value::Number(2.0));
+
+    // The WebIDL-generated installer defines these accessors as enumerable, while the legacy
+    // handwritten WindowRealm shim uses `enumerable: false`. If WindowRealm overwrites the
+    // WebIDL-defined property, these assertions will fail (guarding migration correctness).
+    assert_eq!(
+      exec("Object.getOwnPropertyDescriptor(Element.prototype,'firstElementChild').enumerable")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      exec("Object.getOwnPropertyDescriptor(Element.prototype,'lastElementChild').enumerable")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      exec("Object.getOwnPropertyDescriptor(Element.prototype,'childElementCount').enumerable")?,
+      Value::Bool(true)
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn webidl_dom_backend_node_traversal_does_not_leak_closed_shadow_root() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut event_loop = EventLoop::<WindowHostState>::new();

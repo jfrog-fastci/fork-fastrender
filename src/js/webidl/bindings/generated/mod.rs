@@ -1596,6 +1596,32 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_get_attribute_child_element_count(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "childElementCount",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn element_get_attribute_children(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1764,6 +1790,32 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_get_attribute_first_element_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "firstElementChild",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn element_get_attribute_id(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1825,6 +1877,32 @@ pub mod window {
       )?;
       Ok(Value::Undefined)
     }
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_last_element_child(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "lastElementChild",
+      0,
+      &[],
+    )
   }
 
   #[allow(dead_code)]
@@ -5854,6 +5932,30 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("childElementCount")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          element_get_attribute_child_element_count,
+          None,
+          "get childElementCount",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_element,
+          "childElementCount",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("children")?;
       if rt
         .scope
@@ -5967,6 +6069,30 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("firstElementChild")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          element_get_attribute_first_element_child,
+          None,
+          "get firstElementChild",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_element,
+          "firstElementChild",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("id")?;
       if rt
         .scope
@@ -5980,6 +6106,30 @@ pub mod window {
         rt.define_accessor_property_str(
           proto_element,
           "id",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("lastElementChild")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          element_get_attribute_last_element_child,
+          None,
+          "get lastElementChild",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_element,
+          "lastElementChild",
           Value::Object(get),
           set,
           AccessorPropertyAttributes::ATTRIBUTE,

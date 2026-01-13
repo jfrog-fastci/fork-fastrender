@@ -37837,42 +37837,60 @@ fn init_window_globals(
           },
         },
       )?;
-      scope.define_property(
-        proto,
-        child_element_count_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(parent_child_element_count_get_func),
-            set: Value::Undefined,
+      if scope
+        .heap()
+        .object_get_own_property(proto, &child_element_count_key)?
+        .is_none()
+      {
+        scope.define_property(
+          proto,
+          child_element_count_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(parent_child_element_count_get_func),
+              set: Value::Undefined,
+            },
           },
-        },
-      )?;
-      scope.define_property(
-        proto,
-        first_element_child_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(parent_first_element_child_get_func),
-            set: Value::Undefined,
+        )?;
+      }
+      if scope
+        .heap()
+        .object_get_own_property(proto, &first_element_child_key)?
+        .is_none()
+      {
+        scope.define_property(
+          proto,
+          first_element_child_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(parent_first_element_child_get_func),
+              set: Value::Undefined,
+            },
           },
-        },
-      )?;
-      scope.define_property(
-        proto,
-        last_element_child_key,
-        PropertyDescriptor {
-          enumerable: false,
-          configurable: true,
-          kind: PropertyKind::Accessor {
-            get: Value::Object(parent_last_element_child_get_func),
-            set: Value::Undefined,
+        )?;
+      }
+      if scope
+        .heap()
+        .object_get_own_property(proto, &last_element_child_key)?
+        .is_none()
+      {
+        scope.define_property(
+          proto,
+          last_element_child_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(parent_last_element_child_get_func),
+              set: Value::Undefined,
+            },
           },
-        },
-      )?;
+        )?;
+      }
     }
 
     // --- Element: nextElementSibling / previousElementSibling --------------------------------

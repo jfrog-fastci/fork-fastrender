@@ -3928,6 +3928,76 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::String(js))?;
         Ok(Value::String(js))
       }
+      ("Element", "firstElementChild", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let handle = require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let found = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            dom.first_element_child(node_id).map(|child_id| {
+              let primary = if child_id.index() >= dom.nodes_len() {
+                DomInterface::Node
+              } else {
+                DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+              };
+              (child_id, primary)
+            })
+          }))
+        })?;
+        let Some((child_id, primary_interface)) = found else {
+          return Ok(Value::Null);
+        };
+
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          document_id,
+          child_id,
+          primary_interface,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Element", "lastElementChild", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let handle = require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let found = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            dom.last_element_child(node_id).map(|child_id| {
+              let primary = if child_id.index() >= dom.nodes_len() {
+                DomInterface::Node
+              } else {
+                DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+              };
+              (child_id, primary)
+            })
+          }))
+        })?;
+        let Some((child_id, primary_interface)) = found else {
+          return Ok(Value::Null);
+        };
+
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          document_id,
+          child_id,
+          primary_interface,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Element", "childElementCount", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let handle = require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let count =
+          self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.child_element_count(node_id))))?;
+        Ok(Value::Number(count as f64))
+      }
       ("Element", "nextElementSibling", 0) => {
         let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
         let document_id = require_dom_platform_mut(vm)?
