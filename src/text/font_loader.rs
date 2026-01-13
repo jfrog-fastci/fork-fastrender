@@ -3577,6 +3577,21 @@ fn resolve_font_url(url: &str, base_url: Option<&str>) -> String {
   rewrite_discord_font_asset_url(&resolved).unwrap_or(resolved)
 }
 
+fn direct_font_fetch_disabled_error(
+  url: &str,
+  kind: &'static str,
+  feature: &'static str,
+) -> Error {
+  Error::Font(FontError::LoadFailed {
+    family: url.to_string(),
+    reason: format!(
+      "direct {kind} font fetching is disabled (missing Cargo feature `{feature}`); \
+construct the FontContext with FontContext::with_resource_fetcher(_and_config) so font I/O is \
+brokered by the provided ResourceFetcher"
+    ),
+  })
+}
+
 fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
   render_control::check_active(RenderStage::Css)?;
   if has_prefix_ignore_ascii_case(url, "data:") {
@@ -3596,72 +3611,91 @@ fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
 
   if has_prefix_ignore_ascii_case(url, "http://") || has_prefix_ignore_ascii_case(url, "https://") {
     render_control::check_active(RenderStage::Css)?;
-    static FETCHER: OnceLock<HttpFetcher> = OnceLock::new();
-    let fetcher = FETCHER.get_or_init(|| {
-      HttpFetcher::new()
-        .with_max_size(MAX_FONT_BYTES as usize)
-        .with_timeout(Duration::from_secs(10))
-        .with_retry_policy(HttpRetryPolicy {
-          max_attempts: 1,
-          ..HttpRetryPolicy::default()
-        })
-    });
-    let resource = match fetcher.fetch(url) {
-      Ok(resource) => resource,
-      Err(err) => {
-        // Preserve render-control errors (deadline/cancel/memory budgets) as `Error::Render` so
-        // callers can distinguish them from ordinary font load failures.
-        if matches!(&err, Error::Render(_)) {
-          return Err(err);
+    #[cfg(feature = "direct_network")]
+    {
+      static FETCHER: OnceLock<HttpFetcher> = OnceLock::new();
+      let fetcher = FETCHER.get_or_init(|| {
+        HttpFetcher::new()
+          .with_max_size(MAX_FONT_BYTES as usize)
+          .with_timeout(Duration::from_secs(10))
+          .with_retry_policy(HttpRetryPolicy {
+            max_attempts: 1,
+            ..HttpRetryPolicy::default()
+          })
+      });
+      let resource = match fetcher.fetch(url) {
+        Ok(resource) => resource,
+        Err(err) => {
+          // Preserve render-control errors (deadline/cancel/memory budgets) as `Error::Render` so
+          // callers can distinguish them from ordinary font load failures.
+          if matches!(&err, Error::Render(_)) {
+            return Err(err);
+          }
+          return Err(Error::Font(crate::error::FontError::LoadFailed {
+            family: url.to_string(),
+            reason: err.to_string(),
+          }));
         }
-        return Err(Error::Font(crate::error::FontError::LoadFailed {
+      };
+      render_control::check_active(RenderStage::Css)?;
+      if let Err(err) =
+        ensure_http_success(&resource, url).and_then(|()| ensure_font_mime_sane(&resource, url))
+      {
+        return Err(Error::Font(FontError::LoadFailed {
           family: url.to_string(),
           reason: err.to_string(),
         }));
       }
-    };
-    render_control::check_active(RenderStage::Css)?;
-    if let Err(err) =
-      ensure_http_success(&resource, url).and_then(|()| ensure_font_mime_sane(&resource, url))
+      return Ok((resource.bytes, resource.content_type));
+    }
+    #[cfg(not(feature = "direct_network"))]
     {
-      return Err(Error::Font(FontError::LoadFailed {
+      return Err(direct_font_fetch_disabled_error(url, "network", "direct_network"));
+    }
+  }
+
+  #[cfg(feature = "direct_filesystem")]
+  {
+    const FILE_URL_PREFIX: &str = "file://";
+    let path = if has_prefix_ignore_ascii_case(url, FILE_URL_PREFIX) {
+      url.get(FILE_URL_PREFIX.len()..).unwrap_or("")
+    } else {
+      url
+    };
+
+    let mut max_bytes = MAX_FONT_BYTES as usize;
+    if let Ok(meta) = fs::metadata(path) {
+      enforce_font_size_for_family(meta.len(), url, "file")?;
+      if let Ok(len) = usize::try_from(meta.len()) {
+        max_bytes = len;
+      }
+    }
+
+    let mut file = fs::File::open(path).map_err(|e| {
+      Error::Font(crate::error::FontError::LoadFailed {
         family: url.to_string(),
-        reason: err.to_string(),
-      }));
-    }
-    return Ok((resource.bytes, resource.content_type));
+        reason: e.to_string(),
+      })
+    })?;
+
+    let bytes = read_all_with_limit(&mut file, max_bytes, "font file").map_err(|e| {
+      Error::Font(crate::error::FontError::LoadFailed {
+        family: url.to_string(),
+        reason: e.to_string(),
+      })
+    })?;
+    enforce_font_size_for_family(bytes.len() as u64, url, "file")?;
+    Ok((bytes, None))
   }
 
-  const FILE_URL_PREFIX: &str = "file://";
-  let path = if has_prefix_ignore_ascii_case(url, FILE_URL_PREFIX) {
-    url.get(FILE_URL_PREFIX.len()..).unwrap_or("")
-  } else {
-    url
-  };
-
-  let mut max_bytes = MAX_FONT_BYTES as usize;
-  if let Ok(meta) = fs::metadata(path) {
-    enforce_font_size_for_family(meta.len(), url, "file")?;
-    if let Ok(len) = usize::try_from(meta.len()) {
-      max_bytes = len;
-    }
+  #[cfg(not(feature = "direct_filesystem"))]
+  {
+    Err(direct_font_fetch_disabled_error(
+      url,
+      "filesystem",
+      "direct_filesystem",
+    ))
   }
-
-  let mut file = fs::File::open(path).map_err(|e| {
-    Error::Font(crate::error::FontError::LoadFailed {
-      family: url.to_string(),
-      reason: e.to_string(),
-    })
-  })?;
-
-  let bytes = read_all_with_limit(&mut file, max_bytes, "font file").map_err(|e| {
-    Error::Font(crate::error::FontError::LoadFailed {
-      family: url.to_string(),
-      reason: e.to_string(),
-    })
-  })?;
-  enforce_font_size_for_family(bytes.len() as u64, url, "file")?;
-  Ok((bytes, None))
 }
 
 fn ordered_sources<'a>(sources: &'a [FontFaceSource]) -> Vec<&'a FontFaceSource> {
@@ -4895,6 +4929,132 @@ mod tests {
   }
 
   #[test]
+  fn font_context_with_resource_fetcher_uses_provided_fetcher_for_web_fonts() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    struct CountingFetcher {
+      url: String,
+      bytes: Arc<Vec<u8>>,
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for CountingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected ResourceFetcher::fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.url, self.url);
+        assert_eq!(req.destination, FetchDestination::Font);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(FetchedResource::new(
+          (*self.bytes).clone(),
+          Some("font/ttf".to_string()),
+        ))
+      }
+    }
+
+    let url = "https://example.com/font.ttf".to_string();
+    let bytes = Arc::new(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(CountingFetcher {
+      url: url.clone(),
+      bytes,
+      calls: Arc::clone(&calls),
+    });
+
+    let ctx = FontContext::with_resource_fetcher(fetcher);
+    let face = FontFaceRule {
+      family: Some("ResourceFetcherWebFont".to_string()),
+      sources: vec![FontFaceSource::url(url)],
+      display: Some(FontDisplay::Block),
+      ..Default::default()
+    };
+
+    let report = ctx
+      .load_web_fonts_with_policy(
+        &[face],
+        None,
+        None,
+        WebFontPolicy::BlockUntilLoaded {
+          timeout: Duration::from_millis(250),
+        },
+      )
+      .expect("load web fonts");
+    assert!(
+      report.events.iter().any(|event| {
+        event.family == "ResourceFetcherWebFont" && matches!(event.status, FontLoadStatus::Loaded)
+      }),
+      "expected loaded font event, got {:?}",
+      report.events
+    );
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected provided ResourceFetcher to be called exactly once"
+    );
+    assert!(
+      ctx
+        .get_font_simple("ResourceFetcherWebFont", 400, FontStyle::Normal)
+        .is_some(),
+      "expected web font to be active after load"
+    );
+  }
+
+  #[cfg(all(not(feature = "direct_network"), not(feature = "direct_filesystem")))]
+  #[test]
+  fn font_context_new_disallows_direct_network_and_filesystem_web_font_fetches() {
+    let ctx = FontContext::new();
+    let http_face = FontFaceRule {
+      family: Some("DisabledHttpFont".to_string()),
+      sources: vec![FontFaceSource::url("https://example.com/font.ttf".to_string())],
+      display: Some(FontDisplay::Block),
+      ..Default::default()
+    };
+    let file_face = FontFaceRule {
+      family: Some("DisabledFileFont".to_string()),
+      sources: vec![FontFaceSource::url("file:///tmp/font.ttf".to_string())],
+      display: Some(FontDisplay::Block),
+      ..Default::default()
+    };
+
+    let report = ctx
+      .load_web_fonts_with_policy(
+        &[http_face, file_face],
+        None,
+        None,
+        WebFontPolicy::BlockUntilLoaded {
+          timeout: Duration::from_millis(100),
+        },
+      )
+      .expect("load web fonts report");
+
+    let mut saw_network = false;
+    let mut saw_filesystem = false;
+    for event in report.events {
+      let FontLoadStatus::Failed { reason } = event.status else {
+        continue;
+      };
+      if reason.contains("direct network font fetching is disabled") {
+        saw_network = true;
+      }
+      if reason.contains("direct filesystem font fetching is disabled") {
+        saw_filesystem = true;
+      }
+    }
+    assert!(
+      saw_network,
+      "expected disabled network fetch to surface clear error"
+    );
+    assert!(
+      saw_filesystem,
+      "expected disabled filesystem fetch to surface clear error"
+    );
+  }
+
+  #[cfg(feature = "direct_filesystem")]
+  #[test]
   fn fetch_font_bytes_rejects_oversized_file_urls_without_allocating() {
     let tmp = tempfile::NamedTempFile::new().expect("temp font");
     tmp
@@ -4916,6 +5076,7 @@ mod tests {
     }
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn fetch_font_bytes_errors_on_http_status_failures() {
     let Some(listener) = try_bind_localhost("fetch_font_bytes_errors_on_http_status_failures")
@@ -4963,6 +5124,7 @@ mod tests {
     handle.join().expect("server thread");
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn fetch_font_bytes_propagates_render_control_error_from_http_fetcher() {
     use std::sync::atomic::{AtomicUsize, Ordering};

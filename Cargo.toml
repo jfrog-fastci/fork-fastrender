@@ -29,7 +29,9 @@ exclude = ["vendor/ecma-rs"]
 resolver = "2"
 
 [features]
-default = ["preserve3d_warp", "avif", "direct_network", "direct_websocket"]
+# `direct_network` / `direct_websocket` gate in-process network stacks. Sandboxed renderer builds
+# should disable them and provide a `ResourceFetcher` that proxies over IPC.
+default = ["preserve3d_warp", "avif", "direct_network", "direct_websocket", "direct_filesystem"]
 a11y_debug = []
 avif = ["dep:avif-decode", "dep:avif-parse"]
 audio_cpal = ["dep:cpal"]
@@ -40,6 +42,9 @@ quickjs = ["dep:rquickjs"]
 # Direct (in-process) networking. Renderer builds should disable this feature so all network
 # requests are mediated by a separate network/IPC process.
 direct_network = ["dep:reqwest", "dep:ureq"]
+# Direct (in-process) filesystem access (e.g. `file://` resources). Sandboxed renderer builds
+# should disable this feature and inject a `ResourceFetcher` that proxies filesystem reads.
+direct_filesystem = []
 # Direct (in-process) WebSocket implementation for the vm-js Window realm.
 direct_websocket = ["dep:tungstenite"]
 # Feature set for a renderer build that intentionally excludes any in-process network stacks.
