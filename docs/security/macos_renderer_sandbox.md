@@ -53,7 +53,10 @@ does *zero* network/file I/O; turning on App Sandbox prematurely would break
 common development workflows (and would complicate debugging tools that rely on
 broader process permissions).
 
+For developer/CI sandbox testing on macOS, FastRender instead uses the
+**Seatbelt** sandbox interface (`sandbox_init` / `sandbox-exec`) which does not
+require entitlements or code signing; see [`docs/macos_sandbox.md`](../macos_sandbox.md).
+
 These files are therefore **preparatory**: they exist so that when `.app`
 packaging lands, we have a reviewed, deny-by-default entitlements baseline ready
 to wire into the signing step.
-
