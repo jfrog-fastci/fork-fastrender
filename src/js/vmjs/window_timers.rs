@@ -5354,9 +5354,7 @@ mod tests {
   }
 
   #[test]
-  fn string_handlers_throw_type_error() -> crate::error::Result<()> {
-    let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+  fn timers_reject_string_handlers() -> crate::error::Result<()> {
     let mut host = Host::new();
 
     {
@@ -5364,12 +5362,12 @@ mod tests {
       install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
     }
 
-    let err = {
+    let err_timeout = {
       let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
       let global = realm.global_object();
       let mut scope = heap.scope();
       let set_timeout = get_prop(&mut scope, global, "setTimeout");
-      let handler_s = scope.alloc_string("alert(1)").unwrap();
+      let handler_s = scope.alloc_string("1+1").unwrap();
       scope
         .push_root(Value::String(handler_s))
         .expect("push root handler string");
@@ -5379,10 +5377,38 @@ mod tests {
         Value::Undefined,
         &[Value::String(handler_s), Value::Number(0.0)],
       )
-      .expect_err("string handlers should be rejected")
+      .expect_err("setTimeout string handler should be rejected")
     };
 
-    assert_type_error_contains(host.window.heap_mut(), err, "string handlers");
+    assert_type_error_contains(
+      host.window.heap_mut(),
+      err_timeout,
+      SET_TIMEOUT_STRING_HANDLER_ERROR,
+    );
+
+    let err_interval = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      let mut scope = heap.scope();
+      let set_interval = get_prop(&mut scope, global, "setInterval");
+      let handler_s = scope.alloc_string("1+1").unwrap();
+      scope
+        .push_root(Value::String(handler_s))
+        .expect("push root handler string");
+      vm.call_without_host(
+        &mut scope,
+        set_interval,
+        Value::Undefined,
+        &[Value::String(handler_s), Value::Number(0.0)],
+      )
+      .expect_err("setInterval string handler should be rejected")
+    };
+
+    assert_type_error_contains(
+      host.window.heap_mut(),
+      err_interval,
+      SET_INTERVAL_STRING_HANDLER_ERROR,
+    );
 
     Ok(())
   }

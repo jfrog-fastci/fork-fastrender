@@ -339,6 +339,7 @@ mod tests {
   use crate::error::{Error, Result as RenderResult};
   use crate::clock::VirtualClock;
   use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
+  use crate::js::vm_error_format;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::JsExecutionOptions;
   use std::sync::Arc;
@@ -415,6 +416,63 @@ mod tests {
     // Root `value` before defining the property in case it triggers an allocation/GC.
     scope.push_root(value).expect("push root value");
     scope.define_property(obj, key, data_desc(value)).unwrap();
+  }
+
+  fn assert_type_error_contains(heap: &mut Heap, err: VmError, expected: &str) {
+    match err {
+      VmError::TypeError(msg) => {
+        assert!(msg.contains(expected), "msg={msg:?} expected={expected:?}");
+      }
+      other => {
+        let rendered = vm_error_format::vm_error_to_string(heap, other);
+        let first_line = rendered.lines().next().unwrap_or("");
+        assert!(
+          first_line.starts_with("TypeError"),
+          "expected TypeError, got {rendered:?}"
+        );
+        assert!(
+          first_line.contains(expected),
+          "expected TypeError message containing {expected:?}, got {rendered:?}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn request_animation_frame_rejects_string_callback() -> RenderResult<()> {
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    }
+
+    let err = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      let mut scope = heap.scope();
+      let raf = get_prop(&mut scope, global, "requestAnimationFrame");
+      let handler_s = scope.alloc_string("1+1").unwrap();
+      scope
+        .push_root(Value::String(handler_s))
+        .expect("push root handler string");
+      vm.call_without_host(
+        &mut scope,
+        raf,
+        Value::Undefined,
+        &[Value::String(handler_s)],
+      )
+      .expect_err("requestAnimationFrame string callback should be rejected")
+    };
+
+    assert_type_error_contains(
+      host.window.heap_mut(),
+      err,
+      REQUEST_ANIMATION_FRAME_STRING_HANDLER_ERROR,
+    );
+
+    Ok(())
   }
 
   fn init_log(scope: &mut Scope<'_>, global: vm_js::GcObject) {
