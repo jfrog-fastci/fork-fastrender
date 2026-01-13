@@ -11229,10 +11229,93 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         request_redraw = true;
       }
     }
+
+    #[derive(Debug, Clone)]
+    enum DownloadToastTrigger {
+      Started {
+        download_id: fastrender::ui::DownloadId,
+      },
+      Finished {
+        download_id: fastrender::ui::DownloadId,
+        outcome: fastrender::ui::DownloadOutcome,
+      },
+    }
+
+    let download_toast_trigger = match &msg {
+      fastrender::ui::WorkerToUi::DownloadStarted { download_id, .. } => {
+        Some(DownloadToastTrigger::Started {
+          download_id: *download_id,
+        })
+      }
+      fastrender::ui::WorkerToUi::DownloadFinished {
+        download_id,
+        outcome,
+        ..
+      } => Some(DownloadToastTrigger::Finished {
+        download_id: *download_id,
+        outcome: outcome.clone(),
+      }),
+      _ => None,
+    };
+
     let update = self.browser_state.apply_worker_msg(msg);
     history_changed |= update.history_changed;
 
     let has_frame_ready = update.frame_ready.is_some();
+
+    if let Some(trigger) = download_toast_trigger {
+      use fastrender::ui::downloads_notifications::{coalesce_download_toast, DownloadEvent};
+
+      let download_id = match &trigger {
+        DownloadToastTrigger::Started { download_id }
+        | DownloadToastTrigger::Finished { download_id, .. } => *download_id,
+      };
+
+      let entry = self
+        .browser_state
+        .downloads
+        .downloads
+        .iter()
+        .find(|d| d.download_id == download_id);
+
+      let download_event = match (trigger, entry) {
+        (DownloadToastTrigger::Started { .. }, Some(entry)) => Some(DownloadEvent::Started {
+          file_name: entry.file_name.clone(),
+        }),
+        (
+          DownloadToastTrigger::Finished { outcome, .. },
+          Some(entry),
+        ) => {
+          let outcome = match outcome {
+            fastrender::ui::DownloadOutcome::Completed => {
+              fastrender::ui::downloads_notifications::DownloadOutcome::Completed
+            }
+            fastrender::ui::DownloadOutcome::Cancelled => {
+              fastrender::ui::downloads_notifications::DownloadOutcome::Cancelled
+            }
+            fastrender::ui::DownloadOutcome::Failed { .. } => {
+              let error = match &entry.status {
+                fastrender::ui::DownloadStatus::Failed { error } => error.clone(),
+                _ => String::new(),
+              };
+              fastrender::ui::downloads_notifications::DownloadOutcome::Failed { error }
+            }
+          };
+
+          Some(DownloadEvent::Finished {
+            file_name: entry.file_name.clone(),
+            outcome,
+          })
+        }
+        _ => None,
+      };
+
+      if let Some(event) = download_event {
+        let (kind, text) = coalesce_download_toast(self.chrome_toast.toast(), event);
+        self.show_chrome_toast_with_kind(kind, &text);
+        request_redraw = true;
+      }
+    }
     if let Some(frame_ready) = update.frame_ready {
       // Ignore stale frames for tabs that have already been closed.
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
@@ -11606,11 +11689,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
   }
 
   fn show_chrome_toast(&mut self, text: &str) {
-    use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+    self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Info, text);
+  }
+
+  fn show_chrome_toast_with_kind(&mut self, kind: fastrender::ui::ToastKind, text: &str) {
+    use fastrender::ui::TOAST_DEFAULT_TTL;
     let now = std::time::Instant::now();
-    self
-      .chrome_toast
-      .show(ToastKind::Info, text.to_string(), now, TOAST_DEFAULT_TTL);
+    self.chrome_toast.show(kind, text.to_string(), now, TOAST_DEFAULT_TTL);
   }
 
   fn render_chrome_toast(&mut self, ctx: &egui::Context) {

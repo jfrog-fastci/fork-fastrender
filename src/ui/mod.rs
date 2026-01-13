@@ -53,6 +53,7 @@ pub mod media_prefs;
 pub mod window_title;
 pub mod downloads;
 pub mod downloads_panel_policy;
+pub mod downloads_notifications;
 pub mod open_in_new_tab;
 pub mod titlebar_insets;
 pub mod untrusted;
