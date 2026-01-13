@@ -187,6 +187,7 @@ mod transition_global_keyword_tests;
 mod transitions_starting_style_test;
 mod ua_form_control_defaults_test;
 mod user_agent_defaults_test;
+mod user_agent_placeholder_pseudo_test;
 mod user_agent_test;
 mod user_validity_pseudo_test;
 mod var_dependent_recompute_test;

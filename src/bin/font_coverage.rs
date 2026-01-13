@@ -3,11 +3,13 @@
 //! This binary is intended for pageset triage: given some input text, load a deterministic set of
 //! fonts and report which Unicode scalar values have no glyph in any loaded face.
 
-use clap::{ArgAction, Args, Parser};
+use clap::error::ErrorKind as ClapErrorKind;
+use clap::{ArgAction, Args, CommandFactory, Parser};
 use fastrender::dom;
 use fastrender::{FontConfig, FontDatabase, Script};
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -51,6 +53,27 @@ struct FontSourceArgs {
   /// Additional font directories to load (repeatable)
   #[arg(long = "font-dir", value_name = "DIR")]
   font_dir: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputSource<'a> {
+  Text(&'a str),
+  HtmlFile(&'a Path),
+}
+
+fn input_source(cli: &Cli) -> Result<InputSource<'_>, clap::Error> {
+  match (cli.text.as_deref(), cli.html_file.as_deref()) {
+    (Some(text), None) => Ok(InputSource::Text(text)),
+    (None, Some(path)) => Ok(InputSource::HtmlFile(path)),
+    (Some(_), Some(_)) => Err(Cli::command().error(
+      ClapErrorKind::ArgumentConflict,
+      "--text cannot be used with --html-file (specify exactly one input source)",
+    )),
+    (None, None) => Err(Cli::command().error(
+      ClapErrorKind::MissingRequiredArgument,
+      "missing input source: specify exactly one of --text or --html-file",
+    )),
+  }
 }
 
 impl FontSourceArgs {
@@ -196,20 +219,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let font_config = cli.fonts.to_font_config();
   let db = FontDatabase::with_config(&font_config);
 
-  let codepoints = if let Some(text) = cli.text.as_deref() {
-    collect_codepoints_from_text(text)
-  } else if let Some(path) = cli.html_file.as_ref() {
-    let data = fs::read(path)?;
-    let html = String::from_utf8_lossy(&data);
-    collect_codepoints_from_html(&html)?
-  } else {
-    return Err(
-      std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        "expected either --text or --html-file",
-      )
-      .into(),
-    );
+  let codepoints = match input_source(&cli) {
+    Ok(InputSource::Text(text)) => collect_codepoints_from_text(text),
+    Ok(InputSource::HtmlFile(path)) => {
+      let data = fs::read(path)?;
+      let html = String::from_utf8_lossy(&data);
+      collect_codepoints_from_html(&html)?
+    }
+    Err(err) => err.exit(),
   };
 
   let missing = find_missing_codepoints(&db, &codepoints);
@@ -231,4 +248,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn empty_cli() -> Cli {
+    Cli {
+      fonts: FontSourceArgs {
+        bundled_fonts: false,
+        system_fonts: false,
+        font_dir: Vec::new(),
+      },
+      text: None,
+      html_file: None,
+    }
+  }
+
+  #[test]
+  fn input_source_rejects_missing_input_source() {
+    let cli = empty_cli();
+    let err = input_source(&cli).expect_err("expected missing args to be rejected");
+    assert_eq!(err.kind(), ClapErrorKind::MissingRequiredArgument);
+    let msg = err.to_string();
+    assert!(
+      msg.contains("--text") && msg.contains("--html-file"),
+      "error message should mention both input flags, got:\n{msg}"
+    );
+  }
+
+  #[test]
+  fn input_source_rejects_conflicting_input_sources() {
+    let mut cli = empty_cli();
+    cli.text = Some("hello".to_string());
+    cli.html_file = Some(PathBuf::from("input.html"));
+
+    let err = input_source(&cli).expect_err("expected conflicting args to be rejected");
+    assert_eq!(err.kind(), ClapErrorKind::ArgumentConflict);
+    let msg = err.to_string();
+    assert!(
+      msg.contains("--text") && msg.contains("--html-file"),
+      "error message should mention both input flags, got:\n{msg}"
+    );
+  }
 }

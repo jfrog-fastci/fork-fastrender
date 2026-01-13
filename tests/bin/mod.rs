@@ -8,6 +8,7 @@ mod bundle_page_cache_offline_test;
 mod bundle_page_same_origin_policy_test;
 mod bundle_page_test;
 mod bundled_font_coverage_test;
+mod font_coverage_invalid_args_test;
 mod chrome_baseline_script_test;
 mod chrome_fixture_baseline_script_test;
 mod compare_diff_reports_test;
