@@ -1873,7 +1873,7 @@ fn storage_require_this(
   this: Value,
 ) -> Result<web_storage::StorageKind, VmError> {
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
 
   let brand_key = alloc_key(scope, STORAGE_BRAND_KEY)?;
@@ -1881,7 +1881,7 @@ fn storage_require_this(
     scope.heap().object_get_own_data_property_value(obj, &brand_key)?,
     Some(Value::Bool(true))
   ) {
-    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   }
 
   let kind_key = alloc_key(scope, STORAGE_KIND_KEY)?;
@@ -1890,16 +1890,41 @@ fn storage_require_this(
     .object_get_own_data_property_value(obj, &kind_key)?
     .unwrap_or(Value::Undefined);
   let Value::Number(kind_n) = kind_v else {
-    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
   if !kind_n.is_finite() || kind_n.is_nan() {
-    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   }
   match kind_n {
     n if n == 0.0 => Ok(web_storage::StorageKind::Local),
     n if n == 1.0 => Ok(web_storage::StorageKind::Session),
-    _ => Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR)),
+    _ => Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR)),
   }
+}
+
+fn history_require_this(this: Value, history_obj: GcObject) -> Result<(), VmError> {
+  match this {
+    Value::Object(obj) if obj == history_obj => Ok(()),
+    _ => Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR)),
+  }
+}
+
+fn location_require_this(scope: &Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+
+  // `Heap::object_host_slots` only supports ordinary objects/functions. When `this` is another kind
+  // (like a Proxy), treat it as unbranded.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  if !matches!(slots, Some(HostSlots { a, .. }) if a == WINDOW_REALM_LOCATION_HOST_TAG) {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  }
+  Ok(obj)
 }
 
 fn storage_to_string(scope: &mut Scope<'_>, value: Value) -> Result<GcString, VmError> {
@@ -2439,7 +2464,7 @@ const HISTORY_SCROLL_RESTORATION_AUTO: u64 = 0;
 const HISTORY_SCROLL_RESTORATION_MANUAL: u64 = 1;
 const DOM_RECT_FROM_RECT_CTOR_SLOT: usize = 0;
 const DOM_RECT_FROM_RECT_READ_ONLY_SLOT: usize = 1;
-const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
+const ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 const STORAGE_BRAND_KEY: &str = "__fastrender_storage_brand";
 const STORAGE_KIND_KEY: &str = "__fastrender_storage_kind";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
@@ -5434,9 +5459,7 @@ fn location_href_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
   request_location_navigation(vm, scope, host, hooks, Some(location_obj), url_value, false)
 }
@@ -5450,9 +5473,7 @@ fn location_assign_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
   request_location_navigation(vm, scope, host, hooks, Some(location_obj), url_value, false)
 }
@@ -5466,25 +5487,21 @@ fn location_replace_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
   let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
   request_location_navigation(vm, scope, host, hooks, Some(location_obj), url_value, true)
 }
 
 fn location_reload_native(
   vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(_) = this else {
-    return Ok(Value::Undefined);
-  };
+  location_require_this(scope, this)?;
 
   let current_url = {
     let Some(data) = vm.user_data::<WindowRealmUserData>() else {
@@ -5517,9 +5534,7 @@ fn location_pathname_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
 
   let pathname_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let pathname_value = match pathname_value {
@@ -5580,9 +5595,7 @@ fn location_search_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let search_value = match search_value {
@@ -5633,9 +5646,7 @@ fn location_hash_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
 
   let hash_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let hash_value = match hash_value {
@@ -5678,9 +5689,7 @@ fn location_protocol_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
 
   let protocol_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let protocol_value = match protocol_value {
@@ -5732,9 +5741,7 @@ fn location_host_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
 
   let host_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let host_value = match host_value {
@@ -5824,9 +5831,7 @@ fn location_hostname_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
 
   let hostname_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let hostname_value = match hostname_value {
@@ -5872,9 +5877,7 @@ fn location_port_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(location_obj) = this else {
-    return Ok(Value::Undefined);
-  };
+  let location_obj = location_require_this(scope, this)?;
 
   let port_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let port_value = match port_value {
@@ -6230,7 +6233,7 @@ fn history_state_change_native(
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
@@ -6242,6 +6245,7 @@ fn history_state_change_native(
     Value::Object(obj) => obj,
     _ => return Ok(Value::Undefined),
   };
+  history_require_this(this, history_obj)?;
   let location_obj = match slots
     .get(HISTORY_LOCATION_OBJ_SLOT)
     .copied()
@@ -6860,7 +6864,7 @@ fn history_back_native(
   vm_host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
@@ -6880,6 +6884,7 @@ fn history_back_native(
     Value::Object(obj) => obj,
     _ => return Ok(Value::Undefined),
   };
+  history_require_this(this, history_obj)?;
   let location_obj = match slots
     .get(HISTORY_TRAVERSE_LOCATION_OBJ_SLOT)
     .copied()
@@ -6917,7 +6922,7 @@ fn history_forward_native(
   vm_host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
@@ -6937,6 +6942,7 @@ fn history_forward_native(
     Value::Object(obj) => obj,
     _ => return Ok(Value::Undefined),
   };
+  history_require_this(this, history_obj)?;
   let location_obj = match slots
     .get(HISTORY_TRAVERSE_LOCATION_OBJ_SLOT)
     .copied()
@@ -6974,9 +6980,48 @@ fn history_go_native(
   vm_host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let (window_obj, history_obj, location_obj, document_obj) = {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    let window_obj = match slots
+      .get(HISTORY_TRAVERSE_WINDOW_OBJ_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => return Ok(Value::Undefined),
+    };
+    let history_obj = match slots
+      .get(HISTORY_TRAVERSE_HISTORY_OBJ_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => return Ok(Value::Undefined),
+    };
+    let location_obj = match slots
+      .get(HISTORY_TRAVERSE_LOCATION_OBJ_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => return Ok(Value::Undefined),
+    };
+    let document_obj = match slots
+      .get(HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => return Ok(Value::Undefined),
+    };
+    (window_obj, history_obj, location_obj, document_obj)
+  };
+
+  history_require_this(this, history_obj)?;
+
   let delta_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let mut delta = scope.heap_mut().to_number(delta_value)?;
   if delta.is_nan() {
@@ -7013,40 +7058,6 @@ fn history_go_native(
     vm.tick()?;
     return Ok(Value::Undefined);
   }
-
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let window_obj = match slots
-    .get(HISTORY_TRAVERSE_WINDOW_OBJ_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined)
-  {
-    Value::Object(obj) => obj,
-    _ => return Ok(Value::Undefined),
-  };
-  let history_obj = match slots
-    .get(HISTORY_TRAVERSE_HISTORY_OBJ_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined)
-  {
-    Value::Object(obj) => obj,
-    _ => return Ok(Value::Undefined),
-  };
-  let location_obj = match slots
-    .get(HISTORY_TRAVERSE_LOCATION_OBJ_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined)
-  {
-    Value::Object(obj) => obj,
-    _ => return Ok(Value::Undefined),
-  };
-  let document_obj = match slots
-    .get(HISTORY_TRAVERSE_DOCUMENT_OBJ_SLOT)
-    .copied()
-    .unwrap_or(Value::Undefined)
-  {
-    Value::Object(obj) => obj,
-    _ => return Ok(Value::Undefined),
-  };
 
   schedule_history_traversal(
     vm,
@@ -44741,7 +44752,7 @@ mod tests {
     )?;
     assert_eq!(
       get_string(realm.heap(), illegal_invocation_message),
-      STORAGE_ILLEGAL_INVOCATION_ERROR
+      ILLEGAL_INVOCATION_ERROR
     );
     assert_eq!(
       realm.exec_script(

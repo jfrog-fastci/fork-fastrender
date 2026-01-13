@@ -990,6 +990,82 @@ fn history_and_location_constructors_exist() -> Result<()> {
 }
 
 #[test]
+fn history_and_location_methods_throw_illegal_invocation_on_wrong_receiver() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let err = realm
+    .exec_script(
+      r#"(() => {
+        const f = history.pushState;
+        try {
+          f.call({}, 1, '', '#a');
+          return 'no';
+        } catch (e) {
+          return e.name + '|' + e.message;
+        }
+      })()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), err), "TypeError|Illegal invocation");
+
+  let err = realm
+    .exec_script(
+      r#"(() => {
+        const f = history.back;
+        try {
+          f.call({});
+          return 'no';
+        } catch (e) {
+          return e.name + '|' + e.message;
+        }
+      })()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), err), "TypeError|Illegal invocation");
+
+  let err = realm
+    .exec_script(
+      r#"(() => {
+        const f = location.assign;
+        try {
+          f.call({}, '#a');
+          return 'no';
+        } catch (e) {
+          return e.name + '|' + e.message;
+        }
+      })()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), err), "TypeError|Illegal invocation");
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "location.assign illegal invocation must not schedule navigation"
+  );
+
+  let err = realm
+    .exec_script(
+      r#"(() => {
+        const set = Object.getOwnPropertyDescriptor(location, 'href').set;
+        try {
+          set.call({}, 'https://x/');
+          return 'no';
+        } catch (e) {
+          return e.name + '|' + e.message;
+        }
+      })()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), err), "TypeError|Illegal invocation");
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "location.href illegal invocation must not schedule navigation"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn history_push_state_updates_location_without_navigation() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
