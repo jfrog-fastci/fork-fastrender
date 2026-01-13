@@ -229,6 +229,39 @@ impl CharSet {
   }
 
   #[inline]
+  fn insert_range(&mut self, start: u16, end: u16) {
+    if start > end {
+      return;
+    }
+    let start = start as usize;
+    let end = end as usize;
+    let start_idx = start / 64;
+    let start_bit = start % 64;
+    let end_idx = end / 64;
+    let end_bit = end % 64;
+    if start_idx == end_idx {
+      let mask = (!0u64 << start_bit) & (!0u64 >> (63 - end_bit));
+      self.bits[start_idx] |= mask;
+      return;
+    }
+
+    self.bits[start_idx] |= !0u64 << start_bit;
+    for idx in (start_idx + 1)..end_idx {
+      self.bits[idx] = !0u64;
+    }
+    self.bits[end_idx] |= !0u64 >> (63 - end_bit);
+  }
+
+  #[inline]
+  fn complement(&self) -> Self {
+    let mut out = Self::default();
+    for i in 0..CHARSET_WORDS {
+      out.bits[i] = !self.bits[i];
+    }
+    out
+  }
+
+  #[inline]
   fn union(&self, other: &Self) -> Self {
     let mut out = Self::default();
     for i in 0..CHARSET_WORDS {
@@ -577,6 +610,118 @@ impl UnicodeSet {
     ctx.vec_try_push(&mut self.strings, owned)?;
     Ok(())
   }
+}
+
+fn char_set_to_char_class(
+  ctx: &mut CompileCtx<'_>,
+  chars: &CharSet,
+  negated: bool,
+) -> Result<CharClass, RegExpCompileError> {
+  let mut items: Vec<CharClassItem> = Vec::new();
+
+  // Convert the bitset into a compact list of ranges.
+  let mut u: u32 = 0;
+  let mut i: usize = 0;
+  while u <= 0xFFFF {
+    if i != 0 {
+      ctx.tick_every(i)?;
+    }
+    i = i.wrapping_add(1);
+
+    let cu = u as u16;
+    if !chars.contains(cu) {
+      u += 1;
+      continue;
+    }
+
+    let start = cu;
+    let mut end = cu;
+    u += 1;
+    while u <= 0xFFFF {
+      let cu = u as u16;
+      if !chars.contains(cu) {
+        break;
+      }
+      end = cu;
+      u += 1;
+    }
+
+    if start == end {
+      ctx.vec_try_push(&mut items, CharClassItem::Char(start as u32))?;
+    } else {
+      ctx.vec_try_push(&mut items, CharClassItem::Range(start as u32, end as u32))?;
+    }
+  }
+
+  Ok(CharClass { negated, items })
+}
+
+#[inline]
+fn is_class_set_escape_class_operand_start(u: Option<u16>) -> bool {
+  let Some(u) = u else { return false };
+  u == (b'd' as u16)
+    || u == (b'D' as u16)
+    || u == (b's' as u16)
+    || u == (b'S' as u16)
+    || u == (b'w' as u16)
+    || u == (b'W' as u16)
+    || u == (b'p' as u16)
+    || u == (b'P' as u16)
+}
+
+#[inline]
+fn is_class_set_reserved_punctuator(u: u16) -> bool {
+  u == (b'&' as u16)
+    || u == (b'-' as u16)
+    || u == (b'!' as u16)
+    || u == (b'#' as u16)
+    || u == (b'%' as u16)
+    || u == (b',' as u16)
+    || u == (b':' as u16)
+    || u == (b';' as u16)
+    || u == (b'<' as u16)
+    || u == (b'=' as u16)
+    || u == (b'>' as u16)
+    || u == (b'@' as u16)
+    || u == (b'`' as u16)
+    || u == (b'~' as u16)
+}
+
+#[inline]
+fn is_class_set_syntax_character(u: u16) -> bool {
+  u == (b'(' as u16)
+    || u == (b')' as u16)
+    || u == (b'[' as u16)
+    || u == (b']' as u16)
+    || u == (b'{' as u16)
+    || u == (b'}' as u16)
+    || u == (b'/' as u16)
+    || u == (b'-' as u16)
+    || u == (b'\\' as u16)
+    || u == (b'|' as u16)
+}
+
+#[inline]
+fn is_class_set_reserved_double_punctuator(u: u16) -> bool {
+  u == (b'&' as u16)
+    || u == (b'!' as u16)
+    || u == (b'#' as u16)
+    || u == (b'$' as u16)
+    || u == (b'%' as u16)
+    || u == (b'*' as u16)
+    || u == (b'+' as u16)
+    || u == (b',' as u16)
+    || u == (b'.' as u16)
+    || u == (b':' as u16)
+    || u == (b';' as u16)
+    || u == (b'<' as u16)
+    || u == (b'=' as u16)
+    || u == (b'>' as u16)
+    || u == (b'?' as u16)
+    || u == (b'@' as u16)
+    || u == (b'^' as u16)
+    || u == (b'`' as u16)
+    || u == (b'~' as u16)
 }
 
 fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
@@ -3408,6 +3553,9 @@ impl<'a> Parser<'a> {
 
   fn parse_class(&mut self, ctx: &mut CompileCtx<'_>) -> Result<Atom, RegExpCompileError> {
     // `[` has already been consumed.
+    if self.flags.unicode_sets {
+      return self.parse_class_unicode_sets(ctx);
+    }
     let mut negated = false;
     if self.eat(b'^' as u16) {
       negated = true;
@@ -3494,6 +3642,447 @@ impl<'a> Parser<'a> {
     }
 
     Ok(Atom::Class(CharClass { negated, items }))
+  }
+
+  fn parse_class_unicode_sets(&mut self, ctx: &mut CompileCtx<'_>) -> Result<Atom, RegExpCompileError> {
+    // `[` has already been consumed.
+    let mut negated = false;
+    if self.eat(b'^' as u16) {
+      negated = true;
+    }
+
+    // UnicodeSetsMode allows empty class contents (`[]` / `[^]`).
+    let set = if self.peek() == Some(b']' as u16) {
+      UnicodeSet::new()
+    } else {
+      self.parse_class_set_expression(ctx)?
+    };
+
+    if !self.eat(b']' as u16) {
+      return Err(RegExpSyntaxError {
+        message: "Unterminated character class",
+      }
+      .into());
+    }
+
+    // Early error: negated UnicodeSets-mode classes must not contain strings.
+    if negated && set.may_contain_strings() {
+      return Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
+      }
+      .into());
+    }
+
+    self.unicode_set_to_class_atom(ctx, set, negated)
+  }
+
+  fn unicode_set_to_class_atom(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    set: UnicodeSet,
+    negated: bool,
+  ) -> Result<Atom, RegExpCompileError> {
+    if set.strings.is_empty() {
+      return Ok(Atom::Class(char_set_to_char_class(ctx, &set.chars, negated)?));
+    }
+
+    // Negated classes with strings are an early error and should have been rejected above.
+    debug_assert!(!negated, "negated UnicodeSets-mode classes cannot contain strings");
+
+    let has_empty = set.contains_string(&[]);
+    let strings = StringTrie::try_build_from_slices(
+      ctx,
+      set.iter_strings_desc_len().filter(|s| s.len() > 1),
+      self.flags.ignore_case,
+    )?;
+    let single = char_set_to_char_class(ctx, &set.chars, false)?;
+    Ok(Atom::UnicodeSet(UnicodeSetClass {
+      strings,
+      single,
+      has_empty,
+    }))
+  }
+
+  fn parse_class_set_expression(&mut self, ctx: &mut CompileCtx<'_>) -> Result<UnicodeSet, RegExpCompileError> {
+    // Implements the core of ECMA-262 `ClassSetExpression` for UnicodeSetsMode (`/v`).
+    //
+    // We follow the grammar:
+    //   ClassSetExpression :: ClassUnion | ClassIntersection | ClassSubtraction
+    //
+    // Disambiguation strategy:
+    // - Parse a leading `ClassSetOperand`, then look for `&&` / `--` to decide whether this is an
+    //   intersection/subtraction expression.
+    // - Otherwise, fall back to parsing a union from the start (so `a-b` parses as a range).
+    let start_idx = self.idx;
+    let first = self.parse_class_set_operand(ctx)?;
+
+    let is_and_and = self.peek() == Some(b'&' as u16)
+      && self.units.get(self.idx + 1).copied() == Some(b'&' as u16)
+      && self.units.get(self.idx + 2).copied() != Some(b'&' as u16);
+    if is_and_and {
+      // ClassIntersection
+      self.idx = self.idx.saturating_add(2); // consume `&&`
+      let mut out = first;
+      let rhs = self.parse_class_set_operand(ctx)?;
+      out = out.intersection(ctx, &rhs)?;
+      while self.peek() == Some(b'&' as u16)
+        && self.units.get(self.idx + 1).copied() == Some(b'&' as u16)
+        && self.units.get(self.idx + 2).copied() != Some(b'&' as u16)
+      {
+        self.idx = self.idx.saturating_add(2);
+        let rhs = self.parse_class_set_operand(ctx)?;
+        out = out.intersection(ctx, &rhs)?;
+      }
+      return Ok(out);
+    }
+
+    let is_dash_dash =
+      self.peek() == Some(b'-' as u16) && self.units.get(self.idx + 1).copied() == Some(b'-' as u16);
+    if is_dash_dash {
+      // ClassSubtraction
+      self.idx = self.idx.saturating_add(2); // consume `--`
+      let mut out = first;
+      let rhs = self.parse_class_set_operand(ctx)?;
+      out = out.difference(ctx, &rhs)?;
+      while self.peek() == Some(b'-' as u16) && self.units.get(self.idx + 1).copied() == Some(b'-' as u16) {
+        self.idx = self.idx.saturating_add(2);
+        let rhs = self.parse_class_set_operand(ctx)?;
+        out = out.difference(ctx, &rhs)?;
+      }
+      return Ok(out);
+    }
+
+    // Otherwise: ClassUnion (which includes ranges).
+    self.idx = start_idx;
+    self.parse_class_union(ctx)
+  }
+
+  fn parse_class_union(&mut self, ctx: &mut CompileCtx<'_>) -> Result<UnicodeSet, RegExpCompileError> {
+    let mut out = UnicodeSet::new();
+    let mut i: usize = 0;
+    while let Some(u) = self.peek() {
+      if u == (b']' as u16) {
+        break;
+      }
+      if i != 0 {
+        ctx.tick_every(i)?;
+      }
+      i = i.wrapping_add(1);
+      let item = self.parse_class_union_item(ctx)?;
+      out = out.union(ctx, &item)?;
+    }
+    Ok(out)
+  }
+
+  fn parse_class_union_item(&mut self, ctx: &mut CompileCtx<'_>) -> Result<UnicodeSet, RegExpCompileError> {
+    // If this starts with an operand that cannot be a range start, parse it directly.
+    match self.peek() {
+      Some(x) if x == (b'[' as u16) => return self.parse_nested_class_operand(ctx),
+      Some(x) if x == (b'\\' as u16) => {
+        let n1 = self.units.get(self.idx + 1).copied();
+        let n2 = self.units.get(self.idx + 2).copied();
+        if n1 == Some(b'q' as u16) && n2 == Some(b'{' as u16) {
+          return self.parse_class_string_disjunction(ctx);
+        }
+        if is_class_set_escape_class_operand_start(n1) {
+          return self.parse_nested_class_operand(ctx);
+        }
+      }
+      _ => {}
+    }
+
+    // Range: ClassSetCharacter '-' ClassSetCharacter
+    let start = self.parse_class_set_character(ctx)?;
+    if self.peek() == Some(b'-' as u16) && self.units.get(self.idx + 1).copied() != Some(b'-' as u16) {
+      self.next(); // consume '-'
+      let end = self.parse_class_set_character(ctx)?;
+      if start > end {
+        return Err(RegExpSyntaxError {
+          message: "Invalid regular expression",
+        }
+        .into());
+      }
+      let mut set = UnicodeSet::new();
+      set.chars.insert_range(start, end);
+      return Ok(set);
+    }
+
+    let mut set = UnicodeSet::new();
+    set.insert_char(start);
+    Ok(set)
+  }
+
+  fn parse_class_set_operand(&mut self, ctx: &mut CompileCtx<'_>) -> Result<UnicodeSet, RegExpCompileError> {
+    match self.peek() {
+      Some(x) if x == (b'[' as u16) => self.parse_nested_class_operand(ctx),
+      Some(x) if x == (b'\\' as u16) => {
+        let n1 = self.units.get(self.idx + 1).copied();
+        let n2 = self.units.get(self.idx + 2).copied();
+        if n1 == Some(b'q' as u16) && n2 == Some(b'{' as u16) {
+          return self.parse_class_string_disjunction(ctx);
+        }
+        if is_class_set_escape_class_operand_start(n1) {
+          return self.parse_nested_class_operand(ctx);
+        }
+        let ch = self.parse_class_set_character(ctx)?;
+        let mut set = UnicodeSet::new();
+        set.insert_char(ch);
+        Ok(set)
+      }
+      Some(_) => {
+        let ch = self.parse_class_set_character(ctx)?;
+        let mut set = UnicodeSet::new();
+        set.insert_char(ch);
+        Ok(set)
+      }
+      None => Err(RegExpSyntaxError {
+        message: "Unterminated character class",
+      }
+      .into()),
+    }
+  }
+
+  fn parse_nested_class_operand(&mut self, ctx: &mut CompileCtx<'_>) -> Result<UnicodeSet, RegExpCompileError> {
+    match self.peek() {
+      Some(x) if x == (b'[' as u16) => {
+        self.next(); // consume '['
+        let mut negated = false;
+        if self.eat(b'^' as u16) {
+          negated = true;
+        }
+
+        let mut inner = if self.peek() == Some(b']' as u16) {
+          UnicodeSet::new()
+        } else {
+          self.parse_class_set_expression(ctx)?
+        };
+
+        if !self.eat(b']' as u16) {
+          return Err(RegExpSyntaxError {
+            message: "Unterminated character class",
+          }
+          .into());
+        }
+
+        if negated {
+          if inner.may_contain_strings() {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          }
+          inner.chars = inner.chars.complement();
+        }
+        Ok(inner)
+      }
+      Some(x) if x == (b'\\' as u16) => {
+        self.next(); // consume '\'
+        let Some(e) = self.next() else {
+          return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
+        };
+        let mut set = UnicodeSet::new();
+
+        match e {
+          x if x == (b'd' as u16) || x == (b'D' as u16) => {
+            for u in b'0'..=b'9' {
+              set.insert_char(u as u16);
+            }
+            if x == (b'D' as u16) {
+              set.chars = set.chars.complement();
+            }
+          }
+          x if x == (b'w' as u16) || x == (b'W' as u16) => {
+            for u in b'0'..=b'9' {
+              set.insert_char(u as u16);
+            }
+            for u in b'a'..=b'z' {
+              set.insert_char(u as u16);
+            }
+            for u in b'A'..=b'Z' {
+              set.insert_char(u as u16);
+            }
+            set.insert_char(b'_' as u16);
+            if x == (b'W' as u16) {
+              set.chars = set.chars.complement();
+            }
+          }
+          x if x == (b's' as u16) || x == (b'S' as u16) => {
+            // Match the same code units as `CharClassItem::Space`.
+            for u in [0x0009u16, 0x000A, 0x000B, 0x000C, 0x000D, 0x0020, 0x00A0, 0xFEFF] {
+              set.insert_char(u);
+            }
+            if x == (b'S' as u16) {
+              set.chars = set.chars.complement();
+            }
+          }
+          // Unicode property escapes (`\p{...}` / `\P{...}`) are not implemented yet.
+          x if x == (b'p' as u16) || x == (b'P' as u16) => {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          }
+          _ => {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          }
+        }
+
+        Ok(set)
+      }
+      _ => Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
+      }
+      .into()),
+    }
+  }
+
+  fn parse_class_string_disjunction(&mut self, ctx: &mut CompileCtx<'_>) -> Result<UnicodeSet, RegExpCompileError> {
+    // Grammar: `\q{` ClassStringDisjunctionContents `}`
+    // `\` has not been consumed yet.
+    if self.next() != Some(b'\\' as u16) || self.next() != Some(b'q' as u16) || self.next() != Some(b'{' as u16) {
+      return Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
+      }
+      .into());
+    }
+
+    let mut out = UnicodeSet::new();
+    let mut cur: Vec<u16> = Vec::new();
+
+    let mut i: usize = 0;
+    loop {
+      let Some(u) = self.peek() else {
+        return Err(RegExpSyntaxError {
+          message: "Unterminated character class",
+        }
+        .into());
+      };
+
+      if u == (b'}' as u16) {
+        self.next();
+        out.insert_string(ctx, &cur)?;
+        break;
+      }
+      if u == (b'|' as u16) {
+        self.next();
+        out.insert_string(ctx, &cur)?;
+        cur.clear();
+        continue;
+      }
+
+      if i != 0 {
+        ctx.tick_every(i)?;
+      }
+      i = i.wrapping_add(1);
+      let ch = self.parse_class_set_character(ctx)?;
+      ctx.vec_try_push(&mut cur, ch)?;
+    }
+
+    Ok(out)
+  }
+
+  fn parse_class_set_character(&mut self, ctx: &mut CompileCtx<'_>) -> Result<u16, RegExpCompileError> {
+    let Some(u) = self.next() else {
+      return Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
+      }
+      .into());
+    };
+
+    // ClassSetSyntaxCharacter :: one of
+    //   `(` `)` `[` `]` `{` `}` `/` `-` `\` `|`
+    match u {
+      x if x == (b'\\' as u16) => {
+        let Some(e) = self.next() else {
+          return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
+        };
+        match e {
+          x if x == (b'b' as u16) => Ok(0x0008), // backspace
+          x if x == (b'c' as u16) => {
+            let Some(next) = self.peek() else {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            };
+            if !is_ascii_letter(next) {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            }
+            self.next();
+            Ok(((next as u8) & 0x1F) as u16)
+          }
+          x if x == (b'n' as u16) => Ok(0x000A),
+          x if x == (b'r' as u16) => Ok(0x000D),
+          x if x == (b't' as u16) => Ok(0x0009),
+          x if x == (b'v' as u16) => Ok(0x000B),
+          x if x == (b'f' as u16) => Ok(0x000C),
+          x if x == (b'0' as u16) => {
+            // `\0` in UnicodeMode is only valid when not followed by a decimal digit.
+            if self.peek().is_some_and(is_decimal_digit) {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            }
+            Ok(0x0000)
+          }
+          x if (b'1' as u16..=b'7' as u16).contains(&x) => Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into()),
+          x if x == (b'8' as u16) || x == (b'9' as u16) => Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into()),
+          x if x == (b'x' as u16) => {
+            let v = self.parse_hex_escape_2(ctx)?;
+            Ok(u16::try_from(v).map_err(|_| {
+              RegExpCompileError::Syntax(RegExpSyntaxError {
+                message: "Invalid escape",
+              })
+            })?)
+          }
+          x if x == (b'u' as u16) => {
+            let v = self.parse_unicode_escape(ctx)?;
+            Ok(u16::try_from(v).map_err(|_| {
+              RegExpCompileError::Syntax(RegExpSyntaxError {
+                message: "Invalid escape",
+              })
+            })?)
+          }
+          // ClassSetReservedPunctuator (treat as identity escapes).
+          x if is_class_set_reserved_punctuator(x) => Ok(x),
+          // Identity escape (approximation).
+          other => Ok(other),
+        }
+      }
+      // Syntax characters must be escaped in UnicodeSetsMode.
+      x if is_class_set_syntax_character(x) => {
+        Err(RegExpSyntaxError {
+          message: "Invalid regular expression",
+        }
+        .into())
+      }
+      other => {
+        // Reject unescaped reserved double punctuators (e.g. `&&`, `==`, `<<`), which must be
+        // escaped in UnicodeSetsMode.
+        let next = self.peek();
+        let is_reserved_double = next == Some(other) && is_class_set_reserved_double_punctuator(other);
+        if is_reserved_double {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
+        Ok(other)
+      }
+    }
   }
 
   fn parse_class_atom(
@@ -4769,6 +5358,88 @@ mod tests {
       r#"(function () { const s = "\uD83D\uDC38"; const m = /\uD83D\uDC38/u.exec(s); return m !== null && m[0] === s; })()"#,
     )?);
 
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_unicode_sets_mode_class_string_disjunction_matches_longest_first() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let ok = eval_bool(
+      &mut rt,
+      r#"
+      (function () {
+        const re = new RegExp("[\\q{ab|a}]", "v");
+        const m = re.exec("ab");
+        return m !== null && m[0] === "ab" && re.test("a");
+      })()
+    "#,
+    )?;
+    assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_unicode_sets_mode_class_set_intersection_can_be_empty() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let ok = eval_bool(
+      &mut rt,
+      r#"
+      (function () {
+        const re = new RegExp("[_&&\\q{0|9\\uFE0F\\u20E3}]", "v");
+        return !re.test("_") && !re.test("0") && !re.test("9\uFE0F\u20E3");
+      })()
+    "#,
+    )?;
+    assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_unicode_sets_mode_class_set_subtraction_removes_string_alternative() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let ok = eval_bool(
+      &mut rt,
+      r#"
+      (function () {
+        const re = new RegExp("[\\q{ab|a}--\\q{ab}]", "v");
+        const m = re.exec("ab");
+        return m !== null && m[0] === "a";
+      })()
+    "#,
+    )?;
+    assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_unicode_sets_mode_negated_class_with_strings_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let ok = eval_bool(
+      &mut rt,
+      r#"
+      (function () {
+        try {
+          new RegExp("[^\\q{ab}]", "v");
+          return false;
+        } catch (e) {
+          return e instanceof SyntaxError;
+        }
+      })()
+    "#,
+    )?;
+    assert!(ok);
     Ok(())
   }
 }
