@@ -5736,7 +5736,7 @@ fn compiled_var_is_hoisted_in_script_body() -> Result<(), VmError> {
 }
 
 #[test]
-fn compiled_var_declaration_without_initializer_is_noop_in_script_body() -> Result<(), VmError> {
+fn compiled_var_in_function_body_is_not_hoisted_to_script_body() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
   let mut rt = JsRuntime::new(vm, heap)?;
@@ -5745,13 +5745,79 @@ fn compiled_var_declaration_without_initializer_is_noop_in_script_body() -> Resu
     &mut rt.heap,
     "test.js",
     r#"
-      var x = 1;
-      var x;
-      x
+      function f() { var __vmjs_var_not_global__ = 1; }
+      __vmjs_var_not_global__;
+    "#,
+  )?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
+  Ok(())
+}
+
+#[test]
+fn compiled_var_in_nested_function_is_not_hoisted_to_outer_function() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        function g() { var __vmjs_var_not_outer__ = 1; }
+        return __vmjs_var_not_outer__;
+      }
+      f();
+    "#,
+  )?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
+  Ok(())
+}
+
+#[test]
+fn compiled_var_in_for_init_is_hoisted() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        __vmjs_i__; // read before for-loop var decl: should see `undefined`, not ReferenceError.
+        for (var __vmjs_i__ = 0; __vmjs_i__ < 1; __vmjs_i__ = __vmjs_i__ + 1) {}
+        return __vmjs_i__;
+      }
+      f();
     "#,
   )?;
   let result = rt.exec_compiled_script(script)?;
   assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_var_in_for_in_head_is_hoisted_when_loop_body_not_entered() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        for (var __vmjs_k__ in ({})) {}
+        return __vmjs_k__;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Undefined);
   Ok(())
 }
 
