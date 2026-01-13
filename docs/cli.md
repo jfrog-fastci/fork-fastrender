@@ -19,8 +19,11 @@ parsing semantics when debugging `<noscript>` fallbacks.
 
 ## JavaScript execution (`--js`)
 
-FastRender’s default CLI renderers run in a **static** mode (HTML/CSS/layout/paint only): author
-scripts are **not** executed unless you opt in with `--js`.
+FastRender’s render CLIs run in a **static** mode (HTML/CSS/layout/paint only): author scripts are
+**not** executed unless you opt in with `--js`.
+ 
+The windowed `browser` app is an exception: author JS execution is currently enabled by default
+(experimental; there is no stable CLI toggle to disable it yet).
 
 ### Binaries that support `--js`
 
@@ -31,8 +34,10 @@ scripts are **not** executed unless you opt in with `--js`.
   - `pageset_progress run --js …` (pageset scoreboard renders)
   - `bundle_page render --js …` (offline replay from a bundle)
 - Browser:
-  - `browser --js …` (windowed browser UI; experimental)
-  - `browser --headless-smoke --js …` (headless smoke test mode; selects a vm-js `api::BrowserTab` harness)
+  - Windowed UI: JS is currently enabled by default (experimental; `--js` does not toggle windowed
+    mode yet).
+  - `browser --headless-smoke --js …` (headless smoke test mode; selects a vm-js `api::BrowserTab`
+    harness — this is what the `browser --js` flag currently controls)
   - Note: the `browser` binary does not expose the shared JS budget flags.
   - Example (headless smoke test):
 
@@ -41,11 +46,11 @@ scripts are **not** executed unless you opt in with `--js`.
       --headless-smoke --js
     ```
 
-  - Example (windowed UI; JS enabled):
+  - Example (windowed UI):
 
     ```bash
     bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
-      --js https://example.com/
+      https://example.com/
     ```
 
 When `--js` is enabled in the render CLIs above, they use the `vm-js`-backed
