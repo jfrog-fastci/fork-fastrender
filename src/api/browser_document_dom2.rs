@@ -2417,10 +2417,6 @@ impl BrowserDocumentDom2 {
       && !self.author_stylesheet_has_has_selectors
       && prev_prepared.is_some()
       && prev_mapping.is_some()
-      // DOM mutations that alter the composed tree (including slot distribution) can shift renderer
-      // preorder ids or introduce selector dependencies we are not currently tracking. Fall back to
-      // a full cascade when structure changes.
-      && self.dirty_structure_nodes.is_empty()
       // Incremental restyle reuse is only meaningful when we have at least one style-affecting
       // mutation classified (attribute changes or form-state changes that affect selectors like
       // `:checked`).
@@ -2440,20 +2436,6 @@ impl BrowserDocumentDom2 {
       // Reuse-based invalidation is currently conservative and does not support container query
       // fixpoint iteration or `:has()` reverse dependencies.
       && prev_prepared.is_some_and(|prepared| !prepared.stylesheet().has_container_rules())
-      // Shadow roots introduce additional selector dependencies through slotting/composed tree
-      // traversal; until those are modelled in the invalidation sets, disable reuse.
-      && !prev_prepared.is_some_and(|prepared| {
-        let mut stack: Vec<&crate::dom::DomNode> = vec![prepared.dom()];
-        while let Some(node) = stack.pop() {
-          if matches!(node.node_type, crate::dom::DomNodeType::ShadowRoot { .. }) {
-            return true;
-          }
-          for child in node.children.iter().rev() {
-            stack.push(child);
-          }
-        }
-        false
-      })
       && prev_mapping.is_some_and(|prev| prev.preorder_to_node_id() == mapping.preorder_to_node_id());
 
     // Build optional reuse inputs for the cascade pass.
@@ -3815,7 +3797,20 @@ fn build_incremental_restyle_scope(
   let mut ancestors: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
   for &dirty in dirty_style_nodes {
-    let restyle_root = dom2.parent_node(dirty).unwrap_or(dom2_root);
+    let mut restyle_root = dom2.parent_node(dirty).unwrap_or(dom2_root);
+    // `<slot>` nodes live inside shadow roots, but their attributes affect the composed/rendered
+    // tree by changing which light-DOM children are assigned. When a slot mutates we must restyle
+    // from the shadow host so host descendants do not reuse stale slot-assignment metadata.
+    if matches!(
+      &dom2.node(dirty).kind,
+      crate::dom2::NodeKind::Slot { .. }
+    ) {
+      if let Some(shadow_root) = dom2.shadow_root_ancestor(dirty) {
+        if let Some(host) = dom2.parent_node(shadow_root) {
+          restyle_root = host;
+        }
+      }
+    }
     let restyle_root_preorder = mapping.preorder_for_node_id(restyle_root)?;
     restyle_roots.insert(restyle_root_preorder);
 
@@ -5597,6 +5592,147 @@ mod tests {
     let after_insert = doc.invalidation_counters();
     assert_eq!(after_insert.full_restyles, after_attr.full_restyles + 1);
     assert_eq!(after_insert.incremental_restyles, after_attr.incremental_restyles);
+
+    Ok(())
+  }
+
+  #[test]
+  fn slot_name_change_updates_slot_distribution_with_incremental_restyle_reuse() -> Result<()> {
+    use crate::debug::runtime::RuntimeToggles;
+    use std::collections::HashMap;
+
+    let renderer = renderer_for_tests();
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE".to_string(),
+      "1".to_string(),
+    )]));
+
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <div id=host>
+            <template shadowroot=open>
+              <slot id=slot name=x></slot>
+            </template>
+            <span id=slotted slot=x>Hi</span>
+          </div>
+        </body>
+      </html>
+    "#;
+
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      RenderOptions::new()
+        .with_viewport(32, 32)
+        .with_runtime_toggles(toggles),
+    )?;
+
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+    assert_eq!(before.full_restyles, 1);
+    assert_eq!(before.incremental_restyles, 0);
+
+    let (slot, slotted) = {
+      let dom = doc.dom();
+      let host = dom.get_element_by_id("host").expect("#host");
+      let shadow_root = dom.shadow_root_for_host(host).expect("shadow root");
+      let slot = dom
+        .get_element_by_id_from(shadow_root, "slot")
+        .expect("slot element");
+      let slotted = dom.get_element_by_id("slotted").expect("#slotted");
+      (slot, slotted)
+    };
+
+    assert!(
+      doc.principal_box_id_for_node(slotted)?.is_some(),
+      "slotted node should be rendered before slot name change"
+    );
+
+    let changed =
+      doc.mutate_dom(|dom| dom.set_attribute(slot, "name", "y").expect("set attribute"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.full_restyles, before.full_restyles);
+    assert_eq!(after.incremental_restyles, before.incremental_restyles + 1);
+    assert!(
+      doc.principal_box_id_for_node(slotted)?.is_none(),
+      "slotted node should not be rendered after slot name change"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn slot_name_change_can_cause_slotted_node_to_start_rendering_with_incremental_restyle_reuse() -> Result<()> {
+    use crate::debug::runtime::RuntimeToggles;
+    use std::collections::HashMap;
+
+    let renderer = renderer_for_tests();
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE".to_string(),
+      "1".to_string(),
+    )]));
+
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <div id=host>
+            <template shadowroot=open>
+              <style>
+                ::slotted(#slotted) { display: block !important; }
+              </style>
+              <slot id=slot name=x></slot>
+            </template>
+            <span id=slotted slot=y style="display:none">Hi</span>
+          </div>
+        </body>
+      </html>
+    "#;
+
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      RenderOptions::new()
+        .with_viewport(32, 32)
+        .with_runtime_toggles(toggles),
+    )?;
+
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+    assert_eq!(before.full_restyles, 1);
+    assert_eq!(before.incremental_restyles, 0);
+
+    let (slot, slotted) = {
+      let dom = doc.dom();
+      let host = dom.get_element_by_id("host").expect("#host");
+      let shadow_root = dom.shadow_root_for_host(host).expect("shadow root");
+      let slot = dom
+        .get_element_by_id_from(shadow_root, "slot")
+        .expect("slot element");
+      let slotted = dom.get_element_by_id("slotted").expect("#slotted");
+      (slot, slotted)
+    };
+
+    assert!(
+      doc.principal_box_id_for_node(slotted)?.is_none(),
+      "slotted node should not be rendered when unassigned"
+    );
+
+    let changed =
+      doc.mutate_dom(|dom| dom.set_attribute(slot, "name", "y").expect("set attribute"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.full_restyles, before.full_restyles);
+    assert_eq!(after.incremental_restyles, before.incremental_restyles + 1);
+    assert!(
+      doc.principal_box_id_for_node(slotted)?.is_some(),
+      "slotted node should be rendered after slot name change assigns it"
+    );
 
     Ok(())
   }
