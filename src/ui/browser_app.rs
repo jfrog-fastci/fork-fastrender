@@ -1,5 +1,6 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
+use crate::multiprocess::SiteKey;
 use crate::ui::about_pages;
 use crate::ui::appearance::AppearanceSettings;
 use crate::ui::browser_limits::BrowserLimits;
@@ -414,6 +415,8 @@ pub struct BrowserTabState {
   /// The UI thread can bump these counters (without blocking on the worker) to cancel in-flight
   /// navigation/paint work.
   pub cancel: CancelGens,
+  /// Best-effort site isolation key snapshot derived from the latest navigation URL.
+  pub site_key: Option<SiteKey>,
   /// URL shown in the address bar when this tab is active.
   ///
   /// This is driven by worker navigation events (e.g. [`WorkerToUi::NavigationCommitted`]), along
@@ -473,6 +476,9 @@ pub struct BrowserTabState {
 impl BrowserTabState {
   pub fn new(tab_id: TabId, initial_url: String) -> Self {
     let committed_url = initial_url.clone();
+    let site_key = Url::parse(&committed_url)
+      .ok()
+      .map(|url| SiteKey::from_url(&url));
     Self {
       id: tab_id,
       renderer_process: None,
@@ -480,6 +486,7 @@ impl BrowserTabState {
       pinned: false,
       group: None,
       cancel: CancelGens::new(),
+      site_key,
       current_url: Some(initial_url),
       committed_url: Some(committed_url),
       title: None,
@@ -2161,7 +2168,16 @@ impl BrowserAppState {
       }
       WorkerToUi::NavigationStarted { tab_id, url } => {
         let safe_url = validate_untrusted_navigation_url(&url).ok();
+        let site_key = if url.len() > MAX_URL_BYTES {
+          None
+        } else {
+          safe_url
+            .as_deref()
+            .and_then(|url| Url::parse(url).ok())
+            .map(|url| SiteKey::from_url(&url))
+        };
         if let Some(tab) = self.tab_mut(tab_id) {
+          tab.site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
             tab.current_url = Some(url.clone());
           }
@@ -2192,6 +2208,14 @@ impl BrowserAppState {
           .as_deref()
           .map(|t| sanitize_untrusted_text(t, MAX_TITLE_BYTES))
           .filter(|t| !t.is_empty());
+        let site_key = if url.len() > MAX_URL_BYTES {
+          None
+        } else {
+          safe_url
+            .as_deref()
+            .and_then(|url| Url::parse(url).ok())
+            .map(|url| SiteKey::from_url(&url))
+        };
 
         if let Some(url) = safe_url.as_ref() {
           // Record global history. This is the single canonical source of truth for what counts as a
@@ -2227,6 +2251,7 @@ impl BrowserAppState {
           self.visited.record_visit(normalized_about, safe_title.clone());
         }
         if let Some(tab) = self.tab_mut(tab_id) {
+          tab.site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
             tab.current_url = Some(url.clone());
             tab.committed_url = Some(url.clone());
@@ -2260,8 +2285,17 @@ impl BrowserAppState {
       } => {
         let safe_url = validate_untrusted_navigation_url(&url).ok();
         let safe_error = sanitize_untrusted_text(&error, MAX_ERROR_BYTES);
+        let site_key = if url.len() > MAX_URL_BYTES {
+          None
+        } else {
+          safe_url
+            .as_deref()
+            .and_then(|url| Url::parse(url).ok())
+            .map(|url| SiteKey::from_url(&url))
+        };
         // Do not record failed navigations in global omnibox history.
         if let Some(tab) = self.tab_mut(tab_id) {
+          tab.site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
             tab.current_url = Some(url.clone());
           }
@@ -2915,6 +2949,35 @@ mod browser_app_tests {
       entry.visited_at_ms, 0,
       "expected committed navigations to have a visit timestamp"
     );
+  }
+
+  #[test]
+  fn navigation_committed_updates_site_key_and_invalid_clears_it() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+      title: None,
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    let tab = app.active_tab().unwrap();
+    let expected = SiteKey::from_url(&Url::parse("https://example.com/").unwrap());
+    assert_eq!(tab.site_key, Some(expected));
+
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "not a url".to_string(),
+      title: None,
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    let tab = app.active_tab().unwrap();
+    assert_eq!(tab.site_key, None);
   }
 
   #[test]
