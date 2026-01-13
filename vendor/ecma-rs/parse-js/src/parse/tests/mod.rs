@@ -5,6 +5,7 @@ mod type_member;
 mod class_await;
 mod class_static_block;
 mod regex_unicode_sets;
+mod regexp_unicode_class;
 
 use super::Parser;
 use crate::lex::LexMode;

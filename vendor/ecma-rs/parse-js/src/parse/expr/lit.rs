@@ -1097,6 +1097,35 @@ fn is_regex_identity_escape_unicode_mode(ch: char) -> bool {
   is_regex_syntax_character(ch) || ch == '/'
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RegexClassAtom {
+  /// Denotes exactly one character.
+  Single(u32),
+  /// Denotes a character class escape / property escape, i.e. does not contain exactly one
+  /// character.
+  NotSingle,
+}
+
+impl RegexClassAtom {
+  #[inline]
+  fn single(self) -> Option<u32> {
+    match self {
+      Self::Single(v) => Some(v),
+      Self::NotSingle => None,
+    }
+  }
+}
+
+#[inline]
+fn regex_hex_value(b: u8) -> Option<u32> {
+  match b {
+    b'0'..=b'9' => Some((b - b'0') as u32),
+    b'a'..=b'f' => Some((b - b'a' + 10) as u32),
+    b'A'..=b'F' => Some((b - b'A' + 10) as u32),
+    _ => None,
+  }
+}
+
 fn validate_regex_pattern(
   pattern: &str,
   base_offset: usize,
@@ -1108,6 +1137,9 @@ fn validate_regex_pattern(
   let bytes = pattern.as_bytes();
   let mut i = 0usize;
   let mut in_charset = false;
+  let mut charset_first = false;
+  let mut charset_negated = false;
+  let mut charset_prev_atom: Option<RegexClassAtom> = None;
   let mut group_stack: Vec<bool> = Vec::new();
   let mut prev_can_be_quantified = false;
   // Whether the immediately preceding token was a quantifier that can accept a `?` non-greedy
@@ -1756,9 +1788,338 @@ fn validate_regex_pattern(
     Ok(end)
   }
 
+  fn parse_legacy_class_atom(
+    pattern: &str,
+    base_offset: usize,
+    start: usize,
+    unicode_mode: bool,
+    unicode_sets_mode: bool,
+    has_named_groups: bool,
+    in_negated_class: bool,
+  ) -> Result<(usize, RegexClassAtom), RegexError> {
+    let ch = pattern[start..].chars().next().unwrap();
+    if ch != '\\' {
+      return Ok((start + ch.len_utf8(), RegexClassAtom::Single(ch as u32)));
+    }
+    let escape_start = start;
+    let after_backslash = start + '\\'.len_utf8();
+    if after_backslash >= pattern.len() {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: base_offset + escape_start,
+        len: 1,
+      });
+    }
+
+    let esc = pattern[after_backslash..].chars().next().unwrap();
+    let esc_len = esc.len_utf8();
+    let after_esc = after_backslash + esc_len;
+    let bytes = pattern.as_bytes();
+
+    if unicode_mode && matches!(esc, 'p' | 'P') {
+      let end = validate_unicode_property_escape(
+        pattern,
+        base_offset,
+        escape_start,
+        after_backslash,
+        unicode_sets_mode,
+        in_negated_class,
+      )?;
+      return Ok((end, RegexClassAtom::NotSingle));
+    }
+
+    // `\k<name>` is not valid inside character classes.
+    if esc == 'k' && (unicode_mode || has_named_groups) {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: base_offset + escape_start,
+        len: after_esc.saturating_sub(escape_start),
+      });
+    }
+
+    if esc == 'u' {
+      let after_u = after_esc;
+      if unicode_mode {
+        if after_u >= bytes.len() {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: after_u.saturating_sub(escape_start),
+          });
+        }
+        if bytes[after_u] == b'{' {
+          let mut j = after_u + 1;
+          let mut saw_digit = false;
+          let mut value: u32 = 0;
+          while j < bytes.len() && bytes[j] != b'}' {
+            let Some(digit) = regex_hex_value(bytes[j]) else {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: j + 1 - escape_start,
+              });
+            };
+            saw_digit = true;
+            if value > (0x10FFFFu32 - digit) / 16 {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: j + 1 - escape_start,
+              });
+            }
+            value = value * 16 + digit;
+            j += 1;
+          }
+          if j >= bytes.len() || !saw_digit {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: j.saturating_sub(escape_start),
+            });
+          }
+          debug_assert_eq!(bytes[j], b'}');
+          return Ok((j + 1, RegexClassAtom::Single(value)));
+        }
+        // `\uXXXX`
+        let mut j = after_u;
+        let mut value: u32 = 0;
+        for _ in 0..4 {
+          if j >= bytes.len() {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: j.saturating_sub(escape_start),
+            });
+          }
+          let Some(digit) = regex_hex_value(bytes[j]) else {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: j.saturating_sub(escape_start),
+            });
+          };
+          value = (value << 4) | digit;
+          j += 1;
+        }
+        return Ok((j, RegexClassAtom::Single(value)));
+      }
+
+      // Non-UnicodeMode: treat `\uXXXX` as a Unicode escape only when exactly 4 hex digits follow.
+      if after_u + 4 <= bytes.len()
+        && bytes[after_u..after_u + 4]
+          .iter()
+          .all(|b| regex_hex_value(*b).is_some())
+      {
+        let mut value: u32 = 0;
+        for b in &bytes[after_u..after_u + 4] {
+          value = (value << 4) | regex_hex_value(*b).unwrap();
+        }
+        return Ok((after_u + 4, RegexClassAtom::Single(value)));
+      }
+      return Ok((after_esc, RegexClassAtom::Single(esc as u32)));
+    }
+
+    if esc == 'x' {
+      let after_x = after_esc;
+      if after_x + 2 <= bytes.len() {
+        if let (Some(h1), Some(h2)) = (regex_hex_value(bytes[after_x]), regex_hex_value(bytes[after_x + 1]))
+        {
+          return Ok((after_x + 2, RegexClassAtom::Single((h1 << 4) | h2)));
+        }
+      }
+      if unicode_mode {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + escape_start,
+          len: after_x.saturating_sub(escape_start),
+        });
+      }
+      return Ok((after_esc, RegexClassAtom::Single(esc as u32)));
+    }
+
+    // Digit escapes are disallowed in UnicodeMode character classes (except `\0`).
+    if esc.is_ascii_digit() {
+      if unicode_mode {
+        if esc == '0' {
+          let next_is_digit = after_esc < pattern.len()
+            && pattern[after_esc..]
+              .chars()
+              .next()
+              .is_some_and(|c| c.is_ascii_digit());
+          if next_is_digit {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: 2 + esc_len,
+            });
+          }
+          return Ok((after_esc, RegexClassAtom::Single(0)));
+        }
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + escape_start,
+          len: 1 + esc_len,
+        });
+      }
+
+      // Non-UnicodeMode: treat octal escapes (`\0`..`\777`) as a single character.
+      if ('0'..='7').contains(&esc) {
+        let mut j = after_backslash;
+        let mut value: u32 = 0;
+        for _ in 0..3 {
+          if j >= pattern.len() {
+            break;
+          }
+          let c = pattern[j..].chars().next().unwrap();
+          if !('0'..='7').contains(&c) {
+            break;
+          }
+          value = (value << 3) + ((c as u8 - b'0') as u32);
+          j += c.len_utf8();
+        }
+        return Ok((j, RegexClassAtom::Single(value)));
+      }
+      // `\8`/`\9` are treated as identity escapes in non-UnicodeMode.
+      return Ok((after_esc, RegexClassAtom::Single(esc as u32)));
+    }
+
+    // ControlEscape.
+    match esc {
+      'f' => return Ok((after_esc, RegexClassAtom::Single(0x0c))),
+      'n' => return Ok((after_esc, RegexClassAtom::Single(0x0a))),
+      'r' => return Ok((after_esc, RegexClassAtom::Single(0x0d))),
+      't' => return Ok((after_esc, RegexClassAtom::Single(0x09))),
+      'v' => return Ok((after_esc, RegexClassAtom::Single(0x0b))),
+      _ => {}
+    }
+
+    // `\c` AsciiLetter.
+    if esc == 'c' {
+      if after_esc >= pattern.len() {
+        if unicode_mode {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: pattern.len().saturating_sub(escape_start),
+          });
+        }
+        return Ok((after_esc, RegexClassAtom::Single(esc as u32)));
+      }
+      let ctrl = pattern[after_esc..].chars().next().unwrap();
+      if ctrl.is_ascii_alphabetic() {
+        let upper = ctrl.to_ascii_uppercase();
+        let value = (upper as u32).saturating_sub(0x40);
+        return Ok((after_esc + ctrl.len_utf8(), RegexClassAtom::Single(value)));
+      }
+      if unicode_mode {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + escape_start,
+          len: after_esc + ctrl.len_utf8() - escape_start,
+        });
+      }
+      return Ok((after_esc, RegexClassAtom::Single(esc as u32)));
+    }
+
+    // `\b` is backspace inside character classes.
+    if esc == 'b' {
+      return Ok((after_esc, RegexClassAtom::Single(0x08)));
+    }
+
+    // `\-` is a ClassEscape in UnicodeMode.
+    if esc == '-' {
+      return Ok((after_esc, RegexClassAtom::Single('-' as u32)));
+    }
+
+    // CharacterClassEscape.
+    if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
+      return Ok((after_esc, RegexClassAtom::NotSingle));
+    }
+
+    if unicode_mode && !is_regex_identity_escape_unicode_mode(esc) {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: base_offset + escape_start,
+        len: 1 + esc_len,
+      });
+    }
+
+    Ok((after_esc, RegexClassAtom::Single(esc as u32)))
+  }
+
   while i < pattern.len() {
     let ch = pattern[i..].chars().next().unwrap();
     let ch_len = ch.len_utf8();
+
+    if in_charset {
+      if ch == ']' {
+        in_charset = false;
+        charset_first = false;
+        charset_negated = false;
+        charset_prev_atom = None;
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        i += ch_len;
+        continue;
+      }
+
+      if charset_first && ch == '^' {
+        charset_first = false;
+        charset_negated = true;
+        i += ch_len;
+        continue;
+      }
+
+      // Ranges: <ClassAtom> `-` <ClassAtom>
+      if ch == '-' && charset_prev_atom.is_some() && i + 1 < bytes.len() && bytes[i + 1] != b']' {
+        let left = charset_prev_atom.take().unwrap();
+        let dash_index = i;
+        let (end, right) = parse_legacy_class_atom(
+          pattern,
+          base_offset,
+          i + 1,
+          unicode_mode,
+          unicode_sets_mode,
+          has_named_groups,
+          charset_negated,
+        )?;
+
+        if unicode_mode && (left.single().is_none() || right.single().is_none()) {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + dash_index,
+            len: 1,
+          });
+        }
+        if let (Some(start), Some(end_cp)) = (left.single(), right.single()) {
+          if start > end_cp {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + dash_index,
+              len: 1,
+            });
+          }
+        }
+
+        i = end;
+        charset_first = false;
+        continue;
+      }
+
+      let (end, atom) = parse_legacy_class_atom(
+        pattern,
+        base_offset,
+        i,
+        unicode_mode,
+        unicode_sets_mode,
+        has_named_groups,
+        charset_negated,
+      )?;
+      charset_prev_atom = Some(atom);
+      i = end;
+      charset_first = false;
+      continue;
+    }
 
     if unicode_sets_mode && !in_charset && ch == '[' {
       let end =
@@ -2206,19 +2567,12 @@ fn validate_regex_pattern(
       continue;
     }
 
-    if in_charset {
-      if ch == ']' {
-        in_charset = false;
-        prev_can_be_quantified = true;
-        quantifier_allows_lazy = false;
-      }
-      i += ch_len;
-      continue;
-    }
-
     match ch {
       '[' => {
         in_charset = true;
+        charset_first = true;
+        charset_negated = false;
+        charset_prev_atom = None;
         prev_can_be_quantified = false;
         quantifier_allows_lazy = false;
         i += ch_len;
