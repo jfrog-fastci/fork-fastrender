@@ -9917,10 +9917,12 @@ impl App {
     }
 
     if self.bookmarks_panel_open && !close_bookmarks_panel {
-      let output = fastrender::ui::bookmarks_manager::bookmarks_manager_side_panel(
+      let output = fastrender::ui::panels::bookmarks_manager_side_panel(
         &ctx,
-        &mut self.bookmarks_manager,
-        &mut self.bookmarks,
+        fastrender::ui::panels::BookmarksManagerInput {
+          state: &mut self.bookmarks_manager,
+          store: &mut self.bookmarks,
+        },
       );
       if output.close_requested {
         close_bookmarks_panel = true;
