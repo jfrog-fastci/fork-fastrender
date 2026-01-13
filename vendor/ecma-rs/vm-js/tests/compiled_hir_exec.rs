@@ -1196,6 +1196,44 @@ fn compiled_hir_exec_unary_minus_object_preserves_bigint() -> Result<(), VmError
 }
 
 #[test]
+fn compiled_hir_exec_unary_plus_symbol_throws_type_error() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        try {
+          +Symbol("s");
+          return false;
+        } catch (e) {
+          return e instanceof TypeError;
+        }
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_hir_exec_unary_minus_symbol_throws_type_error() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        try {
+          -Symbol("s");
+          return false;
+        } catch (e) {
+          return e instanceof TypeError;
+        }
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_relational_comparison_string_uses_lexicographic_order() -> Result<(), VmError> {
   let result = compile_and_call0(
     r#"
