@@ -1178,6 +1178,8 @@ pub fn chrome_ui_with_bookmarks(
         "Home (Alt+Home)"
       };
       let home_response = icon_button(ui, BrowserIcon::Home, home_tooltip, true);
+      #[cfg(test)]
+      store_test_id(ctx, "chrome_home_button_id", home_response.id);
       if home_response.clicked() {
         actions.push(ChromeAction::Home);
       }
@@ -5702,21 +5704,21 @@ mod tests {
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
-    let zoom_in_id = expect_temp_id(&ctx, "chrome_zoom_in_button_id");
+    let home_id = expect_temp_id(&ctx, "chrome_home_button_id");
     let address_bar_text_edit_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
     let address_bar_display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
     let menu_button_id = expect_temp_id(&ctx, "chrome_menu_button_id");
 
     // Frame 2: focus a left-side toolbar button so we have a stable starting point for Tab
     // traversal.
-    ctx.memory_mut(|mem| mem.request_focus(zoom_in_id));
+    ctx.memory_mut(|mem| mem.request_focus(home_id));
     begin_frame(&ctx, Vec::new());
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
-      ctx.memory(|mem| mem.has_focus(zoom_in_id)),
-      "expected initial focus on zoom-in button"
+      ctx.memory(|mem| mem.has_focus(home_id)),
+      "expected initial focus on home button"
     );
 
     // Now Tab forward through widgets and ensure we reach the address bar before the menu button.
