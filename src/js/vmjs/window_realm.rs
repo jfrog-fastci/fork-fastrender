@@ -33861,7 +33861,7 @@ fn range_set_start_native(
     Err(dom2::DomError::IndexSizeError) => {
       Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
     }
-    Err(dom2::DomError::InvalidNodeType) => Err(VmError::Throw(make_dom_exception(
+    Err(dom2::DomError::InvalidNodeTypeError) => Err(VmError::Throw(make_dom_exception(
       vm,
       scope,
       "InvalidNodeTypeError",
@@ -33915,7 +33915,7 @@ fn range_set_end_native(
     Err(dom2::DomError::IndexSizeError) => {
       Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
     }
-    Err(dom2::DomError::InvalidNodeType) => Err(VmError::Throw(make_dom_exception(
+    Err(dom2::DomError::InvalidNodeTypeError) => Err(VmError::Throw(make_dom_exception(
       vm,
       scope,
       "InvalidNodeTypeError",

@@ -598,7 +598,7 @@ impl Document {
     match &node.kind {
       NodeKind::Text { content } | NodeKind::Comment { content } => Ok(content.as_str()),
       NodeKind::ProcessingInstruction { data, .. } => Ok(data.as_str()),
-      _ => Err(DomError::InvalidNodeType),
+      _ => Err(DomError::InvalidNodeTypeError),
     }
   }
 
@@ -613,7 +613,7 @@ impl Document {
         *value = data;
         Ok(())
       }
-      _ => Err(DomError::InvalidNodeType),
+      _ => Err(DomError::InvalidNodeTypeError),
     }
   }
 
