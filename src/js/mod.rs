@@ -78,6 +78,8 @@ pub mod runtime;
 pub mod chrome_events;
 #[path = "vmjs/chrome_api.rs"]
 pub mod vmjs_chrome_api;
+#[path = "vmjs/chrome_command_queue.rs"]
+pub mod chrome_command_queue;
 #[path = "vmjs/vm_error_format.rs"]
 pub(crate) mod vm_error_format;
 #[path = "vmjs/vm_limits.rs"]
