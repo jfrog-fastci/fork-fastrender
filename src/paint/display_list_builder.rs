@@ -3628,7 +3628,18 @@ impl DisplayListBuilder {
           && source_rect.min_y() <= target_rect.min_y()
           && source_rect.max_x() >= target_rect.max_x()
           && source_rect.max_y() >= target_rect.max_y();
-        if source_covers_target && !is_paged_media_page_root {
+        // If the source element already covers the entire paint target, we can often skip explicit
+        // canvas background propagation and let normal fragment painting handle it.
+        //
+        // However, when the canvas background originates from `<body>` (rather than the stacking
+        // context root `<html>`), relying on normal fragment painting would paint the body
+        // background in the in-flow layer. That would incorrectly cover negative z-index stacking
+        // contexts promoted to the root stacking context (WPT paint/stacking negative z-index
+        // reftests).
+        //
+        // Only skip propagation when the source is the root fragment itself.
+        let root_box_id = Self::get_box_id(fragment).unwrap_or(usize::MAX);
+        if source_covers_target && !is_paged_media_page_root && suppress_box_id == root_box_id {
           return None;
         }
         self.canvas_background_suppress_box_id = Some(suppress_box_id);
@@ -8127,21 +8138,13 @@ impl DisplayListBuilder {
       }
     }
 
-    if let Some(style) = html.style.clone() {
-      if Self::has_paintable_background(&style) {
-        let suppress_box_id = Self::get_box_id(html).unwrap_or(usize::MAX);
-        return Some((
-          style,
-          suppress_box_id,
-          Rect::new(html_origin, html.bounds.size),
-        ));
-      }
-    }
-
     if let Some(html_id) = Self::get_box_id(html) {
-      // Renderer-produced fragment trees can flatten the body box when it has no paintable
-      // background. Avoid treating arbitrary descendants as the canvas background in that case by
-      // only considering the body box (which is expected to be the root element's first child).
+      // HTML canvas background propagation:
+      //
+      // Prefer `<body>` as the canvas background source when it has a paintable background, even
+      // when `<html>` also has a background. This matches browser behavior where body background
+      // fills the canvas (including the body margin area), and ensures negative z-index stacking
+      // contexts remain visible above the page background.
       if let Some(body_id) = html_id.checked_add(1) {
         // In some layout modes the `<body>` fragment may not be a direct child of `<html>` (e.g.
         // anonymous wrappers for scrolling/overflow). Search by box id rather than assuming a
@@ -8163,7 +8166,20 @@ impl DisplayListBuilder {
           }
         }
       }
+
+      if let Some(style) = html.style.clone() {
+        if Self::has_paintable_background(&style) {
+          return Some((style, html_id, Rect::new(html_origin, html.bounds.size)));
+        }
+      }
       return None;
+    }
+
+    if let Some(style) = html.style.clone() {
+      if Self::has_paintable_background(&style) {
+        let suppress_box_id = Self::get_box_id(html).unwrap_or(usize::MAX);
+        return Some((style, suppress_box_id, Rect::new(html_origin, html.bounds.size)));
+      }
     }
 
     // Fallback for fragment trees without box IDs (unit tests): treat the first *in-flow* paintable

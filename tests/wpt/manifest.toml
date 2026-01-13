@@ -1676,7 +1676,7 @@ id = "paint/stacking/z-index-negative-order-001"
 path = "paint/stacking/z-index-negative-order-001.html"
 reference = "paint/stacking/z-index-negative-order-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 
@@ -1689,7 +1689,7 @@ id = "paint/stacking/z-index-negative-auto-positive-001"
 path = "paint/stacking/z-index-negative-auto-positive-001.html"
 reference = "paint/stacking/z-index-negative-auto-positive-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 
@@ -1793,7 +1793,7 @@ id = "paint/stacking/negative-z-index-behind-inflow-001"
 path = "paint/stacking/negative-z-index-behind-inflow-001.html"
 reference = "paint/stacking/negative-z-index-behind-inflow-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 

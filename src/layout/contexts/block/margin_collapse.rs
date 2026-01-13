@@ -419,6 +419,13 @@ pub fn should_collapse_with_first_child(parent_style: &ComputedStyle) -> bool {
   if padding_for_side(parent_style, block_start) > 0.0 {
     return false;
   }
+  // If the parent has a non-zero computed block size (or non-zero min-block-size), its block-start
+  // margin edge is not guaranteed to be adjoining with the block-start margin edge of its first
+  // in-flow child (CSS2.1 defines bottom-adjoining margins in terms of `height:auto`; for the
+  // purposes of this engine we apply the same conservative restriction at block-start as well).
+  if has_non_zero_block_size(parent_style) || has_non_zero_min_block_size(parent_style) {
+    return false;
+  }
   if establishes_bfc(parent_style) {
     return false;
   }
