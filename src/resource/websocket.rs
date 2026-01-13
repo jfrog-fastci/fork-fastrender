@@ -1,10 +1,14 @@
 use super::ResourceFetcher;
 use http::header::{HeaderValue, COOKIE, SET_COOKIE};
 use std::io;
+use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::sync::OnceLock;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use tungstenite::client::IntoClientRequest;
@@ -33,6 +37,47 @@ fn rustls_client_config() -> Arc<rustls::ClientConfig> {
   }))
 }
 
+fn resolve_socket_addrs_with_timeout(
+  host: &str,
+  port: u16,
+  timeout: Duration,
+) -> tungstenite::Result<Vec<SocketAddr>> {
+  if let Ok(ip) = host.parse::<IpAddr>() {
+    return Ok(vec![SocketAddr::new(ip, port)]);
+  }
+
+  let (tx, rx) = mpsc::channel::<io::Result<Vec<SocketAddr>>>();
+  let host = host.to_string();
+  thread::spawn(move || {
+    let res = (host.as_str(), port)
+      .to_socket_addrs()
+      .map(|iter| iter.collect::<Vec<_>>());
+    let _ = tx.send(res);
+  });
+
+  match rx.recv_timeout(timeout) {
+    Ok(Ok(addrs)) => {
+      if addrs.is_empty() {
+        Err(tungstenite::Error::Io(io::Error::new(
+          io::ErrorKind::NotFound,
+          "WebSocket host did not resolve to any addresses",
+        )))
+      } else {
+        Ok(addrs)
+      }
+    }
+    Ok(Err(err)) => Err(tungstenite::Error::Io(err)),
+    Err(mpsc::RecvTimeoutError::Timeout) => Err(tungstenite::Error::Io(io::Error::new(
+      io::ErrorKind::TimedOut,
+      "WebSocket DNS resolution timed out",
+    ))),
+    Err(mpsc::RecvTimeoutError::Disconnected) => Err(tungstenite::Error::Io(io::Error::new(
+      io::ErrorKind::Other,
+      "WebSocket DNS resolution thread disconnected",
+    ))),
+  }
+}
+
 fn connect_with_timeout(
   url: &Url,
   request: tungstenite::handshake::client::Request,
@@ -55,9 +100,15 @@ fn connect_with_timeout(
   let deadline = Instant::now() + timeout;
   let mut last_err: Option<io::Error> = None;
 
-  let addrs = (host, port)
-    .to_socket_addrs()
-    .map_err(tungstenite::Error::Io)?;
+  let remaining = deadline.saturating_duration_since(Instant::now());
+  if remaining.is_zero() {
+    return Err(tungstenite::Error::Io(io::Error::new(
+      io::ErrorKind::TimedOut,
+      "WebSocket connect timed out",
+    )));
+  }
+
+  let addrs = resolve_socket_addrs_with_timeout(host, port, remaining)?;
 
   for addr in addrs {
     let remaining = deadline.saturating_duration_since(Instant::now());
