@@ -28767,7 +28767,7 @@ fn node_node_name_get_native(
         None => tag_name.to_string(),
       };
       let is_html_namespace = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
-      if is_html_namespace {
+      if dom.is_html_document() && is_html_namespace {
         qualified_name.to_ascii_uppercase()
       } else {
         qualified_name
@@ -28775,7 +28775,7 @@ fn node_node_name_get_native(
     }
     NodeKind::Slot { namespace, .. } => {
       let is_html_namespace = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
-      if is_html_namespace {
+      if dom.is_html_document() && is_html_namespace {
         "SLOT".to_string()
       } else {
         "slot".to_string()
@@ -28805,12 +28805,15 @@ fn node_node_value_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_id = dom_platform_mut(vm)
+  let node_key = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-  let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
+    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
 
-  match &dom.node(node_id).kind {
+  match &dom.node(node_key.node_id).kind {
     NodeKind::Text { content } => Ok(Value::String(scope.alloc_string(content)?)),
     NodeKind::Comment { content } => Ok(Value::String(scope.alloc_string(content)?)),
     NodeKind::ProcessingInstruction { data, .. } => Ok(Value::String(scope.alloc_string(data)?)),
@@ -28839,18 +28842,18 @@ fn node_node_value_set_native(
     Other,
   }
 
-  let node_id = dom_platform_mut(vm)
+  let node_key = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_id(scope.heap(), Value::Object(wrapper_obj))?;
-
-  let target = {
-    let dom = dom_from_vm_host(host).ok_or(VmError::TypeError("Illegal invocation"))?;
-    match &dom.node(node_id).kind {
-      NodeKind::Text { .. } => NodeValueTarget::Text,
-      NodeKind::Comment { .. } => NodeValueTarget::Comment,
-      NodeKind::ProcessingInstruction { .. } => NodeValueTarget::ProcessingInstruction,
-      _ => NodeValueTarget::Other,
-    }
+    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let target = match &dom.node(node_key.node_id).kind {
+    NodeKind::Text { .. } => NodeValueTarget::Text,
+    NodeKind::Comment { .. } => NodeValueTarget::Comment,
+    NodeKind::ProcessingInstruction { .. } => NodeValueTarget::ProcessingInstruction,
+    _ => NodeValueTarget::Other,
   };
 
   // Setting `nodeValue` on non-text-like nodes is a no-op.
@@ -28858,7 +28861,7 @@ fn node_node_value_set_native(
     return Ok(Value::Undefined);
   }
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id)?;
 
   let value_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let value = match value_value {
@@ -28874,31 +28877,56 @@ fn node_node_value_set_native(
     }
   };
 
-  let needs_microtask = mutate_dom_for_vm_host(host, |dom| {
+  if is_host_document_id(vm, node_key.document_id) {
+    let needs_microtask = mutate_dom_for_vm_host(host, |dom| {
+      let res = match target {
+        NodeValueTarget::Text => dom.set_text_data(node_key.node_id, &value),
+        NodeValueTarget::Comment => dom.set_comment_data(node_key.node_id, &value),
+        NodeValueTarget::ProcessingInstruction => {
+          dom.set_processing_instruction_data(node_key.node_id, &value)
+        }
+        NodeValueTarget::Other => Ok(false),
+      };
+
+      match res {
+        Ok(changed) => {
+          let needs = dom.take_mutation_observer_microtask_needed();
+          (Ok(needs), changed)
+        }
+        Err(err) => {
+          let exc = match make_dom_exception(vm, scope, err.code(), "") {
+            Ok(v) => VmError::Throw(v),
+            Err(e) => e,
+          };
+          (Err(exc), false)
+        }
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??;
+
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+  } else {
+    let mut dom_ptr =
+      dom_ptr_for_document_id_mut(vm, host, node_key.document_id).ok_or(VmError::TypeError(
+        "Illegal invocation",
+      ))?;
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this node's owner document, and we
+    // have exclusive access for the duration of this native call.
+    let dom_mut = unsafe { dom_ptr.as_mut() };
     let res = match target {
-      NodeValueTarget::Text => dom.set_text_data(node_id, &value),
-      NodeValueTarget::Comment => dom.set_comment_data(node_id, &value),
-      NodeValueTarget::ProcessingInstruction => dom.set_processing_instruction_data(node_id, &value),
+      NodeValueTarget::Text => dom_mut.set_text_data(node_key.node_id, &value),
+      NodeValueTarget::Comment => dom_mut.set_comment_data(node_key.node_id, &value),
+      NodeValueTarget::ProcessingInstruction => {
+        dom_mut.set_processing_instruction_data(node_key.node_id, &value)
+      }
       NodeValueTarget::Other => Ok(false),
     };
-
-    match res {
-      Ok(changed) => {
-        let needs = dom.take_mutation_observer_microtask_needed();
-        (Ok(needs), changed)
-      }
-      Err(err) => {
-        let exc = match make_dom_exception(vm, scope, err.code(), "") {
-          Ok(v) => VmError::Throw(v),
-          Err(e) => e,
-        };
-        (Err(exc), false)
-      }
+    if let Err(err) = res {
+      return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
     }
-  })
-  .ok_or(VmError::TypeError("Illegal invocation"))??;
-
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom_mut.take_mutation_observer_microtask_needed();
+  }
 
   Ok(Value::Undefined)
 }
@@ -33038,9 +33066,10 @@ fn element_tag_name_get_native(
     None => local_name.to_string(),
   };
 
-  // In HTML documents, HTML namespace elements expose an ASCII-uppercased `tagName`.
+  // In HTML documents, HTML-namespace elements expose an ASCII-uppercased `tagName`. XML documents
+  // (including XHTML/XMLDocument) preserve the original qualified name.
   let is_html_namespace = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
-  let tag_name = if is_html_namespace {
+  let tag_name = if dom.is_html_document() && is_html_namespace {
     qualified_name.to_ascii_uppercase()
   } else {
     qualified_name
@@ -33111,8 +33140,10 @@ fn element_local_name_get_native(
     _ => return Err(VmError::TypeError("Illegal invocation")),
   };
 
+  // In HTML documents, HTML-namespace elements expose an ASCII-lowercased `localName`. XML
+  // documents (including XHTML/XMLDocument) preserve the original local name.
   let is_html_namespace = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
-  let local_name = if is_html_namespace {
+  let local_name = if dom.is_html_document() && is_html_namespace {
     local_name.to_ascii_lowercase()
   } else {
     local_name.to_string()
@@ -54897,6 +54928,12 @@ mod tests {
         if (xmlDoc.doctype !== dt) throw new Error("expected doctype to be adopted into the new document");
         const pi = xmlDoc.createProcessingInstruction("whippoorwill", "chirp chirp chirp");
         const comment = xmlDoc.createComment("hello");
+        if (pi.nodeValue !== "chirp chirp chirp") throw new Error(`expected PI nodeValue, got ${pi.nodeValue}`);
+        if (comment.nodeValue !== "hello") throw new Error(`expected comment nodeValue, got ${comment.nodeValue}`);
+        pi.nodeValue = "x";
+        comment.nodeValue = "y";
+        if (pi.nodeValue !== "x") throw new Error(`expected PI nodeValue after set, got ${pi.nodeValue}`);
+        if (comment.nodeValue !== "y") throw new Error(`expected comment nodeValue after set, got ${comment.nodeValue}`);
         xmlDoc.appendChild(pi);
         xmlDoc.appendChild(comment);
         return true;
