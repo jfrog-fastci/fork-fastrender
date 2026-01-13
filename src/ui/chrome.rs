@@ -1175,8 +1175,8 @@ pub fn chrome_ui_with_bookmarks(
     // Navigation + address bar row.
     ui.horizontal(|ui| {
       let is_compact = ui.available_width() < COMPACT_MODE_THRESHOLD_PX;
-      let (can_back, can_forward, loading, stage, load_progress, zoom_factor, error, warning) = app
-        .active_tab()
+      let active_tab = app.active_tab();
+      let (can_back, can_forward, loading, stage, load_progress, zoom_factor) = active_tab
         .map(|t| {
           (
             t.can_go_back,
@@ -1185,45 +1185,38 @@ pub fn chrome_ui_with_bookmarks(
             t.load_stage,
             t.load_progress,
             t.zoom,
-            t.error.clone(),
-            t.warning.clone(),
           )
         })
-        .unwrap_or((
-          false,
-          false,
-          false,
-          None,
-          None,
-          zoom::DEFAULT_ZOOM,
-          None,
-          None,
-        ));
+        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM));
+      // Avoid cloning error/warning strings every frame; these are only needed by reference for
+      // display/tooltip rendering.
+      let error = active_tab.and_then(|t| t.error.as_deref());
+      let warning = active_tab.and_then(|t| t.warning.as_deref());
 
       let downloads = app.downloads.aggregate_progress();
       let downloads_hover = if downloads.active_count == 0 {
-        "Show downloads".to_string()
+        std::borrow::Cow::Borrowed("Show downloads")
       } else if let Some(total) = downloads.total_bytes {
         let count = if downloads.active_count > 1 {
           format!(" ({})", downloads.active_count)
         } else {
           String::new()
         };
-        format!(
+        std::borrow::Cow::Owned(format!(
           "Downloading…{count} {} / {}",
           format_bytes(downloads.received_bytes),
           format_bytes(total)
-        )
+        ))
       } else {
         let count = if downloads.active_count > 1 {
           format!(" ({})", downloads.active_count)
         } else {
           String::new()
         };
-        format!(
+        std::borrow::Cow::Owned(format!(
           "Downloading…{count} {}",
           format_bytes(downloads.received_bytes)
-        )
+        ))
       };
 
       let back_tooltip = if cfg!(target_os = "macos") {
@@ -1315,8 +1308,18 @@ pub fn chrome_ui_with_bookmarks(
           }
         }
         let percent = zoom::zoom_percent(zoom_factor);
-        let reset_zoom_label = format!("Zoom: {percent}% (reset)");
-        let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
+        let (reset_zoom_label, reset_btn_label) = if zoom_non_default {
+          (
+            std::borrow::Cow::Owned(format!("Zoom: {percent}% (reset)")),
+            std::borrow::Cow::Owned(format!("{percent}%")),
+          )
+        } else {
+          (
+            std::borrow::Cow::Borrowed("Zoom: 100% (reset)"),
+            std::borrow::Cow::Borrowed("100%"),
+          )
+        };
+        let reset_btn = egui::Button::new(reset_btn_label.as_ref()).min_size(egui::vec2(
           MIN_CHROME_HIT_TARGET_POINTS,
           MIN_CHROME_HIT_TARGET_POINTS,
         ));
@@ -1326,8 +1329,8 @@ pub fn chrome_ui_with_bookmarks(
         show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
         paint_focus_ring(ui, &reset_zoom_response, focus_ring);
         reset_zoom_response.widget_info({
-          let reset_zoom_label = reset_zoom_label.clone();
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
+          let label = reset_zoom_label.as_ref();
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if reset_zoom_response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
@@ -1817,16 +1820,14 @@ pub fn chrome_ui_with_bookmarks(
             // Downloads button.
             let (_id, downloads_rect) = ui.allocate_space(egui::vec2(button_side, button_side));
             let downloads_id = address_bar_id.with("downloads");
-            let downloads_resp = ui
-              .interact(downloads_rect, downloads_id, egui::Sense::click())
-              .on_hover_text(downloads_hover.clone());
+            let downloads_resp = ui.interact(downloads_rect, downloads_id, egui::Sense::click());
             #[cfg(test)]
             store_test_id(ctx, "chrome_downloads_button_id", downloads_resp.id);
+            show_tooltip_on_hover_or_focus(ui, &downloads_resp, downloads_hover.as_ref());
             downloads_resp.widget_info({
-              let label = downloads_hover.clone();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+              let label = downloads_hover.as_ref();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
             });
-            show_tooltip_on_focus(ui, &downloads_resp, &downloads_hover);
 
             // Micro-interaction: fade a subtle hover fill in/out.
             let highlight = downloads_resp.hovered() || downloads_resp.has_focus();
