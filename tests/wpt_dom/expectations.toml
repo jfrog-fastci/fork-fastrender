@@ -176,12 +176,6 @@ status = "xfail"
 reason = "Document/Element.getElementsByTagNameNS is not implemented/exposed yet (method missing)."
 
 [[expectations]]
-id = "dom/traversal_basics.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; NodeIterator/TreeWalker/NodeFilter are not implemented."
-
-[[expectations]]
 id = "dom/traversal_filter_semantics.window.js"
 backend = "quickjs"
 status = "xfail"
@@ -312,12 +306,6 @@ regex = "(?i)^events/(event|eventtarget).*?(strict|webidl|constructor|brand|inva
 backend = "quickjs"
 status = "skip"
 reason = "QuickJS backend uses minimal Event/EventTarget shims; strict WebIDL/brand/InvalidStateError tests are vm-js-only."
-
-[[expectations]]
-id = "dom/nodeiterator_pre_remove.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; NodeIterator pre-remove steps are not implemented."
 
 [[expectations]]
 id = "dom/shadow_dom_traversal_iterators.window.js"
