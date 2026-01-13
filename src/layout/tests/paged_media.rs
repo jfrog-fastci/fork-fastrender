@@ -5384,6 +5384,7 @@ fn page_marks_crop_draws_lines_in_bleed_area() {
             bleed: 20px;
             trim: 0;
             marks: crop;
+            color: black;
             background: white;
           }
           html, body { margin: 0; background: transparent; }
@@ -5435,6 +5436,54 @@ fn page_marks_crop_draws_lines_in_bleed_area() {
 }
 
 #[test]
+fn page_marks_cross_draws_lines_in_bleed_area() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 100px 100px;
+            margin: 0;
+            bleed: 20px;
+            trim: 0;
+            marks: cross;
+            color: black;
+            background: white;
+          }
+          html, body { margin: 0; background: transparent; }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(140, 140)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render page cross marks");
+
+  let bg = [255, 255, 255, 255];
+  let mark = [0, 0, 0, 255];
+
+  // Cross marks are drawn near each corner; sample the intersection point for each.
+  let samples: &[(u32, u32)] = &[(15, 15), (125, 15), (15, 125), (125, 125)];
+  for &(x, y) in samples {
+    assert_eq!(
+      pixel(&pixmap, x, y),
+      mark,
+      "expected cross mark pixel at ({x},{y}) to be non-background"
+    );
+  }
+
+  assert_eq!(pixel(&pixmap, 70, 70), bg);
+}
+
+#[test]
 fn page_marks_none_draws_no_marks() {
   let html = r#"
     <html>
@@ -5446,6 +5495,7 @@ fn page_marks_none_draws_no_marks() {
             bleed: 20px;
             trim: 0;
             marks: none;
+            color: black;
             background: white;
           }
           html, body { margin: 0; background: transparent; }
