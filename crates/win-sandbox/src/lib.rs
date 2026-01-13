@@ -147,6 +147,9 @@ pub enum WinSandboxError {
   /// This is intended for tests and defense-in-depth verification.
   #[error("mitigation verification failed: {message}")]
   MitigationVerificationFailed { message: String },
+
+  #[error("{arg} contains an interior NUL character")]
+  InteriorNul { arg: &'static str },
 }
 
 impl WinSandboxError {

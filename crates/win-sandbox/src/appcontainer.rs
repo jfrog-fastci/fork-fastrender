@@ -19,8 +19,11 @@ const fn hresult_from_win32(error: u32) -> HRESULT {
   }
 }
 
-fn wide_null(s: &str) -> Vec<u16> {
-  s.encode_utf16().chain(std::iter::once(0)).collect()
+fn wide_null(arg: &'static str, s: &str) -> Result<Vec<u16>> {
+  if s.chars().any(|c| c == '\0') {
+    return Err(WinSandboxError::InteriorNul { arg });
+  }
+  Ok(s.encode_utf16().chain(std::iter::once(0)).collect())
 }
 
 // -----------------------------------------------------------------------------
@@ -67,7 +70,7 @@ impl UserenvAvailability {
 
 impl UserenvApis {
   unsafe fn load() -> Result<Self> {
-    let dll_w = wide_null("userenv.dll");
+    let dll_w = wide_null("dll_name", "userenv.dll")?;
     let module = LoadLibraryW(dll_w.as_ptr());
     if module.is_null() {
       return Err(WinSandboxError::last("LoadLibraryW(userenv.dll)"));
@@ -143,9 +146,9 @@ impl AppContainerProfile {
   pub fn ensure(name: &str, display_name: &str, description: &str) -> Result<Self> {
     let apis = userenv_apis()?;
 
-    let name_w = wide_null(name);
-    let display_name_w = wide_null(display_name);
-    let description_w = wide_null(description);
+    let name_w = wide_null("name", name)?;
+    let display_name_w = wide_null("display_name", display_name)?;
+    let description_w = wide_null("description", description)?;
 
     // SAFETY: Win32 FFI call.
     let mut sid: *mut c_void = std::ptr::null_mut();
@@ -161,12 +164,24 @@ impl AppContainerProfile {
     };
 
     if hr == hresult_from_win32(ERROR_ALREADY_EXISTS) {
+      if !sid.is_null() {
+        // Some Windows builds may still return the SID on `ERROR_ALREADY_EXISTS`.
+        return Ok(Self {
+          sid: OwnedSid::from_free_sid(sid as _),
+        });
+      }
       return Ok(Self {
         sid: derive_appcontainer_sid(name)?,
       });
     }
 
     if hr < 0 {
+      if !sid.is_null() {
+        // SAFETY: AppContainer SIDs are freed with FreeSid.
+        unsafe {
+          windows_sys::Win32::Security::FreeSid(sid as _);
+        }
+      }
       return Err(WinSandboxError::from_hresult("CreateAppContainerProfile", hr));
     }
 
@@ -193,7 +208,7 @@ impl AppContainerProfile {
 /// AppContainer.
 pub fn derive_appcontainer_sid(name: &str) -> Result<OwnedSid> {
   let apis = userenv_apis()?;
-  let name_w = wide_null(name);
+  let name_w = wide_null("name", name)?;
 
   // SAFETY: Win32 FFI call.
   let mut sid: *mut c_void = std::ptr::null_mut();
@@ -201,6 +216,12 @@ pub fn derive_appcontainer_sid(name: &str) -> Result<OwnedSid> {
     (apis.derive_app_container_sid_from_app_container_name)(name_w.as_ptr(), &mut sid)
   };
   if hr < 0 {
+    if !sid.is_null() {
+      // SAFETY: AppContainer SIDs are freed with FreeSid.
+      unsafe {
+        windows_sys::Win32::Security::FreeSid(sid as _);
+      }
+    }
     return Err(WinSandboxError::from_hresult(
       "DeriveAppContainerSidFromAppContainerName",
       hr,
