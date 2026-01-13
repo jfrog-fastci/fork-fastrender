@@ -195,6 +195,111 @@ fn range_endpoints_update_after_replace_data_deletion_processing_instruction() {
 }
 
 #[test]
+fn range_replace_data_shifts_offsets_after_replaced_region() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+  let text = doc.create_text("hello");
+  doc.append_child(parent, text).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 4).unwrap();
+  doc.range_set_end(range, text, 5).unwrap();
+
+  // Replace "e" with "XYZ" at offset 1.
+  assert!(doc.replace_data(text, 1, 1, "XYZ").unwrap());
+
+  // Offsets after offset+removed_len (2) are shifted by inserted_len-removed_len (2).
+  assert_eq!(doc.range_start_offset(range).unwrap(), 6);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 7);
+}
+
+#[test]
+fn range_replace_data_collapses_offsets_in_replaced_region() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+  let text = doc.create_text("hello");
+  doc.append_child(parent, text).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 2).unwrap();
+  // End offset exactly at offset+removed_len should also collapse.
+  doc.range_set_end(range, text, 3).unwrap();
+
+  // Replace "el" with "X" at offset 1.
+  assert!(doc.replace_data(text, 1, 2, "X").unwrap());
+
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
+fn range_delete_data_updates_offsets() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+  let text = doc.create_text("hello");
+  doc.append_child(parent, text).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 4).unwrap();
+  doc.range_set_end(range, text, 5).unwrap();
+
+  assert!(doc.delete_data(text, 1, 2).unwrap());
+
+  // Removed_len is clamped to 2; offsets after offset+removed_len (3) shift by -2.
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 3);
+}
+
+#[test]
+fn range_set_text_data_collapses_offsets_to_zero() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+  let text = doc.create_text("hello");
+  doc.append_child(parent, text).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 2).unwrap();
+  doc.range_set_end(range, text, 4).unwrap();
+
+  assert!(doc.set_text_data(text, "bye").unwrap());
+
+  // Setting `data` is specified as replaceData(0, length, ...), which collapses offsets > 0.
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 0);
+}
+
+#[test]
+fn range_delete_data_uses_utf16_code_units() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  // U+1F600 GRINNING FACE is 2 UTF-16 code units.
+  let text = doc.create_text("😀b");
+  doc.append_child(parent, text).unwrap();
+
+  let range = doc.create_range();
+  // Boundary after the entire text ("😀b") is at UTF-16 offset 3.
+  doc.range_set_start(range, text, 3).unwrap();
+  doc.range_set_end(range, text, 3).unwrap();
+
+  // Delete the emoji (2 code units) and ensure the range shifts to remain after "b" (offset 1).
+  assert!(doc.delete_data(text, 0, 2).unwrap());
+  assert_eq!(doc.text_data(text).unwrap(), "b");
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
 fn range_clone_extract_does_not_leak_persistent_subranges() {
   let html =
     "<!doctype html><div id=root><b id=b>hello</b><span id=mid>mid</span><i id=i>world</i></div>";

@@ -945,9 +945,6 @@ impl Document {
     }
     let end = offset.saturating_add(count).min(units.len());
     let removed_len = end.saturating_sub(offset);
-    let inserted_len = (has_live_subscribers || has_live_ranges)
-      .then(|| utf16_len(data))
-      .unwrap_or(0);
 
     // `Vec::splice` applies its mutation when the returned iterator is dropped; we discard it.
     let _ = units.splice(offset..end, data.encode_utf16());
@@ -955,6 +952,10 @@ impl Document {
     if new_value == old_value {
       return Ok(false);
     }
+
+    let inserted_len = (has_live_subscribers || has_live_ranges)
+      .then(|| utf16_len(data))
+      .unwrap_or(0);
 
     if has_live_subscribers {
       self
@@ -985,6 +986,15 @@ impl Document {
     }
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
+  }
+
+  pub fn delete_data(
+    &mut self,
+    node: NodeId,
+    offset: usize,
+    count: usize,
+  ) -> Result<bool, DomError> {
+    self.replace_data(node, offset, count, "")
   }
 
   /// Set the `data` string for any CharacterData node (Text, Comment, ProcessingInstruction).
