@@ -15,6 +15,7 @@ and the practical debugging knobs.
 
 Related docs (other platforms / tooling):
 
+- Linux renderer sandbox deep dive (Landlock + seccomp layering): [security/sandbox.md](security/sandbox.md)
 - Linux seccomp allowlist workflow: [seccomp_allowlist.md](seccomp_allowlist.md)
 - Windows renderer sandbox boundary (Job/AppContainer details): [windows_sandbox.md](windows_sandbox.md)
 - Windows renderer sandbox quick reference: [security/windows_renderer_sandbox.md](security/windows_renderer_sandbox.md)
