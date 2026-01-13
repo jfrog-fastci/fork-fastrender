@@ -2019,15 +2019,15 @@ impl BlockFormattingContext {
           // computed y-position, push it down until it does (matching the float placement loop).
           if border_box_width > 0.0 {
             let min_y = external_float_base_y + box_y;
-            let (_, available_width) = ctx.available_width_at_y_in_containing_block(
+            let (mut left_edge, mut available_width) = ctx.available_width_at_y_in_containing_block(
               min_y,
               external_float_base_x,
               containing_width,
             );
-            let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
+            let mut has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
 
             if has_overlapping_floats && available_width + FLOAT_FIT_EPSILON < border_box_width {
-              let fit_y = ctx.find_fit_in_containing_block(
+              let (fit_y, fit_left_edge, fit_right_edge) = ctx.find_fit_in_containing_block_with_edges(
                 border_box_width,
                 0.0,
                 min_y,
@@ -2036,16 +2036,12 @@ impl BlockFormattingContext {
               );
               if fit_y.is_finite() && fit_y > min_y {
                 box_y += fit_y - min_y;
+                left_edge = fit_left_edge;
+                available_width = (fit_right_edge - fit_left_edge).max(0.0);
+                has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
               }
             }
 
-            let query_y = external_float_base_y + box_y;
-            let (left_edge, available_width) = ctx.available_width_at_y_in_containing_block(
-              query_y,
-              external_float_base_x,
-              containing_width,
-            );
-            let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
             if has_overlapping_floats {
               let band_left = (left_edge - external_float_base_x).max(0.0);
               let band_right = (band_left + available_width).max(band_left);
