@@ -847,6 +847,10 @@ glob = "built-ins/Object/assign/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Object/is/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/Object/keys/**"
 status = "pass"
 
