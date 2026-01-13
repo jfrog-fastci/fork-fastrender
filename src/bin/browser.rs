@@ -93,7 +93,7 @@ mod perf_log {
   pub enum PerfEvent<'a> {
     Frame {
       schema_version: u32,
-      ts_ms: u64,
+      t_ms: u64,
       window_id: &'a str,
       active_tab_id: Option<u64>,
       ui_frame_ms: f64,
@@ -104,17 +104,17 @@ mod perf_log {
     },
     Input {
       schema_version: u32,
-      ts_ms: u64,
+      t_ms: u64,
       window_id: &'a str,
       active_tab_id: Option<u64>,
-      kind: InputKind,
+      input_kind: InputKind,
       input_ts_ms: u64,
       input_to_present_ms: f64,
       count: u32,
     },
     Resize {
       schema_version: u32,
-      ts_ms: u64,
+      t_ms: u64,
       window_id: &'a str,
       resize_ts_ms: u64,
       resize_to_present_ms: f64,
@@ -123,7 +123,7 @@ mod perf_log {
     },
     Navigation {
       schema_version: u32,
-      ts_ms: u64,
+      t_ms: u64,
       window_id: &'a str,
       tab_id: u64,
       navigation_seqno: u64,
@@ -131,7 +131,7 @@ mod perf_log {
     },
     Ttfp {
       schema_version: u32,
-      ts_ms: u64,
+      t_ms: u64,
       window_id: &'a str,
       tab_id: u64,
       navigation_seqno: u64,
@@ -6316,7 +6316,7 @@ impl PerfWindowLog {
 
     let event = perf_log::PerfEvent::Navigation {
       schema_version: perf_log::SCHEMA_VERSION,
-      ts_ms: self.ts_ms(at),
+      t_ms: self.ts_ms(at),
       window_id: &self.window_id,
       tab_id: tab_id.0,
       navigation_seqno: seqno,
@@ -6349,7 +6349,7 @@ impl PerfWindowLog {
     window_occluded: bool,
     window_minimized: bool,
   ) {
-    let ts_ms = self.ts_ms(present_at);
+    let t_ms = self.ts_ms(present_at);
     let fps = self.last_present.and_then(|prev| {
       let dt = present_at.saturating_duration_since(prev).as_secs_f64();
       if dt > 0.0 && dt.is_finite() {
@@ -6362,7 +6362,7 @@ impl PerfWindowLog {
 
     let frame_event = perf_log::PerfEvent::Frame {
       schema_version: perf_log::SCHEMA_VERSION,
-      ts_ms,
+      t_ms,
       window_id: &self.window_id,
       active_tab_id: active_tab_id.map(|t| t.0),
       ui_frame_ms,
@@ -6381,10 +6381,10 @@ impl PerfWindowLog {
       let latency = present_at.saturating_duration_since(first).as_secs_f64() * 1000.0;
       let event = perf_log::PerfEvent::Input {
         schema_version: perf_log::SCHEMA_VERSION,
-        ts_ms,
+        t_ms,
         window_id: &self.window_id,
         active_tab_id: active_tab_id.map(|t| t.0),
-        kind,
+        input_kind: kind,
         input_ts_ms,
         input_to_present_ms: latency,
         count,
@@ -6411,7 +6411,7 @@ impl PerfWindowLog {
         * 1000.0;
       let event = perf_log::PerfEvent::Resize {
         schema_version: perf_log::SCHEMA_VERSION,
-        ts_ms,
+        t_ms,
         window_id: &self.window_id,
         resize_ts_ms,
         resize_to_present_ms: latency,
@@ -6434,7 +6434,7 @@ impl PerfWindowLog {
             * 1000.0;
           let event = perf_log::PerfEvent::Ttfp {
             schema_version: perf_log::SCHEMA_VERSION,
-            ts_ms,
+            t_ms,
             window_id: &self.window_id,
             tab_id: tab_id.0,
             navigation_seqno: pending.seqno,
@@ -17471,7 +17471,7 @@ mod perf_log_tests {
 
     let event = perf_log::PerfEvent::Frame {
       schema_version: perf_log::SCHEMA_VERSION,
-      ts_ms: 42,
+      t_ms: 42,
       window_id: "WindowId(1)",
       active_tab_id: Some(123),
       ui_frame_ms: 9.5,
@@ -17491,7 +17491,7 @@ mod perf_log_tests {
     let value: serde_json::Value = serde_json::from_str(line).expect("valid json");
     assert_eq!(value["event"], "frame");
     assert_eq!(value["schema_version"], perf_log::SCHEMA_VERSION);
-    assert_eq!(value["ts_ms"], 42);
+    assert_eq!(value["t_ms"], 42);
   }
 }
 

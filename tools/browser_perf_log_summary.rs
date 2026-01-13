@@ -277,7 +277,11 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
         let ui_frame_ms =
           parse_required_ms(obj, "ui_frame_ms").map_err(|err| format!("line {line_no}: {err}"))?;
         frame_ms.push(ui_frame_ms);
-        if ui_frame_ms.is_finite() && ui_frame_ms > 0.0 {
+        if let Some(fps_value) = parse_optional_ms(obj, "fps") {
+          fps.push(fps_value);
+        } else if ui_frame_ms.is_finite() && ui_frame_ms > 0.0 {
+          // Legacy fallback: older logs did not include an explicit FPS measurement, so estimate it
+          // from CPU frame time.
           fps.push(1000.0 / ui_frame_ms);
         }
       }
@@ -327,9 +331,10 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
   let schema_version_seen = schema_version_seen.unwrap_or(SUPPORTED_SCHEMA_VERSION);
 
   let fps_stats = fps.stats();
-  let frames = frame_ms
-    .stats()
-    .map(|ui_frame_ms| FrameSummary { ui_frame_ms, fps: fps_stats });
+  let frames = frame_ms.stats().map(|ui_frame_ms| FrameSummary {
+    ui_frame_ms,
+    fps: fps_stats,
+  });
 
   let input = if let Some(input_to_present_ms) = input_overall.stats() {
     let mut by_kind: BTreeMap<String, SeriesStats> = BTreeMap::new();
