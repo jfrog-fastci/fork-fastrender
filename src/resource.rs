@@ -34,6 +34,7 @@ use lru::LruCache;
 use publicsuffix::{List, Psl};
 use reqwest::blocking as reqwest_blocking;
 use reqwest::cookie::{CookieStore, Jar as ReqwestCookieJar};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -72,7 +73,7 @@ pub use disk_cache::{DiskCacheConfig, DiskCachingFetcher};
 // ============================================================================
 
 /// Origin model capturing scheme, host, and port.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DocumentOrigin {
   scheme: String,
   host: Option<String>,
