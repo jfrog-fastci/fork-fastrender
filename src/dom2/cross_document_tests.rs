@@ -30,7 +30,8 @@ fn find_first_html_script(doc: &Document) -> NodeId {
         tag_name,
         namespace,
         ..
-      } if tag_name.eq_ignore_ascii_case("script") && doc.is_html_case_insensitive_namespace(namespace) =>
+      } if tag_name.eq_ignore_ascii_case("script")
+        && doc.is_html_case_insensitive_namespace(namespace) =>
       {
         Some(NodeId::from_index(idx))
       }
@@ -110,7 +111,7 @@ fn build_shadow_host_source_document() -> (Document, NodeId) {
     "<html><body>",
     "<div id=host data-x=y>",
     "<!--c-->",
-    "<template shadowroot=open shadowrootdelegatesfocus>",
+    "<template shadowroot=open shadowrootdelegatesfocus shadowrootclonable>",
     "<slot id=slot name=s><span id=fallback>fallback</span></slot>",
     "<span id=shadow_span>shadow</span>",
     "</template>",
@@ -120,7 +121,9 @@ fn build_shadow_host_source_document() -> (Document, NodeId) {
     "</body></html>"
   );
   let mut doc = crate::dom2::parse_html(html).unwrap();
-  let host = doc.get_element_by_id("host").expect("host element not found");
+  let host = doc
+    .get_element_by_id("host")
+    .expect("host element not found");
 
   // Ensure the subtree contains a ProcessingInstruction node kind (not produced by the HTML parser).
   let pi = doc.push_node(
@@ -404,19 +407,45 @@ fn import_node_from_node_kind_coverage_including_shadow_dom_and_script_flags() {
   {
     let mut dst = Document::new(QuirksMode::NoQuirks);
     let imported = dst.import_node_from(&src, host, /* deep */ false).unwrap();
-    assert_eq!(dst.parent(imported).unwrap(), None, "imported root must be detached");
-    assert_node_kind_equivalent(&src.node(host).kind, &dst.node(imported).kind);
-    assert!(
-      dst.node(imported).children.is_empty(),
-      "deep=false should not clone children"
+    assert_eq!(
+      dst.parent(imported).unwrap(),
+      None,
+      "imported root must be detached"
     );
+    assert_node_kind_equivalent(&src.node(host).kind, &dst.node(imported).kind);
+    // `importNode(..., deep=false)` does not clone light DOM children, but it *does* clone a clonable
+    // shadow root and shallow-clone its shadow tree.
+    let children = dst.children(imported).unwrap();
+    assert_eq!(children.len(), 1, "expected only a ShadowRoot child");
+    let shadow_root = children[0];
+    assert!(
+      matches!(dst.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+      "expected cloned ShadowRoot child"
+    );
+    assert_eq!(dst.parent(shadow_root).unwrap(), Some(imported));
+
+    // Shadow tree direct children are cloned shallowly.
+    let cloned_slot = find_in_subtree_by_id(&dst, imported, "slot").expect("slot not found");
+    assert!(dst.node(cloned_slot).children.is_empty());
+    let cloned_shadow_span =
+      find_in_subtree_by_id(&dst, imported, "shadow_span").expect("shadow span not found");
+    assert!(dst.node(cloned_shadow_span).children.is_empty());
+
+    // Neither light DOM nor deeper shadow descendants should be cloned.
+    assert!(find_in_subtree_by_id(&dst, imported, "light").is_none());
+    assert!(find_in_subtree_by_id(&dst, imported, "s").is_none());
+    assert!(find_in_subtree_by_id(&dst, imported, "fallback").is_none());
   }
 
   // Element root: deep=true (should clone ShadowRoot+Slot descendants and clear script flags).
   {
     let mut dst = Document::new(QuirksMode::NoQuirks);
     let imported = dst.import_node_from(&src, host, /* deep */ true).unwrap();
-    assert_eq!(dst.parent(imported).unwrap(), None, "imported root must be detached");
+    assert_eq!(
+      dst.parent(imported).unwrap(),
+      None,
+      "imported root must be detached"
+    );
     assert_subtree_kinds_match(&src, host, &dst, imported);
 
     assert!(
@@ -443,7 +472,9 @@ fn import_node_from_node_kind_coverage_including_shadow_dom_and_script_flags() {
   // Text.
   {
     let mut dst = Document::new(QuirksMode::NoQuirks);
-    let imported = dst.import_node_from(&src, src_text, /* deep */ false).unwrap();
+    let imported = dst
+      .import_node_from(&src, src_text, /* deep */ false)
+      .unwrap();
     assert_eq!(dst.parent(imported).unwrap(), None);
     assert_node_kind_equivalent(&src.node(src_text).kind, &dst.node(imported).kind);
   }
@@ -451,7 +482,9 @@ fn import_node_from_node_kind_coverage_including_shadow_dom_and_script_flags() {
   // Comment.
   {
     let mut dst = Document::new(QuirksMode::NoQuirks);
-    let imported = dst.import_node_from(&src, src_comment, /* deep */ false).unwrap();
+    let imported = dst
+      .import_node_from(&src, src_comment, /* deep */ false)
+      .unwrap();
     assert_eq!(dst.parent(imported).unwrap(), None);
     assert_node_kind_equivalent(&src.node(src_comment).kind, &dst.node(imported).kind);
   }
@@ -459,7 +492,9 @@ fn import_node_from_node_kind_coverage_including_shadow_dom_and_script_flags() {
   // ProcessingInstruction.
   {
     let mut dst = Document::new(QuirksMode::NoQuirks);
-    let imported = dst.import_node_from(&src, src_pi, /* deep */ false).unwrap();
+    let imported = dst
+      .import_node_from(&src, src_pi, /* deep */ false)
+      .unwrap();
     assert_eq!(dst.parent(imported).unwrap(), None);
     assert_node_kind_equivalent(&src.node(src_pi).kind, &dst.node(imported).kind);
   }
@@ -501,7 +536,9 @@ fn import_node_from_node_kind_coverage_including_shadow_dom_and_script_flags() {
   // Slot deep=false.
   {
     let mut dst = Document::new(QuirksMode::NoQuirks);
-    let imported = dst.import_node_from(&src, src_slot, /* deep */ false).unwrap();
+    let imported = dst
+      .import_node_from(&src, src_slot, /* deep */ false)
+      .unwrap();
     assert_eq!(dst.parent(imported).unwrap(), None);
     assert_node_kind_equivalent(&src.node(src_slot).kind, &dst.node(imported).kind);
     assert!(
@@ -513,7 +550,9 @@ fn import_node_from_node_kind_coverage_including_shadow_dom_and_script_flags() {
   // Slot deep=true.
   {
     let mut dst = Document::new(QuirksMode::NoQuirks);
-    let imported = dst.import_node_from(&src, src_slot, /* deep */ true).unwrap();
+    let imported = dst
+      .import_node_from(&src, src_slot, /* deep */ true)
+      .unwrap();
     assert_eq!(dst.parent(imported).unwrap(), None);
     assert_subtree_kinds_match(&src, src_slot, &dst, imported);
     let fallback =
@@ -559,7 +598,11 @@ fn adopt_node_from_mapping_is_complete_and_preserves_node_kinds_for_shadow_dom_s
     !src.children(old_parent).unwrap().contains(&host),
     "adopted node should be removed from its old parent's child list"
   );
-  assert_eq!(src.parent(host).unwrap(), None, "adopted source root must be detached");
+  assert_eq!(
+    src.parent(host).unwrap(),
+    None,
+    "adopted source root must be detached"
+  );
 
   // Convert mapping list into an indexable lookup for tests.
   let mut old_to_new = std::collections::HashMap::<NodeId, NodeId>::new();
@@ -661,10 +704,17 @@ fn adopt_node_from_doctype_detaches_from_source_document() {
   let mut dst = Document::new(QuirksMode::NoQuirks);
   let adopted = dst.adopt_node_from(&mut src, doctype).unwrap();
   assert_eq!(dst.parent(adopted.new_root).unwrap(), None);
-  assert_eq!(src.parent(doctype).unwrap(), None, "source doctype should be detached");
+  assert_eq!(
+    src.parent(doctype).unwrap(),
+    None,
+    "source doctype should be detached"
+  );
   assert_node_kind_equivalent(&src.node(doctype).kind, &dst.node(adopted.new_root).kind);
   assert!(
-    adopted.mapping.iter().any(|(old, new)| *old == doctype && *new == adopted.new_root),
+    adopted
+      .mapping
+      .iter()
+      .any(|(old, new)| *old == doctype && *new == adopted.new_root),
     "expected mapping to contain adopted doctype"
   );
 }
@@ -703,12 +753,14 @@ fn import_document_node_is_not_supported() {
 
   let mut dst = Document::new(QuirksMode::NoQuirks);
   assert_eq!(
-    dst.import_node_from(&src, src.root(), /* deep */ false)
+    dst
+      .import_node_from(&src, src.root(), /* deep */ false)
       .unwrap_err(),
     DomError::NotSupportedError
   );
   assert_eq!(
-    dst.import_node_from(&src, detached_doc, /* deep */ false)
+    dst
+      .import_node_from(&src, detached_doc, /* deep */ false)
       .unwrap_err(),
     DomError::NotSupportedError
   );
@@ -728,7 +780,9 @@ fn import_html_script_matches_clone_semantics() {
   src.set_script_already_started(script, true).unwrap();
 
   let mut dst = Document::new(QuirksMode::NoQuirks);
-  let imported = dst.import_node_from(&src, script, /* deep */ false).unwrap();
+  let imported = dst
+    .import_node_from(&src, script, /* deep */ false)
+    .unwrap();
 
   let imported_node = dst.node(imported);
   assert!(imported_node.script_already_started);
@@ -747,7 +801,9 @@ fn import_html_script_matches_clone_semantics() {
   src2.node_mut(script2).script_force_async = true;
 
   let mut dst2 = Document::new(QuirksMode::NoQuirks);
-  let imported2 = dst2.import_node_from(&src2, script2, /* deep */ false).unwrap();
+  let imported2 = dst2
+    .import_node_from(&src2, script2, /* deep */ false)
+    .unwrap();
 
   let imported_node2 = dst2.node(imported2);
   assert!(imported_node2.script_already_started);
@@ -820,12 +876,14 @@ fn import_shadow_root_node_is_not_supported() {
 
   let mut dst = Document::new(QuirksMode::NoQuirks);
   assert_eq!(
-    dst.import_node_from(&src, shadow_root, /* deep */ false)
+    dst
+      .import_node_from(&src, shadow_root, /* deep */ false)
       .unwrap_err(),
     DomError::NotSupportedError
   );
   assert_eq!(
-    dst.import_node_from(&src, shadow_root, /* deep */ true)
+    dst
+      .import_node_from(&src, shadow_root, /* deep */ true)
       .unwrap_err(),
     DomError::NotSupportedError
   );
@@ -836,12 +894,14 @@ fn import_shadow_host_element_deep_clones_shadow_root_descendants() {
   let html = concat!(
     "<!doctype html>",
     "<div id=host>",
-    "<template shadowroot=open><span id=shadow>shadow</span></template>",
+    "<template shadowroot=open shadowrootclonable><span id=shadow>shadow</span></template>",
     "<p id=light>light</p>",
     "</div>",
   );
   let src = crate::dom2::parse_html(html).unwrap();
-  let host = src.get_element_by_id("host").expect("host element not found");
+  let host = src
+    .get_element_by_id("host")
+    .expect("host element not found");
 
   let mut dst = Document::new(QuirksMode::NoQuirks);
   let imported = dst.import_node_from(&src, host, /* deep */ true).unwrap();
@@ -856,6 +916,41 @@ fn import_shadow_host_element_deep_clones_shadow_root_descendants() {
       .copied()
       .any(|child| matches!(dst.node(child).kind, NodeKind::ShadowRoot { .. })),
     "expected imported host subtree to contain a ShadowRoot child"
+  );
+}
+
+#[test]
+fn import_shadow_host_element_does_not_clone_non_clonable_shadow_root() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowroot=open><span id=shadow>shadow</span></template>",
+    "<p id=light>light</p>",
+    "</div>",
+  );
+  let src = crate::dom2::parse_html(html).unwrap();
+  let host = src
+    .get_element_by_id("host")
+    .expect("host element not found");
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let imported = dst.import_node_from(&src, host, /* deep */ true).unwrap();
+  assert_eq!(dst.parent(imported).unwrap(), None);
+
+  assert!(
+    !dst
+      .subtree_preorder(imported)
+      .any(|id| matches!(dst.node(id).kind, NodeKind::ShadowRoot { .. })),
+    "non-clonable ShadowRoot should not be cloned by importNode"
+  );
+
+  assert!(
+    find_in_subtree_by_id(&dst, imported, "light").is_some(),
+    "expected light DOM descendants to be cloned when deep=true"
+  );
+  assert!(
+    find_in_subtree_by_id(&dst, imported, "shadow").is_none(),
+    "expected shadow DOM descendants to be skipped when ShadowRoot is not clonable"
   );
 }
 
@@ -909,7 +1004,10 @@ fn adopt_preserves_html_script_internal_state() {
     ),
     src_flags
   );
-  assert_eq!(dst.get_attribute(adopted.new_root, "id").unwrap(), Some("s"));
+  assert_eq!(
+    dst.get_attribute(adopted.new_root, "id").unwrap(),
+    Some("s")
+  );
 }
 
 #[test]
@@ -917,8 +1015,10 @@ fn adopt_resets_slot_assignment_state() {
   // Slot assignment is derived from being connected. `adoptNode` removes the node first, so the
   // adopted copy should be detached with `assigned=false`.
   let mut src = Document::new(QuirksMode::NoQuirks);
+  let host = src.create_element("div", HTML_NAMESPACE);
+  src.append_child(src.root(), host).unwrap();
   let slot = src.create_element("slot", HTML_NAMESPACE);
-  src.append_child(src.root(), slot).unwrap();
+  src.append_child(host, slot).unwrap();
   match &mut src.node_mut(slot).kind {
     NodeKind::Slot { assigned, .. } => *assigned = true,
     _ => panic!("expected a Slot node"),
