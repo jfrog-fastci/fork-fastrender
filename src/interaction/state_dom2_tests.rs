@@ -1,6 +1,9 @@
 #![cfg(test)]
 
 use crate::interaction::state::InteractionStateDom2;
+use crate::interaction::state::{FileSelection, FormStateDom2};
+use rustc_hash::FxHashSet;
+use std::path::PathBuf;
 
 #[test]
 fn interaction_state_dom2_projection_updates_preorder_ids_after_dom_mutation() {
@@ -88,5 +91,73 @@ fn interaction_state_dom2_projection_clears_unmappable_focus() {
   assert!(
     !projected.focus_visible,
     "focus_visible should be cleared when no focused element is projected"
+  );
+}
+
+#[test]
+fn form_state_dom2_projection_maps_file_inputs_and_select_selected() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<input id=f type=file>",
+    "<select id=s><option id=o1>one</option><option id=o2>two</option></select>",
+    "</body></html>",
+  );
+
+  let doc = crate::dom2::parse_html(html).unwrap();
+  let file_input = doc.get_element_by_id("f").expect("missing #f");
+  let select = doc.get_element_by_id("s").expect("missing #s");
+  let option1 = doc.get_element_by_id("o1").expect("missing #o1");
+
+  let mut form_state = FormStateDom2::default();
+  form_state.file_inputs.insert(
+    file_input,
+    vec![FileSelection {
+      path: PathBuf::from("/tmp/example.txt"),
+      filename: "example.txt".to_string(),
+      content_type: "text/plain".to_string(),
+      bytes: vec![1, 2, 3],
+    }],
+  );
+  form_state
+    .select_selected
+    .insert(select, FxHashSet::from_iter([option1]));
+
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  let projected = form_state.project_to_preorder(&snapshot.mapping);
+
+  let file_input_preorder = snapshot
+    .mapping
+    .preorder_for_node_id(file_input)
+    .expect("file input should be connected");
+  let select_preorder = snapshot
+    .mapping
+    .preorder_for_node_id(select)
+    .expect("select should be connected");
+  let option1_preorder = snapshot
+    .mapping
+    .preorder_for_node_id(option1)
+    .expect("option should be connected");
+
+  assert!(
+    projected.file_inputs.contains_key(&file_input_preorder),
+    "expected projected file input entry"
+  );
+  assert_eq!(
+    projected.file_inputs.get(&file_input_preorder).unwrap()[0].filename,
+    "example.txt"
+  );
+
+  assert!(
+    projected.select_selected.contains_key(&select_preorder),
+    "expected projected select selection entry"
+  );
+  assert!(
+    projected
+      .select_selected
+      .get(&select_preorder)
+      .unwrap()
+      .contains(&option1_preorder),
+    "expected projected select selection to contain option preorder id"
   );
 }

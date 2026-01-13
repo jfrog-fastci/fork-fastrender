@@ -41,7 +41,10 @@ pub use hit_testing::{
   fragment_tree_with_scroll, fragment_tree_with_scroll_and_sticky, hit_test_dom_viewport_point,
   hit_test_dom_with_scroll, hit_test_with_scroll,
 };
-pub use state::{ImePreeditState, InteractionState};
+pub use state::{
+  FormStateDom2, ImePreeditState, ImePreeditStateDom2, InteractionState, InteractionStateDom2,
+  TextEditPaintStateDom2,
+};
 pub use url::resolve_url;
 
 use crate::style::ComputedStyle;
