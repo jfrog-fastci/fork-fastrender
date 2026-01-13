@@ -2243,7 +2243,7 @@ fn validate_regex_pattern(
       _ => {}
     }
 
-    // `\c` AsciiLetter.
+    // `\c` AsciiLetter / Annex B "class control" escape.
     if esc == 'c' {
       if after_esc >= pattern.len() {
         return Err(RegexError {
@@ -2258,11 +2258,22 @@ fn validate_regex_pattern(
         let value = (upper as u32).saturating_sub(0x40);
         return Ok((after_esc + ctrl.len_utf8(), RegexClassAtom::Single(value)));
       }
-      return Err(RegexError {
-        kind: RegexErrorKind::InvalidPattern,
-        offset: base_offset + escape_start,
-        len: after_esc + ctrl.len_utf8() - escape_start,
-      });
+      if !unicode_mode && (ctrl.is_ascii_digit() || ctrl == '_') {
+        // Annex B ClassEscape extension: `\c` ClassControlLetter.
+        let value = (ctrl as u32) % 32;
+        return Ok((after_esc + ctrl.len_utf8(), RegexClassAtom::Single(value)));
+      }
+      if unicode_mode {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + escape_start,
+          len: after_esc + ctrl.len_utf8() - escape_start,
+        });
+      }
+      // Non-UnicodeMode: Annex B allows treating `\c` followed by a non-letter as an extended atom.
+      // Approximate this by accepting it as an identity escape of `c` (leaving the following
+      // character to be parsed normally).
+      return Ok((after_esc, RegexClassAtom::Single('c' as u32)));
     }
 
     // `\b` is backspace inside character classes.
@@ -2632,7 +2643,7 @@ fn validate_regex_pattern(
         continue;
       }
 
-      // `\c` must be followed by an ASCII letter in all modes.
+      // `\c` AsciiLetter / Annex B extended atom.
       if esc == 'c' {
         let after_c = i + esc_len;
         let Some(control) = pattern[after_c..].chars().next() else {
@@ -2642,14 +2653,21 @@ fn validate_regex_pattern(
             len: after_c.saturating_sub(escape_start),
           });
         };
-        if !control.is_ascii_alphabetic() {
+        if control.is_ascii_alphabetic() {
+          i = after_c + control.len_utf8();
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+          continue;
+        }
+        if unicode_mode {
           return Err(RegexError {
             kind: RegexErrorKind::InvalidPattern,
             offset: base_offset + escape_start,
             len: after_c + control.len_utf8() - escape_start,
           });
         }
-        i = after_c + control.len_utf8();
+        // Non-UnicodeMode: accept as an extended atom (effectively an identity escape of `c`).
+        i += esc_len;
         prev_can_be_quantified = true;
         quantifier_allows_lazy = false;
         continue;

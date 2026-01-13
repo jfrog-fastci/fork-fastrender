@@ -20,6 +20,14 @@ fn unicode_mode_rejects_invalid_class_control_escape() {
 }
 
 #[test]
+fn non_unicode_mode_allows_annex_b_class_control_escape() {
+  parse(r"/\c0/").unwrap();
+  parse(r"/[\c0]/").unwrap();
+  parse(r"/\c_/").unwrap();
+  parse(r"/[\c_]/").unwrap();
+}
+
+#[test]
 fn unicode_mode_accepts_common_escapes() {
   parse(r"/\w\s\u{61}/u").unwrap();
   parse(r"/[\w\cA\-]/u").unwrap();
