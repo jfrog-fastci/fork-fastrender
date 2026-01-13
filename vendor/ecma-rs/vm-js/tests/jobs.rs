@@ -258,7 +258,7 @@ fn host_call_job_callback_default_delegates_to_ctx_call() -> Result<(), VmError>
 
   let mut host = TestHost::default();
   let mut ctx = TestContext::default();
-  let callback = JobCallback::new(callback_obj);
+  let callback = JobCallback::new(callback_obj)?;
 
   // Not implementing `host_call_job_callback` should still compile; the default impl is a stub.
   let err = (&mut host as &mut dyn VmHostHooks).host_call_job_callback(
@@ -284,7 +284,7 @@ fn job_callback_exposes_callback_object() -> Result<(), VmError> {
     callback_obj = scope.alloc_object()?;
   }
 
-  let cb = JobCallback::new(callback_obj);
+  let cb = JobCallback::new(callback_obj)?;
   assert_eq!(cb.callback(), callback_obj);
   Ok(())
 }
@@ -299,7 +299,7 @@ fn job_callback_downcast_ref_exposes_host_data() -> Result<(), VmError> {
     callback_obj = scope.alloc_object()?;
   }
 
-  let cb = JobCallback::new_with_data(callback_obj, 42u32);
+  let cb = JobCallback::new_with_data(callback_obj, 42u32)?;
   assert_eq!(cb.callback(), callback_obj);
   assert_eq!(cb.downcast_ref::<u32>(), Some(&42u32));
   assert_eq!(cb.downcast_ref::<u64>(), None);
@@ -316,7 +316,7 @@ fn job_callback_does_not_implicitly_root_callback() -> Result<(), VmError> {
   {
     let mut scope = heap.scope();
     obj = scope.alloc_object()?;
-    cb = JobCallback::new(obj);
+    cb = JobCallback::new(obj)?;
     weak = WeakGcObject::from(obj);
   }
 
@@ -337,7 +337,7 @@ fn job_callback_callback_can_be_rooted_by_host() -> Result<(), VmError> {
   {
     let mut scope = heap.scope();
     obj = scope.alloc_object()?;
-    cb = JobCallback::new(obj);
+    cb = JobCallback::new(obj)?;
     weak = WeakGcObject::from(obj);
   }
 
@@ -387,7 +387,7 @@ fn job_can_invoke_host_call_job_callback() -> Result<(), VmError> {
     let mut scope = ctx.heap.scope();
     scope.alloc_object()?
   };
-  let callback = JobCallback::new_with_data(callback_obj, 42u32);
+  let callback = JobCallback::new_with_data(callback_obj, 42u32)?;
   let this_argument = Value::Null;
   let arguments = vec![Value::Bool(true), Value::Number(1.0)];
   let expected_arguments = arguments.clone();

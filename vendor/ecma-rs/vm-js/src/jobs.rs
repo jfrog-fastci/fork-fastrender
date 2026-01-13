@@ -476,31 +476,40 @@ impl JobCallback {
   }
 
   /// Create a new `JobCallback` with no extra host-defined metadata.
-  pub fn new(callback: GcObject) -> Self {
+  ///
+  /// This constructor is fallible: it returns [`VmError::OutOfMemory`] instead of panicking if the
+  /// underlying `Arc` allocation fails.
+  pub fn new(callback: GcObject) -> Result<Self, VmError> {
     Self::try_new_in_realm(callback, None)
-      .unwrap_or_else(|_| panic!("JobCallback::new: out of memory"))
   }
 
   /// Create a new `JobCallback` associated with an opaque realm identifier.
-  pub fn new_in_realm(callback: GcObject, realm: Option<RealmId>) -> Self {
-    Self::try_new_in_realm(callback, realm).unwrap_or_else(|_| panic!("JobCallback::new: out of memory"))
+  ///
+  /// This constructor is fallible: it returns [`VmError::OutOfMemory`] instead of panicking if the
+  /// underlying `Arc` allocation fails.
+  pub fn new_in_realm(callback: GcObject, realm: Option<RealmId>) -> Result<Self, VmError> {
+    Self::try_new_in_realm(callback, realm)
   }
 
   /// Create a new `JobCallback` with host-defined metadata.
-  pub fn new_with_data<T: Any + Send + Sync>(callback: GcObject, data: T) -> Self {
+  ///
+  /// This constructor is fallible: it returns [`VmError::OutOfMemory`] instead of panicking if the
+  /// underlying `Arc` allocation fails.
+  pub fn new_with_data<T: Any + Send + Sync>(callback: GcObject, data: T) -> Result<Self, VmError> {
     Self::try_new_with_data_in_realm(callback, data, None)
-      .unwrap_or_else(|_| panic!("JobCallback::new_with_data: out of memory"))
   }
 
   /// Create a new `JobCallback` with host-defined metadata, associated with an opaque realm
   /// identifier.
+  ///
+  /// This constructor is fallible: it returns [`VmError::OutOfMemory`] instead of panicking if the
+  /// underlying `Arc` allocation fails.
   pub fn new_with_data_in_realm<T: Any + Send + Sync>(
     callback: GcObject,
     data: T,
     realm: Option<RealmId>,
-  ) -> Self {
+  ) -> Result<Self, VmError> {
     Self::try_new_with_data_in_realm(callback, data, realm)
-      .unwrap_or_else(|_| panic!("JobCallback::new_with_data_in_realm: out of memory"))
   }
 
   /// Returns the callback object captured by this record.
@@ -1136,7 +1145,40 @@ pub trait VmHostHooks {
 mod oom_tests {
   use super::*;
   use crate::test_alloc::FailAllocsGuard;
+  use crate::test_alloc::FailNextMatchingAllocGuard;
   use crate::{Heap, HeapLimits, VmOptions};
+  use std::sync::atomic::AtomicUsize;
+
+  // Keep this local so we can precisely fail `arc_try_new_vm`'s allocation without also failing
+  // allocations performed by the panic runtime (important for regression tests that used to
+  // `panic!` on OOM).
+  #[repr(C)]
+  struct ArcInner<T> {
+    strong: AtomicUsize,
+    weak: AtomicUsize,
+    data: T,
+  }
+
+  const JOB_CALLBACK_ARC_INNER_SIZE: usize = std::mem::size_of::<ArcInner<JobCallbackInner>>();
+  const JOB_CALLBACK_ARC_INNER_ALIGN: usize = std::mem::align_of::<ArcInner<JobCallbackInner>>();
+  const U32_ARC_INNER_SIZE: usize = std::mem::size_of::<ArcInner<u32>>();
+  const U32_ARC_INNER_ALIGN: usize = std::mem::align_of::<ArcInner<u32>>();
+
+  trait IntoJobCallbackResult {
+    fn into_job_callback_result(self) -> Result<JobCallback, VmError>;
+  }
+
+  impl IntoJobCallbackResult for JobCallback {
+    fn into_job_callback_result(self) -> Result<JobCallback, VmError> {
+      Ok(self)
+    }
+  }
+
+  impl IntoJobCallbackResult for Result<JobCallback, VmError> {
+    fn into_job_callback_result(self) -> Result<JobCallback, VmError> {
+      self
+    }
+  }
 
   #[test]
   fn host_make_job_callback_returns_out_of_memory_on_arc_alloc_failure() {
@@ -1155,6 +1197,58 @@ mod oom_tests {
       .host_make_job_callback(callback)
       .expect_err("expected OOM error");
     assert!(matches!(err, VmError::OutOfMemory));
+  }
+
+  #[test]
+  fn job_callback_new_returns_out_of_memory_on_arc_alloc_failure_without_panicking() {
+    let callback = GcObject(crate::HeapId(0));
+    let _guard =
+      FailNextMatchingAllocGuard::new(JOB_CALLBACK_ARC_INNER_SIZE, JOB_CALLBACK_ARC_INNER_ALIGN);
+
+    let result = std::panic::catch_unwind(|| JobCallback::new(callback).into_job_callback_result())
+      .expect("JobCallback::new should not panic on OOM");
+    assert!(matches!(result, Err(VmError::OutOfMemory)));
+  }
+
+  #[test]
+  fn job_callback_new_in_realm_returns_out_of_memory_on_arc_alloc_failure_without_panicking() {
+    let callback = GcObject(crate::HeapId(0));
+    let _guard =
+      FailNextMatchingAllocGuard::new(JOB_CALLBACK_ARC_INNER_SIZE, JOB_CALLBACK_ARC_INNER_ALIGN);
+
+    let result = std::panic::catch_unwind(|| {
+      JobCallback::new_in_realm(callback, Some(RealmId::from_raw(123))).into_job_callback_result()
+    })
+    .expect("JobCallback::new_in_realm should not panic on OOM");
+    assert!(matches!(result, Err(VmError::OutOfMemory)));
+  }
+
+  #[test]
+  fn job_callback_new_with_data_returns_out_of_memory_on_host_data_arc_alloc_failure_without_panicking() {
+    let callback = GcObject(crate::HeapId(0));
+    let _guard = FailNextMatchingAllocGuard::new(U32_ARC_INNER_SIZE, U32_ARC_INNER_ALIGN);
+
+    let result = std::panic::catch_unwind(|| {
+      JobCallback::new_with_data(callback, 42u32).into_job_callback_result()
+    })
+    .expect("JobCallback::new_with_data should not panic on OOM");
+    assert!(matches!(result, Err(VmError::OutOfMemory)));
+  }
+
+  #[test]
+  fn job_callback_new_with_data_in_realm_returns_out_of_memory_on_callback_record_arc_alloc_failure_without_panicking() {
+    let callback = GcObject(crate::HeapId(0));
+    // First allocation (for the host data) should succeed; fail the allocation for the callback
+    // record `Arc`.
+    let _guard =
+      FailNextMatchingAllocGuard::new(JOB_CALLBACK_ARC_INNER_SIZE, JOB_CALLBACK_ARC_INNER_ALIGN);
+
+    let result = std::panic::catch_unwind(|| {
+      JobCallback::new_with_data_in_realm(callback, 42u32, Some(RealmId::from_raw(123)))
+        .into_job_callback_result()
+    })
+    .expect("JobCallback::new_with_data_in_realm should not panic on OOM");
+    assert!(matches!(result, Err(VmError::OutOfMemory)));
   }
 
   #[test]

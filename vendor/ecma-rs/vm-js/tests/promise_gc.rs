@@ -53,7 +53,7 @@ fn promise_reaction_handler_traced_while_pending_and_collectable_after_settlemen
       PromiseReaction {
         capability: None,
         type_: PromiseReactionType::Fulfill,
-        handler: Some(JobCallback::new(handler)),
+        handler: Some(JobCallback::new(handler)?),
       },
     )?;
 

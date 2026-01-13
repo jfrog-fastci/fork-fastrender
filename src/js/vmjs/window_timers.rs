@@ -7169,7 +7169,7 @@ mod tests {
       make_callback(vm, &mut scope, global, "callback", record_callback_call)
     };
 
-    let job_callback = vm_js::JobCallback::new(callback_func);
+    let job_callback = vm_js::JobCallback::new(callback_func).expect("JobCallback::new");
 
     let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
       hooks.host_call_job_callback(ctx, &job_callback, Value::Undefined, &[])?;

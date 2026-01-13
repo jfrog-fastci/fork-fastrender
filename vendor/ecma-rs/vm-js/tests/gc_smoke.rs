@@ -155,7 +155,7 @@ fn promise_reaction_lists_are_cleared_on_settlement() -> Result<(), VmError> {
       PromiseReaction {
         capability: None,
         type_: PromiseReactionType::Fulfill,
-        handler: Some(JobCallback::new(handler)),
+        handler: Some(JobCallback::new(handler)?),
       },
     )?;
 
