@@ -2505,7 +2505,7 @@ mod tests {
   use crate::{error::RenderError, render_control::RenderDeadline};
   use std::cell::Cell;
   use std::rc::Rc;
-  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::sync::Mutex;
 
   #[derive(Default)]
@@ -2643,6 +2643,41 @@ mod tests {
       .queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))
       .is_err());
     assert_eq!(wakes.load(Ordering::SeqCst), 0);
+  }
+
+  #[test]
+  fn external_task_queue_wake_callback_is_invoked_outside_mutex() -> Result<()> {
+    let handle = ExternalTaskQueueHandle::<()>::new(10);
+    let handle_for_cb = handle.clone();
+    let wake_ran = Arc::new(AtomicBool::new(false));
+    let wake_ran_for_cb = Arc::clone(&wake_ran);
+    handle.set_wake_callback(Some(Arc::new(move || {
+      // If the queue mutex were held while calling the wake callback, this would deadlock.
+      let empty = handle_for_cb.is_empty();
+      wake_ran_for_cb.store(!empty, Ordering::SeqCst);
+    })));
+
+    handle.queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))?;
+    assert!(
+      wake_ran.load(Ordering::SeqCst),
+      "wake callback should have been invoked and observed the queued task"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn external_task_queue_wake_callback_panics_are_swallowed() -> Result<()> {
+    let handle = ExternalTaskQueueHandle::<()>::new(10);
+    handle.set_wake_callback(Some(Arc::new(|| {
+      panic!("wake callback panic should be caught");
+    })));
+
+    // Should not panic even though the wake callback panics.
+    assert!(handle
+      .queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))
+      .is_ok());
+    assert!(!handle.is_empty(), "task should still be enqueued");
+    Ok(())
   }
 
   #[test]
