@@ -182,11 +182,8 @@ mod ui_fieldset_disabled;
 mod ui_form_reset;
 mod ui_worker_keyboard;
 mod ui_worker_media_prefs;
-<<<<<<< HEAD
 mod ui_worker_parse_time_js_dom_mutation_first_frame;
-=======
 mod ui_worker_page_accesskit_subtree;
->>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
 mod ui_worker_form_state_tab_switch;
 mod ui_worker_form_control_dom1_to_dom2_mirror;
 mod ui_worker_navigation_errors;
@@ -226,6 +223,7 @@ mod ui_worker_js_post_navigation_pump;
 mod ui_worker_download_cancel_cleans_up;
 mod ui_worker_download_filename_collision_suffix;
 mod ui_worker_find_query_coalescing;
+mod ui_worker_find_in_page;
 mod ui_worker_link_download;
 mod ui_worker_unsupported_scheme;
 mod ui_worker_untrusted_chrome_schemes;
