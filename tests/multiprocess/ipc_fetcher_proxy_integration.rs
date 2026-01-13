@@ -357,18 +357,38 @@ fn ipc_fetcher_cookie_header_value_is_deterministic_when_remote_returns_none() {
 
   let ipc_handle = thread::spawn(move || {
     let (mut stream, _) = ipc_listener.accept().unwrap();
-    let req_bytes = read_frame(&mut stream).expect("read ipc frame");
-    let req: IpcRequest = serde_json::from_slice(&req_bytes).expect("decode ipc request");
-    match req {
+    stream
+      .set_read_timeout(Some(Duration::from_secs(2)))
+      .unwrap();
+    stream
+      .set_write_timeout(Some(Duration::from_secs(2)))
+      .unwrap();
+
+    // Auth handshake must precede any other IPC request.
+    let hello_bytes = read_frame(&mut stream).expect("read ipc hello frame");
+    let hello: IpcRequest = serde_json::from_slice(&hello_bytes).expect("decode ipc hello request");
+    match hello {
+      IpcRequest::Hello { token } => assert_eq!(token, TEST_AUTH_TOKEN, "unexpected IPC auth token"),
+      other => panic!("expected IPC hello request, got {other:?}"),
+    }
+    let hello_ack = serde_json::to_vec(&IpcResponse::HelloAck).expect("encode ipc hello ack");
+    write_frame(&mut stream, &hello_ack).expect("write ipc hello ack");
+
+    let req_bytes = read_frame(&mut stream).expect("read ipc request frame");
+    let env: BrowserToNetwork = serde_json::from_slice(&req_bytes).expect("decode ipc request");
+    match env.request {
       IpcRequest::CookieHeaderValue { .. } => {}
       other => panic!("unexpected IPC request: {other:?}"),
     }
     let response = IpcResponse::MaybeString(IpcResult::Ok(None));
-    let out = serde_json::to_vec(&response).expect("encode ipc response");
-    write_frame(&mut stream, &out).expect("write ipc response");
+    let mut service = NetworkService::new(&mut stream);
+    service
+      .send_response(env.id, response)
+      .expect("write ipc response");
   });
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let cookie = fetcher
     .cookie_header_value("http://example.com/")
     .expect("cookie_header_value should be Some for valid URL");
@@ -390,18 +410,34 @@ fn ipc_fetcher_store_cookie_from_document_oversize_is_not_sent_over_ipc() {
   let ipc_handle = thread::spawn(move || {
     let (mut stream, _) = ipc_listener.accept().unwrap();
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+
+    // Auth handshake must precede any other IPC request.
+    let hello_bytes = read_frame(&mut stream).expect("read ipc hello frame");
+    let hello: IpcRequest = serde_json::from_slice(&hello_bytes).expect("decode ipc hello request");
+    match hello {
+      IpcRequest::Hello { token } => assert_eq!(token, TEST_AUTH_TOKEN, "unexpected IPC auth token"),
+      other => panic!("expected IPC hello request, got {other:?}"),
+    }
+    let hello_ack = serde_json::to_vec(&IpcResponse::HelloAck).expect("encode ipc hello ack");
+    write_frame(&mut stream, &hello_ack).expect("write ipc hello ack");
+
+    // After the handshake, the oversize cookie should cause the client to send nothing; we should
+    // observe EOF when the fetcher is dropped.
     let mut buf = [0u8; 1];
     match stream.read(&mut buf) {
       Ok(0) => {}
-      Ok(n) => panic!("expected no IPC bytes, got {n}"),
-      Err(err) if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut => {
+      Ok(n) => panic!("expected no IPC bytes after hello, got {n}"),
+      Err(err)
+        if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut =>
+      {
         panic!("timed out waiting for IPC stream to close without sending bytes");
       }
       Err(err) => panic!("IPC read failed: {err}"),
     }
   });
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   fetcher.store_cookie_from_document(
     "http://example.com/",
     &format!("oversize={}; Path=/", "x".repeat(5000)),
