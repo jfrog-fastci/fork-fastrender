@@ -6988,10 +6988,7 @@ impl App {
                 tab.find = fastrender::ui::FindInPageState::default();
               }
               self.send_worker_msg(fastrender::ui::UiToWorker::FindStop { tab_id });
-              self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-                && !self.bookmarks_panel_open
-                && !self.history_panel_open
-                && !self.downloads_panel_open;
+              self.page_has_focus = self.should_restore_page_focus();
               self.window.request_redraw();
               return;
             }
@@ -7478,10 +7475,7 @@ impl App {
         }
         ChromeAction::CloseFindInPage(tab_id) => {
           self.send_worker_msg(UiToWorker::FindStop { tab_id });
-          self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-            && !self.bookmarks_panel_open
-            && !self.history_panel_open
-            && !self.downloads_panel_open;
+          self.page_has_focus = self.should_restore_page_focus();
           self.window.request_redraw();
         }
         ChromeAction::OpenTabSearch => {
@@ -7493,11 +7487,7 @@ impl App {
         ChromeAction::CloseTabSearch => {
           // After dismissing the overlay, restore page focus so keyboard scrolling works without an
           // extra click.
-          self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-            && !self.bookmarks_panel_open
-            && !self.history_panel_open
-            && !self.downloads_panel_open
-            && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
+          self.page_has_focus = self.should_restore_page_focus();
           self.window.request_redraw();
         }
         ChromeAction::ToggleDownloadsPanel => {
@@ -7516,16 +7506,13 @@ impl App {
           }
           self.window.request_redraw();
         }
-        ChromeAction::AddressBarFocusChanged(has_focus) => {
+        ChromeAction::AddressBarFocusChanged(_has_focus) => {
           // Treat address bar focus as the only "chrome text input" focus surface for now.
           //
           // When the address bar has focus, keyboard input should not be forwarded to the page.
           // When it loses focus (via Enter/Escape/clicking elsewhere), restore page focus so common
           // scrolling shortcuts work without requiring an extra click.
-          self.page_has_focus = !has_focus
-            && !self.bookmarks_panel_open
-            && !self.history_panel_open
-            && !self.downloads_panel_open;
+          self.page_has_focus = self.should_restore_page_focus();
         }
         ChromeAction::ToggleBookmarkForActiveTab => {
           self.toggle_bookmark_for_active_tab();
