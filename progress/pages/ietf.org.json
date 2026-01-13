@@ -14,7 +14,7 @@
     "layout": 44.1182859813084,
     "paint": 109.293026635514
   },
-  "notes": "Visually close to Chrome; remaining diffs are dominated by pixel-level rasterization differences. Above-the-fold uses large photos (jumbotron `background-image: cover` + `object-fit: cover` event images) that cover ~35% of the viewport (4 image draw ops in the display list), so small JPEG/PNG decode + resampling/crop rounding deltas inflate diff%. The rest is mostly tiny text AA/hinting (63 text items) + subtle shadow/gradient edge differences. With tolerance=0 these per-pixel deltas look big in diff% even though perceptual score is low.",
+  "notes": "Visually close to Chrome; remaining diffs are dominated by pixel-level rasterization differences. Above-the-fold uses large photos (jumbotron `background-size: cover` + `object-fit: cover` event images) that cover ~35% of the viewport (4 image draw ops in the display list), so small JPEG/PNG decode + resampling/crop rounding deltas inflate diff%. The rest is mostly tiny text AA/hinting (63 text items) + subtle shadow/gradient edge differences. With tolerance=0 these per-pixel deltas look big in diff% even though perceptual score is low.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 447962,
