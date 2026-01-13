@@ -331,7 +331,7 @@ fn blob_ctor_construct(
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
-  _new_target: Value,
+  new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
     "Blob requires intrinsics (create a Realm first)",
@@ -413,19 +413,52 @@ fn blob_ctor_construct(
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(callee))?;
 
-  let proto = {
-    let key_s = scope.alloc_string("prototype")?;
-    scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
+  let new_target_obj = match new_target {
+    Value::Object(obj) => {
+      scope.push_root(Value::Object(obj))?;
+      Some(obj)
+    }
+    _ => None,
+  };
+
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+
+  // Spec-shaped behavior: honor `newTarget` for subclassing:
+  // https://webidl.spec.whatwg.org/#dfn-get-prototype-from-constructor
+  //
+  // Accessing `newTarget.prototype` can invoke user code (Proxy traps/getters), so it must happen
+  // before any per-realm Blob registry lock is held.
+  let new_target_proto = if let Some(new_target_obj) = new_target_obj {
+    match vm.get_with_host_and_hooks(host, &mut scope, hooks, new_target_obj, prototype_key)? {
+      Value::Object(proto) => {
+        scope.push_root(Value::Object(proto))?;
+        Some(proto)
+      }
+      _ => None,
+    }
+  } else {
+    None
+  };
+
+  // If `newTarget.prototype` isn't an object, fall back to this realm's intrinsic Blob prototype.
+  let realm_id = realm_id_for_binding_call(vm, &scope, callee)?;
+  let fallback_proto = if let Some(proto) = blob_prototype_for_realm(realm_id) {
+    proto
+  } else {
+    // Minimal fallback: use `callee.prototype` if it's an object (should usually be `Blob.prototype`
+    // unless user code clobbers it), otherwise `Object.prototype`.
     match scope
       .heap()
-      .object_get_own_data_property_value(callee, &key)?
+      .object_get_own_data_property_value(callee, &prototype_key)?
       .unwrap_or(Value::Undefined)
     {
       Value::Object(proto) => proto,
       _ => intr.object_prototype(),
     }
   };
+
+  let proto = new_target_proto.unwrap_or(fallback_proto);
+  scope.push_root(Value::Object(proto))?;
 
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
@@ -1139,6 +1172,29 @@ mod tests {
       "(() => {{ const t = 'a'.repeat({long_len}); return new Blob(['hi']).slice(0, 1, t).type; }})()"
     ))?;
     assert_eq!(get_string(realm.heap(), sliced), "");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn blob_ctor_honors_new_target_prototype_for_subclassing() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      r#"
+(() => {
+  class X extends Blob {}
+  const b = new X(["hi"]);
+  if (!(b instanceof X)) return "instanceof X failed";
+  if (!(b instanceof Blob)) return "instanceof Blob failed";
+  if (Object.getPrototypeOf(b) !== X.prototype) return "prototype mismatch";
+  if (b.size !== 2) return "size mismatch: " + b.size;
+  return "ok";
+})()
+"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
 
     realm.teardown();
     Ok(())
