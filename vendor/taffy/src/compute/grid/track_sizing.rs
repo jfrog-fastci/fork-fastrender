@@ -2161,7 +2161,9 @@ fn distribute_space_up_to_limits(
 #[cfg(all(test, feature = "taffy_tree"))]
 mod tests {
   use crate::prelude::*;
+  use crate::tree::RunMode;
   use crate::tree::MeasureOutput;
+  use crate::CacheTree;
 
   use crate::geometry::Point;
   use crate::geometry::AbstractAxis;
@@ -2322,6 +2324,111 @@ mod tests {
       assert_eq!(child1_layout.location, expected_child1.location);
       assert_eq!(child2_layout.location, expected_child2.location);
     }
+  }
+
+  #[test]
+  fn grid_container_baseline_uses_first_item_in_row_when_no_baseline_aligned_items_exist() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child1 = taffy.new_leaf(Style::default()).unwrap();
+    let child2 = taffy.new_leaf(Style::default()).unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          size: Size::from_lengths(100.0, 100.0),
+          grid_template_columns: vec![fr(1.0); 2],
+          grid_template_rows: vec![fr(1.0); 1],
+          align_items: Some(AlignItems::Start),
+          justify_items: Some(JustifyItems::Start),
+          align_content: Some(AlignContent::Start),
+          justify_content: Some(JustifyContent::Start),
+          ..Default::default()
+        },
+        &[child1, child2],
+      )
+      .unwrap();
+
+    taffy
+      .compute_layout_with_measure(root, Size::MAX_CONTENT, |_, _, node_id, _, _| {
+        if node_id == child1 {
+          MeasureOutput::from_size(Size {
+            width: 10.0,
+            height: 10.0,
+          })
+        } else {
+          MeasureOutput::from_size(Size {
+            width: 10.0,
+            height: 20.0,
+          })
+        }
+      })
+      .unwrap();
+
+    let output = taffy
+      .cache_get(root, Size::NONE, Size::MAX_CONTENT, RunMode::PerformLayout)
+      .expect("expected grid layout output to be cached");
+
+    assert_eq!(output.first_baselines.y, Some(10.0));
+  }
+
+  #[test]
+  fn grid_container_baseline_prefers_first_baseline_aligned_item_in_first_row() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child1 = taffy.new_leaf(Style::default()).unwrap();
+    let child2 = taffy
+      .new_leaf(Style {
+        align_self: Some(AlignSelf::Baseline),
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          size: Size::from_lengths(100.0, 100.0),
+          grid_template_columns: vec![fr(1.0); 2],
+          grid_template_rows: vec![fr(1.0); 1],
+          align_items: Some(AlignItems::Start),
+          justify_items: Some(JustifyItems::Start),
+          align_content: Some(AlignContent::Start),
+          justify_content: Some(JustifyContent::Start),
+          ..Default::default()
+        },
+        &[child1, child2],
+      )
+      .unwrap();
+
+    taffy
+      .compute_layout_with_measure(root, Size::MAX_CONTENT, |_, _, node_id, _, _| {
+        if node_id == child1 {
+          MeasureOutput::from_size(Size {
+            width: 10.0,
+            height: 10.0,
+          })
+        } else {
+          MeasureOutput {
+            size: Size {
+              width: 10.0,
+              height: 20.0,
+            },
+            first_baselines: Point {
+              x: None,
+              y: Some(7.0),
+            },
+          }
+        }
+      })
+      .unwrap();
+
+    let output = taffy
+      .cache_get(root, Size::NONE, Size::MAX_CONTENT, RunMode::PerformLayout)
+      .expect("expected grid layout output to be cached");
+
+    assert_eq!(output.first_baselines.y, Some(7.0));
   }
 
   #[test]
