@@ -83,6 +83,10 @@ fn internal_await_delays_first_yield() -> Result<(), VmError> {
     assert_eq!(value_to_string(&rt, value), "s|");
 
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    assert!(
+      rt.vm.microtask_queue().is_empty(),
+      "expected microtask queue to be empty after checkpoint"
+    );
 
     let value = rt.exec_script("log")?;
     assert_eq!(value_to_string(&rt, value), "sa");
@@ -127,6 +131,10 @@ fn next_requests_are_queued_across_internal_await() -> Result<(), VmError> {
     assert_eq!(value_to_string(&rt, value), "");
 
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    assert!(
+      rt.vm.microtask_queue().is_empty(),
+      "expected microtask queue to be empty after checkpoint"
+    );
 
     let value = rt.exec_script("results.join(',')")?;
     assert_eq!(value_to_string(&rt, value), "1,2,done");
