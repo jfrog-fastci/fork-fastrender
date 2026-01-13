@@ -131,6 +131,10 @@ fn compute_referer_header_value(
   }
 
   let mut referrer_url = Url::parse(raw_referrer).ok()?;
+  // Match browser behavior: only synthesize a `Referer` header for network referrers.
+  if !matches!(referrer_url.scheme(), "http" | "https") {
+    return None;
+  }
   referrer_url.set_fragment(None);
   let _ = referrer_url.set_username("");
   let _ = referrer_url.set_password(None);
