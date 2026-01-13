@@ -54,8 +54,11 @@ fn sandboxed_child_entrypoint() {
   let probe_path = tmp.path().join("probe.txt");
   std::fs::write(&probe_path, b"probe").expect("write probe file");
 
-  let sandbox_status =
-    fastrender::sandbox::apply_renderer_sandbox(fastrender::sandbox::RendererSandboxConfig::default());
+  let mut sandbox_config = fastrender::sandbox::RendererSandboxConfig::default();
+  // Apply Landlock when supported as additional defense-in-depth. This is best-effort: kernels that
+  // don't support Landlock will still run the seccomp sandbox.
+  sandbox_config.landlock = fastrender::sandbox::RendererLandlockPolicy::RestrictWrites;
+  let sandbox_status = fastrender::sandbox::apply_renderer_sandbox(sandbox_config);
   match sandbox_status {
     Ok(fastrender::sandbox::SandboxStatus::Applied)
     | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
@@ -75,10 +78,14 @@ fn sandboxed_child_entrypoint() {
         | fastrender::sandbox::SandboxError::DisableCoreDumpsFailed { source }
         | fastrender::sandbox::SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
         fastrender::sandbox::SandboxError::LandlockFailed { source } => match source {
-          fastrender::sandbox::linux_landlock::LandlockError::SetNoNewPrivsFailed { source } => {
+          fastrender::sandbox::linux_landlock::LandlockError::ProbeFailed { source }
+          | fastrender::sandbox::linux_landlock::LandlockError::CreateRulesetFailed { source }
+          | fastrender::sandbox::linux_landlock::LandlockError::OpenPathFailed { source, .. }
+          | fastrender::sandbox::linux_landlock::LandlockError::AddRuleFailed { source, .. }
+          | fastrender::sandbox::linux_landlock::LandlockError::SetNoNewPrivsFailed { source }
+          | fastrender::sandbox::linux_landlock::LandlockError::RestrictSelfFailed { source } => {
             source.raw_os_error()
           }
-          _ => None,
         },
         fastrender::sandbox::SandboxError::SeccompInstallRejected { errno, .. } => Some(*errno),
         fastrender::sandbox::SandboxError::SeccompInstallFailed { errno, .. } => Some(*errno),
