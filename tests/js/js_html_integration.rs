@@ -1495,6 +1495,49 @@ fn p3_load_event_waits_for_link_rel_icon() -> Result<()> {
 }
 
 #[test]
+fn p3_load_event_waits_for_link_rel_icon_set_after_domcontentloaded() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_icon_dynamic.html", js_options)?;
+
+  // Ensure `<link>` becomes an image-like load blocker when its `rel` is mutated to include `icon`
+  // after DOMContentLoaded.
+  let icon_url = "https://example.invalid/icon_dyn.png";
+  h.register_script_source(icon_url, "fake image bytes");
+  h.register_html_source(&format!(
+    r#"<!doctype html><head>
+      <link id="l">
+    </head><body>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          Promise.resolve().then(() => {{
+            console.log("microtask");
+            const link = document.getElementById("l");
+            // Exercise tokenization: `rel` can be a whitespace-separated list.
+            link.setAttribute("rel", "shortcut icon");
+            link.setAttribute("href", "{icon_url}");
+            setTimeout(() => console.log("timer"), 0);
+          }});
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "dcl".to_string(),
+      "microtask".to_string(),
+      "timer".to_string(),
+      "load".to_string()
+    ]
+  );
+  Ok(())
+}
+
+#[test]
 fn p3_load_event_waits_for_input_type_image() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p3_input_image.html", js_options)?;
@@ -1522,6 +1565,47 @@ fn p3_load_event_waits_for_input_type_image() -> Result<()> {
   assert_eq!(
     console_logs(&h.tab),
     vec!["dcl".to_string(), "timer".to_string(), "load".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn p3_load_event_waits_for_input_type_image_set_after_domcontentloaded() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_input_image_dynamic.html", js_options)?;
+
+  // Ensure `<input>` becomes a load blocker when it is mutated into `type=image` after
+  // DOMContentLoaded has fired.
+  let img_url = "https://example.invalid/input_image_dyn.png";
+  h.register_script_source(img_url, "fake image bytes");
+  h.register_html_source(&format!(
+    r#"<!doctype html><body>
+      <input id="i" type="button">
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          Promise.resolve().then(() => {{
+            console.log("microtask");
+            const input = document.getElementById("i");
+            input.setAttribute("type", "image");
+            input.setAttribute("src", "{img_url}");
+            setTimeout(() => console.log("timer"), 0);
+          }});
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "dcl".to_string(),
+      "microtask".to_string(),
+      "timer".to_string(),
+      "load".to_string()
+    ]
   );
   Ok(())
 }
@@ -1556,6 +1640,46 @@ fn p3_load_event_waits_for_video_poster() -> Result<()> {
 }
 
 #[test]
+fn p3_load_event_waits_for_video_poster_set_after_domcontentloaded() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_video_poster_dynamic.html", js_options)?;
+
+  // Ensure `<video>` poster loads are treated as load blockers even when the `poster` attribute is
+  // set after DOMContentLoaded.
+  let poster_url = "https://example.invalid/poster_dyn.png";
+  h.register_script_source(poster_url, "fake image bytes");
+  h.register_html_source(&format!(
+    r#"<!doctype html><body>
+      <video id="v"></video>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          Promise.resolve().then(() => {{
+            console.log("microtask");
+            const v = document.getElementById("v");
+            v.setAttribute("poster", "{poster_url}");
+            setTimeout(() => console.log("timer"), 0);
+          }});
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "dcl".to_string(),
+      "microtask".to_string(),
+      "timer".to_string(),
+      "load".to_string()
+    ]
+  );
+  Ok(())
+}
+
+#[test]
 fn p3_window_onload_property_fires_after_load_listeners() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p3_onload_property.html", js_options)?;
@@ -1578,7 +1702,7 @@ fn p3_window_onload_property_fires_after_load_listeners() -> Result<()> {
     vec![
       "dcl".to_string(),
       "listener".to_string(),
-      "onload".to_string(),
+      "onload".to_string()
     ]
   );
   Ok(())
