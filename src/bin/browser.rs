@@ -21980,11 +21980,13 @@ impl App {
           page_rect
         };
         painter.image(tex.id(), image_rect, tex.uv_rect(), egui::Color32::WHITE);
-        // The page is currently presented as a rendered image (no document accessibility yet). Give
-        // it a stable label so screen readers can identify what this focusable region represents.
-        response.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::Label, "Web page content (rendered image)")
-        });
+        // Expose the page viewport as an accessibility container (`WebView`) so we can attach the
+        // page document subtree as children in AccessKit (screen reader traversal).
+        let page_title = self
+          .browser_state
+          .tab(active_tab)
+          .and_then(|tab| tab.title.as_deref().or(tab.committed_title.as_deref()));
+        fastrender::ui::a11y::configure_page_viewport_accessibility(&response, page_title);
         self.page_rect_points = Some(response.rect);
         self.page_viewport_css = Some(viewport_css_for_mapping);
         let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping);
