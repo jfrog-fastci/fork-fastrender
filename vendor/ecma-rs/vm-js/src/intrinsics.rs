@@ -1054,6 +1054,8 @@ impl Intrinsics {
     let regexp_prototype_source_get =
       vm.register_native_call(builtins::regexp_prototype_source_get)?;
     let regexp_prototype_flags_get = vm.register_native_call(builtins::regexp_prototype_flags_get)?;
+    let regexp_prototype_has_indices_get =
+      vm.register_native_call(builtins::regexp_prototype_has_indices_get)?;
     let regexp_prototype_global_get = vm.register_native_call(builtins::regexp_prototype_global_get)?;
     let regexp_prototype_ignore_case_get =
       vm.register_native_call(builtins::regexp_prototype_ignore_case_get)?;
@@ -3240,6 +3242,33 @@ impl Intrinsics {
 
       let get_name = scope.alloc_string("get flags")?;
       let get = scope.alloc_native_function(regexp_prototype_flags_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.hasIndices
+    {
+      let key_s = scope.alloc_string("hasIndices")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get hasIndices")?;
+      let get = scope.alloc_native_function(regexp_prototype_has_indices_get, None, get_name, 0)?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()

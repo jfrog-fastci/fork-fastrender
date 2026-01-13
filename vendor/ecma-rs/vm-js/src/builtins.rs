@@ -13252,6 +13252,19 @@ fn regexp_prototype_flag_get(
   Ok(Value::Bool(contains))
 }
 
+/// `get RegExp.prototype.hasIndices` (ECMA-262).
+pub fn regexp_prototype_has_indices_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  regexp_prototype_flag_get(vm, scope, this, b'd' as u16)
+}
+
 /// `get RegExp.prototype.global` (ECMA-262).
 pub fn regexp_prototype_global_get(
   vm: &mut Vm,
@@ -13358,12 +13371,16 @@ pub fn regexp_prototype_flags_get(
   let r = require_object(this)?;
   scope.push_root(Value::Object(r))?;
 
-  // `vm-js` does not currently support `/d` (`hasIndices`).
+  // `RegExp.prototype.flags` is generic and uses `ToBoolean(Get(R, ...))`, so a user can
+  // monkeypatch `unicode`/`unicodeSets` to both be truthy; reserve space for both.
   let mut out: Vec<u16> = Vec::new();
-  // `RegExp.prototype.flags` is generic and uses `ToBoolean(Get(R, ...))`, so a user can monkeypatch
-  // `unicode`/`unicodeSets` to both be truthy; reserve space for both.
-  out.try_reserve_exact(7).map_err(|_| VmError::OutOfMemory)?;
+  out.try_reserve_exact(8).map_err(|_| VmError::OutOfMemory)?;
 
+  let key = string_key(&mut scope, "hasIndices")?;
+  let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
+  if scope.heap().to_boolean(v)? {
+    out.push(b'd' as u16);
+  }
   let key = string_key(&mut scope, "global")?;
   let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
   if scope.heap().to_boolean(v)? {

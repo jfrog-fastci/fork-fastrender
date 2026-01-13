@@ -552,8 +552,28 @@ fn regexp_prototype_source_flags_and_bool_getters_special_case_prototype() {
   let v = rt
     .exec_script(
       r#"
+        Object.getOwnPropertyDescriptor(RegExp.prototype, 'hasIndices')
+          .get.call(RegExp.prototype) === undefined
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  let v = rt
+    .exec_script(
+      r#"
         Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags')
           .get.call(RegExp.prototype) === ''
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  let v = rt
+    .exec_script(
+      r#"
+        Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags')
+          .get.call({ hasIndices: true }) === 'd'
       "#,
     )
     .unwrap();

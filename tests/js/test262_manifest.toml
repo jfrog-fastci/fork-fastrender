@@ -1050,8 +1050,9 @@ glob = "built-ins/RegExp/prototype/unicode/**"
 status = "pass"
 
 [[expectations]]
-glob = "built-ins/RegExp/prototype/unicodeSets/**"
-status = "pass"
+id = "built-ins/RegExp/prototype/source/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
 
 [[expectations]]
 glob = "built-ins/RegExp/prototype/sticky/**"
@@ -1060,6 +1061,46 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/RegExp/prototype/toString/**"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/global/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/ignoreCase/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/multiline/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/dotAll/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/unicode/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/sticky/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/flags/return-order.js"
+status = "xfail"
+reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/flags/this-val-regexp.js"
+status = "xfail"
+reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
 
 [[expectations]]
 glob = "built-ins/String/prototype/match/**"
