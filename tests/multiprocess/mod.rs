@@ -6,6 +6,7 @@ mod ipc_fetcher_auth;
 mod ipc_fetcher_frame_limits;
 mod ipc_fetcher_partial;
 mod ipc_fetcher_proxy_integration;
+mod cors_network_process_test;
 mod site_isolation_file_urls;
 mod websocket_ipc;
 mod network_process_auth;
