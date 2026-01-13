@@ -174,9 +174,10 @@ fi
 echo "capture_browser_perf_log: capturing perf JSONL (stdout → tee → ${out_path})" >&2
 
 set +e
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= "${browser_cmd[@]}" | tee "${out_path}"
-browser_status=${PIPESTATUS[0]}
-tee_status=${PIPESTATUS[1]}
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= "${browser_cmd[@]}" | tee -- "${out_path}"
+# NOTE: `PIPESTATUS` is updated after *every* command (including simple assignments). Capture both
+# pipeline statuses in a single assignment statement so `set -u` doesn't explode mid-script.
+browser_status=${PIPESTATUS[0]:-0} tee_status=${PIPESTATUS[1]:-0}
 set -e
 
 status="${browser_status}"
