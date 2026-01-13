@@ -51,6 +51,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 // -----------------------------------------------------------------------------
 // Test hooks
@@ -265,6 +266,53 @@ fn visited_link_node_ids_for_dom(
   }
 
   visited
+}
+
+// -----------------------------------------------------------------------------
+// Download progress throttling
+// -----------------------------------------------------------------------------
+
+/// Minimum interval between `WorkerToUi::DownloadProgress` messages for a single download.
+///
+/// Large/fast downloads can otherwise generate extremely high message rates, waking the UI thread
+/// frequently and increasing cross-thread channel overhead.
+const DOWNLOAD_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(75);
+
+/// If bytes are still increasing but we haven't crossed [`DOWNLOAD_PROGRESS_MIN_BYTES`], emit a
+/// progress update once this much time has passed.
+const DOWNLOAD_PROGRESS_MAX_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Minimum received-byte delta to emit an update (subject to [`DOWNLOAD_PROGRESS_MIN_INTERVAL`]).
+const DOWNLOAD_PROGRESS_MIN_BYTES: u64 = 256 * 1024;
+
+fn should_emit_download_progress(
+  received_bytes: u64,
+  last_sent_bytes: u64,
+  elapsed_since_last_sent: Duration,
+  is_final: bool,
+) -> bool {
+  // Never suppress the final progress update: the UI should observe completion before
+  // `WorkerToUi::DownloadFinished`.
+  if is_final {
+    return received_bytes != last_sent_bytes;
+  }
+
+  if received_bytes <= last_sent_bytes {
+    return false;
+  }
+
+  // Time-based rate limit (caps update rate on very fast downloads).
+  if elapsed_since_last_sent < DOWNLOAD_PROGRESS_MIN_INTERVAL {
+    return false;
+  }
+
+  let delta = received_bytes - last_sent_bytes;
+  if delta >= DOWNLOAD_PROGRESS_MIN_BYTES {
+    return true;
+  }
+
+  // Slow transfers: still emit occasional updates so UI shows liveness.
+  elapsed_since_last_sent >= DOWNLOAD_PROGRESS_MAX_INTERVAL
 }
 #[derive(Debug, Clone, Default)]
 struct FindInPageWorkerState {
@@ -2138,6 +2186,8 @@ impl BrowserRuntime {
           received_bytes: 0,
           total_bytes,
         });
+        let mut last_progress_sent_at = Instant::now();
+        let mut last_progress_sent_bytes: u64 = 0;
 
         let mut writer = match std::fs::OpenOptions::new()
           .write(true)
@@ -2158,11 +2208,9 @@ impl BrowserRuntime {
         };
 
         const READ_CHUNK: usize = 16 * 1024;
-        const PROGRESS_STRIDE: u64 = 64 * 1024;
 
         let mut buf = vec![0u8; READ_CHUNK];
         let mut received: u64 = 0;
-        let mut last_progress_sent: u64 = 0;
 
         loop {
           if cancel.load(Ordering::Acquire) {
@@ -2196,11 +2244,11 @@ impl BrowserRuntime {
 
           received = received.saturating_add(n as u64);
 
-          let should_emit_progress =
-            last_progress_sent == 0 || received.saturating_sub(last_progress_sent) >= PROGRESS_STRIDE;
-
-          if should_emit_progress {
-            last_progress_sent = received;
+          let now = Instant::now();
+          let elapsed = now.duration_since(last_progress_sent_at);
+          if should_emit_download_progress(received, last_progress_sent_bytes, elapsed, false) {
+            last_progress_sent_at = now;
+            last_progress_sent_bytes = received;
             let _ = ui_tx.send(WorkerToUi::DownloadProgress {
               tab_id,
               download_id,
@@ -2239,6 +2287,20 @@ impl BrowserRuntime {
             ),
           });
           return;
+        }
+
+        if should_emit_download_progress(
+          received,
+          last_progress_sent_bytes,
+          Duration::ZERO,
+          true,
+        ) {
+          let _ = ui_tx.send(WorkerToUi::DownloadProgress {
+            tab_id,
+            download_id,
+            received_bytes: received,
+            total_bytes,
+          });
         }
 
         finish(DownloadOutcome::Completed);
@@ -6584,4 +6646,45 @@ pub fn spawn_browser_ui_worker(
 /// takes `&str` for the worker name.
 pub fn spawn_test_browser_worker(name: &str) -> crate::Result<BrowserWorkerHandle> {
   spawn_browser_worker_with_name(name.to_string())
+}
+
+#[cfg(test)]
+mod download_progress_tests {
+  use super::*;
+
+  #[test]
+  fn download_progress_is_throttled_by_time() {
+    let received = DOWNLOAD_PROGRESS_MIN_BYTES * 8;
+
+    // Even if a lot of data arrives, we should not emit progress updates more frequently than the
+    // time-based throttle.
+    assert!(!should_emit_download_progress(
+      received,
+      0,
+      DOWNLOAD_PROGRESS_MIN_INTERVAL - Duration::from_millis(1),
+      false,
+    ));
+
+    assert!(should_emit_download_progress(
+      received,
+      0,
+      DOWNLOAD_PROGRESS_MIN_INTERVAL,
+      false,
+    ));
+
+    // After we "emit", the next update should again be suppressed until the interval elapses.
+    let received2 = received + DOWNLOAD_PROGRESS_MIN_BYTES * 8;
+    assert!(!should_emit_download_progress(
+      received2,
+      received,
+      Duration::from_millis(1),
+      false,
+    ));
+  }
+
+  #[test]
+  fn download_progress_forces_final_update() {
+    // Final update must bypass throttling.
+    assert!(should_emit_download_progress(123, 0, Duration::ZERO, true));
+  }
 }
