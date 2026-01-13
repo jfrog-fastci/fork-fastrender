@@ -5266,6 +5266,9 @@ fn is_inherited_property(name: &str) -> bool {
       | "letter-spacing"
       | "word-spacing"
       | "line-padding"
+      | "text-spacing-trim"
+      | "text-autospace"
+      | "text-spacing"
       | "text-anchor"
       | "dominant-baseline"
       | "baseline-shift"
@@ -7509,6 +7512,12 @@ pub(crate) fn apply_property_from_source(
     "letter-spacing" => styles.letter_spacing = source.letter_spacing,
     "word-spacing" => styles.word_spacing = source.word_spacing,
     "line-padding" => styles.line_padding = source.line_padding,
+    "text-spacing-trim" => styles.text_spacing_trim = source.text_spacing_trim,
+    "text-autospace" => styles.text_autospace = source.text_autospace,
+    "text-spacing" => {
+      styles.text_spacing_trim = source.text_spacing_trim;
+      styles.text_autospace = source.text_autospace;
+    }
     "white-space" => styles.white_space = source.white_space,
     "line-break" => styles.line_break = source.line_break,
     "break-before" => styles.break_before = source.break_before,
@@ -15117,6 +15126,122 @@ fn apply_declaration_with_base_internal_with_order(
       } {
         styles.line_padding = len;
       }
+    }
+    "text-spacing-trim" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(parsed) = TextSpacingTrim::parse(kw) {
+          styles.text_spacing_trim = parsed;
+        }
+      }
+    }
+    "text-autospace" => {
+      match resolved_value {
+        PropertyValue::Keyword(kw) => {
+          if let Some(parsed) = TextAutospace::parse(kw) {
+            styles.text_autospace = parsed;
+          }
+        }
+        PropertyValue::Multiple(values) => {
+          let mut raw = String::new();
+          for (idx, value) in values.iter().enumerate() {
+            let PropertyValue::Keyword(part) = value else {
+              return;
+            };
+            if idx > 0 {
+              raw.push(' ');
+            }
+            raw.push_str(part);
+          }
+          if let Some(parsed) = TextAutospace::parse(&raw) {
+            styles.text_autospace = parsed;
+          }
+        }
+        _ => {}
+      }
+    }
+    "text-spacing" => {
+      let tokens: Vec<&str> = match resolved_value {
+        PropertyValue::Keyword(raw) => split_ascii_whitespace(raw).collect(),
+        PropertyValue::Multiple(values) => {
+          let mut out = Vec::new();
+          for value in values {
+            let PropertyValue::Keyword(part) = value else {
+              return;
+            };
+            out.push(part.as_str());
+          }
+          out
+        }
+        _ => return,
+      };
+      if tokens.is_empty() {
+        return;
+      }
+
+      if tokens.len() == 1 {
+        if tokens[0].eq_ignore_ascii_case("none") {
+          styles.text_spacing_trim = TextSpacingTrim::SpaceAll;
+          styles.text_autospace = TextAutospace::NoAutospace;
+          return;
+        }
+        if tokens[0].eq_ignore_ascii_case("auto") {
+          styles.text_spacing_trim = TextSpacingTrim::Auto;
+          styles.text_autospace = TextAutospace::Auto;
+          return;
+        }
+      }
+
+      // Shorthand resets unspecified longhands to their initial values.
+      let mut trim: Option<TextSpacingTrim> = None;
+      let mut autospace: Option<TextAutospace> = None;
+
+      for token in tokens {
+        // `none` / `auto` must be standalone keywords in this shorthand.
+        if token.eq_ignore_ascii_case("none") || token.eq_ignore_ascii_case("auto") {
+          return;
+        }
+
+        if trim.is_none() {
+          if let Some(parsed) = TextSpacingTrim::parse(token) {
+            // `auto` is excluded above; `TextSpacingTrim::parse` still accepts it for the longhand,
+            // but should not be allowed in the shorthand combination branch.
+            if matches!(parsed, TextSpacingTrim::Auto) {
+              return;
+            }
+            trim = Some(parsed);
+            continue;
+          }
+        }
+
+        if autospace.is_none() {
+          if let Some(parsed) = TextAutospace::parse(token) {
+            // `auto` is excluded above; keep shorthand semantics aligned with the spec branch.
+            if matches!(parsed, TextAutospace::Auto) {
+              return;
+            }
+            autospace = Some(parsed);
+            continue;
+          }
+        }
+
+        // The keyword might be ambiguous (`normal`). Prefer assigning it to the missing side.
+        if token.eq_ignore_ascii_case("normal") {
+          if trim.is_none() {
+            trim = Some(TextSpacingTrim::Normal);
+            continue;
+          }
+          if autospace.is_none() {
+            autospace = Some(TextAutospace::Normal);
+            continue;
+          }
+        }
+
+        // Unknown token or duplicate component.
+        return;
+      }
+
+      styles.text_spacing_trim = trim.unwrap_or(TextSpacingTrim::Normal);
+      styles.text_autospace = autospace.unwrap_or(TextAutospace::Normal);
     }
     "white-space" => {
       if let PropertyValue::Keyword(kw) = resolved_value {

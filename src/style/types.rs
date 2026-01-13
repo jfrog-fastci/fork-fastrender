@@ -3788,6 +3788,146 @@ impl Default for HangingPunctuation {
   }
 }
 
+/// CSS Text 4 `text-spacing-trim` property.
+///
+/// Spec: <https://drafts.csswg.org/css-text-4/#text-spacing-trim-property>
+///
+/// Grammar: `<<spacing-trim>> | auto`, where `<<spacing-trim>> = space-all | normal | space-first
+/// | trim-start | trim-both | trim-all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextSpacingTrim {
+  /// UA-defined behavior.
+  Auto,
+  /// Default trimming behavior (no special hanging in FastRender's current implementation).
+  Normal,
+  SpaceAll,
+  SpaceFirst,
+  TrimStart,
+  TrimBoth,
+  TrimAll,
+}
+
+impl Default for TextSpacingTrim {
+  fn default() -> Self {
+    Self::Normal
+  }
+}
+
+impl TextSpacingTrim {
+  pub fn parse(keyword: &str) -> Option<Self> {
+    match keyword.to_ascii_lowercase().as_str() {
+      "auto" => Some(Self::Auto),
+      "normal" => Some(Self::Normal),
+      "space-all" => Some(Self::SpaceAll),
+      "space-first" => Some(Self::SpaceFirst),
+      "trim-start" => Some(Self::TrimStart),
+      "trim-both" => Some(Self::TrimBoth),
+      "trim-all" => Some(Self::TrimAll),
+      _ => None,
+    }
+  }
+}
+
+/// CSS Text 4 `text-autospace` property.
+///
+/// This is primarily used by the `text-spacing` shorthand, which combines `text-spacing-trim` and
+/// `text-autospace`.
+///
+/// Spec: <https://drafts.csswg.org/css-text-4/#text-autospace-property>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextAutospace {
+  /// UA-defined behavior.
+  Auto,
+  /// Default autospace behavior.
+  Normal,
+  /// Disables automatic spacing between character classes.
+  NoAutospace,
+  IdeographAlpha,
+  IdeographNumeric,
+  Punctuation,
+  IdeographAlphaNumeric,
+  IdeographAlphaPunctuation,
+  IdeographNumericPunctuation,
+  IdeographAlphaNumericPunctuation,
+}
+
+impl Default for TextAutospace {
+  fn default() -> Self {
+    Self::Normal
+  }
+}
+
+impl TextAutospace {
+  pub fn parse(raw: &str) -> Option<Self> {
+    let tokens: Vec<&str> = raw
+      .split(|ch: char| matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+      .filter(|t| !t.is_empty())
+      .collect();
+    if tokens.is_empty() {
+      return None;
+    }
+
+    // Single-keyword forms.
+    if tokens.len() == 1 {
+      return match tokens[0].to_ascii_lowercase().as_str() {
+        "auto" => Some(Self::Auto),
+        "normal" => Some(Self::Normal),
+        "no-autospace" => Some(Self::NoAutospace),
+        "ideograph-alpha" => Some(Self::IdeographAlpha),
+        "ideograph-numeric" => Some(Self::IdeographNumeric),
+        "punctuation" => Some(Self::Punctuation),
+        _ => None,
+      };
+    }
+
+    // Combined keyword forms: `ideograph-alpha || ideograph-numeric || punctuation`.
+    let mut ideograph_alpha = false;
+    let mut ideograph_numeric = false;
+    let mut punctuation = false;
+
+    for token in tokens {
+      match token.to_ascii_lowercase().as_str() {
+        // `auto`/`normal`/`no-autospace` are not combinable.
+        "auto" | "normal" | "no-autospace" => return None,
+        "ideograph-alpha" => {
+          if ideograph_alpha {
+            return None;
+          }
+          ideograph_alpha = true;
+        }
+        "ideograph-numeric" => {
+          if ideograph_numeric {
+            return None;
+          }
+          ideograph_numeric = true;
+        }
+        "punctuation" => {
+          if punctuation {
+            return None;
+          }
+          punctuation = true;
+        }
+        _ => return None,
+      }
+    }
+
+    if !(ideograph_alpha || ideograph_numeric || punctuation) {
+      return None;
+    }
+
+    Some(match (ideograph_alpha, ideograph_numeric, punctuation) {
+      (true, false, false) => Self::IdeographAlpha,
+      (false, true, false) => Self::IdeographNumeric,
+      (false, false, true) => Self::Punctuation,
+      (true, true, false) => Self::IdeographAlphaNumeric,
+      (true, false, true) => Self::IdeographAlphaPunctuation,
+      (false, true, true) => Self::IdeographNumericPunctuation,
+      (true, true, true) => Self::IdeographAlphaNumericPunctuation,
+      _ => return None,
+    })
+  }
+}
+
 /// CSS `text-rendering`
 ///
 /// Reference: SVG/CSS (non-standard, inherited)

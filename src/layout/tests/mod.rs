@@ -47,6 +47,7 @@ mod block_margin_collapse;
 mod block_nonblock_fc_does_not_inherit_definite_height;
 mod block_percent_height_auto;
 mod br_linebreak;
+mod text_spacing_trim_test;
 mod bundled_serif_default_line_metrics;
 mod button_inline_flex_children;
 mod calc_percent_height_is_not_collapsible_through;

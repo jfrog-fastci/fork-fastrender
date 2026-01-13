@@ -94,6 +94,7 @@ use crate::style::types::TabSize;
 use crate::style::types::TextAlign;
 use crate::style::types::TextCombineUpright;
 use crate::style::types::TextJustify;
+use crate::style::types::TextSpacingTrim;
 use crate::style::types::TextTransform;
 use crate::style::types::TextWrap;
 use crate::style::types::UnicodeBidi;
@@ -7817,6 +7818,256 @@ impl InlineFormattingContext {
       items = markers;
     }
 
+    // CSS Text 4 `text-spacing-trim` hanging punctuation (minimal implementation).
+    //
+    // For `trim-start`, a leading fullwidth opening punctuation character is treated as half-width
+    // for alignment/justification measurement and the other half hangs into the line's start edge.
+    // For `trim-both`, the same is done for trailing fullwidth closing punctuation.
+    //
+    // This implementation is intentionally conservative:
+    // - At most one punctuation glyph is trimmed per edge.
+    // - Only a small subset of the spec's character classes is recognized.
+    // - Only `trim-start` and `trim-both` (and `trim-all` as an alias for `trim-both`) affect
+    //   layout; other values are parsed/stored but currently behave like `normal`.
+    fn is_fullwidth_opening_punctuation(ch: char) -> bool {
+      matches!(
+        ch,
+        '\u{3008}' // LEFT ANGLE BRACKET
+          | '\u{300A}' // LEFT DOUBLE ANGLE BRACKET
+          | '\u{300C}' // LEFT CORNER BRACKET
+          | '\u{300E}' // LEFT WHITE CORNER BRACKET
+          | '\u{3010}' // LEFT BLACK LENTICULAR BRACKET
+          | '\u{3014}' // LEFT TORTOISE SHELL BRACKET
+          | '\u{3016}' // LEFT WHITE LENTICULAR BRACKET
+          | '\u{3018}' // LEFT WHITE TORTOISE SHELL BRACKET
+          | '\u{301A}' // LEFT WHITE SQUARE BRACKET
+          | '\u{FF08}' // FULLWIDTH LEFT PARENTHESIS
+          | '\u{FF3B}' // FULLWIDTH LEFT SQUARE BRACKET
+          | '\u{FF5B}' // FULLWIDTH LEFT CURLY BRACKET
+          | '\u{FF5F}' // FULLWIDTH LEFT WHITE PARENTHESIS
+      )
+    }
+
+    fn is_fullwidth_closing_punctuation(ch: char) -> bool {
+      matches!(
+        ch,
+        '\u{3001}' // IDEOGRAPHIC COMMA
+          | '\u{3002}' // IDEOGRAPHIC FULL STOP
+          | '\u{3009}' // RIGHT ANGLE BRACKET
+          | '\u{300B}' // RIGHT DOUBLE ANGLE BRACKET
+          | '\u{300D}' // RIGHT CORNER BRACKET
+          | '\u{300F}' // RIGHT WHITE CORNER BRACKET
+          | '\u{3011}' // RIGHT BLACK LENTICULAR BRACKET
+          | '\u{3015}' // RIGHT TORTOISE SHELL BRACKET
+          | '\u{3017}' // RIGHT WHITE LENTICULAR BRACKET
+          | '\u{3019}' // RIGHT WHITE TORTOISE SHELL BRACKET
+          | '\u{301B}' // RIGHT WHITE SQUARE BRACKET
+          | '\u{FF01}' // FULLWIDTH EXCLAMATION MARK
+          | '\u{FF09}' // FULLWIDTH RIGHT PARENTHESIS
+          | '\u{FF0C}' // FULLWIDTH COMMA
+          | '\u{FF0E}' // FULLWIDTH FULL STOP
+          | '\u{FF1A}' // FULLWIDTH COLON
+          | '\u{FF1B}' // FULLWIDTH SEMICOLON
+          | '\u{FF1F}' // FULLWIDTH QUESTION MARK
+          | '\u{FF3D}' // FULLWIDTH RIGHT SQUARE BRACKET
+          | '\u{FF5D}' // FULLWIDTH RIGHT CURLY BRACKET
+          | '\u{FF60}' // FULLWIDTH RIGHT WHITE PARENTHESIS
+      )
+    }
+
+    fn first_cluster_advance(text: &TextItem) -> Option<f32> {
+      let first = text.text.chars().next()?;
+      let offset = first.len_utf8();
+      Some(text.advance_at_offset(offset).max(0.0))
+    }
+
+    fn last_cluster_advance(text: &TextItem) -> Option<f32> {
+      let last = text.text.chars().next_back()?;
+      let start = text.text.len().saturating_sub(last.len_utf8());
+      let before = text.advance_at_offset(start);
+      Some((text.advance - before).max(0.0))
+    }
+
+    let mut inline_shifts: Vec<f32> = vec![0.0; items.len()];
+    if !items.is_empty() {
+      fn wants_trim_start(trim: TextSpacingTrim) -> bool {
+        matches!(
+          trim,
+          TextSpacingTrim::TrimStart | TextSpacingTrim::TrimBoth | TextSpacingTrim::TrimAll
+        )
+      }
+
+      fn wants_trim_end(trim: TextSpacingTrim) -> bool {
+        matches!(trim, TextSpacingTrim::TrimBoth | TextSpacingTrim::TrimAll)
+      }
+
+      fn start_hang_in_item(item: &InlineItem) -> Option<f32> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker || !wants_trim_start(t.style.text_spacing_trim) {
+              return None;
+            }
+            let ch = t.text.chars().next()?;
+            if !is_fullwidth_opening_punctuation(ch) {
+              return None;
+            }
+            let adv = first_cluster_advance(t)?;
+            if adv <= 0.0 {
+              return None;
+            }
+            Some(adv * 0.5)
+          }
+          InlineItem::InlineBox(b) => {
+            for child in &b.children {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return start_hang_in_item(other),
+              }
+            }
+            None
+          }
+          InlineItem::Ruby(r) => {
+            // Ruby layout caches widths for segments; mutating nested text advances without updating
+            // those caches would desync painting and layout. Keep hanging behavior conservative for now.
+            let _ = r;
+            None
+          }
+          _ => None,
+        }
+      }
+
+      fn end_hang_in_item(item: &InlineItem) -> Option<f32> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker || !wants_trim_end(t.style.text_spacing_trim) {
+              return None;
+            }
+            let ch = t.text.chars().next_back()?;
+            if !is_fullwidth_closing_punctuation(ch) {
+              return None;
+            }
+            let adv = last_cluster_advance(t)?;
+            if adv <= 0.0 {
+              return None;
+            }
+            Some(adv * 0.5)
+          }
+          InlineItem::InlineBox(b) => {
+            for child in b.children.iter().rev() {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return end_hang_in_item(other),
+              }
+            }
+            None
+          }
+          InlineItem::Ruby(r) => {
+            let _ = r;
+            None
+          }
+          _ => None,
+        }
+      }
+
+      fn apply_start_hang(item: &mut InlineItem, hang: f32) -> bool {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker
+              || !wants_trim_start(t.style.text_spacing_trim)
+              || !t.text.chars().next().is_some_and(is_fullwidth_opening_punctuation)
+            {
+              return false;
+            }
+            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            true
+          }
+          InlineItem::InlineBox(b) => {
+            for child in &mut b.children {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return apply_start_hang(other, hang),
+              }
+            }
+            false
+          }
+          InlineItem::Ruby(_) => false,
+          _ => false,
+        }
+      }
+
+      fn apply_end_hang(item: &mut InlineItem, hang: f32) -> bool {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker
+              || !wants_trim_end(t.style.text_spacing_trim)
+              || !t.text.chars().next_back().is_some_and(is_fullwidth_closing_punctuation)
+            {
+              return false;
+            }
+            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            true
+          }
+          InlineItem::InlineBox(b) => {
+            for child in b.children.iter_mut().rev() {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return apply_end_hang(other, hang),
+              }
+            }
+            false
+          }
+          InlineItem::Ruby(_) => false,
+          _ => false,
+        }
+      }
+
+      let start_info: Option<(usize, f32)> = items
+        .iter()
+        .enumerate()
+        .find_map(|(idx, positioned)| match &positioned.item {
+          InlineItem::StaticPositionAnchor(_) => None,
+          _ => start_hang_in_item(&positioned.item).map(|hang| (idx, hang)),
+        });
+
+      let end_info: Option<(usize, f32)> = items
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(idx, positioned)| match &positioned.item {
+          InlineItem::StaticPositionAnchor(_) => None,
+          _ => end_hang_in_item(&positioned.item).map(|hang| (idx, hang)),
+        });
+
+      if let Some((idx, hang)) = start_info {
+        if let Some(positioned) = items.get_mut(idx) {
+          apply_start_hang(&mut positioned.item, hang);
+        }
+        // When the inline-start edge is the physical left edge (`direction:ltr`), shift the glyph
+        // left so the hanging half does not overlap the following content.
+        if !rtl {
+          if let Some(shift) = inline_shifts.get_mut(idx) {
+            *shift -= hang;
+          }
+        }
+      }
+
+      if let Some((idx, hang)) = end_info {
+        if let Some(positioned) = items.get_mut(idx) {
+          apply_end_hang(&mut positioned.item, hang);
+        }
+        // When the inline-end edge is the physical left edge (`direction:rtl`), shift the glyph
+        // left so the hanging half protrudes outward rather than overlapping preceding content.
+        if rtl {
+          if let Some(shift) = inline_shifts.get_mut(idx) {
+            *shift -= hang;
+          }
+        }
+      }
+    }
     let usable_width = if available_width.is_finite() {
       available_width.max(0.0)
     } else {
@@ -8306,6 +8557,11 @@ impl InlineFormattingContext {
     for (i, positioned) in items.iter().enumerate() {
       let item_width = positioned.item.width();
       let mut inline_pos = if rtl { cursor - item_width } else { cursor };
+      if let Some(delta) = inline_shifts.get(i).copied() {
+        if delta != 0.0 {
+          inline_pos += delta;
+        }
+      }
       let mut block_pos = line.baseline + positioned.baseline_offset
         - positioned.item.baseline_metrics().baseline_offset;
       if let InlineItem::InlineBox(box_item) = &positioned.item {

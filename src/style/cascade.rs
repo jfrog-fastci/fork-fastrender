@@ -19144,6 +19144,8 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.letter_spacing = parent.letter_spacing;
   styles.word_spacing = parent.word_spacing;
   styles.line_padding = parent.line_padding;
+  styles.text_spacing_trim = parent.text_spacing_trim;
+  styles.text_autospace = parent.text_autospace;
   styles.justify_items = parent.justify_items;
   styles.visibility = parent.visibility;
   styles.visibility_is_inherited = true;

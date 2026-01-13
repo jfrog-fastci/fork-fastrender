@@ -1138,6 +1138,8 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
   style.letter_spacing = parent.letter_spacing;
   style.word_spacing = parent.word_spacing;
   style.line_padding = parent.line_padding;
+  style.text_spacing_trim = parent.text_spacing_trim;
+  style.text_autospace = parent.text_autospace;
   style.justify_items = parent.justify_items;
   style.visibility = parent.visibility;
   style.visibility_is_inherited = true;

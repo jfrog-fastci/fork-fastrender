@@ -225,6 +225,8 @@ use types::HangingPunctuation;
 use types::TextOrientation;
 use types::TextOverflow;
 use types::TextRendering;
+use types::TextAutospace;
+use types::TextSpacingTrim;
 use types::TextSizeAdjust;
 use types::TextTransform;
 use types::TextUnderlineOffset;
@@ -1251,6 +1253,8 @@ pub struct ComputedStyle {
   ///
   /// Spec: https://www.w3.org/TR/css-text-4/#line-padding-property
   pub line_padding: f32,
+  pub text_spacing_trim: TextSpacingTrim,
+  pub text_autospace: TextAutospace,
   pub white_space: WhiteSpace,
   pub line_break: LineBreak,
   pub tab_size: TabSize,
@@ -1712,6 +1716,8 @@ impl Default for ComputedStyle {
       letter_spacing: 0.0,
       word_spacing: 0.0,
       line_padding: 0.0,
+      text_spacing_trim: TextSpacingTrim::Normal,
+      text_autospace: TextAutospace::Normal,
       text_wrap: TextWrap::Auto,
       text_box_trim: TextBoxTrim::None,
       text_box_edge: TextBoxEdge::Auto,
