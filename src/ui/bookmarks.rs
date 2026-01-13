@@ -79,7 +79,7 @@ pub struct BookmarkFolder {
   pub children: Vec<BookmarkId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookmarkStore {
   pub version: u32,
   #[serde(default = "default_next_id")]
@@ -90,6 +90,12 @@ pub struct BookmarkStore {
   /// All nodes keyed by stable ID.
   #[serde(default)]
   pub nodes: BTreeMap<BookmarkId, BookmarkNode>,
+  /// Monotonically increasing revision counter for UI caching.
+  ///
+  /// This is *not* part of the persisted bookmark schema (it exists so immediate-mode UIs can
+  /// cheaply detect when a store mutation has occurred).
+  #[serde(skip)]
+  revision: u64,
 }
 
 fn default_next_id() -> BookmarkId {
@@ -103,9 +109,21 @@ impl Default for BookmarkStore {
       next_id: default_next_id(),
       roots: Vec::new(),
       nodes: BTreeMap::new(),
+      revision: 0,
     }
   }
 }
+
+impl PartialEq for BookmarkStore {
+  fn eq(&self, other: &Self) -> bool {
+    self.version == other.version
+      && self.next_id == other.next_id
+      && self.roots == other.roots
+      && self.nodes == other.nodes
+  }
+}
+
+impl Eq for BookmarkStore {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BookmarkError {
@@ -161,6 +179,20 @@ pub enum BookmarkStoreMigration {
 }
 
 impl BookmarkStore {
+  /// Returns the current store revision (incremented on successful mutation).
+  pub fn revision(&self) -> u64 {
+    self.revision
+  }
+
+  /// Manually bump the store revision.
+  ///
+  /// Most callers should not need this: all mutation APIs (`add`, `remove_by_id`, `update`, etc)
+  /// update the revision automatically. This exists for situations where the store is replaced via
+  /// assignment (e.g. import flows) and the caller wants to invalidate UI caches.
+  pub fn touch(&mut self) {
+    self.revision = self.revision.wrapping_add(1);
+  }
+
   /// Apply an incremental update to the store.
   ///
   /// This is used by the windowed browser to synchronize bookmark updates across windows without
@@ -205,6 +237,7 @@ impl BookmarkStore {
       BookmarkDelta::ReorderRoot(order) => self.reorder_root(order),
       BookmarkDelta::ReplaceAll(store) => {
         *self = store.clone();
+        self.touch();
         Ok(())
       }
     }
@@ -486,7 +519,9 @@ impl BookmarkStore {
   ) -> Result<BookmarkId, BookmarkError> {
     let url = url.trim().to_string();
     if url.is_empty() {
-      return Err(BookmarkError::InvalidStore("bookmark URL is empty".to_string()));
+      return Err(BookmarkError::InvalidStore(
+        "bookmark URL is empty".to_string(),
+      ));
     }
     validate_user_navigation_url_scheme(&url).map_err(BookmarkError::InvalidStore)?;
     let title = normalize_optional_string(title);
@@ -532,6 +567,7 @@ impl BookmarkStore {
       self.nodes.remove(&node_id);
     }
     self.repair_next_id();
+    self.touch();
     true
   }
 
@@ -597,6 +633,7 @@ impl BookmarkStore {
       }
       BookmarkNode::Folder(_) => unreachable!("validated above"),
     }
+    self.touch();
     Ok(())
   }
 
@@ -642,6 +679,7 @@ impl BookmarkStore {
       }
     }
 
+    self.touch();
     Ok(())
   }
 
@@ -664,6 +702,7 @@ impl BookmarkStore {
       return Err(BookmarkError::InvalidReorder);
     }
     self.roots = ids_in_new_order.to_vec();
+    self.touch();
     Ok(())
   }
 
@@ -797,12 +836,16 @@ impl BookmarkStore {
     let new_parent = if folder_path_titles.is_empty() {
       None
     } else {
-      Some(self.folder_id_by_path_titles(folder_path_titles).ok_or_else(|| {
-        BookmarkError::InvalidStore(format!(
-          "folder path not found: {}",
-          folder_path_titles.join("/")
-        ))
-      })?)
+      Some(
+        self
+          .folder_id_by_path_titles(folder_path_titles)
+          .ok_or_else(|| {
+            BookmarkError::InvalidStore(format!(
+              "folder path not found: {}",
+              folder_path_titles.join("/")
+            ))
+          })?,
+      )
     };
 
     let ids: Vec<BookmarkId> = self
@@ -992,7 +1035,10 @@ impl BookmarkStore {
     }
     self.nodes.insert(id, node);
     match self.attach_to_parent_list(id, parent) {
-      Ok(()) => Ok(()),
+      Ok(()) => {
+        self.touch();
+        Ok(())
+      }
       Err(err) => {
         // Roll back: keep the store invariant "every node is reachable from roots".
         self.nodes.remove(&id);
@@ -1400,35 +1446,34 @@ mod bookmarks_bar_ui {
             drag_released = Some(id);
           }
 
-            // Keyboard-accessible reorder.
-            response.context_menu(|ui| {
-              ui.set_min_width(140.0);
-              if let Some(idx) = visible_ids.iter().position(|x| *x == id) {
-                ui.add_enabled_ui(idx > 0, |ui| {
-                  let move_left = ui.button("Move left");
-                  move_left.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark left")
-                  });
-                  if move_left.clicked() {
-                    if let Some(new_order) =
-                      move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
-                    {
-                      out.reorder_roots = Some(new_order);
-                    }
-                    ui.close_menu();
-                  }
+          // Keyboard-accessible reorder.
+          response.context_menu(|ui| {
+            ui.set_min_width(140.0);
+            if let Some(idx) = visible_ids.iter().position(|x| *x == id) {
+              ui.add_enabled_ui(idx > 0, |ui| {
+                let move_left = ui.button("Move left");
+                move_left.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark left")
                 });
-                ui.add_enabled_ui(idx + 1 < visible_ids.len(), |ui| {
-                  let move_right = ui.button("Move right");
-                  move_right.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark right")
-                  });
-                  if move_right.clicked() {
-                    if let Some(new_order) =
-                      move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
-                    {
-                      out.reorder_roots = Some(new_order);
-                    }
+                if move_left.clicked() {
+                  if let Some(new_order) =
+                    move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
+                  {
+                    out.reorder_roots = Some(new_order);
+                  }
+                  ui.close_menu();
+                }
+              });
+              ui.add_enabled_ui(idx + 1 < visible_ids.len(), |ui| {
+                let move_right = ui.button("Move right");
+                move_right.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark right")
+                });
+                if move_right.clicked() {
+                  if let Some(new_order) = move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
+                  {
+                    out.reorder_roots = Some(new_order);
+                  }
                   ui.close_menu();
                 }
               });
@@ -1817,7 +1862,9 @@ mod tests {
   #[test]
   fn add_rejects_invalid_url_scheme() {
     let mut store = BookmarkStore::default();
-    assert!(store.add("javascript:alert(1)".to_string(), None, None).is_err());
+    assert!(store
+      .add("javascript:alert(1)".to_string(), None, None)
+      .is_err());
     assert!(!store.contains_url("javascript:alert(1)"));
   }
 
@@ -1826,7 +1873,11 @@ mod tests {
     let mut store = BookmarkStore::default();
     let folder = store.create_folder("Folder".to_string(), None).unwrap();
     let bookmark = store
-      .add("https://example.com/".to_string(), Some("Example".to_string()), None)
+      .add(
+        "https://example.com/".to_string(),
+        Some("Example".to_string()),
+        None,
+      )
       .unwrap();
 
     assert!(store

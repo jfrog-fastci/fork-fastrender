@@ -1,8 +1,8 @@
 #![cfg(all(target_os = "linux", feature = "browser_ui"))]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::collections::BTreeMap;
 
 fn run_browser_headless_smoke(
   args: &[&str],
@@ -72,11 +72,12 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
   // Legacy headless-smoke schema: array of `{title,url}` objects.
   // The browser should migrate this into the canonical `BookmarkStore` format.
   let seed_bookmarks_json = r#"[{"title":"Example","url":"https://example.com"}]"#.to_string();
-  let expected_bookmarks = fastrender::ui::BookmarkStore {
-    version: fastrender::ui::BOOKMARK_STORE_VERSION,
-    next_id: fastrender::ui::BookmarkId(2),
-    roots: vec![fastrender::ui::BookmarkId(1)],
-    nodes: BTreeMap::from([(
+  let expected_bookmarks = {
+    let mut store = fastrender::ui::BookmarkStore::default();
+    store.version = fastrender::ui::BOOKMARK_STORE_VERSION;
+    store.next_id = fastrender::ui::BookmarkId(2);
+    store.roots = vec![fastrender::ui::BookmarkId(1)];
+    store.nodes = BTreeMap::from([(
       fastrender::ui::BookmarkId(1),
       fastrender::ui::BookmarkNode::Bookmark(fastrender::ui::bookmarks::BookmarkEntry {
         id: fastrender::ui::BookmarkId(1),
@@ -85,12 +86,14 @@ fn browser_persists_and_restores_bookmarks_and_history_across_runs() {
         added_at_ms: 0,
         parent: None,
       }),
-    )]),
+    )]);
+    store
   };
 
   // Legacy headless-smoke history schema: array of `{title,url,ts}` objects.
   // The browser should migrate this into the canonical persisted history format.
-  let seed_history_json = r#"[{"title":"Example","url":"https://example.com","ts":123}]"#.to_string();
+  let seed_history_json =
+    r#"[{"title":"Example","url":"https://example.com","ts":123}]"#.to_string();
   let expected_history = fastrender::ui::PersistedGlobalHistoryStore {
     entries: vec![fastrender::ui::GlobalHistoryEntry {
       url: "https://example.com/".to_string(),
