@@ -64,6 +64,16 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     Some(1),
     "ui_perf_smoke should default to a deterministic single Rayon thread (override with --rayon-threads or RAYON_NUM_THREADS)"
   );
+  for key in ["rss_start_bytes", "rss_after_warmup_bytes"] {
+    assert!(
+      summary.get(key).is_some(),
+      "summary should include {key} (null when unsupported)"
+    );
+    assert!(
+      summary[key].is_null() || summary[key].as_u64().is_some(),
+      "summary {key} should be null or an integer byte count"
+    );
+  }
   let scenarios = summary["scenarios"]
     .as_array()
     .expect("scenarios array must exist");
@@ -79,6 +89,17 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     Some("tab_switch"),
     "scenario name should match"
   );
+
+  for key in ["rss_bytes_start", "rss_bytes_end", "rss_bytes_peak"] {
+    assert!(
+      scenario.get(key).is_some(),
+      "scenario should include {key} (null when unsupported)"
+    );
+    assert!(
+      scenario[key].is_null() || scenario[key].as_u64().is_some(),
+      "scenario {key} should be null or an integer byte count"
+    );
+  }
 
   assert!(
     scenario["samples_ms"].as_array().is_some(),

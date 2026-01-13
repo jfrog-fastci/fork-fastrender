@@ -238,6 +238,10 @@ struct UiPerfSmokeSummary {
   schema_version: u32,
   #[serde(default)]
   run_config: RunConfig,
+  #[serde(default)]
+  rss_start_bytes: Option<u64>,
+  #[serde(default)]
+  rss_after_warmup_bytes: Option<u64>,
   scenarios: Vec<ScenarioSummary>,
 }
 
@@ -324,7 +328,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let factory = build_ui_worker_factory(policy)?;
 
+  let rss_start_bytes = fastrender::memory::current_rss_bytes();
+  let rss_after_warmup_bytes;
+
   if isolate {
+    // Best-effort warmup: prime global caches once before running isolated per-scenario workers.
+    let (tx, rx, join) =
+      fastrender::ui::spawn_ui_worker_with_factory("fastr-ui-perf-smoke-warmup", factory.clone())?
+        .split();
+    run_warmup(&tx, &rx, args.verbose);
+
+    drop(tx);
+    let join_result = join_with_timeout(join, Duration::from_secs(5));
+    if let Err(err) = join_result {
+      eprintln!("Warning: failed to join UI worker thread: {err}");
+    }
+
+    rss_after_warmup_bytes = fastrender::memory::current_rss_bytes();
+
     for name in &scenario_names {
       let worker_name = format!("fastr-ui-perf-smoke-{name}");
       let (tx, rx, join) =
@@ -348,6 +369,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx, join) =
       fastrender::ui::spawn_ui_worker_with_factory("fastr-ui-perf-smoke-worker", factory.clone())?
         .split();
+    run_warmup(&tx, &rx, args.verbose);
+    rss_after_warmup_bytes = fastrender::memory::current_rss_bytes();
     for name in &scenario_names {
       let summary = run_named_scenario(name, &tx, &rx, &run_config, args.verbose);
       let failed = summary.status != ScenarioStatus::Ok;
@@ -369,6 +392,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let summary = UiPerfSmokeSummary {
     schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
     run_config,
+    rss_start_bytes,
+    rss_after_warmup_bytes,
     scenarios: scenarios.clone(),
   };
 
@@ -868,6 +893,30 @@ fn format_status(status: ScenarioStatus) -> &'static str {
     ScenarioStatus::Error => "error",
     ScenarioStatus::Timeout => "timeout",
   }
+}
+
+fn run_warmup(tx: &Sender<UiToWorker>, rx: &Receiver<WorkerToUi>, verbose: bool) {
+  // Best-effort warmup: load a minimal internal page so the UI worker initializes fonts/caches
+  // before we start measuring scenarios. Failures here should not abort the run.
+  let tab_id = TabId::new();
+  let url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
+  if let Err(err) = create_and_navigate_tab(tx, tab_id, DEFAULT_VIEWPORT_CSS, DEFAULT_DPR, &url) {
+    eprintln!("Warmup: failed to create/navigate tab: {err}");
+    return;
+  }
+
+  match wait_for_frame(rx, tab_id, ACTION_TIMEOUT) {
+    Ok(_) => {
+      if verbose {
+        eprintln!("Warmup: FrameReady received");
+      }
+    }
+    Err(err) => {
+      eprintln!("Warmup: {}", err.message);
+    }
+  }
+
+  let _ = tx.send(UiToWorker::CloseTab { tab_id });
 }
 
 #[derive(Debug)]
