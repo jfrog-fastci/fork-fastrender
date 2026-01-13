@@ -14034,7 +14034,8 @@ enum AsyncFrame {
     base_root: Option<RootId>,
     key_root: Option<RootId>,
   },
-  /// Continue an `+=` assignment after evaluating the RHS.
+  /// Continue a compound assignment (e.g. `+=`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `>>>=`)
+  /// after evaluating the RHS.
   AssignAddAfterRhs {
     expr: *const BinaryExpr,
     base_root: Option<RootId>,
@@ -14235,7 +14236,8 @@ pub(crate) enum GenFrame {
     base: Option<Value>,
     key: Option<Value>,
   },
-  /// Continue a `+=` assignment after evaluating the RHS.
+  /// Continue a compound assignment (e.g. `+=`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `>>>=`)
+  /// after evaluating the RHS.
   ///
   /// `left` stores the original `GetValue` result of the reference before evaluating the RHS.
   AssignAddAfterRhs {
