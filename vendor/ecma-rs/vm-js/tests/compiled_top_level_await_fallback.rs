@@ -42,3 +42,43 @@ fn compiled_script_falls_back_for_top_level_await() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn compiled_script_falls_back_for_top_level_for_await_of() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // Use a manual async iterator (no `async function` / generators) so this tests the top-level
+  // await fallback rather than the async-function AST fallback.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_top_level_for_await_of_fallback.js",
+    r#"
+      var out = "";
+      var iter = {
+        i: 0,
+        next: function () {
+          if (this.i++ === 0) return Promise.resolve({ value: "ok", done: false });
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      };
+      var iterable = {};
+      iterable[Symbol.asyncIterator] = function () { return iter; };
+
+      for await (var x of iterable) {
+        out = x;
+      }
+      out
+    "#,
+  )?;
+
+  rt.exec_compiled_script(script)?;
+
+  // Loop body should not have executed until we run microtasks.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ok");
+  Ok(())
+}
