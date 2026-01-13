@@ -179,6 +179,7 @@ impl CellOccupancyMatrix {
     }
 
     for x in row_range {
+      check_layout_abort();
       for y in col_range.clone() {
         *self.inner.get_mut(x as usize, y as usize).unwrap() = value;
       }
