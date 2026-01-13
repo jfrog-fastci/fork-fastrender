@@ -16189,6 +16189,12 @@ fn async_eval_class(
     if let Some(realm) = evaluator.vm.current_realm() {
       ctor_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
     }
+    if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+      let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+      ctor_scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
+    }
     Some(func_obj)
   } else {
     None
@@ -16717,6 +16723,12 @@ fn async_define_class_member(
       if let Some(realm) = evaluator.vm.current_realm() {
         member_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
       }
+      if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+        let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+        member_scope
+          .heap_mut()
+          .set_function_script_or_module_token(func_obj, Some(token))?;
+      }
       member_scope.push_root(Value::Object(func_obj))?;
 
       // Methods use the property key as the function `name` if possible.
@@ -16796,6 +16808,12 @@ fn async_define_class_member(
       if let Some(realm) = evaluator.vm.current_realm() {
         member_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
       }
+      if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+        let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+        member_scope
+          .heap_mut()
+          .set_function_script_or_module_token(func_obj, Some(token))?;
+      }
       member_scope.push_root(Value::Object(func_obj))?;
 
       crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))
@@ -16870,6 +16888,12 @@ fn async_define_class_member(
         .set_function_realm(func_obj, evaluator.env.global_object())?;
       if let Some(realm) = evaluator.vm.current_realm() {
         member_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      }
+      if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+        let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+        member_scope
+          .heap_mut()
+          .set_function_script_or_module_token(func_obj, Some(token))?;
       }
       member_scope.push_root(Value::Object(func_obj))?;
 

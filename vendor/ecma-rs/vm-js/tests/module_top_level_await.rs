@@ -366,6 +366,87 @@ fn import_meta_works_after_top_level_await() -> Result<(), VmError> {
 }
 
 #[test]
+fn import_meta_works_in_async_class_method_called_from_promise_job() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = graph.add_module_with_specifier(
+    "m.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        export let ok = 0;
+
+        // Ensure this class definition runs through the async evaluator.
+        await Promise.resolve();
+
+        class C {
+          static m() {
+            return import.meta.url === "https://example.invalid/m.js";
+          }
+        }
+
+        // Call the class method from a Promise job (no active execution context).
+        Promise.resolve()
+          .then(C.m)
+          .then(v => { ok = v ? 1 : 0; })
+          .catch(() => { ok = -1; });
+      "#,
+    )?,
+  )?;
+  graph.link_all_by_specifier();
+
+  // `import.meta` from Promise jobs resolves via `Vm::module_graph_ptr()`. Real embeddings attach
+  // their module graph to the VM; tests that invoke module code from jobs must do the same.
+  vm.set_module_graph(&mut graph);
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  let res = (|| -> Result<(), VmError> {
+    hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+    {
+      let mut scope = heap.scope();
+      let eval_promise_value = scope
+        .heap()
+        .get_root(eval_promise_root)
+        .ok_or_else(|| VmError::invalid_handle())?;
+      let Value::Object(eval_promise_obj) = eval_promise_value else {
+        return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+      };
+      assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+      let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+      assert_eq!(
+        ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "ok")?,
+        Value::Number(1.0)
+      );
+    }
+
+    Ok(())
+  })();
+
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  vm.clear_module_graph();
+  realm.teardown(&mut heap);
+  res
+}
+
+#[test]
 fn export_default_await_initializes_default_binding() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
