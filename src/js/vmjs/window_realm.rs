@@ -43380,6 +43380,9 @@ fn init_window_globals(
     let document_type_proto = platform.prototype_for(DomInterface::DocumentType);
     let element_proto = platform.prototype_for(DomInterface::Element);
     let html_element_proto = platform.prototype_for(DomInterface::HTMLElement);
+    let html_media_element_proto = platform.prototype_for(DomInterface::HTMLMediaElement);
+    let html_video_element_proto = platform.prototype_for(DomInterface::HTMLVideoElement);
+    let html_audio_element_proto = platform.prototype_for(DomInterface::HTMLAudioElement);
     let html_input_element_proto = platform.prototype_for(DomInterface::HTMLInputElement);
     let html_select_element_proto = platform.prototype_for(DomInterface::HTMLSelectElement);
     let html_text_area_element_proto = platform.prototype_for(DomInterface::HTMLTextAreaElement);
@@ -43853,17 +43856,13 @@ fn init_window_globals(
         Ok(ctor)
       };
 
-    let html_element_ctor = install_illegal_dom_ctor(&mut scope, "HTMLElement", html_element_proto)?;
+    let html_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLElement", html_element_proto)?;
 
     // HTMLMediaElement is widely referenced by feature-detection code (e.g. libraries checking
     // `HTMLMediaElement.prototype.readyState`). FastRender does not yet implement media playback, but
     // we provide a minimal, spec-shaped stub to avoid runtime errors when scripts inspect media
     // readiness state.
-    let html_media_element_proto = scope.alloc_object()?;
-    scope.push_root(Value::Object(html_media_element_proto))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(html_media_element_proto, Some(html_element_proto))?;
     let html_media_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLMediaElement", html_media_element_proto)?;
 
@@ -43912,6 +43911,11 @@ fn init_window_globals(
       seeking_key,
       readonly_attr_desc(Value::Bool(false)),
     )?;
+
+    let html_video_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLVideoElement", html_video_element_proto)?;
+    let html_audio_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLAudioElement", html_audio_element_proto)?;
     let html_input_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLInputElement", html_input_element_proto)?;
     let html_text_area_element_ctor =
@@ -44076,6 +44080,12 @@ fn init_window_globals(
     scope
       .heap_mut()
       .object_set_prototype(html_media_element_ctor, Some(html_element_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(html_video_element_ctor, Some(html_media_element_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(html_audio_element_ctor, Some(html_media_element_ctor))?;
     for ctor in [
       html_media_element_ctor,
       html_input_element_ctor,
@@ -51136,7 +51146,7 @@ mod tests {
            if (e.message !== 'Illegal invocation') return false;\n\
          }\n\
          return true;\n\
-        })()",
+      })()",
     )?;
     assert_eq!(value, Value::Bool(true));
     Ok(())
@@ -51150,6 +51160,8 @@ mod tests {
       "<!doctype html><html><body>\n\
         <input id=\"i\">\n\
         <div id=\"d\"></div>\n\
+        <video id=\"v\"></video>\n\
+        <audio id=\"a\"></audio>\n\
         <svg id=\"s\"></svg>\n\
       </body></html>",
       RenderOptions::default(),
@@ -51163,9 +51175,14 @@ mod tests {
       "(() => {\n\
         const input = document.getElementById('i');\n\
         const div = document.getElementById('d');\n\
+        const video = document.getElementById('v');\n\
+        const audio = document.getElementById('a');\n\
         const svg = document.getElementById('s');\n\
 \n\
         if (typeof HTMLElement !== 'function') return false;\n\
+        if (typeof HTMLMediaElement !== 'function') return false;\n\
+        if (typeof HTMLVideoElement !== 'function') return false;\n\
+        if (typeof HTMLAudioElement !== 'function') return false;\n\
         if (typeof HTMLInputElement !== 'function') return false;\n\
         if (typeof HTMLDivElement !== 'function') return false;\n\
 \n\
@@ -51173,12 +51190,25 @@ mod tests {
         if (!(input instanceof HTMLElement)) return false;\n\
         if (!(div instanceof HTMLDivElement)) return false;\n\
         if (!(div instanceof HTMLElement)) return false;\n\
+        if (!(video instanceof HTMLVideoElement)) return false;\n\
+        if (!(video instanceof HTMLMediaElement)) return false;\n\
+        if (!(video instanceof HTMLElement)) return false;\n\
+        if (!(audio instanceof HTMLAudioElement)) return false;\n\
+        if (!(audio instanceof HTMLMediaElement)) return false;\n\
+        if (!(audio instanceof HTMLElement)) return false;\n\
         if (svg instanceof HTMLElement) return false;\n\
         if (!(svg instanceof Element)) return false;\n\
 \n\
         if (HTMLElement.prototype === Element.prototype) return false;\n\
         if (Object.getPrototypeOf(HTMLElement.prototype) !== Element.prototype) return false;\n\
+        if (Object.getPrototypeOf(HTMLMediaElement.prototype) !== HTMLElement.prototype) return false;\n\
+        if (Object.getPrototypeOf(HTMLVideoElement.prototype) !== HTMLMediaElement.prototype) return false;\n\
+        if (Object.getPrototypeOf(HTMLAudioElement.prototype) !== HTMLMediaElement.prototype) return false;\n\
         if (Object.getPrototypeOf(HTMLInputElement.prototype) !== HTMLElement.prototype) return false;\n\
+\n\
+        if (Object.getPrototypeOf(HTMLMediaElement) !== HTMLElement) return false;\n\
+        if (Object.getPrototypeOf(HTMLVideoElement) !== HTMLMediaElement) return false;\n\
+        if (Object.getPrototypeOf(HTMLAudioElement) !== HTMLMediaElement) return false;\n\
         return true;\n\
       })()",
     )?;
