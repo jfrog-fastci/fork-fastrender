@@ -200,9 +200,9 @@ impl AudioMixer {
 
 fn apply_signed_offset(base: Duration, offset_ns: i64) -> Duration {
   if offset_ns >= 0 {
-    base + Duration::from_nanos(offset_ns as u64)
+    base.saturating_add(Duration::from_nanos(offset_ns as u64))
   } else {
-    base.saturating_sub(Duration::from_nanos((-offset_ns) as u64))
+    base.saturating_sub(Duration::from_nanos(offset_ns.unsigned_abs()))
   }
 }
 
@@ -241,6 +241,13 @@ mod tests {
       channels: 1,
       sample_rate,
     }
+  }
+
+  #[test]
+  fn audio_mixer_apply_signed_offset_saturates_on_overflow() {
+    let res = std::panic::catch_unwind(|| apply_signed_offset(Duration::MAX, 1));
+    assert!(res.is_ok(), "apply_signed_offset should not panic on overflow");
+    assert_eq!(res.unwrap(), Duration::MAX);
   }
 
   #[test]
