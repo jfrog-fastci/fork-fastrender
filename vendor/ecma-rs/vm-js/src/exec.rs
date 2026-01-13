@@ -14406,6 +14406,11 @@ enum AsyncFrame {
     last_value_root: RootId,
     last_value_is_set: bool,
   },
+  /// Best-effort stack trace capture for throw completions leaving an async statement evaluation.
+  ///
+  /// This mirrors `Evaluator::eval_stmt_labelled`'s implicit-throw handling for statements that
+  /// contain `await` / `yield` and therefore suspend and resume via the async frame stack.
+  FinalizeThrowAtStmt { stmt: *const Node<Stmt> },
 
   /// Restore the outer lexical environment after finishing a block/catch/finally body.
   RestoreLexEnv { outer: GcEnv },
@@ -14998,6 +15003,9 @@ pub(crate) enum GenFrame {
     last_value: Option<Value>,
   },
 
+  /// Best-effort stack trace capture for throw completions leaving a generator statement evaluation.
+  FinalizeThrowAtStmt { stmt: *const Node<Stmt> },
+
   /// Restore the outer lexical environment after finishing a block/catch/finally body.
   RestoreLexEnv { outer: GcEnv },
 
@@ -15508,7 +15516,7 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
         heap.remove_root(id);
       }
     }
-    AsyncFrame::WithAfterObject { .. } => {}
+    AsyncFrame::WithAfterObject { .. } | AsyncFrame::FinalizeThrowAtStmt { .. } => {}
     AsyncFrame::BindObjAfterKey {
       value_root,
       excluded,
@@ -16624,6 +16632,79 @@ fn completion_from_expr_result_for_return(
   }
 }
 
+#[inline]
+fn patch_stack_top_frame_best_effort(
+  stack: &mut Vec<StackFrame>,
+  source: Arc<str>,
+  line: u32,
+  col: u32,
+) {
+  if let Some(top) = stack.first_mut() {
+    top.source = source;
+    top.line = line;
+    top.col = col;
+    return;
+  }
+
+  // `Vec::push` can abort on OOM; reserve fallibly.
+  if stack.try_reserve(1).is_ok() {
+    stack.push(StackFrame {
+      function: None,
+      source,
+      line,
+      col,
+    });
+  }
+}
+
+fn finalize_thrown_for_stmt(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &Node<Stmt>,
+  mut thrown: Thrown,
+) -> Thrown {
+  let source = evaluator.env.source();
+  let rel_start = stmt.loc.start_u32().saturating_sub(evaluator.env.prefix_len());
+  let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
+  let (line, col) = source.line_col(abs_offset);
+
+  // If the throw completion is missing a captured stack (implicit throw), capture one now. This is
+  // best-effort: `capture_stack` can return an empty vector under allocator pressure.
+  let mut should_patch_top = false;
+  if thrown.stack.is_empty() {
+    thrown.stack = evaluator.vm.capture_stack();
+    should_patch_top = true;
+  }
+
+  // If the stack was captured while executing a native builtin, the top frame will typically have
+  // a `<native>:0:0` location. Patch it to this statement location so user code sees where the
+  // exception was triggered.
+  if !should_patch_top && thrown.stack.first().is_some_and(|top| top.line == 0) {
+    should_patch_top = true;
+  }
+
+  if should_patch_top {
+    patch_stack_top_frame_best_effort(&mut thrown.stack, source.name.clone(), line, col);
+  }
+
+  crate::error_object::attach_stack_property_for_throw(scope, thrown.value, &thrown.stack);
+  thrown
+}
+
+fn finalize_throw_completion_for_stmt(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &Node<Stmt>,
+  completion: Completion,
+) -> Completion {
+  match completion {
+    Completion::Throw(thrown) => Completion::Throw(finalize_thrown_for_stmt(
+      evaluator, scope, stmt, thrown,
+    )),
+    other => other,
+  }
+}
+
 fn async_eval_stmt_list(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -17140,12 +17221,32 @@ fn async_eval_stmt_labelled(
   // Async statement evaluation does not go through `Evaluator::eval_stmt_labelled`, so we must
   // ensure `VmError::Throw(..)` propagates as a JS throw completion (catchable by `try/catch`)
   // rather than bubbling out as a fatal internal error.
-  match res {
-    Ok(v) => Ok(v),
-    Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-      Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+  let eval = match res {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+      match err {
+        VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+          AsyncEval::Complete(completion_from_expr_result(Err(err))?)
+        }
+        other => return Err(other),
+      }
     }
-    Err(err) => Err(err),
+  };
+
+  match eval {
+    AsyncEval::Complete(c) => Ok(AsyncEval::Complete(finalize_throw_completion_for_stmt(
+      evaluator, scope, stmt, c,
+    ))),
+    AsyncEval::Suspend(mut suspend) => {
+      // Best-effort: stack trace capture must never change execution semantics under OOM.
+      if suspend.frames.try_reserve(1).is_ok() {
+        suspend
+          .frames
+          .push_back(AsyncFrame::FinalizeThrowAtStmt { stmt: stmt as *const _ });
+      }
+      Ok(AsyncEval::Suspend(suspend))
+    }
   }
 }
 
@@ -30157,6 +30258,18 @@ fn async_resume_from_frames(
         }
       },
 
+      AsyncFrame::FinalizeThrowAtStmt { stmt } => match state {
+        AsyncState::Completion(c) => {
+          let stmt = unsafe { &*stmt };
+          state = AsyncState::Completion(finalize_throw_completion_for_stmt(
+            evaluator, scope, stmt, c,
+          ));
+        }
+        // Be conservative: this frame is best-effort for stack traces and must never change
+        // execution semantics.
+        AsyncState::Expr(expr_res) => state = AsyncState::Expr(expr_res),
+      },
+
       AsyncFrame::RestoreLexEnv { outer } => match state {
         AsyncState::Completion(c) => {
           evaluator.env.set_lexical_env(scope.heap_mut(), outer);
@@ -32980,16 +33093,31 @@ fn gen_eval_stmt_labelled(
   // Generator evaluation does not go through `Evaluator::eval_stmt_labelled`, so we must ensure
   // `VmError::Throw(..)` propagates as a JS throw completion (catchable by `try/catch`) rather than
   // bubbling out as a fatal internal error.
-  match res {
-    Ok(v) => Ok(v),
+  let eval = match res {
+    Ok(v) => v,
     Err(err) => {
       let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
       match err {
         VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
-          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+          GenEval::Complete(completion_from_expr_result(Err(err))?)
         }
-        other => Err(other),
+        other => return Err(other),
       }
+    }
+  };
+
+  match eval {
+    GenEval::Complete(c) => Ok(GenEval::Complete(finalize_throw_completion_for_stmt(
+      evaluator, scope, stmt, c,
+    ))),
+    GenEval::Suspend(mut suspend) => {
+      // Best-effort: stack trace capture must never change execution semantics under OOM.
+      if suspend.frames.try_reserve(1).is_ok() {
+        suspend
+          .frames
+          .push_back(GenFrame::FinalizeThrowAtStmt { stmt: stmt as *const _ });
+      }
+      Ok(GenEval::Suspend(suspend))
     }
   }
 }
@@ -36033,6 +36161,11 @@ fn gen_resume_from_frames(
           }
           abrupt => state = abrupt,
         }
+      }
+
+      GenFrame::FinalizeThrowAtStmt { stmt } => {
+        let stmt = unsafe { &*stmt };
+        state = finalize_throw_completion_for_stmt(evaluator, scope, stmt, state);
       }
 
       GenFrame::RestoreLexEnv { outer } => {
