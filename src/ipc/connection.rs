@@ -54,11 +54,16 @@ impl<R: Read, W: Write> IpcConnection<R, W> {
 
   pub fn recv_json<T: DeserializeOwned>(&mut self) -> Result<T, IpcError> {
     // Security note: the JSON IPC boundary is treated as untrusted (e.g. renderer → browser or
-    // renderer → network-process). `serde` defaults to ignoring unknown struct fields, which can
-    // lead to forward-compat ambiguities at a security boundary. IPC protocol structs are annotated
-    // with `#[serde(deny_unknown_fields)]` so we fail closed if an unexpected field appears.
+    // renderer → network-process).
+    //
+    // We deserialize via `serde_json::Value` first so serde_json's recursion limit applies to the
+    // entire payload, including deeply nested structures hidden in unknown fields.
+    //
+    // IPC protocol structs are also annotated with `#[serde(deny_unknown_fields)]` so we fail
+    // closed if an unexpected field appears.
     let payload = read_frame(&mut self.reader)?;
-    serde_json::from_slice(&payload).map_err(IpcError::Deserialize)
+    let value: serde_json::Value = serde_json::from_slice(&payload).map_err(IpcError::Deserialize)?;
+    serde_json::from_value(value).map_err(IpcError::Deserialize)
   }
 }
 
@@ -94,7 +99,8 @@ pub fn decode_renderer_to_browser_from_parts(
 pub fn decode_renderer_to_browser_json(
   json: &[u8],
 ) -> Result<protocol::renderer::RendererToBrowser, serde_json::Error> {
-  serde_json::from_slice(json)
+  let value: serde_json::Value = serde_json::from_slice(json)?;
+  serde_json::from_value(value)
 }
 
 #[cfg(test)]
@@ -164,16 +170,16 @@ mod tests {
     // Without `#[serde(deny_unknown_fields)]`, serde_json would silently ignore the `unexpected`
     // field inside `WebSocketConnectParams`.
     let payload = br#"{
-      "WebSocket": {
-        "conn_id": 1,
-        "cmd": {
-          "Connect": {
-            "params": {
-              "url": "ws://example.com",
-              "protocols": [],
-              "origin": null,
-              "document_url": null,
-              "unexpected": "boom"
+      \"WebSocket\": {
+        \"conn_id\": 1,
+        \"cmd\": {
+          \"Connect\": {
+            \"params\": {
+              \"url\": \"ws://example.com\",
+              \"protocols\": [],
+              \"origin\": null,
+              \"document_url\": null,
+              \"unexpected\": \"boom\"
             }
           }
         }
@@ -188,5 +194,57 @@ mod tests {
       .recv_json::<crate::ipc::RendererToNetwork>()
       .expect_err("unknown fields must be rejected");
     assert!(matches!(err, IpcError::Deserialize(_)));
+  }
+
+  #[test]
+  fn deeply_nested_json_is_rejected_without_panicking() {
+    // Threat model: the renderer process is untrusted and controls the raw IPC payload bytes. A
+    // compromised/malicious renderer could send deeply-nested JSON (e.g. `[[[[...]]]]`) to try to
+    // trigger a stack overflow during deserialization in the trusted browser process. We rely on
+    // serde_json's built-in recursion limit as a defense-in-depth guardrail here.
+
+    // serde_json's default recursion limit is far lower than this (currently 128); keep the input
+    // small in bytes but large in nesting depth.
+    //
+    // Important: we embed the nested value under an *unknown* field inside a valid-looking enum
+    // variant. Without the recursion guardrail, this could slip through because Serde typically
+    // ignores unknown fields for forward compatibility.
+    let depth: usize = 2048;
+    let mut nested = String::with_capacity(depth * 2 + 1);
+    for _ in 0..depth {
+      nested.push('[');
+    }
+    nested.push('0');
+    for _ in 0..depth {
+      nested.push(']');
+    }
+
+    // `RendererToBrowser::HelloAck` is the smallest possible renderer → browser message. Attach the
+    // malicious nesting as an unknown field inside the variant payload.
+    let json = format!(r#"{{\"HelloAck\":{{\"evil\":{nested}}}}}"#);
+
+    assert!(
+      json.len() < MAX_IPC_MESSAGE_BYTES,
+      "test JSON unexpectedly exceeds MAX_IPC_MESSAGE_BYTES"
+    );
+
+    let mut framed = Vec::<u8>::new();
+    write_frame(&mut framed, json.as_bytes()).unwrap();
+
+    let mut receiver = IpcConnection::new(std::io::Cursor::new(framed), std::io::sink());
+    let err = receiver
+      .recv_json::<protocol::renderer::RendererToBrowser>()
+      .unwrap_err();
+
+    match err {
+      IpcError::Deserialize(inner) => {
+        // Be robust to minor wording changes across serde_json versions.
+        assert!(
+          inner.to_string().to_ascii_lowercase().contains("recursion"),
+          "expected recursion-limit error, got: {inner}"
+        );
+      }
+      other => panic!("expected IpcError::Deserialize, got {other:?}"),
+    }
   }
 }
