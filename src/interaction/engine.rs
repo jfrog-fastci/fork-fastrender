@@ -2,6 +2,9 @@ use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::interaction::selection_serialize::{
+  serialize_document_selection, DocumentSelection, DocumentSelectionPoint, DocumentSelectionRange,
+};
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::layout::contexts::inline::line_builder::TextItem;
 use crate::scroll::ScrollState;
@@ -18,9 +21,6 @@ use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use crate::tree::fragment_tree::{FragmentContent, HitTestRoot};
 use crate::ui::messages::{MediaElementKind, PointerButton, PointerModifiers};
-use crate::interaction::selection_serialize::{
-  serialize_document_selection, DocumentSelection, DocumentSelectionPoint, DocumentSelectionRange,
-};
 use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -40,8 +40,8 @@ use super::hit_test::{
 use super::image_maps;
 use super::resolve_url;
 use super::state::{
-  DocumentSelectionRanges, DocumentSelectionState, FileSelection, ImePreeditState, InteractionState,
-  TextEditPaintState,
+  DocumentSelectionRanges, DocumentSelectionState, FileSelection, ImePreeditState,
+  InteractionState, TextEditPaintState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1364,10 +1364,9 @@ mod tests {
 
   #[test]
   fn bidi_clipboard_cut_preserves_split_caret_affinity() {
-    let mut dom = crate::dom::parse_html(
-      "<html><body><input dir=\"ltr\" value=\"ABC אבג DEF\"></body></html>",
-    )
-    .expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><input dir=\"ltr\" value=\"ABC אבג DEF\"></body></html>")
+        .expect("parse");
     let input_id = find_element_node_id(&mut dom, "input");
 
     let mut engine = InteractionEngine::new();
@@ -1951,10 +1950,9 @@ mod tests {
       "label chains should include the associated control (for=)"
     );
 
-    let mut dom = crate::dom::parse_html(
-      "<html><body><label>Label <input id=\"c\"></label></body></html>",
-    )
-    .expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><label>Label <input id=\"c\"></label></body></html>")
+        .expect("parse");
     let label_id = find_element_node_id(&mut dom, "label");
     let input_id = find_element_node_id(&mut dom, "input");
     let index = DomIndexMut::new(&mut dom);
@@ -2053,10 +2051,9 @@ mod tests {
 
   #[test]
   fn tabindex_does_not_make_hidden_input_focusable() {
-    let mut dom = crate::dom::parse_html(
-      "<html><body><input type=\"hidden\" tabindex=\"-1\"></body></html>",
-    )
-    .expect("parse");
+    let mut dom =
+      crate::dom::parse_html("<html><body><input type=\"hidden\" tabindex=\"-1\"></body></html>")
+        .expect("parse");
     let input_id = find_element_node_id(&mut dom, "input");
     let index = DomIndexMut::new(&mut dom);
 
@@ -2094,8 +2091,7 @@ mod tests {
     )
     .expect("submission");
     assert_eq!(
-      submission.url,
-      "https://example.com/submit?a=1",
+      submission.url, "https://example.com/submit?a=1",
       "controls in the first <legend> should not be considered disabled when collecting form data"
     );
   }
@@ -3316,8 +3312,7 @@ fn node_or_ancestor_is_inert(index: &DomIndexMut, node_id: usize) -> bool {
 
 fn node_self_is_tab_inert(node: &DomNode) -> bool {
   // `<template>` contents are inert and should not be reachable via Tab.
-  node_is_inert_like(node)
-    || super::effective_disabled::node_self_is_hidden(node)
+  node_is_inert_like(node) || super::effective_disabled::node_self_is_hidden(node)
 }
 
 fn parse_tabindex(node: &DomNode) -> Option<i32> {
@@ -3522,7 +3517,9 @@ fn word_selection_class(ch: char) -> WordSelectionClass {
     || ch == '_'
     || matches!(
       unicode_general_category::get_general_category(ch),
-      GeneralCategory::NonspacingMark | GeneralCategory::SpacingMark | GeneralCategory::EnclosingMark
+      GeneralCategory::NonspacingMark
+        | GeneralCategory::SpacingMark
+        | GeneralCategory::EnclosingMark
     )
   {
     WordSelectionClass::Word
@@ -3817,6 +3814,30 @@ fn grapheme_cluster_boundaries_char_idx(text: &str) -> Vec<usize> {
   out
 }
 
+fn is_grapheme_cluster_boundary(boundaries: &[usize], char_idx: usize) -> bool {
+  boundaries.binary_search(&char_idx).is_ok()
+}
+
+fn snap_char_idx_down_to_grapheme_boundary(boundaries: &[usize], char_idx: usize) -> usize {
+  if boundaries.is_empty() {
+    return 0;
+  }
+  let len = *boundaries.last().unwrap_or(&0);
+  let char_idx = char_idx.min(len);
+  let pos = boundaries.partition_point(|&b| b <= char_idx);
+  boundaries.get(pos.saturating_sub(1)).copied().unwrap_or(0)
+}
+
+fn snap_char_idx_up_to_grapheme_boundary(boundaries: &[usize], char_idx: usize) -> usize {
+  if boundaries.is_empty() {
+    return 0;
+  }
+  let len = *boundaries.last().unwrap_or(&0);
+  let char_idx = char_idx.min(len);
+  let pos = boundaries.partition_point(|&b| b < char_idx);
+  boundaries.get(pos).copied().unwrap_or(len)
+}
+
 fn prev_grapheme_cluster(text: &str, caret: usize) -> Option<(usize, usize)> {
   if caret == 0 {
     return None;
@@ -3912,6 +3933,7 @@ fn shaped_total_advance(runs: &[crate::text::pipeline::ShapedRun], fallback: f32
 
 fn caret_position_for_x_in_text(
   text: &str,
+  boundary_text: &str,
   style: &ComputedStyle,
   rect: Rect,
   x: f32,
@@ -3932,9 +3954,11 @@ fn caret_position_for_x_in_text(
   }
   local_x = local_x.clamp(0.0, total_advance);
 
+  let allowed_boundaries = grapheme_cluster_boundaries_char_idx(boundary_text);
   let stops = crate::text::caret::caret_stops_for_runs(text, &runs, total_advance);
   let Some(best) = stops
     .iter()
+    .filter(|stop| is_grapheme_cluster_boundary(&allowed_boundaries, stop.char_idx))
     .filter(|stop| stop.x.is_finite())
     .min_by(|a, b| {
       let da = (local_x - a.x).abs();
@@ -4006,20 +4030,27 @@ fn caret_index_for_text_control_point(
     let line_idx = ((local_y / line_height).floor() as isize).max(0) as usize;
     let line_idx = line_idx.min(layout.lines.len().saturating_sub(1));
 
-    let line = layout.lines.get(line_idx).copied().unwrap_or(crate::textarea::TextareaVisualLine {
-      start_char: 0,
-      end_char: 0,
-      start_byte: 0,
-      end_byte: 0,
-    });
+    let line = layout
+      .lines
+      .get(line_idx)
+      .copied()
+      .unwrap_or(crate::textarea::TextareaVisualLine {
+        start_char: 0,
+        end_char: 0,
+        start_byte: 0,
+        end_byte: 0,
+      });
     let caret_line = line.text(&value);
     let line_y = rect.y() + line_idx as f32 * line_height - scroll_y;
     let line_rect = Rect::from_xywh(rect.x(), line_y, rect.width(), line_height);
     let (caret_in_line, affinity) =
-      caret_position_for_x_in_text(caret_line, style, line_rect, page_point.x);
+      caret_position_for_x_in_text(caret_line, caret_line, style, line_rect, page_point.x);
 
     let total_chars = value.chars().count();
-    let caret = line.start_char.saturating_add(caret_in_line).min(total_chars);
+    let caret = line
+      .start_char
+      .saturating_add(caret_in_line)
+      .min(total_chars);
     return Some((caret, affinity));
   }
 
@@ -4052,7 +4083,8 @@ fn caret_index_for_text_control_point(
       );
     }
 
-    let (caret, affinity) = caret_position_for_x_in_text(&display_text, style, rect, page_point.x);
+    let (caret, affinity) =
+      caret_position_for_x_in_text(&display_text, &value, style, rect, page_point.x);
     let total_chars = value.chars().count();
     return Some((caret.min(total_chars), affinity));
   }
@@ -4131,10 +4163,8 @@ fn document_selection_hit_at_page_point(
   };
 
   let local_x = page_point.x - abs_origin.x;
-  let runs: &[crate::text::pipeline::ShapedRun] = shaped
-    .as_deref()
-    .map(|runs| runs.as_slice())
-    .unwrap_or(&[]);
+  let runs: &[crate::text::pipeline::ShapedRun] =
+    shaped.as_deref().map(|runs| runs.as_slice()).unwrap_or(&[]);
   let local_char = crate::text::caret::char_idx_for_x(text, runs, local_x);
 
   // Map fragment-local caret into the full text-node character index using the fragment's stable
@@ -4150,10 +4180,19 @@ fn document_selection_hit_at_page_point(
   let total_chars = text_box.text.chars().count();
   let char_offset = (start_char + local_char).min(total_chars);
 
-  Some((DocumentSelectionPoint { node_id, char_offset }, box_id))
+  Some((
+    DocumentSelectionPoint {
+      node_id,
+      char_offset,
+    },
+    box_id,
+  ))
 }
 
-fn cmp_document_selection_points(a: DocumentSelectionPoint, b: DocumentSelectionPoint) -> std::cmp::Ordering {
+fn cmp_document_selection_points(
+  a: DocumentSelectionPoint,
+  b: DocumentSelectionPoint,
+) -> std::cmp::Ordering {
   a.node_id
     .cmp(&b.node_id)
     .then_with(|| a.char_offset.cmp(&b.char_offset))
@@ -4361,7 +4400,11 @@ fn nearest_block_level_box_for_box_id<'a>(
     nearest_block: None,
   }];
 
-  while let Some(Frame { node, nearest_block }) = stack.pop() {
+  while let Some(Frame {
+    node,
+    nearest_block,
+  }) = stack.pop()
+  {
     let nearest_block = if node.style.display.is_block_level() {
       Some(node)
     } else {
@@ -5053,7 +5096,10 @@ fn select_control_snapshot_from_box_tree(
   None
 }
 
-fn select_control_snapshot_from_dom(index: &DomIndexMut, select_node_id: usize) -> Option<SelectControl> {
+fn select_control_snapshot_from_dom(
+  index: &DomIndexMut,
+  select_node_id: usize,
+) -> Option<SelectControl> {
   let select_node = index.node(select_node_id)?;
   if !select_node
     .tag_name()
@@ -5124,9 +5170,15 @@ fn select_control_snapshot_from_dom(index: &DomIndexMut, select_node_id: usize) 
     while let Some(node) = stack.pop() {
       match &node.node_type {
         DomNodeType::Text { content } => text.push_str(content),
-        DomNodeType::Element { tag_name, namespace, .. } => {
+        DomNodeType::Element {
+          tag_name,
+          namespace,
+          ..
+        } => {
           if tag_name.eq_ignore_ascii_case("script")
-            && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE || namespace == crate::dom::SVG_NAMESPACE)
+            && (namespace.is_empty()
+              || namespace == crate::dom::HTML_NAMESPACE
+              || namespace == crate::dom::SVG_NAMESPACE)
           {
             continue;
           }
@@ -6080,7 +6132,11 @@ impl InteractionEngine {
       .is_some_and(|form_id| self.mark_user_validity(form_id))
   }
 
-  fn ensure_form_default_snapshot_for_control(&mut self, index: &DomIndexMut, control_node_id: usize) {
+  fn ensure_form_default_snapshot_for_control(
+    &mut self,
+    index: &DomIndexMut,
+    control_node_id: usize,
+  ) {
     let Some(form_id) = resolve_form_owner(index, control_node_id) else {
       return;
     };
@@ -6106,9 +6162,10 @@ impl InteractionEngine {
       }
 
       if is_input(node) && resolve_form_owner(index, node_id) == Some(form_id) {
-        snapshot
-          .input_value
-          .insert(node_id, node.get_attribute_ref("value").map(|v| v.to_string()));
+        snapshot.input_value.insert(
+          node_id,
+          node.get_attribute_ref("value").map(|v| v.to_string()),
+        );
 
         if is_checkbox_input(node) || is_radio_input(node) {
           snapshot
@@ -6273,7 +6330,9 @@ impl InteractionEngine {
         }
         ids_in_form.insert(node_id);
       }
-      self.text_undo.retain(|node_id, _| !ids_in_form.contains(node_id));
+      self
+        .text_undo
+        .retain(|node_id, _| !ids_in_form.contains(node_id));
     }
 
     // Clear HTML "user validity" gating for the form + its associated controls.
@@ -6311,14 +6370,22 @@ impl InteractionEngine {
           .node(focused)
           .is_some_and(|node| resolve_form_owner(index, focused) == Some(form_id));
       if focused_in_form {
-        if let Some(edit) = self.text_edit.as_mut().filter(|edit| edit.node_id == focused) {
+        if let Some(edit) = self
+          .text_edit
+          .as_mut()
+          .filter(|edit| edit.node_id == focused)
+        {
           let value_len = index
             .node(focused)
             .map(|node| {
               if is_textarea(node) {
                 textarea_value_for_editing(node).chars().count()
               } else {
-                node.get_attribute_ref("value").unwrap_or("").chars().count()
+                node
+                  .get_attribute_ref("value")
+                  .unwrap_or("")
+                  .chars()
+                  .count()
               }
             })
             .unwrap_or(0);
@@ -6332,7 +6399,12 @@ impl InteractionEngine {
     changed
   }
 
-  fn step_number_input(&mut self, index: &mut DomIndexMut, node_id: usize, delta_steps: i32) -> bool {
+  fn step_number_input(
+    &mut self,
+    index: &mut DomIndexMut,
+    node_id: usize,
+    delta_steps: i32,
+  ) -> bool {
     if delta_steps == 0 {
       return false;
     }
@@ -6372,13 +6444,28 @@ impl InteractionEngine {
         .unwrap_or("")
         .chars()
         .count();
-      if let Some(edit) = self.text_edit.as_mut().filter(|edit| edit.node_id == node_id) {
-        let prev = (edit.caret, edit.caret_affinity, edit.selection_anchor, edit.preferred_x);
+      if let Some(edit) = self
+        .text_edit
+        .as_mut()
+        .filter(|edit| edit.node_id == node_id)
+      {
+        let prev = (
+          edit.caret,
+          edit.caret_affinity,
+          edit.selection_anchor,
+          edit.preferred_x,
+        );
         edit.caret = new_len;
         edit.caret_affinity = CaretAffinity::Downstream;
         edit.selection_anchor = None;
         edit.preferred_x = None;
-        if (edit.caret, edit.caret_affinity, edit.selection_anchor, edit.preferred_x) != prev {
+        if (
+          edit.caret,
+          edit.caret_affinity,
+          edit.selection_anchor,
+          edit.preferred_x,
+        ) != prev
+        {
           changed = true;
         }
       }
@@ -6488,7 +6575,11 @@ impl InteractionEngine {
         DateTimeInputKind::Month => crate::dom::parse_input_month_value(trimmed).is_some(),
         DateTimeInputKind::Week => crate::dom::parse_input_week_value(trimmed).is_some(),
       };
-      if ok { trimmed } else { "" }
+      if ok {
+        trimmed
+      } else {
+        ""
+      }
     };
 
     self.ensure_form_default_snapshot_for_control(&index, input_node_id);
@@ -7111,13 +7202,21 @@ impl InteractionEngine {
         if is_textarea(node) {
           textarea_value_for_editing(node).chars().count()
         } else {
-          node.get_attribute_ref("value").unwrap_or("").chars().count()
+          node
+            .get_attribute_ref("value")
+            .unwrap_or("")
+            .chars()
+            .count()
         }
       })
       .unwrap_or(0);
     let caret = caret.min(current_len);
 
-    if let Some(edit) = self.text_edit.as_ref().filter(|edit| edit.node_id == node_id) {
+    if let Some(edit) = self
+      .text_edit
+      .as_ref()
+      .filter(|edit| edit.node_id == node_id)
+    {
       let mut edit = *edit;
       edit.caret = edit.caret.min(current_len);
       edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
@@ -7431,7 +7530,8 @@ impl InteractionEngine {
         if let Some((point, text_box_id)) =
           document_selection_hit_at_page_point(&box_index, fragment_tree, page_point)
         {
-          if let Some(DocumentSelectionState::Ranges(ranges)) = self.state.document_selection.as_mut()
+          if let Some(DocumentSelectionState::Ranges(ranges)) =
+            self.state.document_selection.as_mut()
           {
             let before = ranges.clone();
             if let Some(initial_range) = state.initial_range {
@@ -7509,20 +7609,23 @@ impl InteractionEngine {
       .is_some_and(|state| state.payload.is_none())
     {
       const DRAG_THRESHOLD_PX: f32 = 4.0;
-      let should_activate = self.document_selection_drag_drop.as_ref().is_some_and(|state| {
-        // Match sentinel handling for other drags: when the pointer leaves the page image, the UI
-        // sends a negative page-point to clear hover state. Ignore those sentinel points so leaving
-        // the page doesn't accidentally activate a drag-drop gesture.
-        if !(page_point.x.is_finite()
-          && page_point.y.is_finite()
-          && page_point.x >= 0.0
-          && page_point.y >= 0.0)
-        {
-          return false;
-        }
+      let should_activate = self
+        .document_selection_drag_drop
+        .as_ref()
+        .is_some_and(|state| {
+          // Match sentinel handling for other drags: when the pointer leaves the page image, the UI
+          // sends a negative page-point to clear hover state. Ignore those sentinel points so leaving
+          // the page doesn't accidentally activate a drag-drop gesture.
+          if !(page_point.x.is_finite()
+            && page_point.y.is_finite()
+            && page_point.x >= 0.0
+            && page_point.y >= 0.0)
+          {
+            return false;
+          }
 
-        state.down_page_point.distance_to(page_point) >= DRAG_THRESHOLD_PX
-      });
+          state.down_page_point.distance_to(page_point) >= DRAG_THRESHOLD_PX
+        });
 
       if should_activate {
         let payload = self.document_selection_text_with_layout(box_tree, fragment_tree);
@@ -7696,7 +7799,8 @@ impl InteractionEngine {
 
     let mut dom_changed = changed;
     if let Some(hit) = down_hit.as_ref() {
-      if matches!(button, PointerButton::Primary) && index.node(hit.dom_node_id).is_some_and(is_range_input)
+      if matches!(button, PointerButton::Primary)
+        && index.node(hit.dom_node_id).is_some_and(is_range_input)
       {
         self.range_drag = Some(RangeDragState {
           node_id: hit.dom_node_id,
@@ -7983,11 +8087,9 @@ impl InteractionEngine {
         let should_start_drag_drop = click_count == 1
           && !modifiers.shift()
           && !modifiers.command()
-          && self
-            .state
-            .document_selection
-            .as_ref()
-            .is_some_and(|sel| sel.has_highlight() && document_selection_contains_point(sel, point));
+          && self.state.document_selection.as_ref().is_some_and(|sel| {
+            sel.has_highlight() && document_selection_contains_point(sel, point)
+          });
 
         if should_start_drag_drop {
           // Clicking inside an existing highlighted selection begins a drag candidate. Do not
@@ -8025,7 +8127,9 @@ impl InteractionEngine {
                 Some(DocumentSelectionState::Ranges(ranges))
               }
               // No primary range to extend: treat as a normal click.
-              _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
+              _ => Some(DocumentSelectionState::Ranges(
+                DocumentSelectionRanges::collapsed(point),
+              )),
             }
           } else if modifiers.command() {
             match self.state.document_selection.clone() {
@@ -8040,17 +8144,29 @@ impl InteractionEngine {
                 ranges.normalize();
                 Some(DocumentSelectionState::Ranges(ranges))
               }
-              _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
+              _ => Some(DocumentSelectionState::Ranges(
+                DocumentSelectionRanges::collapsed(point),
+              )),
             }
           } else {
             match click_count {
               2 => document_word_selection_range(box_tree, text_box_id, point)
                 .and_then(single_range)
-                .or_else(|| Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))),
+                .or_else(|| {
+                  Some(DocumentSelectionState::Ranges(
+                    DocumentSelectionRanges::collapsed(point),
+                  ))
+                }),
               3 => document_block_selection_range(box_tree, text_box_id, point)
                 .and_then(single_range)
-                .or_else(|| Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))),
-              _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
+                .or_else(|| {
+                  Some(DocumentSelectionState::Ranges(
+                    DocumentSelectionRanges::collapsed(point),
+                  ))
+                }),
+              _ => Some(DocumentSelectionState::Ranges(
+                DocumentSelectionRanges::collapsed(point),
+              )),
             }
           };
 
@@ -8199,7 +8315,11 @@ impl InteractionEngine {
     let caret = caret.min(current_len);
 
     // Preserve an existing selection if the right-click fell within it.
-    if let Some(edit) = self.text_edit.as_ref().filter(|edit| edit.node_id == node_id) {
+    if let Some(edit) = self
+      .text_edit
+      .as_ref()
+      .filter(|edit| edit.node_id == node_id)
+    {
       let mut edit = *edit;
       edit.caret = edit.caret.min(current_len);
       edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
@@ -8787,8 +8907,9 @@ impl InteractionEngine {
             fragment_tree,
             drag_drop.down_page_point,
           ) {
-            self.state.document_selection =
-              Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)));
+            self.state.document_selection = Some(DocumentSelectionState::Ranges(
+              DocumentSelectionRanges::collapsed(point),
+            ));
           } else {
             self.state.document_selection = None;
           }
@@ -8829,7 +8950,11 @@ impl InteractionEngine {
             if is_textarea(node) {
               textarea_value_for_editing(node).chars().count()
             } else {
-              node.get_attribute_ref("value").unwrap_or("").chars().count()
+              node
+                .get_attribute_ref("value")
+                .unwrap_or("")
+                .chars()
+                .count()
             }
           })
           .unwrap_or(0);
@@ -8883,7 +9008,9 @@ impl InteractionEngine {
           let down_summary = nearest_details_summary(&index, down);
           let up_summary = nearest_details_summary(&index, up);
           match (down_summary, up_summary) {
-            (Some(down_summary), Some(up_summary)) if down_summary == up_summary => Some(down_summary),
+            (Some(down_summary), Some(up_summary)) if down_summary == up_summary => {
+              Some(down_summary)
+            }
             _ => None,
           }
         }
@@ -9193,25 +9320,39 @@ impl InteractionEngine {
                   None
                 };
 
-                if let Some(submission) =
-                  form_submission(dom, target_id, image_coords, document_url, base_url, Some(&self.state))
-                {
+                if let Some(submission) = form_submission(
+                  dom,
+                  target_id,
+                  image_coords,
+                  document_url,
+                  base_url,
+                  Some(&self.state),
+                ) {
                   self.last_form_submitter = Some(target_id);
-                  let target_blank = resolve_form_owner(&index, target_id)
-                    .is_some_and(|form_id| submission_target_is_blank(&index, Some(target_id), form_id));
+                  let target_blank = resolve_form_owner(&index, target_id).is_some_and(|form_id| {
+                    submission_target_is_blank(&index, Some(target_id), form_id)
+                  });
                   match submission.method {
                     FormSubmissionMethod::Get => {
                       if target_blank {
-                        action = InteractionAction::OpenInNewTab { href: submission.url };
+                        action = InteractionAction::OpenInNewTab {
+                          href: submission.url,
+                        };
                       } else {
-                        action = InteractionAction::Navigate { href: submission.url };
+                        action = InteractionAction::Navigate {
+                          href: submission.url,
+                        };
                       }
                     }
                     FormSubmissionMethod::Post => {
                       if target_blank {
-                        action = InteractionAction::OpenInNewTabRequest { request: submission };
+                        action = InteractionAction::OpenInNewTabRequest {
+                          request: submission,
+                        };
                       } else {
-                        action = InteractionAction::NavigateRequest { request: submission };
+                        action = InteractionAction::NavigateRequest {
+                          request: submission,
+                        };
                       }
                     }
                   }
@@ -9511,7 +9652,11 @@ impl InteractionEngine {
       if selected.is_empty() {
         self.state.form_state.file_inputs.remove(&target_id);
       } else {
-        self.state.form_state.file_inputs.insert(target_id, selected);
+        self
+          .state
+          .form_state
+          .file_inputs
+          .insert(target_id, selected);
       }
       self.state.mark_paint_hash_dirty();
 
@@ -9581,7 +9726,11 @@ impl InteractionEngine {
       if selected.is_empty() {
         self.state.form_state.file_inputs.remove(&input_node_id);
       } else {
-        self.state.form_state.file_inputs.insert(input_node_id, selected);
+        self
+          .state
+          .form_state
+          .file_inputs
+          .insert(input_node_id, selected);
       }
       self.state.mark_paint_hash_dirty();
 
@@ -10371,11 +10520,8 @@ impl InteractionEngine {
           if range.start == range.end {
             continue;
           }
-          let part = serialize_document_selection(
-            box_tree,
-            fragment_tree,
-            DocumentSelection::Range(*range),
-          );
+          let part =
+            serialize_document_selection(box_tree, fragment_tree, DocumentSelection::Range(*range));
           if !part.is_empty() {
             parts.push(part);
           }
@@ -10413,11 +10559,8 @@ impl InteractionEngine {
           if range.start == range.end {
             continue;
           }
-          let part = serialize_document_selection(
-            box_tree,
-            fragment_tree,
-            DocumentSelection::Range(*range),
-          );
+          let part =
+            serialize_document_selection(box_tree, fragment_tree, DocumentSelection::Range(*range));
           if !part.is_empty() {
             parts.push(part);
           }
@@ -10911,12 +11054,19 @@ impl InteractionEngine {
             let runs = shape_text_runs_for_interaction(line_text, shape_style).unwrap_or_default();
             let total_advance = shaped_total_advance(&runs, fallback_advance);
             let stops = crate::text::caret::caret_stops_for_runs(line_text, &runs, total_advance);
+            let grapheme_boundaries = grapheme_cluster_boundaries_char_idx(line_text);
 
             if let Some((start, end)) = selection.filter(|_| !extend_selection) {
               // Collapse selection without shift.
               if start >= line_start && end <= line_end {
-                let start_in_line = start.saturating_sub(line_start).min(line_len);
-                let end_in_line = end.saturating_sub(line_start).min(line_len);
+                let start_in_line_raw = start.saturating_sub(line_start).min(line_len);
+                let end_in_line_raw = end.saturating_sub(line_start).min(line_len);
+                let start_in_line =
+                  snap_char_idx_down_to_grapheme_boundary(&grapheme_boundaries, start_in_line_raw);
+                let end_in_line =
+                  snap_char_idx_up_to_grapheme_boundary(&grapheme_boundaries, end_in_line_raw);
+                let start = line_start.saturating_add(start_in_line).min(total_chars);
+                let end = line_start.saturating_add(end_in_line).min(total_chars);
 
                 let start_pos = crate::text::caret::caret_stop_index(
                   &stops,
@@ -10959,8 +11109,13 @@ impl InteractionEngine {
                 }
               } else {
                 // Selection spans multiple lines; fall back to logical collapse.
-                edit
-                  .set_caret_and_maybe_extend_selection(if move_left { start } else { end }, false);
+                let grapheme_boundaries = grapheme_cluster_boundaries_char_idx(&current);
+                let next = if move_left {
+                  snap_char_idx_down_to_grapheme_boundary(&grapheme_boundaries, start)
+                } else {
+                  snap_char_idx_up_to_grapheme_boundary(&grapheme_boundaries, end)
+                };
+                edit.set_caret_and_maybe_extend_selection(next, false);
               }
             } else if let Some(cur_idx) =
               crate::text::caret::caret_stop_index(&stops, caret_in_line, edit.caret_affinity)
@@ -10968,11 +11123,15 @@ impl InteractionEngine {
               // Move caret within the current line, falling back to crossing a newline when there is
               // no further visual stop in the requested direction.
               let next_idx = if move_left {
-                cur_idx.saturating_sub(1)
+                (0..cur_idx).rev().find(|&idx| {
+                  is_grapheme_cluster_boundary(&grapheme_boundaries, stops[idx].char_idx)
+                })
               } else {
-                (cur_idx + 1).min(stops.len().saturating_sub(1))
+                ((cur_idx + 1)..stops.len()).find(|&idx| {
+                  is_grapheme_cluster_boundary(&grapheme_boundaries, stops[idx].char_idx)
+                })
               };
-              if next_idx != cur_idx {
+              if let Some(next_idx) = next_idx {
                 let stop = stops.get(next_idx).copied().unwrap_or(stops[cur_idx]);
                 edit.set_caret_with_affinity_and_maybe_extend_selection(
                   line_start.saturating_add(stop.char_idx).min(total_chars),
@@ -10981,17 +11140,25 @@ impl InteractionEngine {
                 );
               } else {
                 let next = if move_left {
-                  caret.saturating_sub(1)
+                  prev_grapheme_cluster(&current, caret)
+                    .map(|(start, _)| start)
+                    .unwrap_or(caret)
                 } else {
-                  (caret + 1).min(total_chars)
+                  next_grapheme_cluster(&current, caret)
+                    .map(|(_, end)| end)
+                    .unwrap_or(caret)
                 };
                 edit.set_caret_and_maybe_extend_selection(next, extend_selection);
               }
             } else {
               let next = if move_left {
-                caret.saturating_sub(1)
+                prev_grapheme_cluster(&current, caret)
+                  .map(|(start, _)| start)
+                  .unwrap_or(caret)
               } else {
-                (caret + 1).min(total_chars)
+                next_grapheme_cluster(&current, caret)
+                  .map(|(_, end)| end)
+                  .unwrap_or(caret)
               };
               edit.set_caret_and_maybe_extend_selection(next, extend_selection);
             }
@@ -11007,16 +11174,23 @@ impl InteractionEngine {
             let runs = shape_text_runs_for_interaction(text, shape_style).unwrap_or_default();
             let total_advance = shaped_total_advance(&runs, fallback_advance);
             let stops = crate::text::caret::caret_stops_for_runs(text, &runs, total_advance);
+            // Grapheme cluster boundary indices are based on the underlying value, not on the
+            // display text (e.g. password inputs render bullets), so we don't allow the caret to be
+            // placed within a multi-scalar grapheme cluster.
+            let grapheme_boundaries = grapheme_cluster_boundaries_char_idx(&current);
 
             if let Some((start, end)) = selection.filter(|_| !extend_selection) {
-              let start_pos = crate::text::caret::caret_stop_index(
-                &stops,
+              let start = snap_char_idx_down_to_grapheme_boundary(
+                &grapheme_boundaries,
                 start.min(current_len),
-                CaretAffinity::Downstream,
               );
+              let end =
+                snap_char_idx_up_to_grapheme_boundary(&grapheme_boundaries, end.min(current_len));
+              let start_pos =
+                crate::text::caret::caret_stop_index(&stops, start, CaretAffinity::Downstream);
               let end_pos = crate::text::caret::caret_stop_index(
                 &stops,
-                end.min(current_len),
+                end,
                 // Prefer upstream at the end boundary to avoid "teleporting" across split-caret
                 // bidi boundaries when collapsing selections with ArrowLeft/Right.
                 CaretAffinity::Upstream,
@@ -11050,21 +11224,32 @@ impl InteractionEngine {
               edit.caret_affinity,
             ) {
               let next_idx = if move_left {
-                cur_idx.saturating_sub(1)
+                (0..cur_idx).rev().find(|&idx| {
+                  is_grapheme_cluster_boundary(&grapheme_boundaries, stops[idx].char_idx)
+                })
               } else {
-                (cur_idx + 1).min(stops.len().saturating_sub(1))
+                ((cur_idx + 1)..stops.len()).find(|&idx| {
+                  is_grapheme_cluster_boundary(&grapheme_boundaries, stops[idx].char_idx)
+                })
               };
-              let stop = stops.get(next_idx).copied().unwrap_or(stops[cur_idx]);
-              edit.set_caret_with_affinity_and_maybe_extend_selection(
-                stop.char_idx.min(current_len),
-                stop.affinity,
-                extend_selection,
-              );
+              if let Some(next_idx) = next_idx {
+                let stop = stops.get(next_idx).copied().unwrap_or(stops[cur_idx]);
+                edit.set_caret_with_affinity_and_maybe_extend_selection(
+                  stop.char_idx.min(current_len),
+                  stop.affinity,
+                  extend_selection,
+                );
+              }
             } else {
+              let caret = edit.caret.min(current_len);
               let next_caret = if move_left {
-                edit.caret.saturating_sub(1)
+                prev_grapheme_cluster(&current, caret)
+                  .map(|(start, _)| start)
+                  .unwrap_or(caret)
               } else {
-                (edit.caret + 1).min(current_len)
+                next_grapheme_cluster(&current, caret)
+                  .map(|(_, end)| end)
+                  .unwrap_or(caret)
               };
               edit.set_caret_and_maybe_extend_selection(next_caret, extend_selection);
             }
@@ -11193,21 +11378,21 @@ impl InteractionEngine {
               if let Some((textarea_box_id, style)) =
                 textarea_control_snapshot_from_box_tree(box_tree, focused)
               {
-                if let Some(border_rect) = fragment_rect_for_box_id(fragment_tree, textarea_box_id) {
+                if let Some(border_rect) = fragment_rect_for_box_id(fragment_tree, textarea_box_id)
+                {
                   let style = style.as_ref();
                   let viewport_size = fragment_tree.viewport_size();
-                  let content_rect = content_rect_for_border_rect(border_rect, style, viewport_size);
+                  let content_rect =
+                    content_rect_for_border_rect(border_rect, style, viewport_size);
                   let rect = inset_rect_uniform(content_rect, 2.0);
 
                   if rect.width() > 0.0 && rect.height() > 0.0 {
-                    let metrics = if matches!(
-                      style.line_height,
-                      crate::style::types::LineHeight::Normal
-                    ) {
-                      super::resolve_scaled_metrics_for_interaction(style)
-                    } else {
-                      None
-                    };
+                    let metrics =
+                      if matches!(style.line_height, crate::style::types::LineHeight::Normal) {
+                        super::resolve_scaled_metrics_for_interaction(style)
+                      } else {
+                        None
+                      };
                     let line_height = compute_line_height_with_metrics_viewport(
                       style,
                       metrics.as_ref(),
@@ -11218,11 +11403,14 @@ impl InteractionEngine {
                     if line_height.is_finite() && line_height > 0.0 {
                       let total_chars = current_len;
                       let caret = edit.caret.min(total_chars);
-                      let chars_per_line = crate::textarea::textarea_chars_per_line(style, rect.width());
-                      let layout = crate::textarea::build_textarea_visual_lines(&current, chars_per_line);
+                      let chars_per_line =
+                        crate::textarea::textarea_chars_per_line(style, rect.width());
+                      let layout =
+                        crate::textarea::build_textarea_visual_lines(&current, chars_per_line);
 
-                      let line_idx =
-                        crate::textarea::textarea_visual_line_index_for_caret(&current, &layout, caret);
+                      let line_idx = crate::textarea::textarea_visual_line_index_for_caret(
+                        &current, &layout, caret,
+                      );
 
                       let target_idx = (if move_up {
                         line_idx.checked_sub(1)
@@ -11232,24 +11420,33 @@ impl InteractionEngine {
                       .filter(|idx| *idx < layout.lines.len());
 
                       if let Some(target_idx) = target_idx {
-                        let line_rect = Rect::from_xywh(rect.x(), rect.y(), rect.width(), line_height);
+                        let line_rect =
+                          Rect::from_xywh(rect.x(), rect.y(), rect.width(), line_height);
 
                         // Maintain a preferred x position across vertical moves (like browsers).
                         let preferred_x = if let Some(px) = edit.preferred_x {
                           px
                         } else {
-                          let cur_line =
-                            layout.lines.get(line_idx).copied().unwrap_or(layout.lines[0]);
+                          let cur_line = layout
+                            .lines
+                            .get(line_idx)
+                            .copied()
+                            .unwrap_or(layout.lines[0]);
                           let cur_text = cur_line.text(&current);
-                          let caret_in_line =
-                            caret.saturating_sub(cur_line.start_char).min(cur_line.len_chars());
+                          let caret_in_line = caret
+                            .saturating_sub(cur_line.start_char)
+                            .min(cur_line.len_chars());
 
                           let fallback_advance = fallback_text_advance(cur_text, style);
-                          let runs = shape_text_runs_for_interaction(cur_text, style).unwrap_or_default();
+                          let runs =
+                            shape_text_runs_for_interaction(cur_text, style).unwrap_or_default();
                           let total_advance = shaped_total_advance(&runs, fallback_advance);
                           let start_x = aligned_text_start_x(style, line_rect, total_advance);
-                          let stops =
-                            crate::text::caret::caret_stops_for_runs(cur_text, &runs, total_advance);
+                          let stops = crate::text::caret::caret_stops_for_runs(
+                            cur_text,
+                            &runs,
+                            total_advance,
+                          );
                           let caret_x_local = crate::text::caret::caret_x_for_position(
                             &stops,
                             caret_in_line,
@@ -11265,16 +11462,27 @@ impl InteractionEngine {
                           px
                         };
 
-                        let target_line = layout.lines.get(target_idx).copied().unwrap_or(layout.lines[0]);
+                        let target_line = layout
+                          .lines
+                          .get(target_idx)
+                          .copied()
+                          .unwrap_or(layout.lines[0]);
                         let target_text = target_line.text(&current);
 
                         let x = rect.x() + preferred_x;
                         let x = if x.is_finite() { x } else { rect.x() };
-                        let (caret_in_line, affinity) =
-                          caret_position_for_x_in_text(target_text, style, line_rect, x);
+                        let (caret_in_line, affinity) = caret_position_for_x_in_text(
+                          target_text,
+                          target_text,
+                          style,
+                          line_rect,
+                          x,
+                        );
 
-                        edit.caret =
-                          target_line.start_char.saturating_add(caret_in_line).min(total_chars);
+                        edit.caret = target_line
+                          .start_char
+                          .saturating_add(caret_in_line)
+                          .min(total_chars);
                         edit.caret_affinity = affinity;
                         if !extend_selection {
                           edit.selection_anchor = None;
@@ -11312,7 +11520,11 @@ impl InteractionEngine {
                 .unwrap_or(1.0);
               let preferred_col = edit
                 .preferred_x
-                .and_then(|x| (x / char_advance).is_finite().then_some((x / char_advance).round() as usize))
+                .and_then(|x| {
+                  (x / char_advance)
+                    .is_finite()
+                    .then_some((x / char_advance).round() as usize)
+                })
                 .unwrap_or(col);
 
               let target_line = (if move_up {
@@ -11403,8 +11615,12 @@ impl InteractionEngine {
           self.ensure_form_default_snapshot_for_control(&index, focused);
           if let Some(node_mut) = index.node_mut(focused) {
             let dom_changed = match key {
-              KeyAction::ArrowUp | KeyAction::ArrowRight => dom_mutation::step_range_value(node_mut, 1),
-              KeyAction::ArrowDown | KeyAction::ArrowLeft => dom_mutation::step_range_value(node_mut, -1),
+              KeyAction::ArrowUp | KeyAction::ArrowRight => {
+                dom_mutation::step_range_value(node_mut, 1)
+              }
+              KeyAction::ArrowDown | KeyAction::ArrowLeft => {
+                dom_mutation::step_range_value(node_mut, -1)
+              }
               KeyAction::Home => bounds
                 .map(|(min, _)| dom_mutation::set_range_value(node_mut, min))
                 .unwrap_or(false),
@@ -11782,16 +11998,24 @@ impl InteractionEngine {
               match submission.method {
                 FormSubmissionMethod::Get => {
                   if target_blank {
-                    action = InteractionAction::OpenInNewTab { href: submission.url };
+                    action = InteractionAction::OpenInNewTab {
+                      href: submission.url,
+                    };
                   } else {
-                    action = InteractionAction::Navigate { href: submission.url };
+                    action = InteractionAction::Navigate {
+                      href: submission.url,
+                    };
                   }
                 }
                 FormSubmissionMethod::Post => {
                   if target_blank {
-                    action = InteractionAction::OpenInNewTabRequest { request: submission };
+                    action = InteractionAction::OpenInNewTabRequest {
+                      request: submission,
+                    };
                   } else {
-                    action = InteractionAction::NavigateRequest { request: submission };
+                    action = InteractionAction::NavigateRequest {
+                      request: submission,
+                    };
                   }
                 }
               }
@@ -11837,16 +12061,24 @@ impl InteractionEngine {
                 match submission.method {
                   FormSubmissionMethod::Get => {
                     if target_blank {
-                      action = InteractionAction::OpenInNewTab { href: submission.url };
+                      action = InteractionAction::OpenInNewTab {
+                        href: submission.url,
+                      };
                     } else {
-                      action = InteractionAction::Navigate { href: submission.url };
+                      action = InteractionAction::Navigate {
+                        href: submission.url,
+                      };
                     }
                   }
                   FormSubmissionMethod::Post => {
                     if target_blank {
-                      action = InteractionAction::OpenInNewTabRequest { request: submission };
+                      action = InteractionAction::OpenInNewTabRequest {
+                        request: submission,
+                      };
                     } else {
-                      action = InteractionAction::NavigateRequest { request: submission };
+                      action = InteractionAction::NavigateRequest {
+                        request: submission,
+                      };
                     }
                   }
                 }
@@ -11966,16 +12198,24 @@ impl InteractionEngine {
               match submission.method {
                 FormSubmissionMethod::Get => {
                   if target_blank {
-                    action = InteractionAction::OpenInNewTab { href: submission.url };
+                    action = InteractionAction::OpenInNewTab {
+                      href: submission.url,
+                    };
                   } else {
-                    action = InteractionAction::Navigate { href: submission.url };
+                    action = InteractionAction::Navigate {
+                      href: submission.url,
+                    };
                   }
                 }
                 FormSubmissionMethod::Post => {
                   if target_blank {
-                    action = InteractionAction::OpenInNewTabRequest { request: submission };
+                    action = InteractionAction::OpenInNewTabRequest {
+                      request: submission,
+                    };
                   } else {
-                    action = InteractionAction::NavigateRequest { request: submission };
+                    action = InteractionAction::NavigateRequest {
+                      request: submission,
+                    };
                   }
                 }
               }
@@ -12228,16 +12468,24 @@ impl InteractionEngine {
               match submission.method {
                 FormSubmissionMethod::Get => {
                   if target_blank {
-                    action = InteractionAction::OpenInNewTab { href: submission.url };
+                    action = InteractionAction::OpenInNewTab {
+                      href: submission.url,
+                    };
                   } else {
-                    action = InteractionAction::Navigate { href: submission.url };
+                    action = InteractionAction::Navigate {
+                      href: submission.url,
+                    };
                   }
                 }
                 FormSubmissionMethod::Post => {
                   if target_blank {
-                    action = InteractionAction::OpenInNewTabRequest { request: submission };
+                    action = InteractionAction::OpenInNewTabRequest {
+                      request: submission,
+                    };
                   } else {
-                    action = InteractionAction::NavigateRequest { request: submission };
+                    action = InteractionAction::NavigateRequest {
+                      request: submission,
+                    };
                   }
                 }
               }
@@ -12283,16 +12531,24 @@ impl InteractionEngine {
                 match submission.method {
                   FormSubmissionMethod::Get => {
                     if target_blank {
-                      action = InteractionAction::OpenInNewTab { href: submission.url };
+                      action = InteractionAction::OpenInNewTab {
+                        href: submission.url,
+                      };
                     } else {
-                      action = InteractionAction::Navigate { href: submission.url };
+                      action = InteractionAction::Navigate {
+                        href: submission.url,
+                      };
                     }
                   }
                   FormSubmissionMethod::Post => {
                     if target_blank {
-                      action = InteractionAction::OpenInNewTabRequest { request: submission };
+                      action = InteractionAction::OpenInNewTabRequest {
+                        request: submission,
+                      };
                     } else {
-                      action = InteractionAction::NavigateRequest { request: submission };
+                      action = InteractionAction::NavigateRequest {
+                        request: submission,
+                      };
                     }
                   }
                 }
@@ -12412,16 +12668,24 @@ impl InteractionEngine {
               match submission.method {
                 FormSubmissionMethod::Get => {
                   if target_blank {
-                    action = InteractionAction::OpenInNewTab { href: submission.url };
+                    action = InteractionAction::OpenInNewTab {
+                      href: submission.url,
+                    };
                   } else {
-                    action = InteractionAction::Navigate { href: submission.url };
+                    action = InteractionAction::Navigate {
+                      href: submission.url,
+                    };
                   }
                 }
                 FormSubmissionMethod::Post => {
                   if target_blank {
-                    action = InteractionAction::OpenInNewTabRequest { request: submission };
+                    action = InteractionAction::OpenInNewTabRequest {
+                      request: submission,
+                    };
                   } else {
-                    action = InteractionAction::NavigateRequest { request: submission };
+                    action = InteractionAction::NavigateRequest {
+                      request: submission,
+                    };
                   }
                 }
               }

@@ -164,6 +164,57 @@ fn arrow_left_moves_caret_and_typing_inserts_before_last_char() -> Result<()> {
 }
 
 #[test]
+fn arrow_left_moves_across_zwj_emoji_grapheme_cluster() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+  let emoji = "👨‍👩‍👧‍👦";
+
+  let html = format!(
+    r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body {{ margin: 0; padding: 0; }}
+          #txt {{ position: absolute; left: 0; top: 0; width: 280px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }}
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="{emoji}">
+      </body>
+    </html>
+  "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 20.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowLeft))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  let expected = format!("X{emoji}");
+  assert_eq!(input.get_attribute_ref("value"), Some(expected.as_str()));
+  Ok(())
+}
+
+#[test]
 fn shift_arrow_creates_selection_and_typing_replaces_it() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
@@ -898,7 +949,8 @@ fn textarea_arrow_down_moves_by_visual_lines_when_wrapped() -> Result<()> {
 
   // Focus the textarea, then force caret to the beginning.
   let click = (10.0, 10.0);
-  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
 
@@ -1041,7 +1093,8 @@ fn textarea_auto_scrolls_to_keep_caret_visible_after_typing_many_lines() -> Resu
 
   // Focus the textarea.
   let click = (10.0, 10.0);
-  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
 
   // Insert enough lines to overflow the textarea height. Paint should auto-scroll so the caret
