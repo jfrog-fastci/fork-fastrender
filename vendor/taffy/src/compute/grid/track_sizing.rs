@@ -648,6 +648,7 @@ pub(super) fn resolve_item_baselines(
   items.sort_unstable_by_key(|item| item.placement(other_axis).start);
 
   // Iterate over grid rows
+  let mut is_first_row_group = true;
   let mut remaining_items = &mut items[0..];
   while !remaining_items.is_empty() {
     check_layout_abort();
@@ -673,18 +674,27 @@ pub(super) fn resolve_item_baselines(
       row_items
     };
 
+    let is_first_row_group_this_iter = is_first_row_group;
+    is_first_row_group = false;
+
     let is_baseline_aligned = |item: &GridItem| match axis {
       AbstractAxis::Inline => item.align_self == AlignSelf::Baseline,
       AbstractAxis::Block => item.justify_self == AlignSelf::Baseline,
     };
 
-    // Collect baseline-aligned items in this group.
-    let mut baseline_values: Vec<(usize, f32)> = Vec::new();
-    for (idx, item) in row_items.iter_mut().enumerate() {
-      if !is_baseline_aligned(item) {
-        continue;
-      }
+    // Count baseline-aligned items in this group.
+    //
+    // Baseline alignment is a no-op if <= 1 items in a row-group participate. In that case we can
+    // skip the expensive baseline-measurement pass entirely, with one exception:
+    // - In the column sizing pass (`axis == Inline`), the grid container baseline is derived from
+    //   the first row-group's baseline-aligned item (if any), so we still need to measure that
+    //   baseline value.
+    let baseline_item_count = row_items.iter().filter(|item| is_baseline_aligned(item)).count();
+    if baseline_item_count == 0 {
+      continue;
+    }
 
+    let mut measure_item_baseline_value = |item: &mut GridItem| -> f32 {
       let measured_size_and_baselines = tree.perform_child_layout(
         item.node,
         Size::NONE,
@@ -724,11 +734,7 @@ pub(super) fn resolve_item_baselines(
       } else {
         0.0
       };
-      let margin_start = if margin_start.is_finite() {
-        margin_start
-      } else {
-        0.0
-      };
+      let margin_start = if margin_start.is_finite() { margin_start } else { 0.0 };
       let extra_margin_start = if extra_margin_start.is_finite() {
         extra_margin_start
       } else {
@@ -737,18 +743,47 @@ pub(super) fn resolve_item_baselines(
 
       let value = baseline.unwrap_or(fallback_size) + margin_start + extra_margin_start;
       let value = if value.is_finite() { value } else { 0.0 };
+
       if axis == AbstractAxis::Inline {
         // Record the vertical baseline for computing the grid container baseline.
         item.baseline = Some(value);
       }
 
-      baseline_values.push((idx, value));
+      value
+    };
+
+    if baseline_item_count <= 1 {
+      match axis {
+        // `justify-self: baseline` does not contribute to the grid container baseline, so we can
+        // skip measuring entirely when there is no alignment work to do.
+        AbstractAxis::Block => continue,
+        // `align-self: baseline` is only needed for the grid container baseline if this is the
+        // first row-group containing items.
+        AbstractAxis::Inline => {
+          if !is_first_row_group_this_iter {
+            continue;
+          }
+
+          // Measure only the single baseline item in this row-group to compute the grid container
+          // baseline later. No shim is needed.
+          let item = row_items
+            .iter_mut()
+            .find(|item| is_baseline_aligned(item))
+            .unwrap();
+          let _ = measure_item_baseline_value(item);
+          continue;
+        }
+      }
     }
 
-    // If this group has one or zero items participating in baseline alignment then baseline
-    // alignment is a no-op for those items and we skip further shim computations for that group.
-    if baseline_values.len() <= 1 {
-      continue;
+    // Collect baseline-aligned items in this group.
+    let mut baseline_values: Vec<(usize, f32)> = Vec::new();
+    for (idx, item) in row_items.iter_mut().enumerate() {
+      if !is_baseline_aligned(item) {
+        continue;
+      }
+      let value = measure_item_baseline_value(item);
+      baseline_values.push((idx, value));
     }
 
     let group_max_baseline = baseline_values
@@ -1076,6 +1111,30 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
       .iter_mut()
       .filter(|item| item.crosses_intrinsic_track(axis))
     {
+      // Avoid computing intrinsic contributions (expensive) if this item doesn't span any track
+      // that will actually participate in this distribution step.
+      //
+      // Note: for flex batches, `distribute_item_space_to_base_size` only distributes to flexible
+      // tracks, so we include `track.is_flexible()` in the filter here as well.
+      let has_affected_track = {
+        let track_range = item.track_range_excluding_lines(axis);
+        let spanned_tracks = &axis_tracks[track_range];
+        spanned_tracks.iter().any(|track| {
+          let affected = track
+            .min_track_sizing_function
+            .definite_value(percentage_basis(track), |val, basis| item_sizer.calc(val, basis))
+            .is_none();
+          if is_flex {
+            track.is_flexible() && affected
+          } else {
+            affected
+          }
+        })
+      };
+      if !has_affected_track {
+        continue;
+      }
+
       // ...by distributing extra space as needed to accommodate these items’ minimum contributions.
       //
       // QUIRK: The spec says that:
@@ -2659,5 +2718,79 @@ mod tests {
       .unwrap();
 
     assert_eq!(max_content_probe_count, 0);
+  }
+
+  #[test]
+  fn grid_minmax_0_1fr_avoids_intrinsic_measure_fanout() {
+    // Regression test for excessive intrinsic measurement in `resolve_intrinsic_track_sizes`.
+    //
+    // Grids with `minmax(0, 1fr)` tracks should not need to probe every item multiple times during
+    // intrinsic track sizing (the track sizing functions are definite/flex, so there is no
+    // intrinsic distribution work to do).
+    const NUM_COLS: usize = 20;
+    const NUM_ITEMS: usize = 200;
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let mut children = Vec::with_capacity(NUM_ITEMS);
+    for _ in 0..NUM_ITEMS {
+      children.push(taffy.new_leaf(Style::default()).unwrap());
+    }
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          size: Size::from_lengths(1000.0, 1000.0),
+          grid_template_columns: vec![minmax(length(0.0), fr(1.0)); NUM_COLS],
+          grid_template_rows: vec![length(10.0)],
+          grid_auto_rows: vec![length(10.0)],
+          ..Default::default()
+        },
+        &children,
+      )
+      .unwrap();
+
+    let mut measure_calls = 0usize;
+    taffy
+      .compute_layout_with_measure(root, Size::MAX_CONTENT, |_, _, _, _, _| {
+        measure_calls += 1;
+        MeasureOutput {
+          size: Size {
+            width: 10.0,
+            height: 10.0,
+          },
+          first_baselines: Point::NONE,
+        }
+      })
+      .unwrap();
+
+    assert!(
+      measure_calls <= NUM_ITEMS * 2,
+      "expected near-final-layout-only measure calls; got {measure_calls} for {NUM_ITEMS} items"
+    );
+
+    let root_layout = taffy.layout(root).unwrap();
+    assert!(root_layout.size.width.is_finite());
+    assert!(root_layout.size.height.is_finite());
+    assert_eq!(root_layout.size.width, 1000.0);
+    assert_eq!(root_layout.size.height, 1000.0);
+
+    // Basic invariants: first row item widths sum to the container width and positions are finite.
+    let expected_col_width = 1000.0 / NUM_COLS as f32;
+    let mut width_sum = 0.0;
+    for (i, child) in children.iter().take(NUM_COLS).enumerate() {
+      let layout = taffy.layout(*child).unwrap();
+      assert!(layout.location.x.is_finite());
+      assert!(layout.location.y.is_finite());
+      assert!(layout.size.width.is_finite());
+      assert!(layout.size.height.is_finite());
+      width_sum += layout.size.width;
+
+      // We pick numbers that divide evenly to avoid rounding noise.
+      assert!((layout.location.x - (expected_col_width * i as f32)).abs() < 0.01);
+      assert!((layout.size.width - expected_col_width).abs() < 0.01);
+    }
+    assert!((width_sum - 1000.0).abs() < 0.01);
   }
 }
