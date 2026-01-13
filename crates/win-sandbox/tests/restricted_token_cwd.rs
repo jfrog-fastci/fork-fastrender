@@ -12,15 +12,14 @@ use win_sandbox::{restricted_token, RestrictedToken, SpawnConfig};
 use windows_sys::Win32::Foundation::{
   CloseHandle, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
 };
-use windows_sys::Win32::Security::{
-  GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-  TOKEN_MANDATORY_LABEL, TOKEN_QUERY, PSID,
-};
 use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
   NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
-use windows_sys::Win32::Security::NO_INHERITANCE;
+use windows_sys::Win32::Security::{
+  GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
+  NO_INHERITANCE, PSID, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const TEST_NAME: &str = "restricted_token_spawn_does_not_inherit_inaccessible_cwd";
@@ -69,7 +68,7 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
     fn drop(&mut self) {
       unsafe {
         if !self.0.is_null() {
-          LocalFree(self.0.cast());
+          LocalFree(self.0 as _);
         }
       }
     }
@@ -105,7 +104,7 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
     fn drop(&mut self) {
       unsafe {
         if !self.0.is_null() {
-          LocalFree(self.0.cast());
+          LocalFree(self.0 as _);
         }
       }
     }
@@ -134,8 +133,16 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
 fn current_integrity_rid() -> u32 {
   let mut token: HANDLE = std::ptr::null_mut();
   let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
-  assert_ne!(ok, 0, "OpenProcessToken failed: {}", std::io::Error::last_os_error());
-  assert!(!token.is_null(), "OpenProcessToken returned null token handle");
+  assert_ne!(
+    ok,
+    0,
+    "OpenProcessToken failed: {}",
+    std::io::Error::last_os_error()
+  );
+  assert!(
+    !token.is_null(),
+    "OpenProcessToken returned null token handle"
+  );
 
   let mut len: u32 = 0;
   unsafe {
@@ -147,7 +154,10 @@ fn current_integrity_rid() -> u32 {
       &mut len,
     );
   }
-  assert!(len > 0, "GetTokenInformation(TokenIntegrityLevel) returned len=0");
+  assert!(
+    len > 0,
+    "GetTokenInformation(TokenIntegrityLevel) returned len=0"
+  );
 
   let mut buf = vec![0u8; len as usize];
   let ok = unsafe {
@@ -171,7 +181,10 @@ fn current_integrity_rid() -> u32 {
   assert!(!sid.is_null(), "integrity SID should be non-null");
 
   let subauth_count = unsafe { *GetSidSubAuthorityCount(sid) } as usize;
-  assert!(subauth_count > 0, "integrity SID should have sub authorities");
+  assert!(
+    subauth_count > 0,
+    "integrity SID should have sub authorities"
+  );
   let rid = unsafe { *GetSidSubAuthority(sid, (subauth_count - 1) as u32) };
   unsafe {
     CloseHandle(token);
@@ -195,7 +208,8 @@ fn restricted_token_spawn_does_not_inherit_inaccessible_cwd() {
     );
 
     let cwd = std::env::var_os(ENV_TEST_CWD).expect("missing parent restricted CWD env var");
-    let err = std::env::set_current_dir(PathBuf::from(cwd)).expect_err("expected set_current_dir to fail");
+    let err =
+      std::env::set_current_dir(PathBuf::from(cwd)).expect_err("expected set_current_dir to fail");
     if let Some(code) = err.raw_os_error() {
       assert!(
         code == ERROR_ACCESS_DENIED as i32
@@ -227,7 +241,10 @@ fn restricted_token_spawn_does_not_inherit_inaccessible_cwd() {
 
   let exe = std::env::current_exe().expect("current test exe path");
   let env = vec![
-    (OsString::from(ENV_TEST_CWD), tmp.path().as_os_str().to_os_string()),
+    (
+      OsString::from(ENV_TEST_CWD),
+      tmp.path().as_os_str().to_os_string(),
+    ),
     (OsString::from(ENV_TEST_DEPTH), OsString::from("1")),
   ];
 
