@@ -25,6 +25,12 @@ Linux-specific knobs (also consumed by the `sandbox_probe` tool and Linux render
   - `FASTR_RENDERER_LANDLOCK=0|1`
   - `FASTR_RENDERER_CLOSE_FDS=0|1` (currently used by `sandbox_probe`)
 
+Repo entrypoints:
+
+- Env parsing: `src/system/renderer_sandbox.rs` (std-only parsing helpers).
+- Spawn-time sandboxing: `src/sandbox/spawn.rs` (`sandbox::spawn::configure_renderer_command`).
+- In-process sandboxing: `src/sandbox/mod.rs` (`sandbox::apply_renderer_sandbox`).
+
 ## Threat model
 
 Assume the attacker controls:
