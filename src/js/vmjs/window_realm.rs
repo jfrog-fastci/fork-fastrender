@@ -14117,8 +14117,8 @@ fn document_create_element_native(
 fn document_create_node_iterator_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -14153,7 +14153,7 @@ fn document_create_node_iterator_native(
   let what_to_show_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let what_to_show: u32 = match what_to_show_value {
     Value::Undefined => 0xFFFF_FFFF,
-    other => webidl_to_uint32(scope, other)?,
+    other => webidl_to_uint32(vm, scope, host, hooks, other)?,
   };
 
   // WebIDL: optional NodeFilter? filter = null.
