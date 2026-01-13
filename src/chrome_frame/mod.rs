@@ -148,7 +148,7 @@ impl ChromeFrameDocument {
 
   /// Render a new chrome frame only when something is invalidated (DOM mutations, scroll, etc).
   ///
-  /// Returns `Ok(None)` when no dirty flags are set and no time-based tick is required.
+  /// Returns `Ok(None)` when no dirty flags are set and no time-based repaint is required.
   pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {
     if self.dirty {
       return Ok(Some(self.render()?));
