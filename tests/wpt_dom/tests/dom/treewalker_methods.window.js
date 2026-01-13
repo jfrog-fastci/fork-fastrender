@@ -93,6 +93,24 @@ test(() => {
 }, "TreeWalker navigation methods (parentNode/firstChild/lastChild/nextSibling/previousSibling) update currentNode per spec");
 
 test(() => {
+  const { root, a1 } = make_tree();
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+
+  // Sibling traversal from the root should always return null and not move.
+  assert_equals(tw.nextSibling(), null);
+  assert_equals(tw.currentNode, root);
+  assert_equals(tw.previousSibling(), null);
+  assert_equals(tw.currentNode, root);
+
+  // Child traversal from a leaf should return null and not move.
+  tw.currentNode = a1;
+  assert_equals(tw.firstChild(), null);
+  assert_equals(tw.currentNode, a1);
+  assert_equals(tw.lastChild(), null);
+  assert_equals(tw.currentNode, a1);
+}, "TreeWalker navigation methods return null without moving when no matching node exists");
+
+test(() => {
   const root = document.createElement("div");
   const tw = document.createTreeWalker(root, -1, null);
   assert_equals(tw.whatToShow, NodeFilter.SHOW_ALL);
