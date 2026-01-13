@@ -3425,7 +3425,15 @@ fn apply_request_init(
   if !matches!(mode_val, Value::Undefined | Value::Null) {
     let mode_s = to_rust_string_limited(scope.heap_mut(), mode_val, 64, FETCH_MODE_TOO_LONG_ERROR)?;
     let mode = match mode_s.as_str() {
-      "navigate" => RequestMode::Navigate,
+      "navigate" => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "Request.mode \"navigate\" is not allowed",
+        ));
+      }
       "same-origin" => RequestMode::SameOrigin,
       "no-cors" => RequestMode::NoCors,
       "cors" => RequestMode::Cors,
@@ -4076,6 +4084,18 @@ fn request_ctor_construct(
     &mut keepalive,
     init,
   )?;
+
+  // Request constructor invariant: user-constructed Requests must never have mode "navigate",
+  // including when inheriting from an input Request.
+  if request.mode == RequestMode::Navigate {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host,
+      host_hooks,
+      "Request.mode \"navigate\" is not allowed",
+    ));
+  }
 
   // Enforce invariants even when `init` is omitted (e.g. `new Request(existingRequest)`).
   request.method =
@@ -8401,6 +8421,18 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     init,
   )?;
 
+  // Request constructor invariant (fetch shares the same construction algorithm): the resulting
+  // mode must not be "navigate", even when inherited from an input Request.
+  if request.mode == RequestMode::Navigate {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host,
+      host_hooks,
+      "Request.mode \"navigate\" is not allowed",
+    ));
+  }
+
   // Enforce invariants even when `init` is omitted (e.g. `fetch(existingRequest)`).
   request.method =
     normalize_and_validate_method(vm, scope, host, host_hooks, request.method.as_str())?;
@@ -10007,6 +10039,14 @@ mod tests {
     )?;
     assert_eq!(get_string(window.heap(), invalid_cache), "TypeError");
 
+    let mode_navigate = window.exec_script(
+      "(() => {\
+         try { new Request('https://example.invalid/', { mode: 'navigate' }); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(window.heap(), mode_navigate), "TypeError");
+
     let only_if_cached_wrong_mode = window.exec_script(
       "(() => {\
          try { new Request('https://example.invalid/', { cache: 'only-if-cached', mode: 'cors' }); return 'no'; }\
@@ -10064,6 +10104,55 @@ mod tests {
 
     drop(fetch_bindings);
     window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_init_mode_navigate_throws_or_rejects_type_error() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let env = WindowFetchEnv::for_document(
+      Arc::new(StaticOkFetcher),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            globalThis.__err = null;
+            (async () => {
+              try {
+                await fetch('https://example.invalid/', { mode: 'navigate' });
+              } catch (e) {
+                globalThis.__err = e && e.name ? e.name : String(e);
+              }
+            })();
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let err_val = host.window.exec_script("globalThis.__err").unwrap();
+    assert!(
+      matches!(err_val, Value::String(_)),
+      "expected fetch to throw/reject TypeError, got {err_val:?}"
+    );
+    assert_eq!(get_string(host.window.heap(), err_val), "TypeError");
     Ok(())
   }
 
