@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, Job, JsRuntime, MicrotaskQueue, ModuleGraph, ModuleId,
+  Budget, Heap, HeapLimits, HostDefined, Job, JsRuntime, MicrotaskQueue, ModuleGraph, ModuleId,
   ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, Scope, SourceText,
-  SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  SourceTextModuleRecord, TerminationReason, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  VmOptions,
 };
 
 fn new_runtime() -> Result<JsRuntime, VmError> {
@@ -138,7 +139,7 @@ impl VmHostHooks for TestHostHooks {
     payload: ModuleLoadPayload,
   ) -> Result<(), VmError> {
     let _ = host_defined;
-    let specifier = module_request.specifier.clone();
+    let specifier = module_request.specifier_utf8_lossy();
     self.load_calls.push(specifier.clone());
 
     let module_id = match self.modules.get(&specifier).copied() {
@@ -151,7 +152,7 @@ impl VmHostHooks for TestHostHooks {
         let source =
           SourceText::new_charged_arc(scope.heap_mut(), specifier.as_str(), src.as_str())?;
         let record = SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
-        let id = modules.add_module_with_specifier(&specifier, record)?;
+        let id = modules.add_module_with_specifier(specifier.as_str(), record)?;
         self.modules.insert(specifier.clone(), id);
         id
       }
@@ -268,6 +269,48 @@ fn jsruntime_exec_module_dynamic_import_works_end_to_end() -> Result<(), VmError
     rt.exec_script_with_host_and_hooks(&mut host, &mut hooks, "globalThis.v")?,
     Value::Number(42.0)
   );
+  Ok(())
+}
+
+#[test]
+fn jsruntime_exec_module_hard_stop_tears_down_vm_microtasks() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // Ensure there are no leftover jobs from runtime initialization.
+  assert!(rt.vm.microtask_queue().is_empty());
+
+  // Enqueue a Promise job, then spin until we exhaust fuel. If hard-stop teardown is broken, the
+  // queued job will remain in the VM-owned microtask queue after `exec_module` returns the
+  // termination error.
+  rt.vm.set_budget(Budget {
+    fuel: Some(200),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt
+    .exec_module(
+      "hard_stop.js",
+      r#"
+        Promise.resolve(1).then(() => 2);
+        for (;;) {}
+      "#,
+    )
+    .unwrap_err();
+
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  assert!(
+    rt.vm.microtask_queue().is_empty(),
+    "hard-stop module exec should teardown queued microtasks for heap reuse"
+  );
+
+  // Reset budget so we can reuse the runtime.
+  rt.vm.set_budget(Budget::unlimited(1));
+  assert_eq!(rt.exec_script("1 + 1")?, Value::Number(2.0));
   Ok(())
 }
 
