@@ -1164,39 +1164,9 @@ status = "xfail"
 reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
 
 [[expectations]]
-id = "built-ins/String/prototype/matchAll/cstm-matchall-on-bigint-primitive.js"
-status = "xfail"
-reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
-
-[[expectations]]
-id = "built-ins/String/prototype/matchAll/cstm-matchall-on-number-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.matchAll incorrectly calls @@matchAll on primitive values (should not consult Symbol.matchAll)."
-
-[[expectations]]
-id = "built-ins/String/prototype/matchAll/cstm-matchall-on-string-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.matchAll incorrectly calls @@matchAll on primitive values (should not consult Symbol.matchAll)."
-
-[[expectations]]
-id = "built-ins/String/prototype/matchAll/flags-undefined-throws.js"
-status = "xfail"
-reason = "vm-js: String.prototype.matchAll does not yet implement the IsRegExp/flags global checks."
-
-[[expectations]]
-id = "built-ins/String/prototype/matchAll/regexp-prototype-has-no-matchAll.js"
-status = "xfail"
-reason = "vm-js: String.prototype.matchAll throws an invariant violation instead of a TypeError when RegExp @@matchAll is missing."
-
-[[expectations]]
 id = "built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js"
 status = "xfail"
 reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
-
-[[expectations]]
-id = "built-ins/String/prototype/matchAll/this-val-non-obj-coercible.js"
-status = "xfail"
-reason = "vm-js: String.prototype.matchAll does not yet implement RequireObjectCoercible(this value)."
 
 [[expectations]]
 id = "built-ins/String/prototype/search/regexp-prototype-search-v-flag.js"
