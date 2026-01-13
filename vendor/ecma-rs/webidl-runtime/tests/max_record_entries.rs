@@ -151,7 +151,7 @@ fn record_conversion_rejects_non_objects_in_both_conversion_paths() {
     let Some(thrown) = err.thrown_value() else {
       panic!("expected throw");
     };
-    assert_eq!(thrown_message(&mut rt, thrown), "value is not an object");
+    assert_eq!(thrown_message(&mut rt, thrown), "Value is not an object");
     assert!(
       thrown_to_string(&mut rt, thrown).starts_with("TypeError"),
       "expected TypeError"
