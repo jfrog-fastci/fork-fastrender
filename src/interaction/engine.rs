@@ -3041,27 +3041,154 @@ fn document_word_selection_range(
   text_box_id: usize,
   point: DocumentSelectionPoint,
 ) -> Option<DocumentSelectionRange> {
-  let box_node = box_node_by_id(box_tree, text_box_id)?;
-  let node_id = box_node.styled_node_id.unwrap_or(point.node_id);
-  let BoxType::Text(text_box) = &box_node.box_type else {
-    return None;
+  #[derive(Clone, Copy)]
+  struct SelectableTextBox<'a> {
+    box_id: usize,
+    node_id: usize,
+    text: &'a str,
+    len: usize,
+  }
+
+  fn fallback_single_node(
+    box_tree: &BoxTree,
+    text_box_id: usize,
+    point: DocumentSelectionPoint,
+  ) -> Option<DocumentSelectionRange> {
+    let box_node = box_node_by_id(box_tree, text_box_id)?;
+    let node_id = box_node.styled_node_id.unwrap_or(point.node_id);
+    let BoxType::Text(text_box) = &box_node.box_type else {
+      return None;
+    };
+    let (start, end) = word_selection_range(&text_box.text, point.char_offset)?;
+    let len = text_box.text.chars().count();
+    let start = start.min(len);
+    let end = end.min(len);
+    if start >= end {
+      return None;
+    }
+    Some(DocumentSelectionRange {
+      start: DocumentSelectionPoint {
+        node_id,
+        char_offset: start,
+      },
+      end: DocumentSelectionPoint {
+        node_id,
+        char_offset: end,
+      },
+    })
+  }
+
+  let Some(block) = nearest_block_level_box_for_box_id(&box_tree.root, text_box_id) else {
+    return fallback_single_node(box_tree, text_box_id, point);
   };
-  let (start, end) = word_selection_range(&text_box.text, point.char_offset)?;
-  let len = text_box.text.chars().count();
-  let start = start.min(len);
-  let end = end.min(len);
+
+  // Collect selectable text boxes within the nearest block-level container, matching the same
+  // traversal order used by selection serialization.
+  let mut boxes: Vec<SelectableTextBox<'_>> = Vec::new();
+  let mut stack: Vec<&BoxNode> = vec![block];
+  while let Some(node) = stack.pop() {
+    if !box_is_selectable_for_document_selection(node) {
+      continue;
+    }
+
+    if let BoxType::Text(text_box) = &node.box_type {
+      if let Some(node_id) = node.styled_node_id {
+        let len = text_box.text.chars().count();
+        if len > 0 {
+          boxes.push(SelectableTextBox {
+            box_id: node.id,
+            node_id,
+            text: &text_box.text,
+            len,
+          });
+        }
+      }
+    }
+
+    // Mirror selection serialization traversal ordering:
+    // visit `footnote_body` before normal children, and visit children left-to-right.
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+  }
+
+  let Some(clicked_idx) = boxes.iter().position(|entry| entry.box_id == text_box_id) else {
+    return fallback_single_node(box_tree, text_box_id, point);
+  };
+
+  let clicked = boxes.get(clicked_idx)?;
+  let local_caret = point.char_offset.min(clicked.len);
+  let prefix_len: usize = boxes.iter().take(clicked_idx).map(|b| b.len).sum();
+
+  // Materialize the concatenated text as a flat char vector so we can index it by character.
+  let total_len: usize = boxes.iter().map(|b| b.len).sum();
+  if total_len == 0 {
+    return None;
+  }
+  let mut chars: Vec<char> = Vec::with_capacity(total_len);
+  for entry in &boxes {
+    chars.extend(entry.text.chars());
+  }
+  debug_assert_eq!(chars.len(), total_len);
+
+  let caret = (prefix_len + local_caret).min(total_len);
+  let hit = if caret == total_len { total_len - 1 } else { caret };
+  let target_class = word_selection_class(*chars.get(hit)?);
+
+  let mut start = hit;
+  while start > 0 && word_selection_class(chars[start - 1]) == target_class {
+    start -= 1;
+  }
+  let mut end = hit + 1;
+  while end < total_len && word_selection_class(chars[end]) == target_class {
+    end += 1;
+  }
   if start >= end {
     return None;
   }
+
+  let start_point = {
+    let mut acc = 0usize;
+    let mut out = None;
+    for entry in &boxes {
+      let next = acc.saturating_add(entry.len);
+      if start < next {
+        out = Some(DocumentSelectionPoint {
+          node_id: entry.node_id,
+          char_offset: start.saturating_sub(acc).min(entry.len),
+        });
+        break;
+      }
+      acc = next;
+    }
+    out?
+  };
+  let end_point = {
+    let mut acc = 0usize;
+    let mut out = None;
+    for entry in &boxes {
+      let next = acc.saturating_add(entry.len);
+      if end <= next {
+        out = Some(DocumentSelectionPoint {
+          node_id: entry.node_id,
+          char_offset: end.saturating_sub(acc).min(entry.len),
+        });
+        break;
+      }
+      acc = next;
+    }
+    out?
+  };
+  if start_point == end_point {
+    return None;
+  }
+
   Some(DocumentSelectionRange {
-    start: DocumentSelectionPoint {
-      node_id,
-      char_offset: start,
-    },
-    end: DocumentSelectionPoint {
-      node_id,
-      char_offset: end,
-    },
+    start: start_point,
+    end: end_point,
   })
 }
 

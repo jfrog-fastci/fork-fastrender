@@ -103,6 +103,56 @@ fn ui_document_selection_double_click_selects_word_and_suppresses_link_navigatio
 }
 
 #[test]
+fn ui_document_selection_double_click_selects_word_across_inline_nodes() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+
+  let tab_id = TabId::new();
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    r#"<!doctype html><meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { font: 40px/80px monospace; }
+  #p { position: absolute; top: 0; left: 10px; margin: 0; }
+</style>
+<p id="p"><span>he</span><span>llo</span></p>
+"#,
+    "https://example.invalid/",
+    (320, 140),
+    1.0,
+  )?;
+
+  // Initial paint ensures layout artifacts exist for selection serialization.
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Double-click on the second span ("llo"). The word is split across two text nodes, so selection
+  // should still include the full "hello".
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    (100.0, 40.0),
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(UiToWorker::PointerUp {
+    tab_id,
+    pos_css: (100.0, 40.0),
+    button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
+  })?;
+
+  let copy_msgs = controller.handle_message(UiToWorker::Copy { tab_id })?;
+  assert_eq!(
+    extract_clipboard_text(copy_msgs).as_deref(),
+    Some("hello"),
+    "expected double-click selection to span across inline text node boundaries"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn ui_document_selection_triple_click_selects_paragraph_or_line() -> Result<()> {
   let _lock = super::stage_listener_test_lock();
 
