@@ -51,7 +51,7 @@ Rule of thumb:
   **not** need the extra `fastrender`-specific behavior in `src/sandbox/windows.rs` (notably env
   sanitization and AppContainer executable relocation/current-dir workarounds).
 - Use `win_sandbox::RendererSandbox` when you specifically want “AppContainer-only spawn + stdio
-  allowlist + exe relocation” and will handle job assignment separately.
+  allowlist + exe relocation + default mitigations (best-effort)” and will handle job assignment separately.
 
 Related docs:
 
@@ -341,6 +341,9 @@ In repo reality today:
 `src/sandbox/windows.rs::spawn_sandboxed` applies these mitigation policies at process creation time
 (best-effort). If the OS rejects the mitigation attribute (e.g. older Windows builds), the spawn
 logic retries without mitigations instead of failing process creation.
+
+`crates/win-sandbox::RendererSandbox` also applies the default mitigation policy at process creation
+time (best-effort) when spawning its AppContainer-only child.
 
 These mitigations reduce the renderer’s attack surface against:
 
