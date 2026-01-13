@@ -2147,6 +2147,54 @@ fn compiled_computed_member_update_key_evaluates_before_nullish_base_error() -> 
 }
 
 #[test]
+fn compiled_computed_member_call_evaluates_key_before_nullish_base_error_but_not_args() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // In `null[expr](arg)`, `expr` is evaluated (and ToPropertyKey is applied) before the `null` base
+  // is coerced via `ToObject` and throws a TypeError. The call arguments are **not** evaluated,
+  // since the member reference evaluation throws before reaching argument evaluation.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      function arg() { ok = 2; return 0; }
+      try { null[(ok = 1, 'x')](arg()); } catch(e) {}
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_optional_chaining_computed_member_call_short_circuits_without_evaluating_key_or_args() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // In `o?.[expr](arg)`, when `o` is nullish, the optional chain short-circuits to `undefined` and
+  // does not evaluate either `expr` or `arg`.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      function arg() { ok = 2; return 0; }
+      let o = null;
+      o?.[(ok = 1, 'x')](arg());
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_member_assignment_to_nullish_base_does_not_evaluate_rhs() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
