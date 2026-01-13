@@ -25,6 +25,12 @@ pub struct VmErrorReport {
   pub kind: &'static str,
   /// A bounded, host-owned UTF-8 message.
   pub message: String,
+  /// For `kind == "throw"` when the thrown value is a native Error object, the Error's `name`
+  /// property (e.g. `"TypeError"`).
+  pub exception_name: Option<String>,
+  /// For `kind == "throw"` when the thrown value is a native Error object, the Error's `message`
+  /// property (without the `"TypeError: "` prefix).
+  pub exception_message: Option<String>,
   /// Captured stack frames when available.
   pub stack: Vec<StackFrame>,
   /// For `kind == "termination"`, the termination reason.
@@ -565,18 +571,38 @@ impl Agent {
   /// host OOM: it returns partial/empty fields rather than aborting.
   pub fn error_report(&mut self, err: &VmError) -> VmErrorReport {
     match err {
-      VmError::Throw(value) => VmErrorReport {
-        kind: "throw",
-        message: self.format_thrown_value(*value),
-        stack: Vec::new(),
-        termination_reason: None,
-      },
-      VmError::ThrowWithStack { value, stack } => VmErrorReport {
-        kind: "throw",
-        message: self.format_thrown_value(*value),
-        stack: clone_stack_best_effort(stack),
-        termination_reason: None,
-      },
+      VmError::Throw(value) => {
+        let (exception_name, exception_message) = match value {
+          Value::Object(obj) if self.heap().is_error_object(*obj) => {
+            self.try_extract_error_object_name_and_message(*obj)
+          }
+          _ => (None, None),
+        };
+        VmErrorReport {
+          kind: "throw",
+          message: self.format_thrown_value(*value),
+          exception_name,
+          exception_message,
+          stack: Vec::new(),
+          termination_reason: None,
+        }
+      }
+      VmError::ThrowWithStack { value, stack } => {
+        let (exception_name, exception_message) = match value {
+          Value::Object(obj) if self.heap().is_error_object(*obj) => {
+            self.try_extract_error_object_name_and_message(*obj)
+          }
+          _ => (None, None),
+        };
+        VmErrorReport {
+          kind: "throw",
+          message: self.format_thrown_value(*value),
+          exception_name,
+          exception_message,
+          stack: clone_stack_best_effort(stack),
+          termination_reason: None,
+        }
+      }
       VmError::Termination(term) => {
         let reason_str = match term.reason {
           TerminationReason::OutOfFuel => "execution terminated: out of fuel",
@@ -588,6 +614,8 @@ impl Agent {
         VmErrorReport {
           kind: "termination",
           message: string_from_str_best_effort(reason_str),
+          exception_name: None,
+          exception_message: None,
           stack: clone_stack_best_effort(&term.stack),
           termination_reason: Some(term.reason),
         }
@@ -610,6 +638,8 @@ impl Agent {
         VmErrorReport {
           kind: "syntax",
           message,
+          exception_name: None,
+          exception_message: None,
           stack: Vec::new(),
           termination_reason: None,
         }
@@ -617,6 +647,8 @@ impl Agent {
       VmError::OutOfMemory => VmErrorReport {
         kind: "out_of_memory",
         message: string_from_str_best_effort("out of memory"),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
@@ -624,6 +656,8 @@ impl Agent {
         kind: "invariant_violation",
         message: fallible_format::try_format_error_message("invariant violation: ", msg, "")
           .unwrap_or_default(),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
@@ -631,6 +665,8 @@ impl Agent {
         kind: "limit_exceeded",
         message: fallible_format::try_format_error_message("limit exceeded: ", msg, "")
           .unwrap_or_default(),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
@@ -651,6 +687,8 @@ impl Agent {
         VmErrorReport {
           kind: "invalid_handle",
           message,
+          exception_name: None,
+          exception_message: None,
           stack: Vec::new(),
           termination_reason: None,
         }
@@ -658,12 +696,16 @@ impl Agent {
       VmError::PrototypeCycle => VmErrorReport {
         kind: "prototype_cycle",
         message: string_from_str_best_effort("prototype cycle"),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
       VmError::PrototypeChainTooDeep => VmErrorReport {
         kind: "prototype_chain_too_deep",
         message: string_from_str_best_effort("prototype chain too deep"),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
@@ -671,6 +713,8 @@ impl Agent {
         kind: "unimplemented",
         message: fallible_format::try_format_error_message("unimplemented: ", msg, "")
           .unwrap_or_default(),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
@@ -679,46 +723,112 @@ impl Agent {
         message: string_from_str_best_effort(
           "invalid property descriptor patch: cannot mix data and accessor fields",
         ),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
       VmError::PropertyNotFound => VmErrorReport {
         kind: "property_not_found",
         message: string_from_str_best_effort("property not found"),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
       VmError::PropertyNotData => VmErrorReport {
         kind: "property_not_data",
         message: string_from_str_best_effort("property is not a data property"),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
       VmError::TypeError(msg) => VmErrorReport {
         kind: "type_error",
         message: fallible_format::try_format_error_message("type error: ", msg, "").unwrap_or_default(),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
       VmError::RangeError(msg) => VmErrorReport {
         kind: "range_error",
         message: fallible_format::try_format_error_message("range error: ", msg, "").unwrap_or_default(),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
       VmError::NotCallable => VmErrorReport {
         kind: "not_callable",
         message: string_from_str_best_effort("value is not callable"),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
       VmError::NotConstructable => VmErrorReport {
         kind: "not_constructable",
         message: string_from_str_best_effort("value is not a constructor"),
+        exception_name: None,
+        exception_message: None,
         stack: Vec::new(),
         termination_reason: None,
       },
     }
+  }
+
+  fn try_extract_error_object_name_and_message(
+    &mut self,
+    obj: crate::GcObject,
+  ) -> (Option<String>, Option<String>) {
+    // Best-effort: never allow failure to extract structured fields to change the overall error
+    // report shape.
+    let mut scope = self.heap_mut().scope();
+    if scope.push_root(Value::Object(obj)).is_err() {
+      return (None, None);
+    }
+
+    let name_key_s = match scope.common_key_name() {
+      Ok(s) => s,
+      Err(_) => return (None, None),
+    };
+    if scope.push_root(Value::String(name_key_s)).is_err() {
+      return (None, None);
+    }
+    let message_key_s = match scope.common_key_message() {
+      Ok(s) => s,
+      Err(_) => return (None, None),
+    };
+    if scope.push_root(Value::String(message_key_s)).is_err() {
+      return (None, None);
+    }
+
+    let name_key = PropertyKey::from_string(name_key_s);
+    let message_key = PropertyKey::from_string(message_key_s);
+    let heap = scope.heap();
+
+    let max_bytes = fallible_format::MAX_ERROR_MESSAGE_BYTES;
+
+    let to_utf8_bounded = |s: crate::GcString| -> Option<String> {
+      let js = heap.get_string(s).ok()?;
+      let (mut out, truncated) =
+        crate::string::utf16_to_utf8_lossy_bounded(js.as_code_units(), max_bytes).ok()?;
+      if truncated && out.len().saturating_add(3) <= max_bytes {
+        // Best-effort truncation marker.
+        let _ = push_str_best_effort(&mut out, "...");
+      }
+      Some(out)
+    };
+
+    let name_value = Self::get_data_string_property_from_chain(heap, obj, &name_key);
+    let message_value = Self::get_data_string_property_from_chain(heap, obj, &message_key);
+
+    (
+      name_value.and_then(to_utf8_bounded),
+      message_value.and_then(to_utf8_bounded),
+    )
   }
 
   fn format_thrown_value(&mut self, value: Value) -> String {
@@ -953,6 +1063,16 @@ mod error_report_tests {
       "expected message to contain error name and message, got: {:?}",
       report.message
     );
+    assert_eq!(
+      report.exception_name.as_deref(),
+      Some("TypeError"),
+      "expected exception_name"
+    );
+    assert_eq!(
+      report.exception_message.as_deref(),
+      Some("boom"),
+      "expected exception_message"
+    );
     assert!(
       !report.stack.is_empty(),
       "expected stack frames for thrown error, got empty stack"
@@ -1098,6 +1218,8 @@ throw new TypeError("boom");
     let report = agent.error_report(&err);
     assert_eq!(report.kind, "throw");
     assert!(report.message.is_empty());
+    assert!(report.exception_name.is_none());
+    assert!(report.exception_message.is_none());
     assert!(report.stack.is_empty());
   }
 
