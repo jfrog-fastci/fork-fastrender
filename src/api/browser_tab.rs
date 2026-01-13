@@ -2499,6 +2499,14 @@ impl BrowserTabHost {
       return Ok(discovered.id);
     }
 
+    // HTML sets the per-element "already started" flag during preparation ("prepare a script"),
+    // *before* fetch/execution occurs. This must only run for scripts that successfully pass the
+    // early-out conditions above (e.g. non-empty inline scripts, valid types, etc), so that empty
+    // scripts remain eligible for later `src`/text/type mutations.
+    self
+      .mutate_dom(|dom| (dom.set_script_already_started(node_id, true), false))
+      .map_err(|err| Error::Other(err.to_string()))?;
+
     fn trim_ascii_whitespace(value: &str) -> &str {
       value.trim_matches(|c: char| {
         matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
@@ -9187,6 +9195,71 @@ mod tests {
         "pre".to_string(),
         "microtask:A".to_string()
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_inline_script_is_marked_already_started_during_preparation() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor {
+      log: Rc::clone(&log),
+    };
+    let tab = BrowserTab::from_html(
+      "<!doctype html><html><body><script id=s>noop</script></body></html>",
+      RenderOptions::default(),
+      executor,
+    )?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &["script:noop".to_string(), "microtask:noop".to_string()]
+    );
+
+    let script = tab
+      .host
+      .dom()
+      .get_element_by_id("s")
+      .expect("expected #s script to exist");
+    assert!(
+      tab.host.dom().node(script).script_already_started,
+      "parser-inserted runnable scripts must be marked already started during preparation"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_external_script_is_marked_already_started_during_preparation() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor {
+      log: Rc::clone(&log),
+    };
+    let mut tab = BrowserTab::from_html(
+      "<!doctype html><html><body><script id=s async src=a.js></script></body></html>",
+      RenderOptions::default(),
+      executor,
+    )?;
+    // Provide the external source and drive the event loop so the fetch/execution completes.
+    tab
+      .host
+      .register_external_script_source("a.js".to_string(), "EXT".to_string());
+    tab
+      .event_loop
+      .run_until_idle(&mut tab.host, RunLimits::unbounded())?;
+
+    assert!(
+      log.borrow().iter().any(|entry| entry == "script:EXT"),
+      "expected external script to execute"
+    );
+
+    let script = tab
+      .host
+      .dom()
+      .get_element_by_id("s")
+      .expect("expected #s script to exist");
+    assert!(
+      tab.host.dom().node(script).script_already_started,
+      "parser-inserted external scripts must be marked already started during preparation (before fetch/execution)"
     );
     Ok(())
   }
