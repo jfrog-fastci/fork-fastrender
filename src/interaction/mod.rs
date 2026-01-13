@@ -8,6 +8,7 @@ pub mod dom_geometry;
 pub(crate) mod effective_disabled;
 pub(crate) mod effective_disabled_dom2;
 pub mod engine;
+pub mod engine_dom2;
 pub mod focus_scroll;
 pub(crate) mod form_controls;
 pub mod form_submit;
@@ -30,6 +31,7 @@ pub use anchor_scroll::scroll_offset_for_fragment_target;
 pub use engine::{
   DateTimeInputKind, DragDropKind, InputModality, InteractionAction, InteractionEngine, KeyAction,
 };
+pub use engine_dom2::InteractionEngineDom2;
 pub use element_geometry::{element_geometry_for_styled_node_id, ElementBoxGeometry};
 pub use form_submit::{
   form_submission, form_submission_dom2, form_submission_from_submitter_dom2, form_submission_get_url,
