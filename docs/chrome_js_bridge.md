@@ -81,16 +81,27 @@ An embedder must explicitly install the bridge into a specific JS realm (the chr
 by calling the `vm-js` installer:
 
 ```rust
-use std::sync::Arc;
-use fastrender::js::chrome_api::{install_chrome_api_bindings_vm_js, ChromeApiHandler};
+use fastrender::js::chrome_api::{install_chrome_api_bindings_vm_js, ChromeApiHost, ChromeCommand};
+use fastrender::js::WindowRealmHost;
 
-let handler: Arc<dyn ChromeApiHandler> = /* host-provided implementation */;
-let _bindings = install_chrome_api_bindings_vm_js(vm, heap, realm, handler)?;
-// Keep `_bindings` alive for as long as the realm should be privileged.
+struct MyHost;
+impl WindowRealmHost for MyHost { /* ... */ }
+impl ChromeApiHost for MyHost {
+  fn chrome_dispatch(&mut self, cmd: ChromeCommand) -> Result<(), fastrender::error::Error> {
+    /* apply cmd in the browser process / UI model */
+    Ok(())
+  }
+}
+
+install_chrome_api_bindings_vm_js::<MyHost>(vm, heap, realm)?;
 ```
 
-The returned `ChromeApiBindings` is an RAII guard: dropping it unregisters the backing Rust env
-state for that realm.
+The installer is **non-clobbering**: if `globalThis.chrome` already exists on the realm global
+object, it returns `Ok(())` without modifying it.
+
+At runtime, installed JS methods emit a [`ChromeCommand`](../src/js/vmjs/chrome_api.rs) and call
+`ChromeApiHost::chrome_dispatch` on the embedder’s host state via the `vm-js` host hooks payload
+(typically provided by `VmJsEventLoopHooks`).
 
 Repo reality (today): the installer is implemented in-tree (see
 [`src/js/vmjs/chrome_api.rs`](../src/js/vmjs/chrome_api.rs)) and covered by
@@ -128,8 +139,8 @@ Conceptual mapping (in-tree protocol names):
 | Chrome JS | Browser host action |
 |---|---|
 | `chrome.navigation.navigate(url)` | `UiToWorker::Navigate { tab_id: active, url: normalized, reason: TypedUrl }` |
-| `chrome.navigation.goBack()` | `UiToWorker::GoBack { tab_id: active }` |
-| `chrome.navigation.goForward()` | `UiToWorker::GoForward { tab_id: active }` |
+| `chrome.navigation.back()` | `UiToWorker::GoBack { tab_id: active }` |
+| `chrome.navigation.forward()` | `UiToWorker::GoForward { tab_id: active }` |
 | `chrome.navigation.reload()` | `UiToWorker::Reload { tab_id: active }` |
 | `chrome.navigation.stop()` | `UiToWorker::StopLoading { tab_id: active }` |
 | `chrome.tabs.activateTab(id)` | `UiToWorker::SetActiveTab { tab_id: id }` |
@@ -159,8 +170,8 @@ Imperative navigation on the **active tab**.
   - In the in-tree egui browser, “typed navigation” normalization lives in
     `BrowserTabState::navigate_typed` in [`src/ui/browser_app.rs`](../src/ui/browser_app.rs) and uses
     [`resolve_omnibox_input`](../src/ui/url.rs) + `validate_user_navigation_url_scheme`.
-- `chrome.navigation.goBack()`
-- `chrome.navigation.goForward()`
+- `chrome.navigation.back()`
+- `chrome.navigation.forward()`
 - `chrome.navigation.reload()`
 - `chrome.navigation.stop()`
   - Cancel the current in-flight navigation and/or paint work for the active tab.
@@ -177,7 +188,8 @@ Tab management within the current window (MVP).
   - Opens a new foreground tab.
   - If `url` is provided, the new tab navigates to it; otherwise the embedder chooses a default
     (commonly `about:newtab`).
-  - Returns the new tab id as a **Number safe integer**.
+  - `url` may be `undefined`/`null` to request the embedder’s default new-tab page.
+  - Returns `undefined` (command-only).
   - Like `chrome.navigation.navigate(url)`, the argument should be treated as omnibox-style input
     and normalized/validated by the host (do not assume it is already a safe/absolute URL).
 - `chrome.tabs.closeTab(id)`
@@ -195,14 +207,10 @@ Tab management within the current window (MVP).
 
 Chrome UIs typically need an initial snapshot of tab state.
 
-Implemented by the in-tree `vm-js` chrome bridge:
+Repo reality (today): the in-tree `vm-js` chrome bridge is **command-only** and does not currently
+expose a synchronous snapshot API (no `chrome.tabs.getAll()` / `chrome.getState()`).
 
-- `chrome.tabs.getAll(): Array<object>`
-  - Returns a snapshot of open tabs.
-  - Current shape: `{ id, url, title, active }` (see `ChromeTabInfo` in
-    [`src/js/vmjs/chrome_api.rs`](../src/js/vmjs/chrome_api.rs)).
-
-Some embeddings may additionally expose a higher-level snapshot API:
+Embeddings may additionally expose a higher-level snapshot API:
 
 - `chrome.getState(): object` (optional / embedder-defined)
   - If present, returns a snapshot of the browser state needed for chrome UI (tabs, active tab id,
@@ -233,11 +241,11 @@ Example shape (illustrative):
 
 ---
 
-## Event model (optional)
+## Event model (recommended; helper implemented in-tree)
 
 Chrome pages may be notified of browser state changes via DOM events dispatched on `window`.
 
-If implemented by the embedder, listen with:
+Chrome pages listen with:
 
 ```js
 window.addEventListener("chrome-tabs", (e) => {
@@ -247,17 +255,24 @@ window.addEventListener("chrome-tabs", (e) => {
 
 Some embeddings may also dispatch additional events (e.g. `chrome-navigation`, `chrome-state`).
 
-If events are not available, chrome pages can fall back to polling via `chrome.getState()` /
-`chrome.tabs.getAll()`.
+Host-side implementation (in-tree helper): embedders can dispatch `CustomEvent` asynchronously via:
+
+```rust
+use fastrender::js::chrome_events::dispatch_chrome_event_vm_js;
+
+// detail_json is parsed via JSON.parse in the target realm (invalid JSON => detail: null).
+dispatch_chrome_event_vm_js(host, event_loop, "chrome-tabs", r#"{"tabs":[...]}"#)?;
+```
+
+- `event_type` and `detail_json` are length-capped (DoS resistance / bounded queues).
+- `detail_json` is parsed with `JSON.parse`; invalid JSON still dispatches the event with
+  `detail: null`.
 
 Recommended: `e.detail` should be the same shape as `chrome.getState()` (or at least contain
 `{ tabs, activeTabId }`) so chrome pages can update with a single handler.
 
-Recommended implementation: dispatch `CustomEvent`:
-
-```js
-window.dispatchEvent(new CustomEvent("chrome-tabs", { detail: chromeState }));
-```
+If an embedding cannot support events, consider adding an embedder-defined `chrome.getState()`
+snapshot getter as a fallback.
 
 ---
 
@@ -275,8 +290,12 @@ The chrome bridge is privileged, but it still validates inputs:
 - Invalid/blocked URLs passed to `chrome.navigation.navigate(...)` should throw an exception rather
   than silently doing nothing. The embedder is expected to apply its scheme allowlist (e.g.
   reject `javascript:`).
+- The in-tree `vm-js` binding also enforces a hard URL argument size cap (measured in UTF-16 code
+  units) to prevent hostile pages from forcing large host allocations.
+- If the embedder executes chrome page JS without a `VmJsHostHooksPayload`/host state installed,
+  chrome calls throw a **TypeError** (`"chrome API host not available"`). This is an embedder bug.
 - Unavailability is not an error:
-  - `goBack()` / `goForward()` should be no-ops if there is no history entry in that direction.
+  - `back()` / `forward()` should be no-ops if there is no history entry in that direction.
   - `stop()` should be a no-op if nothing is loading.
 - Navigation failures that happen *after* dispatch (DNS failures, network errors, HTTP failures,
   etc) should generally **not** throw. They should be surfaced via state/events (for example via an
@@ -285,9 +304,8 @@ The chrome bridge is privileged, but it still validates inputs:
 The chrome bridge is primarily **command-oriented**.
 
 - Most methods return `undefined` and should be treated as “fire-and-forget”.
-- Snapshot APIs (like `chrome.tabs.getAll()` and optional `chrome.getState()`) return plain
-  objects/arrays.
-- `chrome.tabs.newTab()` returns the allocated tab id.
+- Embedding-defined snapshot APIs (like `chrome.getState()`) should return plain objects/arrays.
+- `chrome.tabs.newTab()` returns `undefined`.
 
 ---
 
@@ -317,19 +335,11 @@ This is a minimal, framework-free example of wiring a chrome page to the bridge.
 <button id="new-tab">New tab</button>
 <input id="address" placeholder="Enter URL" />
 <script>
-  function getChromeState() {
-    if (typeof chrome === "undefined") {
-      throw new Error("chrome JS bridge is not installed in this realm");
-    }
-    if (typeof chrome.getState === "function") {
-      return chrome.getState();
-    }
-    if (chrome.tabs && typeof chrome.tabs.getAll === "function") {
-      const tabs = chrome.tabs.getAll();
-      return { tabs };
-    }
-    return { tabs: [] };
+  if (typeof chrome === "undefined") {
+    throw new Error("chrome JS bridge is not installed in this realm");
   }
+
+  let state = { tabs: [] };
 
   function renderTabs(state) {
     const strip = document.getElementById("tab-strip");
@@ -358,7 +368,11 @@ This is a minimal, framework-free example of wiring a chrome page to the bridge.
   }
 
   function refresh() {
-    renderTabs(getChromeState());
+    // Optional embedder-defined snapshot getter.
+    if (typeof chrome.getState === "function") {
+      state = chrome.getState() || state;
+    }
+    renderTabs(state);
   }
 
   // Address bar -> navigate active tab.
@@ -369,8 +383,14 @@ This is a minimal, framework-free example of wiring a chrome page to the bridge.
   document.getElementById("new-tab").onclick = () => chrome.tabs.newTab();
 
   // Event-driven updates when available.
-  window.addEventListener("chrome-tabs", refresh);
-  window.addEventListener("chrome-navigation", refresh);
+  window.addEventListener("chrome-tabs", (e) => {
+    state = e.detail || state;
+    renderTabs(state);
+  });
+  window.addEventListener("chrome-state", (e) => {
+    state = e.detail || state;
+    renderTabs(state);
+  });
 
   // Initial paint.
   refresh();

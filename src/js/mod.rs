@@ -34,6 +34,7 @@
 
 pub mod cookie_jar;
 pub mod chrome_navigation_url;
+pub use chrome_navigation_url as chrome_api;
 pub mod web_storage;
 pub mod indexed_db;
 pub(crate) mod dom_internal_keys;
