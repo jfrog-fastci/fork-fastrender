@@ -95,6 +95,24 @@ fn string_regex_methods_basic_match_search_replace_split() {
 }
 
 #[test]
+fn regexp_s_and_s_match_full_ecma262_whitespace_and_lineterminators() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          /(\s)/.test("\u2028"), // Line Separator
+          /\S/.test("\u2028"),
+          /\s/.test("\u2003"), // Em Space (Zs)
+          /\S/.test("\u2003"),
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false,true,false");
+}
+
+#[test]
 fn match_all_iterator_is_iterable() {
   let mut rt = new_runtime();
   let value = rt

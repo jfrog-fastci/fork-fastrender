@@ -986,10 +986,29 @@ impl CharClassItem {
         if negated { !is_word } else { is_word }
       }
       CharClassItem::Space { negated } => {
+        // `\s` in ECMAScript RegExp matches the union of WhiteSpace and LineTerminator
+        // (https://tc39.es/ecma262/#sec-characterclassescape).
+        //
+        // Keep this set in sync with `builtins::is_trim_whitespace_unit`.
         let is_space = matches!(
           u,
-          0x0009 | 0x000A | 0x000B | 0x000C | 0x000D | 0x0020 | 0x00A0 | 0xFEFF
-        );
+          // WhiteSpace (ECMA-262)
+          0x0009
+            | 0x000B
+            | 0x000C
+            | 0x0020
+            | 0x00A0
+            | 0x1680
+            | 0x202F
+            | 0x205F
+            | 0x3000
+            | 0xFEFF
+            // LineTerminator (ECMA-262)
+            | 0x000A
+            | 0x000D
+            | 0x2028
+            | 0x2029
+        ) || matches!(u, 0x2000..=0x200A);
         if negated { !is_space } else { is_space }
       }
     }
