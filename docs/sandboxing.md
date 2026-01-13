@@ -46,7 +46,7 @@ Limitations of the fallback:
 - **AppContainer requires Windows 8+**.
 - For best results and modern sandbox behavior, **Windows 10+ is recommended**.
 
-## Debug escape hatch (Windows)
+### Debug escape hatch (Windows)
 
 When debugging sandbox-related issues locally, you can disable the Windows renderer sandbox:
 
@@ -56,3 +56,28 @@ When debugging sandbox-related issues locally, you can disable the Windows rende
 When sandboxing is disabled, FastRender prints a **warning to stderr** so insecure runs are not
 silent.
 
+## Linux sandbox implementation
+
+Linux sandbox code lives in:
+
+- `seccomp-bpf`: [`src/sandbox/linux_seccomp.rs`](../src/sandbox/linux_seccomp.rs) (installed via [`src/sandbox/mod.rs`](../src/sandbox/mod.rs))
+- Optional filesystem defense-in-depth: [`src/sandbox/linux_landlock.rs`](../src/sandbox/linux_landlock.rs)
+
+Repo reality (today): the Linux seccomp sandbox is designed to:
+
+- deny path-based filesystem opens (`open`, `openat`, `openat2`, `creat`)
+- deny network socket operations (and restrict `socket()` to `AF_UNIX`)
+- deny process execution (`execve`, `execveat`)
+
+Maintaining the syscall allowlist is a moving target; use the workflow in
+[seccomp_allowlist.md](seccomp_allowlist.md).
+
+IPC implication: prefer **inherited IPC endpoints** (e.g. `socketpair()`) and browser-allocated
+shared memory (`memfd_create`) passed to the renderer before the sandbox is installed; see
+[ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
+
+## macOS sandbox notes
+
+Renderer sandboxing on macOS uses Seatbelt profiles. For iteration tooling and IPC capability
+expectations, see [macos_sandbox.md](macos_sandbox.md) (and the launcher helper in
+[`src/sandbox/macos_spawn.rs`](../src/sandbox/macos_spawn.rs)).
