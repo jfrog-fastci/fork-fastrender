@@ -160,6 +160,28 @@ fn compiled_for_loop_let_creates_per_iteration_envs() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_for_loop_let_closure_captures_each_iteration_value() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let f0;
+        let f1;
+        let f2;
+        for (let i = 0; i < 3; i = i + 1) {
+          if (i === 0) f0 = function() { return i; };
+          if (i === 1) f1 = function() { return i; };
+          if (i === 2) f2 = function() { return i; };
+        }
+        return f0() + f1() + f2();
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_for_of_let_creates_per_iteration_envs() -> Result<(), VmError> {
   // `for (let x of ...)` should create a fresh lexical binding each iteration so closures capture
   // the value from the iteration when they were created.
