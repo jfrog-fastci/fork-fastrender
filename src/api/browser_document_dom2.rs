@@ -1863,38 +1863,10 @@ impl BrowserDocumentDom2 {
     x: f32,
     y: f32,
   ) -> Result<Vec<crate::dom2::NodeId>> {
-    if !x.is_finite() || !y.is_finite() {
-      return Ok(Vec::new());
-    }
-
-    self.ensure_layout_for_hit_testing()?;
-    let Some(prepared) = self.prepared.as_ref() else {
-      return Ok(Vec::new());
-    };
-
-    let viewport = prepared.fragment_tree().viewport_size();
-    if x < 0.0 || y < 0.0 || x >= viewport.width || y >= viewport.height {
-      return Ok(Vec::new());
-    }
-
-    let scroll_state = ScrollState::from_parts_with_deltas(
-      Point::new(self.options.scroll_x, self.options.scroll_y),
-      self.options.element_scroll_offsets.clone(),
-      self.options.scroll_delta,
-      self.options.element_scroll_deltas.clone(),
-    );
-
-    let hits = crate::interaction::hit_testing::hit_test_dom_viewport_point_all(
-      prepared,
-      &scroll_state,
-      Point::new(x, y),
-    );
-
+    let hits = self.hit_test_viewport_point_all(x, y)?;
     let mut out: Vec<crate::dom2::NodeId> = Vec::new();
     for hit in hits {
-      let Some(mut node_id) = self.dom2_node_for_hit_test(&hit) else {
-        continue;
-      };
+      let mut node_id = hit.node;
 
       loop {
         match &self.dom().node(node_id).kind {

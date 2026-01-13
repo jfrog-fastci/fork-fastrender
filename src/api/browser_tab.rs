@@ -6853,6 +6853,12 @@ impl BrowserTab {
     self.host.document.hit_test_viewport_point(x, y)
   }
 
+  /// Like [`BrowserTab::hit_test_viewport_point`], but returns all hits (topmost first).
+  pub fn hit_test_viewport_point_all(&mut self, x: f32, y: f32) -> Result<Vec<Dom2HitTestResult>> {
+    self.sync_document_animation_time_to_event_loop();
+    self.host.document.hit_test_viewport_point_all(x, y)
+  }
+
   fn cached_renderer_dom_mapping(&mut self) -> &crate::dom2::RendererDomMapping {
     let generation = self.dom().mutation_generation();
     let rebuild = match self.renderer_dom_mapping_cache.as_ref() {
