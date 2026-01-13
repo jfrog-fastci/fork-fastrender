@@ -2871,7 +2871,8 @@ impl ModuleGraph {
     })();
 
     // If module evaluation initiated an async continuation whose Promise reactions are still
-    // pending (dynamic import), keep `vm.module_graph_ptr` installed until those reactions run.
+    // pending (dynamic import and/or top-level await), keep `vm.module_graph_ptr` installed until
+    // those reactions run.
     //
     // Note: `insert_pending_dynamic_import_evaluation` captures the VM's current module graph
     // pointer as the "previous" value to restore. When dynamic import begins during this
@@ -2879,8 +2880,7 @@ impl ModuleGraph {
     // pointer before disarming the guard so completion restores correctly.
     if graph_guard.restore_on_drop && self.module_graph_ptr_refcount > 0 {
       let self_ptr: *mut ModuleGraph = self;
-      if self.module_graph_ptr_prev == Some(self_ptr) && graph_guard.prev_graph() != Some(self_ptr)
-      {
+      if self.module_graph_ptr_prev == Some(self_ptr) && graph_guard.prev_graph() != Some(self_ptr) {
         self.module_graph_ptr_prev = graph_guard.prev_graph();
       }
       graph_guard.disarm();
