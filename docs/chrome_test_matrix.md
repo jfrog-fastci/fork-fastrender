@@ -16,6 +16,9 @@ Key notation:
 Note (macOS): <kbd>Cmd</kbd>+<kbd>Tab</kbd> is generally reserved by the OS (app switcher), so tab
 cycling should be tested with <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd>.
 
+Note (Win/Linux): some keyboard layouts expose **AltGr** as <kbd>Ctrl</kbd>+<kbd>Alt</kbd>. The
+browser shortcut mapping intentionally ignores Ctrl+Alt+… combinations to avoid breaking text entry.
+
 ## Address bar (omnibox)
 
 | Test | Win/Linux shortcut | macOS shortcut | Expected / parity notes |
