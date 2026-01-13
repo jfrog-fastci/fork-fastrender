@@ -11,19 +11,18 @@ use vm_js::{GcObject, PropertyKey, Value, VmError, VmHost, VmHostHooks};
 
 use crate::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
 
-/// Returns `true` if `obj` should be treated as iterable for union discrimination purposes.
+/// Perform a spec-shaped `GetMethod(obj, @@iterator)` lookup.
 ///
-/// This matches WebIDL union discrimination behaviour: `GetMethod(obj, @@iterator)` is used with no
-/// special casing for Arrays.
-///
-/// - `undefined`/`null` => not iterable (`false`)
-/// - non-callable => throw a TypeError
-pub fn object_has_iterator<'a>(
+/// Returns:
+/// - `Ok(Some(method))` if `obj[@@iterator]` is present and callable.
+/// - `Ok(None)` if `obj[@@iterator]` is `undefined` or `null`.
+/// - `Err(TypeError)` if `obj[@@iterator]` is present but not callable.
+pub fn get_iterator_method<'a>(
   rt: &mut BindingsRuntime<'a>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   obj: GcObject,
-) -> Result<bool, VmError> {
+) -> Result<Option<Value>, VmError> {
   // Root `obj` for the duration of any property lookups (which may invoke user code and allocate).
   rt.scope.push_root(Value::Object(obj))?;
 
@@ -34,6 +33,7 @@ pub fn object_has_iterator<'a>(
   let sym = intr.well_known_symbols().iterator;
   rt.scope.push_root(Value::Symbol(sym))?;
   let key = PropertyKey::from_symbol(sym);
+
   let method = rt.scope.ordinary_get_with_host_and_hooks(
     &mut *rt.vm,
     host,
@@ -43,12 +43,25 @@ pub fn object_has_iterator<'a>(
     Value::Object(obj),
   )?;
   if matches!(method, Value::Undefined | Value::Null) {
-    return Ok(false);
+    return Ok(None);
   }
   if !rt.scope.heap().is_callable(method)? {
     return Err(rt.throw_type_error("GetMethod: target is not callable"));
   }
-  Ok(true)
+  Ok(Some(method))
+}
+
+/// Returns `true` if `obj` should be treated as iterable for union discrimination purposes.
+///
+/// This matches WebIDL union discrimination behaviour: `GetMethod(obj, @@iterator)` is used with no
+/// special casing for Arrays.
+pub fn object_has_iterator<'a>(
+  rt: &mut BindingsRuntime<'a>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+) -> Result<bool, VmError> {
+  Ok(get_iterator_method(rt, host, hooks, obj)?.is_some())
 }
 
 /// Convert an ECMAScript value to an IDL `sequence<T>`/`FrozenArray<T>` value.
@@ -97,6 +110,79 @@ where
     }
     Err(err) => return Err(err),
   };
+  rt.scope.push_root(iterator_record.iterator)?;
+  rt.scope.push_root(iterator_record.next_method)?;
+
+  let out = rt.alloc_array(0)?;
+
+  let mut idx: usize = 0;
+  while let Some(next) = vm_js::iterator::iterator_step_value(
+    &mut *rt.vm,
+    host,
+    hooks,
+    &mut rt.scope,
+    &mut iterator_record,
+  )? {
+    rt.scope.push_root(next)?;
+
+    if idx >= rt.limits().max_sequence_length {
+      return Err(rt.throw_range_error("sequence exceeds maximum length"));
+    }
+
+    let converted = convert_elem(rt, host, hooks, next)?;
+    let converted = rt.scope.push_root(converted)?;
+
+    // Root the key string across `convert_elem` (which may allocate/GC).
+    let key_s = rt.scope.alloc_string(&idx.to_string())?;
+    rt.scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    rt.scope
+      .create_data_property_or_throw(out, key, converted)?;
+    idx += 1;
+  }
+
+  Ok(Value::Object(out))
+}
+
+/// Convert an ECMAScript value to an IDL `sequence<T>`/`FrozenArray<T>` value, using a previously
+/// resolved `@@iterator` method.
+///
+/// This follows the WebIDL "convert JS value to sequence" algorithm shape:
+/// 1) `GetMethod(V, @@iterator)` once (performed by the caller),
+/// 2) then `GetIteratorFromMethod(V, method)` to begin iteration (no second `GetMethod`).
+pub fn to_iterable_list_from_method<'a, F>(
+  rt: &mut BindingsRuntime<'a>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+  method: Value,
+  expected_object_message: &'static str,
+  mut convert_elem: F,
+) -> Result<Value, VmError>
+where
+  F: FnMut(
+    &mut BindingsRuntime<'a>,
+    &mut dyn VmHost,
+    &mut dyn VmHostHooks,
+    Value,
+  ) -> Result<Value, VmError>,
+{
+  let v = value;
+  let Value::Object(_obj) = v else {
+    return Err(rt.throw_type_error(expected_object_message));
+  };
+  // Root the iterable + method across any allocations performed by iterator consumption.
+  rt.scope.push_root(v)?;
+  rt.scope.push_root(method)?;
+
+  let mut iterator_record = vm_js::iterator::get_iterator_from_method(
+    &mut *rt.vm,
+    host,
+    hooks,
+    &mut rt.scope,
+    v,
+    method,
+  )?;
   rt.scope.push_root(iterator_record.iterator)?;
   rt.scope.push_root(iterator_record.next_method)?;
 

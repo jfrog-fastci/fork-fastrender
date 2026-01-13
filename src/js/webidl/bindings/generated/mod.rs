@@ -5875,13 +5875,14 @@ pub mod window {
           if false {
             Value::Undefined
           } else if let Value::Object(obj) = v {
-            let has_iter = conversions::object_has_iterator(rt, host, hooks, obj)?;
-            if has_iter {
-              conversions::to_iterable_list(
+            let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
+            if let Some(iter_method) = iter_method {
+              conversions::to_iterable_list_from_method(
                 rt,
                 host,
                 hooks,
                 v,
+                iter_method,
                 "expected object for sequence",
                 |rt, host, hooks, next| {
                   Ok(conversions::to_iterable_list(
@@ -12555,13 +12556,14 @@ pub mod worker {
           if false {
             Value::Undefined
           } else if let Value::Object(obj) = v {
-            let has_iter = conversions::object_has_iterator(rt, host, hooks, obj)?;
-            if has_iter {
-              conversions::to_iterable_list(
+            let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
+            if let Some(iter_method) = iter_method {
+              conversions::to_iterable_list_from_method(
                 rt,
                 host,
                 hooks,
                 v,
+                iter_method,
                 "expected object for sequence",
                 |rt, host, hooks, next| {
                   Ok(conversions::to_iterable_list(

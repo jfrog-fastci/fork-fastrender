@@ -17,6 +17,22 @@ test(() => {
 }, "URLSearchParams constructor accepts iterable URLSearchParams init");
 
 test(() => {
+  let getterCalls = 0;
+  const iterable = {
+    get [Symbol.iterator]() {
+      getterCalls++;
+      return function* () {
+        yield ["a", "1"];
+      };
+    },
+  };
+
+  const params = new URLSearchParams(iterable);
+  assert_equals(params.toString(), "a=1");
+  assert_equals(getterCalls, 1);
+}, "URLSearchParams constructor evaluates @@iterator getter only once when converting union init");
+
+test(() => {
   const assert_invalid = init => {
     let threw = false;
     try {

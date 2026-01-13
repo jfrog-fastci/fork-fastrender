@@ -7898,7 +7898,13 @@ fn emit_union_conversion_expr_vmjs(
     )
   });
   let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
-  let seq_expr = sequence_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
+  // When discriminating unions that include a `sequence<>`/`FrozenArray<>` member, WebIDL performs
+  // `GetMethod(V, @@iterator)` once and then consumes the iterator with
+  // `GetIteratorFromMethod(V, method)`. Avoid double-evaluating `@@iterator` getters/traps by
+  // plumbing the resolved method into the conversion.
+  let seq_expr = sequence_member.map(|ty| {
+    emit_iterable_list_conversion_expr_vmjs_from_method(resolved, ty, "v", "iter_method", rt_is_ref)
+  });
   let record_expr = record_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
   let callback_expr =
     callback_function_member.map(|ty| emit_conversion_expr_vmjs(resolved, ty, "v", rt_is_ref));
@@ -7952,11 +7958,11 @@ fn emit_union_conversion_expr_vmjs(
 
   if let Some(seq_expr) = &seq_expr {
     out.push_str(&format!(
-      "    let has_iter = conversions::object_has_iterator({rt_expr}, host, hooks, obj)?;\n",
+      "    let iter_method = conversions::get_iterator_method({rt_expr}, host, hooks, obj)?;\n",
       rt_expr = rt_expr
     ));
 
-    out.push_str("    if has_iter {\n      ");
+    out.push_str("    if let Some(iter_method) = iter_method {\n      ");
     out.push_str(seq_expr);
     out.push_str("\n    }");
 
@@ -8051,6 +8057,63 @@ fn emit_iterable_list_conversion_expr_vmjs(
     expected_msg = expected_msg,
     elem_expr = elem_expr
   )
+}
+
+fn emit_iterable_list_conversion_expr_vmjs_from_method(
+  resolved: &ResolvedWebIdlWorld,
+  ty: &IdlType,
+  value_ident: &str,
+  method_ident: &str,
+  rt_is_ref: bool,
+) -> String {
+  match ty {
+    IdlType::Annotated { inner, .. } => emit_iterable_list_conversion_expr_vmjs_from_method(
+      resolved,
+      inner,
+      value_ident,
+      method_ident,
+      rt_is_ref,
+    ),
+    IdlType::Nullable(inner) => format!(
+      "if matches!({value_ident}, Value::Null | Value::Undefined) {{ Value::Null }} else {{ {} }}",
+      emit_iterable_list_conversion_expr_vmjs_from_method(
+        resolved,
+        inner,
+        value_ident,
+        method_ident,
+        rt_is_ref
+      )
+    ),
+    IdlType::Sequence(elem_ty) => {
+      let elem_expr = emit_conversion_expr_vmjs(resolved, elem_ty, "next", rt_is_ref);
+      let expected_msg = rust_string_literal("expected object for sequence");
+      let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
+      format!(
+        "conversions::to_iterable_list_from_method({rt_expr}, host, hooks, {value_ident}, {method_ident}, {expected_msg}, |rt, host, hooks, next| Ok({elem_expr}))?",
+        rt_expr = rt_expr,
+        value_ident = value_ident,
+        method_ident = method_ident,
+        expected_msg = expected_msg,
+        elem_expr = elem_expr,
+      )
+    }
+    IdlType::FrozenArray(elem_ty) => {
+      let elem_expr = emit_conversion_expr_vmjs(resolved, elem_ty, "next", rt_is_ref);
+      let expected_msg = rust_string_literal("expected object for FrozenArray");
+      let rt_expr = if rt_is_ref { "rt" } else { "&mut rt" };
+      format!(
+        "conversions::to_iterable_list_from_method({rt_expr}, host, hooks, {value_ident}, {method_ident}, {expected_msg}, |rt, host, hooks, next| Ok({elem_expr}))?",
+        rt_expr = rt_expr,
+        value_ident = value_ident,
+        method_ident = method_ident,
+        expected_msg = expected_msg,
+        elem_expr = elem_expr,
+      )
+    }
+    // This helper is only used by union discrimination for `sequence<>`/`FrozenArray<>` members.
+    // Emit a regular conversion expression for anything else.
+    _ => emit_conversion_expr_vmjs(resolved, ty, value_ident, rt_is_ref),
+  }
 }
 
 fn emit_record_conversion_expr_vmjs(
