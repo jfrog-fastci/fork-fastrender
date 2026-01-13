@@ -1571,6 +1571,169 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
         }
       }
+      ("Document", "documentElement", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+
+        // Brand check: `Document.prototype.documentElement` must only be callable on a DOM-backed
+        // Document wrapper.
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let found = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::document_element(host).map(|node_id| {
+            let primary = host.with_dom(|dom| {
+              if node_id.index() >= dom.nodes_len() {
+                DomInterface::Element
+              } else {
+                DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+              }
+            });
+            (node_id, primary)
+          }))
+        })?;
+        let Some((node_id, primary_interface)) = found else {
+          return Ok(Value::Null);
+        };
+
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          document_id,
+          node_id,
+          primary_interface,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Document", "head", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+
+        // Brand check: `Document.prototype.head` must only be callable on a DOM-backed Document
+        // wrapper.
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let found = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::head(host).map(|node_id| {
+            let primary = host.with_dom(|dom| {
+              if node_id.index() >= dom.nodes_len() {
+                DomInterface::Element
+              } else {
+                DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+              }
+            });
+            (node_id, primary)
+          }))
+        })?;
+        let Some((node_id, primary_interface)) = found else {
+          return Ok(Value::Null);
+        };
+
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          document_id,
+          node_id,
+          primary_interface,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Document", "body", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+
+        let (document_id, document_node_id) = {
+          let platform = require_dom_platform_mut(vm)?;
+          let handle = platform.require_document_handle(scope.heap(), Value::Object(document_obj))?;
+          (handle.document_id, handle.node_id)
+        };
+
+        if args.is_empty() {
+          let found = self.with_dom_host(vm, |host| {
+            Ok(dom2_bindings::body(host).map(|node_id| {
+              let primary = host.with_dom(|dom| {
+                if node_id.index() >= dom.nodes_len() {
+                  DomInterface::Element
+                } else {
+                  DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                }
+              });
+              (node_id, primary)
+            }))
+          })?;
+          let Some((node_id, primary_interface)) = found else {
+            return Ok(Value::Null);
+          };
+
+          let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+            scope,
+            document_id,
+            node_id,
+            primary_interface,
+          )?;
+          scope.push_root(Value::Object(wrapper))?;
+          Ok(Value::Object(wrapper))
+        } else {
+          let value = args.get(0).copied().unwrap_or(Value::Undefined);
+          if matches!(value, Value::Null | Value::Undefined) {
+            // WebIDL normalizes `undefined` to `null` for `any` setters, but accept either.
+            return Ok(Value::Undefined);
+          }
+
+          let element_id = require_dom_platform_mut(vm)?.require_element_id(scope.heap(), value)?;
+
+          // Spec note (minimal): we only accept HTML <body> or <frameset> elements in the HTML
+          // namespace, otherwise throw HierarchyRequestError (DOMException).
+          let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| {
+              if element_id.index() >= dom.nodes_len() {
+                return (Err(DomError::NotFoundError), false);
+              }
+              let is_valid_body_like = match &dom.node(element_id).kind {
+                NodeKind::Element {
+                  tag_name,
+                  namespace,
+                  ..
+                } => {
+                  let is_html_ns = namespace.is_empty() || namespace == HTML_NAMESPACE;
+                  is_html_ns
+                    && (tag_name.eq_ignore_ascii_case("body")
+                      || tag_name.eq_ignore_ascii_case("frameset"))
+                }
+                _ => false,
+              };
+              if !is_valid_body_like {
+                return (Err(DomError::HierarchyRequestError), false);
+              }
+
+              let Some(document_element) = dom.document_element_for(document_node_id) else {
+                return (Err(DomError::HierarchyRequestError), false);
+              };
+
+              let existing = dom.body_for(document_node_id);
+              let changed = match existing {
+                Some(old_body) => dom.replace_child(document_element, element_id, old_body),
+                None => dom.append_child(document_element, element_id),
+              };
+              match changed {
+                Ok(changed) => (Ok(()), changed),
+                Err(err) => (Err(err), false),
+              }
+            }))
+          })?;
+
+          match result {
+            Ok(()) => Ok(Value::Undefined),
+            Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+          }
+        }
+      }
       ("EventTarget", "constructor", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
         scope.heap_mut().object_set_host_slots(
@@ -3640,6 +3803,84 @@ mod window_document_tests {
 
     drop(scope);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod document_element_accessors_tests {
+  use super::*;
+  use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
+  use crate::js::window_timers::VmJsEventLoopHooks;
+  use crate::js::{DocumentHostState, WindowHostState};
+  use vm_js::Value;
+ 
+  fn make_window_and_dom_host() -> Result<(WindowRealm, DocumentHostState), VmError> {
+    let config = WindowRealmConfig::new("https://example.invalid/")
+      .with_dom_bindings_backend(DomBindingsBackend::WebIdl);
+    let window = WindowRealm::new(config)?;
+ 
+    let root = crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>")
+      .map_err(|_| VmError::TypeError("failed to parse HTML fixture"))?;
+    let dom_host = DocumentHostState::from_renderer_dom(&root);
+    Ok((window, dom_host))
+  }
+ 
+  #[test]
+  fn document_element_head_body_accessors_expose_expected_elements() -> Result<(), VmError> {
+    let (mut window, mut dom_host) = make_window_and_dom_host()?;
+    let mut webidl_host =
+      VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+ 
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        const de = Object.getOwnPropertyDescriptor(Document.prototype, 'documentElement').get.call(document);
+        const head = Object.getOwnPropertyDescriptor(Document.prototype, 'head').get.call(document);
+        const body = Object.getOwnPropertyDescriptor(Document.prototype, 'body').get.call(document);
+        return de !== null && de.tagName === 'HTML'
+          && head !== null && head.tagName === 'HEAD'
+          && body !== null && body.tagName === 'BODY';
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+ 
+  #[test]
+  fn document_body_setter_replaces_body_element() -> Result<(), VmError> {
+    let (mut window, mut dom_host) = make_window_and_dom_host()?;
+    let mut webidl_host =
+      VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+ 
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        const bodyDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'body');
+        const get = bodyDesc.get;
+        const set = bodyDesc.set;
+        const newBody = Document.prototype.createElement.call(document, 'body');
+        set.call(document, newBody);
+        return get.call(document) === newBody;
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
     Ok(())
   }
 }
