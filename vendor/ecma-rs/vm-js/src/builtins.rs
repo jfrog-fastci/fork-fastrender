@@ -8617,7 +8617,8 @@ fn regexp_exec_array(
     scope.define_property(
       array,
       groups_key,
-      data_desc(groups_value, true, false, true),
+      // RegExpBuiltinExec uses `CreateDataProperty` for `.groups`.
+      data_desc(groups_value, true, true, true),
     )?;
   }
 
