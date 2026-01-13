@@ -750,13 +750,25 @@ pub fn to_callback_interface<R: WebIdlJsRuntime>(
     return Err(rt.throw_type_error("Value is not a callable callback interface"));
   }
   rt.with_stack_roots(&[value], |rt| {
+    // WebIDL callback interfaces are structural: non-callable objects are accepted only when they
+    // expose a callable method for the callback's operation.
+    //
+    // `EventListener` uses `handleEvent`, while `NodeFilter` uses `acceptNode`. This conversion
+    // helper does not currently receive the callback interface operation name, so support both.
+    //
+    // Keep the existing `handleEvent` behavior intact and only fall back to `acceptNode` when
+    // `handleEvent` is missing.
     let handle_event_key = rt.property_key_from_str("handleEvent")?;
-    match rt.get_method(value, handle_event_key)? {
-      Some(_) => Ok(value),
-      None => Err(
-        rt.throw_type_error("Callback interface object is missing a callable handleEvent method"),
-      ),
+    if rt.get_method(value, handle_event_key)?.is_some() {
+      return Ok(value);
     }
+
+    let accept_node_key = rt.property_key_from_str("acceptNode")?;
+    if rt.get_method(value, accept_node_key)?.is_some() {
+      return Ok(value);
+    }
+
+    Err(rt.throw_type_error("Callback interface object is missing a callable handleEvent method"))
   })
 }
 
@@ -942,11 +954,16 @@ pub fn invoke_callback_interface<R: WebIdlJsRuntime>(
   roots.push(callback);
   roots.extend_from_slice(args);
   rt.with_stack_roots(&roots, |rt| {
+    // Prefer `handleEvent` (EventListener), but fall back to `acceptNode` (NodeFilter) when missing.
     let handle_event_key = rt.property_key_from_str("handleEvent")?;
-    let Some(handle_event) = rt.get_method(callback, handle_event_key)? else {
-      return Err(
-        rt.throw_type_error("Callback interface object is missing a callable handleEvent method"),
-      );
+    let handle_event = match rt.get_method(callback, handle_event_key)? {
+      Some(method) => method,
+      None => {
+        let accept_node_key = rt.property_key_from_str("acceptNode")?;
+        rt.get_method(callback, accept_node_key)?.ok_or_else(|| {
+          rt.throw_type_error("Callback interface object is missing a callable handleEvent method")
+        })?
+      }
     };
 
     rt.call(handle_event, callback, args)

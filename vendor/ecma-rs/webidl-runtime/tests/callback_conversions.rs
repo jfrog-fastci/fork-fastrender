@@ -49,6 +49,24 @@ fn callback_interface_conversion_accepts_object_with_handle_event_method() {
 }
 
 #[test]
+fn callback_interface_conversion_accepts_object_with_accept_node_method() {
+  let mut rt = VmJsRuntime::new();
+  let accept_node = rt
+    .alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))
+    .unwrap();
+
+  let obj = rt.alloc_object_value().unwrap();
+  let key = rt.property_key_from_str("acceptNode").unwrap();
+  rt.define_data_property(obj, key, accept_node, true)
+    .unwrap();
+
+  // NodeFilter is a callback interface whose operation is `acceptNode`.
+  let ty = callback_interface_type("NodeFilter");
+  let got = convert_to_callback(&mut rt, obj, &ty).unwrap();
+  assert_eq!(got, obj);
+}
+
+#[test]
 fn callback_interface_conversion_accepts_branded_platform_object_without_handle_event() {
   let mut rt = VmJsRuntime::new();
   let obj = rt
@@ -131,4 +149,28 @@ fn invoke_callback_interface_calls_handle_event_with_object_this() {
 
   let result = invoke_callback_interface(&mut rt, obj, &[event]).unwrap();
   assert_eq!(result, Value::Number(2.0));
+}
+
+#[test]
+fn invoke_callback_interface_calls_accept_node_with_object_this() {
+  let mut rt = VmJsRuntime::new();
+  let event = Value::Number(123.0);
+
+  let obj = rt.alloc_object_value().unwrap();
+  let expected_this = obj;
+
+  let accept_node = rt
+    .alloc_function_value(move |_rt, this, args| {
+      assert_eq!(this, expected_this);
+      assert_eq!(args, &[event]);
+      Ok(Value::Number(3.0))
+    })
+    .unwrap();
+
+  let key = rt.property_key_from_str("acceptNode").unwrap();
+  rt.define_data_property(obj, key, accept_node, true)
+    .unwrap();
+
+  let result = invoke_callback_interface(&mut rt, obj, &[event]).unwrap();
+  assert_eq!(result, Value::Number(3.0));
 }

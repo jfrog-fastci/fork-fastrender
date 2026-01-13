@@ -1814,11 +1814,18 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
       return Err(self.throw_type_error("Value is not a callback interface object"));
     }
 
+    // Callback interface objects are structural: accept them only when they expose a callable
+    // operation method.
+    //
+    // Prefer `handleEvent` (EventListener) and fall back to `acceptNode` (NodeFilter) when missing.
     let handle_event_key = self.property_key_from_str("handleEvent")?;
     if self.get_method(value, handle_event_key)?.is_none() {
-      return Err(
-        self.throw_type_error("Callback interface object is missing a callable handleEvent method"),
-      );
+      let accept_node_key = self.property_key_from_str("acceptNode")?;
+      if self.get_method(value, accept_node_key)?.is_none() {
+        return Err(self.throw_type_error(
+          "Callback interface object is missing a callable handleEvent method",
+        ));
+      }
     }
 
     CallbackHandle::new(self.heap_mut(), CallbackKind::Interface, value, None)
