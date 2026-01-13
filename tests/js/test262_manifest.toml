@@ -601,6 +601,49 @@ glob = "built-ins/Array/prototype/join/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Array/prototype/includes/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/includes/coerced-searchelement-fromindex-resize.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/includes/resizable-buffer-special-float-values.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/includes/resizable-buffer.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+glob = "built-ins/Array/prototype/indexOf/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/indexOf/coerced-searchelement-fromindex-grow.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/indexOf/coerced-searchelement-fromindex-shrink.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/indexOf/resizable-buffer-special-float-values.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/indexOf/resizable-buffer.js"
+status = "skip"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (test uses resizableArrayBufferUtils.js)."
+
+[[expectations]]
 glob = "built-ins/Array/prototype/at/**"
 status = "pass"
 
