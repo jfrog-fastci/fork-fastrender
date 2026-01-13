@@ -34,26 +34,10 @@ fn scrollport_size_for_state(state: &ScrollChainState<'_>, is_viewport: bool) ->
   }
 
   let reservation = state.container.scrollbar_reservation;
-  let reserve_left = if reservation.left.is_finite() {
-    reservation.left.max(0.0)
-  } else {
-    0.0
-  };
-  let reserve_right = if reservation.right.is_finite() {
-    reservation.right.max(0.0)
-  } else {
-    0.0
-  };
-  let reserve_top = if reservation.top.is_finite() {
-    reservation.top.max(0.0)
-  } else {
-    0.0
-  };
-  let reserve_bottom = if reservation.bottom.is_finite() {
-    reservation.bottom.max(0.0)
-  } else {
-    0.0
-  };
+  let reserve_left = sanitize_nonneg(reservation.left);
+  let reserve_right = sanitize_nonneg(reservation.right);
+  let reserve_top = sanitize_nonneg(reservation.top);
+  let reserve_bottom = sanitize_nonneg(reservation.bottom);
 
   let width = state.viewport.width - reserve_left - reserve_right;
   let height = state.viewport.height - reserve_top - reserve_bottom;
@@ -329,12 +313,8 @@ fn apply_focus_scroll_chain(
   for (idx, state) in chain.iter_mut().enumerate() {
     let is_viewport = last_is_viewport && idx == chain_len.saturating_sub(1);
     let can_scroll = is_viewport || state.container.box_id().is_some();
-    let origin = if is_viewport {
-      Point::ZERO
-    } else {
-      state.origin
-    };
     let scrollport_origin = scrollport_origin_for_state(state, is_viewport);
+    let origin = if is_viewport { Point::ZERO } else { state.origin };
 
     let target_local = target_bounds
       .translate(Point::new(-origin.x, -origin.y))

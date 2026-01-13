@@ -310,9 +310,6 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
 fn tab_focus_scrolls_bordered_scroller_to_expected_offset() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
-
-  const DEFAULT_FOCUS_SCROLL_PADDING_CSS: f32 = 8.0;
-
   let dir = tempdir().expect("temp dir");
   let html = r#"<!doctype html>
     <html>
@@ -322,8 +319,11 @@ fn tab_focus_scrolls_bordered_scroller_to_expected_offset() {
           #scroller {
             width: 200px;
             height: 100px;
+            overflow-x: scroll;
             overflow-y: scroll;
-            border: 10px solid black;
+            scrollbar-gutter: stable both-edges;
+            scrollbar-width: auto;
+            border: 10px solid rgb(0,0,0);
             background: rgb(0,0,0);
           }
           #content {
@@ -379,12 +379,7 @@ fn tab_focus_scrolls_bordered_scroller_to_expected_offset() {
 
   ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
 
-  // Focus-driven auto-scroll should use the *scrollport* (padding box) coordinate space for the
-  // bordered scroller, not the border box. For a 100px tall scrollport and 8px focus padding, the
-  // desired scroll offset is:
-  //   input_bottom - (scrollport_height - padding)
-  // = (800 + 30) - (100 - 8)
-  // = 738px.
+  // Wait for the scroller to receive a non-zero scroll offset.
   let frame = {
     let deadline = Instant::now() + DEFAULT_TIMEOUT;
     loop {
@@ -435,12 +430,32 @@ fn tab_focus_scrolls_bordered_scroller_to_expected_offset() {
     "expected element scroll y > 0, got {scroll_y}"
   );
 
-  let input_bottom = 800.0 + 30.0;
-  let scrollport_height = 100.0;
-  let expected = input_bottom - (scrollport_height - DEFAULT_FOCUS_SCROLL_PADDING_CSS);
+  // Focus-driven auto-scroll should use the *scrollport* coordinate space for the bordered scroller
+  // (padding box minus reserved scrollbar gutters), not the border box. Borders and gutters change
+  // the scrollport origin/size but must not affect the meaning of `scrollTop=0`.
+  let hide_scrollbars = std::env::var("FASTR_HIDE_SCROLLBARS")
+    .ok()
+    .map(|v| {
+      let lower = v.trim().to_ascii_lowercase();
+      !matches!(lower.as_str(), "0" | "false" | "no" | "off")
+    })
+    .unwrap_or(false);
+  let gutter = if hide_scrollbars { 0.0 } else { 15.0 };
+  let focus_padding = 8.0;
+  let scrollport_height = 100.0 - gutter * 2.0;
+  let input_top = 800.0;
+  let input_bottom = input_top + 30.0;
+  let expected = input_bottom - (scrollport_height - focus_padding);
   assert!(
     (scroll_y - expected).abs() <= 1.0,
     "expected bordered scroller scroll y ≈ {expected}, got {scroll_y}"
+  );
+
+  let viewport_top = scroll_y;
+  let viewport_bottom = scroll_y + scrollport_height;
+  assert!(
+    viewport_top <= input_top && viewport_bottom >= input_bottom,
+    "expected focused input [{input_top}, {input_bottom}] to be visible in nested scrollport [{viewport_top}, {viewport_bottom}]",
   );
 
   drop(ui_tx);
