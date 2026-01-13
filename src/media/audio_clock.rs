@@ -220,11 +220,11 @@ impl MediaClock for InterpolatedAudioClock {
   }
 
   fn is_started(&self) -> bool {
-    // Treat the clock as started once we've observed at least one audio callback.
-    self
-      .last_callback_end_nanos_plus_one
-      .load(Ordering::Relaxed)
-      != 0
+    self.frames_written.load(Ordering::Acquire) > 0
+      || self
+        .last_callback_end_nanos_plus_one
+        .load(Ordering::Relaxed)
+        != 0
   }
 }
 
@@ -243,6 +243,16 @@ fn duration_to_nanos_u64(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn is_started_false_until_first_callback() {
+    let clock = InterpolatedAudioClock::new(1000);
+    assert!(!clock.is_started());
+
+    let t1 = clock.start + Duration::from_millis(1);
+    clock.on_callback_end_at(t1, 0, None);
+    assert!(clock.is_started());
+  }
 
   #[test]
   fn interpolates_smoothly_between_callbacks() {

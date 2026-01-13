@@ -304,6 +304,7 @@ impl MediaClock for AudioClock {
   fn is_started(&self) -> bool {
     match self {
       Self::OutputFrames { clock } => clock.is_started(),
+      // Wall-time based clocks (e.g. null backend) are started immediately.
       Self::Instant { .. } => true,
     }
   }
@@ -332,6 +333,13 @@ mod tests {
 
     assert!(clock.is_started());
     assert_eq!(clock.frames(), 480);
+
+    // Wall-time based clocks are started immediately.
+    let instant_clock = AudioClock::Instant {
+      start: Instant::now(),
+      sample_rate_hz: 48_000,
+    };
+    assert!(instant_clock.is_started());
   }
 
   #[test]

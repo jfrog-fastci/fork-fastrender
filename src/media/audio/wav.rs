@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::convert::TryFrom;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
@@ -46,7 +47,7 @@ impl WavAudioBackend {
     let channels = config.channels;
     let spec = hound::WavSpec {
       channels,
-      sample_rate: config.sample_rate_hz.max(1),
+      sample_rate: config.sample_rate_hz,
       bits_per_sample: 16,
       sample_format: hound::SampleFormat::Int,
     };
@@ -56,7 +57,7 @@ impl WavAudioBackend {
       .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
 
     let mixer = Arc::new(MixerState::new(config));
-    let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz.max(1)));
+    let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz));
     let state = Arc::new(BackendState::new());
 
     let worker_state = Arc::clone(&state);

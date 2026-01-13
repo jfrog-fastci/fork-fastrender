@@ -177,6 +177,7 @@ mod tests {
   use std::sync::atomic::AtomicBool;
   use std::sync::atomic::AtomicU64;
   use std::sync::atomic::Ordering;
+  use std::time::Instant;
 
   #[derive(Debug, Default)]
   struct TestClock {
@@ -316,6 +317,39 @@ mod tests {
 
     audio.set_started(true);
     // Audio time hasn't advanced yet; switching should preserve continuity.
+    assert_eq!(master.now(), Duration::from_secs(3));
+    assert_eq!(master.current_source(), ClockSource::Audio);
+  }
+
+  #[test]
+  fn output_audio_clock_is_ignored_until_started() {
+    use crate::media::audio::AudioClock as BackendAudioClock;
+    use crate::media::audio_clock::InterpolatedAudioClock;
+
+    let system = Arc::new(TestClock::new(Duration::ZERO, true));
+    let master = MasterClock::new(system.clone());
+
+    system.advance(Duration::from_secs(2));
+    assert_eq!(master.now(), Duration::from_secs(2));
+    assert_eq!(master.current_source(), ClockSource::System);
+
+    // Attach an output-frame based clock; it should not be considered started until the first audio
+    // callback is observed.
+    let device_clock = Arc::new(InterpolatedAudioClock::new(1000));
+    let audio = Arc::new(BackendAudioClock::OutputFrames {
+      clock: device_clock.clone(),
+    });
+    master.set_audio_clock(Some(audio));
+    assert_eq!(master.current_source(), ClockSource::System);
+
+    system.advance(Duration::from_secs(1));
+    assert_eq!(master.now(), Duration::from_secs(3));
+    assert_eq!(master.current_source(), ClockSource::System);
+
+    // Simulate the first backend callback. Use 0 frames so the audio clock time stays stable and
+    // the switch can be asserted deterministically.
+    device_clock.on_callback_end_at(Instant::now(), 0, None);
+
     assert_eq!(master.now(), Duration::from_secs(3));
     assert_eq!(master.current_source(), ClockSource::Audio);
   }
