@@ -767,6 +767,7 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static,
   {
+    self.maybe_compact_animation_frame_queue();
     if self.animation_frame_callbacks.len()
       >= self.queue_limits.max_pending_animation_frame_callbacks
     {
@@ -812,7 +813,9 @@ impl<Host: 'static> EventLoop<Host> {
     if self.animation_frame_callbacks.is_empty() {
       // Avoid accumulating canceled IDs in the scheduling queue.
       self.animation_frame_queue.clear();
+      return;
     }
+    self.maybe_compact_animation_frame_queue();
   }
 
   /// Run one animation frame "turn" (draining callbacks queued before the frame started).
@@ -1689,6 +1692,31 @@ impl<Host: 'static> EventLoop<Host> {
         .is_some_and(|timer| timer.schedule_seq == *schedule_seq)
     });
     self.timer_queue = BinaryHeap::from(entries);
+  }
+
+  fn maybe_compact_animation_frame_queue(&mut self) {
+    // `animation_frame_queue` can contain stale entries for cancelled callbacks. If attacker-controlled
+    // JS repeatedly schedules/cancels rAF callbacks without ever allowing the embedder to drive
+    // `run_animation_frame`, those stale IDs would otherwise accumulate without bound.
+    //
+    // Compact opportunistically when the queue grows noticeably larger than the set of live
+    // callbacks (or exceeds the configured max pending callback count).
+    let live = self.animation_frame_callbacks.len();
+    if live == 0 {
+      self.animation_frame_queue.clear();
+      return;
+    }
+
+    let queue_len = self.animation_frame_queue.len();
+    let should_compact = queue_len > self.queue_limits.max_pending_animation_frame_callbacks
+      || queue_len > live.saturating_mul(2).max(64);
+    if !should_compact {
+      return;
+    }
+
+    self
+      .animation_frame_queue
+      .retain(|id| self.animation_frame_callbacks.contains_key(id));
   }
 
   fn pop_next_task(&mut self) -> Option<Task<Host>> {
@@ -3754,6 +3782,36 @@ mod tests {
     assert_eq!(
       event_loop.run_animation_frame(&mut host)?,
       RunAnimationFrameOutcome::Idle
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn canceled_animation_frame_callbacks_do_not_accumulate_in_queue() -> Result<()> {
+    struct Host;
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_animation_frame_callbacks: 4,
+      ..QueueLimits::unbounded()
+    });
+
+    // Keep one callback live so `cancel_animation_frame` does not clear the entire queue.
+    let _keep_alive = event_loop.request_animation_frame(|_host, _event_loop, _ts| Ok(()))?;
+
+    for _ in 0..1024 {
+      let id = event_loop.request_animation_frame(|_host, _event_loop, _ts| Ok(()))?;
+      event_loop.cancel_animation_frame(id);
+    }
+
+    // The scheduling queue should not grow linearly with cancellations.
+    assert_eq!(event_loop.animation_frame_callbacks.len(), 1);
+    assert!(
+      event_loop.animation_frame_queue.len() <= 8,
+      "animation_frame_queue grew too large (len={})",
+      event_loop.animation_frame_queue.len()
     );
     Ok(())
   }
