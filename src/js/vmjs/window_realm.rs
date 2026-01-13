@@ -59047,6 +59047,28 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn html_media_element_can_play_type_webm_vp9_opus_is_non_empty() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let out = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        return video.canPlayType('video/webm; codecs="vp9,opus"');
+      })()"#,
+    )?;
+
+    let out = get_string(realm.heap(), out);
+    assert!(
+      !out.is_empty(),
+      "expected HTMLMediaElement.canPlayType() to return a non-empty string for vp9+opus webm"
+    );
+    Ok(())
+  }
+
   /// Minimal `VmHostHooks` implementation for tests that execute scripts with a real `VmHost`
   /// context, but without an `EventLoop`.
   ///

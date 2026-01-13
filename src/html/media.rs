@@ -9,13 +9,11 @@
 //! FastRender does not currently implement the full HTML "resource selection algorithm" for media
 //! elements. For box generation we intentionally implement a small subset:
 //!
-//! - The element `src` attribute wins when present and not "unusable".
-//! - Otherwise scan `<source>` children in DOM order.
-//! - Remember the first `<source src>` as a fallback.
-//! - Prefer a `<source>` whose `type` parses to the right kind (`video/*` for `<video>`,
-//!   `audio/*` for `<audio>`) *and* `can_play_type(type)` is not [`CanPlayType::No`].
-//! - If no preferred candidate exists, fall back to the first `<source>` so pages relying on
-//!   sniffing do not regress.
+//! - Prefer `<source>` children over the element `src` attribute when present.
+//! - Scan `<source>` children in DOM order and select the first candidate whose `type` (or inferred
+//!   type from `src`) is supported by [`can_play_type`].
+//! - If no `<source>` candidates are playable, fall back to the element `src` attribute (when
+//!   present and not "unusable").
 //!
 //! The API accepts an optional [`MediaContext`] so `<source media>` conditions can be honored when a
 //! media-query evaluation context is available.
@@ -434,19 +432,9 @@ pub fn select_media_source<'a>(
   sources: impl IntoIterator<Item = MediaSourceCandidate<'a>>,
   ctx: MediaSelectionContext<'_>,
 ) -> SelectedMediaSource<'a> {
-  if let Some(src) = element_src {
-    let trimmed = trim_ascii_whitespace(src);
-    if !media_src_is_unusable(trimmed) {
-      return SelectedMediaSource {
-        url: trimmed,
-        mime: None,
-        codecs: Vec::new(),
-        from_source: false,
-      };
-    }
-  }
-
-  let mut fallback: Option<SelectedMediaSource<'a>> = None;
+  let fallback_src = element_src
+    .map(trim_ascii_whitespace)
+    .filter(|src| !media_src_is_unusable(src));
 
   for candidate in sources {
     let src_trimmed = trim_ascii_whitespace(candidate.src);
@@ -475,27 +463,30 @@ pub fn select_media_source<'a>(
       (mime, Vec::new(), playability)
     };
 
-    let selected = SelectedMediaSource {
-      url: src_trimmed,
-      mime,
-      codecs,
-      from_source: true,
-    };
-
-    let preferred = selected
-      .mime
+    if mime
       .as_deref()
-      .is_some_and(|mime| mime_matches_kind(kind, mime) && playability.is_playable());
-    if preferred {
-      return selected;
-    }
-
-    if fallback.is_none() {
-      fallback = Some(selected);
+      .is_some_and(|mime| mime_matches_kind(kind, mime) && playability.is_playable())
+    {
+      return SelectedMediaSource {
+        url: src_trimmed,
+        mime,
+        codecs,
+        from_source: true,
+      };
     }
   }
 
-  fallback.unwrap_or_else(SelectedMediaSource::empty)
+  // No playable `<source>` candidate matched; fall back to the `src` attribute.
+  if let Some(src) = fallback_src {
+    return SelectedMediaSource {
+      url: src,
+      mime: None,
+      codecs: Vec::new(),
+      from_source: false,
+    };
+  }
+
+  SelectedMediaSource::empty()
 }
 
 /// Compute the effective media source URL for a `<video>`/`<audio>` element during box generation.
@@ -590,7 +581,7 @@ mod tests {
   }
 
   #[test]
-  fn media_src_attribute_wins_over_source_children() {
+  fn media_src_prefers_source_children_over_src_attribute() {
     let selected = select_media_source(
       MediaKind::Video,
       Some("parent.mp4"),
@@ -602,10 +593,8 @@ mod tests {
       MediaSelectionContext { media_context: None },
     );
 
-    assert_eq!(selected.url, "parent.mp4");
-    assert!(!selected.from_source);
-    assert!(selected.mime.is_none());
-    assert!(selected.codecs.is_empty());
+    assert_eq!(selected.url, "child.mp4");
+    assert!(selected.from_source);
   }
 
   #[test]
