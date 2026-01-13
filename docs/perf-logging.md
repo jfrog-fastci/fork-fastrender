@@ -73,7 +73,8 @@ The exact schema evolves, but each JSON line is intended to be self-describing. 
 include:
 
 - `schema_version` (integer) — currently `1`.
-- `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`).
+- `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`; plus
+  periodic diagnostics like `idle_summary` / `worker_wake_summary` / `cpu_summary`).
 - `t_ms` (integer) — monotonic timestamp in milliseconds since process start.
 - `window_id` (string) — identifier for the window instance.
 - Event-specific numeric fields such as `ui_frame_ms`, `input_to_present_ms`, `resize_to_present_ms`,
@@ -161,19 +162,22 @@ Each log line is a JSON object that includes:
 
 - `schema_version` (currently `1`)
 - `event` (tag)
-- `ts_ms` (monotonic timestamp in milliseconds since process start)
+- `t_ms` (monotonic timestamp in milliseconds since process start)
 - `window_id` (string)
 
 Event payload fields (current schema in `src/bin/browser.rs`, `perf_log::PerfEvent`):
 
 - `event=frame`: `ui_frame_ms`, `fps` (optional), plus window state flags (`window_focused`,
-  `window_occluded`, `window_minimized`).
-- `event=input`: `kind` (`keyboard|mouse_wheel|pointer_move|button`), `input_to_present_ms`,
-  `input_ts_ms`, `count`.
+  `window_occluded`, `window_minimized`) and `active_tab_id` (optional).
+- `event=input`: `input_kind` (`keyboard|mouse_wheel|pointer_move|button`), `input_to_present_ms`,
+  `input_ts_ms`, `count`, and `active_tab_id` (optional).
 - `event=resize`: `resize_to_present_ms`, `resize_ts_ms`, `new_width_px`, `new_height_px`.
 - `event=navigation`: `tab_id`, `navigation_seqno`, `url`.
 - `event=ttfp`: `tab_id`, `navigation_seqno`, `ttfp_ms`.
 - `event=cpu_summary`: `cpu_time_ms_total`, `cpu_percent_recent` (process CPU time over the last interval)
+
+Other JSONL diagnostics may be emitted (for example `event=idle_summary` and `event=worker_wake_summary`);
+`browser_perf_log_summary` ignores unknown event types.
 
 To turn a captured JSONL log into p50/p95/max summary numbers, pipe it into the helper:
 

@@ -6896,6 +6896,7 @@ struct WorkerWakePerfLogLine {
 fn format_worker_wake_perf_log_line(line: &WorkerWakePerfLogLine) -> serde_json::Value {
   serde_json::json!({
     "event": "worker_wake_summary",
+    "schema_version": perf_log::SCHEMA_VERSION,
     "t_ms": line.t_ms,
     "window_id": line.window_id.as_str(),
     "worker_msgs_forwarded_per_sec": line.worker_msgs_forwarded_per_sec,
@@ -7068,7 +7069,7 @@ impl WorkerWakePerfLogger {
 
 #[cfg(test)]
 mod worker_wake_perf_log_format_tests {
-  use super::{format_worker_wake_perf_log_line, WorkerWakePerfLogLine};
+  use super::{format_worker_wake_perf_log_line, perf_log, WorkerWakePerfLogLine};
 
   #[test]
   fn formats_worker_wake_summary_json() {
@@ -7090,6 +7091,7 @@ mod worker_wake_perf_log_format_tests {
 
     let json = format_worker_wake_perf_log_line(&line);
     assert_eq!(json["event"], "worker_wake_summary");
+    assert_eq!(json["schema_version"], perf_log::SCHEMA_VERSION);
     assert_eq!(json["t_ms"], 123);
     assert_eq!(json["window_id"], "WindowId(42)");
     assert_eq!(json["worker_msgs_forwarded_per_sec"], 10.0);
@@ -7226,9 +7228,11 @@ impl IdleRepaintMonitor {
           .as_millis()
           .min(u128::from(u64::MAX)) as u64;
         let line = serde_json::json!({
+          "schema_version": perf_log::SCHEMA_VERSION,
           "event": "idle_summary",
           "t_ms": t_ms,
           "window_id": self.window_id.as_str(),
+          "idle_frames": self.idle_frames_per_sec,
           "idle_frames_total": self.idle_frames_total,
           "idle_frames_per_sec": self.idle_frames_per_sec,
         });
