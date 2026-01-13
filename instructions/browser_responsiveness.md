@@ -74,13 +74,13 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 # - input latency
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
 
-# Windowed perf-log capture + summary (preferred over recording huge logs)
-timeout -k 10 600 bash scripts/capture_browser_perf_log.sh -- \
-  bash scripts/run_limited.sh --as 64G -- \
-  env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
-timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- target/browser_perf.jsonl
+# Windowed perf-log capture (stdout JSONL) + summary (preferred over recording huge logs)
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh \
+  --url about:test-layout-stress --out target/browser_perf.jsonl --summary
+
+# Or summarize later (supports --from-ms/--to-ms windowing):
+timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
+  --input target/browser_perf.jsonl
 
 # Profile with samply (Linux)
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
