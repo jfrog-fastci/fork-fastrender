@@ -1972,6 +1972,28 @@ impl<Host: 'static> EventLoop<Host> {
     self.pending_tasks
   }
 
+  fn maybe_compact_animation_frame_queue(&mut self) {
+    // `animation_frame_queue` can contain stale IDs for canceled callbacks. Since `VecDeque` does
+    // not support removal-by-key, those stale entries would otherwise accumulate unboundedly if
+    // attacker-controlled JS repeatedly schedules/cancels animation frame callbacks while keeping
+    // at least one callback pending (so the queue is not cleared).
+    //
+    // Compact opportunistically when the queue grows noticeably larger than the set of live
+    // callbacks.
+    let live = self.animation_frame_callbacks.len();
+    let queue_len = self.animation_frame_queue.len();
+    let should_compact = queue_len > self.queue_limits.max_pending_animation_frame_callbacks
+      || queue_len > live.saturating_mul(2).max(64);
+    if !should_compact {
+      return;
+    }
+
+    let callbacks = &self.animation_frame_callbacks;
+    self
+      .animation_frame_queue
+      .retain(|id| callbacks.contains_key(id));
+  }
+
   fn maybe_compact_timer_queue(&mut self) {
     // `timer_queue` can contain stale entries for cleared timers (and for interval timers that have
     // since been rescheduled). Since `BinaryHeap` does not support removal-by-key, those stale
@@ -5001,6 +5023,38 @@ mod tests {
       RunAnimationFrameOutcome::Ran { callbacks: 1 }
     );
     assert_eq!(host.log, vec!["a"]);
+    Ok(())
+  }
+
+  #[test]
+  fn request_animation_frame_compacts_stale_queue_entries_from_canceled_handles() -> Result<()> {
+    #[derive(Default)]
+    struct Host;
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock_and_queue_limits(
+      clock_for_loop,
+      QueueLimits {
+        max_pending_animation_frame_callbacks: 2,
+        ..QueueLimits::unbounded()
+      },
+    );
+
+    // Keep one callback live so the animation frame queue isn't cleared wholesale.
+    let _persistent = event_loop.request_animation_frame(|_host, _event_loop, _ts| Ok(()))?;
+
+    // Simulate an attacker pattern: repeatedly schedule+cancel callbacks, leaving stale IDs behind.
+    for _ in 0..50 {
+      let id = event_loop.request_animation_frame(|_host, _event_loop, _ts| Ok(()))?;
+      event_loop.cancel_animation_frame(id);
+      assert!(
+        event_loop.animation_frame_queue.len() <= 3,
+        "expected rAF queue to stay bounded, got len={}",
+        event_loop.animation_frame_queue.len()
+      );
+    }
+
     Ok(())
   }
 
