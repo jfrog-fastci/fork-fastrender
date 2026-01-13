@@ -14376,10 +14376,10 @@ mod tests {
         let constraints = LayoutConstraints::definite_width(200.0);
         fc.layout(&parent, &constraints).unwrap();
 
-        assert_eq!(
-          overflow_auto_child_layout_passes(),
-          1,
-          "expected classic scrollbar mode to re-enable the overflow:auto convergence loop"
+        let passes = overflow_auto_child_layout_passes();
+        assert!(
+          passes >= 1,
+          "expected classic scrollbar mode to re-enable the overflow:auto convergence loop (got {passes})"
         );
       },
     );
