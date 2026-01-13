@@ -1,0 +1,162 @@
+# Runtime stacks: `BrowserDocument` vs `BrowserDocumentDom2` vs `BrowserTab`
+
+FastRender currently exposes multiple “document/tab” APIs that look similar but live at different layers.
+This doc is a **choose-the-right-type** reference that answers:
+
+- Which DOM representation is in use?
+- Can JavaScript run?
+- Is there an event loop (tasks + microtasks)?
+- Do live DOM mutations trigger rerendering?
+
+All types below are exported as `fastrender::api::*` and also re-exported at the crate root
+(e.g. `fastrender::BrowserTab`).
+
+## Capability matrix (repo reality)
+
+| Type | DOM representation | Live DOM mutation + rerender | JS execution | Event loop | HTML `<script>` processing | Navigation/history |
+|---|---|---|---|---|---|---|
+| `api::BrowserDocument` | `crate::dom::DomNode` | Yes (`render_if_needed`) | No | No | No | URL fetch+replace (`navigate_url`) |
+| `api::BrowserDocumentDom2` | `crate::dom2::Document` (authoritative) + snapshots to `DomNode` for layout | Yes (`render_if_needed`) | No (host must embed) | No | No | URL fetch+replace (`navigate_url`) |
+| `api::BrowserTab` | `BrowserDocumentDom2` + tab state | Yes (driven by event loop + rendering) | Yes (via `BrowserTabJsExecutor`) | Yes (`EventLoop<BrowserTabHost>`) | Yes (streaming parser + scheduler) | Yes (history + script-driven navigations) |
+| `api::BrowserDocumentJs` | `BrowserDocumentDom2` | Yes (driven by its event loop + rendering) | Yes (`js::webidl::legacy::VmJsRuntime`) | Yes (`EventLoop<BrowserDocumentJs>`) | **No** (manual script execution) | No |
+
+Notes:
+
+- “Live DOM mutation + rerender” means: if you mutate the live DOM, the next `render_if_needed()` /
+  `tick_frame()` will rerun the render pipeline and produce a new `Pixmap`.
+- “HTML `<script>` processing” means: parser-inserted scripts execute at parse time, and script
+  scheduling follows FastRender’s current HTML-integration implementation (see `docs/js_embedding.md`
+  and `docs/html_script_processing.md`).
+
+## `api::BrowserDocument` (renderer DOM, no JS)
+
+Implementation: [`src/api/browser_document.rs`](../src/api/browser_document.rs)
+
+`BrowserDocument` is a **multi-frame renderer** that owns:
+
+- a `FastRender` instance, and
+- a live renderer DOM tree: `crate::dom::DomNode`.
+
+It is designed for “render, mutate, rerender” workflows **without JavaScript**:
+
+- mutate via `dom_mut()` / `mutate_dom(...)`,
+- render via `render_frame()` or `render_if_needed()`.
+
+What it does *not* provide:
+
+- no JS runtime,
+- no HTML event loop (tasks/microtasks),
+- the DOM type is the renderer’s internal DOM, not the `dom2`/WebIDL-shaped DOM used by JS bindings.
+
+## `api::BrowserDocumentDom2` (dom2 + render caching; foundation for JS)
+
+Implementation: [`src/api/browser_document_dom2.rs`](../src/api/browser_document_dom2.rs)
+
+`BrowserDocumentDom2` mirrors `BrowserDocument`, but the **authoritative DOM** is a spec-ish,
+mutable `crate::dom2::Document`.
+
+Key properties:
+
+- The renderer snapshots the `dom2::Document` into an immutable `dom::DomNode` only when a new
+  layout/style recomputation is needed.
+- DOM mutations are tracked so `render_if_needed()` can rerun the pipeline when required.
+- This is the document type used by `BrowserTab` and by dom2-backed JS bindings (`crate::js::DomHost`).
+
+What it does *not* provide on its own:
+
+- no JS executor,
+- no `EventLoop` (tasks/microtasks),
+- no HTML `<script>` scheduling.
+
+Use it when you want a live, mutable `dom2` document + rendering, but you are **not** running page JS
+(or you are embedding your own JS engine on top).
+
+## `api::BrowserTab` (dom2 + JS + event loop + navigation)
+
+Implementation: [`src/api/browser_tab.rs`](../src/api/browser_tab.rs)
+
+`BrowserTab` is the JS-capable “tab runtime” API. It owns, at minimum:
+
+- a `BrowserDocumentDom2` (live `dom2` document + render caching),
+- an HTML-shaped `EventLoop<BrowserTabHost>` (tasks + microtasks + timers),
+- script scheduling/plumbing for HTML parsing (`StreamingHtmlParser` + `HtmlScriptScheduler`),
+- a pluggable JS executor (`BrowserTabJsExecutor`), e.g. [`VmJsBrowserTabExecutor`](../src/api/browser_tab_vm_js_executor.rs).
+
+This is the type that supports **page scripts that mutate the DOM over time**.
+
+### Headless screenshots *with JS*
+
+For “load a page, let JS settle, then screenshot” workflows, use `BrowserTab` and drive it with
+`run_until_stable(...)` before rendering:
+
+```rust,no_run
+use fastrender::{BrowserTab, RenderOptions, Result};
+
+fn main() -> Result<()> {
+    let mut tab = BrowserTab::from_url_with_vmjs(
+        "https://example.com",
+        RenderOptions::new().with_viewport(1280, 720),
+    )?;
+
+    // Run JS/event-loop work until stable (bounded).
+    let _ = tab.run_until_stable(/* max_frames */ 10)?;
+
+    // Then render a frame.
+    let pixmap = tab.render_frame()?;
+    pixmap.save_png("out.png")?;
+    Ok(())
+}
+```
+
+### Live rendering: the “tick loop” integration point
+
+For interactive/live rendering (a tab that never “finishes”), the core integration is a **tick loop**:
+
+- run some amount of event-loop work (tasks/microtasks/animation frame callbacks),
+- if the document became dirty, render and display the new frame,
+- repeat, driven by your outer UI loop (vsync, timers, network wakeups, input events).
+
+In the public API this maps to:
+
+- `BrowserTab::tick_frame()` — run at most one task turn (or a microtask checkpoint) and return a
+  freshly rendered `Pixmap` *only if* something invalidated rendering.
+- `BrowserTab::run_until_stable(...)` — a bounded helper for “drive until idle + rendered”.
+
+Conceptually:
+
+```rust,no_run
+# use fastrender::{BrowserTab, Result};
+# fn drive(mut tab: BrowserTab) -> Result<()> {
+loop {
+    if let Some(pixmap) = tab.tick_frame()? {
+        // Present pixmap in your window/texture.
+        drop(pixmap);
+    }
+
+    // Your outer loop decides when to call tick_frame() again:
+    // - after forwarding input to the tab (mouse/keyboard),
+    // - when timers/network wake the event loop,
+    // - on vsync / a frame budget.
+}
+# }
+```
+
+See also: [`instructions/live_rendering.md`](../instructions/live_rendering.md).
+
+## `api::BrowserDocumentJs` (legacy JS host wrapper)
+
+Implementation: [`src/api/browser_document_js.rs`](../src/api/browser_document_js.rs)
+
+`BrowserDocumentJs` is a standalone “JS + document” host container that couples:
+
+- `BrowserDocumentDom2`,
+- an `EventLoop<BrowserDocumentJs>`,
+- and the legacy vm-js WebIDL runtime (`crate::js::webidl::legacy::VmJsRuntime`).
+
+Current status and guidance:
+
+- It is **independent** of `BrowserTab` (i.e. `BrowserTab` does not use `BrowserDocumentJs`).
+- It does **not** implement the HTML `<script>` processing/scheduling model; scripts are executed via
+  explicit host calls (e.g. `execute_script_element(...)`).
+- For JS-enabled HTML loading/navigation/rendering, prefer `BrowserTab`.
+
