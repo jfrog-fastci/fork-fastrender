@@ -91,6 +91,14 @@ fn to_rlim_t(value: u64, resource: &'static str) -> Result<libc::rlim_t, Rendere
 
 #[cfg(all(unix, target_os = "linux"))]
 fn linux_pre_exec(cfg: LinuxPreExecConfig) -> std::io::Result<()> {
+  // 0) Parent-death signal: ensure the renderer is killed if its parent disappears. This should run
+  // as early as possible to minimize the unsupervised window.
+  set_parent_death_signal_sigkill()?;
+
+  // 0b) Make the process non-dumpable (no ptrace/coredumps). This is defense-in-depth for renderer
+  // security boundaries.
+  set_dumpable_0()?;
+
   // 1) Apply rlimits.
   if let Some(limit) = cfg.rlimit_as {
     apply_rlimit_hard_ceiling(libc::RLIMIT_AS, limit)?;
@@ -140,12 +148,16 @@ fn apply_rlimit_hard_ceiling(
     return Err(std::io::Error::last_os_error());
   }
 
-  // Never attempt to raise limits inside the sandbox.
-  let effective = if requested > current.rlim_max {
-    current.rlim_max
-  } else {
-    requested
-  };
+  // Never attempt to raise limits inside the sandbox:
+  // - respect the inherited soft limit (rlim_cur),
+  // - and never exceed the inherited hard maximum (rlim_max).
+  let mut effective = requested;
+  if effective > current.rlim_max {
+    effective = current.rlim_max;
+  }
+  if effective > current.rlim_cur {
+    effective = current.rlim_cur;
+  }
 
   let new = libc::rlimit {
     rlim_cur: effective,
@@ -171,6 +183,38 @@ fn set_no_new_privs() -> std::io::Result<()> {
   Ok(())
 }
 
+#[cfg(all(unix, target_os = "linux"))]
+fn set_dumpable_0() -> std::io::Result<()> {
+  // SAFETY: `prctl(PR_SET_DUMPABLE, ...)` is a direct syscall wrapper.
+  let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+  if rc != 0 {
+    return Err(std::io::Error::last_os_error());
+  }
+  Ok(())
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn set_parent_death_signal_sigkill() -> std::io::Result<()> {
+  // SAFETY: `prctl` is a direct syscall wrapper.
+  let rc = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
+  if rc != 0 {
+    return Err(std::io::Error::last_os_error());
+  }
+
+  // There is a race: if the parent dies between `fork` and this `prctl`, the child would become an
+  // orphan and would not receive the death signal. Checking `getppid() == 1` after setting PDEATHSIG
+  // closes that hole in normal process trees.
+  if unsafe { libc::getppid() } == 1 {
+    // Best-effort self-kill (should not return).
+    unsafe {
+      libc::raise(libc::SIGKILL);
+      libc::_exit(1);
+    }
+  }
+
+  Ok(())
+}
+
 // --- Landlock (best-effort) --------------------------------------------------
 
 #[cfg(all(unix, target_os = "linux"))]
@@ -188,32 +232,51 @@ struct LandlockRulesetAttrV1 {
 #[cfg(all(
   unix,
   target_os = "linux",
-  any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+  any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+  )
 ))]
 const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
 #[cfg(all(
   unix,
   target_os = "linux",
-  not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))
+  not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+  ))
 ))]
 const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 0;
 
 #[cfg(all(
   unix,
   target_os = "linux",
-  any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+  any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+  )
 ))]
 const SYS_LANDLOCK_RESTRICT_SELF: libc::c_long = 446;
 #[cfg(all(
   unix,
   target_os = "linux",
-  not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))
+  not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+  ))
 ))]
 const SYS_LANDLOCK_RESTRICT_SELF: libc::c_long = 0;
 
 #[cfg(all(unix, target_os = "linux"))]
-const LANDLOCK_ARCH_SUPPORTED: bool =
-  cfg!(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"));
+const LANDLOCK_ARCH_SUPPORTED: bool = cfg!(any(
+  target_arch = "x86_64",
+  target_arch = "aarch64",
+  target_arch = "riscv64"
+));
 
 #[cfg(all(unix, target_os = "linux"))]
 fn apply_landlock_restrict_writes_best_effort() -> std::io::Result<()> {
@@ -315,7 +378,12 @@ fn install_seccomp_renderer_default(
   const BPF_RET: u16 = 0x06;
 
   const fn bpf_stmt(code: u16, k: u32) -> libc::sock_filter {
-    libc::sock_filter { code, jt: 0, jf: 0, k }
+    libc::sock_filter {
+      code,
+      jt: 0,
+      jf: 0,
+      k,
+    }
   }
   const fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> libc::sock_filter {
     libc::sock_filter { code, jt, jf, k }
@@ -498,8 +566,14 @@ mod tests {
       assert_eq!(max_as, expected_as, "RLIMIT_AS.max should match");
 
       let (cur_nofile, max_nofile) = get_rlimit(libc::RLIMIT_NOFILE);
-      assert_eq!(cur_nofile, expected_nofile, "RLIMIT_NOFILE.cur should match");
-      assert_eq!(max_nofile, expected_nofile, "RLIMIT_NOFILE.max should match");
+      assert_eq!(
+        cur_nofile, expected_nofile,
+        "RLIMIT_NOFILE.cur should match"
+      );
+      assert_eq!(
+        max_nofile, expected_nofile,
+        "RLIMIT_NOFILE.max should match"
+      );
 
       let (cur_core, max_core) = get_rlimit(libc::RLIMIT_CORE);
       assert_eq!(cur_core, 0, "core dumps should be disabled");
@@ -508,6 +582,20 @@ mod tests {
       // Validate no_new_privs is set.
       let no_new_privs = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
       assert_eq!(no_new_privs, 1, "PR_GET_NO_NEW_PRIVS should report enabled");
+
+      // Validate dumpable is disabled (no ptrace/coredumps).
+      let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+      assert_eq!(dumpable, 0, "PR_GET_DUMPABLE should report disabled");
+
+      // Validate PDEATHSIG is configured.
+      let mut pdeathsig: libc::c_int = 0;
+      let rc = unsafe { libc::prctl(libc::PR_GET_PDEATHSIG, &mut pdeathsig, 0, 0, 0) };
+      assert_eq!(rc, 0, "PR_GET_PDEATHSIG should succeed");
+      assert_eq!(
+        pdeathsig,
+        libc::SIGKILL,
+        "expected PDEATHSIG to be configured to SIGKILL"
+      );
 
       // Validate seccomp is active.
       let seccomp_mode = unsafe { libc::prctl(libc::PR_GET_SECCOMP, 0, 0, 0, 0) };
@@ -519,7 +607,11 @@ mod tests {
       let errno = std::io::Error::last_os_error()
         .raw_os_error()
         .expect("errno");
-      assert_eq!(errno, libc::EPERM, "socket() should fail with EPERM under seccomp");
+      assert_eq!(
+        errno,
+        libc::EPERM,
+        "socket() should fail with EPERM under seccomp"
+      );
 
       return;
     }
@@ -547,7 +639,8 @@ mod tests {
 
     let test_name = "sandbox::spawn::tests::configure_renderer_command_installs_sandbox";
     let mut cmd = Command::new(exe);
-    cmd.env(CHILD_ENV, "1")
+    cmd
+      .env(CHILD_ENV, "1")
       .env(EXPECT_AS_ENV, desired_as.to_string())
       .env(EXPECT_NOFILE_ENV, desired_nofile.to_string())
       .arg("--exact")
