@@ -2325,14 +2325,22 @@ fn validate_regex_pattern(
       _ => {}
     }
 
-    // `\c` AsciiLetter / Annex B "class control" escape.
+    // `\c` AsciiLetter / Annex B extensions.
     if esc == 'c' {
       if after_esc >= pattern.len() {
-        return Err(RegexError {
-          kind: RegexErrorKind::InvalidPattern,
-          offset: base_offset + escape_start,
-          len: pattern.len().saturating_sub(escape_start),
-        });
+        // In UnicodeMode, `\c` must be followed by an ASCII letter (and we already know no
+        // character follows).
+        //
+        // In non-UnicodeMode, Annex B treats an incomplete control escape as literal pattern
+        // characters (`\c`), so accept it as an identity escape for `c`.
+        if unicode_mode {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: pattern.len().saturating_sub(escape_start),
+          });
+        }
+        return Ok((after_esc, RegexClassAtom::Single('c' as u32)));
       }
       let ctrl = pattern[after_esc..].chars().next().unwrap();
       if ctrl.is_ascii_alphabetic() {
@@ -2345,13 +2353,19 @@ fn validate_regex_pattern(
         let value = (ctrl as u32) % 32;
         return Ok((after_esc + ctrl.len_utf8(), RegexClassAtom::Single(value)));
       }
-      // `\c` is only valid when followed by an ASCII letter (or, in non-UnicodeMode character
-      // classes, a ClassControlLetter digit/underscore per Annex B).
-      return Err(RegexError {
-        kind: RegexErrorKind::InvalidPattern,
-        offset: base_offset + escape_start,
-        len: after_esc + ctrl.len_utf8() - escape_start,
-      });
+      if unicode_mode {
+        // `\c` is only valid when followed by an ASCII letter (or, in non-UnicodeMode character
+        // classes, a ClassControlLetter digit/underscore per Annex B).
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + escape_start,
+          len: after_esc + ctrl.len_utf8() - escape_start,
+        });
+      }
+      // Annex B (non-UnicodeMode): treat invalid `\c` escapes as literal pattern characters.
+      // Accept it as an identity escape for `c`, leaving the following character to be parsed
+      // normally by the caller.
+      return Ok((after_esc, RegexClassAtom::Single('c' as u32)));
     }
 
     // `\b` is backspace inside character classes.
@@ -2752,19 +2766,13 @@ fn validate_regex_pattern(
             len: after_c + control.len_utf8() - escape_start,
           });
         }
-        // In non-UnicodeMode, `\c` is only tolerated when followed by a decimal digit or `_`
-        // (Annex B ClassControlLetter), in which case it falls through as an extended atom.
-        if control.is_ascii_digit() || control == '_' {
-          i += esc_len;
-          prev_can_be_quantified = true;
-          quantifier_allows_lazy = false;
-          continue;
-        }
-        return Err(RegexError {
-          kind: RegexErrorKind::InvalidPattern,
-          offset: base_offset + escape_start,
-          len: after_c + control.len_utf8() - escape_start,
-        });
+        // Annex B (non-UnicodeMode): treat invalid `\c` escapes as literal pattern characters.
+        // Accept it as an identity escape for `c`, leaving the following character to be parsed
+        // normally by the loop.
+        i += esc_len;
+        prev_can_be_quantified = true;
+        quantifier_allows_lazy = false;
+        continue;
       }
 
       if unicode_mode {
@@ -2946,11 +2954,14 @@ fn validate_regex_pattern(
             err
           })?;
         if let Some(name) = capture_name {
-          // ECMAScript permits duplicate named capture group declarations. At runtime, backreference
-          // resolution and `groups` object behaviour follow the spec-defined ordering rules.
-          //
-          // For early syntax validation we only need to know whether a name exists at least once.
-          named_capture_groups.insert(name);
+          // Named capture group names must be unique.
+          if !named_capture_groups.insert(name) {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + i,
+              len: consumed,
+            });
+          }
         }
         group_stack.push(quantifiable);
         prev_can_be_quantified = false;
