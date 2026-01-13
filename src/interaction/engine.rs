@@ -1428,6 +1428,41 @@ mod tests {
   }
 
   #[test]
+  fn word_left_skips_combining_mark_sequence() {
+    let value = "a\u{0301}b";
+    let mut dom = crate::dom::parse_html(&format!(
+      "<html><body><input value=\"{value}\"></body></html>"
+    ))
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    set_text_selection_caret(&mut engine, &mut dom, input_id, value.chars().count());
+    assert!(engine.key_action(&mut dom, KeyAction::WordLeft));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 0);
+  }
+
+  #[test]
+  fn word_backspace_deletes_combining_mark_sequence() {
+    let value = "a\u{0301}b";
+    let mut dom = crate::dom::parse_html(&format!(
+      "<html><body><input value=\"{value}\"></body></html>"
+    ))
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    set_text_selection_caret(&mut engine, &mut dom, input_id, value.chars().count());
+    assert!(engine.key_action(&mut dom, KeyAction::WordBackspace));
+    assert_eq!(input_value(&mut dom, input_id), "");
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 0);
+  }
+
+  #[test]
   fn text_delete_range_for_key_is_total_for_unexpected_key_actions() {
     // Ensure we never panic if some unrelated KeyAction is routed into the text delete handler.
     let selection = Some((1, 3));
@@ -2618,15 +2653,14 @@ fn char_idx_at_byte(boundary_bytes: &[usize], byte_idx: usize) -> usize {
   }
 }
 
-fn is_word_char(ch: char) -> bool {
-  ch.is_alphanumeric() || ch == '_'
-}
-
 fn word_char_classes(text: &str) -> Vec<bool> {
   let mut out = Vec::with_capacity(text.chars().count());
   for segment in text.split_word_bounds() {
     for ch in segment.chars() {
-      out.push(is_word_char(ch));
+      // Keep keyboard word navigation (Ctrl+Arrow, Ctrl+Backspace/Delete) consistent with the
+      // pointer's word selection behavior (double click), including treating Unicode combining
+      // marks as part of a word.
+      out.push(matches!(word_selection_class(ch), WordSelectionClass::Word));
     }
   }
   out
