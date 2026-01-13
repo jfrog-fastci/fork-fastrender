@@ -1669,7 +1669,6 @@ impl TextItem {
     let run_count = runs.len();
     let mut cluster_count = 0usize;
     let mut last_offset: Option<usize> = None;
-
     let mut check_run =
       |run_idx: usize, cluster_count: &mut usize, last_offset: &mut Option<usize>| -> bool {
       let run_len = runs[run_idx].glyphs.len();

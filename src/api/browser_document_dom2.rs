@@ -2356,7 +2356,6 @@ impl BrowserDocumentDom2 {
         .as_ref()
         .and_then(|state| state.document_selection.as_ref())
     });
-
     crate::interaction::document_selection::apply_document_selection_to_fragment_tree_with_index(
       &mut prepared.fragment_tree,
       prepared.document_selection_index.as_ref(),
@@ -2707,10 +2706,7 @@ impl BrowserDocumentDom2 {
           if tag_name.eq_ignore_ascii_case("input") {
             let ty = attributes
               .iter()
-              .find(|attr| {
-                attr.namespace == crate::dom2::NULL_NAMESPACE
-                  && attr.local_name.eq_ignore_ascii_case("type")
-              })
+              .find(|attr| attr.qualified_name_matches("type", /* is_html */ true))
               .map(|attr| attr.value.as_str())
               .unwrap_or("text");
             !(ty.eq_ignore_ascii_case("hidden")

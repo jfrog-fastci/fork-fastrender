@@ -205,7 +205,6 @@ fn parse_env_duration_ms_or_default(raw: Option<&str>, default_ms: u64, key: &st
     }
   }
 }
-
 /// Suggest when the UI/event-loop should wake up to try presenting the next video frame.
 ///
 /// This helper is intended for **tickless media playback** scheduling: the worker/media pipeline can
