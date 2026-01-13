@@ -57,12 +57,32 @@ pub enum WebSocketIpcCommand {
 /// Stub-only API surface. No events are processed because no WebSocket objects are installed.
 #[derive(Debug)]
 pub enum WebSocketIpcEvent {
-  Open { ws_id: u64, protocol: String },
-  MessageText { ws_id: u64, text: String },
-  MessageBinary { ws_id: u64, data: Vec<u8> },
-  Sent { ws_id: u64, amount: usize },
-  Error { ws_id: u64, message: String },
-  Close { ws_id: u64, code: u16, reason: String },
+  Open {
+    ws_id: u64,
+    protocol: String,
+  },
+  MessageText {
+    ws_id: u64,
+    text: String,
+  },
+  MessageBinary {
+    ws_id: u64,
+    data: Vec<u8>,
+  },
+  /// Indicates that `amount` bytes have been flushed/written by the network process.
+  Sent {
+    ws_id: u64,
+    amount: usize,
+  },
+  Error {
+    ws_id: u64,
+    message: String,
+  },
+  Close {
+    ws_id: u64,
+    code: u16,
+    reason: String,
+  },
 }
 
 /// Environment configuration for installing the IPC-based WebSocket backend.
