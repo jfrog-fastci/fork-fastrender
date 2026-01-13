@@ -91,6 +91,7 @@ Notes:
   fallback embedded SBPL profile for older macOS versions).
 - `relaxed` maps to the renderer-friendly “system fonts” profile (still blocks network).
 - `off` disables sandboxing (debugging only; insecure).
+- Legacy aliases: `1` = `strict`, `0` = `off`.
 
 Advanced override:
 
