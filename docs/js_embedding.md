@@ -121,15 +121,24 @@ fn main() -> Result<()> {
         RenderOptions::new().with_viewport(800, 600),
     )?;
 
-    // 2) Drive the JS event loop until stable (bounded by default JS budgets).
-    let _ = tab.run_until_stable(/* max_frames */ 10)?;
+  // 2) Drive the JS event loop until stable (bounded by default JS budgets).
+  let _ = tab.run_until_stable(/* max_frames */ 10)?;
 
-    // 3) Render a frame.
-    let pixmap = tab.render_frame()?;
-    pixmap.save_png("out.png")?;
-    Ok(())
+  // 3) Render a frame.
+  let pixmap = tab.render_frame()?;
+  pixmap.save_png("out.png")?;
+  Ok(())
 }
 ```
+
+If you are embedding FastRender in a **live / interactive** setting (continuous event-driven loop),
+see [`docs/live_rendering_loop.md`](live_rendering_loop.md) for:
+
+- `run_event_loop_until_idle` (tasks/microtasks/timers only; no rAF; no render),
+- `tick_frame` (step-wise; returns a `Pixmap` when pixels change),
+- `run_until_stable` (deterministic convergence: drains tasks + rAF + renders),
+- and why `requestAnimationFrame` callbacks run on the **frame schedule**, not during
+  `run_event_loop_until_idle`.
 
 ---
 
