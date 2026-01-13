@@ -1,4 +1,4 @@
-//! Audio output backends and audio clock exposure.
+//! Audio output backends and decoder-facing PCM ingestion.
 //!
 //! The audio backend is responsible for two things:
 //!
@@ -30,12 +30,15 @@ mod null_backend;
 mod ring_buffer;
 #[cfg(feature = "audio_cpal")]
 mod thread_priority;
+pub mod convert;
 pub mod mixer;
 pub mod queue;
 pub mod timed_queue;
+pub mod types;
 
 #[cfg(feature = "audio_cpal")]
 pub use cpal_backend::CpalAudioBackend;
+pub use convert::convert_to_f32_interleaved;
 pub use latency::{
   duration_to_frames_ceil, duration_to_frames_floor, frames_to_duration, latency_from_timestamps,
 };
@@ -44,6 +47,12 @@ pub use queue::{pcm_f32_queue, PcmF32QueueConsumer, PcmF32QueueProducer};
 pub use timed_queue::{PushError, ReadResult, TimedAudioQueue, TimedAudioSegment};
 
 pub use mixer::{AudioMixer, AudioStreamId, AudioStreamParams};
+pub use types::{AudioBuffer, AudioSamples, ChannelLayout, SampleFormat};
+
+/// Decoder-facing audio enqueue handle.
+///
+/// This is currently an alias for the producer side of a bounded SPSC PCM queue.
+pub type AudioStreamHandle = PcmF32QueueProducer;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioStreamConfig {
@@ -141,6 +150,9 @@ impl AudioClock {
 
 #[derive(Debug, Error)]
 pub enum AudioError {
+  // --------------------------------------------------------------------------
+  // Backend / device errors
+  // --------------------------------------------------------------------------
   #[error("no default output audio device is available")]
   NoOutputDevice,
   #[error("failed to enumerate output audio configs: {0}")]
@@ -153,6 +165,52 @@ pub enum AudioError {
   UnsupportedSampleFormat(String),
   #[error("failed to start output audio stream: {0}")]
   StreamPlayFailed(String),
+
+  // --------------------------------------------------------------------------
+  // Decoder-facing buffer validation/conversion errors
+  // --------------------------------------------------------------------------
+  #[error("invalid channel count {channels}")]
+  InvalidChannels { channels: usize },
+
+  #[error("invalid sample rate {sample_rate}")]
+  InvalidSampleRate { sample_rate: u32 },
+
+  #[error(
+    "audio buffer format/layout mismatch with data: format={format:?} data_format={data_format:?} layout={layout:?} data_layout={data_layout:?}"
+  )]
+  BufferMetadataMismatch {
+    format: SampleFormat,
+    data_format: SampleFormat,
+    layout: ChannelLayout,
+    data_layout: ChannelLayout,
+  },
+
+  #[error(
+    "interleaved buffer has {len_samples} samples which is not divisible by channel count {channels}"
+  )]
+  InvalidInterleavedLength { len_samples: usize, channels: usize },
+
+  #[error("planar buffer expected {channels} planes but got {planes}")]
+  InvalidPlaneCount { channels: usize, planes: usize },
+
+  #[error(
+    "planar buffer plane {plane} has {len_samples} samples but expected {expected_samples}"
+  )]
+  InvalidPlaneLength {
+    plane: usize,
+    len_samples: usize,
+    expected_samples: usize,
+  },
+
+  #[error(
+    "audio buffer config mismatch: expected {expected_channels}ch@{expected_sample_rate_hz}Hz but got {channels}ch@{sample_rate_hz}Hz"
+  )]
+  StreamConfigMismatch {
+    expected_channels: usize,
+    expected_sample_rate_hz: u32,
+    channels: usize,
+    sample_rate_hz: u32,
+  },
 }
 
 pub trait AudioSink: Send + Sync {
@@ -215,5 +273,57 @@ impl dyn AudioBackend {
     }
 
     Box::new(NullAudioBackend::new())
+  }
+}
+
+impl PcmF32QueueProducer {
+  /// Push decoder-provided PCM samples in a variety of common formats/layouts.
+  ///
+  /// Input is validated and normalized to interleaved `f32` internally before enqueueing.
+  pub fn push_audio(&mut self, buffer: AudioBuffer<'_>) -> Result<(), AudioError> {
+    let expected_channels = self.channels();
+    let expected_sample_rate_hz = self.sample_rate_hz();
+    if buffer.channels != expected_channels || buffer.sample_rate != expected_sample_rate_hz {
+      return Err(AudioError::StreamConfigMismatch {
+        expected_channels,
+        expected_sample_rate_hz,
+        channels: buffer.channels,
+        sample_rate_hz: buffer.sample_rate,
+      });
+    }
+
+    // Avoid an intermediate allocation for already-normalized data.
+    if let AudioSamples::InterleavedF32(samples) = buffer.data {
+      if samples.len() % expected_channels != 0 {
+        return Err(AudioError::InvalidInterleavedLength {
+          len_samples: samples.len(),
+          channels: expected_channels,
+        });
+      }
+      return self.push_pcm_f32(samples, buffer.pts);
+    }
+
+    let converted = convert_to_f32_interleaved(&buffer)?;
+    self.push_pcm_f32(&converted, buffer.pts)
+  }
+
+  /// Convenience helper for pushing interleaved `f32` PCM into the queue.
+  pub fn push_pcm_f32(&mut self, samples: &[f32], pts: Option<Duration>) -> Result<(), AudioError> {
+    let channels = self.channels();
+    if channels == 0 {
+      return Err(AudioError::InvalidChannels { channels });
+    }
+    if samples.len() % channels != 0 {
+      return Err(AudioError::InvalidInterleavedLength {
+        len_samples: samples.len(),
+        channels,
+      });
+    }
+    if let Some(pts) = pts {
+      self.push(samples, pts);
+    } else {
+      self.push_without_pts(samples);
+    }
+    Ok(())
   }
 }
