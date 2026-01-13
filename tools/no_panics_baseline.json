@@ -1,11 +1,5 @@
 [
   {
-    "path": "src/accessibility.rs",
-    "kind": "expect",
-    "line": "let child_dst = dst.children.last_mut().expect(\"child was just pushed\") as *mut DomNode;",
-    "count": 1
-  },
-  {
     "path": "src/api.rs",
     "kind": "expect",
     "line": ".expect(\"build intrinsic probe pool\");",
@@ -18,231 +12,57 @@
     "count": 1
   },
   {
-    "path": "src/api.rs",
-    "kind": "panic",
-    "line": "panic!(",
-    "count": 1
-  },
-  {
-    "path": "src/api.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"viewport gutter iteration should always return within bounds\");",
-    "count": 1
-  },
-  {
-    "path": "src/api/browser_document.rs",
+    "path": "src/api/browser_document_dom2.rs",
     "kind": "expect",
-    "line": ".expect(\"prepared checked by early return\");",
-    "count": 1
-  },
-  {
-    "path": "src/api/browser_document2.rs",
-    "kind": "expect",
-    "line": "out.expect(\"DomHost::mutate_dom closure did not set a result\")",
+    "line": ".expect(\"mapping exists when can_incremental_relayout=true\");",
     "count": 1
   },
   {
     "path": "src/api/browser_document_dom2.rs",
     "kind": "expect",
-    "line": ".expect(\"prepared checked by early return\");",
-    "count": 1
-  },
-  {
-    "path": "src/api/browser_document_dom2.rs",
-    "kind": "expect",
-    "line": "out.expect(\"DomHost::mutate_dom closure did not set a result\")",
-    "count": 1
-  },
-  {
-    "path": "src/api/browser_document_js.rs",
-    "kind": "expect",
-    "line": "self.event_loop.as_mut().expect(",
-    "count": 1
-  },
-  {
-    "path": "src/bin/diff_snapshots.rs",
-    "kind": "unreachable",
-    "line": "(None, None) => unreachable!(\"stem discovered without any snapshots\"),",
-    "count": 1
-  },
-  {
-    "path": "src/bin/fetch_and_render.rs",
-    "kind": "expect",
-    "line": ".expect(\"valid regex\")",
-    "count": 2
-  },
-  {
-    "path": "src/bin/font_coverage.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"clap enforces one input source\")",
-    "count": 1
-  },
-  {
-    "path": "src/bin/inspect_frag.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(\"validated mutual exclusion above\"),",
-    "count": 1
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "expect",
-    "line": "return Ok(values.pop().expect(\"length checked\"));",
-    "count": 1
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "Ok((axis.unwrap(), angle.unwrap()))",
-    "count": 2
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "let digit = ch.to_digit(16).unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "let part = parts_buf[0].unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "let part0 = parts_buf[0].unwrap();",
+    "line": ".expect(\"prepared exists when can_incremental_relayout=true\");",
     "count": 3
   },
   {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "let part1 = parts_buf[1].unwrap();",
-    "count": 3
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "let part2 = parts_buf[2].unwrap();",
-    "count": 2
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "let part3 = parts_buf[3].unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "out.push(iter.next().unwrap());",
-    "count": 1
-  },
-  {
-    "path": "src/debug/snapshot.rs",
+    "path": "src/bin/browser.rs",
     "kind": "expect",
-    "line": "let actual_json = serde_json::to_string_pretty(actual).expect(\"serialize actual Dom2Snapshot\");",
+    "line": ".expect(\"sanitized session should always provide at least one tab\");",
     "count": 1
   },
   {
-    "path": "src/debug/snapshot.rs",
+    "path": "src/bin/browser.rs",
     "kind": "expect",
-    "line": "serde_json::to_string_pretty(expected).expect(\"serialize expected Dom2Snapshot\");",
+    "line": ".expect(\"tab exists (checked above)\");",
     "count": 1
   },
   {
-    "path": "src/debug/snapshot.rs",
-    "kind": "assert",
-    "line": "assert!(",
-    "count": 5
-  },
-  {
-    "path": "src/debug/snapshot.rs",
-    "kind": "assert_eq",
-    "line": "assert_eq!(",
-    "count": 2
-  },
-  {
-    "path": "src/debug/snapshot.rs",
-    "kind": "assert_eq",
-    "line": "assert_eq!(actual_json, expected_json);",
-    "count": 1
-  },
-  {
-    "path": "src/dom2/html5ever_tree_sink.rs",
-    "kind": "unwrap",
-    "line": "let prev_id = prev.unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/dom2/html5ever_tree_sink.rs",
-    "kind": "unwrap",
-    "line": "let reference = reference.unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/dom2/html5ever_tree_sink.rs",
+    "path": "src/dom2/cross_document.rs",
     "kind": "unreachable",
-    "line": "_ => unreachable!(\"kind checked above\"),",
+    "line": "_ => unreachable!(\"shadow_root_for_host must return a ShadowRoot node\"),",
     "count": 1
   },
   {
-    "path": "src/dom2/mod.rs",
-    "kind": "expect",
-    "line": ".expect(\"child node missing after push\");",
-    "count": 2
-  },
-  {
-    "path": "src/dom2/mod.rs",
-    "kind": "expect",
-    "line": ".expect(\"document root must be representable in renderer DOM snapshot\"),",
+    "path": "src/dom2/cross_document.rs",
+    "kind": "unreachable",
+    "line": "unreachable!();",
     "count": 1
   },
   {
-    "path": "src/dom2/mod.rs",
-    "kind": "expect",
-    "line": ".expect(\"dom2 document root missing\")",
+    "path": "src/dom2/mutation.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"replace_data target kind changed unexpectedly\"),",
     "count": 1
   },
   {
-    "path": "src/dom2/mod.rs",
-    "kind": "expect",
-    "line": "let scope_id = scope.expect(\"scope is Some when not using document snapshot\");",
-    "count": 2
-  },
-  {
-    "path": "src/html/pausable_html5ever.rs",
-    "kind": "expect",
-    "line": ".expect(\"pump called after parser finished\");",
-    "count": 2
-  },
-  {
-    "path": "src/html/pausable_html5ever.rs",
-    "kind": "expect",
-    "line": ".expect(\"push_front_str called after parser finished\");",
+    "path": "src/dom2/mutation.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"shadow_root_for_host must return a ShadowRoot node\"),",
     "count": 1
   },
   {
-    "path": "src/html/pausable_html5ever.rs",
-    "kind": "expect",
-    "line": ".expect(\"push_str called after parser finished\");",
-    "count": 1
-  },
-  {
-    "path": "src/html/pausable_html5ever.rs",
-    "kind": "expect",
-    "line": ".expect(\"sink called after parser finished\")",
-    "count": 1
-  },
-  {
-    "path": "src/html/pausable_html5ever.rs",
-    "kind": "expect",
-    "line": ".expect(\"sink_mut called after parser finished\")",
-    "count": 1
-  },
-  {
-    "path": "src/html/pausable_html5ever.rs",
-    "kind": "expect",
-    "line": ".expect(\"with_sink called after parser finished\");",
+    "path": "src/dom2/mutation.rs",
+    "kind": "unreachable",
+    "line": "unreachable!();",
     "count": 1
   },
   {
@@ -252,177 +72,63 @@
     "count": 2
   },
   {
-    "path": "src/interaction/engine.rs",
-    "kind": "expect",
-    "line": "changed |= dom_mutation::mark_user_validity(index.node_mut(focused).expect(\"node exists\"));",
+    "path": "src/js/vmjs/vm_error_format.rs",
+    "kind": "unwrap",
+    "line": "emit_literal = Some(match next_char.unwrap() {",
     "count": 1
   },
   {
-    "path": "src/interaction/engine.rs",
-    "kind": "expect",
-    "line": "dom_mutation::mark_user_validity(index.node_mut(focused).expect(\"node exists\"));",
-    "count": 1
-  },
-  {
-    "path": "src/interaction/engine.rs",
-    "kind": "expect",
-    "line": "index.node_mut(focused).expect(\"node exists\"),",
+    "path": "src/js/vmjs/vm_error_format.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(),",
     "count": 2
   },
   {
-    "path": "src/interaction/engine.rs",
+    "path": "src/js/vmjs/window_realm.rs",
     "kind": "expect",
-    "line": "last_enabled_idx.expect(\"first_enabled implies at least one enabled option\");",
+    "line": ".expect(\"WindowRealm missing WindowRealmUserData\")",
     "count": 1
   },
   {
-    "path": "src/interaction/engine.rs",
+    "path": "src/js/vmjs/window_realm.rs",
     "kind": "expect",
-    "line": "let last_enabled_idx = last_enabled_idx.expect(\"first_enabled implies at least one enabled option\");",
-    "count": 1
-  },
-  {
-    "path": "src/interaction/engine.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"handled above\")",
-    "count": 1
-  },
-  {
-    "path": "src/interaction/hit_test.rs",
-    "kind": "expect",
-    "line": ".expect(\"node_ids only yields valid ids\");",
+    "line": "let f = f.take().expect(\"closure is only taken once\");",
     "count": 2
   },
   {
-    "path": "src/js/dom_bindings/mod.rs",
-    "kind": "expect",
-    "line": "let event = unsafe { ptr.as_ptr().as_mut().expect(\"NonNull is never null\") };",
-    "count": 1
-  },
-  {
-    "path": "src/js/dom_bindings/mod.rs",
+    "path": "src/js/vmjs/window_realm.rs",
     "kind": "unreachable",
-    "line": "unreachable!(\"ToString must return a string\");",
+    "line": "_ => unreachable!(),",
     "count": 1
   },
   {
-    "path": "src/js/dom_bindings/mod.rs",
+    "path": "src/js/vmjs/window_streams.rs",
     "kind": "unreachable",
-    "line": "unreachable!(\"alloc_object_value must return an object\");",
-    "count": 4
+    "line": "_ => unreachable!(),",
+    "count": 2
   },
   {
-    "path": "src/js/dom_bindings/mod.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"alloc_string_value must return a string\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/ecma_embed.rs",
-    "kind": "expect",
-    "line": ".expect(\"checked host function exists above\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/ecma_vm_runtime.rs",
-    "kind": "expect",
-    "line": ".expect(\"vm-js Job should be present when microtask runs\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/ecma_vm_runtime.rs",
-    "kind": "assert",
-    "line": "assert!(",
-    "count": 1
-  },
-  {
-    "path": "src/js/html_classic_scripts.rs",
-    "kind": "expect",
-    "line": ".expect(\"ClassicScriptRunner executor missing\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/html_classic_scripts.rs",
-    "kind": "expect",
-    "line": ".expect(\"parsing_finished implies finished_document\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/html_scripting.rs",
-    "kind": "expect",
-    "line": ".set(cur.checked_sub(1).expect(\"js execution depth underflow\"));",
-    "count": 1
-  },
-  {
-    "path": "src/js/page_load.rs",
-    "kind": "expect",
-    "line": ".set(cur.checked_sub(1).expect(\"js execution depth underflow\"));",
-    "count": 1
-  },
-  {
-    "path": "src/js/runtime.rs",
-    "kind": "expect",
-    "line": ".expect(\"event loop stack underflow\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/script_scheduler.rs",
-    "kind": "expect",
-    "line": ".set(cur.checked_sub(1).expect(\"js execution depth underflow\"));",
-    "count": 1
-  },
-  {
-    "path": "src/js/streaming_pipeline.rs",
-    "kind": "expect",
-    "line": ".expect(\"execute_script_now requires script node id\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/streaming_pipeline.rs",
-    "kind": "expect",
-    "line": ".expect(\"queue_script_task requires script node id\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/streaming_pipeline.rs",
-    "kind": "expect",
-    "line": ".set(cur.checked_sub(1).expect(\"js execution depth underflow\"));",
-    "count": 1
-  },
-  {
-    "path": "src/js/window_animation_frame.rs",
-    "kind": "expect",
-    "line": ".expect(\"requestAnimationFrame id should be set\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/window_realm.rs",
-    "kind": "expect",
-    "line": "std::str::from_utf8(&buf[i..]).expect(\"decimal digits should be valid UTF-8\")",
-    "count": 1
-  },
-  {
-    "path": "src/layout/absolute_positioning.rs",
+    "path": "src/js/vmjs/window_websocket.rs",
     "kind": "unwrap",
-    "line": "let left = left.unwrap();",
+    "line": ".insert(\"Sec-WebSocket-Protocol\", header.parse().unwrap());",
     "count": 1
   },
   {
-    "path": "src/layout/absolute_positioning.rs",
-    "kind": "unwrap",
-    "line": "let right = right.unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/layout/absolute_positioning.rs",
-    "kind": "unwrap",
-    "line": "let width = specified_width_for_overconstraint.unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/layout/contexts/block/mod.rs",
+    "path": "src/js/webidl/vmjs_host_dispatch.rs",
     "kind": "expect",
-    "line": "Ok(last.expect(\"at least one layout pass\"))",
+    "line": ".expect(\"checked type id\");",
+    "count": 2
+  },
+  {
+    "path": "src/js/webidl/vmjs_host_dispatch.rs",
+    "kind": "expect",
+    "line": "let host = any.downcast_mut::<Host>().expect(\"checked type id\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/webidl/vmjs_host_dispatch.rs",
+    "kind": "unwrap",
+    "line": "let node_index = usize::try_from(slots.unwrap().a).map_err(|_| VmError::TypeError(\"Illegal invocation\"))?;",
     "count": 1
   },
   {
@@ -444,58 +150,118 @@
     "count": 1
   },
   {
-    "path": "src/layout/contexts/block/mod.rs",
-    "kind": "panic",
-    "line": ".unwrap_or_else(|| panic!(\"expected floating side for box_id={}\", child.id));",
-    "count": 1
-  },
-  {
-    "path": "src/layout/contexts/flex.rs",
-    "kind": "expect",
-    "line": "Ok(last.expect(\"at least one layout pass\"))",
-    "count": 1
-  },
-  {
     "path": "src/layout/contexts/flex.rs",
     "kind": "expect",
     "line": "let mut fragment = fragment.take().expect(\"fragment already normalized\");",
     "count": 1
   },
   {
-    "path": "src/layout/contexts/flex.rs",
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"expected grid placement metadata\")",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"footer fragment\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"grid layout succeeds\");",
+    "count": 7
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"wrap fragment\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "expect",
+    "line": "let value = parse_property_value(property, css_text).expect(\"parse property value\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
     "kind": "assert",
     "line": "assert!(",
     "count": 1
   },
   {
-    "path": "src/layout/contexts/flex.rs",
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 2
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(child.grid_column_raw.as_deref(), Some(\"2 / 3\"));",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(child.grid_row_raw.as_deref(), Some(\"2 / 3\"));",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(child2.grid_column_raw.as_deref(), Some(\"1 / 4\"));",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(child2.grid_row_raw.as_deref(), Some(\"1 / 4\"));",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(fragment.children.len(), 1);",
+    "count": 4
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(fragment.children.len(), 2);",
+    "count": 3
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(placements.len(), 2);",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(placements[0].box_id, 1, \"first item should be wrap\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid/tests/placement_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(placements[1].box_id, 2, \"second item should be footer\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/inline/mod.rs",
     "kind": "unreachable",
-    "line": "_ => unreachable!(\"width_is_intrinsic_probe guarded avail.width\"),",
-    "count": 1
-  },
-  {
-    "path": "src/layout/contexts/grid.rs",
-    "kind": "expect",
-    "line": "Ok(last.expect(\"at least one layout pass\"))",
-    "count": 1
-  },
-  {
-    "path": "src/layout/contexts/inline/mod.rs",
-    "kind": "expect",
-    "line": "Ok(last.expect(\"at least one layout pass\"))",
-    "count": 1
-  },
-  {
-    "path": "src/layout/contexts/inline/mod.rs",
-    "kind": "panic",
-    "line": ".unwrap_or_else(|| panic!(\"expected floating side for box_id={}\", float_node.id));",
+    "line": "(Some(_), Some(_)) => unreachable!(\"handled by early return\"),",
     "count": 1
   },
   {
     "path": "src/layout/float_context.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(),",
-    "count": 2
+    "kind": "unwrap",
+    "line": "cache.segments.last_mut().unwrap().end_y = segment_end;",
+    "count": 1
   },
   {
     "path": "src/layout/pagination.rs",
@@ -504,21 +270,15 @@
     "count": 1
   },
   {
-    "path": "src/layout/pagination.rs",
-    "kind": "unwrap",
-    "line": "let token = target.take().unwrap();",
+    "path": "src/layout/table.rs",
+    "kind": "expect",
+    "line": ".expect(",
     "count": 1
   },
   {
     "path": "src/layout/table.rs",
     "kind": "expect",
-    "line": ".expect(\"row index must be in bounds\");",
-    "count": 1
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "expect",
-    "line": "Ok(last.expect(\"at least one layout pass\"))",
+    "line": ".expect(\"TableStructure::from_box_tree should not fail without an active layout deadline\")",
     "count": 1
   },
   {
@@ -540,39 +300,75 @@
     "count": 1
   },
   {
-    "path": "src/layout/table.rs",
-    "kind": "assert",
-    "line": "assert!(!metrics.has_baseline);",
-    "count": 1
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "assert",
-    "line": "assert!((metrics.baseline_height() - 15.0).abs() < 0.01);",
-    "count": 1
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "assert",
-    "line": "assert!((metrics.baseline_height() - 24.0).abs() < 0.01);",
-    "count": 1
-  },
-  {
-    "path": "src/layout/taffy_integration.rs",
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
     "kind": "expect",
-    "line": ".expect(\"PooledTaffyTree missing inner tree\")",
-    "count": 2
-  },
-  {
-    "path": "src/layout/utils.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(),",
+    "line": ".expect(\"expected diagnostics stats\");",
     "count": 1
   },
   {
-    "path": "src/math/mod.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(),",
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"expected flex template eviction stats\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"expected grid template eviction stats\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"expected taffy_nodes_built stats\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"render with flex containers\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 1
+  },
+  {
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
+    "kind": "assert",
+    "line": "assert!(flex_built > 0, \"expected flex layouts to build taffy nodes\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_builder.rs",
+    "kind": "expect",
+    "line": ".expect(\"entered fragment frame missing data\");",
+    "count": 5
+  },
+  {
+    "path": "src/paint/display_list_builder.rs",
+    "kind": "expect",
+    "line": "let data = frame.data.as_mut().expect(\"missing clip frame data\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_builder.rs",
+    "kind": "expect",
+    "line": "let data = frame.data.take().expect(\"missing clip frame data\");",
     "count": 1
   },
   {
@@ -630,6 +426,942 @@
     "count": 1
   },
   {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": ".expect(\"render html\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": ".expect(\"sample pixel should be in bounds\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": "brightest_non_black_pixel(&reference).expect(\"reference Hebrew should paint non-black pixels\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": "brightest_non_black_pixel(&reference).expect(\"reference should have non-black pixels\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": "let clipped_bounds = non_black_bounds(&clipped).expect(\"clipped text should paint\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": "let px = clipped.pixel(left_out_x, mid_y).expect(\"pixel in bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": "let px = clipped.pixel(right_out_x, mid_y).expect(\"pixel in bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "expect",
+    "line": "let reference_bounds = non_black_bounds(&reference).expect(\"reference text should paint\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_clip_text_rtl.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 5
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_tiling_viewport.rs",
+    "kind": "expect",
+    "line": ".expect(\"diagnostics stats should be present\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_tiling_viewport.rs",
+    "kind": "expect",
+    "line": ".expect(\"paint display_items should be present\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_tiling_viewport.rs",
+    "kind": "expect",
+    "line": ".expect(\"render should succeed\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_tiling_viewport.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::new().expect(\"renderer should construct\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/background_tiling_viewport.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/bidi_split_caret_affinity.rs",
+    "kind": "expect",
+    "line": ".expect(\"create BrowserDocument\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/bidi_split_caret_affinity.rs",
+    "kind": "expect",
+    "line": ".expect(\"render form control\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/bidi_split_caret_affinity.rs",
+    "kind": "expect",
+    "line": "let node = find_by_id(doc.dom(), \"target\").expect(\"target input\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/bidi_split_caret_affinity.rs",
+    "kind": "expect",
+    "line": "let node_id = *ids.get(&(node as *const DomNode)).expect(\"node id\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/bidi_split_caret_affinity.rs",
+    "kind": "expect",
+    "line": "let renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/bidi_split_caret_affinity.rs",
+    "kind": "expect",
+    "line": "red_bounds(&downstream).expect(\"expected downstream caret pixels\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/bidi_split_caret_affinity.rs",
+    "kind": "expect",
+    "line": "red_bounds(&upstream).expect(\"expected upstream caret pixels\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/bidi_split_caret_affinity.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/box_shadow_blur_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"display list should be captured\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/box_shadow_blur_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"render should succeed\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/box_shadow_blur_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"stats should be present\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/box_shadow_blur_cache.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::new().expect(\"renderer should construct\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/box_shadow_blur_cache.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 5
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/box_shadow_blur_cache.rs",
+    "kind": "panic",
+    "line": "panic!(",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/builder_clip_path_backdrop_root_test.rs",
+    "kind": "expect",
+    "line": "let child_context = child_context.expect(\"expected a stacking context for clip-path\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/builder_clip_path_backdrop_root_test.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "expect",
+    "line": ".expect(\"create BrowserDocument\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "expect",
+    "line": ".expect(\"render focused form control\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "expect",
+    "line": ".expect(\"render with display-list artifact\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "expect",
+    "line": "let node = find_by_id(doc.dom(), \"target\").expect(\"target element\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "expect",
+    "line": "let node_id = *ids.get(&(node as *const DomNode)).expect(\"node id\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "expect",
+    "line": "let renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "assert",
+    "line": "assert!(caret_red > 0, \"expected caret to paint in red pixels\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_appearance_none_caret.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_bidi_caret.rs",
+    "kind": "expect",
+    "line": ".expect(\"create BrowserDocument\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_bidi_caret.rs",
+    "kind": "expect",
+    "line": ".expect(\"render rtl caret at end\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_bidi_caret.rs",
+    "kind": "expect",
+    "line": ".expect(\"render rtl caret at start\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_bidi_caret.rs",
+    "kind": "expect",
+    "line": "let node = find_by_id(doc.dom(), \"target\").expect(\"target input\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_bidi_caret.rs",
+    "kind": "expect",
+    "line": "let node_id = *ids.get(&(node as *const DomNode)).expect(\"node id\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_bidi_caret.rs",
+    "kind": "expect",
+    "line": "let renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_bidi_caret.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_bidi_caret.rs",
+    "kind": "assert",
+    "line": "assert!(any, \"expected caret to paint in red pixels\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_caret_color.rs",
+    "kind": "expect",
+    "line": ".expect(\"create BrowserDocument\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_caret_color.rs",
+    "kind": "expect",
+    "line": ".expect(\"render form control\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_caret_color.rs",
+    "kind": "expect",
+    "line": "let node = find_by_id(doc.dom(), \"target\").expect(\"target input\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_caret_color.rs",
+    "kind": "expect",
+    "line": "let node_id = *ids.get(&(node as *const DomNode)).expect(\"node id\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_caret_color.rs",
+    "kind": "expect",
+    "line": "let renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_caret_color.rs",
+    "kind": "assert",
+    "line": "assert!(caret_red > 0, \"expected caret to paint in red pixels\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_caret_color.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_content_box_clip.rs",
+    "kind": "expect",
+    "line": ".expect(\"render form control\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_content_box_clip.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_content_box_clip.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 4
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/form_control_content_box_clip.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": ".expect(\"render display-list iframe\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": ".expect(\"render iframe placeholder\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": ".expect(\"render inner srcdoc\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": ".expect(\"render nested iframe with depth limit\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": ".expect(\"write inner\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": "let mut inner_renderer = FastRender::with_config(config.clone()).expect(\"create inner renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"renderer with depth\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": "let pixmap = renderer.render_html(outer, 32, 32).expect(\"render iframe\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": "let temp = tempdir().expect(\"tempdir\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "expect",
+    "line": "std::fs::write(&middle_path, middle_html).expect(\"write middle\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let border = pixmap.pixel(90, 10).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let clipped = pixmap.pixel(45, 45).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let inner_pixel = pixmap.pixel(5, 5).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let inner_url = Url::from_file_path(&inner_path).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let middle_url = Url::from_file_path(&middle_path).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let missing_url = Url::from_file_path(&missing_path).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let outside = pixmap.pixel(28, 28).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let padding = pixmap.pixel(90, 30).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let placeholder = pixmap.pixel(90, 90).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "unwrap",
+    "line": "let px = pixmap.pixel(8, 8).unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/iframe.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 6
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": ".expect(\"encode 1x1 PNG\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": ".expect(\"encode PNG\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": ".expect(\"layout document\");",
+    "count": 4
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": "let dom = renderer.parse_html(&html).expect(\"parse html\");",
+    "count": 4
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::new().expect(\"renderer\");",
+    "count": 4
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": "let opt_px = opt_pixmap.pixel(10, 10).expect(\"pixel in bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": "let px = pixmap.pixel(10, 10).expect(\"pixel in bounds\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": "let top_left = pixmap.pixel(0, 0).expect(\"pixel in bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "expect",
+    "line": "let unopt_px = unopt_pixmap.pixel(10, 10).expect(\"pixel in bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "unwrap",
+    "line": ".unwrap()",
+    "count": 5
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "unwrap",
+    "line": ".unwrap();",
+    "count": 10
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 5
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/image_pattern.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 4
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/math_content_box_clip.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/math_content_box_clip.rs",
+    "kind": "expect",
+    "line": "let pixmap = renderer.render_html(html, 100, 100).expect(\"render math\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/math_content_box_clip.rs",
+    "kind": "assert",
+    "line": "assert!(content_red > 0, \"expected math glyphs inside content box\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/math_content_box_clip.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": ".expect(\"encode png\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "FastRender::with_config_and_fetcher(config, Some(fetcher)).expect(\"create renderer\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let border_px = pixmap.pixel(0, 0).expect(\"border pixel in bounds\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let empty_url = Url::from_file_path(&empty_path).expect(\"file URL\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let icon_px = pixmap.pixel(4, 4).expect(\"icon pixel in bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let interior_px = pixmap.pixel(15, 15).expect(\"interior pixel in bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let pixmap = renderer.render_html(&html, 24, 24).expect(\"render\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let pixmap = renderer.render_html(&html, 60, 60).expect(\"render\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let px = pixmap.pixel(4, 4).expect(\"pixel in bounds\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let tmp = tempdir().expect(\"tempdir\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "std::fs::write(&empty_path, []).expect(\"write empty image\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 4
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 5
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "assert_ne",
+    "line": "assert_ne!(",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/parallel_worker_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"diagnostics stats should be present\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/parallel_worker_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"render should succeed\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/parallel_worker_diagnostics.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::new().expect(\"renderer should construct\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/parallel_worker_diagnostics.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 5
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/srcset_slot_width_content_box.rs",
+    "kind": "expect",
+    "line": ".expect(\"encode png\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/srcset_slot_width_content_box.rs",
+    "kind": "expect",
+    "line": "let inside = pixmap.pixel(25, 25).expect(\"inside pixel\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/srcset_slot_width_content_box.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/srcset_slot_width_content_box.rs",
+    "kind": "expect",
+    "line": "let pixmap = renderer.render_html(&html, 100, 100).expect(\"render img\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/srcset_slot_width_content_box.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"join thread\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"render should succeed\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"second render should succeed\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"spawn thread\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"stats should be present on second render\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"stats should be present on third render\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"stats should be present\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"text raster cpu time should be recorded\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"text shaping cpu time should be recorded\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": ".expect(\"third render should succeed\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::new().expect(\"renderer should construct\");",
+    "count": 3
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 8
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "assert",
+    "line": "assert!(misses >= 1, \"expected at least one outline cache miss\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "assert",
+    "line": "assert!(raster_ms > 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "assert",
+    "line": "assert!(shape_ms > 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "assert",
+    "line": "assert!(stats.counts.glyphs.unwrap_or(0) > 0);",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "assert",
+    "line": "assert!(stats.counts.shaped_runs.unwrap_or(0) > 0);",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_diagnostics.rs",
+    "kind": "assert",
+    "line": "assert!(third_hits > 0, \"expected glyph cache hits on third render\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_shadow_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"first render should succeed\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_shadow_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"join thread\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_shadow_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"second render should succeed\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_shadow_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"spawn thread\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_shadow_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"stats should be present on first render\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_shadow_cache.rs",
+    "kind": "expect",
+    "line": ".expect(\"stats should be present on second render\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_shadow_cache.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::with_config(config).expect(\"renderer should construct\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/text_shadow_cache.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 6
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/textarea_line_height_normal.rs",
+    "kind": "expect",
+    "line": ".expect(\"create BrowserDocument\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/textarea_line_height_normal.rs",
+    "kind": "expect",
+    "line": ".expect(\"render textarea\")",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/textarea_line_height_normal.rs",
+    "kind": "expect",
+    "line": "let node = find_by_id(doc.dom(), \"target\").expect(\"target textarea\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/textarea_line_height_normal.rs",
+    "kind": "expect",
+    "line": "let node_id = *ids.get(&(node as *const DomNode)).expect(\"node id\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/textarea_line_height_normal.rs",
+    "kind": "expect",
+    "line": "let renderer = FastRender::with_config(config).expect(\"create renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/textarea_line_height_normal.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 1
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/textarea_line_height_normal.rs",
+    "kind": "panic",
+    "line": "panic!(\"expected caret to paint in red pixels\");",
+    "count": 1
+  },
+  {
     "path": "src/paint/painter.rs",
     "kind": "expect",
     "line": ".expect(\"RenderedMask must contain a mask until dropped\")",
@@ -639,12 +1371,6 @@
     "path": "src/paint/painter.rs",
     "kind": "expect",
     "line": "fallback_layout.as_ref().expect(\"inserted layout\")",
-    "count": 1
-  },
-  {
-    "path": "src/paint/preserve3d.rs",
-    "kind": "expect",
-    "line": ".expect(\"depth_sort returned index in-bounds\"),",
     "count": 1
   },
   {
@@ -666,9 +1392,159 @@
     "count": 1
   },
   {
-    "path": "src/paint/svg_filter.rs",
-    "kind": "unreachable",
-    "line": "EdgeMode::Duplicate => unreachable!(),",
+    "path": "src/paint/stacking.rs",
+    "kind": "expect",
+    "line": "let mut finished = stack.pop().expect(\"frame must exist\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking.rs",
+    "kind": "expect",
+    "line": "} = stack.pop().expect(\"frame must exist\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/axis_specific_clips_stacking_context_test.rs",
+    "kind": "expect",
+    "line": "let px = pixmap.pixel(x, y).expect(\"pixel inside viewport\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/axis_specific_clips_stacking_context_test.rs",
+    "kind": "unwrap",
+    "line": ".unwrap()",
+    "count": 2
+  },
+  {
+    "path": "src/paint/stacking/tests/axis_specific_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/paint/stacking/tests/axis_specific_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/paint/stacking/tests/axis_specific_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 4, 7), (255, 0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/axis_specific_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 4, 7), (255, 255, 255, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/axis_specific_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 7, 4), (255, 0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/axis_specific_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 7, 4), (255, 255, 255, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_border_radius_clips_stacking_context_test.rs",
+    "kind": "expect",
+    "line": "let px = pixmap.pixel(x, y).expect(\"pixel inside viewport\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_border_radius_clips_stacking_context_test.rs",
+    "kind": "unwrap",
+    "line": ".unwrap()",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_border_radius_clips_stacking_context_test.rs",
+    "kind": "unwrap",
+    "line": ".unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_border_radius_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_border_radius_clips_stacking_context_test.rs",
+    "kind": "assert_ne",
+    "line": "assert_ne!(pixel(&pixmap, 1, 1), (255, 0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_promoted_positioned_test.rs",
+    "kind": "expect",
+    "line": "let px = pixmap.pixel(x, y).expect(\"pixel inside viewport\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_promoted_positioned_test.rs",
+    "kind": "unwrap",
+    "line": ".unwrap()",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_promoted_positioned_test.rs",
+    "kind": "unwrap",
+    "line": ".unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_promoted_positioned_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_promoted_positioned_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_promoted_positioned_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 7, 3), (255, 255, 255, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_stacking_context_test.rs",
+    "kind": "expect",
+    "line": "let px = pixmap.pixel(x, y).expect(\"pixel inside viewport\");",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_stacking_context_test.rs",
+    "kind": "unwrap",
+    "line": ".unwrap()",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_stacking_context_test.rs",
+    "kind": "unwrap",
+    "line": ".unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/paint/stacking/tests/hidden_clips_stacking_context_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 7, 3), (255, 255, 255, 255));",
     "count": 1
   },
   {
@@ -685,20 +1561,8 @@
   },
   {
     "path": "src/resource.rs",
-    "kind": "expect",
-    "line": "let ch = rest[i..].chars().next().expect(\"valid UTF-8\");",
-    "count": 1
-  },
-  {
-    "path": "src/resource.rs",
     "kind": "unwrap",
     "line": "guard.as_ref().unwrap().as_result()",
-    "count": 1
-  },
-  {
-    "path": "src/resource.rs",
-    "kind": "unreachable",
-    "line": "ReferrerPolicy::EmptyString => unreachable!(\"policy resolved above\"),",
     "count": 1
   },
   {
@@ -714,184 +1578,1522 @@
     "count": 1
   },
   {
-    "path": "src/resource/web_url/search_params.rs",
+    "path": "src/scroll/tests/offset_translates_promoted_fragments_test.rs",
     "kind": "expect",
-    "line": "out.push((new_key.take().expect(\"new_key set when !inserted\"), new_value));",
-    "count": 2
-  },
-  {
-    "path": "src/resource/web_url/url.rs",
-    "kind": "expect",
-    "line": "write!(&mut out, \"{port}\").expect(\"writing to String should not fail\");",
-    "count": 2
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"ancestor bloom shadow scope stack underflow\");",
+    "line": "let px = pixmap.pixel(x, y).expect(\"pixel inside viewport\");",
     "count": 1
   },
   {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"custom layer base missing\")",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"layer snapshot inserted\")",
-    "count": 2
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"layer snapshot missing for important declarations\"),",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"parent frame should still be on the stack\")",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"parent frame should still be on the stack\");",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"shareable keys require a UA computed style snapshot\");",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"slot inheritance cache requires UA computed style snapshot\");",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": ".expect(\"style traversal stack must contain at least one frame\");",
-    "count": 2
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "let child_dst = dst.children.last_mut().expect(\"child was just pushed\") as *mut StyledNode;",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "let inline_layer_order = inline_layer_order.expect(\"inline layer order missing\");",
-    "count": 1
-  },
-  {
-    "path": "src/style/counters.rs",
-    "kind": "expect",
-    "line": ".expect(\"enter_scope always leaves at least one scope\");",
-    "count": 1
-  },
-  {
-    "path": "src/style/grid.rs",
+    "path": "src/scroll/tests/offset_translates_promoted_fragments_test.rs",
     "kind": "unwrap",
-    "line": "let (flow_parsed, remainder) = parse_auto_flow_tokens(right.unwrap());",
-    "count": 1
+    "line": ".unwrap()",
+    "count": 2
   },
   {
-    "path": "src/style/grid.rs",
-    "kind": "unwrap",
-    "line": "let ch = input[i..].chars().next().unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/style/grid.rs",
-    "kind": "unwrap",
-    "line": "let ch = self.input[i..].chars().next().unwrap();",
+    "path": "src/scroll/tests/offset_translates_promoted_fragments_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));",
     "count": 3
   },
   {
-    "path": "src/style/grid.rs",
-    "kind": "unwrap",
-    "line": "line_names.last_mut().unwrap().extend(first.iter().cloned());",
-    "count": 2
-  },
-  {
-    "path": "src/style/media.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(),",
+    "path": "src/scroll/tests/offset_translates_promoted_fragments_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 3, 3), (0, 0, 255, 255));",
     "count": 3
   },
   {
-    "path": "src/style/properties.rs",
-    "kind": "expect",
-    "line": ".expect(\"checked Some above\")",
-    "count": 1
+    "path": "src/scroll/tests/offset_translates_promoted_fragments_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pixel(&pixmap, 3, 4), (0, 0, 255, 255));",
+    "count": 3
   },
   {
-    "path": "src/style/properties.rs",
-    "kind": "expect",
-    "line": "return Ok(values.pop().expect(\"checked len\"));",
-    "count": 1
+    "path": "src/scroll/tests/overflow_clipping_test.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 23
   },
   {
-    "path": "src/style/properties.rs",
-    "kind": "unwrap",
-    "line": ".unwrap_or_else(|| values.last().copied().unwrap());",
+    "path": "src/scroll/tests/overflow_clipping_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(chain.len(), 1);",
+    "count": 7
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare bottom\");",
+    "count": 5
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare left\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare max\");",
     "count": 4
   },
   {
-    "path": "src/style/properties.rs",
-    "kind": "unwrap",
-    "line": "let end_x = xs[end].unwrap();",
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare min\");",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare none\");",
     "count": 1
   },
   {
-    "path": "src/style/properties.rs",
-    "kind": "unwrap",
-    "line": "let x_comp = xs.get(idx).copied().unwrap_or_else(|| *xs.last().unwrap());",
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare not snapped\");",
     "count": 1
   },
   {
-    "path": "src/style/properties.rs",
-    "kind": "unwrap",
-    "line": "let y_comp = ys.get(idx).copied().unwrap_or_else(|| *ys.last().unwrap());",
-    "count": 1
-  },
-  {
-    "path": "src/style/values.rs",
-    "kind": "unreachable",
-    "line": "CalcLengthKind::Linear => unreachable!(),",
-    "count": 1
-  },
-  {
-    "path": "src/style/values.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(),",
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare right\");",
     "count": 2
   },
   {
-    "path": "src/style/var_resolution.rs",
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
     "kind": "expect",
-    "line": ".expect(\"non-empty string must have last byte\");",
+    "line": ".expect(\"prepare scrolled\");",
     "count": 2
   },
   {
-    "path": "src/style/var_resolution.rs",
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
     "kind": "expect",
-    "line": ".expect(\"writing to String should be infallible\"),",
+    "line": ".expect(\"prepare snapped\");",
     "count": 1
   },
   {
-    "path": "src/style/var_resolution.rs",
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
     "kind": "expect",
-    "line": ".expect(\"writing to String should be infallible\");",
+    "line": ".expect(\"prepare stuck\");",
     "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare top\");",
+    "count": 6
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepare\");",
+    "count": 15
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "box_id_by_element_id(&prepared.box_tree().root, \"scroller\").expect(\"scroller box id\");",
+    "count": 5
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "box_id_by_element_id(&prepared_left.box_tree().root, \"scroller\").expect(\"scroller box id\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "box_id_by_element_id(&prepared_none.box_tree().root, \"scroller\").expect(\"scroller box id\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "box_id_by_element_id(&prepared_top.box_tree().root, \"scroller\").expect(\"scroller box id\");",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "find_by_id(prepared.styled_tree(), \"target_inline\").expect(\"target_inline element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "find_by_id(prepared_not_snapped.styled_tree(), \"marker\").expect(\"marker\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "find_by_id(prepared_scrolled.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let bounds = scroll_bounds_for_box_id(prepared.fragment_tree(), scroller_box_id).expect(\"bounds\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let marker = find_by_id(prepared.styled_tree(), \"marker\").expect(\"marker\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let marker_snapped = find_by_id(prepared_snapped.styled_tree(), \"marker\").expect(\"marker\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::new().expect(\"renderer\");",
+    "count": 24
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target = find_by_id(prepared.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 7
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_bottom = find_by_id(prepared_bottom.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 5
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_left = find_by_id(prepared_left.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_max = find_by_id(prepared_max.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_min = find_by_id(prepared_min.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_none = find_by_id(prepared_none.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_right = find_by_id(prepared_right.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_size = find_by_id(prepared.styled_tree(), \"target_size\").expect(\"target_size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_stuck = find_by_id(prepared_stuck.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "let target_top = find_by_id(prepared_top.styled_tree(), \"target\").expect(\"target element\");",
+    "count": 6
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "expect",
+    "line": "scroll_bounds_for_box_id(prepared.fragment_tree(), scroller_box_id).expect(\"scroll bounds\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 40
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": ".expect(\"laid out\")",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": ".expect(\"scroll-state-and-inline-size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": ".expect(\"shorthand-scroll-state-and-inline-size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": ".expect(\"shorthand-scroll-state-and-size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": ".expect(\"shorthand-size-and-scroll-state element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"commented-name-and-type\").expect(\"commented-name-and-type element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"commented-name-only\").expect(\"commented-name-only element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"invalid-dup-scroll-state\").expect(\"invalid-dup-scroll-state element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"invalid-mixed-normal\").expect(\"invalid-mixed-normal element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"invalid-mixed-size\").expect(\"invalid-mixed-size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"scroll-state-and-size\").expect(\"scroll-state-and-size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"shorthand-inherit\").expect(\"shorthand-inherit element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"shorthand-initial\").expect(\"shorthand-initial element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"shorthand-scroll-state\").expect(\"shorthand-scroll-state element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "find_by_id(&styled, \"size-and-scroll-state\").expect(\"size-and-scroll-state element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let above = find_by_id(&styled, \"above\").expect(\"above element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let and1 = find_by_id(&styled, \"and1\").expect(\"and1 element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let and2 = find_by_id(&styled, \"and2\").expect(\"and2 element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let auto = find_by_id(&styled, \"auto\").expect(\"auto element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let below = find_by_id(&styled, \"below\").expect(\"below element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let block = find_by_id(&styled, \"block\").expect(\"block element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let bold = find_by_id(&styled, \"bold\").expect(\"bold element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let commented_reset = find_by_id(&styled, \"commented-reset\").expect(\"commented-reset element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let commented_size = find_by_id(&styled, \"commented-size\").expect(\"commented-size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let deep = find_by_id(&styled, \"deep\").expect(\"deep element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let default = find_by_id(&styled, \"default\").expect(\"default element\");",
+    "count": 5
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let dom = renderer.parse_html(html).expect(\"parsed dom\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let escaped_size = find_by_id(&styled, \"escaped-size\").expect(\"escaped-size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let faded = find_by_id(&styled, \"faded\").expect(\"faded element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let far = find_by_id(&styled, \"far\").expect(\"far element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let few = find_by_id(&styled, \"few\").expect(\"few element\");",
+    "count": 6
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let from_font = find_by_id(&styled, \"from-font\").expect(\"from-font element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let hidden = find_by_id(&styled, \"hidden\").expect(\"hidden element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let high = find_by_id(&styled, \"high\").expect(\"high element\");",
+    "count": 15
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let infinite = find_by_id(&styled, \"infinite\").expect(\"infinite element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let initial = find_by_id(&styled, \"initial\").expect(\"initial element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let inline = find_by_id(&styled, \"inline\").expect(\"inline element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let invalid_dup_size = find_by_id(&styled, \"invalid-dup-size\").expect(\"invalid-dup-size element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let invalid_none = find_by_id(&styled, \"invalid-none\").expect(\"invalid-none element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let invalid_style = find_by_id(&styled, \"invalid-style\").expect(\"invalid-style element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let large = find_by_id(&styled, \"large\").expect(\"large element\");",
+    "count": 18
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let long = find_by_id(&styled, \"long\").expect(\"long element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let low = find_by_id(&styled, \"low\").expect(\"low element\");",
+    "count": 17
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let ltr = find_by_id(&styled, \"ltr\").expect(\"ltr element\");",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let many = find_by_id(&styled, \"many\").expect(\"many element\");",
+    "count": 6
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let matched = find_by_id(&styled, \"match\").expect(\"match element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let missed = find_by_id(&styled, \"miss\").expect(\"miss element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let missing = find_by_id(&styled, \"missing\").expect(\"missing element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let mixed = find_by_id(&styled, \"mixed\").expect(\"mixed element\");",
+    "count": 20
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let mut renderer = FastRender::new().expect(\"renderer\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let name_only = find_by_id(&styled, \"name-only\").expect(\"name-only element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let narrow = find_by_id(&styled, \"narrow\").expect(\"narrow element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let near = find_by_id(&styled, \"near\").expect(\"near element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let neg = find_by_id(&styled, \"neg\").expect(\"neg element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let none = find_by_id(&styled, \"none\").expect(\"none element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let nonuniform = find_by_id(&styled, \"nonuniform\").expect(\"nonuniform element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let normal = find_by_id(&styled, \"normal\").expect(\"normal element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let not1 = find_by_id(&styled, \"not1\").expect(\"not1 element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let not2 = find_by_id(&styled, \"not2\").expect(\"not2 element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let or1 = find_by_id(&styled, \"or1\").expect(\"or1 element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let or2 = find_by_id(&styled, \"or2\").expect(\"or2 element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let pos = find_by_id(&styled, \"pos\").expect(\"pos element\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let present = find_by_id(&styled, \"present\").expect(\"present element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let raised = find_by_id(&styled, \"raised\").expect(\"raised element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let relative = find_by_id(&styled, \"relative\").expect(\"relative element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let reset = find_by_id(&styled, \"reset\").expect(\"reset element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let rtl = find_by_id(&styled, \"rtl\").expect(\"rtl element\");",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let scroll_state = find_by_id(&styled, \"scroll-state\").expect(\"scroll-state element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let set = find_by_id(&styled, \"set\").expect(\"set element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let shallow = find_by_id(&styled, \"shallow\").expect(\"shallow element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let short = find_by_id(&styled, \"short\").expect(\"short element\");",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let small = find_by_id(&styled, \"small\").expect(\"small element\");",
+    "count": 22
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let tall = find_by_id(&styled, \"tall\").expect(\"tall element\");",
+    "count": 3
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let target = find_by_id(&styled, \"layered\").expect(\"layered element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let target = find_by_id(&styled, \"nested\").expect(\"nested element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let target = find_by_id(&styled, \"target\").expect(\"target element\");",
+    "count": 30
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let thick = find_by_id(&styled, \"thick\").expect(\"thick element\");",
+    "count": 16
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let thin = find_by_id(&styled, \"thin\").expect(\"thin element\");",
+    "count": 20
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let tight = find_by_id(&styled, \"tight\").expect(\"tight element\");",
+    "count": 14
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let type_inherit = find_by_id(&styled, \"type-inherit\").expect(\"type-inherit element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let type_initial = find_by_id(&styled, \"type-initial\").expect(\"type-initial element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let vertical = find_by_id(&styled, \"vertical\").expect(\"vertical element\");",
+    "count": 12
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "expect",
+    "line": "let wide = find_by_id(&styled, \"wide\").expect(\"wide element\");",
+    "count": 19
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert",
+    "line": "assert!(commented_reset.styles.container_name.is_empty());",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert",
+    "line": "assert!(reset.styles.container_name.is_empty());",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert",
+    "line": "assert!(shorthand_initial.styles.container_name.is_empty());",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert",
+    "line": "assert!(type_inherit.styles.container_name.is_empty());",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 26
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(above.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(and1.styles.color, Rgba::rgb(1, 2, 3));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(and2.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(auto.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(below.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(block.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(bold.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(commented_reset.styles.container_type, ContainerType::Normal);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(commented_size.styles.container_type, ContainerType::Size);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(deep.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(default.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 5
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(escaped_size.styles.container_type, ContainerType::Size);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(faded.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(far.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(few.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 6
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(from_font.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(hidden.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(high.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 15
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(infinite.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(initial.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(inline.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 18
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(long.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(low.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 17
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(ltr.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(many.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 6
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(matched.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(missed.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(missing.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(mixed.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 20
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(name_only.styles.container_name, vec![\"demo\".to_string()]);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(name_only.styles.container_type, ContainerType::Normal);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(narrow.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(near.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(neg.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(none.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(nonuniform.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(normal.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(normal.styles.font_stretch.to_percentage(), 100.0);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(not1.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(not2.styles.color, Rgba::rgb(7, 8, 9));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(or1.styles.color, Rgba::rgb(4, 5, 6));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(or2.styles.color, Rgba::rgb(4, 5, 6));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(pos.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(present.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(raised.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(relative.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(reset.styles.container_type, ContainerType::Normal);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(rtl.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(set.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(shallow.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(short.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 4
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 22
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(tall.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 3
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(target.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(target.styles.color, Rgba::rgb(0, 128, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(target.styles.color, Rgba::rgb(1, 2, 3));",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 25
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(target.styles.color, Rgba::rgb(255, 165, 0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(target.styles.color, Rgba::rgb(5, 6, 7));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(thick.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 16
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(thin.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 20
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(tight.styles.color, Rgba::rgb(0, 0, 255));",
+    "count": 14
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(type_initial.styles.container_type, ContainerType::Normal);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(vertical.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 12
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(wide.styles.color, Rgba::rgb(255, 0, 0));",
+    "count": 19
+  },
+  {
+    "path": "src/style/cascade/tests/container_style_queries.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(wide.styles.font_stretch.to_percentage(), 150.0);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "expect",
+    "line": "let div = find_by_tag(&styled, \"div\").expect(\"div present\");",
+    "count": 7
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "expect",
+    "line": "let dom = dom::parse_html(html).expect(\"parse html\");",
+    "count": 7
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "expect",
+    "line": "let sheet = parse_stylesheet(css).expect(\"parse css\");",
+    "count": 7
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.border_bottom_style, BorderStyle::Solid);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.border_left_color, Rgba::new(255, 0, 0, 1.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.border_left_style, BorderStyle::Solid);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.border_left_width, Length::px(9.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.border_right_color, Rgba::new(0, 0, 255, 1.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.border_right_style, BorderStyle::Dashed);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.border_right_width, Length::px(10.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.border_top_style, BorderStyle::Dotted);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.bottom, InsetValue::Length(Length::px(3.0)));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.left, InsetValue::Length(Length::px(4.0)));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.margin_left, Some(Length::px(5.0)));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.margin_right, Some(Length::px(6.0)));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.padding_left, Length::px(7.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.padding_right, Length::px(8.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.right, InsetValue::Length(Length::px(2.0)));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/logical_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.top, InsetValue::Length(Length::px(1.0)));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/offset_anchor_parsing_test.rs",
+    "kind": "expect",
+    "line": "let div = find_by_tag(&styled, \"div\").expect(\"div present\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/offset_anchor_parsing_test.rs",
+    "kind": "expect",
+    "line": "let dom = dom::parse_html(html).expect(\"parse html\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/offset_anchor_parsing_test.rs",
+    "kind": "expect",
+    "line": "let sheet = parse_stylesheet(css).expect(\"parse css\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/offset_anchor_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"parse html\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"stylesheet\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "expect",
+    "line": "let axes = find_by_id(&styled, \"axes\").expect(\"axes element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "expect",
+    "line": "let clip = find_by_id(&styled, \"clip\").expect(\"clip element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "expect",
+    "line": "let orient = find_by_id(&styled, \"orient\").expect(\"orient element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "expect",
+    "line": "let overflow = find_by_id(&styled, \"overflow\").expect(\"overflow element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "expect",
+    "line": "let visibility = find_by_id(&styled, \"visibility\").expect(\"visibility element\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(axes.styles.overflow_x, Overflow::Scroll);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(axes.styles.overflow_y, Overflow::Hidden);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(clip.styles.overflow_x, Overflow::Clip);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(clip.styles.overflow_y, Overflow::Clip);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(orient.styles.webkit_box_orient, WebkitBoxOrient::Vertical);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(overflow.styles.overflow_x, Overflow::Hidden);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(overflow.styles.overflow_y, Overflow::Hidden);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/overflow_visibility_case_insensitive_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(visibility.styles.visibility, Visibility::Hidden);",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "expect",
+    "line": "let div = find_by_tag(&styled, \"div\").expect(\"div present\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "expect",
+    "line": "let dom = dom::parse_html(html).expect(\"parse html\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "expect",
+    "line": "let sheet = parse_stylesheet(css).expect(\"parse css\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.scroll_margin_bottom, Length::px(5.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.scroll_margin_left, Length::px(6.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.scroll_margin_right, Length::px(6.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.scroll_margin_top, Length::px(5.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.scroll_padding_bottom, Length::px(3.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.scroll_padding_left, Length::px(4.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.scroll_padding_right, Length::px(2.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade/tests/scroll_box_shorthand_parsing_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(div.styles.scroll_padding_top, Length::px(1.0));",
+    "count": 1
+  },
+  {
+    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"expected ::placeholder styles to be computed\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"parse html\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
+    "kind": "expect",
+    "line": "let input = find_by_id(&styled, \"input\").expect(\"input styled\");",
+    "count": 2
+  },
+  {
+    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
+    "kind": "expect",
+    "line": "parse_stylesheet(\"input::placeholder { color: rgb(11 22 33); }\").expect(\"parse stylesheet\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(placeholder.color, Rgba::rgb(11, 22, 33));",
+    "count": 1
+  },
+  {
+    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(placeholder.color, Rgba::rgb(128, 128, 128));",
+    "count": 1
+  },
+  {
+    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(placeholder.opacity, 1.0);",
+    "count": 2
   },
   {
     "path": "src/text/color_fonts/mod.rs",
@@ -936,12 +3138,6 @@
     "count": 1
   },
   {
-    "path": "src/text/line_break.rs",
-    "kind": "expect",
-    "line": ".expect(\"ICU word segmenter data should be available\");",
-    "count": 1
-  },
-  {
     "path": "src/text/pipeline.rs",
     "kind": "unwrap",
     "line": "let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();",
@@ -960,12 +3156,6 @@
     "count": 1
   },
   {
-    "path": "src/tree/anonymous.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"split stack always returns from within the loop\");",
-    "count": 1
-  },
-  {
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
     "line": ".expect(\"children state always has composed children\");",
@@ -981,7 +3171,7 @@
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
     "line": "let frame = stack.last_mut().expect(\"frame exists\");",
-    "count": 3
+    "count": 2
   },
   {
     "path": "src/tree/box_generation.rs",
@@ -993,54 +3183,6 @@
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
     "line": "let styled = stack.last().expect(\"frame exists\").styled;",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "expect",
-    "line": "stack.pop().expect(\"frame exists\");",
-    "count": 7
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "Display::None => unreachable!(\"display:none pseudo-elements are filtered before counter scope\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "Display::None => unreachable!(\"handled above\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "Display::None | Display::Contents => unreachable!(\"handled above\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "Visibility::Collapse => unreachable!(\"collapse is normalized to hidden\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(\"memchr2 returned non-matching byte\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "_ => unreachable!(\"memchr3 returned non-matching byte\"),",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "unreachable",
-    "line": "unreachable!(\"non-empty pseudo-element content values must be ContentValue::Items\");",
     "count": 1
   },
   {
@@ -1056,9 +3198,63 @@
     "count": 1
   },
   {
-    "path": "src/tree/fragment_tree.rs",
+    "path": "src/ui/bookmarks.rs",
     "kind": "expect",
-    "line": ".expect(\"stack non-empty in hit_test_path_within_root\");",
-    "count": 2
+    "line": ".expect(\"alloc id should not fail during migration\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/bookmarks.rs",
+    "kind": "unreachable",
+    "line": "BookmarkNode::Folder(_) => unreachable!(\"validated above\"),",
+    "count": 1
+  },
+  {
+    "path": "src/ui/browser_app.rs",
+    "kind": "expect",
+    "line": "let group_id = left.expect(\"checked is_some above\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/chrome.rs",
+    "kind": "expect",
+    "line": ".expect(\"checked is_some above\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/chrome.rs",
+    "kind": "unwrap",
+    "line": ".is_some_and(|pos| !popup_rect.unwrap().contains(pos))",
+    "count": 1
+  },
+  {
+    "path": "src/ui/downloads.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"u32::MAX exhausted while searching for a unique download filename\")",
+    "count": 1
+  },
+  {
+    "path": "src/ui/media_prefs.rs",
+    "kind": "expect",
+    "line": ".expect(\"raw initialized\")",
+    "count": 1
+  },
+  {
+    "path": "src/ui/media_prefs.rs",
+    "kind": "expect",
+    "line": "raw.expect(\"raw initialized when changed\"),",
+    "count": 1
+  },
+  {
+    "path": "src/ui/panel_widgets.rs",
+    "kind": "expect",
+    "line": "close_response: close_response.expect(\"panel_header must render a close button\"),",
+    "count": 1
+  },
+  {
+    "path": "src/ui/render_worker.rs",
+    "kind": "expect",
+    "line": ".expect(\"spawn UI worker router thread\");",
+    "count": 1
   }
 ]

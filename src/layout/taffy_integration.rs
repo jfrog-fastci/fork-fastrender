@@ -33,6 +33,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -652,7 +653,7 @@ const TAFFY_TREE_POOL_MAX: usize = 8;
 
 /// RAII wrapper that returns a cleared `TaffyTree` to the per-thread pool on drop.
 pub(crate) struct PooledTaffyTree {
-  tree: Option<TaffyTree<*const BoxNode>>,
+  tree: ManuallyDrop<TaffyTree<*const BoxNode>>,
 }
 
 impl PooledTaffyTree {
@@ -671,7 +672,9 @@ impl PooledTaffyTree {
     // contents to overflow and producing visible 1px mismatches on real pages (fortune.com header
     // nav was one example).
     tree.disable_rounding();
-    Self { tree: Some(tree) }
+    Self {
+      tree: ManuallyDrop::new(tree),
+    }
   }
 
   /// Consumes the wrapper without returning the tree to the pool.
@@ -679,11 +682,12 @@ impl PooledTaffyTree {
   /// This is used by higher-level caches (e.g. per-box Taffy tree reuse) which want to keep
   /// the internal node caches alive across layout passes. The caller becomes responsible for
   /// either returning the tree to the pool (after clearing) or storing it elsewhere.
-  pub(crate) fn into_inner(mut self) -> TaffyTree<*const BoxNode> {
-    self
-      .tree
-      .take()
-      .expect("PooledTaffyTree missing inner tree")
+  pub(crate) fn into_inner(self) -> TaffyTree<*const BoxNode> {
+    let mut this = ManuallyDrop::new(self);
+    // SAFETY: `this` is wrapped in `ManuallyDrop`, so `PooledTaffyTree::drop` will not run and
+    // will not attempt to return the tree to the pool. This intentionally transfers ownership of
+    // the `TaffyTree` to the caller (e.g. per-box caches).
+    unsafe { ManuallyDrop::take(&mut this.tree) }
   }
 }
 
@@ -691,27 +695,22 @@ impl Deref for PooledTaffyTree {
   type Target = TaffyTree<*const BoxNode>;
 
   fn deref(&self) -> &Self::Target {
-    self
-      .tree
-      .as_ref()
-      .expect("PooledTaffyTree missing inner tree")
+    &self.tree
   }
 }
 
 impl DerefMut for PooledTaffyTree {
   fn deref_mut(&mut self) -> &mut Self::Target {
-    self
-      .tree
-      .as_mut()
-      .expect("PooledTaffyTree missing inner tree")
+    &mut self.tree
   }
 }
 
 impl Drop for PooledTaffyTree {
   fn drop(&mut self) {
-    let Some(mut tree) = self.tree.take() else {
-      return;
-    };
+    // SAFETY: `tree` is only moved out via `into_inner`, which suppresses this `Drop`
+    // implementation entirely by wrapping `self` in `ManuallyDrop`. In the normal RAII case, the
+    // tree is still present here and must be returned to the pool.
+    let mut tree = unsafe { ManuallyDrop::take(&mut self.tree) };
     tree.clear();
     TAFFY_TREE_POOL.with(|pool| {
       let mut pool = pool.borrow_mut();
@@ -880,7 +879,7 @@ pub(crate) struct CachedTaffyTree {
   root: Option<taffy::tree::NodeId>,
   root_style_fingerprint: u64,
   child_fingerprint: u64,
-  tree: Option<TaffyTree<*const BoxNode>>,
+  tree: ManuallyDrop<TaffyTree<*const BoxNode>>,
 }
 
 impl CachedTaffyTree {
@@ -892,17 +891,17 @@ impl CachedTaffyTree {
         TAFFY_TREE_CACHE_HITS.with(|cell| cell.set(cell.get() + 1));
         let mut tree = entry.tree;
         tree.disable_rounding();
-        return Self {
-          key: Some(key),
-          root: Some(entry.root),
-          root_style_fingerprint: entry.root_style_fingerprint,
-          child_fingerprint: entry.child_fingerprint,
-          tree: Some(tree),
-        };
-      }
-      #[cfg(test)]
-      TAFFY_TREE_CACHE_MISSES.with(|cell| cell.set(cell.get() + 1));
-    }
+         return Self {
+           key: Some(key),
+           root: Some(entry.root),
+           root_style_fingerprint: entry.root_style_fingerprint,
+           child_fingerprint: entry.child_fingerprint,
+           tree: ManuallyDrop::new(tree),
+         };
+       }
+       #[cfg(test)]
+       TAFFY_TREE_CACHE_MISSES.with(|cell| cell.set(cell.get() + 1));
+     }
 
     let mut pooled = PooledTaffyTree::new().into_inner();
     pooled.disable_rounding();
@@ -911,7 +910,7 @@ impl CachedTaffyTree {
       root: None,
       root_style_fingerprint: 0,
       child_fingerprint: 0,
-      tree: Some(pooled),
+      tree: ManuallyDrop::new(pooled),
     }
   }
 
@@ -939,9 +938,7 @@ impl CachedTaffyTree {
   /// rebuilds, and forgetting the root prevents `Drop` from caching an invalid entry if the rebuild
   /// subsequently fails.
   pub(crate) fn clear_and_invalidate(&mut self) {
-    if let Some(tree) = self.tree.as_mut() {
-      tree.clear();
-    }
+    self.tree.clear();
     self.root = None;
     self.root_style_fingerprint = 0;
     self.child_fingerprint = 0;
@@ -952,21 +949,20 @@ impl Deref for CachedTaffyTree {
   type Target = TaffyTree<*const BoxNode>;
 
   fn deref(&self) -> &Self::Target {
-    self.tree.as_ref().expect("CachedTaffyTree missing tree")
+    &self.tree
   }
 }
 
 impl DerefMut for CachedTaffyTree {
   fn deref_mut(&mut self) -> &mut Self::Target {
-    self.tree.as_mut().expect("CachedTaffyTree missing tree")
+    &mut self.tree
   }
 }
 
 impl Drop for CachedTaffyTree {
   fn drop(&mut self) {
-    let Some(mut tree) = self.tree.take() else {
-      return;
-    };
+    // SAFETY: `tree` is only moved out here, in `Drop`.
+    let mut tree = unsafe { ManuallyDrop::take(&mut self.tree) };
 
     let Some(key) = self.key else {
       tree.clear();
@@ -1555,7 +1551,6 @@ impl TaffyNodeCache {
 
   #[inline]
   fn shard_index(&self, key: &TaffyNodeCacheKey) -> usize {
-    debug_assert!(!self.shards.is_empty());
     let mut h = FxHasher::default();
     key.hash(&mut h);
     (h.finish() as usize) & self.shard_mask
@@ -1623,6 +1618,87 @@ mod tests {
       root_style: Arc::new(SendSyncStyle(TaffyStyle::default())),
       child_styles: Vec::new(),
     })
+  }
+
+  fn clear_taffy_tree_pool() {
+    TAFFY_TREE_POOL.with(|pool| pool.borrow_mut().clear());
+  }
+
+  fn taffy_tree_pool_len() -> usize {
+    TAFFY_TREE_POOL.with(|pool| pool.borrow().len())
+  }
+
+  #[test]
+  fn pooled_taffy_tree_drop_returns_tree_to_pool_and_clears() {
+    clear_taffy_tree_pool();
+    assert_eq!(taffy_tree_pool_len(), 0);
+
+    {
+      let mut tree = PooledTaffyTree::new();
+      // Ensure the tree contains some nodes before dropping so we can verify `Drop` clears it.
+      tree
+        .new_leaf(TaffyStyle::default())
+        .expect("leaf node should be created");
+      assert!(tree.total_node_count() > 0);
+      assert_eq!(taffy_tree_pool_len(), 0);
+    }
+
+    assert_eq!(taffy_tree_pool_len(), 1);
+
+    {
+      let tree = PooledTaffyTree::new();
+      assert_eq!(taffy_tree_pool_len(), 0);
+      assert_eq!(
+        tree.total_node_count(),
+        0,
+        "trees returned to the pool must be cleared before reuse",
+      );
+    }
+
+    clear_taffy_tree_pool();
+  }
+
+  #[test]
+  fn pooled_taffy_tree_into_inner_does_not_return_to_pool_or_clear() {
+    clear_taffy_tree_pool();
+    assert_eq!(taffy_tree_pool_len(), 0);
+
+    let tree = {
+      let mut pooled = PooledTaffyTree::new();
+      pooled
+        .new_leaf(TaffyStyle::default())
+        .expect("leaf node should be created");
+      assert!(pooled.total_node_count() > 0);
+      pooled.into_inner()
+    };
+
+    // `into_inner` transfers ownership of the tree to the caller and must not run `Drop`'s pooling
+    // logic.
+    assert_eq!(taffy_tree_pool_len(), 0);
+    assert!(
+      tree.total_node_count() > 0,
+      "into_inner must not clear the tree (higher-level caches rely on preserved node state)",
+    );
+
+    drop(tree);
+    assert_eq!(taffy_tree_pool_len(), 0);
+    clear_taffy_tree_pool();
+  }
+
+  #[test]
+  fn pooled_taffy_tree_pool_is_bounded() {
+    clear_taffy_tree_pool();
+
+    // Fill the pool by keeping multiple trees alive simultaneously (mirrors recursive flex/grid
+    // layout).
+    let mut live = Vec::new();
+    for _ in 0..(TAFFY_TREE_POOL_MAX + 4) {
+      live.push(PooledTaffyTree::new());
+    }
+    drop(live);
+
+    assert_eq!(taffy_tree_pool_len(), TAFFY_TREE_POOL_MAX);
+    clear_taffy_tree_pool();
   }
 
   #[test]
