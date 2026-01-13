@@ -1796,6 +1796,7 @@ pub fn form_submission_get_url_from_submitter_dom2(
 #[cfg(test)]
 mod dom2_tests {
   use super::*;
+  use selectors::context::QuirksMode;
 
   #[test]
   fn dom2_form_submission_respects_disabled_fieldset_checkedness_and_textarea_value() {
@@ -1842,6 +1843,54 @@ mod dom2_tests {
       submission.url,
       "https://example.com/submit?a=1&c=yes&d=on&r=2&t=edited",
       "expected: (1) first-legend input included and fieldset-disabled input excluded, (2) checkbox/radio use dom2 checkedness state, (3) textarea uses dom2 current value"
+    );
+  }
+
+  #[test]
+  fn dom2_form_submission_ignores_options_in_inert_template_subtrees() {
+    let mut doc = crate::dom2::Document::new(QuirksMode::NoQuirks);
+    let root = doc.root();
+    let body = doc.create_element("body", "");
+    doc.append_child(root, body).unwrap();
+
+    let form = doc.create_element("form", "");
+    doc
+      .set_attribute(form, "action", "https://example.com/submit")
+      .unwrap();
+    doc.append_child(body, form).unwrap();
+
+    let select = doc.create_element("select", "");
+    doc.set_attribute(select, "name", "s").unwrap();
+    doc.append_child(form, select).unwrap();
+
+    let option_live = doc.create_element("option", "");
+    doc.set_attribute(option_live, "value", "a").unwrap();
+    doc.set_bool_attribute(option_live, "selected", true).unwrap();
+    doc.append_child(select, option_live).unwrap();
+
+    // Insert an inert `<template>` subtree inside the `<select>` via DOM APIs. Its `<option>`
+    // descendants should not contribute to the select's option list or to form submission.
+    let template = doc.create_element("template", "");
+    doc.append_child(select, template).unwrap();
+
+    let option_inert = doc.create_element("option", "");
+    doc.set_attribute(option_inert, "value", "b").unwrap();
+    doc.set_bool_attribute(option_inert, "selected", true).unwrap();
+    doc.append_child(template, option_inert).unwrap();
+
+    let submission = form_submission_without_submitter_dom2(
+      &doc,
+      form,
+      "https://example.com/page",
+      "https://example.com/page",
+      None,
+    )
+    .expect("submission");
+
+    assert_eq!(
+      submission.url,
+      "https://example.com/submit?s=a",
+      "options inside inert template subtrees must not contribute to successful controls"
     );
   }
 }
