@@ -24,6 +24,8 @@
 //! - **Windows**: renderers are intended to be spawned in an AppContainer (no capabilities) with a
 //!   Job Object configured for kill-on-close and active-process limiting, plus handle inheritance
 //!   allowlisting (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) and process mitigations.
+//!   - Defense in depth: when supported, the AppContainer token is hardened by removing the broad
+//!     `ALL APPLICATION PACKAGES` group via `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`.
 //!   - Sandbox setup **fails closed by default** (to avoid silent security downgrades).
 //!   - Set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to opt into restricted-token / unsandboxed fallback
 //!     on unsupported hosts (see [`windows`]).
