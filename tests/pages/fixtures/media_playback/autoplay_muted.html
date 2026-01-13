@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>autoplay_muted</title>
+<style>
+  body {
+    font: 14px system-ui, sans-serif;
+  }
+  #indicator {
+    display: inline-block;
+    padding: 6px 10px;
+    border: 1px solid #ccc;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #indicator.playing {
+    background: #cfc;
+  }
+  #indicator.error {
+    background: #fcc;
+  }
+  video {
+    display: block;
+    margin-top: 8px;
+  }
+</style>
+
+<div id="indicator">waiting</div>
+<video id="v" src="assets/test_h264_aac.mp4" autoplay muted playsinline></video>
+
+<script>
+  (() => {
+    const v = document.getElementById("v");
+    const indicator = document.getElementById("indicator");
+
+    let flipped = false;
+    function flip(reason) {
+      if (flipped) return;
+      flipped = true;
+      indicator.textContent = `playing (${reason})`;
+      indicator.className = "playing";
+    }
+
+    v.addEventListener("playing", () => flip("playing"));
+    v.addEventListener("timeupdate", () => flip("timeupdate"));
+    v.addEventListener("error", () => {
+      indicator.textContent = "error";
+      indicator.className = "error";
+    });
+  })();
+</script>
+

@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>js_controls</title>
+<style>
+  body {
+    font: 14px system-ui, sans-serif;
+  }
+  button {
+    margin: 2px;
+  }
+  #state {
+    margin-top: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+  }
+  #log {
+    margin-top: 8px;
+    border: 1px solid #ccc;
+    padding: 8px;
+    height: 200px;
+    overflow: auto;
+    white-space: pre;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+</style>
+
+<video id="v" src="assets/test_h264_aac.mp4" controls playsinline></video>
+
+<div id="buttons">
+  <button id="play">play()</button>
+  <button id="pause">pause()</button>
+  <button id="seek0">currentTime=0</button>
+  <button id="seek05">currentTime=0.5</button>
+  <button id="toggleMuted">toggle muted</button>
+  <button id="vol0">volume=0</button>
+  <button id="vol05">volume=0.5</button>
+  <button id="vol1">volume=1</button>
+</div>
+
+<div id="state"></div>
+<pre id="log"></pre>
+
+<script>
+  (() => {
+    const m = document.getElementById("v");
+    const stateEl = document.getElementById("state");
+    const logEl = document.getElementById("log");
+
+    let entry = 0;
+    function log(msg) {
+      entry += 1;
+      logEl.textContent += `${entry} ${msg}\n`;
+    }
+
+    function fmtNum(value, digits) {
+      if (Number.isFinite(value)) return value.toFixed(digits);
+      return String(value);
+    }
+
+    function updateState() {
+      stateEl.textContent =
+        `paused=${m.paused} ` +
+        `currentTime=${fmtNum(m.currentTime, 3)} ` +
+        `duration=${fmtNum(m.duration, 3)} ` +
+        `muted=${m.muted} ` +
+        `volume=${fmtNum(m.volume, 2)} ` +
+        `readyState=${m.readyState} ` +
+        `networkState=${m.networkState}`;
+    }
+
+    // Required listeners (for integration tests) that log to the DOM.
+    const events = ["play", "pause", "timeupdate", "ended", "error"];
+    let loggedTimeupdates = 0;
+    for (const ev of events) {
+      m.addEventListener(ev, () => {
+        if (ev === "timeupdate") {
+          loggedTimeupdates += 1;
+          if (loggedTimeupdates > 5) {
+            updateState();
+            return;
+          }
+        }
+        let extra = "";
+        if (ev === "error") {
+          extra = m.error ? ` code=${m.error.code}` : "";
+        }
+        log(`${ev}${extra} t=${fmtNum(m.currentTime, 3)}`);
+        updateState();
+      });
+    }
+
+    updateState();
+
+    document.getElementById("play").addEventListener("click", () => {
+      log("call play()");
+      const p = m.play();
+      if (p && typeof p.catch === "function") {
+        p.catch((e) => log(`play() rejected: ${e && e.name ? e.name : String(e)}`));
+      }
+      updateState();
+    });
+    document.getElementById("pause").addEventListener("click", () => {
+      log("call pause()");
+      m.pause();
+      updateState();
+    });
+    document.getElementById("seek0").addEventListener("click", () => {
+      log("set currentTime=0");
+      m.currentTime = 0;
+      updateState();
+    });
+    document.getElementById("seek05").addEventListener("click", () => {
+      log("set currentTime=0.5");
+      m.currentTime = 0.5;
+      updateState();
+    });
+    document.getElementById("toggleMuted").addEventListener("click", () => {
+      m.muted = !m.muted;
+      log(`set muted=${m.muted}`);
+      updateState();
+    });
+    document.getElementById("vol0").addEventListener("click", () => {
+      m.volume = 0;
+      log("set volume=0");
+      updateState();
+    });
+    document.getElementById("vol05").addEventListener("click", () => {
+      m.volume = 0.5;
+      log("set volume=0.5");
+      updateState();
+    });
+    document.getElementById("vol1").addEventListener("click", () => {
+      m.volume = 1;
+      log("set volume=1");
+      updateState();
+    });
+  })();
+</script>
