@@ -4,12 +4,16 @@
 //! - [`registry`]: browser-side process-per-site/origin bookkeeping (`RendererProcessRegistry`).
 //! - [`subframes`]: browser-owned frame tree + iframe discovery synchronisation, assigning frames to
 //!   renderer processes by [`SiteKey`].
+//! - [`frame_tree`]: low-level browsing-context tree representation keyed by [`FrameToken`], with
+//!   configurable iframe depth limiting (used by future OOPIF + site isolation plumbing).
 //! - [`compositor`]: composition of child frame pixmaps into the final tab surface.
 
 pub mod compositor;
+pub mod frame_tree;
 pub mod registry;
 pub mod subframes;
 
+pub use frame_tree::{EmbeddingGeometry, FrameNodeStatus, FrameToken};
 pub use registry::{
   FrameId, ProcessHandle, ProcessSpawner, RendererProcessId, RendererProcessRegistry,
   RendererProcessRegistryConfig, SiteKey,
