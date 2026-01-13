@@ -22357,12 +22357,12 @@ fn async_eval_update_expression(
   }
 }
 
-fn async_reference_from_member(
+fn async_reference_from_member<'a>(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
-  member: &MemberExpr,
+  member: &'a MemberExpr,
   base: Value,
-) -> Result<Reference<'static>, VmError> {
+) -> Result<Reference<'a>, VmError> {
   if member.optional_chaining {
     return Err(VmError::InvariantViolation(
       "optional chaining used in reference position",
@@ -22378,11 +22378,23 @@ fn async_reference_from_member(
 
   let mut key_scope = scope.reborrow();
   key_scope.push_root(base)?;
-  let key_s = key_scope.alloc_string(&member.right)?;
-  Ok(Reference::Property {
-    base,
-    key: PropertyKey::from_string(key_s),
-  })
+  if member.right.starts_with('#') {
+    let sym = key_scope
+      .heap()
+      .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+      .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+    Ok(Reference::Private {
+      base,
+      sym,
+      name: &member.right,
+    })
+  } else {
+    let key_s = key_scope.alloc_string(&member.right)?;
+    Ok(Reference::Property {
+      base,
+      key: PropertyKey::from_string(key_s),
+    })
+  }
 }
 
 fn async_update_computed_member_after_base(
@@ -22575,10 +22587,22 @@ fn async_eval_tagged_template_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&member.right)?;
-    let reference = Reference::Property {
-      base,
-      key: PropertyKey::from_string(key_s),
+    let reference = if member.right.starts_with('#') {
+      let sym = key_scope
+        .heap()
+        .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+        .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+      Reference::Private {
+        base,
+        sym,
+        name: &member.right,
+      }
+    } else {
+      let key_s = key_scope.alloc_string(&member.right)?;
+      Reference::Property {
+        base,
+        key: PropertyKey::from_string(key_s),
+      }
     };
     evaluator
       .get_value_from_reference(&mut key_scope, &reference)
@@ -23281,10 +23305,22 @@ fn async_member_after_base(
 
   let mut key_scope = scope.reborrow();
   key_scope.push_root(base)?;
-  let key_s = key_scope.alloc_string(&expr.right)?;
-  let reference = Reference::Property {
-    base,
-    key: PropertyKey::from_string(key_s),
+  let reference = if expr.right.starts_with('#') {
+    let sym = key_scope
+      .heap()
+      .resolve_private_name_symbol(evaluator.env.lexical_env, &expr.right)?
+      .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+    Reference::Private {
+      base,
+      sym,
+      name: &expr.right,
+    }
+  } else {
+    let key_s = key_scope.alloc_string(&expr.right)?;
+    Reference::Property {
+      base,
+      key: PropertyKey::from_string(key_s),
+    }
   };
   evaluator
     .get_value_from_reference(&mut key_scope, &reference)
