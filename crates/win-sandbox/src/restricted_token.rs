@@ -104,10 +104,11 @@ pub fn create_restricted_token_low_integrity() -> Result<OwnedHandle> {
   //
   // This still satisfies the intent: if the current token contains any of these well-known groups,
   // we disable them; otherwise there is nothing to disable.
-  let attempts: [&[&OwnedSid]; 3] = [
+  let attempts: [&[&OwnedSid]; 4] = [
     &[&admin_sid, &power_users_sid, &users_sid],
     &[&admin_sid, &users_sid],
     &[&users_sid],
+    &[],
   ];
 
   let mut last_err: Option<WinSandboxError> = None;
@@ -261,7 +262,10 @@ fn sid_from_sddl(sddl: &str) -> Result<OwnedSid> {
   Ok(OwnedSid::from_local_free(sid as _))
 }
 
-fn create_restricted_token_disable_sids(existing_token: HANDLE, disabled: &[&OwnedSid]) -> Result<OwnedHandle> {
+fn create_restricted_token_disable_sids(
+  existing_token: HANDLE,
+  disabled: &[&OwnedSid],
+) -> Result<OwnedHandle> {
   let disabled: Vec<SID_AND_ATTRIBUTES> = disabled
     .iter()
     .map(|sid| SID_AND_ATTRIBUTES {
@@ -269,6 +273,11 @@ fn create_restricted_token_disable_sids(existing_token: HANDLE, disabled: &[&Own
       Attributes: 0,
     })
     .collect();
+  let disabled_ptr = if disabled.is_empty() {
+    std::ptr::null()
+  } else {
+    disabled.as_ptr()
+  };
 
   let mut restricted: HANDLE = std::ptr::null_mut();
   let ok = unsafe {
@@ -276,7 +285,7 @@ fn create_restricted_token_disable_sids(existing_token: HANDLE, disabled: &[&Own
       existing_token,
       DISABLE_MAX_PRIVILEGE,
       disabled.len() as u32,
-      disabled.as_ptr(),
+      disabled_ptr,
       0,
       std::ptr::null(),
       0,
