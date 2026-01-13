@@ -146,6 +146,9 @@ Run a thematic suite directly:
 
 ```bash
 bash scripts/cargo_agent.sh xtask js test262 --suite language_statements
+
+# RegExp-focused suite (named groups, indices, lookbehind, property escapes, String match/matchAll)
+bash scripts/cargo_agent.sh xtask js test262 --suite regexp
 ```
 
 Further narrow any suite using `--filter` (glob or regex on test ids):
