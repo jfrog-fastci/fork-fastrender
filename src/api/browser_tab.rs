@@ -4252,6 +4252,11 @@ pub struct BrowserTab {
 }
 
 impl BrowserTab {
+  fn sync_document_animation_time_to_event_loop(&mut self) {
+    let ms = crate::js::time::duration_to_ms_f64(self.event_loop.now()) as f32;
+    self.host.document.set_animation_time_ms(ms);
+  }
+
   pub fn from_html_with_vmjs_executor(html: &str, options: RenderOptions) -> Result<Self> {
     Self::from_html(html, options, super::VmJsBrowserTabExecutor::default())
   }
@@ -5566,6 +5571,11 @@ impl BrowserTab {
           BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
         }
         if render_between_turns && host.document.is_dirty() {
+          // If the document is already dirty, we're about to render a frame. Update the renderer's
+          // CSS animation sampling time to match the JS event-loop clock so any time-dependent
+          // effects (animations/transitions) stay coherent with `requestAnimationFrame`.
+          let ms = crate::js::time::duration_to_ms_f64(event_loop.now()) as f32;
+          host.document.set_animation_time_ms(ms);
           if let Some(frame) = host.document.render_if_needed()? {
             *pending_frame = Some(frame);
             on_render();
@@ -6268,6 +6278,10 @@ impl BrowserTab {
         continue;
       }
 
+      if self.host.document.is_dirty() || matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. })
+      {
+        self.sync_document_animation_time_to_event_loop();
+      }
       if let Some(frame) = self.host.document.render_if_needed()? {
         self.pending_frame = Some(frame);
         frames_rendered = frames_rendered.saturating_add(1);
@@ -6397,10 +6411,12 @@ impl BrowserTab {
     // `run_event_loop_until_idle` does not run requestAnimationFrame callbacks. When embeddings drive
     // a tab via `tick_frame()`, rAF callbacks would otherwise starve forever once the event loop is
     // idle.
+    let mut ran_animation_frame = false;
     if self.event_loop.has_pending_animation_frame_callbacks() {
       let raf_outcome = self
         .event_loop
         .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
+      ran_animation_frame = matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. });
 
       if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
         // HTML: microtask checkpoint after rAF callbacks.
@@ -6454,6 +6470,93 @@ impl BrowserTab {
       }
     }
 
+    // Tie CSS animation sampling to the same event-loop clock used for `requestAnimationFrame`
+    // timestamps.
+    //
+    // We only sync time when we're going to render anyway:
+    // - the document is already dirty (DOM/style/layout changes),
+    // - or we just ran an animation frame turn.
+    //
+    // This avoids making `tick_frame()` produce spurious frames when no work remains.
+    if self.host.document.is_dirty() || ran_animation_frame {
+      self.sync_document_animation_time_to_event_loop();
+    }
+    self.render_if_needed()
+  }
+
+  /// Run one animation frame turn (draining `requestAnimationFrame` callbacks queued before the
+  /// frame starts) and render if needed.
+  ///
+  /// This ties the CSS animation sampling time to the same event-loop clock used for the rAF
+  /// timestamp argument so JS-driven frame ticks advance visuals coherently.
+  pub fn tick_animation_frame(&mut self) -> Result<Option<Pixmap>> {
+    let run_limits = self.host.js_execution_options.event_loop_run_limits;
+    let trace = self.trace.clone();
+    let diagnostics = self.diagnostics.clone();
+    let mut report_error = move |err: Error| {
+      let message = err.to_string();
+      if let Some(diag) = &diagnostics {
+        diag.record_js_exception(message.clone(), None);
+      }
+      if trace.is_enabled() {
+        let mut span = trace.span("js.uncaught_exception", "js");
+        span.arg_str("message", &message);
+      }
+    };
+
+    let raf_outcome = self
+      .event_loop
+      .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
+    if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
+      // HTML: microtask checkpoint after rAF callbacks.
+      //
+      // Drain microtasks only: tasks/timers must wait for a future tick so rendering can happen
+      // first.
+      let microtask_limits = RunLimits {
+        max_tasks: 0,
+        max_microtasks: run_limits.max_microtasks,
+        max_wall_time: run_limits.max_wall_time,
+      };
+      match self.event_loop.run_until_idle_handling_errors_with_hook(
+        &mut self.host,
+        microtask_limits,
+        &mut report_error,
+        |host, event_loop| {
+          let executor_hook: fn(&mut BrowserTabHost, &mut EventLoop<BrowserTabHost>) -> Result<()> =
+            BrowserTabHost::executor_microtask_checkpoint_hook;
+          if !event_loop
+            .microtask_checkpoint_hooks()
+            .iter()
+            .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
+          {
+            BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
+          }
+          host.discover_dynamic_scripts(event_loop)
+        },
+      )? {
+        RunUntilIdleOutcome::Idle
+        | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
+          // Expected: tasks may exist, but this checkpoint only drains microtasks.
+        }
+        RunUntilIdleOutcome::Stopped(reason) => {
+          return Err(Error::Other(format!(
+            "BrowserTab::tick_animation_frame microtask checkpoint stopped: {reason:?}"
+          )))
+        }
+      }
+
+      // Ensure scripts inserted by rAF callbacks are discovered even if there were no microtasks to
+      // drain (meaning the microtask-only run can stop at `MaxTasks` without invoking hooks).
+      let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+      host.discover_dynamic_scripts(event_loop)?;
+    }
+
+    if self.commit_pending_navigation()? {
+      // Navigation resets the document/event loop; render the new document if needed.
+      return self.render_if_needed();
+    }
+
+    self.sync_document_animation_time_to_event_loop();
     self.render_if_needed()
   }
 
@@ -6648,6 +6751,7 @@ mod tests {
   use std::rc::Rc;
   use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex, OnceLock};
+  use std::time::Duration;
 
   use vm_js::{
     GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm, VmError, VmHost,
@@ -7829,8 +7933,6 @@ mod tests {
 
   #[test]
   fn realtime_animations_sample_event_loop_clock() -> Result<()> {
-    use std::time::Duration;
-
     let clock: Arc<VirtualClock> = Arc::new(VirtualClock::new());
     let event_loop = EventLoop::with_clock(clock.clone() as Arc<dyn Clock>);
 
@@ -7878,6 +7980,57 @@ mod tests {
       end[0] <= 10 && end[1] <= 10 && end[2] <= 10 && end[3] == 255,
       "expected animation end frame to be opaque black, got {end:?}"
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_tick_animation_frame_syncs_css_animation_time_to_event_loop() -> Result<()> {
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; background: rgb(255, 255, 255); }
+            #box {
+              width: 10px;
+              height: 10px;
+              background: rgb(255, 0, 0);
+              animation: move 200ms linear infinite;
+            }
+            @keyframes move {
+              from { transform: translateX(0px); }
+              to { transform: translateX(20px); }
+            }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>"#;
+    let options = RenderOptions::new().with_viewport(32, 16);
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock_for_loop);
+    let mut tab = BrowserTab::from_html_with_event_loop(
+      html,
+      options,
+      NoopExecutor::default(),
+      event_loop,
+    )?;
+
+    let frame_0 = tab
+      .tick_animation_frame()?
+      .expect("expected initial frame at t=0ms");
+    assert_eq!(rgba_at(&frame_0, 2, 2), [255, 0, 0, 255]);
+    assert_eq!(rgba_at(&frame_0, 12, 2), [255, 255, 255, 255]);
+
+    clock.set_now(Duration::from_millis(100));
+    let frame_100 = tab
+      .tick_animation_frame()?
+      .expect("expected frame at t=100ms");
+    assert_eq!(rgba_at(&frame_100, 2, 2), [255, 255, 255, 255]);
+    assert_eq!(rgba_at(&frame_100, 12, 2), [255, 0, 0, 255]);
 
     Ok(())
   }
