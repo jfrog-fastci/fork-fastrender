@@ -5,6 +5,8 @@ use super::{
 };
 use crate::error::{Error, ResourceError, Result};
 use base64::Engine as _;
+use http::header::HeaderName;
+use http::Method;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -36,16 +38,34 @@ pub const IPC_MAX_INBOUND_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 pub const IPC_MAX_OUTBOUND_FRAME_BYTES: usize = 80 * 1024 * 1024; // 80 MiB
 
 /// Maximum URL string length accepted by the network process (in bytes).
-pub const IPC_MAX_URL_BYTES: usize = 1024 * 1024; // 1 MiB
+///
+/// Note: this limit is intended for *network* URLs (http/https). Other URL schemes (notably `data:`)
+/// can legitimately be larger; those use [`IPC_MAX_NON_HTTP_URL_BYTES`].
+pub const IPC_MAX_URL_BYTES: usize = 8 * 1024; // 8 KiB
 
 /// Maximum number of request headers accepted by the network process.
-pub const IPC_MAX_HEADER_COUNT: usize = 1024;
+pub const IPC_MAX_HEADER_COUNT: usize = 256;
 
 /// Maximum byte length for a single request header name.
 pub const IPC_MAX_HEADER_NAME_BYTES: usize = 1024;
 
 /// Maximum byte length for a single request header value.
-pub const IPC_MAX_HEADER_VALUE_BYTES: usize = 16 * 1024;
+pub const IPC_MAX_HEADER_VALUE_BYTES: usize = 1024;
+
+/// Maximum URL length (in bytes) accepted for non-http(s) schemes (e.g. data/file/about).
+///
+/// This is still bounded to avoid pathological IPC payloads, but is intentionally larger than
+/// [`IPC_MAX_URL_BYTES`] so inline resources like `data:` URLs do not get truncated prematurely.
+pub const IPC_MAX_NON_HTTP_URL_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Maximum decoded request body size (in bytes) accepted in [`IpcHttpRequest::body_b64`].
+///
+/// Larger uploads should be implemented using chunked/streaming request bodies instead of sending a
+/// single base64 blob over IPC.
+pub const IPC_MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Maximum byte length for the HTTP method string in [`IpcHttpRequest`].
+pub const IPC_MAX_METHOD_BYTES: usize = 64;
 
 /// Maximum byte length for the auth token string.
 pub const IPC_MAX_AUTH_TOKEN_BYTES: usize = 1024;
@@ -67,6 +87,26 @@ const IPC_INLINE_LIMIT_BYTES: usize = 1 * 1024 * 1024;
 /// This is intentionally small so that even JSON + base64 encoding stays well under the global IPC
 /// frame caps.
 const IPC_CHUNK_MAX_BYTES: usize = 64 * 1024;
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+  value
+    .get(..prefix.len())
+    .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn is_http_or_https_url(url: &str) -> bool {
+  starts_with_ignore_ascii_case(url, "http://") || starts_with_ignore_ascii_case(url, "https://")
+}
+
+fn contains_nul_cr_or_lf(s: &str) -> bool {
+  s.as_bytes()
+    .iter()
+    .any(|&b| b == 0x00 || b == b'\r' || b == b'\n')
+}
+
+fn contains_nul(s: &str) -> bool {
+  s.as_bytes().contains(&0x00)
+}
 
 fn write_ipc_frame<W: Write>(
   writer: &mut W,
@@ -308,12 +348,22 @@ impl<'a, W: Write> NetworkService<'a, W> {
 }
 
 fn validate_ipc_url(url: &str) -> std::result::Result<(), String> {
-  if url.len() > IPC_MAX_URL_BYTES {
-    return Err(format!(
-      "URL exceeds max length ({} > {})",
-      url.len(),
-      IPC_MAX_URL_BYTES
-    ));
+  let is_http_like = is_http_or_https_url(url);
+  let max_len = if is_http_like {
+    IPC_MAX_URL_BYTES
+  } else {
+    IPC_MAX_NON_HTTP_URL_BYTES
+  };
+  if url.len() > max_len {
+    return Err(format!("url exceeds max length ({} > {})", url.len(), max_len));
+  }
+  // NUL bytes are always rejected.
+  if contains_nul(url) {
+    return Err("url contains NUL byte".to_string());
+  }
+  // CR/LF bytes are rejected for network URLs (avoid header injection and parsing ambiguity).
+  if is_http_like && url.as_bytes().iter().any(|&b| b == b'\r' || b == b'\n') {
+    return Err("url contains CR/LF bytes".to_string());
   }
   Ok(())
 }
@@ -327,6 +377,9 @@ fn validate_ipc_headers(headers: &[(String, String)]) -> std::result::Result<(),
     ));
   }
   for (name, value) in headers {
+    if name.is_empty() {
+      return Err("header name is empty".to_string());
+    }
     if name.len() > IPC_MAX_HEADER_NAME_BYTES {
       return Err(format!(
         "header name exceeds max length ({} > {})",
@@ -341,6 +394,67 @@ fn validate_ipc_headers(headers: &[(String, String)]) -> std::result::Result<(),
         IPC_MAX_HEADER_VALUE_BYTES
       ));
     }
+
+    if contains_nul_cr_or_lf(name) {
+      return Err("header name contains NUL/CR/LF bytes".to_string());
+    }
+    if contains_nul_cr_or_lf(value) {
+      return Err("header value contains NUL/CR/LF bytes".to_string());
+    }
+    if HeaderName::from_bytes(name.as_bytes()).is_err() {
+      return Err("header name is not a valid HTTP token".to_string());
+    }
+  }
+  Ok(())
+}
+
+fn validate_ipc_method(method: &str) -> std::result::Result<(), String> {
+  if method.is_empty() {
+    return Err("method is empty".to_string());
+  }
+  if method.len() > IPC_MAX_METHOD_BYTES {
+    return Err(format!(
+      "method exceeds max length ({} > {})",
+      method.len(),
+      IPC_MAX_METHOD_BYTES
+    ));
+  }
+  if contains_nul_cr_or_lf(method) {
+    return Err("method contains NUL/CR/LF bytes".to_string());
+  }
+  if Method::from_bytes(method.as_bytes()).is_err() {
+    return Err("method is not a valid HTTP token".to_string());
+  }
+  Ok(())
+}
+
+fn estimated_base64_decoded_len(encoded_len: usize) -> Option<usize> {
+  // Conservative upper bound for base64 decoded bytes, accounting for unpadded encodings:
+  // - Each 4 chars yields up to 3 bytes.
+  // - Remainders yield up to 0/1/2 bytes (1 is invalid base64 and will error on decode anyway).
+  let chunks = encoded_len.checked_div(4)?;
+  let rem = encoded_len % 4;
+  let mut out = chunks.checked_mul(3)?;
+  let extra = match rem {
+    0 => 0,
+    1 => 0,
+    2 => 1,
+    3 => 2,
+    _ => 0,
+  };
+  out = out.checked_add(extra)?;
+  Some(out)
+}
+
+fn validate_ipc_body(body_b64: &str) -> std::result::Result<(), String> {
+  let Some(estimated) = estimated_base64_decoded_len(body_b64.len()) else {
+    return Err("request body length overflow".to_string());
+  };
+  if estimated > IPC_MAX_REQUEST_BODY_BYTES {
+    return Err(format!(
+      "request body exceeds max length (estimated {} > {})",
+      estimated, IPC_MAX_REQUEST_BODY_BYTES
+    ));
   }
   Ok(())
 }
@@ -361,6 +475,9 @@ pub fn validate_ipc_request(request: &IpcRequest) -> std::result::Result<(), Str
     IpcRequest::Hello { token } => {
       if token.is_empty() {
         return Err("auth token is empty".to_string());
+      }
+      if contains_nul_cr_or_lf(token) {
+        return Err("auth token contains NUL/CR/LF bytes".to_string());
       }
       if token.len() > IPC_MAX_AUTH_TOKEN_BYTES {
         return Err(format!(
@@ -386,7 +503,11 @@ pub fn validate_ipc_request(request: &IpcRequest) -> std::result::Result<(), Str
     | IpcRequest::RemoveCacheArtifactWithRequest { req, .. } => validate_ipc_fetch_request(req),
     IpcRequest::FetchHttpRequest { req } => {
       validate_ipc_fetch_request(&req.fetch)?;
+      validate_ipc_method(&req.method)?;
       validate_ipc_headers(&req.headers)?;
+      if let Some(body_b64) = req.body_b64.as_deref() {
+        validate_ipc_body(body_b64)?;
+      }
       Ok(())
     }
     IpcRequest::RequestHeaderValue { req, header_name } => {
@@ -398,8 +519,132 @@ pub fn validate_ipc_request(request: &IpcRequest) -> std::result::Result<(), Str
           IPC_MAX_HEADER_NAME_BYTES
         ));
       }
+      if contains_nul_cr_or_lf(header_name) {
+        return Err("header_name contains NUL/CR/LF bytes".to_string());
+      }
       Ok(())
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn validate_ipc_request_rejects_overlong_http_url() {
+    let base = "https://example.com/";
+    let pad = "a".repeat(IPC_MAX_URL_BYTES - base.len() + 1);
+    let url = format!("{base}{pad}");
+    assert!(url.len() > IPC_MAX_URL_BYTES);
+    let err = validate_ipc_request(&IpcRequest::Fetch { url }).unwrap_err();
+    assert!(err.contains("url exceeds max length"), "unexpected error: {err}");
+  }
+
+  #[test]
+  fn validate_ipc_request_rejects_too_many_headers() {
+    let mut headers = Vec::new();
+    for idx in 0..=IPC_MAX_HEADER_COUNT {
+      headers.push((format!("x-test-{idx}"), "a".to_string()));
+    }
+    let req = IpcRequest::FetchHttpRequest {
+      req: IpcHttpRequest {
+        fetch: IpcFetchRequest {
+          url: "https://example.com/".to_string(),
+          destination: FetchDestination::Fetch,
+          referrer_url: None,
+          client_origin: None,
+          referrer_policy: ReferrerPolicy::NoReferrer,
+          credentials_mode: FetchCredentialsMode::Omit,
+        },
+        method: "GET".to_string(),
+        redirect: web_fetch::RequestRedirect::Follow,
+        headers,
+        body_b64: None,
+      },
+    };
+    let err = validate_ipc_request(&req).unwrap_err();
+    assert!(err.contains("header count exceeds max"), "unexpected error: {err}");
+  }
+
+  #[test]
+  fn validate_ipc_request_rejects_overlong_header_value() {
+    let value = "a".repeat(IPC_MAX_HEADER_VALUE_BYTES + 1);
+    let req = IpcRequest::FetchHttpRequest {
+      req: IpcHttpRequest {
+        fetch: IpcFetchRequest {
+          url: "https://example.com/".to_string(),
+          destination: FetchDestination::Fetch,
+          referrer_url: None,
+          client_origin: None,
+          referrer_policy: ReferrerPolicy::NoReferrer,
+          credentials_mode: FetchCredentialsMode::Omit,
+        },
+        method: "GET".to_string(),
+        redirect: web_fetch::RequestRedirect::Follow,
+        headers: vec![("X-Test".to_string(), value)],
+        body_b64: None,
+      },
+    };
+    let err = validate_ipc_request(&req).unwrap_err();
+    assert!(
+      err.contains("header value exceeds max length"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn validate_ipc_request_rejects_header_value_with_newlines() {
+    let req = IpcRequest::FetchHttpRequest {
+      req: IpcHttpRequest {
+        fetch: IpcFetchRequest {
+          url: "https://example.com/".to_string(),
+          destination: FetchDestination::Fetch,
+          referrer_url: None,
+          client_origin: None,
+          referrer_policy: ReferrerPolicy::NoReferrer,
+          credentials_mode: FetchCredentialsMode::Omit,
+        },
+        method: "GET".to_string(),
+        redirect: web_fetch::RequestRedirect::Follow,
+        headers: vec![("X-Test".to_string(), "hello\r\nworld".to_string())],
+        body_b64: None,
+      },
+    };
+    let err = validate_ipc_request(&req).unwrap_err();
+    assert!(
+      err.contains("header value contains NUL/CR/LF"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn validate_ipc_request_rejects_overlong_request_body() {
+    // Construct an encoded body string that will exceed the max decoded length estimate without
+    // requiring us to actually base64-encode a huge buffer.
+    let encoded_len = (IPC_MAX_REQUEST_BODY_BYTES / 3).saturating_add(1) * 4;
+    let body_b64 = "A".repeat(encoded_len);
+    let req = IpcRequest::FetchHttpRequest {
+      req: IpcHttpRequest {
+        fetch: IpcFetchRequest {
+          url: "https://example.com/".to_string(),
+          destination: FetchDestination::Fetch,
+          referrer_url: None,
+          client_origin: None,
+          referrer_policy: ReferrerPolicy::NoReferrer,
+          credentials_mode: FetchCredentialsMode::Omit,
+        },
+        method: "POST".to_string(),
+        redirect: web_fetch::RequestRedirect::Follow,
+        headers: vec![],
+        body_b64: Some(body_b64),
+      },
+    };
+    let err = validate_ipc_request(&req).unwrap_err();
+    assert!(
+      err.contains("request body exceeds max length"),
+      "unexpected error: {err}"
+    );
   }
 }
 
@@ -645,10 +890,21 @@ impl IpcHttpRequest {
     let Some(encoded) = &self.body_b64 else {
       return Ok(None);
     };
+    // Enforce a hard cap before decoding so we never allocate attacker-controlled request bodies.
+    validate_ipc_body(encoded)?;
     base64::engine::general_purpose::STANDARD
       .decode(encoded.as_bytes())
-      .map(Some)
       .map_err(|err| format!("invalid base64 request body: {err}"))
+      .and_then(|bytes| {
+        if bytes.len() > IPC_MAX_REQUEST_BODY_BYTES {
+          return Err(format!(
+            "request body exceeds max length ({} > {})",
+            bytes.len(),
+            IPC_MAX_REQUEST_BODY_BYTES
+          ));
+        }
+        Ok(Some(bytes))
+      })
   }
 }
 
