@@ -8331,14 +8331,27 @@ impl<'a> Evaluator<'a> {
     block_scope.push_root(Value::Object(receiver))?;
 
     let saved_this = self.this;
+    let saved_this_initialized = self.this_initialized;
     let saved_new_target = self.new_target;
     let saved_home_object = self.home_object;
     let saved_lex = self.env.lexical_env;
     let saved_var_env = self.env.var_env();
+    let saved_this_root = self
+      .this_root_idx
+      .map(|idx| block_scope.heap().root_stack[idx]);
 
     self.this = Value::Object(receiver);
+    // Static blocks have their own `this` binding which is always initialized, even if the
+    // surrounding code is executing inside a derived constructor before `super()` returns.
+    self.this_initialized = true;
     self.new_target = Value::Undefined;
+    // Static blocks use the class constructor object as their `[[HomeObject]]` so `super.prop`
+    // resolves against `Object.getPrototypeOf(classConstructor)` and uses `classConstructor` as the
+    // receiver.
     self.home_object = Some(receiver);
+    if let Some(idx) = self.this_root_idx {
+      block_scope.heap_mut().root_stack[idx] = self.this;
+    }
 
     let var_env = block_scope.env_create(Some(saved_lex))?;
     let body_lex = block_scope.env_create(Some(var_env))?;
@@ -8354,8 +8367,12 @@ impl<'a> Evaluator<'a> {
     self.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
     self.env.set_var_env(saved_var_env);
     self.this = saved_this;
+    self.this_initialized = saved_this_initialized;
     self.new_target = saved_new_target;
     self.home_object = saved_home_object;
+    if let Some(idx) = self.this_root_idx {
+      block_scope.heap_mut().root_stack[idx] = saved_this_root.unwrap_or(Value::Undefined);
+    }
 
     match res? {
       Completion::Normal(_) => Ok(()),
@@ -9878,6 +9895,48 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     expr: &MemberExpr,
   ) -> Result<OptionalChainEval, VmError> {
+    // `super.prop` (SuperProperty) evaluation.
+    //
+    // This is a Super Reference which uses:
+    // - the current lexical `[[HomeObject]]` to resolve the super base (`GetSuperBase`), and
+    // - the current `this` binding as the receiver for `[[Get]]`.
+    if matches!(&*expr.left.stx, Expr::Super(_)) {
+      // Optional chaining on `super` is an early error.
+      if expr.optional_chaining {
+        return Err(VmError::InvariantViolation(
+          "optional chaining used with super property",
+        ));
+      }
+      // Private-name super property access is an early error (`super.#x`).
+      if expr.right.starts_with('#') {
+        return Err(VmError::InvariantViolation(
+          "super private-name member access should be rejected by early errors",
+        ));
+      }
+
+      // Evaluating a super property reference requires an initialized `this` binding; in derived
+      // constructors before `super()`, this throws before any further evaluation.
+      if self.derived_constructor && !self.this_initialized {
+        return Err(throw_reference_error(
+          self.vm,
+          scope,
+          "Must call super constructor in derived class before accessing 'this'",
+        )?);
+      }
+
+      let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+        "super property access missing [[HomeObject]]",
+      ))?;
+
+      // Root `this` + home object across property-key string allocation.
+      let mut key_scope = scope.reborrow();
+      key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+      let key_s = key_scope.alloc_string(&expr.right)?;
+      let key = PropertyKey::from_string(key_s);
+      let value = self.eval_super_property_get(&mut key_scope, key)?;
+      return Ok(OptionalChainEval::Value(value));
+    }
+
     let base = match self.eval_chain_base(scope, &expr.left)? {
       OptionalChainEval::Value(v) => v,
       OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
@@ -9917,16 +9976,38 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     expr: &ComputedMemberExpr,
   ) -> Result<OptionalChainEval, VmError> {
-    // Evaluating a `super[expr]` property reference requires an initialized `this` binding.
+    // `super[expr]` (SuperProperty) evaluation.
     //
-    // In derived constructors before `super()`, this check must happen **before** evaluating the
-    // computed key expression.
-    if matches!(&*expr.object.stx, Expr::Super(_)) && self.derived_constructor && !self.this_initialized {
-      return Err(throw_reference_error(
-        self.vm,
-        scope,
-        "Must call super constructor in derived class before accessing 'this'",
-      )?);
+    // Like `super.prop`, this uses `[[HomeObject]]` to resolve the super base and the current `this`
+    // binding as the receiver. Per ECMA-262, derived constructors must throw before evaluating the
+    // computed key expression when `this` is uninitialized.
+    if matches!(&*expr.object.stx, Expr::Super(_)) {
+      if expr.optional_chaining {
+        return Err(VmError::InvariantViolation(
+          "optional chaining used with super computed property",
+        ));
+      }
+
+      if self.derived_constructor && !self.this_initialized {
+        return Err(throw_reference_error(
+          self.vm,
+          scope,
+          "Must call super constructor in derived class before accessing 'this'",
+        )?);
+      }
+
+      let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+        "super property access missing [[HomeObject]]",
+      ))?;
+
+      // Root `this` + home object across evaluation of the computed member key and `ToPropertyKey`.
+      let mut key_scope = scope.reborrow();
+      key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+      let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
+      key_scope.push_root(member_value)?;
+      let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+      let value = self.eval_super_property_get(&mut key_scope, key)?;
+      return Ok(OptionalChainEval::Value(value));
     }
 
     let base = match self.eval_chain_base(scope, &expr.object)? {
@@ -9948,6 +10029,52 @@ impl<'a> Evaluator<'a> {
     let reference = Reference::Property { base, key };
     let value = self.get_value_from_reference(&mut key_scope, &reference)?;
     Ok(OptionalChainEval::Value(value))
+  }
+
+  fn eval_super_property_get(
+    &mut self,
+    scope: &mut Scope<'_>,
+    key: PropertyKey,
+  ) -> Result<Value, VmError> {
+    let this_value = self.this;
+    let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+      "super property access missing [[HomeObject]]",
+    ))?;
+
+    // Root `this`, `home_object`, and `key` across:
+    // - `GetPrototypeOf(home_object)` (Proxy-aware), and
+    // - the final `[[Get]]` (which can invoke accessors).
+    let mut super_scope = scope.reborrow();
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    super_scope.push_roots(&[this_value, Value::Object(home_object), key_root])?;
+
+    let super_base = super_scope.get_prototype_of_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      home_object,
+    )?;
+    let Some(super_base) = super_base else {
+      // `super` base is `null`: dereferencing throws a TypeError.
+      return Err(throw_type_error(
+        self.vm,
+        &mut super_scope,
+        "Cannot convert undefined or null to object",
+      )?);
+    };
+
+    super_scope.push_root(Value::Object(super_base))?;
+    super_scope.get_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      super_base,
+      key,
+      this_value,
+    )
   }
 
   fn eval_reference<'b>(
@@ -37339,6 +37466,65 @@ mod tests {
       VmError::Syntax(_) => Ok(()),
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn class_static_block_super_property_uses_class_constructor_home_object() -> Result<(), VmError> {
+    let source = r#"
+      function Parent() {}
+
+      var receiver1, receiver2, receiver3;
+      var val1, val2, val3;
+      var f;
+
+      Object.defineProperty(Parent, "x", {
+        get() { receiver1 = this; return 42; }
+      });
+      Object.defineProperty(Parent, "y", {
+        get() { receiver2 = this; return 99; }
+      });
+      Object.defineProperty(Parent, "z", {
+        get() { receiver3 = this; return 123; }
+      });
+
+      class C extends Parent {
+        static {
+          val1 = super.x;
+          f = () => super.y;
+          val3 = super["z"];
+        }
+      }
+
+      val2 = f();
+
+      receiver1 === C &&
+        receiver2 === C &&
+        receiver3 === C &&
+        val1 === 42 &&
+        val2 === 99 &&
+        val3 === 123
+    "#;
+
+    // Interpreter mode.
+    {
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+      let mut rt = JsRuntime::new(vm, heap)?;
+      let value = rt.exec_script(source)?;
+      assert!(matches!(value, Value::Bool(true)), "got {value:?}");
+    }
+
+    // Compiled (HIR) mode.
+    {
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+      let mut rt = JsRuntime::new(vm, heap)?;
+      let script = crate::CompiledScript::compile_script(rt.heap_mut(), "<static_block_super>", source)?;
+      let value = rt.exec_compiled_script(script)?;
+      assert!(matches!(value, Value::Bool(true)), "got {value:?}");
+    }
+
+    Ok(())
   }
 
   #[test]

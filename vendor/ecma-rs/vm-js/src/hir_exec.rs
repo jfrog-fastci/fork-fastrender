@@ -8707,6 +8707,8 @@ impl<'vm> HirEvaluator<'vm> {
       self.this = Value::Object(receiver);
       self.this_initialized = true;
       self.new_target = Value::Undefined;
+      // Static blocks use the class constructor object as their `[[HomeObject]]` so `super.prop`
+      // resolves against `Object.getPrototypeOf(classConstructor)` with receiver = `classConstructor`.
       self.home_object = Some(receiver);
 
       let var_env = block_scope.env_create(Some(saved_lex))?;
