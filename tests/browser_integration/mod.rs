@@ -12,6 +12,7 @@ mod headless_chrome_media_features;
 mod browser_mem_limit_env;
 mod browser_bookmarks_history_restore;
 mod browser_session_restore;
+mod browser_session_multi_window_restore;
 mod browser_session_lock_enforced;
 mod browser_session_scroll_restore;
 mod browser_tab_fetcher_injection;
