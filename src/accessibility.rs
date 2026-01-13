@@ -2388,6 +2388,7 @@ fn has_global_aria_attributes(node: &DomNode) -> bool {
         | "aria-controls"
         | "aria-current"
         | "aria-describedby"
+        | "aria-description"
         | "aria-details"
         | "aria-disabled"
         | "aria-dropeffect"

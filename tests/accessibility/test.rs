@@ -495,6 +495,42 @@ fn accessibility_presentational_role_disallowed_with_aria_activedescendant() {
 }
 
 #[test]
+fn accessibility_presentational_role_disallowed_with_aria_description() {
+  let html = r##"
+    <html>
+      <body>
+        <div id="x" role="presentation" aria-description="Extra detail">Text</div>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let subset = snapshot_subset(&tree, &["x"]);
+
+  assert_eq!(
+    subset,
+    json!({
+      "x": {
+        "role": "generic",
+        "name": "Text",
+        "description": "Extra detail",
+        "value": null,
+        "level": null,
+        "html_tag": "div",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      }
+    })
+  );
+}
+
+#[test]
 fn accessibility_details_expanded_state() {
   let html = r##"
     <html>
