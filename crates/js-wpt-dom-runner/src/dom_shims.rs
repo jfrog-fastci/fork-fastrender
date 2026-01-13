@@ -600,6 +600,11 @@ const DOM_SHIM: &str = r##"
   }
 
   function traverseElementSubtree(root, visit) {
+    // Treat inert HTML `<template>` contents as disconnected from traversal APIs.
+    //
+    // In the real DOM, `template.content` owns the template's descendants, so querying from the
+    // `<template>` element itself must not expose those nodes.
+    if (g.__fastrender_dom_is_inert_template(nodeIdFromThis(root))) return;
     var stack = [];
     var kids = root.childNodes || [];
     for (var i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
@@ -2396,6 +2401,9 @@ impl Dom {
     if matches!(root_node.kind, NodeKind::Text { .. }) {
       return Err(DomShimError::InvalidNodeType);
     }
+    if root_node.is_inert_template {
+      return Ok(Vec::new());
+    }
 
     // Clone so we can traverse without holding a borrow on `root_node`.
     let initial_children = root_node.children.clone();
@@ -3425,8 +3433,8 @@ mod tests {
         (function () {
           // `<template>` in SVG namespace is not an inert HTML template; traversal APIs should still
           // walk its descendants.
-          document.body.innerHTML = "<svg><template><div id='inside'></div></template></svg><div id='outside'></div>";
-          var divs = document.getElementsByTagName("div");
+          document.body.innerHTML = "<svg><template><g id='inside'></g></template></svg><g id='outside'></g>";
+          var divs = document.getElementsByTagName("g");
           return JSON.stringify({
             len: divs.length,
             ids: Array.from(divs).map(function (n) { return n.id; }).join(",")
@@ -3478,7 +3486,7 @@ mod tests {
         (function () {
           // `<template>` in SVG namespace is not an inert HTML template; selector traversal should
           // still walk its descendants.
-          document.body.innerHTML = "<svg><template><div id='inside'></div></template></svg><div id='outside'></div>";
+          document.body.innerHTML = "<svg><template><g id='inside'></g></template></svg><g id='outside'></g>";
           var inside = document.querySelector("#inside");
           var outside = document.querySelector("#outside");
           return JSON.stringify({
@@ -3491,6 +3499,128 @@ mod tests {
 
       assert_eq!(v["insideId"], "inside");
       assert_eq!(v["outsideId"], "outside");
+    });
+  }
+
+  #[test]
+  fn element_query_selector_does_not_traverse_inert_template_contents() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+      let v = eval_json(
+        ctx.clone(),
+        r##"
+        (function () {
+          var tmpl = document.createElement("template");
+          tmpl.id = "t";
+          document.body.appendChild(tmpl);
+
+          var inside = document.createElement("div");
+          inside.id = "inside";
+          tmpl.appendChild(inside);
+
+          var inTemplate = tmpl.querySelector("#inside");
+          var inDoc = document.querySelector("#inside");
+          return JSON.stringify({
+            inTemplateIsNull: inTemplate === null,
+            inDocIsNull: inDoc === null,
+          });
+        })()
+        "##,
+      );
+
+      assert_eq!(v["inTemplateIsNull"], true);
+      assert_eq!(v["inDocIsNull"], true);
+    });
+  }
+
+  #[test]
+  fn element_query_selector_traverses_svg_template_contents() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+      let v = eval_json(
+        ctx.clone(),
+        r##"
+        (function () {
+          document.body.innerHTML = "<svg><template><g id='inside'></g></template></svg><g id='outside'></g>";
+          var tmpl = document.querySelector("svg template");
+          var inTemplate = tmpl.querySelector("#inside");
+          return JSON.stringify({
+            inTemplateId: inTemplate ? inTemplate.id : null,
+          });
+        })()
+        "##,
+      );
+
+      assert_eq!(v["inTemplateId"], "inside");
+    });
+  }
+
+  #[test]
+  fn element_get_elements_by_tag_name_does_not_traverse_inert_template_contents() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+      let v = eval_json(
+        ctx.clone(),
+        r##"
+        (function () {
+          var tmpl = document.createElement("template");
+          tmpl.id = "t";
+          document.body.appendChild(tmpl);
+
+          var inside = document.createElement("div");
+          inside.id = "inside";
+          tmpl.appendChild(inside);
+
+          var outside = document.createElement("div");
+          outside.id = "outside";
+          document.body.appendChild(outside);
+
+          var divsInTemplate = tmpl.getElementsByTagName("div");
+          var divsInDoc = document.getElementsByTagName("div");
+          return JSON.stringify({
+            templateLen: divsInTemplate.length,
+            docLen: divsInDoc.length,
+            docIds: Array.from(divsInDoc).map(function (n) { return n.id; }).join(","),
+          });
+        })()
+        "##,
+      );
+
+      assert_eq!(v["templateLen"], 0);
+      assert_eq!(v["docLen"], 1);
+      assert_eq!(v["docIds"], "outside");
+    });
+  }
+
+  #[test]
+  fn element_get_elements_by_tag_name_traverses_svg_template_contents() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+      let v = eval_json(
+        ctx.clone(),
+        r##"
+        (function () {
+          document.body.innerHTML = "<svg><template><g id='inside'></g></template></svg><g id='outside'></g>";
+          var tmpl = document.querySelector("svg template");
+          var divs = tmpl.getElementsByTagName("g");
+          return JSON.stringify({
+            len: divs.length,
+            ids: Array.from(divs).map(function (n) { return n.id; }).join(","),
+          });
+        })()
+        "##,
+      );
+
+      assert_eq!(v["len"], 1);
+      assert_eq!(v["ids"], "inside");
     });
   }
 
