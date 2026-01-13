@@ -5963,6 +5963,8 @@ impl<'a> Evaluator<'a> {
         } else {
           intr.generator_function_prototype()
         }
+      } else if func.async_ {
+        intr.async_function_prototype()
       } else {
         intr.function_prototype()
       }),
@@ -7894,6 +7896,8 @@ impl<'a> Evaluator<'a> {
                 } else {
                   intr.generator_function_prototype()
                 }
+              } else if func_node.stx.async_ {
+                intr.async_function_prototype()
               } else {
                 intr.function_prototype()
               }),
@@ -10726,6 +10730,8 @@ impl<'a> Evaluator<'a> {
         } else {
           intr.generator_function_prototype()
         }
+      } else if func.async_ {
+        intr.async_function_prototype()
       } else {
         intr.function_prototype()
       }),
@@ -10843,7 +10849,14 @@ impl<'a> Evaluator<'a> {
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
     alloc_scope
       .heap_mut()
-      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      .object_set_prototype(
+        func_obj,
+        Some(if func.async_ {
+          intr.async_function_prototype()
+        } else {
+          intr.function_prototype()
+        }),
+      )?;
     alloc_scope
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
@@ -11439,6 +11452,8 @@ impl<'a> Evaluator<'a> {
                   } else {
                     intr.generator_function_prototype()
                   }
+                } else if func_node.stx.async_ {
+                  intr.async_function_prototype()
                 } else {
                   intr.function_prototype()
                 }),

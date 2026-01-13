@@ -43,6 +43,8 @@ pub struct Intrinsics {
   throw_type_error: GcObject,
   iterator_prototype: GcObject,
   async_iterator_prototype: GcObject,
+  async_function: GcObject,
+  async_function_prototype: GcObject,
   generator_function: GcObject,
   generator_function_prototype: GcObject,
   generator_prototype: GcObject,
@@ -234,7 +236,7 @@ fn init_native_error(
   common: CommonKeys,
   constructor_prototype: GcObject,
   base_prototype: GcObject,
-  to_string_tag: GcSymbol,
+  _to_string_tag: GcSymbol,
   call: NativeFunctionId,
   construct: NativeConstructId,
   name: &str,
@@ -245,11 +247,6 @@ fn init_native_error(
   scope
     .heap_mut()
     .object_set_prototype(prototype, Some(base_prototype))?;
-
-  // `@@toStringTag` for native error prototypes is `"Error"` (ECMA-262).
-  //
-  // This ensures `Object.prototype.toString.call(new TypeError())` yields `"[object Error]"`.
-  install_to_string_tag(scope, prototype, to_string_tag, "Error")?;
 
   // Create (and store) the name string early so it is kept alive by the rooted objects before any
   // subsequent allocations/GC.
@@ -284,8 +281,9 @@ fn init_native_error(
   scope.define_property(
     constructor,
     common.prototype,
-    // Per ECMA-262, constructor `.prototype` properties are writable but non-configurable.
-    data_desc(Value::Object(prototype), true, false, false),
+    // Per ECMA-262, built-in constructor `.prototype` properties are non-writable,
+    // non-enumerable, and non-configurable (ES5: { ReadOnly, DontEnum, DontDelete }).
+    data_desc(Value::Object(prototype), false, false, false),
   )?;
   // X.name / X.length
   scope.define_property(
@@ -300,6 +298,31 @@ fn init_native_error(
   )?;
 
   Ok((constructor, prototype))
+}
+
+fn install_prototype_data_method(
+  scope: &mut Scope<'_>,
+  function_prototype: GcObject,
+  prototype: GcObject,
+  name: &str,
+  call: NativeFunctionId,
+  length: u32,
+) -> Result<(), VmError> {
+  let name_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(name_s))?;
+  let key = PropertyKey::from_string(name_s);
+  let func = scope.alloc_native_function(call, None, name_s, length)?;
+  scope.push_root(Value::Object(func))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(function_prototype))?;
+  scope.define_property(
+    prototype,
+    key,
+    // Built-in prototype methods are writable, non-enumerable, configurable.
+    data_desc(Value::Object(func), true, false, true),
+  )?;
+  Ok(())
 }
 
 fn install_object_static_method(
@@ -819,19 +842,16 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(finalization_registry_prototype, Some(object_prototype))?;
 
-    // `@@toStringTag` on intrinsic prototypes (ECMA-262).
+    // `@@toStringTag` on intrinsic objects (ECMA-262).
     //
     // These are consulted by `Object.prototype.toString` via `Get(O, @@toStringTag)`.
-    install_to_string_tag(
-      scope,
-      function_prototype,
-      well_known_symbols.to_string_tag,
-      "Function",
-    )?;
-    install_to_string_tag(scope, array_prototype, well_known_symbols.to_string_tag, "Array")?;
-    install_to_string_tag(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;
+    //
+    // Note: many built-ins use `Object.prototype.toString` "builtinTag" logic and therefore do not
+    // have an intrinsic `@@toStringTag` property (e.g. Array / Function / Error / Date / RegExp).
+    // This matches spec and allows instances to override `Symbol.toStringTag` via ordinary
+    // assignment.
+    install_to_string_tag(scope, iterator_prototype, well_known_symbols.to_string_tag, "Iterator")?;
     install_to_string_tag(scope, bigint_prototype, well_known_symbols.to_string_tag, "BigInt")?;
-    install_to_string_tag(scope, date_prototype, well_known_symbols.to_string_tag, "Date")?;
     install_to_string_tag(scope, symbol_prototype, well_known_symbols.to_string_tag, "Symbol")?;
     install_to_string_tag(
       scope,
@@ -1122,6 +1142,58 @@ impl Intrinsics {
     let date_prototype_get_time = vm.register_native_call(builtins::date_prototype_get_time)?;
     let date_prototype_value_of = vm.register_native_call(builtins::date_prototype_value_of)?;
     let date_prototype_to_primitive = vm.register_native_call(builtins::date_prototype_to_primitive)?;
+    let date_prototype_get_timezone_offset =
+      vm.register_native_call(builtins::date_prototype_get_timezone_offset)?;
+    let date_prototype_get_full_year = vm.register_native_call(builtins::date_prototype_get_full_year)?;
+    let date_prototype_get_month = vm.register_native_call(builtins::date_prototype_get_month)?;
+    let date_prototype_get_date = vm.register_native_call(builtins::date_prototype_get_date)?;
+    let date_prototype_get_day = vm.register_native_call(builtins::date_prototype_get_day)?;
+    let date_prototype_get_hours = vm.register_native_call(builtins::date_prototype_get_hours)?;
+    let date_prototype_get_minutes = vm.register_native_call(builtins::date_prototype_get_minutes)?;
+    let date_prototype_get_seconds = vm.register_native_call(builtins::date_prototype_get_seconds)?;
+    let date_prototype_get_milliseconds =
+      vm.register_native_call(builtins::date_prototype_get_milliseconds)?;
+    let date_prototype_get_utc_full_year =
+      vm.register_native_call(builtins::date_prototype_get_utc_full_year)?;
+    let date_prototype_get_utc_month = vm.register_native_call(builtins::date_prototype_get_utc_month)?;
+    let date_prototype_get_utc_date = vm.register_native_call(builtins::date_prototype_get_utc_date)?;
+    let date_prototype_get_utc_day = vm.register_native_call(builtins::date_prototype_get_utc_day)?;
+    let date_prototype_get_utc_hours = vm.register_native_call(builtins::date_prototype_get_utc_hours)?;
+    let date_prototype_get_utc_minutes =
+      vm.register_native_call(builtins::date_prototype_get_utc_minutes)?;
+    let date_prototype_get_utc_seconds =
+      vm.register_native_call(builtins::date_prototype_get_utc_seconds)?;
+    let date_prototype_get_utc_milliseconds =
+      vm.register_native_call(builtins::date_prototype_get_utc_milliseconds)?;
+    let date_prototype_set_time = vm.register_native_call(builtins::date_prototype_set_time)?;
+    let date_prototype_set_full_year = vm.register_native_call(builtins::date_prototype_set_full_year)?;
+    let date_prototype_set_month = vm.register_native_call(builtins::date_prototype_set_month)?;
+    let date_prototype_set_date = vm.register_native_call(builtins::date_prototype_set_date)?;
+    let date_prototype_set_hours = vm.register_native_call(builtins::date_prototype_set_hours)?;
+    let date_prototype_set_minutes = vm.register_native_call(builtins::date_prototype_set_minutes)?;
+    let date_prototype_set_seconds = vm.register_native_call(builtins::date_prototype_set_seconds)?;
+    let date_prototype_set_milliseconds =
+      vm.register_native_call(builtins::date_prototype_set_milliseconds)?;
+    let date_prototype_set_utc_full_year =
+      vm.register_native_call(builtins::date_prototype_set_utc_full_year)?;
+    let date_prototype_set_utc_month = vm.register_native_call(builtins::date_prototype_set_utc_month)?;
+    let date_prototype_set_utc_date = vm.register_native_call(builtins::date_prototype_set_utc_date)?;
+    let date_prototype_set_utc_hours = vm.register_native_call(builtins::date_prototype_set_utc_hours)?;
+    let date_prototype_set_utc_minutes =
+      vm.register_native_call(builtins::date_prototype_set_utc_minutes)?;
+    let date_prototype_set_utc_seconds =
+      vm.register_native_call(builtins::date_prototype_set_utc_seconds)?;
+    let date_prototype_set_utc_milliseconds =
+      vm.register_native_call(builtins::date_prototype_set_utc_milliseconds)?;
+    let date_prototype_to_locale_string =
+      vm.register_native_call(builtins::date_prototype_to_locale_string)?;
+    let date_prototype_to_time_string = vm.register_native_call(builtins::date_prototype_to_time_string)?;
+    let date_prototype_to_date_string = vm.register_native_call(builtins::date_prototype_to_date_string)?;
+    let date_prototype_to_locale_date_string =
+      vm.register_native_call(builtins::date_prototype_to_locale_date_string)?;
+    let date_prototype_to_locale_time_string =
+      vm.register_native_call(builtins::date_prototype_to_locale_time_string)?;
+    let date_prototype_to_json = vm.register_native_call(builtins::date_prototype_to_json)?;
     let date_now = vm.register_native_call(builtins::date_now)?;
     let date_parse = vm.register_native_call(builtins::date_parse)?;
     let date_utc = vm.register_native_call(builtins::date_utc)?;
@@ -1189,6 +1261,13 @@ impl Intrinsics {
     let reflect_prevent_extensions = vm.register_native_call(builtins::reflect_prevent_extensions)?;
     let reflect_set = vm.register_native_call(builtins::reflect_set)?;
     let reflect_set_prototype_of = vm.register_native_call(builtins::reflect_set_prototype_of)?;
+
+    // Async function intrinsics.
+    let async_function_constructor_call =
+      vm.register_native_call(builtins::async_function_constructor_call)?;
+    let async_function_constructor_construct = vm.register_native_construct(
+      builtins::async_function_constructor_construct,
+    )?;
 
     // Generator intrinsics.
     let generator_function_constructor_call =
@@ -1715,6 +1794,51 @@ impl Intrinsics {
         data_desc(Value::Object(iter_fn), true, false, true),
       )?;
     }
+
+    // Async function intrinsics.
+    // `%AsyncFunction.prototype%`
+    let async_function_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_function_prototype, Some(function_prototype))?;
+
+    // `%AsyncFunction%`
+    let async_function_name = scope.alloc_string("AsyncFunction")?;
+    let async_function = alloc_rooted_native_function(
+      scope,
+      roots,
+      async_function_constructor_call,
+      Some(async_function_constructor_construct),
+      async_function_name,
+      1,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_function, Some(function_constructor))?;
+    // Override `.prototype` with the spec-required (non-writable, non-configurable) value.
+    scope.define_property(
+      async_function,
+      common.prototype,
+      data_desc(
+        Value::Object(async_function_prototype),
+        false,
+        false,
+        false,
+      ),
+    )?;
+    // AsyncFunction.prototype.constructor
+    scope.define_property(
+      async_function_prototype,
+      common.constructor,
+      data_desc(Value::Object(async_function), false, false, true),
+    )?;
+    // AsyncFunction.prototype[@@toStringTag]
+    install_to_string_tag(
+      scope,
+      async_function_prototype,
+      well_known_symbols.to_string_tag,
+      "AsyncFunction",
+    )?;
 
     // `%AsyncGeneratorFunction.prototype%`
     let async_generator_function_prototype = alloc_rooted_object(scope, roots)?;
@@ -2729,10 +2853,9 @@ impl Intrinsics {
     scope.define_property(
       string_constructor,
       common.prototype,
-      // Per ECMA-262, constructor `.prototype` properties are writable but non-configurable. This
-      // also ensures Proxy `[[Get]]` invariants allow `newTarget.prototype` to be overridden via a
-      // `get` trap when `newTarget` is a Proxy.
-      data_desc(Value::Object(string_prototype), true, false, false),
+      // Per ECMA-262 (ES5: `String.prototype` attributes `{ ReadOnly, DontEnum, DontDelete }`),
+      // `%String%` has a non-writable, non-enumerable, non-configurable `"prototype"` property.
+      data_desc(Value::Object(string_prototype), false, false, false),
     )?;
     scope.define_property(
       string_constructor,
@@ -4605,6 +4728,312 @@ impl Intrinsics {
       )?;
     }
 
+    // Date.prototype remaining ES5 methods (used by test262 built-ins/Object/getOwnPropertyDescriptor).
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getTimezoneOffset",
+      date_prototype_get_timezone_offset,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getFullYear",
+      date_prototype_get_full_year,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getMonth",
+      date_prototype_get_month,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getDate",
+      date_prototype_get_date,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getDay",
+      date_prototype_get_day,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getHours",
+      date_prototype_get_hours,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getMinutes",
+      date_prototype_get_minutes,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getSeconds",
+      date_prototype_get_seconds,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getMilliseconds",
+      date_prototype_get_milliseconds,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getUTCFullYear",
+      date_prototype_get_utc_full_year,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getUTCMonth",
+      date_prototype_get_utc_month,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getUTCDate",
+      date_prototype_get_utc_date,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getUTCDay",
+      date_prototype_get_utc_day,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getUTCHours",
+      date_prototype_get_utc_hours,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getUTCMinutes",
+      date_prototype_get_utc_minutes,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getUTCSeconds",
+      date_prototype_get_utc_seconds,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "getUTCMilliseconds",
+      date_prototype_get_utc_milliseconds,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setTime",
+      date_prototype_set_time,
+      1,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setFullYear",
+      date_prototype_set_full_year,
+      3,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setMonth",
+      date_prototype_set_month,
+      2,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setDate",
+      date_prototype_set_date,
+      1,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setHours",
+      date_prototype_set_hours,
+      4,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setMinutes",
+      date_prototype_set_minutes,
+      3,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setSeconds",
+      date_prototype_set_seconds,
+      2,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setMilliseconds",
+      date_prototype_set_milliseconds,
+      1,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setUTCFullYear",
+      date_prototype_set_utc_full_year,
+      3,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setUTCMonth",
+      date_prototype_set_utc_month,
+      2,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setUTCDate",
+      date_prototype_set_utc_date,
+      1,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setUTCHours",
+      date_prototype_set_utc_hours,
+      4,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setUTCMinutes",
+      date_prototype_set_utc_minutes,
+      3,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setUTCSeconds",
+      date_prototype_set_utc_seconds,
+      2,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "setUTCMilliseconds",
+      date_prototype_set_utc_milliseconds,
+      1,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "toLocaleString",
+      date_prototype_to_locale_string,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "toTimeString",
+      date_prototype_to_time_string,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "toDateString",
+      date_prototype_to_date_string,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "toLocaleDateString",
+      date_prototype_to_locale_date_string,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "toLocaleTimeString",
+      date_prototype_to_locale_time_string,
+      0,
+    )?;
+    install_prototype_data_method(
+      scope,
+      function_prototype,
+      date_prototype,
+      "toJSON",
+      date_prototype_to_json,
+      1,
+    )?;
+
     // `%eval%` (global function)
     let eval_name = scope.alloc_string("eval")?;
     let eval = alloc_rooted_native_function(scope, roots, eval_call, None, eval_name, 1)?;
@@ -4908,7 +5337,7 @@ impl Intrinsics {
     scope.define_property(
       array_buffer,
       common.prototype,
-      data_desc(Value::Object(array_buffer_prototype), true, false, false),
+      data_desc(Value::Object(array_buffer_prototype), false, false, false),
     )?;
     scope.define_property(
       array_buffer,
@@ -5130,7 +5559,7 @@ impl Intrinsics {
     scope.define_property(
       uint8_array,
       common.prototype,
-      data_desc(Value::Object(uint8_array_prototype), true, false, false),
+      data_desc(Value::Object(uint8_array_prototype), false, false, false),
     )?;
     scope.define_property(
       uint8_array,
@@ -5175,7 +5604,7 @@ impl Intrinsics {
     scope.define_property(
       int8_array,
       common.prototype,
-      data_desc(Value::Object(int8_array_prototype), true, false, false),
+      data_desc(Value::Object(int8_array_prototype), false, false, false),
     )?;
     scope.define_property(
       int8_array,
@@ -5255,7 +5684,7 @@ impl Intrinsics {
     scope.define_property(
       int16_array,
       common.prototype,
-      data_desc(Value::Object(int16_array_prototype), true, false, false),
+      data_desc(Value::Object(int16_array_prototype), false, false, false),
     )?;
     scope.define_property(
       int16_array,
@@ -5292,7 +5721,7 @@ impl Intrinsics {
     scope.define_property(
       uint16_array,
       common.prototype,
-      data_desc(Value::Object(uint16_array_prototype), true, false, false),
+      data_desc(Value::Object(uint16_array_prototype), false, false, false),
     )?;
     scope.define_property(
       uint16_array,
@@ -5329,7 +5758,7 @@ impl Intrinsics {
     scope.define_property(
       int32_array,
       common.prototype,
-      data_desc(Value::Object(int32_array_prototype), true, false, false),
+      data_desc(Value::Object(int32_array_prototype), false, false, false),
     )?;
     scope.define_property(
       int32_array,
@@ -5366,7 +5795,7 @@ impl Intrinsics {
     scope.define_property(
       uint32_array,
       common.prototype,
-      data_desc(Value::Object(uint32_array_prototype), true, false, false),
+      data_desc(Value::Object(uint32_array_prototype), false, false, false),
     )?;
     scope.define_property(
       uint32_array,
@@ -5403,7 +5832,7 @@ impl Intrinsics {
     scope.define_property(
       float32_array,
       common.prototype,
-      data_desc(Value::Object(float32_array_prototype), true, false, false),
+      data_desc(Value::Object(float32_array_prototype), false, false, false),
     )?;
     scope.define_property(
       float32_array,
@@ -5440,7 +5869,7 @@ impl Intrinsics {
     scope.define_property(
       float64_array,
       common.prototype,
-      data_desc(Value::Object(float64_array_prototype), true, false, false),
+      data_desc(Value::Object(float64_array_prototype), false, false, false),
     )?;
     scope.define_property(
       float64_array,
@@ -5477,7 +5906,7 @@ impl Intrinsics {
     scope.define_property(
       data_view,
       common.prototype,
-      data_desc(Value::Object(data_view_prototype), true, false, false),
+      data_desc(Value::Object(data_view_prototype), false, false, false),
     )?;
     scope.define_property(
       data_view,
@@ -6041,7 +6470,7 @@ impl Intrinsics {
     scope.define_property(
       weak_map,
       common.prototype,
-      data_desc(Value::Object(weak_map_prototype), true, false, false),
+      data_desc(Value::Object(weak_map_prototype), false, false, false),
     )?;
     scope.define_property(
       weak_map,
@@ -6172,7 +6601,7 @@ impl Intrinsics {
     scope.define_property(
       weak_set,
       common.prototype,
-      data_desc(Value::Object(weak_set_prototype), true, false, false),
+      data_desc(Value::Object(weak_set_prototype), false, false, false),
     )?;
     scope.define_property(
       weak_set,
@@ -6256,7 +6685,7 @@ impl Intrinsics {
     scope.define_property(
       weak_ref,
       common.prototype,
-      data_desc(Value::Object(weak_ref_prototype), true, false, false),
+      data_desc(Value::Object(weak_ref_prototype), false, false, false),
     )?;
     scope.define_property(
       weak_ref,
@@ -7117,7 +7546,7 @@ impl Intrinsics {
     scope.define_property(
       promise,
       common.prototype,
-      data_desc(Value::Object(promise_prototype), true, false, false),
+      data_desc(Value::Object(promise_prototype), false, false, false),
     )?;
 
     // Promise.name / Promise.length
@@ -7328,6 +7757,8 @@ impl Intrinsics {
       throw_type_error,
       iterator_prototype,
       async_iterator_prototype,
+      async_function,
+      async_function_prototype,
       generator_function,
       generator_function_prototype,
       generator_prototype,
@@ -7465,6 +7896,14 @@ impl Intrinsics {
 
   pub fn async_iterator_prototype(&self) -> GcObject {
     self.async_iterator_prototype
+  }
+
+  pub fn async_function(&self) -> GcObject {
+    self.async_function
+  }
+
+  pub fn async_function_prototype(&self) -> GcObject {
+    self.async_function_prototype
   }
 
   pub fn generator_function(&self) -> GcObject {

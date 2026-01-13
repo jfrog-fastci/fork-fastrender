@@ -920,19 +920,21 @@ impl<'vm> HirEvaluator<'vm> {
       let _ = crate::function_properties::make_constructor(&mut scope, func_obj)?;
     }
 
-    // Best-effort function `[[Prototype]]` / `[[Realm]]` metadata.
-    if let Some(intr) = self.vm.intrinsics() {
-      let func_prototype = if is_generator {
-        if is_async_generator {
-          intr.async_generator_function_prototype()
+      // Best-effort function `[[Prototype]]` / `[[Realm]]` metadata.
+      if let Some(intr) = self.vm.intrinsics() {
+        let func_prototype = if is_generator {
+          if is_async_generator {
+            intr.async_generator_function_prototype()
+          } else {
+            intr.generator_function_prototype()
+          }
+        } else if is_async {
+          intr.async_function_prototype()
         } else {
-          intr.generator_function_prototype()
-        }
-      } else {
-        intr.function_prototype()
-      };
-      scope
-        .heap_mut()
+          intr.function_prototype()
+        };
+        scope
+          .heap_mut()
         .object_set_prototype(func_obj, Some(func_prototype))?;
       if is_generator {
         if is_async_generator {

@@ -2198,6 +2198,19 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
   }
 
+  pub(crate) fn date_set_value(&mut self, obj: GcObject, value: f64) -> Result<(), VmError> {
+    match self.get_heap_object_mut(obj.0)? {
+      HeapObject::Object(o) => match &mut o.base.kind {
+        ObjectKind::Date(d) => {
+          d.value = value;
+          Ok(())
+        }
+        _ => Err(VmError::TypeError("Date called on non-Date object")),
+      },
+      _ => Err(VmError::TypeError("Date called on non-object")),
+    }
+  }
+
   pub(crate) fn array_buffer_byte_length(&self, obj: GcObject) -> Result<usize, VmError> {
     Ok(self.get_array_buffer(obj)?.byte_length())
   }

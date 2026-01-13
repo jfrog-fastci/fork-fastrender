@@ -20,6 +20,7 @@ use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+use std::sync::Arc;
 use crate::tick;
 
 fn strict_mode_stmts_contain_with(
@@ -5693,6 +5694,255 @@ pub fn generator_function_constructor_construct(
   Ok(Value::Object(func_obj))
 }
 
+/// `%AsyncFunction%` (ECMA-262).
+///
+/// Calling `%AsyncFunction%` as a function behaves like `new %AsyncFunction%`.
+pub fn async_function_constructor_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  async_function_constructor_construct(vm, scope, host, hooks, callee, args, Value::Object(callee))
+}
+
+/// `%AsyncFunction%` `[[Construct]]` (ECMA-262).
+///
+/// This is `CreateDynamicFunction` for async functions: it parses the provided parameter list and
+/// body text and returns a fresh async function object.
+pub fn async_function_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  // `CreateDynamicFunction` creates the function in the realm of the provided constructor. `vm-js`
+  // represents a realm by storing the realm's global object on `[[Realm]]`.
+  let Some(global_object) = scope.heap().get_function_realm(callee)? else {
+    return Err(VmError::Unimplemented(
+      "AsyncFunction constructor missing [[Realm]]",
+    ));
+  };
+
+  // Like `%Function%`, `%AsyncFunction%` creates its function in the global lexical environment,
+  // not in the caller's environment. In `vm-js`, this is stored as the intrinsic Function
+  // constructor's captured closure env.
+  let closure_env = match scope.heap().get_function_closure_env(callee)? {
+    Some(env) => Some(env),
+    None => scope.heap().get_function_closure_env(intr.function_constructor())?,
+  };
+
+  // `AsyncFunction(...params, body)` uses the final argument as the body.
+  //
+  // When called with no arguments, `CreateDynamicFunction` uses the empty string as the body text
+  // (not `ToString(undefined)`).
+  let (param_values, body_value) = match args.split_last() {
+    Some((last, rest)) => (rest, Some(*last)),
+    None => (&[][..], None),
+  };
+
+  let mut params_joined: String = String::new();
+  for (idx, param_value) in param_values.iter().copied().enumerate() {
+    if idx % 32 == 0 {
+      vm.tick()?;
+    }
+    let s = scope.to_string(vm, host, hooks, param_value)?;
+    let units = scope.heap().get_string(s)?.as_code_units();
+    let text = utf16_to_utf8_lossy_with_tick(units, || vm.tick())?;
+    if idx != 0 {
+      params_joined
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      params_joined.push(',');
+    }
+    params_joined
+      .try_reserve(text.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    params_joined.push_str(&text);
+  }
+
+  let body_text = if let Some(body_value) = body_value {
+    let body_s = scope.to_string(vm, host, hooks, body_value)?;
+    let body_units = scope.heap().get_string(body_s)?.as_code_units();
+    utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?
+  } else {
+    String::new()
+  };
+
+  // Parse as a single async function declaration statement so we can reuse the normal ECMAScript
+  // function-object call path.
+  let mut source: String = String::new();
+  const PREFIX: &str = "async function anonymous(";
+  const MIDDLE: &str = "\n) {\n";
+  const SUFFIX: &str = "\n}";
+  let total_len = PREFIX
+    .len()
+    .checked_add(params_joined.len())
+    .and_then(|n| n.checked_add(MIDDLE.len()))
+    .and_then(|n| n.checked_add(body_text.len()))
+    .and_then(|n| n.checked_add(SUFFIX.len()))
+    .ok_or(VmError::OutOfMemory)?;
+  source
+    .try_reserve(total_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+  source.push_str(PREFIX);
+  source.push_str(&params_joined);
+  source.push_str(MIDDLE);
+  source.push_str(&body_text);
+  source.push_str(SUFFIX);
+
+  // Parse eagerly so syntax errors become JS-catchable `SyntaxError` exceptions instead of
+  // surfacing as non-catchable `VmError::Syntax`.
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let parsed = match vm.parse_top_level_with_budget(&source, opts) {
+    Ok(top) => top,
+    Err(VmError::Syntax(diags)) => {
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+      return Err(VmError::Throw(err_obj));
+    }
+    Err(err) => return Err(err),
+  };
+  {
+    let mut tick = || vm.tick();
+    match crate::early_errors::validate_top_level(
+      &parsed.stx.body,
+      crate::early_errors::EarlyErrorOptions::script(false),
+      &mut tick,
+    ) {
+      Ok(()) => {}
+      Err(VmError::Syntax(diags)) => {
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+        return Err(VmError::Throw(err_obj));
+      }
+      Err(err) => return Err(err),
+    }
+  }
+
+  // Derive strictness and length from the parsed function node.
+  let mut is_strict = false;
+  let mut length: u32 = 0;
+  let mut body_stmts: Option<&[Node<Stmt>]> = None;
+  if parsed.stx.body.len() == 1 {
+    if let Stmt::FunctionDecl(decl) = &*parsed.stx.body[0].stx {
+      let func = &decl.stx.function.stx;
+      length = {
+        let mut len: u32 = 0;
+        for (i, param) in func.parameters.iter().enumerate() {
+          if i % 32 == 0 {
+            vm.tick()?;
+          }
+          if param.stx.rest || param.stx.default_value.is_some() {
+            break;
+          }
+          len = len.saturating_add(1);
+        }
+        len
+      };
+      if let Some(FuncBody::Block(stmts)) = &func.body {
+        const TICK_EVERY: usize = 32;
+        for (i, stmt) in stmts.iter().enumerate() {
+          if i % TICK_EVERY == 0 {
+            vm.tick()?;
+          }
+          let Stmt::Expr(expr_stmt) = &*stmt.stx else {
+            break;
+          };
+          let expr = &expr_stmt.stx.expr;
+          if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+            break;
+          }
+          let Expr::LitStr(lit) = &*expr.stx else {
+            break;
+          };
+          if lit.stx.value == "use strict" {
+            is_strict = true;
+            break;
+          }
+        }
+        body_stmts = Some(stmts);
+      }
+    }
+  }
+
+  if is_strict {
+    // Strict-mode `with` is required to be rejected during dynamic async function creation (spec
+    // `CreateDynamicFunction`), not deferred until first execution.
+    if let Some(stmts) = body_stmts {
+      if strict_mode_stmts_contain_with(vm, stmts)? {
+        let err_obj = crate::error_object::new_syntax_error_object(
+          scope,
+          &intr,
+          "with statements are not allowed in strict mode",
+        )?;
+        return Err(VmError::Throw(err_obj));
+      }
+    }
+  }
+
+  let this_mode = if is_strict { ThisMode::Strict } else { ThisMode::Global };
+
+  let source = Arc::new(SourceText::new_charged(
+    scope.heap_mut(),
+    "<AsyncFunction>",
+    source,
+  )?);
+  let span_end = u32::try_from(source.text.len()).unwrap_or(u32::MAX);
+  let code_id = vm.register_ecma_function(source, 0, span_end, crate::vm::EcmaFunctionKind::Decl)?;
+
+  let name_s = scope.alloc_string("anonymous")?;
+  let func_obj = scope.alloc_ecma_function(
+    code_id,
+    /* is_constructable */ false,
+    name_s,
+    length,
+    this_mode,
+    is_strict,
+    closure_env,
+  )?;
+  scope.push_root(Value::Object(func_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func_obj, Some(intr.async_function_prototype()))?;
+  scope
+    .heap_mut()
+    .set_function_realm(func_obj, global_object)?;
+
+  let job_realm = scope
+    .heap()
+    .get_function_job_realm(callee)
+    .or(vm.current_realm());
+  if let Some(job_realm) = job_realm {
+    scope.heap_mut().set_function_job_realm(func_obj, job_realm)?;
+  }
+  if let Some(script_or_module) = vm.get_active_script_or_module() {
+    let token = vm.intern_script_or_module(script_or_module)?;
+    scope
+      .heap_mut()
+      .set_function_script_or_module_token(func_obj, Some(token))?;
+  }
+
+  Ok(Value::Object(func_obj))
+}
+
 /// `%AsyncGeneratorFunction%` (ECMA-262).
 ///
 /// Calling `%AsyncGeneratorFunction%` as a function behaves like `new %AsyncGeneratorFunction%`.
@@ -10488,7 +10738,7 @@ pub fn object_prototype_to_string(
   // 1. Special-case `undefined` / `null`.
   // 2. `O = ToObject(this)`.
   // 3. Compute a `builtinTag` (Array / Arguments / Function / Error / primitive wrappers / Date /
-  //    RegExp / Generator / Object).
+  //    RegExp / Object).
   // 4. `tag = Get(O, @@toStringTag)` (prototype chain lookup; host-aware; Proxy-aware).
   // 5. If `tag` is a string, use it; otherwise use `builtinTag`.
   // 6. Return `[object ${tag}]`.
@@ -10543,33 +10793,6 @@ pub fn object_prototype_to_string(
   const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
   const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
   const TAG_REGEXP: [u16; 6] = [b'R' as u16, b'e' as u16, b'g' as u16, b'E' as u16, b'x' as u16, b'p' as u16];
-  const TAG_ASYNC_GENERATOR: [u16; 14] = [
-    b'A' as u16,
-    b's' as u16,
-    b'y' as u16,
-    b'n' as u16,
-    b'c' as u16,
-    b'G' as u16,
-    b'e' as u16,
-    b'n' as u16,
-    b'e' as u16,
-    b'r' as u16,
-    b'a' as u16,
-    b't' as u16,
-    b'o' as u16,
-    b'r' as u16,
-  ];
-  const TAG_GENERATOR: [u16; 9] = [
-    b'G' as u16,
-    b'e' as u16,
-    b'n' as u16,
-    b'e' as u16,
-    b'r' as u16,
-    b'a' as u16,
-    b't' as u16,
-    b'o' as u16,
-    b'r' as u16,
-  ];
   const TAG_FUNCTION: [u16; 8] = [
     b'F' as u16,
     b'u' as u16,
@@ -10653,10 +10876,6 @@ pub fn object_prototype_to_string(
     &TAG_DATE
   } else if scope.heap().is_regexp_object(o) {
     &TAG_REGEXP
-  } else if scope.heap().is_async_generator_object(o) {
-    &TAG_ASYNC_GENERATOR
-  } else if scope.heap().is_generator_object(o) {
-    &TAG_GENERATOR
   } else {
     &TAG_OBJECT
   };
@@ -10715,12 +10934,13 @@ pub fn object_prototype_has_own_property(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
 
-  let obj = scope.to_object(vm, host, hooks, this)?;
-  scope.push_root(Value::Object(obj))?;
-
   let prop = args.get(0).copied().unwrap_or(Value::Undefined);
   let key = scope.to_property_key(vm, host, hooks, prop)?;
   root_property_key(&mut scope, key)?;
+
+  // Spec: `ToPropertyKey` precedes `ToObject` (`topropertykey_before_toobject.js`).
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
 
   let has = scope
     .object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?
@@ -24296,6 +24516,43 @@ fn date_alloc_string(scope: &mut Scope<'_>, time: i64) -> Result<crate::GcString
   scope.alloc_string_from_u16_vec(out)
 }
 
+fn date_alloc_date_string(scope: &mut Scope<'_>, time: i64) -> Result<crate::GcString, VmError> {
+  const WEEKDAY: [&[u8]; 7] = [b"Sun", b"Mon", b"Tue", b"Wed", b"Thu", b"Fri", b"Sat"];
+  const MONTH: [&[u8]; 12] = [
+    b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec",
+  ];
+
+  let parts = date_parts_from_time(time);
+  let mut out: Vec<u16> = Vec::new();
+  out.try_reserve_exact(16).map_err(|_| VmError::OutOfMemory)?;
+
+  vec_try_push_ascii(&mut out, WEEKDAY[parts.weekday as usize])?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_ascii(&mut out, MONTH[parts.month0 as usize])?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.date)?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_year_iso(&mut out, parts.year)?;
+
+  scope.alloc_string_from_u16_vec(out)
+}
+
+fn date_alloc_time_string(scope: &mut Scope<'_>, time: i64) -> Result<crate::GcString, VmError> {
+  let parts = date_parts_from_time(time);
+  let mut out: Vec<u16> = Vec::new();
+  out.try_reserve_exact(16).map_err(|_| VmError::OutOfMemory)?;
+
+  vec_try_push_two_digits(&mut out, parts.hour)?;
+  vec_try_push(&mut out, b':' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.minute)?;
+  vec_try_push(&mut out, b':' as u16)?;
+  vec_try_push_two_digits(&mut out, parts.second)?;
+  vec_try_push(&mut out, b' ' as u16)?;
+  vec_try_push_ascii(&mut out, b"GMT")?;
+
+  scope.alloc_string_from_u16_vec(out)
+}
+
 fn parse_iso_date_string(vm: &mut Vm, scope: &mut Scope<'_>, s: crate::GcString) -> Result<f64, VmError> {
   let js = scope.heap().get_string(s)?;
   let units = js.as_code_units();
@@ -24548,6 +24805,19 @@ fn date_this_time_value(scope: &mut Scope<'_>, this: Value) -> Result<f64, VmErr
   };
   match scope.heap().date_value(obj)? {
     Some(v) => Ok(v),
+    None => Err(VmError::TypeError("Date called on non-Date object")),
+  }
+}
+
+fn date_this_object_and_time_value(
+  scope: &mut Scope<'_>,
+  this: Value,
+) -> Result<(GcObject, f64), VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Date called on non-object"));
+  };
+  match scope.heap().date_value(obj)? {
+    Some(v) => Ok((obj, v)),
     None => Err(VmError::TypeError("Date called on non-Date object")),
   }
 }
@@ -24885,6 +25155,760 @@ pub fn date_prototype_to_primitive(
   };
 
   scope.ordinary_to_primitive(vm, host, hooks, obj, hint)
+}
+
+pub fn date_prototype_get_timezone_offset(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  // vm-js does not currently model a host local timezone. Treat local time as UTC.
+  Ok(Value::Number(0.0))
+}
+
+pub fn date_prototype_get_full_year(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let parts = date_parts_from_time(tv as i64);
+  Ok(Value::Number(parts.year as f64))
+}
+
+pub fn date_prototype_get_month(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let parts = date_parts_from_time(tv as i64);
+  Ok(Value::Number(parts.month0 as f64))
+}
+
+pub fn date_prototype_get_date(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let parts = date_parts_from_time(tv as i64);
+  Ok(Value::Number(parts.date as f64))
+}
+
+pub fn date_prototype_get_day(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let parts = date_parts_from_time(tv as i64);
+  Ok(Value::Number(parts.weekday as f64))
+}
+
+pub fn date_prototype_get_hours(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let parts = date_parts_from_time(tv as i64);
+  Ok(Value::Number(parts.hour as f64))
+}
+
+pub fn date_prototype_get_minutes(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let parts = date_parts_from_time(tv as i64);
+  Ok(Value::Number(parts.minute as f64))
+}
+
+pub fn date_prototype_get_seconds(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let parts = date_parts_from_time(tv as i64);
+  Ok(Value::Number(parts.second as f64))
+}
+
+pub fn date_prototype_get_milliseconds(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  let parts = date_parts_from_time(tv as i64);
+  Ok(Value::Number(parts.millisecond as f64))
+}
+
+pub fn date_prototype_get_utc_full_year(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_get_full_year(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_get_utc_month(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_get_month(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_get_utc_date(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_get_date(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_get_utc_day(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_get_day(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_get_utc_hours(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_get_hours(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_get_utc_minutes(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_get_minutes(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_get_utc_seconds(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_get_seconds(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_get_utc_milliseconds(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_get_milliseconds(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_set_time(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (obj, _) = date_this_object_and_time_value(scope, this)?;
+  let t = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let tv = date_time_clip(t);
+  scope.heap_mut().date_set_value(obj, tv)?;
+  Ok(Value::Number(tv))
+}
+
+fn date_set_from_parts(scope: &mut Scope<'_>, obj: GcObject, ms: f64) -> Result<Value, VmError> {
+  scope.heap_mut().date_set_value(obj, ms)?;
+  Ok(Value::Number(ms))
+}
+
+pub fn date_prototype_set_full_year(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (obj, tv0) = date_this_object_and_time_value(scope, this)?;
+  let base = if tv0.is_finite() { tv0 } else { 0.0 };
+  let parts = date_parts_from_time(base as i64);
+
+  let y = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Some(mut year) = to_integer_or_infinity_i64(y) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  if (0..=99).contains(&year) {
+    year = year.saturating_add(1900);
+  }
+
+  let month0 = match args.get(1).copied() {
+    None | Some(Value::Undefined) => parts.month0 as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(m) => m,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+  let date = match args.get(2).copied() {
+    None | Some(Value::Undefined) => parts.date as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(d) => d,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+
+  let Some(day) = make_day(year, month0, date) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(time) = make_time(
+    parts.hour as i64,
+    parts.minute as i64,
+    parts.second as i64,
+    parts.millisecond as i64,
+  ) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(ms) = make_date(day, time) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  date_set_from_parts(scope, obj, date_time_clip(ms as f64))
+}
+
+pub fn date_prototype_set_month(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (obj, tv0) = date_this_object_and_time_value(scope, this)?;
+  let base = if tv0.is_finite() { tv0 } else { 0.0 };
+  let parts = date_parts_from_time(base as i64);
+
+  let m = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Some(month0) = to_integer_or_infinity_i64(m) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let date = match args.get(1).copied() {
+    None | Some(Value::Undefined) => parts.date as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(d) => d,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+
+  let Some(day) = make_day(parts.year, month0, date) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(time) = make_time(
+    parts.hour as i64,
+    parts.minute as i64,
+    parts.second as i64,
+    parts.millisecond as i64,
+  ) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(ms) = make_date(day, time) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  date_set_from_parts(scope, obj, date_time_clip(ms as f64))
+}
+
+pub fn date_prototype_set_date(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (obj, tv0) = date_this_object_and_time_value(scope, this)?;
+  let base = if tv0.is_finite() { tv0 } else { 0.0 };
+  let parts = date_parts_from_time(base as i64);
+
+  let dt = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Some(date) = to_integer_or_infinity_i64(dt) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+
+  let Some(day) = make_day(parts.year, parts.month0 as i64, date) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(time) = make_time(
+    parts.hour as i64,
+    parts.minute as i64,
+    parts.second as i64,
+    parts.millisecond as i64,
+  ) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(ms) = make_date(day, time) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  date_set_from_parts(scope, obj, date_time_clip(ms as f64))
+}
+
+pub fn date_prototype_set_hours(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (obj, tv0) = date_this_object_and_time_value(scope, this)?;
+  let base = if tv0.is_finite() { tv0 } else { 0.0 };
+  let parts = date_parts_from_time(base as i64);
+
+  let h = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Some(hour) = to_integer_or_infinity_i64(h) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let minute = match args.get(1).copied() {
+    None | Some(Value::Undefined) => parts.minute as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(m) => m,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+  let second = match args.get(2).copied() {
+    None | Some(Value::Undefined) => parts.second as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(s) => s,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+  let millisecond = match args.get(3).copied() {
+    None | Some(Value::Undefined) => parts.millisecond as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(ms) => ms,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+
+  let Some(day) = make_day(parts.year, parts.month0 as i64, parts.date as i64) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(time) = make_time(hour, minute, second, millisecond) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(ms) = make_date(day, time) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  date_set_from_parts(scope, obj, date_time_clip(ms as f64))
+}
+
+pub fn date_prototype_set_minutes(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (obj, tv0) = date_this_object_and_time_value(scope, this)?;
+  let base = if tv0.is_finite() { tv0 } else { 0.0 };
+  let parts = date_parts_from_time(base as i64);
+
+  let m = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Some(minute) = to_integer_or_infinity_i64(m) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let second = match args.get(1).copied() {
+    None | Some(Value::Undefined) => parts.second as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(s) => s,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+  let millisecond = match args.get(2).copied() {
+    None | Some(Value::Undefined) => parts.millisecond as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(ms) => ms,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+
+  let Some(day) = make_day(parts.year, parts.month0 as i64, parts.date as i64) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(time) = make_time(parts.hour as i64, minute, second, millisecond) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(ms) = make_date(day, time) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  date_set_from_parts(scope, obj, date_time_clip(ms as f64))
+}
+
+pub fn date_prototype_set_seconds(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (obj, tv0) = date_this_object_and_time_value(scope, this)?;
+  let base = if tv0.is_finite() { tv0 } else { 0.0 };
+  let parts = date_parts_from_time(base as i64);
+
+  let s = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Some(second) = to_integer_or_infinity_i64(s) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let millisecond = match args.get(1).copied() {
+    None | Some(Value::Undefined) => parts.millisecond as i64,
+    Some(v) => match to_integer_or_infinity_i64(scope.to_number(vm, host, hooks, v)?) {
+      Some(ms) => ms,
+      None => return date_set_from_parts(scope, obj, f64::NAN),
+    },
+  };
+
+  let Some(day) = make_day(parts.year, parts.month0 as i64, parts.date as i64) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(time) = make_time(parts.hour as i64, parts.minute as i64, second, millisecond) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(ms) = make_date(day, time) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  date_set_from_parts(scope, obj, date_time_clip(ms as f64))
+}
+
+pub fn date_prototype_set_milliseconds(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (obj, tv0) = date_this_object_and_time_value(scope, this)?;
+  let base = if tv0.is_finite() { tv0 } else { 0.0 };
+  let parts = date_parts_from_time(base as i64);
+
+  let ms = scope.to_number(vm, host, hooks, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let Some(millisecond) = to_integer_or_infinity_i64(ms) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+
+  let Some(day) = make_day(parts.year, parts.month0 as i64, parts.date as i64) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(time) = make_time(
+    parts.hour as i64,
+    parts.minute as i64,
+    parts.second as i64,
+    millisecond,
+  ) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  let Some(ms) = make_date(day, time) else {
+    return date_set_from_parts(scope, obj, f64::NAN);
+  };
+  date_set_from_parts(scope, obj, date_time_clip(ms as f64))
+}
+
+pub fn date_prototype_set_utc_full_year(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_set_full_year(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_set_utc_month(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_set_month(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_set_utc_date(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_set_date(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_set_utc_hours(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_set_hours(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_set_utc_minutes(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_set_minutes(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_set_utc_seconds(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_set_seconds(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_set_utc_milliseconds(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  date_prototype_set_milliseconds(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_to_locale_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // vm-js currently has no Intl implementation; fall back to `toString`.
+  date_prototype_to_string(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_to_time_string(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::String(scope.alloc_string("Invalid Date")?));
+  }
+  let s = date_alloc_time_string(scope, tv as i64)?;
+  Ok(Value::String(s))
+}
+
+pub fn date_prototype_to_date_string(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let tv = date_this_time_value(scope, this)?;
+  if !tv.is_finite() {
+    return Ok(Value::String(scope.alloc_string("Invalid Date")?));
+  }
+  let s = date_alloc_date_string(scope, tv as i64)?;
+  Ok(Value::String(s))
+}
+
+pub fn date_prototype_to_locale_date_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // vm-js currently has no Intl implementation; fall back to `toDateString`.
+  date_prototype_to_date_string(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_to_locale_time_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // vm-js currently has no Intl implementation; fall back to `toTimeString`.
+  date_prototype_to_time_string(vm, scope, host, hooks, callee, this, args)
+}
+
+pub fn date_prototype_to_json(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-date.prototype.tojson
+  let o = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(o))?;
+  let tv = scope.to_primitive(vm, host, hooks, Value::Object(o), crate::ToPrimitiveHint::Number)?;
+  if let Value::Number(n) = tv {
+    if !n.is_finite() {
+      return Ok(Value::Null);
+    }
+  }
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(o))?;
+  let to_iso_key = string_key(&mut scope, "toISOString")?;
+  let to_iso = scope.get_with_host_and_hooks(vm, host, hooks, o, to_iso_key, Value::Object(o))?;
+  if !scope.heap().is_callable(to_iso)? {
+    let err = create_type_error(vm, &mut scope, hooks, "Date.prototype.toISOString is not callable")?;
+    return Err(VmError::Throw(err));
+  }
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, to_iso, Value::Object(o), &[])
 }
 
 /// `Symbol(description)`.
@@ -29082,6 +30106,154 @@ mod date_tests {
   fn date_unary_plus_matches_get_time() -> Result<(), VmError> {
     let mut rt = new_runtime();
     let v = rt.exec_script("const d = new Date(1234); +d === d.getTime()")?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod object_descriptor_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn object_get_own_property_descriptor_builtins() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+      function checkCtorPrototypeAttrs(ctor) {
+        const d = Object.getOwnPropertyDescriptor(ctor, "prototype");
+        return d.writable === false && d.enumerable === false && d.configurable === false;
+      }
+
+      const okCtors =
+        checkCtorPrototypeAttrs(String) &&
+        checkCtorPrototypeAttrs(Error) &&
+        checkCtorPrototypeAttrs(EvalError) &&
+        checkCtorPrototypeAttrs(RangeError) &&
+        checkCtorPrototypeAttrs(ReferenceError) &&
+        checkCtorPrototypeAttrs(SyntaxError) &&
+        checkCtorPrototypeAttrs(TypeError) &&
+        checkCtorPrototypeAttrs(URIError);
+
+      const desc = Object.getOwnPropertyDescriptor(Date.prototype, "getFullYear");
+      const okDate =
+        desc.writable === true &&
+        desc.enumerable === false &&
+        desc.configurable === true &&
+        desc.value === Date.prototype.getFullYear &&
+        typeof Date.prototype.getTimezoneOffset === "function" &&
+        typeof Date.prototype.toJSON === "function";
+
+      okCtors && okDate;
+    "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod object_builtins_regression_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn object_prototype_has_own_property_orders_to_property_key_before_to_object() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const err = {};
+          const prop = { toString() { throw err; } };
+          try {
+            Object.prototype.hasOwnProperty.call(undefined, prop);
+          } catch (e) {
+            return e === err;
+          }
+          return false;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn object_prototype_to_string_tags_iterator_generators_instances_and_async_functions() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const toString = Object.prototype.toString;
+
+          // Iterator fallback: `%IteratorPrototype%[@@toStringTag] === "Iterator"` (iterator-helpers).
+          const arrIter = [][Symbol.iterator]();
+          const arrIterProto = Object.getPrototypeOf(arrIter);
+          const okArrIterDefault = toString.call(arrIter) === "[object Array Iterator]";
+          Object.defineProperty(arrIterProto, Symbol.toStringTag, { configurable: true, value: null });
+          const okArrIterNull = toString.call(arrIter) === "[object Object]";
+          delete arrIterProto[Symbol.toStringTag];
+          const okArrIterFallback = toString.call(arrIter) === "[object Iterator]";
+
+          // Generators: builtinTag must be "Object" (generator tag comes from @@toStringTag).
+          const genFn = function* () {};
+          const gen = genFn();
+          const genProto = Object.getPrototypeOf(gen);
+          Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, get() { return {}; } });
+          const okGenNonString = toString.call(gen) === "[object Object]";
+          delete genProto[Symbol.toStringTag];
+          const okGenRestored = toString.call(gen) === "[object Generator]";
+
+          // Instance override should work for builtinTag-derived objects (Array / Function / Error / Date / RegExp).
+          let a = [];
+          a[Symbol.toStringTag] = "test262";
+          const okArrayOverride = toString.call(a) === "[object test262]";
+          let f = function () {};
+          f[Symbol.toStringTag] = "test262";
+          const okFuncOverride = toString.call(f) === "[object test262]";
+          let e = new Error("x");
+          e[Symbol.toStringTag] = "test262";
+          const okErrorOverride = toString.call(e) === "[object test262]";
+          let d = new Date(0);
+          d[Symbol.toStringTag] = "test262";
+          const okDateOverride = toString.call(d) === "[object test262]";
+          let r = /./;
+          r[Symbol.toStringTag] = "test262";
+          const okRegExpOverride = toString.call(r) === "[object test262]";
+
+          // Async function tag should come from %AsyncFunction.prototype%[@@toStringTag].
+          const af = async function () {};
+          const okAsyncFn = toString.call(af) === "[object AsyncFunction]";
+          const okAsyncProxy = toString.call(new Proxy(af, {})) === "[object AsyncFunction]";
+
+          return (
+            okArrIterDefault &&
+            okArrIterNull &&
+            okArrIterFallback &&
+            okGenNonString &&
+            okGenRestored &&
+            okArrayOverride &&
+            okFuncOverride &&
+            okErrorOverride &&
+            okDateOverride &&
+            okRegExpOverride &&
+            okAsyncFn &&
+            okAsyncProxy
+          );
+        })()
+      "#,
+    )?;
     assert_eq!(v, Value::Bool(true));
     Ok(())
   }

@@ -201,6 +201,9 @@ impl Realm {
         .set_function_closure_env(intrinsics.eval(), Some(env))?;
       scope
         .heap_mut()
+        .set_function_closure_env(intrinsics.async_function(), Some(env))?;
+      scope
+        .heap_mut()
         .set_function_closure_env(intrinsics.generator_function_constructor(), Some(env))?;
       scope
         .heap_mut()
