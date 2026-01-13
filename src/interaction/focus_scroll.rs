@@ -132,7 +132,24 @@ fn adjust_scroll_axis_nearest(
   let start = target_min - current_scroll;
   let end = target_max - current_scroll;
 
-  if start < padded_start && end <= padded_end {
+  // If the target is larger than the scrollport, it can never be fully visible. In that case,
+  // implement true "nearest" scrolling by choosing whichever edge (start or end) requires the
+  // smallest scroll delta to bring it into the padded viewport.
+  let target_extent = target_max - target_min;
+  if target_extent > viewport_extent {
+    let scroll_to_show_start = current_scroll + (start - padded_start);
+    let scroll_to_show_end = current_scroll + (end - padded_end);
+    if !scroll_to_show_start.is_finite() || !scroll_to_show_end.is_finite() {
+      return current_scroll;
+    }
+    let delta_start = (scroll_to_show_start - current_scroll).abs();
+    let delta_end = (scroll_to_show_end - current_scroll).abs();
+    if delta_start <= delta_end {
+      scroll_to_show_start
+    } else {
+      scroll_to_show_end
+    }
+  } else if start < padded_start && end <= padded_end {
     // Target is above/left of the padded viewport; scroll backwards so its start edge is visible.
     current_scroll + (start - padded_start)
   } else if end > padded_end && start >= padded_start {
