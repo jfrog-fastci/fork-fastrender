@@ -467,9 +467,13 @@ pub enum UiToWorker {
   /// images, JS timers/rAF, etc), execute a bounded slice of JS/event-loop work, and, if the tab
   /// becomes dirty, render a new frame.
   ///
-  /// This message is intentionally a **wake-up signal**, not a time source: it does not carry a
-  /// timestamp. Subsystems that care about time (especially audio/video playback) must query their
-  /// own clocks rather than inferring time from tick frequency. See `docs/media_clocking.md`.
+  /// This message is intentionally a **wake-up signal**, not a master time source: it does not
+  /// carry an absolute timestamp.
+  ///
+  /// The included [`UiToWorker::Tick::delta`] is best-effort (and may be injected by deterministic
+  /// harnesses). Subsystems that require an authoritative clock (especially audio/video playback)
+  /// must query their own clocks rather than inferring time from tick cadence or accumulated deltas.
+  /// See `docs/media_clocking.md`.
   Tick {
     tab_id: TabId,
     /// Time elapsed since the previous tick delivered for this tab.
