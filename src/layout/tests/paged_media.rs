@@ -4307,6 +4307,80 @@ fn print_pagination_respects_break_inside_avoid() {
 }
 
 #[test]
+fn grid_item_with_break_inside_avoid_page_is_not_clipped_across_pages() {
+  // Regression: grid items that avoid page breaks should be treated as atomic and moved to the
+  // next page when they fit, rather than being clipped by the page boundary.
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; }
+          .grid {
+            display: grid;
+            height: 120px;
+            grid-template-columns: 200px;
+            /* The second track is intentionally larger than the page height so track-atomic
+               fragmentation can't save us: break-inside on the grid item must be honored. */
+            grid-template-rows: 80px 120px;
+            align-items: start;
+          }
+          .spacer { grid-row: 1 / 2; height: 80px; }
+          #target {
+            grid-row: 2 / 3;
+            height: 40px;
+            break-inside: avoid-page;
+            background: rgb(255, 0, 0);
+          }
+        </style>
+      </head>
+      <body>
+        <div class="grid">
+          <div class="spacer"></div>
+          <div id="target"></div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(
+    page_roots.len() >= 2,
+    "expected the grid item to paginate to at least two pages"
+  );
+
+  let red = Rgba::rgb(255, 0, 0);
+  let mut found = Vec::new();
+  for (idx, page) in page_roots.iter().enumerate() {
+    if let Some(fragment) = find_fragment_by_background(page, red) {
+      found.push((idx, fragment));
+    }
+  }
+
+  assert_eq!(
+    found.len(),
+    1,
+    "expected exactly one red fragment across pages (found={:?})",
+    found.iter().map(|(idx, f)| (*idx, f.bounds)).collect::<Vec<_>>()
+  );
+  assert_eq!(
+    found[0].0, 1,
+    "expected the red grid item to appear only on page 2"
+  );
+  assert!(
+    (found[0].1.bounds.height() - 40.0).abs() < 0.5,
+    "expected the grid item to retain its full height on the next page (got h={}, bounds={:?})",
+    found[0].1.bounds.height(),
+    found[0].1.bounds
+  );
+}
+
+#[test]
 fn margin_box_without_content_is_not_generated() {
   let html = r#"
     <html>

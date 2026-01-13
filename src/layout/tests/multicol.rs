@@ -11,8 +11,10 @@ use crate::style::float::{Clear, Float};
 use crate::style::types::BorderStyle;
 use crate::style::types::BreakBetween;
 use crate::style::types::BreakInside;
+use crate::style::types::GridTrack;
 use crate::style::types::ColumnFill;
 use crate::style::types::ColumnSpan;
+use crate::style::types::AlignItems;
 use crate::style::types::FlexDirection;
 use crate::style::types::WhiteSpace;
 use crate::style::types::WritingMode;
@@ -141,6 +143,32 @@ fn fragments_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Vec<&'a Fragm
 
   let mut out = Vec::new();
   walk(fragment, id, &mut out);
+  out
+}
+
+fn fragments_with_id_abs<'a>(
+  fragment: &'a FragmentNode,
+  id: usize,
+) -> Vec<(f32, f32, &'a FragmentNode)> {
+  fn walk<'a>(
+    fragment: &'a FragmentNode,
+    id: usize,
+    origin: (f32, f32),
+    out: &mut Vec<(f32, f32, &'a FragmentNode)>,
+  ) {
+    let abs = (origin.0 + fragment.bounds.x(), origin.1 + fragment.bounds.y());
+    if let FragmentContent::Block { box_id: Some(b) } = fragment.content {
+      if b == id {
+        out.push((abs.0, abs.1, fragment));
+      }
+    }
+    for child in fragment.children.iter() {
+      walk(child, id, abs, out);
+    }
+  }
+
+  let mut out = Vec::new();
+  walk(fragment, id, (0.0, 0.0), &mut out);
   out
 }
 
@@ -1128,6 +1156,84 @@ fn avoid_column_flex_item_moves_to_next_column() {
     "expected item2 to be in a later column: item1 at x={}, item2 at x={}",
     item1_pos.0,
     item2_pos.0
+  );
+}
+
+#[test]
+fn grid_item_avoid_column_moves_to_next_column_when_it_fits() {
+  // Regression: grid items with `break-inside: avoid-column` should be treated as atomic and moved
+  // to the next column when they fit there, instead of being clipped at the column boundary.
+  let mut multicol_style = ComputedStyle::default();
+  multicol_style.width = Some(Length::px(200.0));
+  multicol_style.height = Some(Length::px(60.0));
+  multicol_style.column_count = Some(2);
+  multicol_style.column_gap = Length::px(0.0);
+  multicol_style.column_fill = ColumnFill::Auto;
+  let multicol_style = Arc::new(multicol_style);
+
+  // Create a grid where the only item is placed in the second row. The second row track is larger
+  // than the column height (60px) so track-level atomicity cannot prevent clipping; the
+  // `break-inside` hint on the grid item must be respected.
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(200.0));
+  grid_style.height = Some(Length::px(90.0));
+  grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+  grid_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(50.0)),
+    GridTrack::Length(Length::px(120.0)),
+  ];
+  grid_style.align_items = AlignItems::Start;
+  let grid_style = Arc::new(grid_style);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.height = Some(Length::px(40.0));
+  item_style.grid_row_start = 2;
+  item_style.grid_row_end = 3;
+  item_style.break_inside = BreakInside::AvoidColumn;
+  let item_style = Arc::new(item_style);
+
+  let mut item = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+  item.id = 501;
+  let item_id = item.id;
+
+  let mut grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+  grid.id = 502;
+
+  let mut multicol = BoxNode::new_block(multicol_style, FormattingContextType::Block, vec![grid]);
+  multicol.id = 503;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&multicol, &LayoutConstraints::definite_width(200.0))
+    .expect("layout");
+
+  let item_frags = fragments_with_id_abs(&fragment, item_id);
+  assert_eq!(
+    item_frags.len(),
+    1,
+    "avoid-column grid item should not split across columns (got fragments={:?})",
+    item_frags
+      .iter()
+      .map(|(x, y, f)| (*x, *y, f.fragment_index, f.bounds))
+      .collect::<Vec<_>>()
+  );
+  let (abs_x, abs_y, frag) = item_frags[0];
+  assert!(
+    (frag.bounds.height() - 40.0).abs() < 0.1,
+    "grid item should keep its full height when moved (got h={})",
+    frag.bounds.height()
+  );
+  assert!(
+    abs_y.abs() < 0.1,
+    "grid item should start at the top of the next column (got y={})",
+    abs_y
+  );
+  assert!(
+    abs_x > 90.0,
+    "expected grid item to be in the second column (x={})",
+    abs_x
   );
 }
 

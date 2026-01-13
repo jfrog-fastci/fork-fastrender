@@ -1911,8 +1911,12 @@ impl FragmentationAnalyzer {
     // Avoid selecting a boundary that lands inside an atomic range. If the natural fragmentainer
     // limit would split an atomic range, clamp to the atomic start so the next fragment starts
     // before the atomic content.
+    let mut limit_clamped_to_atomic_start = false;
     if let Some(range) = atomic_containing_for_fragmentainer(limit, fragmentainer, atomic) {
       if range.start > start + BREAK_EPSILON {
+        if range.start + BREAK_EPSILON < limit {
+          limit_clamped_to_atomic_start = true;
+        }
         limit = limit.min(range.start);
       } else {
         // The fragment starts inside (or at the beginning of) an atomic range, and the current
@@ -2027,6 +2031,7 @@ impl FragmentationAnalyzer {
     if matches!(self.context, FragmentationContext::Column)
       && !self.enforce_fragmentainer_size
       && !self.limit_inside_breakable_float(limit, fragmentainer)
+      && !limit_clamped_to_atomic_start
     {
       // Multi-column layout prefers moving content to the next available break opportunity rather
       // than slicing it at an arbitrary fragmentainer limit (e.g. splitting a block box when the
@@ -5161,11 +5166,23 @@ fn collect_atomic_candidates_with_axis(
       || grid_items
         .and_then(|info| info.items.get(idx))
         .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
+    let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
     if skip_descendants {
+      // In-flow grid items and single-track (parallel-flow) grid items are fragmented specially and
+      // should not contribute descendant break opportunities to their container. However, the grid
+      // item box itself can still be atomic (e.g. `break-inside: avoid-*`) and must participate in
+      // boundary selection.
+      collect_atomic_candidate_for_node(
+        child,
+        child_abs_start,
+        axis,
+        node_block_size,
+        candidates,
+        context,
+      );
       continue;
     }
 
-    let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
     collect_atomic_candidates_with_axis(
       child,
       child_abs_start,
