@@ -14,31 +14,32 @@
     "layout": 16.042655707317074,
     "paint": 23.061317579268295
   },
-  "notes": "",
+  "notes": "Visually close; main fix was text-decoration underline snapping (solid underlines were biased 1px upward due to floor() snapping, fixed by rounding to the nearest device-pixel edge). Remaining diffs (~9% pixels, perceptual ~0.03) are dominated by minor raster-level differences (text AA/hinting and tiny background color deltas like #fffdfd vs #fff), not missing layout/cascade primitives.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 215821,
-    "diff_percent": 22.4814,
-    "perceptual": 0.8786,
+    "diff_pixels": 88764,
+    "diff_percent": 9.2463,
+    "perceptual": 0.0304,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 15,
-      "y": 12,
+      "x": 12,
+      "y": 13,
       "baseline_rgba": [
         255,
-        255,
-        255,
+        253,
+        253,
         255
       ],
       "rendered_rgba": [
-        253,
-        233,
-        226,
+        255,
+        255,
+        255,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "87bcbb0e8dc9b9e870d6b813d5a7226bc728de8d"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,

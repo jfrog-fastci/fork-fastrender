@@ -16823,7 +16823,10 @@ impl DisplayListRenderer {
             } else {
               transform.ty
             };
-            let snapped_edge = (raw_edge + cross_translation).floor() - cross_translation;
+            // Chrome aligns decoration strokes by rounding to the nearest device pixel edge. Using
+            // `floor()` consistently biases underlines upward and shows up as a 1px offset in
+            // Chrome-vs-FastRender diffs on pages with many links (e.g. lite.cnn.com).
+            let snapped_edge = (raw_edge + cross_translation).round() - cross_translation;
             (snapped_edge + snapped_thickness * 0.5, snapped_thickness)
           } else {
             (center, thickness)
@@ -27769,7 +27772,7 @@ mod tests {
           style: TextDecorationStyle::Solid,
           color: Rgba::from_rgba8(0, 0, 255, 255),
           underline: Some(DecorationStroke {
-            // pre-snap edge = 6.8 - 0.9 = 5.9, so snap edge to 5 and thickness to 1.
+            // pre-snap edge = 6.8 - 0.9 = 5.9, so snap edge to 6 and thickness to 1.
             center: 6.8,
             thickness: 1.8,
             segments: None,
@@ -27797,9 +27800,10 @@ mod tests {
       .render(&list)
       .expect("rendered");
 
-    // 1.8px thickness should snap down to a crisp 1px line at y=5.
-    assert_eq!(pixel(&pixmap, 10, 5), (0, 0, 255, 255));
-    assert_eq!(pixel(&pixmap, 10, 6), (255, 255, 255, 255));
+    // 1.8px thickness should snap down to a crisp 1px line at y=6.
+    assert_eq!(pixel(&pixmap, 10, 6), (0, 0, 255, 255));
+    assert_eq!(pixel(&pixmap, 10, 5), (255, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 10, 7), (255, 255, 255, 255));
     // 2.7px thickness should snap down to a crisp 2px line at y=9..10.
     assert_eq!(pixel(&pixmap, 10, 9), (255, 0, 0, 255));
     assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
