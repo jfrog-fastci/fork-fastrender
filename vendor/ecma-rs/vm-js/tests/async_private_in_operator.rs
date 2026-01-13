@@ -24,12 +24,11 @@ fn async_private_in_operator_await_rhs_true_false() -> Result<(), VmError> {
       var out = "";
       async function f() {
         class C {
-          static #x = 0;
-          static async hasAsync(o) {
-            return #x in (await Promise.resolve(o));
-          }
+          #x;
+          async hasAsync(o) { return #x in (await Promise.resolve(o)); }
         }
-        return (await C.hasAsync(C)) && !(await C.hasAsync({}));
+        const c = new C();
+        return (await c.hasAsync(c)) && !(await c.hasAsync({}));
       }
       f().then(v => out = String(v));
       out
@@ -55,8 +54,8 @@ fn async_private_in_operator_await_rhs_non_object_throws_type_error() -> Result<
       var out="";
       async function f(){
         class C {
-          static #x = 0;
-          static async g(){
+          #x;
+          async g(){
             try {
               return #x in (await Promise.resolve(1));
             } catch(e) {
@@ -64,7 +63,7 @@ fn async_private_in_operator_await_rhs_non_object_throws_type_error() -> Result<
             }
           }
         }
-        return await C.g();
+        return await (new C()).g();
       }
       f().then(v=>out=v);
       out
@@ -89,12 +88,17 @@ fn async_private_in_operator_await_rhs_proxy_returns_false() -> Result<(), VmErr
       var out = "";
       async function f() {
         class C {
-          static #x = 0;
-          static async hasAsync(o) {
-            return #x in (await Promise.resolve(o));
-          }
+          #x;
+          async hasAsync(o) { return #x in (await Promise.resolve(o)); }
         }
-        return await C.hasAsync(new Proxy(C, {}));
+        const c = new C();
+        const proxy = new Proxy(c, {
+          has() { throw new Error("has trap should not run"); },
+          getOwnPropertyDescriptor() {
+            throw new Error("getOwnPropertyDescriptor trap should not run");
+          },
+        });
+        return await c.hasAsync(proxy);
       }
       f().then(v => out = String(v));
       out
