@@ -625,7 +625,7 @@ fn tab_search_overlay_ui(
             let tab = &app.tabs[m.tab_index];
             let is_selected = idx == app.chrome.tab_search.selected;
 
-            let title = tab.display_title();
+            let title = tab.display_title().to_string();
             let secondary = tab_search_secondary_text(tab);
 
             let row_id = egui::Id::new(("tab_search_row", tab.id));

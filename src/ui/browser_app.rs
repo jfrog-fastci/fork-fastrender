@@ -499,14 +499,11 @@ impl BrowserTabState {
     self.current_url.as_deref()
   }
 
-  pub fn display_title(&self) -> String {
-    if let Some(title) = self.title.as_ref().filter(|t| !t.trim().is_empty()) {
-      return title.clone();
+  pub fn display_title(&self) -> &str {
+    if let Some(title) = self.title.as_deref().filter(|t| !t.trim().is_empty()) {
+      return title;
     }
-    self
-      .current_url()
-      .map(str::to_string)
-      .unwrap_or_else(|| "New Tab".to_string())
+    self.current_url().unwrap_or("New Tab")
   }
 
   /// Returns a deterministic monotonic progress fraction for a chrome loading indicator.

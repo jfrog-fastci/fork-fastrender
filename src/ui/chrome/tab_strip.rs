@@ -8,6 +8,7 @@ use crate::ui::motion::UiMotion;
 use crate::ui::{icon_button, BrowserIcon};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::ChromeAction;
@@ -92,6 +93,23 @@ struct TabStripLayoutSnapshot {
   scroll_offset_x: f32,
   pinned_count: usize,
   unpinned_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TabStripPerfSample {
+  /// Time spent in `tab_strip_ui` up to snapshot persistence (microseconds).
+  frame_us: u64,
+  tab_count: usize,
+  pinned_count: usize,
+  unpinned_count: usize,
+  pinned_tabs_cap: usize,
+  unpinned_items_cap: usize,
+  tab_rects_cap: usize,
+}
+
+fn tab_strip_perf_enabled() -> bool {
+  static ENABLED: OnceLock<bool> = OnceLock::new();
+  *ENABLED.get_or_init(|| std::env::var_os("FASTR_TAB_STRIP_PERF").is_some())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1501,9 +1519,9 @@ fn tab_ui(
   let hovered = interactive && response.hovered();
   if hovered {
     if err.is_none() && warn.is_none() {
-      response = response.on_hover_text(title.as_str());
+      response = response.on_hover_text(title);
     } else {
-      let mut lines = vec![title.clone()];
+      let mut lines = vec![title.to_string()];
       if let Some(err) = err {
         lines.push(format!("Error: {err}"));
       }
@@ -1514,13 +1532,13 @@ fn tab_ui(
     }
   }
   let a11y_label =
-    tab_a11y_label(title.as_str(), is_active, tab.pinned, tab.loading, err.is_some(), warn.is_some());
+    tab_a11y_label(title, is_active, tab.pinned, tab.loading, err.is_some(), warn.is_some());
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
   if interactive {
-    super::show_tooltip_on_focus(ui, &response, title.as_str());
+    super::show_tooltip_on_focus(ui, &response, title);
   }
 
   let visuals = ui.style().visuals.clone();
@@ -1858,9 +1876,9 @@ fn pinned_tab_ui(
   );
   if !closing && response.hovered() {
     if err.is_none() && warn.is_none() {
-      response = response.on_hover_text(title.as_str());
+      response = response.on_hover_text(title);
     } else {
-      let mut lines = vec![title.clone()];
+      let mut lines = vec![title.to_string()];
       if let Some(err) = err {
         lines.push(format!("Error: {err}"));
       }
@@ -1871,13 +1889,13 @@ fn pinned_tab_ui(
     }
   }
   let a11y_label =
-    tab_a11y_label(title.as_str(), is_active, tab.pinned, tab.loading, err.is_some(), warn.is_some());
+    tab_a11y_label(title, is_active, tab.pinned, tab.loading, err.is_some(), warn.is_some());
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
   if !closing {
-    super::show_tooltip_on_focus(ui, &response, title.as_str());
+    super::show_tooltip_on_focus(ui, &response, title);
   }
 
   let visuals = ui.style().visuals.clone();
@@ -2037,6 +2055,8 @@ pub(super) fn tab_strip_ui(
   let ctx = ui.ctx().clone();
   let motion_enabled = motion.enabled && ctx.style().animation_time > 0.0;
   let now = ui.input(|i| i.time);
+  let perf_enabled = tab_strip_perf_enabled();
+  let perf_start = perf_enabled.then_some(std::time::Instant::now());
 
   #[cfg(test)]
   ui.ctx().data_mut(|d| {
@@ -2122,12 +2142,18 @@ pub(super) fn tab_strip_ui(
   let anim_key = ui.make_persistent_id("tab_strip_pin_anim");
   let drag_lift_out_key = ui.make_persistent_id("tab_strip_drag_lift_out");
 
-  let prev_snapshot = ctx
-    .data(|d| d.get_temp::<Option<TabStripLayoutSnapshot>>(snapshot_key))
-    .unwrap_or(None);
-  let mut pin_anim = ctx
-    .data(|d| d.get_temp::<Option<TabPinAnim>>(anim_key))
-    .unwrap_or(None);
+  // `TabStripLayoutSnapshot` contains per-tab vectors + hashmaps. Cloning it each frame (via
+  // `egui::Data::get_temp`) becomes a dominant allocation + CPU cost once tab counts reach
+  // 100-500.
+  //
+  // Instead, we *take* ownership of the previous snapshot from egui memory, reuse its
+  // allocations, and store it back at the end of the frame.
+  let mut prev_snapshot: Option<TabStripLayoutSnapshot> = ctx.data_mut(|d| {
+    std::mem::take(d.get_temp_mut_or_default::<Option<TabStripLayoutSnapshot>>(snapshot_key))
+  });
+  let mut pin_anim: Option<TabPinAnim> = ctx.data_mut(|d| {
+    std::mem::take(d.get_temp_mut_or_default::<Option<TabPinAnim>>(anim_key))
+  });
 
   // If animations are disabled or the tab disappeared, snap to the new state.
   if !motion_enabled {
@@ -2467,8 +2493,41 @@ pub(super) fn tab_strip_ui(
   let mut scroll_offset_x: f32 = 0.0;
   let mut unpinned_max_scroll_x: f32 = 0.0;
   let mut unpinned_scroll_viewport_rect: Option<Rect> = None;
-  let mut layout_rects: HashMap<TabId, Rect> = HashMap::new();
-  let mut unpinned_items_for_snapshot: Vec<TabStripItemKey> = Vec::new();
+
+  // -----------------------------------------------------------------------------
+  // Per-frame scratch storage
+  // -----------------------------------------------------------------------------
+  //
+  // The tab strip is rendered every egui frame. With hundreds of tabs, repeatedly allocating
+  // `HashMap`s/`Vec`s (and cloning the previous frame's snapshot out of egui memory) can become a
+  // dominant CPU + allocation cost.
+  //
+  // We store the previous frame's snapshot in egui temp memory and *take* it at the start of the
+  // frame. This lets us:
+  // - Avoid cloning the full snapshot (deep-clones every vec/map entry).
+  // - Reuse the existing `Vec`/`HashMap` allocations by clearing + refilling them.
+  let mut layout_snapshot = prev_snapshot.unwrap_or_else(|| TabStripLayoutSnapshot {
+    pinned_tabs: Vec::new(),
+    unpinned_items: Vec::new(),
+    tab_rects: HashMap::new(),
+    unpinned_tab_width: 0.0,
+    scroll_offset_x: 0.0,
+    pinned_count: 0,
+    unpinned_count: 0,
+  });
+
+  let mut layout_rects = std::mem::take(&mut layout_snapshot.tab_rects);
+  layout_rects.clear();
+  layout_rects.reserve(tab_count);
+
+  let mut unpinned_items_for_snapshot = std::mem::take(&mut layout_snapshot.unpinned_items);
+  unpinned_items_for_snapshot.clear();
+  unpinned_items_for_snapshot.reserve(unpinned_count + app.tab_groups.len());
+
+  let mut pinned_tabs_for_snapshot = std::mem::take(&mut layout_snapshot.pinned_tabs);
+  pinned_tabs_for_snapshot.clear();
+  pinned_tabs_for_snapshot.reserve(pinned_count);
+
   let mut ghost_dest_anchor_rect: Option<Rect> = None;
 
   if tabs_viewport_width > 0.0 {
@@ -3423,26 +3482,39 @@ pub(super) fn tab_strip_ui(
     );
   }
 
-  // Persist the layout snapshot for pin/unpin animations.
+  // Persist the layout snapshot for pin/unpin animations (and reuse it as per-frame scratch).
+  pinned_tabs_for_snapshot.extend(app.tabs.iter().take(pinned_len).map(|t| t.id));
+  layout_snapshot.pinned_tabs = pinned_tabs_for_snapshot;
+  layout_snapshot.unpinned_items = unpinned_items_for_snapshot;
+  layout_snapshot.tab_rects = layout_rects;
+  layout_snapshot.unpinned_tab_width = sizing.tab_width;
+  layout_snapshot.scroll_offset_x = scroll_offset_x;
+  layout_snapshot.pinned_count = pinned_count;
+  layout_snapshot.unpinned_count = unpinned_count;
+
+  let perf_sample = if perf_enabled {
+    let elapsed_us = perf_start
+      .as_ref()
+      .map(|start| start.elapsed().as_micros())
+      .unwrap_or(0);
+    Some(TabStripPerfSample {
+      frame_us: elapsed_us.min(u64::MAX as u128) as u64,
+      tab_count,
+      pinned_count,
+      unpinned_count,
+      pinned_tabs_cap: layout_snapshot.pinned_tabs.capacity(),
+      unpinned_items_cap: layout_snapshot.unpinned_items.capacity(),
+      tab_rects_cap: layout_snapshot.tab_rects.capacity(),
+    })
+  } else {
+    None
+  };
+
   ctx.data_mut(|d| {
-    let pinned_tabs = app
-      .tabs
-      .iter()
-      .take(pinned_len)
-      .map(|t| t.id)
-      .collect::<Vec<_>>();
-    d.insert_temp(
-      snapshot_key,
-      Some(TabStripLayoutSnapshot {
-        pinned_tabs,
-        unpinned_items: unpinned_items_for_snapshot.clone(),
-        tab_rects: layout_rects,
-        unpinned_tab_width: sizing.tab_width,
-        scroll_offset_x,
-        pinned_count,
-        unpinned_count,
-      }),
-    );
+    if let Some(sample) = perf_sample {
+      d.insert_temp(egui::Id::new("tab_strip_perf_sample"), sample);
+    }
+    d.insert_temp(snapshot_key, Some(layout_snapshot));
     d.insert_temp(anim_key, pin_anim_render.cloned());
   });
 
