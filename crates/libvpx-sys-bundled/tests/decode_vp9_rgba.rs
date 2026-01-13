@@ -34,5 +34,7 @@ fn decodes_vp9_frame_to_rgba8_from_webm_fixture() {
     assert_eq!((out.width, out.height), (64, 64));
     assert_eq!(out.rgba8.len(), 64 * 64 * 4);
   }
-}
 
+  // Flushing (decode with NULL/0) should not error.
+  let _ = decoder.decode(&[]).expect("flush");
+}
