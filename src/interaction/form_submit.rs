@@ -588,32 +588,44 @@ fn collect_form_entries(
     if is_disabled_or_inert(index, submitter_node_id) {
       return None;
     }
-    if let Some(name) = submitter
+    let name = submitter
       .get_attribute_ref("name")
       .map(trim_ascii_whitespace)
-      .filter(|name| !name.is_empty())
-    {
-      if is_input(submitter) && input_type(submitter).eq_ignore_ascii_case("image") {
-        // `<input type=image>` submits click coordinates as `name.x`/`name.y`.
-        //
-        // We only track click coordinates for pointer activation. Keyboard activation (Enter/Space)
-        // and other submit paths fall back to (0,0) like browsers.
-        let (x, y) = submitter_image_coords.unwrap_or((0, 0));
-        out.push(FormDataEntry::Text {
-          name: format!("{name}.x"),
-          value: x.max(0).to_string(),
-        });
-        out.push(FormDataEntry::Text {
-          name: format!("{name}.y"),
-          value: y.max(0).to_string(),
-        });
+      .unwrap_or("");
+
+    if is_input(submitter) && input_type(submitter).eq_ignore_ascii_case("image") {
+      // `<input type=image>` submits click coordinates.
+      //
+      // - When the submitter has a non-empty name, browsers submit `name.x` and `name.y`.
+      // - When the name is empty/missing, browsers submit `x` and `y`.
+      //
+      // We only track click coordinates for pointer activation. Keyboard activation (Enter/Space)
+      // and other submit paths fall back to (0,0).
+      let (x, y) = submitter_image_coords.unwrap_or((0, 0));
+      let x_name = if name.is_empty() {
+        "x".to_string()
       } else {
-        let value = submitter.get_attribute_ref("value").unwrap_or("");
-        out.push(FormDataEntry::Text {
-          name: name.to_string(),
-          value: value.to_string(),
-        });
-      }
+        format!("{name}.x")
+      };
+      let y_name = if name.is_empty() {
+        "y".to_string()
+      } else {
+        format!("{name}.y")
+      };
+      out.push(FormDataEntry::Text {
+        name: x_name,
+        value: x.max(0).to_string(),
+      });
+      out.push(FormDataEntry::Text {
+        name: y_name,
+        value: y.max(0).to_string(),
+      });
+    } else if !name.is_empty() {
+      let value = submitter.get_attribute_ref("value").unwrap_or("");
+      out.push(FormDataEntry::Text {
+        name: name.to_string(),
+        value: value.to_string(),
+      });
     }
   }
 
