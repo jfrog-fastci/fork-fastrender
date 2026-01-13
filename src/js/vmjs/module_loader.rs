@@ -1606,6 +1606,11 @@ mod tests {
       get_global_prop_utf8(&mut host, "mapped").as_deref(),
       Some(mapped_url)
     );
+    assert_eq!(
+      fetcher.calls(),
+      vec![entry_url.to_string()],
+      "import.meta.resolve should not fetch resolved modules"
+    );
     loader.teardown(&mut host)?;
     Ok(())
   }
