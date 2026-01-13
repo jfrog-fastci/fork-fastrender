@@ -7,8 +7,10 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+use tempfile::TempDir;
 
 /// Debug escape hatch: disable the Windows renderer sandbox.
 ///
@@ -21,6 +23,9 @@ const ENV_DISABLE_RENDERER_SANDBOX: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
 /// - `off`, `0`, `false`, `no` (case-insensitive) => disable sandboxing
 /// - any other non-empty value => leave sandboxing enabled (default)
 const ENV_WINDOWS_RENDERER_SANDBOX: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
+
+/// Enable verbose sandbox logging (primarily for Windows AppContainer spawn debugging).
+const ENV_LOG_SANDBOX: &str = "FASTR_LOG_SANDBOX";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WindowsRendererSandboxLevel {
@@ -93,9 +98,22 @@ Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1 or {ENV_WINDOWS_RENDERER_SANDBOX}=off to 
   });
 }
 
-use windows_sys::Win32::Foundation::{BOOL, ERROR_ALREADY_EXISTS, FALSE, HANDLE, TRUE};
+fn log_sandbox_debug(msg: &str) {
+  if cfg!(debug_assertions) || env_var_truthy(std::env::var_os(ENV_LOG_SANDBOX).as_deref()) {
+    eprintln!("{msg}");
+  }
+}
+
+use windows_sys::Win32::Foundation::{
+  BOOL, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, FALSE, HANDLE, TRUE,
+};
 use windows_sys::Win32::Security::Authentication::Identity::{
   CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+};
+use windows_sys::Win32::Security::Authorization::{
+  GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+  NO_MULTIPLE_TRUSTEE, NO_INHERITANCE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
+  TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
   ConvertStringSidToSidW, CreateRestrictedToken, FreeSid, GetLengthSid, OpenProcessToken,
@@ -103,6 +121,7 @@ use windows_sys::Win32::Security::{
   SE_GROUP_INTEGRITY, SE_GROUP_INTEGRITY_ENABLED, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
   TOKEN_DUPLICATE, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
+use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
 use windows_sys::Win32::System::JobObjects::{
   AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
   JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_BASIC_UI_RESTRICTIONS,
@@ -134,6 +153,8 @@ pub struct SandboxedChild {
   pub pid: u32,
   pub job: JobObject,
   pub level: WindowsSandboxLevel,
+  // Keep any relocated AppContainer executable alive for the lifetime of the child handle.
+  _temp_dir: Option<TempDir>,
 }
 
 #[derive(Debug)]
@@ -353,7 +374,12 @@ pub fn spawn_sandboxed(
     {
       Ok(child) => Ok(child),
       Err(appcontainer_err) => match spawn_restricted_token(exe, args, inherit_handles) {
-        Ok(child) => Ok(child),
+        Ok(child) => {
+          eprintln!(
+            "warning: Windows AppContainer sandbox failed ({appcontainer_err}); falling back to restricted-token mode"
+          );
+          Ok(child)
+        }
         Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles) {
           Ok(child) => Ok(child),
           Err(unsandboxed_err) => Err(io::Error::new(
@@ -419,35 +445,193 @@ fn spawn_appcontainer(
     )?;
   }
 
-  let application_name = wide_from_os(exe.as_os_str());
-  let mut cmdline = build_command_line(exe, args);
-
-  let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
-  startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-  startup.lpAttributeList = attrs.list;
-
-  let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
   let inherit = if handles.is_empty() { FALSE } else { TRUE };
   let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
 
-  let ok = unsafe {
-    CreateProcessW(
-      application_name.as_ptr(),
-      cmdline.as_mut_ptr(),
-      std::ptr::null(),
-      std::ptr::null(),
-      inherit,
-      flags,
-      std::ptr::null(),
-      std::ptr::null(),
-      std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
-      &mut pi,
+  let mut create_process = |image: &Path| -> io::Result<PROCESS_INFORMATION> {
+    let application_name = wide_from_os(image.as_os_str());
+    let mut cmdline = build_command_line(image, args);
+
+    let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    startup.lpAttributeList = attrs.list;
+
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+      CreateProcessW(
+        application_name.as_ptr(),
+        cmdline.as_mut_ptr(),
+        std::ptr::null(),
+        std::ptr::null(),
+        inherit,
+        flags,
+        std::ptr::null(),
+        std::ptr::null(),
+        std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
+        &mut pi,
+      )
+    };
+    if ok == 0 {
+      return Err(io::Error::last_os_error());
+    }
+    Ok(pi)
+  };
+
+  match create_process(exe) {
+    Ok(pi) => return finish_spawn(job, pi, WindowsSandboxLevel::AppContainer, None),
+    Err(err) => {
+      if err.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32) {
+        return Err(err);
+      }
+    }
+  }
+
+  // AppContainer can fail to execute un-packaged dev/test binaries because the directory does not
+  // grant read/execute to the sandbox token. Remediate by copying the image to a fresh temp dir and
+  // granting access to the derived AppContainer SID, then retrying.
+  let (temp_dir, relocated) = relocate_exe_for_appcontainer(exe, sid.sid)?;
+  log_sandbox_debug(&format!(
+    "windows sandbox: AppContainer CreateProcessW returned ERROR_ACCESS_DENIED for {}; copied image to {} and retrying",
+    exe.display(),
+    relocated.display()
+  ));
+
+  match create_process(&relocated) {
+    Ok(pi) => finish_spawn(
+      job,
+      pi,
+      WindowsSandboxLevel::AppContainer,
+      Some(temp_dir),
+    ),
+    Err(err) => {
+      eprintln!(
+        "warning: Windows AppContainer retry after relocation failed ({err}); falling back to restricted-token mode"
+      );
+      Err(err)
+    }
+  }
+}
+
+fn relocate_exe_for_appcontainer(
+  exe: &Path,
+  appcontainer_sid: *mut std::ffi::c_void,
+) -> io::Result<(TempDir, PathBuf)> {
+  let file_name = exe
+    .file_name()
+    .filter(|name| !name.is_empty())
+    .unwrap_or_else(|| OsStr::new("fastrender-renderer.exe"));
+
+  let temp_dir = tempfile::Builder::new()
+    .prefix("fastrender-appcontainer-image-")
+    .tempdir()?;
+
+  let dst = temp_dir.path().join(file_name);
+  std::fs::copy(exe, &dst)?;
+
+  // Best-effort: grant access to the directory itself as well (helps on stricter traverse checks).
+  if let Err(err) = grant_read_execute_acl(temp_dir.path(), appcontainer_sid) {
+    log_sandbox_debug(&format!(
+      "windows sandbox: failed to grant AppContainer directory ACL for {} ({err}); continuing with file ACL",
+      temp_dir.path().display()
+    ));
+  }
+
+  // Prefer granting to the specific AppContainer SID (narrowest). If that fails unexpectedly,
+  // fall back to ALL APPLICATION PACKAGES.
+  if let Err(err) = grant_read_execute_acl(&dst, appcontainer_sid) {
+    log_sandbox_debug(&format!(
+      "windows sandbox: failed to grant copied image ACL to AppContainer SID ({err}); falling back to ALL APPLICATION PACKAGES"
+    ));
+    let aap = all_application_packages_sid()?;
+    if let Err(err) = grant_read_execute_acl(temp_dir.path(), aap.sid) {
+      log_sandbox_debug(&format!(
+        "windows sandbox: failed to grant directory ACL to ALL APPLICATION PACKAGES for {} ({err})",
+        temp_dir.path().display()
+      ));
+    }
+    grant_read_execute_acl(&dst, aap.sid)?;
+  }
+
+  Ok((temp_dir, dst))
+}
+
+fn all_application_packages_sid() -> io::Result<LocalAllocSid> {
+  // ALL APPLICATION PACKAGES: S-1-15-2-1.
+  let sid_string = wide_from_str("S-1-15-2-1");
+  let mut sid: *mut std::ffi::c_void = std::ptr::null_mut();
+  win32_bool(unsafe { ConvertStringSidToSidW(sid_string.as_ptr(), &mut sid) })?;
+  if sid.is_null() {
+    return Err(io::Error::new(
+      io::ErrorKind::Other,
+      "ConvertStringSidToSidW returned null SID for ALL APPLICATION PACKAGES",
+    ));
+  }
+  Ok(LocalAllocSid { sid })
+}
+
+fn grant_read_execute_acl(path: &Path, sid: *mut std::ffi::c_void) -> io::Result<()> {
+  let mut name = wide_from_os(path.as_os_str());
+
+  let mut dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
+  let mut sd: *mut std::ffi::c_void = std::ptr::null_mut();
+
+  // SAFETY: FFI call; output pointers are writable.
+  let status = unsafe {
+    GetNamedSecurityInfoW(
+      name.as_mut_ptr(),
+      SE_FILE_OBJECT,
+      windows_sys::Win32::Security::DACL_SECURITY_INFORMATION,
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      &mut dacl,
+      std::ptr::null_mut(),
+      &mut sd,
     )
   };
-  if ok == 0 {
-    return Err(io::Error::last_os_error());
+  if status != ERROR_SUCCESS {
+    return Err(io::Error::from_raw_os_error(status as i32));
   }
-  finish_spawn(job, pi, WindowsSandboxLevel::AppContainer)
+
+  let mut ea: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
+  ea.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+  ea.grfAccessMode = GRANT_ACCESS;
+  ea.grfInheritance = NO_INHERITANCE;
+  ea.Trustee = TRUSTEE_W {
+    pMultipleTrustee: std::ptr::null_mut(),
+    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+    TrusteeForm: TRUSTEE_IS_SID,
+    TrusteeType: TRUSTEE_IS_UNKNOWN,
+    ptstrName: sid as *mut _,
+  };
+
+  let mut new_dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
+  let status = unsafe { SetEntriesInAclW(1, &mut ea, dacl, &mut new_dacl) };
+  if status != ERROR_SUCCESS {
+    unsafe { LocalFree(sd as isize) };
+    return Err(io::Error::from_raw_os_error(status as i32));
+  }
+
+  let status = unsafe {
+    SetNamedSecurityInfoW(
+      name.as_mut_ptr(),
+      SE_FILE_OBJECT,
+      windows_sys::Win32::Security::DACL_SECURITY_INFORMATION,
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      new_dacl,
+      std::ptr::null_mut(),
+    )
+  };
+
+  unsafe {
+    LocalFree(sd as isize);
+    LocalFree(new_dacl as isize);
+  }
+
+  if status != ERROR_SUCCESS {
+    return Err(io::Error::from_raw_os_error(status as i32));
+  }
+  Ok(())
 }
 
 fn spawn_restricted_token(
@@ -560,7 +744,7 @@ fn spawn_restricted_token(
     }
   }
 
-  finish_spawn(job, pi, WindowsSandboxLevel::RestrictedToken)
+  finish_spawn(job, pi, WindowsSandboxLevel::RestrictedToken, None)
 }
 
 fn spawn_unsandboxed(
@@ -631,13 +815,14 @@ fn spawn_unsandboxed(
     }
   }
 
-  finish_spawn(job, pi, WindowsSandboxLevel::None)
+  finish_spawn(job, pi, WindowsSandboxLevel::None, None)
 }
 
 fn finish_spawn(
   job: JobObject,
   pi: PROCESS_INFORMATION,
   level: WindowsSandboxLevel,
+  temp_dir: Option<TempDir>,
 ) -> io::Result<SandboxedChild> {
   if pi.hProcess == 0 || pi.hThread == 0 {
     return Err(io::Error::new(
@@ -669,6 +854,7 @@ fn finish_spawn(
     pid,
     job,
     level,
+    _temp_dir: temp_dir,
   })
 }
 
