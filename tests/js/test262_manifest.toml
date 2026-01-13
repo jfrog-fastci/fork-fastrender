@@ -645,6 +645,8 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/Array/length/**"
 status = "pass"
+
+[[expectations]]
 glob = "built-ins/Array/prototype/sort/**"
 status = "pass"
 
