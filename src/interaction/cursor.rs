@@ -1,4 +1,3 @@
-use crate::style::types::CursorKeyword;
 use crate::ui::messages::CursorKind;
 
 use super::hit_test::{HitTestKind, HitTestResult};
@@ -39,6 +38,7 @@ pub fn cursor_kind_for_hit(hit: Option<&HitTestResult>) -> CursorKind {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style::types::CursorKeyword;
 
   fn hit(kind: HitTestKind) -> HitTestResult {
     HitTestResult {
