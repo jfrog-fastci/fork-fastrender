@@ -636,6 +636,11 @@ reason = "vm-js does not yet implement class fields/static initialization blocks
 
 # --- Additional curated suites (statements + built-ins) ---
 [[expectations]]
+glob = "language/statements/**/labelled-fn-stmt*.js"
+status = "pass"
+reason = "parse-js: enforce IsLabelledFunction early errors in statement positions."
+
+[[expectations]]
 glob = "language/statements/**"
 status = "xfail"
 reason = "vm-js: statement/function/class semantics are still incomplete; tracked via curated test262 progress."
