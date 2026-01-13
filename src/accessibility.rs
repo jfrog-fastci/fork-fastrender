@@ -1668,6 +1668,19 @@ fn apply_form_state_overrides(root: &mut DomNode, interaction_state: &Interactio
         }
       }
 
+      if is_input && node.get_attribute_ref("type").is_some_and(|t| t.eq_ignore_ascii_case("file")) {
+        if let Some(value_string) = interaction_state
+          .form_state
+          .file_input_value_string(frame.node_id)
+        {
+          if value_string.is_empty() {
+            node.remove_attribute("data-fastr-file-value");
+          } else {
+            node.set_attribute("data-fastr-file-value", &value_string);
+          }
+        }
+      }
+
       if let Some(select_id) = frame.select_override {
         if is_option {
           if let Some(selected) = interaction_state.form_state.select_selected.get(&select_id) {
@@ -3086,6 +3099,16 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
         .unwrap_or_else(|| "text".to_string());
       if input_type == "hidden" {
         return None;
+      }
+      if input_type == "file" {
+        if let Some(value) = ctx
+          .interaction_state
+          .and_then(|state| state.form_state.file_input_value_string(node.node_id))
+        {
+          return Some(value);
+        }
+        // Fall back to DOM-mirrored file input value semantics when no live override exists.
+        return crate::dom::input_file_value_string(&node.node);
       }
       if let Some(value) = ctx
         .interaction_state

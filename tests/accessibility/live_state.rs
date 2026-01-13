@@ -1,11 +1,12 @@
 use fastrender::accessibility::{AccessibilityNode, CheckState};
 use fastrender::api::FastRender;
 use fastrender::dom::{enumerate_dom_ids, DomNode};
-use fastrender::interaction::state::{DocumentSelectionState, TextEditPaintState};
+use fastrender::interaction::state::{DocumentSelectionState, FileSelection, TextEditPaintState};
 use fastrender::interaction::InteractionState;
 use fastrender::text::caret::CaretAffinity;
 use rustc_hash::FxHashSet;
 use serde_json::Value;
+use std::path::PathBuf;
 
 fn find_by_id<'a>(node: &'a AccessibilityNode, id: &str) -> Option<&'a AccessibilityNode> {
   if node.id.as_deref() == Some(id) {
@@ -168,6 +169,79 @@ fn accessibility_exports_selection_debug_fields() {
     selection.get("selection_end").and_then(|v| v.as_u64()),
     Some(4)
   );
+}
+
+#[test]
+fn accessibility_live_file_input_value_and_validation() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <input id="f" type="file" required>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let ids = enumerate_dom_ids(&dom);
+  let file_node = find_dom_by_id(&dom, "f").expect("file input");
+  let file_id = *ids.get(&(file_node as *const DomNode)).expect("file id");
+
+  // Without state, required file inputs are invalid and do not expose a value.
+  let tree = renderer
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, None)
+    .expect("accessibility tree");
+  let node = find_by_id(&tree, "f").expect("file node");
+  assert_eq!(node.value.as_deref(), None);
+  assert!(node.states.invalid);
+
+  // With a live file selection, the accessibility value should mirror browser behavior and
+  // required validation should pass.
+  let mut state = InteractionState::default();
+  state.form_state.file_inputs.insert(
+    file_id,
+    vec![FileSelection {
+      path: PathBuf::from("/tmp/a.txt"),
+      filename: "a.txt".to_string(),
+      content_type: "text/plain".to_string(),
+      bytes: vec![],
+    }],
+  );
+
+  let tree = renderer
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&state))
+    .expect("accessibility tree");
+  let node = find_by_id(&tree, "f").expect("file node");
+  assert_eq!(node.value.as_deref(), Some("C:\\fakepath\\a.txt"));
+  assert!(
+    !node.states.invalid,
+    "required file input should validate against the live file selection"
+  );
+
+  // Multiple selected files still expose only the first filename in the value string.
+  state.form_state.file_inputs.insert(
+    file_id,
+    vec![
+      FileSelection {
+        path: PathBuf::from("/tmp/a.txt"),
+        filename: "a.txt".to_string(),
+        content_type: "text/plain".to_string(),
+        bytes: vec![],
+      },
+      FileSelection {
+        path: PathBuf::from("/tmp/b.txt"),
+        filename: "b.txt".to_string(),
+        content_type: "text/plain".to_string(),
+        bytes: vec![],
+      },
+    ],
+  );
+
+  let tree = renderer
+    .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&state))
+    .expect("accessibility tree");
+  let node = find_by_id(&tree, "f").expect("file node");
+  assert_eq!(node.value.as_deref(), Some("C:\\fakepath\\a.txt"));
 }
 
 #[test]

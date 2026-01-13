@@ -61,6 +61,27 @@ impl FormState {
     self.checked.get(&node_id).copied()
   }
 
+  /// Returns the browser-like "value string" for an `<input type="file">` override.
+  ///
+  /// Browsers ignore author-provided markup `value=` for file inputs and instead expose a synthetic
+  /// string based on the selected filename, prefixed with `C:\fakepath\`.
+  ///
+  /// FastRender mirrors this behavior:
+  /// - selected file bytes live in [`FormState::file_inputs`], and
+  /// - downstream consumers (accessibility, validation) operate on a derived "value string" that
+  ///   reflects only the *first* selected filename (even when `multiple` is enabled).
+  ///
+  /// Returns `None` when no file-input override is present for `node_id`.
+  #[inline]
+  pub fn file_input_value_string(&self, node_id: usize) -> Option<String> {
+    self.file_inputs.get(&node_id).map(|files| {
+      files
+        .first()
+        .map(|file| format!("C:\\fakepath\\{}", file.filename))
+        .unwrap_or_default()
+    })
+  }
+
   #[inline]
   pub fn files_for(&self, node_id: usize) -> Option<&Vec<FileSelection>> {
     self.file_inputs.get(&node_id)

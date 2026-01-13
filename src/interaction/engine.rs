@@ -9484,10 +9484,7 @@ impl InteractionEngine {
     let value_string = self
       .state
       .form_state
-      .file_inputs
-      .get(&target_id)
-      .and_then(|files| files.first())
-      .map(|file| format!("C:\\fakepath\\{}", file.filename))
+      .file_input_value_string(target_id)
       .unwrap_or_default();
     if let Some(node_mut) = index.node_mut(target_id) {
       let attr_changed = if value_string.is_empty() {
@@ -9557,10 +9554,7 @@ impl InteractionEngine {
     let value_string = self
       .state
       .form_state
-      .file_inputs
-      .get(&input_node_id)
-      .and_then(|files| files.first())
-      .map(|file| format!("C:\\fakepath\\{}", file.filename))
+      .file_input_value_string(input_node_id)
       .unwrap_or_default();
     if let Some(node_mut) = index.node_mut(input_node_id) {
       let attr_changed = if value_string.is_empty() {
