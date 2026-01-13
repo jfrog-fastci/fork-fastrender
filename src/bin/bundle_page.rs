@@ -2550,22 +2550,6 @@ fn crawl_document(
     }
   }
 
-  for url in html_media_urls {
-    enqueue_unique(
-      &mut queue,
-      &mut seen_urls,
-      &mut queued,
-      url,
-      FetchDestination::Other,
-      FetchCredentialsMode::Include,
-      root_referrer,
-      root_client_origin.as_ref(),
-      root_referrer_policy,
-      root_referrer,
-      root_referrer_policy,
-    );
-  }
-
   for url in html_documents {
     enqueue_unique(
       &mut queue,
@@ -3124,22 +3108,6 @@ fn crawl_document(
           }
         }
 
-        for url in html_media_urls {
-          enqueue_unique(
-            &mut queue,
-            &mut seen_urls,
-            &mut queued,
-            url,
-            FetchDestination::Other,
-            FetchCredentialsMode::Include,
-            doc_referrer,
-            doc_origin.as_ref(),
-            doc_referrer_policy,
-            doc_referrer,
-            doc_referrer_policy,
-          );
-        }
-
         for url in html_documents {
           enqueue_unique(
             &mut queue,
@@ -3657,6 +3625,105 @@ mod tests {
         .iter()
         .any(|(url, dest)| url == "https://example.com/media.mp4" && *dest == FetchDestination::Other),
       "expected video src to be fetched with FetchDestination::Other, got: {calls:?}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_without_prefetch_media_does_not_fetch_media_src() -> Result<()> {
+    #[derive(Default)]
+    struct MediaFetcher {
+      calls: Mutex<Vec<(String, FetchDestination)>>,
+    }
+
+    impl MediaFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for MediaFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .unwrap()
+          .push((req.url.to_string(), req.destination));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><body><video src="/media.mp4"></video></body></html>"#.to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          // Return a valid response so the test can assert that it is *not* requested.
+          "https://example.com/media.mp4" => Ok(FetchedResource::with_final_url(
+            b"mp4".to_vec(),
+            Some("video/mp4".to_string()),
+            Some(req.url.to_string()),
+          )),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(MediaFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, document_resource) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
+
+    let recorded = recording.snapshot();
+    let (manifest, _resources, _document_bytes) = build_manifest(
+      "https://example.com/".to_string(),
+      render,
+      BundleFetchProfile::default(),
+      document_resource,
+      recorded,
+    );
+
+    assert!(
+      !manifest.resources.contains_key("https://example.com/media.mp4"),
+      "expected media src to be excluded from bundle resources when prefetch_media is not set"
+    );
+
+    let calls = inner.calls();
+    assert!(
+      !calls
+        .iter()
+        .any(|(url, _dest)| url == "https://example.com/media.mp4"),
+      "expected media src to not be fetched when prefetch_media is not set, got: {calls:?}"
     );
 
     Ok(())
