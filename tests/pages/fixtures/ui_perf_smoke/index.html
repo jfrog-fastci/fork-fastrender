@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>UI perf smoke fixture</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #1b1b1b;
+        --muted: #5f6368;
+        --line: #e6e6e6;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      }
+
+      header {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 12px;
+        background: #f7f7f7;
+        border-bottom: 1px solid var(--line);
+        box-sizing: border-box;
+        z-index: 10;
+      }
+
+      #field {
+        flex: 0 0 320px;
+        height: 32px;
+        font-size: 16px;
+        padding: 4px 8px;
+        border: 1px solid #c7c7c7;
+        border-radius: 6px;
+        box-sizing: border-box;
+      }
+
+      header .hint {
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      main {
+        padding-top: 72px;
+      }
+
+      .row {
+        display: flex;
+        gap: 12px;
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .box {
+        width: 64px;
+        height: 64px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #4caf50, #2196f3);
+        flex-shrink: 0;
+      }
+
+      .text {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .text h2 {
+        margin: 0 0 6px;
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .text p {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.4;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <input id="field" type="text" placeholder="Type here" />
+      <span class="hint">Headless UI perf smoke (scroll / resize / input).</span>
+    </header>
+    <main>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 1</h2><p>Deterministic scroll content. This page is intentionally offline and stable.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 2</h2><p>Used by ui_perf_smoke to measure scroll, resize, and input-to-frame latency.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 3</h2><p>Keep the structure simple but non-trivial to exercise layout + paint.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 4</h2><p>Each row includes a gradient box and a small text block.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 5</h2><p>Repeated rows create a long page so scroll bounds are meaningful.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 6</h2><p>The fixed header keeps an input field at a stable pointer coordinate.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 7</h2><p>Baseline comparisons look for relative regressions rather than absolute thresholds.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 8</h2><p>Rows continue below to ensure a large max scroll offset.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 9</h2><p>Scrolling triggers paints with a different scroll offset.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 10</h2><p>Resizing triggers layout and paint work.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 11</h2><p>Typing into the input triggers DOM mutation and repaint.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 12</h2><p>These rows are duplicated to keep the fixture deterministic.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 13</h2><p>Row content intentionally avoids network resources (no external fonts/images).</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 14</h2><p>FastRender should render this consistently across machines.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 15</h2><p>Long content also exercises scrollbars and scroll metrics reporting.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 16</h2><p>Spacing and borders ensure some paint work even on simple views.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 17</h2><p>As the harness evolves, keep this fixture stable and cheap.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 18</h2><p>Prefer relative regression checks because absolute timing budgets can be flaky in CI.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 19</h2><p>Additional rows below are mostly identical to avoid large diffs.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 20</h2><p>Scroll further down for more content.</p></div></div>
+
+      <!-- Repeat rows to make the page tall. -->
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 21</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 22</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 23</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 24</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 25</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 26</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 27</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 28</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 29</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 30</h2><p>Perf harness content.</p></div></div>
+
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 31</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 32</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 33</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 34</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 35</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 36</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 37</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 38</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 39</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 40</h2><p>Perf harness content.</p></div></div>
+
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 41</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 42</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 43</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 44</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 45</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 46</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 47</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 48</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 49</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 50</h2><p>Perf harness content.</p></div></div>
+
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 51</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 52</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 53</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 54</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 55</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 56</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 57</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 58</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 59</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 60</h2><p>Perf harness content.</p></div></div>
+
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 61</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 62</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 63</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 64</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 65</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 66</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 67</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 68</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 69</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 70</h2><p>Perf harness content.</p></div></div>
+
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 71</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 72</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 73</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 74</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 75</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 76</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 77</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 78</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 79</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 80</h2><p>Perf harness content.</p></div></div>
+
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 81</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 82</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 83</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 84</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 85</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 86</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 87</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 88</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 89</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 90</h2><p>Perf harness content.</p></div></div>
+
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 91</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 92</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 93</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 94</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 95</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 96</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 97</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 98</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 99</h2><p>Perf harness content.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 100</h2><p>Perf harness content.</p></div></div>
+    </main>
+  </body>
+</html>
+

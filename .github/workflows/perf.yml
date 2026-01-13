@@ -20,6 +20,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Init required spec submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The vendored `parse-js` crate uses `include_str!` on these TC39 HTML tables.
+          git submodule update --init specs/tc39-ecma262
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -131,8 +138,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Linux GUI dependencies (winit/wgpu)
-        run: bash scripts/ci_install_gui_deps_ubuntu.sh
+      - name: Init required spec submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The vendored `parse-js` crate uses `include_str!` on these TC39 HTML tables.
+          git submodule update --init specs/tc39-ecma262
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -173,7 +184,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/cargo_agent.sh build --locked --release --features browser_ui --bin ui_perf_smoke
+          bash scripts/cargo_agent.sh build --locked --release --bin ui_perf_smoke
 
       - name: Download previous ui_perf_smoke baseline
         id: download_ui_perf_baseline
