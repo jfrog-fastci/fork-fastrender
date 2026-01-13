@@ -356,6 +356,10 @@ impl CpalAudioBackend {
 
       let mut last_frames_written = clock_for_fallback.frames_written();
       let mut last_progress_at = Instant::now();
+      // CPAL can take a little time before the first callback arrives after (re)opening a stream.
+      // Use a more conservative stall timeout until we observe callback progress.
+      let mut awaiting_first_callback =
+        last_callback_frames_watchdog.load(Ordering::Relaxed) == 0;
       let mut consecutive_unhealthy_restarts: usize = 0;
 
       let enter_fallback = |now: Instant| {
@@ -382,6 +386,7 @@ impl CpalAudioBackend {
             last_frames_written = frames_written;
             last_progress_at = now;
             consecutive_unhealthy_restarts = 0;
+            awaiting_first_callback = false;
           } else {
             // Prefer the observed callback size once we have it (e.g. after a stream restart where
             // the device selected a different buffer size).
@@ -389,16 +394,21 @@ impl CpalAudioBackend {
               let v = last_callback_frames_watchdog.load(Ordering::Relaxed);
               if v != 0 { Some(v) } else { fixed_callback_frames }
             };
-            let callback_duration = callback_frames_hint
-              .map(|frames| frames_to_duration(sample_rate_hz, frames as u64))
-              .unwrap_or(STREAM_RESTART_POLL_INTERVAL);
-            let mut stall_timeout = callback_duration.saturating_mul(10);
-            if stall_timeout < STREAM_STALL_TIMEOUT_MIN {
-              stall_timeout = STREAM_STALL_TIMEOUT_MIN;
-            }
-            if stall_timeout > STREAM_STALL_TIMEOUT_MAX {
-              stall_timeout = STREAM_STALL_TIMEOUT_MAX;
-            }
+            let stall_timeout = if awaiting_first_callback {
+              STREAM_STALL_TIMEOUT_MAX
+            } else {
+              let callback_duration = callback_frames_hint
+                .map(|frames| frames_to_duration(sample_rate_hz, frames as u64))
+                .unwrap_or(STREAM_RESTART_POLL_INTERVAL);
+              let mut stall_timeout = callback_duration.saturating_mul(10);
+              if stall_timeout < STREAM_STALL_TIMEOUT_MIN {
+                stall_timeout = STREAM_STALL_TIMEOUT_MIN;
+              }
+              if stall_timeout > STREAM_STALL_TIMEOUT_MAX {
+                stall_timeout = STREAM_STALL_TIMEOUT_MAX;
+              }
+              stall_timeout
+            };
             if now.duration_since(last_progress_at) >= stall_timeout {
               consecutive_unhealthy_restarts =
                 consecutive_unhealthy_restarts.saturating_add(1);
@@ -432,6 +442,7 @@ impl CpalAudioBackend {
           // Give the new stream time to start invoking callbacks before the stall watchdog kicks in.
           last_progress_at = now;
           last_frames_written = clock_for_fallback.frames_written();
+          awaiting_first_callback = true;
         }
         if out.entered_fallback {
           enter_fallback(now);
