@@ -153,6 +153,7 @@ mod ui_worker_download_cancel_cleans_up;
 mod ui_worker_download_filename_collision_suffix;
 mod ui_worker_unsupported_scheme;
 mod ui_worker_untrusted_chrome_schemes;
+mod ui_worker_visited_links;
 mod ui_worker_viewport_changed;
 mod ui_worker_viewport_limits;
 mod ui_worker_zoom;

@@ -21,6 +21,7 @@ use crate::ui::messages::{PointerButton, PointerModifiers};
 use crate::interaction::selection_serialize::{
   serialize_document_selection, DocumentSelection, DocumentSelectionPoint, DocumentSelectionRange,
 };
+use rustc_hash::FxHashSet;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -4339,6 +4340,14 @@ impl InteractionEngine {
 
   pub fn interaction_state(&self) -> &InteractionState {
     &self.state
+  }
+
+  /// Replace the set of visited link node ids for the current document.
+  ///
+  /// This is used by browser-UI integrations to populate `:visited` pseudo-class matching from an
+  /// external per-tab visited URL store without mutating the DOM.
+  pub fn set_visited_links(&mut self, visited_links: FxHashSet<usize>) {
+    self.state.visited_links = visited_links;
   }
 
   /// Debug/test helper: validate internal interaction invariants.

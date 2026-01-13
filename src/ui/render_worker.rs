@@ -41,6 +41,7 @@ use crate::ui::messages::{
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
 use image::imageops::FilterType;
+use rustc_hash::FxHashSet;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -141,6 +142,130 @@ const FAVICON_MAX_EDGE_PX: u32 = 32;
 /// Maximum bytes allowed in a `WorkerToUi::Favicon` payload.
 const MAX_FAVICON_BYTES: usize =
   (FAVICON_MAX_EDGE_PX as usize) * (FAVICON_MAX_EDGE_PX as usize) * 4;
+
+// -----------------------------------------------------------------------------
+// Visited link state
+// -----------------------------------------------------------------------------
+
+/// Maximum number of visited URLs stored per tab.
+///
+/// This is intentionally bounded to avoid untrusted pages inducing unbounded memory growth by
+/// generating unique URLs.
+const VISITED_URL_STORE_MAX_ENTRIES: usize = 5_000;
+
+/// Approximate byte budget for the per-tab visited URL store (sum of URL string lengths).
+///
+/// This is a secondary guard in addition to `VISITED_URL_STORE_MAX_ENTRIES` so pathological long
+/// URLs cannot dominate memory usage even if the entry count remains small.
+const VISITED_URL_STORE_MAX_BYTES: usize = 1_000_000;
+
+#[derive(Debug, Clone, Default)]
+struct VisitedUrlStore {
+  order: VecDeque<Arc<str>>,
+  set: FxHashSet<Arc<str>>,
+  bytes: usize,
+}
+
+impl VisitedUrlStore {
+  fn contains(&self, url: &str) -> bool {
+    self.set.contains(url)
+  }
+
+  fn insert(&mut self, url: Arc<str>) {
+    if self.set.contains(&url) {
+      return;
+    }
+    self.bytes = self.bytes.saturating_add(url.len());
+    self.order.push_back(Arc::clone(&url));
+    self.set.insert(url);
+    self.evict_if_needed();
+  }
+
+  fn record_visited_url(&mut self, url: &str) {
+    let Some(url) = canonical_visited_url_key(url) else {
+      return;
+    };
+    self.insert(url);
+  }
+
+  fn evict_if_needed(&mut self) {
+    while self.order.len() > VISITED_URL_STORE_MAX_ENTRIES || self.bytes > VISITED_URL_STORE_MAX_BYTES {
+      let Some(old) = self.order.pop_front() else {
+        break;
+      };
+      self.bytes = self.bytes.saturating_sub(old.len());
+      self.set.remove(&old);
+    }
+  }
+}
+
+fn canonical_visited_url_key(url: &str) -> Option<Arc<str>> {
+  let mut parsed = url::Url::parse(url).ok()?;
+  parsed.set_fragment(None);
+  Some(Arc::from(parsed.into_string()))
+}
+
+fn resolve_href_for_visited(base: Option<&url::Url>, href: &str) -> Option<url::Url> {
+  let href = trim_ascii_whitespace(href);
+  if href.is_empty() {
+    return None;
+  }
+
+  if href
+    .as_bytes()
+    .get(.."javascript:".len())
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+  {
+    return None;
+  }
+
+  if let Some(base) = base {
+    if let Ok(joined) = base.join(href) {
+      if joined.scheme().eq_ignore_ascii_case("javascript") {
+        return None;
+      }
+      return Some(joined);
+    }
+  }
+
+  let absolute = url::Url::parse(href).ok()?;
+  (!absolute.scheme().eq_ignore_ascii_case("javascript")).then_some(absolute)
+}
+
+fn visited_link_node_ids_for_dom(
+  dom: &crate::dom::DomNode,
+  base_url: &str,
+  store: &VisitedUrlStore,
+) -> FxHashSet<usize> {
+  let base_parsed = url::Url::parse(base_url).ok();
+  let mut visited: FxHashSet<usize> = FxHashSet::default();
+
+  let mut stack: Vec<&crate::dom::DomNode> = vec![dom];
+  let mut next_id = 1usize;
+  while let Some(node) = stack.pop() {
+    let node_id = next_id;
+    next_id += 1;
+
+    if node.tag_name().is_some_and(|tag| {
+      tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area")
+    }) {
+      if let Some(href) = node.get_attribute_ref("href") {
+        if let Some(mut resolved) = resolve_href_for_visited(base_parsed.as_ref(), href) {
+          resolved.set_fragment(None);
+          if store.contains(resolved.as_str()) {
+            visited.insert(node_id);
+          }
+        }
+      }
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  visited
+}
 #[derive(Debug, Clone, Default)]
 struct FindInPageWorkerState {
   query: String,
@@ -165,6 +290,7 @@ struct TabState {
   cancel: CancelGens,
   last_committed_url: Option<String>,
   last_base_url: Option<String>,
+  visited_urls: VisitedUrlStore,
 
   last_pointer_pos_css: Option<(f32, f32)>,
   last_pointer_click_count: u8,
@@ -199,6 +325,7 @@ impl TabState {
       cancel,
       last_committed_url: None,
       last_base_url: None,
+      visited_urls: VisitedUrlStore::default(),
       last_pointer_pos_css: None,
       last_pointer_click_count: 0,
       pointer_buttons: 0,
@@ -2313,6 +2440,14 @@ impl BrowserRuntime {
         line: "crash://panic requested; simulating worker panic".to_string(),
       });
       panic!("crash://panic requested");
+    }
+
+    // Record visited URL state for link-click navigations.
+    //
+    // This is stored per-tab (not global profile) for now; it is later used to synthesize
+    // `InteractionState.visited_links` for newly loaded documents without mutating the DOM.
+    if reason == NavigationReason::LinkClick {
+      tab.visited_urls.record_visited_url(&url);
     }
 
     // Fragment-only navigation within the same document: update URL + scroll state in-place.
@@ -5475,6 +5610,25 @@ impl BrowserRuntime {
     }
 
     // -----------------------------
+    // Initial visited-link state (`:visited`)
+    // -----------------------------
+    //
+    // Populate `InteractionState.visited_links` for the newly loaded document by scanning all
+    // `<a href>` / `<area href>` elements and matching their resolved URLs against the per-tab
+    // visited URL store.
+    //
+    // This keeps visited styling internal (no DOM mutations) while allowing visited state to
+    // persist across back/forward navigations within a tab.
+    let base_for_links = base_url
+      .as_deref()
+      .unwrap_or_else(|| committed_url.as_str());
+    if let Some(tab) = self.tabs.get(&tab_id) {
+      let visited_links =
+        visited_link_node_ids_for_dom(doc.dom(), base_for_links, &tab.visited_urls);
+      interaction.set_visited_links(visited_links);
+    }
+
+    // -----------------------------
     // Initial paint stage
     // -----------------------------
     let paint_cancel_callback = combine_cancel_callbacks(
@@ -5485,7 +5639,9 @@ impl BrowserRuntime {
 
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-      let interaction_state = autofocus_target.map(|_| interaction.interaction_state());
+      let interaction_state = (autofocus_target.is_some()
+        || !interaction.interaction_state().visited_links.is_empty())
+      .then(|| interaction.interaction_state());
       if let Some(interaction_state) = interaction_state {
         match doc.render_if_needed_with_deadlines_and_interaction_state(
           Some(&paint_deadline),
