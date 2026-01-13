@@ -3610,7 +3610,7 @@ pub(super) fn tab_strip_ui(
 
       if let Some(tab) = tab {
         let lift_id = egui::Id::new(("tab_drag_lift", tab_id));
-        let lift_t = motion.animate_bool(ctx, lift_id, false, motion.durations.tab_drag_lift);
+        let lift_t = motion.animate_bool(&ctx, lift_id, false, motion.durations.tab_drag_lift);
 
         // Animation finished (or reduced motion): drop the transient state and skip drawing.
         if lift_t <= 1e-3 {
