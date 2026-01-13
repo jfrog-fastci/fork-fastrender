@@ -1903,6 +1903,81 @@ mod tests {
       "controls in the first <legend> should not be considered disabled when collecting form data"
     );
   }
+
+  #[test]
+  fn a11y_set_text_value_updates_dom_and_caret_for_focused_input() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"hi\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    assert!(engine.set_text_control_value(&mut dom, input_id, "hello"));
+    assert_eq!(input_value(&mut dom, input_id), "hello");
+    assert_eq!(engine.interaction_state().text_edit.unwrap().caret, 5);
+  }
+
+  #[test]
+  fn a11y_set_text_value_is_noop_for_disabled_control() {
+    let mut dom = crate::dom::parse_html("<html><body><input disabled value=\"abc\"></body></html>")
+      .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    assert!(!engine.set_text_control_value(&mut dom, input_id, "xyz"));
+    assert_eq!(input_value(&mut dom, input_id), "abc");
+    assert_eq!(engine.interaction_state().text_edit.unwrap().caret, 3);
+  }
+
+  #[test]
+  fn a11y_set_text_value_is_noop_for_readonly_control() {
+    let mut dom = crate::dom::parse_html("<html><body><input readonly value=\"abc\"></body></html>")
+      .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    assert!(!engine.set_text_control_value(&mut dom, input_id, "xyz"));
+    assert_eq!(input_value(&mut dom, input_id), "abc");
+    assert_eq!(engine.interaction_state().text_edit.unwrap().caret, 3);
+  }
+
+  #[test]
+  fn a11y_set_text_value_uses_data_fastr_value_for_textarea() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><textarea>orig</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    assert!(engine.set_text_control_value(&mut dom, textarea_id, "new"));
+    assert_eq!(textarea_value(&mut dom, textarea_id), "new");
+
+    let index = DomIndexMut::new(&mut dom);
+    let node = index.node(textarea_id).expect("textarea");
+    assert_eq!(node.get_attribute_ref("data-fastr-value"), Some("new"));
+    assert_eq!(engine.interaction_state().text_edit.unwrap().caret, 3);
+  }
+
+  #[test]
+  fn a11y_set_text_selection_range_clamps_to_value_len() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    assert!(engine.a11y_set_text_selection_range(&mut dom, input_id, 0, 10));
+    let paint = engine.interaction_state().text_edit.unwrap();
+    assert_eq!(paint.caret, 3);
+    assert_eq!(paint.selection, Some((0, 3)));
+  }
 }
 
 fn nearest_element_ancestor(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
@@ -2548,6 +2623,10 @@ fn text_control_maxlength_for_user_editing(node: &DomNode) -> Option<usize> {
       .and_then(parse_non_negative_integer);
   }
   None
+}
+
+fn is_text_like_input(node: &DomNode) -> bool {
+  is_text_like_input_for_maxlength(node)
 }
 
 fn is_disabled_or_inert(index: &DomIndexMut, node_id: usize) -> bool {
@@ -5675,34 +5754,45 @@ impl InteractionEngine {
   /// caret/selection, and it supports setting the value to the empty string.
   pub fn set_text_control_value(&mut self, dom: &mut DomNode, node_id: usize, value: &str) -> bool {
     let mut index = DomIndexMut::new(dom);
-    let Some(node) = index.node(node_id) else {
-      return false;
+
+    let (is_input_text_like, is_textarea, current, textarea_default_value) = {
+      let Some(node) = index.node(node_id) else {
+        return false;
+      };
+
+      let is_input_text_like = is_text_like_input(node);
+      let is_textarea = is_textarea(node);
+      if !(is_input_text_like || is_textarea) {
+        return false;
+      }
+
+      if node_or_ancestor_is_inert(&index, node_id) || node_is_disabled(&index, node_id) {
+        return false;
+      }
+      if node_is_readonly(&index, node_id) {
+        return false;
+      }
+
+      let current = if is_textarea {
+        textarea_value_for_editing(node)
+      } else {
+        strip_ascii_line_breaks(node.get_attribute_ref("value").unwrap_or("")).into_owned()
+      };
+      let textarea_default_value = if is_textarea {
+        crate::dom::textarea_value(node)
+      } else {
+        String::new()
+      };
+
+      (is_input_text_like, is_textarea, current, textarea_default_value)
     };
-
-    let is_input_text = is_text_input(node);
-    let is_textarea = is_textarea(node);
-    if !(is_input_text || is_textarea) {
-      return false;
-    }
-
-    if node_or_ancestor_is_inert(&index, node_id) || node_is_disabled(&index, node_id) {
-      return false;
-    }
-    if node_is_readonly(&index, node_id) {
-      return false;
-    }
 
     self.ensure_form_default_snapshot_for_control(&index, node_id);
 
-    let current = if is_textarea {
-      textarea_value_for_editing(node)
-    } else {
-      node.get_attribute_ref("value").unwrap_or("").to_string()
-    };
-    let current_len = current.chars().count();
-
     // Any direct value mutation cancels an in-progress IME preedit string.
     let mut changed = self.ime_cancel_internal();
+
+    let current_len = current.chars().count();
 
     // Capture the current caret/selection state for undo snapshots.
     let mut edit = self.text_edit.unwrap_or(TextEditState {
@@ -5724,7 +5814,13 @@ impl InteractionEngine {
     edit.caret = edit.caret.min(current_len);
     edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
 
-    if value != current {
+    let sanitized = if is_textarea {
+      crate::dom::normalize_textarea_newlines(value.to_string())
+    } else {
+      strip_ascii_line_breaks(value).into_owned()
+    };
+
+    if sanitized != current {
       self.record_text_undo_snapshot(node_id, &current, &edit);
     }
 
@@ -5732,11 +5828,18 @@ impl InteractionEngine {
       return changed;
     };
 
-    let changed_value = if is_input_text {
-      set_node_attr(node_mut, "value", value)
+    let changed_value = if is_input_text_like {
+      if sanitized.is_empty() {
+        remove_node_attr(node_mut, "value")
+      } else {
+        set_node_attr(node_mut, "value", &sanitized)
+      }
+    } else if sanitized == textarea_default_value {
+      remove_node_attr(node_mut, "data-fastr-value")
     } else {
-      set_node_attr(node_mut, "data-fastr-value", value)
+      set_node_attr(node_mut, "data-fastr-value", &sanitized)
     };
+
     changed |= changed_value;
     if changed_value {
       changed |= self.mark_user_validity(node_id);
@@ -5744,10 +5847,10 @@ impl InteractionEngine {
 
     // Keep caret state in sync for focused controls.
     if self.state.focused == Some(node_id) {
-      let len = value.chars().count();
+      let caret = sanitized.chars().count();
       self.text_edit = Some(TextEditState {
         node_id,
-        caret: len,
+        caret,
         caret_affinity: CaretAffinity::Downstream,
         selection_anchor: None,
         preferred_x: None,
@@ -6109,6 +6212,62 @@ impl InteractionEngine {
       }
     }
     self.sync_text_edit_paint_state();
+  }
+
+  /// Assistive-tech hook: set the selection range for the focused text control, clamping indices
+  /// into the current value length.
+  ///
+  /// Returns `true` when the caret/selection paint state changed.
+  pub fn a11y_set_text_selection_range(
+    &mut self,
+    dom: &mut DomNode,
+    node_id: usize,
+    start: usize,
+    end: usize,
+  ) -> bool {
+    if self.state.focused != Some(node_id) {
+      return false;
+    }
+
+    let index = DomIndexMut::new(dom);
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+    if !(is_text_input(node) || is_textarea(node)) {
+      return false;
+    }
+
+    let len = if is_textarea(node) {
+      textarea_value_for_editing(node).chars().count()
+    } else {
+      node.get_attribute_ref("value").unwrap_or("").chars().count()
+    };
+
+    let start = start.min(len);
+    let end = end.min(len);
+
+    self.text_drag = None;
+    self.text_drag_drop = None;
+
+    match self.text_edit.as_mut() {
+      Some(edit) if edit.node_id == node_id => {
+        edit.caret = end;
+        edit.caret_affinity = CaretAffinity::Downstream;
+        edit.selection_anchor = if start == end { None } else { Some(start) };
+        edit.preferred_x = None;
+      }
+      _ => {
+        self.text_edit = Some(TextEditState {
+          node_id,
+          caret: end,
+          caret_affinity: CaretAffinity::Downstream,
+          selection_anchor: if start == end { None } else { Some(start) },
+          preferred_x: None,
+        });
+      }
+    }
+
+    self.sync_text_edit_paint_state()
   }
 
   /// Place the caret in the currently-focused text control based on a page-space point.
