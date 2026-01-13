@@ -121,6 +121,9 @@ interpret the metrics.
     you want a stable on-disk artifact.
 - `FASTR_PERF_TRACE_OUT=/path/to/trace.json` – optional Perfetto/Chrome trace output for UI
   responsiveness (when supported by your build).
+- `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` – write a Chrome trace of the windowed `browser`
+  UI event loop (winit input handling, worker message draining, egui frame build, GPU submission,
+  and present). The trace is written when the browser process exits.
 
 ### Appearance / accessibility / debugging (browser UX)
 
