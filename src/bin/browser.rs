@@ -7289,7 +7289,7 @@ impl App {
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
       chrome_dynamic_fetcher: fastrender::ui::ChromeDynamicAssetFetcher::new(std::sync::Arc::new(
-        fastrender::resource::HttpFetcher::new(),
+        fastrender::ui::chrome_assets::ChromeAssetsFetcher::new(),
       )),
       closing_tab_favicons: std::collections::VecDeque::new(),
       tab_cancel: std::collections::HashMap::new(),

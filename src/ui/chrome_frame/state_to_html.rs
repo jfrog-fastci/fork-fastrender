@@ -1,19 +1,6 @@
 use crate::ui::browser_app::BrowserAppState;
-
-fn escape_html(text: &str) -> String {
-  let mut out = String::with_capacity(text.len());
-  for ch in text.chars() {
-    match ch {
-      '&' => out.push_str("&amp;"),
-      '<' => out.push_str("&lt;"),
-      '>' => out.push_str("&gt;"),
-      '"' => out.push_str("&quot;"),
-      '\'' => out.push_str("&#39;"),
-      _ => out.push(ch),
-    }
-  }
-  out
-}
+use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
+use crate::ui::html_escape::escape_html;
 
 /// Generate a deterministic chrome-frame HTML document from the browser UI state.
 ///
@@ -43,6 +30,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   for tab in &app.tabs {
     let tab_id = escape_html(&tab.id.0.to_string());
     let title = escape_html(&tab.display_title());
+    let favicon_url = ChromeDynamicAssetFetcher::favicon_url(tab.id);
     let is_active = active_tab_id == Some(tab.id);
     out.push_str("    <div class=\"tab");
     if is_active {
@@ -56,6 +44,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("      <a class=\"tab-activate\" href=\"chrome-action:activate-tab?tab_id=");
     out.push_str(&tab_id);
     out.push_str("\">");
+    out.push_str("<img class=\"tab-favicon\" src=\"");
+    out.push_str(&favicon_url);
+    out.push_str("\" alt=\"\" />");
     out.push_str("<span class=\"tab-title\">");
     out.push_str(&title);
     out.push_str("</span>");
@@ -168,6 +159,11 @@ mod tests {
     assert!(html.contains("chrome-action:close-tab?tab_id=1"));
     assert!(html.contains("chrome-action:close-tab?tab_id=2"));
     assert!(html.contains("chrome-action:close-tab?tab_id=3"));
+
+    // Favicons use stable chrome://favicons/<tab_id>.png URLs (no embedded data URLs).
+    assert!(html.contains("chrome://favicons/1.png"));
+    assert!(html.contains("chrome://favicons/2.png"));
+    assert!(html.contains("chrome://favicons/3.png"));
 
     // Titles are escaped.
     assert!(html.contains("Rust &amp; &lt;Friends&gt;"));

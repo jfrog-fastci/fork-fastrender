@@ -25,10 +25,42 @@ body {
 }
 
 .tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
   background: #cfd5dd;
   border-radius: 8px 8px 0 0;
   border: 1px solid transparent;
+}
+
+.tab-activate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.tab-favicon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  object-fit: contain;
+}
+
+.tab-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  padding: 0 4px;
+  color: inherit;
+  text-decoration: none;
+  line-height: 1;
 }
 
 .tab.active {
@@ -49,4 +81,3 @@ body {
 .content {
   padding: 12px;
 }
-
