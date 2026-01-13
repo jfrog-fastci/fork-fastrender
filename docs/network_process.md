@@ -31,6 +31,10 @@ and others are scaffolding. A few important “don’t get surprised” points:
   - Current protocol is intentionally tiny: `Hello { token, role }` + `Fetch { url }` +
     `DownloadStart { url }` (browser-only) + `Shutdown` (browser-only) (see
     `fastrender::network_process::ipc` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs)).
+    - Security note: the role is **not** trusted from the client. The spawn helper provisions
+      separate auth tokens for browser vs renderer connections, and the network process validates
+      that the claimed `role` matches the token-derived role (a compromised renderer cannot claim
+      `Browser` to access download streaming).
     - Security note: the `network_process::ipc` framing helpers are a prototype, but they *do*
       enforce per-direction frame caps (`MAX_INBOUND_FRAME_BYTES`, `MAX_OUTBOUND_FRAME_BYTES`) and
       deny unknown fields. Treat these limits as security-sensitive; do not remove them.
