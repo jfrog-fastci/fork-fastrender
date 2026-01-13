@@ -15,6 +15,15 @@ use std::time::{Duration, Instant};
 /// Abstraction over the master clock used for A/V sync and HTMLMediaElement timekeeping.
 ///
 /// The clock origin is intentionally unspecified; callers should only compute deltas.
+///
+/// # Semantics
+///
+/// When this clock is backed by an audio output device (the preferred A/V sync master), `now()`
+/// should represent the time of the audio that is being *heard* at the output (speaker), not merely
+/// the time at which samples are being *written* into the device callback.
+///
+/// Backends that only observe callback time or output frame counters should compensate using a
+/// best-effort output latency estimate (see `AudioBackend::output_info()` in `src/media/audio/`).
 pub trait MediaClock: Send + Sync + 'static {
   fn now(&self) -> Duration;
 }
@@ -26,8 +35,9 @@ pub type AudioDeviceClock = dyn MediaClock;
 
 /// Default real-time implementation of [`AudioDeviceClock`], backed by [`Instant`].
 ///
-/// Note: this is *not* an accurate audio hardware clock (it does not account for output latency).
-/// It exists as a sensible default and for non-audio test/CI environments.
+/// This is a sensible fallback for non-audio environments, but it does **not** account for audio
+/// output latency. When used as an audio master clock, it should be considered “time of samples
+/// being written” rather than “time of samples being heard”.
 #[derive(Debug)]
 pub struct RealAudioDeviceClock {
   start: Instant,

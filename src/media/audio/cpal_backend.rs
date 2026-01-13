@@ -1,9 +1,10 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
-use super::{AudioBackend, AudioClock, AudioError, AudioSink, AudioStreamConfig};
+use super::{frames_to_duration, AudioBackend, AudioClock, AudioError, AudioOutputInfo, AudioSink, AudioStreamConfig};
 use crate::media::audio::ring_buffer::AudioRingBuffer;
 use cpal::traits::{HostTrait, StreamTrait};
 
@@ -19,6 +20,9 @@ use cpal::traits::{HostTrait, StreamTrait};
 /// wake-up only).
 pub struct CpalAudioBackend {
   config: AudioStreamConfig,
+  fixed_callback_frames: Option<u32>,
+  last_callback_frames: Arc<AtomicU32>,
+  estimated_latency_nanos: Arc<AtomicU64>,
   mixer: Arc<MixerState>,
   frames_played: Arc<AtomicU64>,
   // `cpal::Stream` is not guaranteed to be `Sync` across all platforms; keep it behind a mutex so
@@ -35,6 +39,20 @@ impl CpalAudioBackend {
 
     let (stream_config, sample_format) = select_output_stream_config(&device)?;
     let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
+    let fixed_callback_frames = match stream_config.buffer_size {
+      cpal::BufferSize::Fixed(frames) => Some(frames),
+      cpal::BufferSize::Default => None,
+    };
+    let last_callback_frames = Arc::new(AtomicU32::new(0));
+
+    // Start with a conservative estimate; the callback will refine this using timestamps (when
+    // available) or observed callback sizes.
+    let initial_latency = fixed_callback_frames
+      .map(|frames| frames_to_duration(config.sample_rate_hz, frames as u64))
+      .unwrap_or_else(|| frames_to_duration(config.sample_rate_hz, 1024));
+    let estimated_latency_nanos =
+      Arc::new(AtomicU64::new(duration_to_nanos_u64(initial_latency)));
+
     let frames_played = Arc::new(AtomicU64::new(0));
     let mixer = Arc::new(MixerState::new(config));
 
@@ -44,6 +62,9 @@ impl CpalAudioBackend {
       sample_format,
       mixer.clone(),
       frames_played.clone(),
+      fixed_callback_frames,
+      last_callback_frames.clone(),
+      estimated_latency_nanos.clone(),
     )?;
     stream
       .play()
@@ -51,6 +72,9 @@ impl CpalAudioBackend {
 
     Ok(Self {
       config,
+      fixed_callback_frames,
+      last_callback_frames,
+      estimated_latency_nanos,
       mixer,
       frames_played,
       _stream: Mutex::new(stream),
@@ -61,6 +85,23 @@ impl CpalAudioBackend {
 impl AudioBackend for CpalAudioBackend {
   fn output_config(&self) -> AudioStreamConfig {
     self.config
+  }
+
+  fn output_info(&self) -> AudioOutputInfo {
+    let callback_frames = self.fixed_callback_frames.or_else(|| match self
+      .last_callback_frames
+      .load(Ordering::Relaxed)
+    {
+      0 => None,
+      v => Some(v),
+    });
+
+    AudioOutputInfo {
+      sample_rate_hz: self.config.sample_rate_hz,
+      channels: self.config.channels,
+      callback_frames,
+      estimated_latency: Duration::from_nanos(self.estimated_latency_nanos.load(Ordering::Relaxed)),
+    }
   }
 
   fn clock(&self) -> AudioClock {
@@ -233,11 +274,38 @@ fn build_stream(
   sample_format: cpal::SampleFormat,
   mixer: Arc<MixerState>,
   frames_played: Arc<AtomicU64>,
+  fixed_callback_frames: Option<u32>,
+  last_callback_frames: Arc<AtomicU32>,
+  estimated_latency_nanos: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, AudioError> {
   match sample_format {
-    cpal::SampleFormat::F32 => build_stream_typed::<f32>(device, config, mixer, frames_played),
-    cpal::SampleFormat::I16 => build_stream_typed::<i16>(device, config, mixer, frames_played),
-    cpal::SampleFormat::U16 => build_stream_typed::<u16>(device, config, mixer, frames_played),
+    cpal::SampleFormat::F32 => build_stream_typed::<f32>(
+      device,
+      config,
+      mixer,
+      frames_played,
+      fixed_callback_frames,
+      last_callback_frames,
+      estimated_latency_nanos,
+    ),
+    cpal::SampleFormat::I16 => build_stream_typed::<i16>(
+      device,
+      config,
+      mixer,
+      frames_played,
+      fixed_callback_frames,
+      last_callback_frames,
+      estimated_latency_nanos,
+    ),
+    cpal::SampleFormat::U16 => build_stream_typed::<u16>(
+      device,
+      config,
+      mixer,
+      frames_played,
+      fixed_callback_frames,
+      last_callback_frames,
+      estimated_latency_nanos,
+    ),
     other => Err(AudioError::UnsupportedSampleFormat(format!("{other:?}"))),
   }
 }
@@ -247,6 +315,9 @@ fn build_stream_typed<T>(
   config: &cpal::StreamConfig,
   mixer: Arc<MixerState>,
   frames_played: Arc<AtomicU64>,
+  fixed_callback_frames: Option<u32>,
+  last_callback_frames: Arc<AtomicU32>,
+  estimated_latency_nanos: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, AudioError>
 where
   T: OutputSample,
@@ -255,6 +326,7 @@ where
 
   let channels = mixer.channels_usize();
   let mut mix_buf: Vec<f32> = Vec::new();
+  let sample_rate_hz = mixer.config.sample_rate_hz;
 
   let err_cb = |err| {
     eprintln!("warning: CPAL output stream error: {err}");
@@ -263,7 +335,7 @@ where
   let stream = device
     .build_output_stream(
       config,
-      move |output: &mut [T], _info| {
+      move |output: &mut [T], info| {
         super::thread_priority::promote_current_thread_for_audio();
         if mix_buf.len() < output.len() {
           mix_buf.resize(output.len(), 0.0);
@@ -280,6 +352,20 @@ where
         if channels != 0 {
           let frames = (output.len() / channels) as u64;
           frames_played.fetch_add(frames, Ordering::Relaxed);
+          if let Ok(frames_u32) = u32::try_from(frames) {
+            last_callback_frames.store(frames_u32, Ordering::Relaxed);
+          }
+        }
+
+        // Best-effort latency estimate:
+        // - prefer CPAL timestamps when available (callback vs playback instant),
+        // - otherwise fall back to observed callback buffer size (only when buffer size isn't fixed).
+        if let Some(latency) = latency_from_cpal_info(info) {
+          estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+        } else if fixed_callback_frames.is_none() && channels != 0 {
+          let frames = (output.len() / channels) as u64;
+          let latency = frames_to_duration(sample_rate_hz, frames);
+          estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
         }
       },
       err_cb,
@@ -288,6 +374,15 @@ where
     .map_err(|err| AudioError::StreamBuildFailed(err.to_string()))?;
 
   Ok(stream)
+}
+
+fn latency_from_cpal_info(info: &cpal::OutputCallbackInfo) -> Option<Duration> {
+  let ts = info.timestamp();
+  ts.playback.duration_since(&ts.callback)
+}
+
+fn duration_to_nanos_u64(duration: Duration) -> u64 {
+  u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn sanitize_f32(value: f32) -> f32 {

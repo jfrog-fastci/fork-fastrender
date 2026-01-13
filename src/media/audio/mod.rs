@@ -9,9 +9,10 @@
 //! When audio is present, audio device time is the **master clock** for A/V sync. The UI tick should
 //! only wake the pipeline up; it must not be used as a time source.
 //!
-//! Note: current backends expose time either via an output-frame counter (`AudioClock::OutputFrames`)
-//! or wall time (`AudioClock::Instant`). Output latency is not yet modeled explicitly; treat any
-//! resulting error as a constant offset, not drift.
+//! Output latency is exposed via [`AudioOutputInfo::estimated_latency`]. Backends that derive time
+//! from callback frame counts (`AudioClock::OutputFrames`) can be ahead of “what the user hears” by
+//! a roughly-constant buffer duration; callers should treat this as a constant offset (not drift)
+//! and compensate using the estimated latency.
 //!
 //! See `docs/media_clocking.md` for the broader clocking model and recommended sync tolerances.
 
@@ -23,6 +24,7 @@ use thiserror::Error;
 
 #[cfg(feature = "audio_cpal")]
 mod cpal_backend;
+mod latency;
 mod null_backend;
 #[cfg(feature = "audio_cpal")]
 mod ring_buffer;
@@ -34,6 +36,9 @@ pub mod timed_queue;
 
 #[cfg(feature = "audio_cpal")]
 pub use cpal_backend::CpalAudioBackend;
+pub use latency::{
+  duration_to_frames_ceil, duration_to_frames_floor, frames_to_duration, latency_from_timestamps,
+};
 pub use null_backend::NullAudioBackend;
 pub use queue::{pcm_f32_queue, PcmF32QueueConsumer, PcmF32QueueProducer};
 pub use timed_queue::{PushError, ReadResult, TimedAudioQueue, TimedAudioSegment};
@@ -52,6 +57,31 @@ impl AudioStreamConfig {
       sample_rate_hz,
       channels,
     }
+  }
+}
+
+/// Information about the active audio output device/stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioOutputInfo {
+  pub sample_rate_hz: u32,
+  pub channels: u16,
+  /// The number of frames the backend expects per callback, when known.
+  pub callback_frames: Option<u32>,
+  /// Best-effort estimate of the latency between writing samples in the callback and the samples
+  /// being heard at the output device.
+  pub estimated_latency: Duration,
+}
+
+impl AudioOutputInfo {
+  /// Returns the estimated latency expressed in frames, rounding up.
+  #[must_use]
+  pub fn estimated_latency_frames(&self) -> u64 {
+    duration_to_frames_ceil(self.sample_rate_hz, self.estimated_latency)
+  }
+
+  #[must_use]
+  pub fn stream_config(&self) -> AudioStreamConfig {
+    AudioStreamConfig::new(self.sample_rate_hz, self.channels)
   }
 }
 
@@ -83,10 +113,7 @@ impl AudioClock {
       Self::Instant {
         start,
         sample_rate_hz,
-      } => {
-        let seconds = start.elapsed().as_secs_f64();
-        (seconds * f64::from(*sample_rate_hz)) as u64
-      }
+      } => duration_to_frames_floor(*sample_rate_hz, start.elapsed()),
     }
   }
 
@@ -95,10 +122,9 @@ impl AudioClock {
   ///
   /// This is intended to be used as (or to derive) the master clock for A/V sync.
   ///
-  /// Note: this is currently a best-effort estimate and does **not** include an explicit output
-  /// latency model. In particular, clocks derived from output-frame counters (`OutputFrames`) can be
-  /// ahead of “what the user hears” by a backend-dependent constant buffer duration. This should
-  /// show up as a constant A/V offset, not drift.
+  /// Note: this is currently a best-effort estimate and does **not** apply an output latency model
+  /// by itself. Callers should subtract [`AudioOutputInfo::estimated_latency`] when they need a
+  /// "time heard" estimate.
   pub fn time(&self) -> Duration {
     match self {
       Self::OutputFrames {
@@ -106,7 +132,7 @@ impl AudioClock {
         sample_rate_hz,
       } => {
         let frames = frames_played.load(Ordering::Relaxed);
-        Duration::from_secs_f64(frames as f64 / f64::from(*sample_rate_hz))
+        frames_to_duration(*sample_rate_hz, frames)
       }
       Self::Instant { start, .. } => start.elapsed(),
     }
@@ -143,6 +169,20 @@ pub trait AudioSink: Send + Sync {
 
 pub trait AudioBackend: Send + Sync {
   fn output_config(&self) -> AudioStreamConfig;
+
+  /// Returns information about the active output stream, including the estimated output latency.
+  ///
+  /// Backends should provide best-effort values even when the underlying API does not expose
+  /// explicit latency information.
+  fn output_info(&self) -> AudioOutputInfo {
+    let cfg = self.output_config();
+    AudioOutputInfo {
+      sample_rate_hz: cfg.sample_rate_hz,
+      channels: cfg.channels,
+      callback_frames: None,
+      estimated_latency: Duration::ZERO,
+    }
+  }
 
   fn clock(&self) -> AudioClock;
 
