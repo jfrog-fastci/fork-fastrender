@@ -10,6 +10,16 @@
 //! `F_SEAL_WRITE`, permanently turning the buffer read-only and breaking reuse. Locking the seal set
 //! (`F_SEAL_SEAL`) after applying the required size seals prevents this class of long-lived
 //! denial-of-service.
+//!
+//! ## Security: scrubbing pooled buffers
+//!
+//! If a shared-memory buffer is reused across different renderer processes / security domains, the
+//! new consumer must not observe bytes written by the previous one. Linux may recycle the *same*
+//! memfd across processes, so callers must explicitly scrub (zero) buffers before handing them out
+//! to a different security context.
+//!
+//! [`SharedMemoryPool`] supports configurable scrubbing via [`ScrubPolicy`]. Scrubbing is disabled
+//! by default (`ScrubPolicy::Never`) for performance; enable it when crossing trust boundaries.
 
 use std::io;
 
@@ -48,6 +58,9 @@ pub enum SharedMemoryError {
 
   #[error("failed to query shared memory seals: {0}")]
   SealQuery(#[source] io::Error),
+
+  #[error("shared memory is write-sealed (F_SEAL_WRITE) and cannot be scrubbed")]
+  WriteSealed,
 
   #[error(
     "cannot seal shared memory as read-only while writable mappings exist (unmap writable views before sealing): {0}"
@@ -152,6 +165,37 @@ mod imp {
     #[must_use]
     pub fn len(&self) -> u64 {
       self.len
+    }
+
+    /// Clear the entire buffer contents to zero.
+    ///
+    /// This is used to scrub pooled buffers so they can be safely reused across security domains.
+    ///
+    /// Returns [`SharedMemoryError::WriteSealed`] when `F_SEAL_WRITE` is present.
+    pub fn zero(&self) -> Result<(), SharedMemoryError> {
+      let seals = self.seals()?;
+      if (seals & libc::F_SEAL_WRITE) != 0 {
+        return Err(SharedMemoryError::WriteSealed);
+      }
+
+      if self.len == 0 {
+        return Ok(());
+      }
+
+      // A reasonably sized chunk keeps syscall count bounded without risking large stack usage.
+      const CHUNK: usize = 64 * 1024; // 64 KiB
+      let zeros = [0u8; CHUNK];
+
+      let mut offset: u64 = 0;
+      while offset < self.len {
+        let remaining = self.len - offset;
+        let to_write = remaining.min(CHUNK as u64) as usize;
+        self
+          .write_from_slice(offset, &zeros[..to_write])
+          .map_err(SharedMemoryError::Write)?;
+        offset += to_write as u64;
+      }
+      Ok(())
     }
 
     /// Returns the underlying file descriptor.
@@ -323,6 +367,10 @@ mod imp {
       ))
     }
 
+    pub fn zero(&self) -> Result<(), SharedMemoryError> {
+      Err(SharedMemoryError::Unsupported)
+    }
+
     pub fn seals(&self) -> Result<libc::c_int, SharedMemoryError> {
       Err(SharedMemoryError::Unsupported)
     }
@@ -339,15 +387,48 @@ mod imp {
 
 pub use imp::SharedMemory;
 
+/// Controls when a [`SharedMemoryPool`] scrubs (zeros) buffers.
+///
+/// Scrubbing is required when reusing SHM buffers across different security contexts (e.g.
+/// different renderer processes / origins). Without it, a new consumer can observe bytes written by
+/// the previous one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubPolicy {
+  /// Never scrub buffers (fast, but unsafe across security domains).
+  Never,
+  /// Scrub buffers as they are returned to the pool.
+  OnRelease,
+  /// Scrub buffers immediately before handing them out.
+  OnAcquire,
+}
+
+impl Default for ScrubPolicy {
+  fn default() -> Self {
+    ScrubPolicy::Never
+  }
+}
+
 /// A simple pool for reusable shared memory buffers.
 #[derive(Debug, Default)]
 pub struct SharedMemoryPool {
+  scrub_policy: ScrubPolicy,
   buffers: Vec<SharedMemory>,
 }
 
 impl SharedMemoryPool {
   pub fn new() -> Self {
-    Self { buffers: Vec::new() }
+    Self::default()
+  }
+
+  pub fn with_scrub_policy(scrub_policy: ScrubPolicy) -> Self {
+    Self {
+      scrub_policy,
+      buffers: Vec::new(),
+    }
+  }
+
+  pub fn scrub_policy(&self) -> ScrubPolicy {
+    self.scrub_policy
   }
 
   pub fn len(&self) -> usize {
@@ -355,7 +436,18 @@ impl SharedMemoryPool {
   }
 
   pub fn take(&mut self) -> Option<SharedMemory> {
-    self.buffers.pop()
+    while let Some(buffer) = self.buffers.pop() {
+      if self.scrub_policy == ScrubPolicy::OnAcquire {
+        #[cfg(target_os = "linux")]
+        {
+          if buffer.zero().is_err() {
+            continue;
+          }
+        }
+      }
+      return Some(buffer);
+    }
+    None
   }
 
   /// Return a buffer to the pool if it is still reusable.
@@ -378,6 +470,12 @@ impl SharedMemoryPool {
         return;
       }
 
+      if self.scrub_policy == ScrubPolicy::OnRelease {
+        if buffer.zero().is_err() {
+          return;
+        }
+      }
+
       self.buffers.push(buffer);
       return;
     }
@@ -395,7 +493,7 @@ impl SharedMemoryPool {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-  use super::{SharedMemory, SharedMemoryError, SharedMemoryPool};
+  use super::{ScrubPolicy, SharedMemory, SharedMemoryError, SharedMemoryPool};
   use std::io;
   use std::os::unix::io::AsRawFd;
 
@@ -502,5 +600,50 @@ mod tests {
 
     // Now sealing should succeed.
     shm.seal_read_only().unwrap();
+  }
+
+  #[test]
+  fn shm_scrub_on_release_zeroes_reused_buffer() {
+    let mut pool = SharedMemoryPool::with_scrub_policy(ScrubPolicy::OnRelease);
+
+    // Use a locked, writable buffer so it is eligible for reuse.
+    let shm = SharedMemory::create_with_seals(4096, 0, true).unwrap();
+    shm.write_from_slice(0, &[0xA5; 4096]).unwrap();
+    pool.put(shm);
+
+    let shm2 = pool.take().expect("pooled buffer");
+
+    let mut readback = vec![0xFFu8; 4096];
+    let rc = unsafe {
+      libc::pread(
+        shm2.as_raw_fd(),
+        readback.as_mut_ptr().cast::<libc::c_void>(),
+        readback.len(),
+        0,
+      )
+    };
+    assert_eq!(
+      rc as usize,
+      readback.len(),
+      "expected to read entire buffer"
+    );
+    assert!(
+      readback.iter().all(|b| *b == 0),
+      "expected all bytes to be zero after scrubbing; first non-zero at {:?}",
+      readback.iter().position(|b| *b != 0)
+    );
+  }
+
+  #[test]
+  fn shm_scrub_zero_fails_on_write_sealed_buffer() {
+    let shm = SharedMemory::new(64).unwrap();
+    shm.write_from_slice(0, &[0x11; 64]).unwrap();
+    shm.seal_read_only().unwrap();
+
+    let err = shm.zero().expect_err("zero should fail when write-sealed");
+    assert!(
+      matches!(err, SharedMemoryError::WriteSealed),
+      "expected WriteSealed error, got {err:?}"
+    );
   }
 }
