@@ -21,6 +21,8 @@ fn js_wpt_dom_cli_runs_single_test_and_writes_report() {
       "all",
       "--backend",
       "vmjs",
+      "--dom-bindings-backend",
+      "handwritten",
       "--report",
     ])
     .arg(&report_path)
