@@ -54,16 +54,24 @@ A change counts if it lands at least one of:
 
 | Metric | Target | Current | How to measure |
 |--------|--------|---------|----------------|
-| Resize frame time | <16ms | ? | `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`resize_to_present_ms`) |
-| Scroll frame time | <16ms | ? | `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`ui_frame_ms`/fps while scrolling) |
-| Input latency | <50ms | ? | `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`input_to_present_ms`) |
-| Time to first paint (TTFP) | <100ms | ? | `ui_perf_smoke` (navigate→first frame) or perf log summary (`ttfp_ms`) |
+| Resize frame time | <16ms | ? | `xtask ui-perf-smoke` (`resize_latency_*`) or windowed perf log capture (`resize_to_present_ms`) |
+| Scroll frame time | <16ms | ? | `xtask ui-perf-smoke` (`scroll_latency_*`) or windowed perf log capture (`ui_frame_ms`/fps while scrolling) |
+| Input latency | <50ms | ? | `xtask ui-perf-smoke` (`input_latency_*`) or windowed perf log capture (`input_to_present_ms`) |
+| Time to first paint (TTFP) | <100ms | ? | `xtask ui-perf-smoke` (`ttfp_*`) or perf log capture (`ttfp_ms`) |
 | Idle CPU | ~0% | ? | perf log summary (`cpu_summary.cpu_percent_recent`) + OS profiler while idle |
 
 ### Profiling tools
 
 ```bash
-# Capture + summarize (p50/p95/max) from a windowed browser session.
+# Canonical headless responsiveness harness (`ui_perf_smoke`; JSON summary).
+# Maps directly to the required metrics:
+# - TTFP: `ttfp_p50_ms` / `ttfp_p95_ms`
+# - Scroll: `scroll_latency_p50_ms` / `scroll_latency_p95_ms` (ScrollTo → next frame)
+# - Resize: `resize_latency_p50_ms` / `resize_latency_p95_ms` (ViewportChanged → next frame)
+# - Input: `input_latency_p50_ms` / `input_latency_p95_ms` (TextInput/Backspace → next frame)
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+
+# Windowed perf-log capture + summary (p50/p95/max) from an interactive session.
 # `capture_browser_perf_log.sh` runs the browser under `timeout -k 10 600` + `run_limited.sh --as 64G`.
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --summary \
   target/browser_perf.jsonl about:test-layout-stress
@@ -81,12 +89,6 @@ timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_l
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_LOG_INTERACTION_INVALIDATION=1 \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
-
-# Headless smoke harness (`ui_perf_smoke`; JSON summary).
-# - TTFP: reported as navigation→first frame (per scenario).
-# - Scroll/resize frame time + input latency: capture a windowed `FASTR_PERF_LOG` session (below) while
-#   interacting with e.g. `about:test-layout-stress`, then summarize with `browser_perf_log_summary`.
-timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
 
 # CPU profiling (Linux): reproduce resize/scroll jank, then close the window to finish recording.
 timeout -k 10 600 bash scripts/profile_browser_samply.sh --url about:test-layout-stress
