@@ -63,7 +63,12 @@ where
   F: FnMut(&mut R, &mut Host, R::JsValue) -> Result<BindingValue<R::JsValue>, R::Error>,
 {
   rt.with_stack_roots(&[value], |rt| {
-    let obj = rt.to_object(value)?;
+    // WebIDL "js-to-record" begins by rejecting non-Object values. Unlike `object` conversion, record
+    // conversion does *not* apply `ToObject` to accept primitives.
+    if !rt.is_object(value) {
+      return Err(rt.throw_type_error("Value is not an object"));
+    }
+    let obj = value;
     rt.with_stack_roots(&[obj], |rt| {
       let keys = rt.own_property_keys(obj)?;
 
@@ -502,20 +507,33 @@ mod tests {
   }
 
   #[test]
-  fn record_conversion_uses_to_object() {
+  fn record_conversion_rejects_non_objects() {
     let mut rt = VmJsRuntime::new();
     let mut host = ();
 
-    // WebIDL record conversion performs `ToObject`, so primitives should be accepted.
-    let record = to_record::<(), _, _>(&mut rt, &mut host, Value::Bool(true), |_rt, _host, _v| {
+    let err = to_record::<(), _, _>(&mut rt, &mut host, Value::Bool(true), |_rt, _host, _v| {
       Ok(BindingValue::Undefined)
     })
-    .unwrap();
+    .unwrap_err();
 
-    let BindingValue::Record(entries) = record else {
-      panic!("expected record, got: {record:?}");
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
     };
-    assert!(entries.is_empty());
+    let s = webidl_js_runtime::JsRuntime::to_string(&mut rt, thrown).unwrap();
+    let msg = as_utf8_lossy(&rt, s);
+    assert_eq!(msg, "TypeError: Value is not an object");
+
+    let str_val = rt.alloc_string_value("hi").unwrap();
+    let err = to_record::<(), _, _>(&mut rt, &mut host, str_val, |_rt, _host, _v| {
+      Ok(BindingValue::Undefined)
+    })
+    .unwrap_err();
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
+    };
+    let s = webidl_js_runtime::JsRuntime::to_string(&mut rt, thrown).unwrap();
+    let msg = as_utf8_lossy(&rt, s);
+    assert_eq!(msg, "TypeError: Value is not an object");
   }
 
   #[test]
