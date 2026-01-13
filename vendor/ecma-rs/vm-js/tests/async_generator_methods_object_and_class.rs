@@ -73,6 +73,15 @@ fn async_generator_method_object_literal_creation() -> Result<(), VmError> {
     rt.exec_script("Object.getPrototypeOf(f) === Object.getPrototypeOf(async function*(){})")?;
   assert_eq!(out, Value::Bool(true));
 
+  // Async generator functions have a `.prototype` object whose prototype is `%AsyncGeneratorPrototype%`.
+  let out = rt.exec_script("Object.prototype.toString.call(f.prototype)")?;
+  assert_eq!(expect_string(&rt, out), "[object AsyncGenerator]");
+
+  let out = rt.exec_script(
+    "Object.getPrototypeOf(f.prototype) === Object.getPrototypeOf((async function*(){}).prototype)",
+  )?;
+  assert_eq!(out, Value::Bool(true));
+
   Ok(())
 }
 
@@ -100,6 +109,12 @@ fn async_generator_methods_class_creation() -> Result<(), VmError> {
 
   let out = rt.exec_script("Object.getPrototypeOf(C.s) === Object.getPrototypeOf(async function*(){})")?;
   assert_eq!(out, Value::Bool(true));
+
+  let out = rt.exec_script("Object.prototype.toString.call(C.prototype.m.prototype)")?;
+  assert_eq!(expect_string(&rt, out), "[object AsyncGenerator]");
+
+  let out = rt.exec_script("Object.prototype.toString.call(C.s.prototype)")?;
+  assert_eq!(expect_string(&rt, out), "[object AsyncGenerator]");
 
   Ok(())
 }
