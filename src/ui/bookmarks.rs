@@ -944,6 +944,15 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
   })
 }
 
+fn format_bookmark_widget_info_label(title: Option<&str>, url: &str) -> String {
+  let url = url.trim();
+  let title = title.map(str::trim).filter(|t| !t.is_empty());
+  match title {
+    Some(title) => format!("Bookmark: {title} — {url}"),
+    None => format!("Bookmark: {url}"),
+  }
+}
+
 fn now_unix_ms() -> u64 {
   use std::time::{SystemTime, UNIX_EPOCH};
   SystemTime::now()
@@ -1102,11 +1111,7 @@ mod bookmarks_bar_ui {
           } else {
             url.to_string()
           };
-          let a11y_label = if let Some(title) = title {
-            format!("Bookmark: {title} ({url})")
-          } else {
-            format!("Bookmark: {url}")
-          };
+          let a11y_label = super::format_bookmark_widget_info_label(title, url);
 
           let button = egui::Button::new(label)
             .small()
@@ -1250,6 +1255,18 @@ mod tests {
     assert!(store.contains_url("https://example.com/"));
     assert_eq!(store.toggle("https://example.com/", Some("Ignored")), false);
     assert!(!store.contains_url("https://example.com/"));
+  }
+
+  #[test]
+  fn bookmark_widget_info_label_formats_title_and_url() {
+    assert_eq!(
+      format_bookmark_widget_info_label(Some("Example"), "https://example.com"),
+      "Bookmark: Example — https://example.com"
+    );
+    assert_eq!(
+      format_bookmark_widget_info_label(None, "https://example.com"),
+      "Bookmark: https://example.com"
+    );
   }
 
   #[test]
