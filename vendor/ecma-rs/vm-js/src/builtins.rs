@@ -14974,6 +14974,10 @@ fn regexp_create_named_captures_object(
   named_group_count: usize,
 ) -> Result<GcObject, VmError> {
   debug_assert!(named_group_count > 0);
+
+  // Root `rx` + `input` across allocations in this helper: `ensure_can_alloc_string_units` can GC.
+  scope.push_roots(&[Value::Object(rx), Value::String(input)])?;
+
   // `groups` objects are `OrdinaryObjectCreate(null)` in ECMA-262 (null prototype). `alloc_object`
   // creates objects with `[[Prototype]] = null`.
   let groups_obj = scope.alloc_object()?;
@@ -14984,7 +14988,10 @@ fn regexp_create_named_captures_object(
       vm.tick()?;
     }
 
-    let (group_name_units, selected) = {
+    // Snapshot group metadata first so we can preflight heap limits before allocating any
+    // potentially-large off-heap buffers. (The preflight can GC, so avoid holding heap borrows
+    // across it.)
+    let (group_name_len, selected) = {
       let program = scope.heap().regexp_program(rx)?;
       let group = program
         .named_capture_groups
@@ -14992,12 +14999,6 @@ fn regexp_create_named_captures_object(
         .ok_or(VmError::InvariantViolation(
           "RegExpProgram named group index out of range",
         ))?;
-
-      let mut group_name_units: Vec<u16> = Vec::new();
-      group_name_units
-        .try_reserve_exact(group.name.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-      group_name_units.extend_from_slice(&group.name);
 
       // Find the last matched capture among duplicate indices for this name.
       let mut selected: Option<(usize, usize)> = None;
@@ -15018,7 +15019,26 @@ fn regexp_create_named_captures_object(
         selected = Some((start, end));
         break;
       }
-      (group_name_units, selected)
+      (group.name.len(), selected)
+    };
+
+    // Group name key.
+    scope.ensure_can_alloc_string_units(group_name_len)?;
+    let group_name_units: Vec<u16> = {
+      let program = scope.heap().regexp_program(rx)?;
+      let group = program
+        .named_capture_groups
+        .get(i)
+        .ok_or(VmError::InvariantViolation(
+          "RegExpProgram named group index out of range",
+        ))?;
+
+      let mut buf: Vec<u16> = Vec::new();
+      buf
+        .try_reserve_exact(group_name_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, &group.name)?;
+      buf
     };
 
     let value = match selected {
