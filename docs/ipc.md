@@ -192,6 +192,9 @@ Additional (important) size limits that sit *on top* of framing:
 |---|---:|---|
 | Browser↔renderer control-message decode budget | 256 KiB | `RENDERER_IPC_DECODE_LIMIT_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) (`bincode_options().with_limit(...)`) |
 | Renderer IPC URL string max | 8 KiB | `MAX_URL_BYTES` / `UrlString` (`BoundedString`) in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
+| File input / drag-and-drop max files per message (browser→renderer) | 16 | `FILE_INPUT_MAX_FILES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
+| File input / drag-and-drop file name bytes (browser→renderer) | 256 bytes | `FILE_INPUT_MAX_NAME_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
+| File input / drag-and-drop total file size metadata (browser→renderer) | 512 MiB | `FILE_INPUT_MAX_TOTAL_BYTES_META` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
 | WebSocket URL bytes (renderer→network) | 8 KiB | `MAX_WEBSOCKET_URL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket protocol count (renderer→network) | 32 | `MAX_WEBSOCKET_PROTOCOLS` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
@@ -312,12 +315,20 @@ Security invariants:
 1. **Only `SCM_RIGHTS` is allowed.** Reject other ancillary message types.
 2. **Bound the count:** accept at most `MAX_FDS_PER_MESSAGE` per message.
    - For most message types this should be **0 or 1**.
-   - Recommended global cap: **≤ 4**.
+   - Some message types legitimately need more:
+     - Browser→renderer file-input messages (`DropFiles`, `FilePickerChoose`) attach `files.len()` FDs
+       and are bounded by `FILE_INPUT_MAX_FILES = 16` in
+       [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
+   - Recommended global cap: **≤ 16** (the current maximum required by in-tree protocols). Keep this
+     value small and revisit with security review if a new message type needs more.
    - Repo reality: `src/ipc/fd_passing.rs` provides a defensive `recv_msg(sock_fd, max_fds)` helper
      that enforces `max_fds` (and has an internal absolute ceiling). Keep `max_fds` small at call
      sites.
 3. **Message types must define the FD arity.**
-   - For a given message type, the receiver knows exactly how many FDs to expect (usually 0 or 1).
+   - For a given message type, the receiver knows exactly how many FDs to expect.
+     - Usually this is a fixed small number (0 or 1).
+     - Variable-arity messages are allowed only when the arity is derived from **validated** fields
+       in the decoded message (e.g. `files.len()` with a hard cap).
    - Repo reality: the browser↔renderer protocol encodes this explicitly via `expected_fds()`:
      [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
    - **Do not send the FD “out of band” in a separate write.** For messages like
