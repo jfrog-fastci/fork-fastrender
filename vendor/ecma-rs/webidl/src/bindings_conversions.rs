@@ -1085,7 +1085,7 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   // WebIDL "js-to-record" begins by rejecting non-Object values. Unlike `object` conversion, record
   // conversion does *not* apply `ToObject` to accept primitives.
   if !rt.is_object(v) {
-    return Err(rt.throw_type_error("Value is not an object"));
+    return Err(rt.throw_type_error(conversions_shared::VALUE_IS_NOT_OBJECT));
   }
   let obj = v;
 
@@ -1137,7 +1137,7 @@ fn convert_to_dictionary<R: WebIdlJsRuntime>(
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
   if !rt.is_object(v) && !rt.is_undefined(v) && !rt.is_null(v) {
-    return Err(rt.throw_type_error("Value is not an object"));
+    return Err(rt.throw_type_error(conversions_shared::VALUE_IS_NOT_OBJECT));
   }
 
   let Some(members) = ctx.flattened_dictionary_members(dict_name) else {
