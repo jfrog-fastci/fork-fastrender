@@ -155,6 +155,19 @@ fn logical_assignment_anonymous_function_name_inference() -> Result<(), VmError>
     rt.exec_script(
       r#"
         (() => {
+          // Binding refs.
+          let x = 0;
+          x ||= function() {};
+          if (x.name !== "x") return false;
+
+          let y = 1;
+          y &&= function() {};
+          if (y.name !== "y") return false;
+
+          let z;
+          z ??= function() {};
+          if (z.name !== "z") return false;
+
           let o = {};
           o.f ??= function() {};
           if (o.f.name !== "f") return false;
@@ -166,6 +179,21 @@ fn logical_assignment_anonymous_function_name_inference() -> Result<(), VmError>
           o = { f: 0 };
           o.f ||= function() {};
           if (o.f.name !== "f") return false;
+
+          // Computed refs.
+          const prop = "comp";
+          o[prop] ||= function() {};
+          if (o[prop].name !== "comp") return false;
+
+          // Private refs: assignment works, but private fields do not participate in name inference.
+          class C {
+            static #f = 1;
+            static test() {
+              C.#f &&= function() {};
+              return C.#f.name;
+            }
+          }
+          if (C.test() !== "") return false;
 
           return true;
         })()
