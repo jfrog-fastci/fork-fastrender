@@ -3,7 +3,9 @@
 FastRender has two accessibility-related layers:
 
 1. **Renderer semantics export** (FastRender → JSON): `src/accessibility.rs` builds a static accessibility tree derived from the styled DOM (`AccessibilityNode`). This is used by tests, the library API, and the `dump_a11y` CLI.
-2. **OS accessibility** (browser UI → screen readers): the windowed `browser` app (feature `browser_ui`) uses **AccessKit** via egui’s `accesskit` support so the **browser chrome** (tabs/address bar/menus) is exposed to platform assistive tech (VoiceOver/Narrator/Orca).
+2. **OS accessibility** (browser UI → screen readers): the windowed `browser` app (feature `browser_ui`) uses **AccessKit** so the **browser chrome** (tabs/address bar/menus) is exposed to platform assistive tech (VoiceOver/Narrator/Orca).
+   - **Default backend:** egui’s AccessKit integration (the egui widget tree becomes the OS accessibility tree).
+   - **Renderer-chrome backend (experimental):** `FASTR_BROWSER_RENDERER_CHROME=1` switches the browser to a custom `accesskit_winit::Adapter` (`ChromeAccessKit` in `src/bin/browser.rs`) intended for when the chrome is rendered by FastRender (HTML/CSS) instead of egui.
 
 Today these are *separate*: the rendered page content is a pixmap, so only the egui chrome participates in OS accessibility. This document describes the current AccessKit wiring and the conventions to follow so it stays maintainable, plus notes on how the renderer’s `accessibility.rs` output will eventually feed into AccessKit when chrome/content are rendered by FastRender.
 
@@ -17,9 +19,14 @@ In this repo, AccessKit is used in the **browser/UI process**:
 
 - The windowed app entry point is [`src/bin/browser.rs`](../src/bin/browser.rs).
 - AccessKit is pulled in behind the `browser_ui` feature (`Cargo.toml` `features.browser_ui` enables `accesskit` + `accesskit_winit` and egui’s accesskit integration).
-- egui produces `accesskit::TreeUpdate` values (available on `egui::PlatformOutput::accesskit_update`), and the winit adapter delivers those to the OS accessibility API.
+- With the **egui backend**, egui produces `accesskit::TreeUpdate` values (available on `egui::PlatformOutput::accesskit_update`), and the winit adapter delivers those to the OS accessibility API.
+- With the **renderer-chrome backend**, FastRender (not egui) is responsible for producing `accesskit::TreeUpdate` updates and feeding them into `accesskit_winit::Adapter`.
 
 ### Where AccessKit is wired in the windowed `browser` app
+
+There are two wiring paths, depending on which chrome accessibility backend is active.
+
+#### Egui backend (default)
 
 At a high level:
 
@@ -38,6 +45,28 @@ loop, ensure this still happens every frame.
 Note: in headless unit tests (and in `dump_accesskit`), we explicitly call
 `egui::Context::enable_accesskit()` so egui always emits a `TreeUpdate`. In the real windowed app,
 AccessKit output is typically enabled/disabled by the platform adapter.
+
+#### Renderer-chrome backend (experimental / FastRender-driven)
+
+When `FASTR_BROWSER_RENDERER_CHROME=1` is set, `App::new` selects `ChromeA11yBackend::FastRender` and
+creates a `ChromeAccessKit` wrapper around `accesskit_winit::Adapter` (see
+[`src/bin/browser.rs`](../src/bin/browser.rs), `ChromeAccessKit` + `ChromeA11yBackend`).
+
+This is the integration point for “chrome rendered by FastRender” (HTML/CSS) where egui widgets no
+longer exist, so egui cannot generate the OS accessibility tree.
+
+Key plumbing points:
+
+- **Window events:** `App::handle_winit_input_event` forwards every `WindowEvent` to the adapter via
+  `ChromeAccessKit::process_window_event` so AccessKit can track focus, window activation, etc.
+- **Tree updates:** every rendered frame calls `App::update_chrome_accesskit_tree()`, which calls
+  `adapter.update_if_active(|| App::build_chrome_accesskit_tree_update())`.
+- **Action requests:** OS “press/focus/set value” requests arrive as
+  `accesskit_winit::ActionRequestEvent` user events, converted into `UserEvent::AccessKitAction` and
+  routed to `App::handle_accesskit_action_request`.
+
+Current status note: `build_chrome_accesskit_tree_update` and `handle_accesskit_action_request` are
+placeholders until the real FastRender-rendered chrome document is wired into the windowed browser.
 
 Renderer-side semantics live in [`src/accessibility.rs`](../src/accessibility.rs):
 
@@ -136,9 +165,23 @@ Maintainability rules (to keep ids stable and avoid collisions):
 - In tests, prefer **name/role snapshots** over comparing raw ids. AccessKit ids are implementation details and can change when egui’s internal hashing changes.
   - See [`src/ui/a11y_test_util.rs`](../src/ui/a11y_test_util.rs) helpers used by chrome/menu unit tests.
 
-### Future: FastRender node ids
+### FastRender node ids (renderer-chrome / page content)
 
 When chrome and/or page content are rendered by FastRender (instead of egui widgets), we will need to mint AccessKit ids from FastRender’s own node identifiers (e.g. DOM/styled/layout node ids).
+
+There is already a **prototype** id mapping used by the AccessKit→interaction routing helper in
+[`src/ui/fast_accesskit_actions.rs`](../src/ui/fast_accesskit_actions.rs):
+
+- FastRender DOM nodes have stable **1-indexed pre-order ids** (`crate::dom::enumerate_dom_ids`).
+- `accesskit_node_id_from_fastrender(node_id)` stores that `usize` directly into the `u128` (and
+  relies on it being non-zero).
+- `fastrender_node_id_from_accesskit(node_id)` decodes the reverse mapping.
+
+This “identity mapping” is intentionally simple and debug-friendly, but it imposes a critical
+constraint:
+
+- **All AccessKit nodes that represent DOM nodes must use the same encoding**, otherwise action
+  routing can target the wrong DOM node (or fail to decode).
 
 Constraints to keep in mind (even if the exact scheme changes):
 
@@ -148,7 +191,12 @@ Constraints to keep in mind (even if the exact scheme changes):
   - “virtual” wrapper nodes (window root, split panes, etc) vs DOM nodes
 - Prefer a reversible mapping (helpful for debugging action routing): you should be able to recover `(tree_kind, tab_id, node_id)` from an AccessKit `NodeId` without a global hashmap where possible.
 
-One reasonable (but **not implemented**) approach is to encode a small namespace header into the high bits of the `u128`, for example:
+Collision note: the current renderer-chrome AccessKit tree builder (`App::build_chrome_accesskit_tree_update`)
+uses fixed ids (`1`, `2`) for placeholder root/document nodes. If we adopt the identity mapping above
+for DOM nodes (where DOM root is `1`), we **must** reserve id space for these wrapper/root nodes or
+use a namespacing scheme, otherwise we will collide immediately.
+
+One reasonable (but **not implemented**) approach for collision avoidance is to encode a small namespace header into the high bits of the `u128`, for example:
 
 - high bits: `(tree_kind, tab_id)` (or a per-tab “document generation”)
 - low bits: a stable FastRender node id (DOM/styled/layout id)
@@ -178,18 +226,42 @@ If you add a new stateful chrome control, make sure:
 - it emits a meaningful label via `WidgetInfo`,
 - if it has an “expanded” concept, it sets `expanded` state and exposes `Expand`/`Collapse` actions consistently.
 
-### Future: mapping AccessKit actions into FastRender interaction
+### FastRender documents: mapping AccessKit actions into the interaction engine (prototype)
 
-The renderer already has an interaction engine (focus, text editing, click dispatch, etc). When content/chrome are represented as FastRender nodes in the OS accessibility tree, AccessKit actions will need to be translated into the interaction protocol (e.g. `UiToWorker` messages) and/or direct interaction engine calls, depending on process boundaries.
+For FastRender-rendered UI (renderer-chrome and, eventually, page content), AccessKit action requests
+need to become FastRender interaction operations.
 
-Examples of likely mappings (not implemented today):
+The current shared helper is [`src/ui/fast_accesskit_actions.rs`](../src/ui/fast_accesskit_actions.rs):
 
-| AccessKit action | Typical browser behavior | FastRender-side target |
-|---|---|---|
-| `Default` | Activate (click) | dispatch click / submit / follow link |
-| `Focus` | Move focus | focus the target node + update `InteractionState` |
-| `SetValue` | Edit text field | update text edit state, selection, caret |
-| `Scroll*` | Scroll container | translate to scroll deltas in viewport CSS px |
+- `handle_accesskit_action_request(ctx, request)` decodes the target `NodeId` into a FastRender DOM
+  node id (see NodeId scheme above).
+- It then translates a subset of AccessKit actions into `InteractionEngine` calls and marks
+  `needs_redraw` when state changes.
+
+Actions currently handled by the helper:
+
+| AccessKit action | FastRender-side dispatch |
+|---|---|
+| `Focus` | `InteractionEngine::focus_node_id(..., Some(node_id), true)` |
+| `Default` | focus the node, then `InteractionEngine::key_activate(..., KeyAction::Enter, document_url, base_url)` |
+| `SetValue` | focus the node, then `InteractionEngine::set_text_control_value(dom, node_id, value)` |
+| `Expand` / `Collapse` | best-effort: toggles `<details open>` or updates `aria-expanded="true/false"` |
+| `Increment` / `Decrement` | focus the node, then `InteractionEngine::key_action_with_box_tree(..., KeyAction::{ArrowUp,ArrowDown})` (requires a `BoxTree`) |
+
+Unrecognized actions return `false` (ignored).
+
+Note: the windowed browser’s renderer-chrome backend currently has a placeholder
+`App::handle_accesskit_action_request`. When wiring up a real FastRender chrome document, that
+method should route relevant actions into `fast_accesskit_actions` (or a successor) so screen reader
+activation drives the same interaction paths as pointer/keyboard input.
+
+The renderer already has an interaction engine (focus, text editing, click dispatch, etc). When
+content/chrome are represented as FastRender nodes in the OS accessibility tree, AccessKit actions
+will need to be translated into the interaction protocol (e.g. `UiToWorker` messages) and/or direct
+interaction engine calls, depending on process boundaries.
+
+Additional likely mappings (not implemented today) include scroll actions (e.g. mapping `Scroll*`
+into viewport-local scroll deltas in CSS px).
 
 ---
 
@@ -216,6 +288,11 @@ bash scripts/run_limited.sh --as 64G -- \
 ```
 
 Use this when you’re debugging what screen readers actually see for the **browser chrome** (widget names/roles, focus target, expanded state/actions, etc).
+
+Limitations:
+
+- `dump_accesskit` only snapshots the **egui** backend (`egui::PlatformOutput::accesskit_update`). It
+  does not exercise the renderer-chrome backend (`ChromeAccessKit` / `accesskit_winit::Adapter`).
 
 Note: on Linux, building with `--features browser_ui` requires system GUI/audio development headers
 (`libasound2-dev`, X11/Wayland headers, etc). See
@@ -279,6 +356,18 @@ If you need a lower-level view than a screen reader, use platform accessibility 
 - **Linux:** Accerciser / other AT-SPI inspection tools
 
 Current scope note: the rendered page is still an image, so the screen reader will not traverse document content yet (see future work below).
+
+To smoke-test the **renderer-chrome AccessKit adapter path** (even before a real chrome document is
+wired up), run the windowed browser with:
+
+```bash
+FASTR_BROWSER_RENDERER_CHROME=1 \
+  bash scripts/run_limited.sh --as 64G -- \
+    bash scripts/cargo_agent.sh run --features browser_ui --bin browser
+```
+
+Then inspect with a screen reader / platform accessibility inspector and ensure the app exposes an
+accessibility tree without panics. (Today it is a placeholder tree; this is purely a plumbing check.)
 
 ---
 

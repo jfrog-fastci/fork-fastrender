@@ -75,6 +75,8 @@ end-to-end:
 - **Tabs**: create/close/switch tabs.
 - **Windows**: open multiple windows (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd>).
 - **Menu bar**: browser-style menu bar (File/Edit/View/History/Bookmarks/Window/Help) for discoverability.
+- **Accessibility (chrome)**: the egui-based chrome UI exposes widget semantics to OS assistive tech
+  via AccessKit (VoiceOver/Narrator/Orca). See [chrome_accessibility.md](chrome_accessibility.md).
 - **Navigation**:
   - address bar URL entry (press Enter to navigate; user input is normalized, e.g. `example.com`
     → `https://example.com/`, filesystem paths → `file://...`)
