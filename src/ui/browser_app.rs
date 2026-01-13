@@ -1047,7 +1047,14 @@ impl Default for OmniboxUiState {
 
 impl OmniboxUiState {
   pub fn reset(&mut self) {
-    *self = Self::default();
+    // Keep allocations around: omnibox open/close is frequent, and rebuilding the suggestion list
+    // already does enough work without also thrashing heap capacity.
+    self.open = false;
+    self.selected = None;
+    self.original_input = None;
+    self.last_built_for_input.clear();
+    self.last_built_remote_fetched_at = SystemTime::UNIX_EPOCH;
+    self.suggestions.clear();
   }
 }
 
