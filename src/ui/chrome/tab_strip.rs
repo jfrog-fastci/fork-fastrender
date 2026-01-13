@@ -1102,6 +1102,22 @@ fn group_chip_a11y_label(title: &str, collapsed: bool) -> String {
   }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GroupChipContextMenuState {
+  open: bool,
+  /// Screen-space anchor position in egui points.
+  anchor_pos: Pos2,
+}
+
+impl Default for GroupChipContextMenuState {
+  fn default() -> Self {
+    Self {
+      open: false,
+      anchor_pos: Pos2::ZERO,
+    }
+  }
+}
+
 fn group_chip_ui(
   ui: &mut egui::Ui,
   motion: UiMotion,
@@ -1133,6 +1149,14 @@ fn group_chip_ui(
     let label = group_chip_a11y_label(title, collapsed);
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
   });
+
+  #[cfg(test)]
+  {
+    ui.ctx().data_mut(|d| {
+      d.insert_temp(egui::Id::new("test_tab_group_chip_id"), response.id);
+      d.insert_temp(egui::Id::new("test_tab_group_chip_rect"), chip_rect);
+    });
+  }
 
   let visuals = ui.style().visuals.clone();
 
@@ -1212,70 +1236,206 @@ fn group_chip_ui(
     let _ = ui.put(title_rect, label);
   }
 
+  let menu_state_id = id.with("context_menu_state");
+  let mut menu_state = ui
+    .ctx()
+    .data(|d| d.get_temp::<GroupChipContextMenuState>(menu_state_id))
+    .unwrap_or_default();
+  let menu_open_prev = menu_state.open;
+
   let mut chip_activated = response.clicked();
   chip_activated |= super::keyboard_activate(ui, &response);
   if chip_activated {
     ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
+    // Clicking the chip while its context menu is open should dismiss the menu (standard popup
+    // behaviour).
+    menu_state.open = false;
   }
 
-  response = response.context_menu(|ui| {
-    ui.label("Rename group");
-    let mut new_title = app
-      .tab_groups
-      .get(&group_id)
-      .map(|g| g.title.clone())
-      .unwrap_or_default();
-    let resp = ui.text_edit_singleline(&mut new_title);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Tab group name"));
-    if resp.changed() {
-      app.set_group_title(group_id, new_title);
-    }
-
-    ui.separator();
-
-    let change_color_menu = ui.menu_button("Change color", |ui| {
-      for color in TabGroupColor::ALL {
-        let button = egui::Button::new(color.as_str())
-          .fill(group_color_fill(color))
-          .stroke(Stroke::new(1.0, group_color_egui(color)));
-        let resp = ui.add(button);
-        resp.widget_info({
-          let label = format!("Set group color: {}", color.as_str());
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-        });
-        if resp.clicked() {
-          ops.push(TabStripOp::SetGroupColor(group_id, color));
-          ui.close_menu();
-        }
-      }
+  // Open the context menu with either:
+  // - Pointer: right click on the chip (existing behaviour)
+  // - Keyboard: Shift+F10 while the chip has focus (Windows-style context menu key gesture)
+  //
+  // Egui's built-in `Response::context_menu` does not currently provide a keyboard activation path,
+  // so we manage open-state explicitly.
+  let open_by_pointer = response.clicked_by(egui::PointerButton::Secondary);
+  let open_by_keyboard = response.has_focus()
+    && ui.input_mut(|i| {
+      i.consume_key(
+        egui::Modifiers {
+          shift: true,
+          ..Default::default()
+        },
+        egui::Key::F10,
+      )
     });
-    change_color_menu
-      .response
-      .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change group color"));
 
-    ui.separator();
-
-    let ungroup = ui.button("Ungroup");
-    ungroup.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Ungroup"));
-    if ungroup.clicked() {
-      ops.push(TabStripOp::Ungroup(group_id));
-      ui.close_menu();
-    }
-
-    let label = if collapsed {
-      "Expand group"
+  let mut opened_now_via_keyboard = false;
+  if open_by_pointer {
+    // Anchor to the click position (or hover position) so the menu appears where the user clicked.
+    if let Some(pos) = response
+      .interact_pointer_pos()
+      .or_else(|| ui.input(|i| i.pointer.hover_pos()))
+    {
+      menu_state.anchor_pos = pos;
     } else {
-      "Collapse group"
-    };
-    let collapse_toggle = ui.button(label);
-    collapse_toggle.widget_info({
-      let label = label.to_string();
-      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-    });
-    if collapse_toggle.clicked() {
-      ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
-      ui.close_menu();
+      menu_state.anchor_pos = Pos2::new(chip_rect.left(), chip_rect.bottom());
     }
+    menu_state.open = true;
+  } else if open_by_keyboard {
+    if menu_state.open {
+      // Pressing Shift+F10 again closes the menu (mirrors typical context menu toggle behaviour).
+      menu_state.open = false;
+    } else {
+      // Anchor below the chip when opened via keyboard (no cursor position).
+      menu_state.anchor_pos = Pos2::new(chip_rect.left(), chip_rect.bottom());
+      menu_state.open = true;
+      opened_now_via_keyboard = true;
+    }
+  }
+
+  let mut menu_rect: Option<Rect> = None;
+  if menu_state.open {
+    let mut close_menu = false;
+    // Escape should dismiss the menu when it's open.
+    if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+      close_menu = true;
+    }
+
+    let menu_id = id.with("context_menu_popup");
+    let area = egui::Area::new(menu_id)
+      .order(egui::Order::Foreground)
+      .fixed_pos(menu_state.anchor_pos)
+      .constrain_to(ui.ctx().screen_rect())
+      .interactable(true);
+    let inner = area.show(ui.ctx(), |ui| {
+      let frame = egui::Frame::popup(ui.style());
+      frame
+        .show(ui, |ui| {
+          ui.set_min_width(220.0);
+
+          ui.label("Rename group");
+          let rename_id = ui.make_persistent_id(("tab_group_rename", group_id.0));
+          let mut new_title = app
+            .tab_groups
+            .get(&group_id)
+            .map(|g| g.title.clone())
+            .unwrap_or_default();
+          let rename = ui.add(
+            egui::TextEdit::singleline(&mut new_title)
+              .id(rename_id)
+              .hint_text("Tab group name"),
+          );
+          rename.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Tab group name")
+          });
+          if opened_now_via_keyboard {
+            rename.request_focus();
+          }
+          if rename.changed() {
+            app.set_group_title(group_id, new_title);
+          }
+
+          #[cfg(test)]
+          ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new("test_tab_group_rename_id"), rename_id);
+          });
+
+          ui.separator();
+
+          let change_color_menu = ui.menu_button("Change color", |ui| {
+            for color in TabGroupColor::ALL {
+              let button = egui::Button::new(color.as_str())
+                .fill(group_color_fill(color))
+                .stroke(Stroke::new(1.0, group_color_egui(color)));
+              let resp = ui.add(button);
+              resp.widget_info({
+                let label = format!("Set group color: {}", color.as_str());
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+              });
+              if resp.clicked() {
+                ops.push(TabStripOp::SetGroupColor(group_id, color));
+                // Close the color submenu and the outer context menu.
+                ui.close_menu();
+                close_menu = true;
+              }
+            }
+          });
+          change_color_menu
+            .response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change group color"));
+
+          ui.separator();
+
+          let ungroup = ui.button("Ungroup");
+          ungroup.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Ungroup"));
+          if ungroup.clicked() {
+            ops.push(TabStripOp::Ungroup(group_id));
+            close_menu = true;
+          }
+
+          let label = if collapsed {
+            "Expand group"
+          } else {
+            "Collapse group"
+          };
+          let collapse_toggle = ui.button(label);
+          collapse_toggle.widget_info({
+            let label = label.to_string();
+            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+          });
+          if collapse_toggle.clicked() {
+            ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
+            close_menu = true;
+          }
+
+          if close_menu {
+            // Close any nested menu state (`menu_button`) too.
+            ui.close_menu();
+          }
+        })
+        .inner
+    });
+
+    menu_rect = Some(inner.response.rect);
+
+    // Best-effort: close when clicking outside the chip and the popup.
+    let clicked_outside = ui.ctx().input(|i| {
+      i.pointer.any_pressed()
+        && i
+          .pointer
+          .interact_pos()
+          .or_else(|| i.pointer.latest_pos())
+          .is_some_and(|pos| {
+            !chip_rect.contains(pos) && menu_rect.is_some_and(|rect| !rect.contains(pos))
+          })
+    });
+    if clicked_outside {
+      close_menu = true;
+    }
+
+    if close_menu {
+      menu_state.open = false;
+    }
+  }
+
+  if menu_open_prev != menu_state.open {
+    // Ensure we repaint so the popup opens/closes immediately even in low-event situations (e.g.
+    // keyboard-driven open or click-away dismissal).
+    ui.ctx().request_repaint();
+  }
+
+  ui.ctx().data_mut(|d| {
+    d.insert_temp(menu_state_id, menu_state);
+  });
+
+  #[cfg(test)]
+  ui.ctx().data_mut(|d| {
+    d.insert_temp(
+      egui::Id::new("test_tab_group_context_menu_open"),
+      menu_state.open,
+    );
+    d.insert_temp(egui::Id::new("test_tab_group_context_menu_rect"), menu_rect);
   });
 
   super::paint_focus_ring(ui, &response, focus_ring);
@@ -3882,6 +4042,75 @@ mod tests {
       })
       .inner
   }
+
+  #[test]
+  fn group_chip_context_menu_opens_via_shift_f10_and_focuses_rename() {
+    let ctx = egui::Context::default();
+
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+    let group_id = app.create_group_with_tabs(&[tab_a, tab_b]);
+    assert_ne!(group_id, TabGroupId(0));
+
+    // Frame 1: render once so the chip exists and we can capture its widget id.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let chip_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_tab_group_chip_id")))
+      .expect("expected test_tab_group_chip_id to be stored");
+
+    // Frame 2: focus the chip.
+    ctx.memory_mut(|mem| mem.request_focus(chip_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      ctx.memory(|mem| mem.has_focus(chip_id)),
+      "expected group chip to have focus"
+    );
+
+    // Frame 3: inject Shift+F10.
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.modifiers.shift = true;
+    raw.events = vec![egui::Event::Key {
+      key: egui::Key::F10,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers {
+        shift: true,
+        ..Default::default()
+      },
+    }];
+    ctx.begin_frame(raw);
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let menu_open = ctx
+      .data(|d| d.get_temp::<bool>(egui::Id::new("test_tab_group_context_menu_open")))
+      .unwrap_or(false);
+    assert!(menu_open, "expected group context menu to be open after Shift+F10");
+
+    let rename_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_tab_group_rename_id")))
+      .expect("expected rename id to be stored");
+    assert!(
+      ctx.memory(|mem| mem.has_focus(rename_id)),
+      "expected focus to move to rename text edit after opening via keyboard"
+    );
+  }
+
   #[test]
   fn tab_a11y_label_formats_active_pinned_loading_error_warning_states() {
     let title = "Example title";
