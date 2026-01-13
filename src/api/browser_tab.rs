@@ -15522,3 +15522,263 @@ document.body.appendChild(second);"#,
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod dynamic_import {
+  use super::*;
+
+  fn js_options_with_module_scripts() -> JsExecutionOptions {
+    let mut opts = JsExecutionOptions::default();
+    opts.supports_module_scripts = true;
+    opts
+  }
+
+  fn make_vmjs_tab() -> Result<BrowserTab> {
+    BrowserTab::from_html_with_js_execution_options(
+      "",
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options_with_module_scripts(),
+    )
+  }
+
+  fn assert_body_attr(tab: &BrowserTab, name: &str) -> Option<String> {
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    dom
+      .get_attribute(body, name)
+      .expect("get_attribute should succeed")
+      .map(|s| s.to_string())
+  }
+
+  #[test]
+  fn resolves_relative_dynamic_import_in_inline_classic_script_against_document_base_url() -> Result<()> {
+    let mut tab = make_vmjs_tab()?;
+
+    let doc_url = "https://example.invalid/page.html";
+    tab.register_script_source(
+      "https://example.invalid/base/rel.js",
+      "export default import.meta.url;",
+    );
+    // Register a fallback so resolution mistakes fail by assertion rather than fetch error.
+    tab.register_script_source(
+      "https://example.invalid/rel.js",
+      "export default import.meta.url;",
+    );
+
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><head>
+        <base href="https://example.invalid/base/">
+      </head><body>
+        <script>
+          import("./rel.js")
+            .then(m => { document.body.setAttribute("data-url", String(m.default)); })
+            .catch(e => { document.body.setAttribute("data-err-name", String(e && e.name || "")); });
+        </script>
+      </body>"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(assert_body_attr(&tab, "data-err-name"), None);
+    assert_eq!(
+      assert_body_attr(&tab, "data-url").as_deref(),
+      Some("https://example.invalid/base/rel.js")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn resolves_relative_dynamic_import_in_module_against_referrer_module_url() -> Result<()> {
+    let mut tab = make_vmjs_tab()?;
+
+    let doc_url = "https://example.invalid/page.html";
+    tab.register_script_source(
+      "https://example.invalid/mod/main.js",
+      r#"
+        import("./rel.js")
+          .then(m => { document.body.setAttribute("data-url", String(m.default)); })
+          .catch(e => { document.body.setAttribute("data-err-name", String(e && e.name || "")); });
+      "#,
+    );
+    tab.register_script_source(
+      "https://example.invalid/mod/rel.js",
+      "export default import.meta.url;",
+    );
+    // Register a fallback at the document-base location so incorrect resolution is observable.
+    tab.register_script_source(
+      "https://example.invalid/doc/rel.js",
+      "export default import.meta.url;",
+    );
+
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><head>
+        <base href="https://example.invalid/doc/">
+      </head><body>
+        <script type="module" src="https://example.invalid/mod/main.js"></script>
+      </body>"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(assert_body_attr(&tab, "data-err-name"), None);
+    assert_eq!(
+      assert_body_attr(&tab, "data-url").as_deref(),
+      Some("https://example.invalid/mod/rel.js")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_import_applies_import_map_in_classic_script() -> Result<()> {
+    let mut tab = make_vmjs_tab()?;
+    let doc_url = "https://example.invalid/page.html";
+
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><body>
+        <script type="importmap">{"imports":{"bare":"data:text/javascript,export%20default%2042%3B"}}</script>
+        <script>
+          import("bare")
+            .then(m => { document.body.setAttribute("data-value", String(m.default)); })
+            .catch(e => { document.body.setAttribute("data-err-name", String(e && e.name || "")); });
+        </script>
+      </body>"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(assert_body_attr(&tab, "data-err-name"), None);
+    assert_eq!(assert_body_attr(&tab, "data-value").as_deref(), Some("42"));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_import_applies_scoped_import_map_based_on_referrer_module_url() -> Result<()> {
+    let mut tab = make_vmjs_tab()?;
+    let doc_url = "https://example.invalid/page.html";
+
+    tab.register_script_source(
+      "https://example.invalid/scope/main.js",
+      r#"
+        import("bare")
+          .then(m => { document.body.setAttribute("data-value", String(m.default)); })
+          .catch(e => { document.body.setAttribute("data-err-name", String(e && e.name || "")); });
+      "#,
+    );
+
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><body>
+        <script type="importmap">
+          {
+            "imports": { "bare": "data:text/javascript,export%20default%20%22global%22%3B" },
+            "scopes": {
+              "https://example.invalid/scope/": { "bare": "data:text/javascript,export%20default%20%22scoped%22%3B" }
+            }
+          }
+        </script>
+        <script type="module" src="https://example.invalid/scope/main.js"></script>
+      </body>"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(assert_body_attr(&tab, "data-err-name"), None);
+    assert_eq!(assert_body_attr(&tab, "data-value").as_deref(), Some("scoped"));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_import_caches_module_namespace_objects_and_does_not_reexecute_modules() -> Result<()> {
+    let mut tab = make_vmjs_tab()?;
+    let doc_url = "https://example.invalid/page.html";
+
+    tab.register_script_source(
+      "https://example.invalid/base/mod.js",
+      r#"
+        globalThis.__evals = (globalThis.__evals || 0) + 1;
+        export const evals = globalThis.__evals;
+      "#,
+    );
+
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><head>
+        <base href="https://example.invalid/base/">
+      </head><body>
+        <script>
+          import("./mod.js")
+            .then(m1 => import("./mod.js").then(m2 => {
+              document.body.setAttribute("data-same", String(m1 === m2));
+              document.body.setAttribute("data-evals", String(globalThis.__evals));
+            }))
+            .catch(e => { document.body.setAttribute("data-err-name", String(e && e.name || "")); });
+        </script>
+      </body>"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(assert_body_attr(&tab, "data-err-name"), None);
+    assert_eq!(assert_body_attr(&tab, "data-same").as_deref(), Some("true"));
+    assert_eq!(assert_body_attr(&tab, "data-evals").as_deref(), Some("1"));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_import_rejects_unmapped_bare_specifier_with_type_error() -> Result<()> {
+    let mut tab = make_vmjs_tab()?;
+    let doc_url = "https://example.invalid/page.html";
+
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><body>
+        <script>
+          import("unmapped")
+            .then(() => { document.body.setAttribute("data-ok", "1"); })
+            .catch(e => { document.body.setAttribute("data-err-name", String(e && e.name || "")); });
+        </script>
+      </body>"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(assert_body_attr(&tab, "data-ok"), None);
+    assert_eq!(assert_body_attr(&tab, "data-err-name").as_deref(), Some("TypeError"));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_import_rejects_null_import_map_entry_with_type_error() -> Result<()> {
+    let mut tab = make_vmjs_tab()?;
+    let doc_url = "https://example.invalid/page.html";
+
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><body>
+        <script type="importmap">{"imports":{"blocked":null}}</script>
+        <script>
+          import("blocked")
+            .then(() => { document.body.setAttribute("data-ok", "1"); })
+            .catch(e => { document.body.setAttribute("data-err-name", String(e && e.name || "")); });
+        </script>
+      </body>"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(assert_body_attr(&tab, "data-ok"), None);
+    assert_eq!(assert_body_attr(&tab, "data-err-name").as_deref(), Some("TypeError"));
+    Ok(())
+  }
+}
