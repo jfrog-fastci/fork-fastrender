@@ -6629,6 +6629,7 @@ impl BrowserRuntime {
     }));
   }
 
+<<<<<<< HEAD
   // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
   // borrowed from `self.tabs` without triggering borrow-checker errors (E0499/E0502).
   fn pump_js_event_loop_after_dom_event_dispatch_for_tab(
@@ -6649,6 +6650,10 @@ impl BrowserRuntime {
 
   fn pump_js_event_loop_after_dom_event_dispatch_inner(
     ui_tx: &WorkerToUiSender,
+=======
+  fn pump_js_event_loop_after_dom_event_dispatch(
+    ui_tx: &Sender<WorkerToUi>,
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     debug_log_enabled: bool,
     tab_id: TabId,
     tab: &mut TabState,
@@ -6671,7 +6676,11 @@ impl BrowserRuntime {
     let prev_generation = tab.js_dom_mutation_generation;
     if let Err(err) = js_tab.run_event_loop_until_idle(run_limits) {
       if debug_log_enabled && !cancel_callback() {
+<<<<<<< HEAD
         let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
+=======
+        let _ = ui_tx.send(WorkerToUi::DebugLog {
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
           tab_id,
           line: format!("js event-loop pump failed: {err}"),
         }));
@@ -7431,8 +7440,13 @@ impl BrowserRuntime {
     if dispatched_dom_event {
       // Release our mutable borrow of `tab.js_tab` before running the follow-up pump (which borrows
       // it again).
+<<<<<<< HEAD
       let _ = js_tab;
       Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+=======
+      drop(js_tab);
+      Self::pump_js_event_loop_after_dom_event_dispatch(
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         &self.ui_tx,
         self.debug_log_enabled,
         tab_id,
@@ -7576,7 +7590,11 @@ impl BrowserRuntime {
       }
       if dispatched_dom_event {
         if let Some(before) = js_mutation_generation_before_dispatch {
+<<<<<<< HEAD
           Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+=======
+          Self::pump_js_event_loop_after_dom_event_dispatch(
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
             &self.ui_tx,
             self.debug_log_enabled,
             tab_id,
@@ -7707,7 +7725,11 @@ impl BrowserRuntime {
       }
       if dispatched_dom_event {
         if let Some(before) = js_mutation_generation_before_dispatch {
+<<<<<<< HEAD
           Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+=======
+          Self::pump_js_event_loop_after_dom_event_dispatch(
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
             &self.ui_tx,
             self.debug_log_enabled,
             tab_id,
@@ -7886,7 +7908,13 @@ impl BrowserRuntime {
       if let Some(next_scroll) = focus_scroll {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
+<<<<<<< HEAD
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
+=======
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          js_tab.set_scroll_state(tab.scroll_state.clone());
+        }
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         scroll_changed = true;
         Self::emit_scroll_state_updated(
           &self.ui_tx,
@@ -8186,13 +8214,18 @@ impl BrowserRuntime {
 
     if dispatched_dom_event {
       if let Some(before) = js_mutation_generation_before_dispatch {
+<<<<<<< HEAD
         Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+=======
+        Self::pump_js_event_loop_after_dom_event_dispatch(
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
           &self.ui_tx,
           self.debug_log_enabled,
           tab_id,
           tab,
           before,
         );
+<<<<<<< HEAD
       }
     }
 
@@ -8210,6 +8243,8 @@ impl BrowserRuntime {
     {
       if let Some(node_id) = visited_candidate {
         visited_changed = tab.interaction.mark_link_visited(node_id);
+=======
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
       }
     }
 
@@ -8374,7 +8409,11 @@ impl BrowserRuntime {
 
           if dispatched_dom_event {
             if let Some(before) = js_mutation_generation_before_dispatch {
+<<<<<<< HEAD
               Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+=======
+              Self::pump_js_event_loop_after_dom_event_dispatch(
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
                 &self.ui_tx,
                 self.debug_log_enabled,
                 tab_id,
@@ -8393,7 +8432,11 @@ impl BrowserRuntime {
         } else if dom_changed || scroll_changed {
           if dispatched_dom_event {
             if let Some(before) = js_mutation_generation_before_dispatch {
+<<<<<<< HEAD
               Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+=======
+              Self::pump_js_event_loop_after_dom_event_dispatch(
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
                 &self.ui_tx,
                 self.debug_log_enabled,
                 tab_id,
@@ -9090,7 +9133,11 @@ impl BrowserRuntime {
 
     if dispatched_dom_event {
       if let Some(before) = js_mutation_generation_before_dispatch {
+<<<<<<< HEAD
         Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+=======
+        Self::pump_js_event_loop_after_dom_event_dispatch(
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
           &self.ui_tx,
           self.debug_log_enabled,
           tab_id,
@@ -10647,7 +10694,13 @@ impl BrowserRuntime {
       if let Some(next_scroll) = focus_scroll {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
+<<<<<<< HEAD
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
+=======
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          js_tab.set_scroll_state(tab.scroll_state.clone());
+        }
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         scroll_changed = true;
         Self::emit_scroll_state_updated(
           &self.ui_tx,
@@ -10892,6 +10945,7 @@ impl BrowserRuntime {
           }
         }
       }
+<<<<<<< HEAD
       // Mark visited state only once we know the default action is allowed (i.e. the cancelable
       // click event was not prevented).
       let mut visited_changed = false;
@@ -10910,6 +10964,30 @@ impl BrowserRuntime {
       }
 
       let action_is_none = matches!(&action, InteractionAction::None);
+=======
+
+      // Release the mutable borrow of the renderer document before pumping the JS event loop (which
+      // needs mutable access to `tab`).
+      drop(doc);
+
+      if dispatched_dom_event {
+        if let Some(before) = js_mutation_generation_before_dispatch {
+          Self::pump_js_event_loop_after_dom_event_dispatch(
+            &self.ui_tx,
+            self.debug_log_enabled,
+            tab_id,
+            tab,
+            before,
+          );
+        }
+      }
+
+      let Some(doc) = tab.document.as_mut() else {
+        return;
+      };
+
+      let action_is_none = matches!(action, InteractionAction::None);
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
       match action {
         InteractionAction::Navigate { href } => {
           if default_allowed {

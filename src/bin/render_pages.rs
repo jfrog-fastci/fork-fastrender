@@ -2319,6 +2319,7 @@ fn display_item_name(item: &DisplayItem) -> &'static str {
     DisplayItem::PopStackingContext => "pop_stacking_context",
     DisplayItem::PushBackfaceVisibility(_) => "push_backface_visibility",
     DisplayItem::PopBackfaceVisibility => "pop_backface_visibility",
+    DisplayItem::RemoteFrameSlot(_) => "remote_frame_slot",
   }
 }
 

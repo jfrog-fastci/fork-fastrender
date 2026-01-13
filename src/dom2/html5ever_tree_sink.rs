@@ -815,7 +815,13 @@ impl TreeSink for Dom2TreeSink {
     let range_child_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
     let inserted_count = doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
     doc.live_mutation.pre_insert(*location, 0, 1);
+<<<<<<< HEAD
     doc.live_range_pre_insert_steps(*location, range_child_index, inserted_count);
+=======
+    let tree_child_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
+    let inserted_count = doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
+    doc.live_range_pre_insert_steps(*location, tree_child_index, inserted_count);
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     doc.node_mut(*location).children.insert(0, shadow_root_id);
     doc.node_mut(shadow_root_id).parent = Some(*location);
 
@@ -1121,12 +1127,20 @@ impl TreeSink for Dom2TreeSink {
         doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot);
       doc
         .live_mutation
+<<<<<<< HEAD
         .pre_insert(*new_parent, old_len, moved_children_len);
       doc.live_range_pre_insert_steps(
         *new_parent,
         range_child_index,
         inserted_count,
       );
+=======
+        .pre_insert(*new_parent, old_len, moved_children_snapshot.len());
+      let tree_child_index = doc.tree_child_index_from_raw_index_for_range(*new_parent, old_len);
+      let inserted_count =
+        doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot);
+      doc.live_range_pre_insert_steps(*new_parent, tree_child_index, inserted_count);
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     }
     let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
     if moved_children.is_empty() {

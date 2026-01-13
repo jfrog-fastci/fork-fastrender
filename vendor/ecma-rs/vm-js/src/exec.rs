@@ -12,10 +12,17 @@ use crate::iterator;
 use crate::promise_ops::promise_resolve_for_await_with_host_and_hooks;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
+<<<<<<< HEAD
   EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, Heap, HostDefined,
   ModuleGraph, ModuleId, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
   PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule, SourceText, SourceTextModuleRecord,
   StackFrame, ToPrimitiveHint, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+=======
+  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
+  GcSymbol, HostDefined, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
+  PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule, SourceText, SourceTextModuleRecord,
+  StackFrame, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, ToPrimitiveHint,
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 };
 use core::cmp::Ordering;
 use diagnostics::{Diagnostic, FileId};
@@ -3412,6 +3419,7 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
+<<<<<<< HEAD
     let source =
       match SourceText::new_charged(&mut self.heap, "<inline>", source).and_then(arc_try_new_vm) {
         Ok(source) => source,
@@ -3423,6 +3431,24 @@ impl JsRuntime {
         }
       };
     self.exec_script_source_with_host_and_hooks(host, hooks, source)
+=======
+    let source = match SourceText::new_charged(&mut self.heap, "<inline>", source)
+      .and_then(arc_try_new_vm)
+    {
+      Ok(source) => source,
+      Err(err) => {
+        if is_hard_stop_error(&err) {
+          self.vm.teardown_microtasks(&mut self.heap);
+        }
+        return Err(err);
+      }
+    };
+    self.exec_script_source_with_host_and_hooks(
+      host,
+      hooks,
+      source,
+    )
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
   }
 
   /// Parse and execute a classic script, using a custom host hook implementation.
@@ -3627,6 +3653,10 @@ impl JsRuntime {
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
             let global_this = Value::Object(global_object);
+<<<<<<< HEAD
+=======
+
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
             if !has_await {
               let mut evaluator = Evaluator {
                 vm: &mut *vm_frame,
@@ -3807,6 +3837,7 @@ impl JsRuntime {
             return Err(err);
           }
 
+<<<<<<< HEAD
           let awaited_promise_res: Result<Value, VmError> = match kind {
             AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
               &mut *vm_frame,
@@ -3824,6 +3855,17 @@ impl JsRuntime {
               "unexpected async generator yield* iterator result suspension in async script evaluation",
             )),
           };
+=======
+          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut root_scope,
+            host,
+            &mut hooks,
+            await_value,
+          );
+          let resolve_res =
+            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 
           let awaited_promise = match awaited_promise_res {
             Ok(p) => p,
@@ -4455,6 +4497,7 @@ impl JsRuntime {
             return Err(err);
           }
 
+<<<<<<< HEAD
           let awaited_promise_res: Result<Value, VmError> = match kind {
             AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
               &mut *vm_frame,
@@ -4472,6 +4515,12 @@ impl JsRuntime {
               "unexpected async generator yield* iterator result suspension in async script evaluation",
             )),
           };
+=======
+          let resolve_res =
+            promise_resolve_for_await_with_host_and_hooks(&mut *vm_frame, &mut root_scope, host, hooks, await_value);
+          let resolve_res =
+            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 
           let awaited_promise = match awaited_promise_res {
             Ok(p) => p,
@@ -9637,6 +9686,7 @@ impl<'a> Evaluator<'a> {
           }
         }
       }
+<<<<<<< HEAD
       let super_root_len = scope.heap().root_stack.len();
       scope.push_root(super_value)?;
       let heap_ptr = scope.heap_mut() as *mut Heap;
@@ -9652,6 +9702,41 @@ impl<'a> Evaluator<'a> {
       // - public + private instance fields, and
       // - private instance methods (which are stored per-instance so private access does not consult
       //   the prototype chain).
+=======
+    }
+    let super_root_len = scope.heap().root_stack.len();
+    scope.push_root(super_value)?;
+    let heap_ptr = scope.heap_mut() as *mut Heap;
+    let _super_root_guard = RootStackTruncateGuard {
+      heap: heap_ptr,
+      len: super_root_len,
+    };
+
+    // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
+    // native-slot storage.
+    let mut instance_field_count: usize = 0;
+    for member in members {
+      if member.stx.static_ {
+        continue;
+      }
+      if !matches!(&member.stx.val, ClassOrObjVal::Prop(_)) {
+        continue;
+      }
+      let is_private_field = matches!(
+        &member.stx.key,
+        ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+      );
+      if is_private_field {
+        continue;
+      }
+      instance_field_count = instance_field_count
+        .checked_add(1)
+        .ok_or(VmError::OutOfMemory)?;
+    }
+
+      // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
+      // native-slot storage.
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
       let mut instance_field_count: usize = 0;
       let mut private_instance_method_count: usize = 0;
       for member in members {
@@ -19794,7 +19879,11 @@ fn async_handle_body_result(
       res.map(|_| Value::Undefined)
     }
     Ok(AsyncBodyResult::Await {
+<<<<<<< HEAD
       kind,
+=======
+      kind: _,
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
       await_value,
       frames,
     }) => {
@@ -19806,6 +19895,7 @@ fn async_handle_body_result(
         async_teardown_continuation(&mut await_scope, cont);
         return Err(err);
       }
+<<<<<<< HEAD
 
       let awaited_promise_res: Result<Value, VmError> = match kind {
         AsyncSuspendKind::Await => {
@@ -19836,6 +19926,21 @@ fn async_handle_body_result(
       };
 
       let awaited_promise = match awaited_promise_res {
+=======
+      // `await` must not trigger Promise species side effects. In particular, coercing a Promise
+      // via `PromiseResolve(%Promise%, promise)` can (via thenable resolution jobs) call
+      // `promise.then`, which creates a derived promise using `promise.constructor[Symbol.species]`.
+      //
+      // We still need to perform `Get(promise, \"constructor\")` for side effects/throws (per
+      // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
+      // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
+      // undefined)` is sufficient and avoids Promise species side effects.
+      let resolve_res =
+        promise_resolve_for_await_with_host_and_hooks(vm, &mut await_scope, host, hooks, await_value);
+      let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
+
+      let awaited_promise = match resolve_res {
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         Ok(p) => p,
         Err(err) if err.is_throw_completion() => {
           // `Await` uses `? PromiseResolve(%Promise%, value)`. If that throws, the async function
@@ -22905,9 +23010,13 @@ fn async_eval_throw_stmt(
   stmt: &Node<ThrowStmt>,
 ) -> Result<AsyncEval<Completion>, VmError> {
   match async_eval_expr(evaluator, scope, &stmt.stx.value) {
+<<<<<<< HEAD
     Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(
       evaluator, scope, stmt, v,
     ))),
+=======
+    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v))),
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,
@@ -24553,6 +24662,7 @@ fn async_eval_class_after_super(
       return Err(VmError::Unimplemented("class member type annotations"));
     }
 
+<<<<<<< HEAD
     if !member.stx.static_ {
       let is_private_key = matches!(
         &member.stx.key,
@@ -24609,6 +24719,50 @@ fn async_eval_class_after_super(
     let span_start = evaluator.env.base_offset().saturating_add(rel_start);
     let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
+=======
+    if member.stx.static_ {
+      continue;
+    }
+    let ClassOrObjKey::Direct(direct) = &member.stx.key else {
+      continue;
+    };
+    if direct.stx.key != "constructor" {
+      continue;
+    }
+
+    let ClassOrObjVal::Method(method) = &member.stx.val else {
+      continue;
+    };
+
+    if ctor_method.is_some() {
+      return Err(syntax_error(
+        member.loc,
+        "A class may only have one constructor",
+      ));
+    }
+    ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
+  }
+
+  let mut ctor_length: u32 = 0;
+  let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+    if func_node.stx.generator {
+      return Err(syntax_error(
+        loc,
+        "Class constructor may not be a generator",
+      ));
+    }
+
+    ctor_length = evaluator.function_length(&func_node.stx)?;
+
+    let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+    let rel_end = func_node
+      .loc
+      .end_u32()
+      .saturating_sub(evaluator.env.prefix_len());
+    let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+    let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     let code = evaluator.vm.register_ecma_function(
       evaluator.env.source(),
       span_start,
@@ -24754,10 +24908,14 @@ fn async_eval_class_after_super(
     let prototype_key_s = proto_scope.alloc_string("prototype")?;
     proto_scope.push_root(Value::String(prototype_key_s))?;
     let prototype_key = PropertyKey::from_string(prototype_key_s);
+<<<<<<< HEAD
     let Some(prototype_desc) = proto_scope
       .heap()
       .get_own_property(func_obj, prototype_key)?
     else {
+=======
+    let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)? else {
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
       return Err(VmError::InvariantViolation(
         "class constructor missing prototype property",
       ));
@@ -24781,6 +24939,7 @@ fn async_eval_class_after_super(
     }
   };
 
+<<<<<<< HEAD
   // Class constructor bodies (the hidden function object invoked via `[[Construct]]`) use the
   // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against
   // `super.prototype`.
@@ -24796,6 +24955,15 @@ fn async_eval_class_after_super(
       heap.set_function_meta_property_context(body_func, meta_property_context)?;
       Ok(())
     })() {
+=======
+  // Class constructor bodies use the prototype object as their `[[HomeObject]]` so `super.prop`
+  // can resolve against `super.prototype`.
+  if let Some(body_func) = ctor_body_func {
+    if let Err(err) = class_scope
+      .heap_mut()
+      .set_function_home_object(body_func, Some(prototype_obj))
+    {
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
       class_scope.heap_mut().remove_root(func_root);
       return Err(err);
     }
@@ -33470,7 +33638,26 @@ fn async_apply_binary_operator(
       Ok(Value::Bool(ok))
     }
     // Assignment operators are handled separately (they require reference semantics).
+<<<<<<< HEAD
     op if op.is_assignment() => Err(VmError::InvariantViolation(
+=======
+    OperatorName::Assignment
+    | OperatorName::AssignmentAddition
+    | OperatorName::AssignmentBitwiseAnd
+    | OperatorName::AssignmentBitwiseLeftShift
+    | OperatorName::AssignmentBitwiseOr
+    | OperatorName::AssignmentBitwiseRightShift
+    | OperatorName::AssignmentBitwiseUnsignedRightShift
+    | OperatorName::AssignmentBitwiseXor
+    | OperatorName::AssignmentDivision
+    | OperatorName::AssignmentExponentiation
+    | OperatorName::AssignmentLogicalAnd
+    | OperatorName::AssignmentLogicalOr
+    | OperatorName::AssignmentSubtraction
+    | OperatorName::AssignmentMultiplication
+    | OperatorName::AssignmentNullishCoalescing
+    | OperatorName::AssignmentRemainder => Err(VmError::InvariantViolation(
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
       "internal error: assignment operator in async_apply_binary_operator",
     )),
     _ => Err(VmError::Unimplemented("binary operator")),
@@ -35124,6 +35311,7 @@ fn async_resume_from_frames(
       },
 
       AsyncFrame::YieldStarAfterOperand => match state {
+<<<<<<< HEAD
         AsyncState::Expr(Ok(iterable)) => {
           match async_yield_star_begin(evaluator, scope, iterable) {
             Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
@@ -35139,8 +35327,23 @@ fn async_resume_from_frames(
               state = AsyncState::Expr(Err(err))
             }
             Err(err) => return Err(err),
+=======
+        AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
+          Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+          Ok(AsyncEval::Suspend(mut suspend)) => {
+            suspend.frames.append(&mut frames);
+            return Ok(AsyncBodyResult::Await {
+              kind: suspend.kind,
+              await_value: suspend.await_value,
+              frames: suspend.frames,
+            });
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
           }
-        }
+          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+            state = AsyncState::Expr(Err(err))
+          }
+          Err(err) => return Err(err),
+        },
         AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
@@ -58503,12 +58706,16 @@ pub(crate) fn run_ecma_function(
         evaluator.env.teardown(call_scope.heap_mut());
         res.map(|_| (promise, evaluator.this))
       }
+<<<<<<< HEAD
       Ok(AsyncBodyResult::Await {
         kind,
         await_value,
         frames,
       }) => {
         let mut frames = frames;
+=======
+      Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         // `this` / `new.target` can be temporarily overridden by nested constructs that can suspend
         // (e.g. class static blocks). Capture their current values at the suspension point so the
         // continuation resumes with the correct execution context.
@@ -58534,6 +58741,7 @@ pub(crate) fn run_ecma_function(
           return Err(err);
         }
 
+<<<<<<< HEAD
         let awaited_promise_res: Result<Value, VmError> = match kind {
           AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
             evaluator.vm,
@@ -58551,6 +58759,17 @@ pub(crate) fn run_ecma_function(
             "unexpected async generator yield* iterator result suspension in async function start",
           )),
         };
+=======
+        let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+          evaluator.vm,
+          &mut root_scope,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          await_value,
+        );
+        let resolve_res =
+          resolve_res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
 
         let awaited_promise = match awaited_promise_res {
           Ok(p) => p,
@@ -59334,12 +59553,16 @@ pub(crate) fn start_module_tla_evaluation(
     // If `PromiseResolve(%Promise%, awaitValue)` throws, treat it as a rejection at the await site
     // (i.e. resume immediately with a throw completion so `try/catch` around `await` can observe it).
     loop {
+<<<<<<< HEAD
       let AsyncBodyResult::Await {
         kind,
         await_value,
         frames,
       } = next
       else {
+=======
+      let AsyncBodyResult::Await { await_value, frames, .. } = next else {
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         env.teardown(scope.heap_mut());
         return match next {
           AsyncBodyResult::CompleteOk(_) => Ok(ModuleTlaStepResult::Completed),
@@ -59640,11 +59863,15 @@ pub(crate) fn resume_module_tla_evaluation(
           async_teardown_continuation(scope, cont);
           return Err(VmError::Throw(reason));
         }
+<<<<<<< HEAD
         Ok(AsyncBodyResult::Await {
           kind,
           await_value,
           frames,
         }) => {
+=======
+        Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
           // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
           let awaited_promise_res: Result<Value, VmError> = match kind {
             AsyncSuspendKind::Await => promise_resolve_for_await_with_host_and_hooks(
@@ -60147,11 +60374,15 @@ pub(crate) fn run_module_async_resume(
         Ok(ModuleAsyncStep::Completed)
       }
       AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
+<<<<<<< HEAD
       AsyncBodyResult::Await {
         kind,
         await_value,
         frames,
       } => {
+=======
+      AsyncBodyResult::Await { await_value, frames, .. } => {
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         cont
           .as_mut()
           .expect("module async continuation missing")

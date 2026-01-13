@@ -1205,6 +1205,7 @@ fn run_scroll_fixture(
         continue;
       }
 
+<<<<<<< HEAD
       let start = Instant::now();
       tx.send(UiToWorker::ScrollTo {
         tab_id,
@@ -1220,6 +1221,23 @@ fn run_scroll_fixture(
       bounds = frame.scroll_bounds_css;
       break Ok::<f64, WaitError>(round_ms(start.elapsed().as_secs_f64() * 1000.0));
     }
+=======
+    let start = Instant::now();
+    tx.send(UiToWorker::ScrollTo {
+      tab_id,
+      pos_css: (0.0, target),
+    })
+    .map_err(|err| WaitError {
+      status: ScenarioStatus::Error,
+      message: format!("failed to send ScrollTo: {err}"),
+    })?;
+
+    let next = wait_for_frame(rx, tab_id, ACTION_TIMEOUT)?;
+    frame = next;
+    scroll_y = frame.scroll_css.1;
+    bounds = frame.scroll_bounds_css;
+    return Ok::<f64, WaitError>(round_ms(start.elapsed().as_secs_f64() * 1000.0));
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
   }) {
     Ok(measured) => measured,
     Err(err) => {

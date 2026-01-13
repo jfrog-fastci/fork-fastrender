@@ -151,8 +151,26 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     // the flag and set FD_CLOEXEC manually on the received fd.
     if err.raw_os_error() == Some(libc::EINVAL) && (recv_flags & libc::MSG_CMSG_CLOEXEC) != 0 {
       need_manual_cloexec = true;
+<<<<<<< HEAD
       recv_flags &= !libc::MSG_CMSG_CLOEXEC;
       continue 'recvmsg;
+=======
+      let read_len = loop {
+        msg.msg_controllen = CONTROL_LEN;
+        msg.msg_flags = 0;
+        let rc2 =
+          unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags & !libc::MSG_CMSG_CLOEXEC) };
+        if rc2 >= 0 {
+          break rc2 as usize;
+        }
+        let err2 = io::Error::last_os_error();
+        if err2.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err2);
+      };
+      break read_len;
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     } else {
       return Err(err);
     }

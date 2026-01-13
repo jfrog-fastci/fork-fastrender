@@ -2706,6 +2706,72 @@ mod tests {
   }
 
   #[test]
+  fn video_controls_is_tab_stop_by_default() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><button></button><video controls></video></body></html>",
+    )
+    .expect("parse");
+    let button_id = find_element_node_id(&mut dom, "button");
+    let video_id = find_element_node_id(&mut dom, "video");
+    let index = DomIndexMut::new(&mut dom);
+
+    let focusables = collect_tab_stops(&index);
+    assert_eq!(
+      focusables,
+      vec![button_id, video_id],
+      "<video controls> should participate in sequential Tab navigation by default"
+    );
+  }
+
+  #[test]
+  fn video_without_controls_is_not_tab_stop_by_default() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><button></button><video></video></body></html>")
+        .expect("parse");
+    let button_id = find_element_node_id(&mut dom, "button");
+    let video_id = find_element_node_id(&mut dom, "video");
+    let index = DomIndexMut::new(&mut dom);
+
+    let focusables = collect_tab_stops(&index);
+    assert_eq!(
+      focusables,
+      vec![button_id],
+      "<video> without controls should not participate in Tab order unless tabindex is set"
+    );
+    assert!(
+      !focusables.contains(&video_id),
+      "<video> without controls should be excluded from Tab stops"
+    );
+  }
+
+  #[test]
+  fn video_controls_tabindex_negative_allows_pointer_focus_but_not_tab_stop() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><button></button><video controls tabindex=\"-1\"></video></body></html>",
+    )
+    .expect("parse");
+    let button_id = find_element_node_id(&mut dom, "button");
+    let video_id = find_element_node_id(&mut dom, "video");
+    let index = DomIndexMut::new(&mut dom);
+
+    assert!(
+      is_focusable_interactive_element(&index, video_id),
+      "<video controls tabindex=-1> should remain focusable via pointer click"
+    );
+
+    let focusables = collect_tab_stops(&index);
+    assert_eq!(
+      focusables,
+      vec![button_id],
+      "tabindex < 0 media controls must be skipped by sequential Tab focus navigation"
+    );
+    assert!(
+      !focusables.contains(&video_id),
+      "<video controls tabindex=-1> should be excluded from Tab stops"
+    );
+  }
+
+  #[test]
   fn form_submission_includes_first_legend_controls_in_disabled_fieldset() {
     let mut dom = crate::dom::parse_html(
       "<html><body><form action=\"https://example.com/submit\">\
@@ -3497,6 +3563,10 @@ fn media_controls_kind(node: &DomNode) -> Option<MediaElementKind> {
   None
 }
 
+fn is_media_with_controls(node: &DomNode) -> bool {
+  media_controls_kind(node).is_some()
+}
+
 fn is_details(node: &DomNode) -> bool {
   node
     .tag_name()
@@ -4007,6 +4077,10 @@ fn is_focusable_interactive_element(index: &DomIndexMut, node_id: usize) -> bool
     return true;
   }
 
+  if is_media_with_controls(node) {
+    return true;
+  }
+
   if is_input(node) {
     return !input_type(node).eq_ignore_ascii_case("hidden");
   }
@@ -4090,6 +4164,7 @@ fn tab_stop_tabindex(index: &DomIndexMut, inert: &[bool], node_id: usize) -> Opt
   } else {
     is_focusable_anchor(node)
       || details_owner_for_summary(index, node_id).is_some()
+      || is_media_with_controls(node)
       || is_input(node)
       || is_textarea(node)
       || is_select(node)
@@ -5761,10 +5836,11 @@ fn apply_select_listbox_click(
         return false;
       }
 
-      // Native browser listbox semantics:
-      // - Plain click replaces selection (even in `<select multiple>`).
-      // - Ctrl/Cmd click toggles a single option (multiple-select only).
-      // - Shift click range-selects from a stable anchor option.
+      // Listbox semantics:
+      // - Single-select: plain click replaces selection.
+      // - Multiple-select: plain click toggles a single option (does not clear other selections).
+      // - Shift-click range-selects from a stable anchor option.
+      // - Ctrl/Cmd+Shift-click adds the range to the existing selection.
       let clicked_option_id = *node_id;
 
       // Single-select listboxes always use replacement semantics.
@@ -5841,8 +5917,8 @@ fn apply_select_listbox_click(
       // Non-shift interactions update the range-selection anchor.
       select_listbox_anchor.insert(select_id, clicked_option_id);
 
-      // Ctrl/Cmd toggles in multiple-select listboxes; plain click replaces.
-      dom_mutation::activate_select_option(dom, select_id, clicked_option_id, modifiers.command())
+      // In multiple-select listboxes, plain click toggles (Ctrl/Cmd is treated equivalently).
+      dom_mutation::activate_select_option(dom, select_id, clicked_option_id, true)
     }
   }
 }
@@ -10183,6 +10259,19 @@ impl InteractionEngine {
               }
             }
           }
+<<<<<<< HEAD
+=======
+        } else if is_primary_button {
+          if let Some(kind) = index.node(target_id).and_then(media_controls_kind) {
+            if is_focusable_interactive_element(&index, target_id) {
+              dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+            }
+            action = InteractionAction::OpenMediaControls {
+              media_node_id: target_id,
+              kind,
+            };
+          }
+>>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
         } else {
           // `<video controls>` / `<audio controls>`: request native media controls overlay.
           //
