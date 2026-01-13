@@ -67,6 +67,102 @@ fn should_restore_page_focus_for_state(
     && !find_in_page_open
 }
 
+// Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
+// unit tests (which often run without the full winit/wgpu/egui stack).
+#[cfg(any(test, feature = "browser_ui"))]
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+/// Resolve/normalize/validate a user-supplied address bar input using the same semantics as
+/// `BrowserTabState::navigate_typed`.
+#[cfg(any(test, feature = "browser_ui"))]
+fn resolve_typed_navigation_url(raw: &str, current_url: Option<&str>) -> Result<String, String> {
+  use url::Url;
+
+  let raw_trimmed = trim_ascii_whitespace(raw);
+
+  let normalized = if raw_trimmed.starts_with('#') {
+    let current = current_url
+      .ok_or_else(|| "cannot navigate to a fragment without an active document".to_string())?;
+    let current = Url::parse(current).map_err(|err| err.to_string())?;
+    current
+      .join(raw_trimmed)
+      .map_err(|err| err.to_string())?
+      .to_string()
+  } else {
+    match fastrender::ui::resolve_omnibox_input(raw_trimmed)? {
+      fastrender::ui::OmniboxInputResolution::Url { url } => url,
+      fastrender::ui::OmniboxInputResolution::Search { url, .. } => url,
+    }
+  };
+
+  fastrender::ui::validate_user_navigation_url_scheme(&normalized)?;
+  Ok(normalized)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn open_url_in_new_tab_state(
+  browser_state: &mut fastrender::ui::BrowserAppState,
+  tab_cancel: &mut std::collections::HashMap<
+    fastrender::ui::TabId,
+    fastrender::ui::cancel::CancelGens,
+  >,
+  url: String,
+  reason: fastrender::ui::NavigationReason,
+) -> (fastrender::ui::TabId, Vec<fastrender::ui::UiToWorker>) {
+  use fastrender::ui::{BrowserTabState, RepaintReason, TabId, UiToWorker};
+
+  let new_tab_id = TabId::new();
+  let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
+  tab_state.loading = true;
+  let cancel = tab_state.cancel.clone();
+  tab_cancel.insert(new_tab_id, cancel.clone());
+  browser_state.push_tab(tab_state, true);
+
+  let msgs = vec![
+    UiToWorker::CreateTab {
+      tab_id: new_tab_id,
+      initial_url: None,
+      cancel,
+    },
+    UiToWorker::SetActiveTab { tab_id: new_tab_id },
+    UiToWorker::Navigate {
+      tab_id: new_tab_id,
+      url,
+      reason,
+    },
+    UiToWorker::RequestRepaint {
+      tab_id: new_tab_id,
+      reason: RepaintReason::Explicit,
+    },
+  ];
+
+  (new_tab_id, msgs)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn open_typed_in_new_tab_state(
+  browser_state: &mut fastrender::ui::BrowserAppState,
+  tab_cancel: &mut std::collections::HashMap<
+    fastrender::ui::TabId,
+    fastrender::ui::cancel::CancelGens,
+  >,
+  raw: &str,
+) -> Result<(fastrender::ui::TabId, Vec<fastrender::ui::UiToWorker>), String> {
+  let current_url = browser_state
+    .active_tab()
+    .and_then(|tab| tab.current_url.as_deref())
+    .map(str::to_string);
+  let url = resolve_typed_navigation_url(raw, current_url.as_deref())?;
+  Ok(open_url_in_new_tab_state(
+    browser_state,
+    tab_cancel,
+    url,
+    fastrender::ui::NavigationReason::TypedUrl,
+  ))
+}
+
 #[cfg(feature = "browser_ui")]
 fn main() {
   if let Err(err) = run() {
@@ -190,6 +286,61 @@ mod browser_hud_env_tests {
     assert!(parse_browser_hud_env(Some("maybe")).is_err());
   }
 }
+
+#[cfg(test)]
+mod open_typed_in_new_tab_tests {
+  use super::open_typed_in_new_tab_state;
+  use fastrender::ui::{BrowserAppState, BrowserTabState, NavigationReason, TabId, UiToWorker};
+  use std::collections::HashMap;
+
+  #[test]
+  fn typed_open_in_new_tab_creates_and_activates_tab() {
+    let mut browser_state = BrowserAppState::new();
+    let tab_a = TabId(1);
+    browser_state.push_tab(
+      BrowserTabState::new(tab_a, "https://example.org/".to_string()),
+      true,
+    );
+
+    let mut cancels = HashMap::new();
+    let (new_tab_id, msgs) =
+      open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "example.com")
+        .expect("typed URL should resolve");
+
+    assert_eq!(browser_state.tabs.len(), 2);
+    assert_eq!(browser_state.active_tab_id(), Some(new_tab_id));
+
+    let new_tab = browser_state
+      .tab(new_tab_id)
+      .expect("new tab state should exist");
+    assert_eq!(new_tab.current_url.as_deref(), Some("https://example.com/"));
+
+    assert!(cancels.contains_key(&new_tab_id));
+
+    assert!(
+      msgs.iter().any(|msg| matches!(
+        msg,
+        UiToWorker::CreateTab { tab_id, initial_url: None, .. } if *tab_id == new_tab_id
+      )),
+      "expected CreateTab for {new_tab_id:?}, got {msgs:?}"
+    );
+    assert!(
+      msgs.iter().any(|msg| matches!(
+        msg,
+        UiToWorker::SetActiveTab { tab_id } if *tab_id == new_tab_id
+      )),
+      "expected SetActiveTab for {new_tab_id:?}, got {msgs:?}"
+    );
+    assert!(
+      msgs.iter().any(|msg| matches!(
+        msg,
+        UiToWorker::Navigate { tab_id, url, reason } if *tab_id == new_tab_id && url == "https://example.com/" && *reason == NavigationReason::TypedUrl
+      )),
+      "expected Navigate(TypedUrl) for {new_tab_id:?}, got {msgs:?}"
+    );
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 use arboard::Clipboard;
 #[cfg(feature = "browser_ui")]
@@ -4040,12 +4191,34 @@ impl App {
     self.destroy_all_textures();
   }
 
+  fn apply_open_url_in_new_tab_messages(&mut self, msgs: Vec<fastrender::ui::UiToWorker>) {
+    use fastrender::ui::PointerButton;
+
+    // Reset per-tab cached state; mimic `ChromeAction::NewTab`/`ActivateTab` behaviour.
+    self.page_has_focus = true;
+    self.viewport_cache_tab = None;
+    self.pointer_captured = false;
+    self.captured_button = PointerButton::None;
+    self.cursor_in_page = false;
+    self.hover_sync_pending = true;
+    self.pending_pointer_move = None;
+
+    for msg in msgs {
+      self.send_worker_msg(msg);
+    }
+    self.window.request_redraw();
+  }
+
   /// Open `url` in a new tab and focus the page (matching the expected "open in new tab" UX).
   fn open_url_in_new_tab(&mut self, url: String) -> bool {
-    use fastrender::ui::cancel::CancelGens;
-    use fastrender::ui::messages::{NavigationReason, RepaintReason, UiToWorker};
-    use fastrender::ui::{BrowserTabState, PointerButton, TabId};
+    self.open_url_in_new_tab_with_reason(url, fastrender::ui::NavigationReason::LinkClick)
+  }
 
+  fn open_url_in_new_tab_with_reason(
+    &mut self,
+    url: String,
+    reason: fastrender::ui::NavigationReason,
+  ) -> bool {
     // Close any transient UI state before switching tabs.
     if self.open_select_dropdown.is_some() {
       self.cancel_select_dropdown();
@@ -4057,39 +4230,9 @@ impl App {
       self.cancel_pointer_capture();
     }
 
-    let new_tab_id = TabId::new();
-    let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
-    tab_state.loading = true;
-    let cancel: CancelGens = tab_state.cancel.clone();
-    self.tab_cancel.insert(new_tab_id, cancel.clone());
-    self.browser_state.push_tab(tab_state, true);
-
-    // Reset per-tab cached state; mimic `ChromeAction::NewTab`/`ActivateTab` behaviour.
-    self.page_has_focus = true;
-    self.viewport_cache_tab = None;
-    self.pointer_captured = false;
-    self.captured_button = PointerButton::None;
-    self.cursor_in_page = false;
-    self.hover_sync_pending = true;
-    self.pending_pointer_move = None;
-
-    self.send_worker_msg(UiToWorker::CreateTab {
-      tab_id: new_tab_id,
-      initial_url: None,
-      cancel,
-    });
-    self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
-    self.send_worker_msg(UiToWorker::Navigate {
-      tab_id: new_tab_id,
-      url,
-      reason: NavigationReason::LinkClick,
-    });
-    self.send_worker_msg(UiToWorker::RequestRepaint {
-      tab_id: new_tab_id,
-      reason: RepaintReason::Explicit,
-    });
-    self.window.request_redraw();
-
+    let (_tab_id, msgs) =
+      open_url_in_new_tab_state(&mut self.browser_state, &mut self.tab_cancel, url, reason);
+    self.apply_open_url_in_new_tab_messages(msgs);
     true
   }
 
@@ -8857,6 +9000,23 @@ impl App {
               tab_id,
               reason: RepaintReason::Explicit,
             });
+          }
+        }
+        ChromeAction::OpenUrlInNewTab(raw) => {
+          // Resolve/normalize/validate the typed input (including fragment-only `#foo` joins)
+          // consistently with `BrowserTabState::navigate_typed`.
+          let result =
+            open_typed_in_new_tab_state(&mut self.browser_state, &mut self.tab_cancel, &raw);
+          match result {
+            Ok((_tab_id, msgs)) => {
+              session_dirty = true;
+              self.apply_open_url_in_new_tab_messages(msgs);
+            }
+            Err(err) => {
+              if let Some(tab) = self.browser_state.active_tab_mut() {
+                tab.error = Some(err);
+              }
+            }
           }
         }
         ChromeAction::NavigateTo(raw) => {

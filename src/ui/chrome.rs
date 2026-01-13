@@ -73,6 +73,11 @@ pub enum ChromeAction {
   ActivateTab(TabId),
   TogglePinTab(TabId),
   NavigateTo(String),
+  /// Open an omnibox/address-bar input in a new foreground tab, leaving the current tab unchanged.
+  ///
+  /// The windowed browser is expected to resolve/normalize/validate the provided string using the
+  /// same pipeline as a typed navigation (see `BrowserTabState::navigate_typed`).
+  OpenUrlInNewTab(String),
   Back,
   Forward,
   Reload,
@@ -1321,6 +1326,7 @@ pub fn chrome_ui_with_bookmarks(
       // frame, so we need to wait until after `activated_display_mode` is computed below.
       let mut key_arrow_down = false;
       let mut key_arrow_up = false;
+      let mut key_alt_enter = false;
       let mut key_enter = false;
       let mut key_escape = false;
 
@@ -1382,6 +1388,16 @@ pub fn chrome_ui_with_bookmarks(
         ui.input_mut(|i| {
           key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
           key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
+          // Consume Alt+Enter separately from plain Enter so we can implement the standard
+          // "open in new tab" omnibox behaviour (Alt+Enter on Windows/Linux, Option+Enter on
+          // macOS).
+          key_alt_enter = i.consume_key(
+            egui::Modifiers {
+              alt: true,
+              ..Default::default()
+            },
+            egui::Key::Enter,
+          );
           key_enter = i.consume_key(Default::default(), egui::Key::Enter);
           key_escape = i.consume_key(Default::default(), egui::Key::Escape);
         });
@@ -2199,19 +2215,33 @@ pub fn chrome_ui_with_bookmarks(
           }
         }
 
-        if has_focus && key_enter {
+        if has_focus && (key_enter || key_alt_enter) {
           let accept_action = (app.chrome.omnibox.open)
             .then_some(())
             .and_then(|_| app.chrome.omnibox.selected)
             .and_then(|i| app.chrome.omnibox.suggestions.get(i))
             .map(omnibox_suggestion_accept_action);
 
-          let action = accept_action
-            .unwrap_or_else(|| ChromeAction::NavigateTo(app.chrome.address_bar_text.clone()));
+          // First resolve the omnibox selection the same way plain Enter does.
+          let resolved_action = accept_action.unwrap_or_else(|| {
+            ChromeAction::NavigateTo(app.chrome.address_bar_text.clone())
+          });
 
-          if let ChromeAction::NavigateTo(url) = &action {
+          if let ChromeAction::NavigateTo(url) = &resolved_action {
             app.chrome.address_bar_text = url.clone();
           }
+
+          // Alt+Enter should open the resolved navigation in a new foreground tab, leaving the
+          // current tab unchanged. (If the selected suggestion is an open-tab activation, keep the
+          // existing behaviour.)
+          let action = if key_alt_enter {
+            match resolved_action {
+              ChromeAction::NavigateTo(url) => ChromeAction::OpenUrlInNewTab(url),
+              other => other,
+            }
+          } else {
+            resolved_action
+          };
 
           app.chrome.address_bar_editing = false;
           app.chrome.address_bar_has_focus = false;
@@ -4051,6 +4081,43 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::NavigateTo(url) if url == "example.com")),
       "expected ChromeAction::NavigateTo(\"example.com\"), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn click_type_alt_enter_in_same_frame_emits_open_in_new_tab_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
+      true,
+    );
+
+    // Simulate a click-to-focus address bar interaction where winit batches the click and first
+    // keystrokes (text + Alt+Enter) into the same egui frame.
+    let mut events = left_click_at(egui::pos2(400.0, 60.0));
+    events.push(egui::Event::Text("example.com".to_string()));
+    events.push(egui::Event::Key {
+      key: egui::Key::Enter,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers {
+        alt: true,
+        ..Default::default()
+      },
+    });
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, events);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.iter().any(|action| matches!(
+        action,
+        ChromeAction::OpenUrlInNewTab(url) if url == "example.com"
+      )),
+      "expected ChromeAction::OpenUrlInNewTab(\"example.com\"), got {actions:?}"
     );
   }
 
