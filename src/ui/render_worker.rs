@@ -140,7 +140,7 @@ struct NavigationRequest {
 //
 // Do not copy this approach for media playback: audio/video must be driven from a real master clock
 // (audio device time when available) to avoid A/V drift. See `docs/media_clocking.md`.
-const TICK_ANIMATION_STEP_MS: f32 = 16.0;
+const TICK_ANIMATION_STEP: Duration = Duration::from_millis(16);
 
 // -----------------------------------------------------------------------------
 // Crash-isolation test hooks
@@ -403,7 +403,7 @@ struct TabState {
   needs_repaint: bool,
   force_repaint: bool,
 
-  tick_animation_time_ms: f32,
+  tick_time: Duration,
 
   find: FindInPageWorkerState,
 }
@@ -440,7 +440,7 @@ impl TabState {
       pending_navigation: None,
       needs_repaint: false,
       force_repaint: false,
-      tick_animation_time_ms: 0.0,
+      tick_time: Duration::ZERO,
       find: FindInPageWorkerState::default(),
     }
   }
@@ -1775,7 +1775,7 @@ impl BrowserRuntime {
         }
       }
       UiToWorker::Tick { tab_id } => {
-        self.handle_tick(tab_id);
+        self.handle_tick(tab_id, TICK_ANIMATION_STEP);
       }
       UiToWorker::ViewportChanged {
         tab_id,
@@ -2904,7 +2904,7 @@ impl BrowserRuntime {
     }
   }
 
-  fn handle_tick(&mut self, tab_id: TabId) {
+  fn handle_tick(&mut self, tab_id: TabId, delta: Duration) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
@@ -2916,13 +2916,18 @@ impl BrowserRuntime {
     // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
     if let Some(doc) = tab.document.as_mut() {
       if document_wants_ticks(doc) {
-        let next_time = tab.tick_animation_time_ms + TICK_ANIMATION_STEP_MS;
-        tab.tick_animation_time_ms = if next_time.is_finite() {
-          next_time
+        tab.tick_time = tab.tick_time.checked_add(delta).unwrap_or(Duration::MAX);
+
+        // `BrowserDocument` consumes time in milliseconds as `f32` today. Keep the UI worker's
+        // timeline as a `Duration` to avoid cumulative float drift, then convert at the API
+        // boundary.
+        let time_ms = tab.tick_time.as_secs_f64() * 1000.0;
+        let time_ms = if time_ms.is_finite() {
+          (time_ms.min(f32::MAX as f64)) as f32
         } else {
           f32::MAX
         };
-        doc.set_animation_time_ms(tab.tick_animation_time_ms);
+        doc.set_animation_time_ms(time_ms);
         tab.needs_repaint = true;
       }
     }
@@ -5901,6 +5906,12 @@ impl BrowserRuntime {
     // prepare+paint pipeline (and so we can reinsert the document on all exit paths).
     let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, cancel, doc) = {
       let tab = self.tabs.get_mut(&tab_id)?;
+      let doc = tab.document.take();
+      if doc.is_none() {
+        // If we have to create a brand new long-lived `BrowserDocument` (e.g. first navigation, or a
+        // recovered-from-crash tab), reset tick time so the new document's timeline starts at 0.
+        tab.tick_time = Duration::ZERO;
+      }
       (
         tab.cancel.snapshot_prepare(),
         tab.cancel.snapshot_paint(),
@@ -5908,7 +5919,7 @@ impl BrowserRuntime {
         tab.dpr,
         tab.history.current().map(|e| (e.scroll_x, e.scroll_y)),
         tab.cancel.clone(),
-        tab.document.take(),
+        doc,
       )
     };
     // Capture the original URL before any redirects/mutations for history bookkeeping.
@@ -6250,7 +6261,7 @@ impl BrowserRuntime {
             .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
           tab.document = Some(doc);
           tab.interaction = interaction;
-          tab.tick_animation_time_ms = 0.0;
+          tab.tick_time = Duration::ZERO;
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
 
@@ -6382,7 +6393,7 @@ impl BrowserRuntime {
       .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
     tab.document = Some(doc);
     tab.interaction = interaction;
-    tab.tick_animation_time_ms = 0.0;
+    tab.tick_time = Duration::ZERO;
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
 
@@ -6535,7 +6546,10 @@ impl BrowserRuntime {
     if needs_doc {
       match self.build_initial_document(viewport_css, dpr) {
         Ok(doc) => {
-          let _ = self.reinsert_document(tab_id, doc);
+          if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            tab.tick_time = Duration::ZERO;
+            tab.document = Some(doc);
+          }
         }
         Err(err) => {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -6691,7 +6705,7 @@ impl BrowserRuntime {
     tab.js_dom_mapping_miss_logged = false;
     tab.js_dom_dirty = false;
     tab.js_dom_mutation_generation = 0;
-    tab.tick_animation_time_ms = 0.0;
+    tab.tick_time = Duration::ZERO;
     tab.scroll_state = painted.scroll_state.clone();
     tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());
     tab.last_base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
