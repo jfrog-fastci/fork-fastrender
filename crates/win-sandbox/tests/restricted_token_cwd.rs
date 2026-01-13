@@ -20,14 +20,12 @@ use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
   NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
+use windows_sys::Win32::Security::NO_INHERITANCE;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const TEST_NAME: &str = "restricted_token_spawn_does_not_inherit_inaccessible_cwd";
 const ENV_TEST_DEPTH: &str = "WIN_SANDBOX_RESTRICTED_TOKEN_CWD_DEPTH";
 const ENV_TEST_CWD: &str = "WIN_SANDBOX_RESTRICTED_TOKEN_CWD_PATH";
-
-// `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not currently export it.
-const NO_INHERITANCE: u32 = 0;
 
 #[link(name = "advapi32")]
 extern "system" {
@@ -251,7 +249,8 @@ fn restricted_token_spawn_does_not_inherit_inaccessible_cwd() {
   let token = RestrictedToken::for_current_process_low_integrity()
     .expect("create restricted token")
     .into_handle();
-  let child = restricted_token::spawn_with_token(&cfg, &token).expect("spawn restricted-token child");
+  let child =
+    restricted_token::spawn_with_token(&cfg, &token).expect("spawn restricted-token child");
 
   let exit_code = child
     .wait_timeout(Duration::from_secs(30))
