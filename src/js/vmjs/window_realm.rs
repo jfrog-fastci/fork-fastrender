@@ -2951,6 +2951,7 @@ const PLATFORM_DOCUMENT_KEY: &str = "__fastrender_platform_document";
 const DOM_IMPLEMENTATION_DOCUMENT_ID_KEY: &str = "__fastrender_dom_implementation_document_id";
 const DOM_IMPLEMENTATION_DOCUMENT_OBJ_KEY: &str = "__fastrender_dom_implementation_document_obj";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
+const DOCUMENT_CONTENT_TYPE_KEY: &str = "__fastrender_document_content_type";
 const DOCUMENT_SELECTION_KEY: &str = "__fastrender_document_selection";
 const SELECTION_RANGE_KEY: &str = "__fastrender_selection_range";
 const DOM_IMPLEMENTATION_BRAND_KEY: &str = "__fastrender_dom_implementation";
@@ -13592,9 +13593,13 @@ fn document_create_element_ns_native(
   let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let qualified_name = value_to_rust_utf16_string(vm, scope, qualified_name_value)?;
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
-    "document.createElementNS requires a DOM-backed document",
-  ))?;
+  let document_id = gc_object_id(document_obj);
+  let mut dom_ptr =
+    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+      "document.createElementNS requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
 
   let dom2::ParsedQualifiedName { prefix, mut local_name } =
     match dom2::validate_and_extract_element(namespace.as_deref(), &qualified_name) {
@@ -13613,6 +13618,8 @@ fn document_create_element_ns_native(
   };
 
   let node_id = dom.create_element_ns(&local_name, ns_for_dom2, prefix.as_deref());
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -13949,11 +13956,13 @@ fn document_create_processing_instruction_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
+  let document_id = gc_object_id(document_obj);
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
     "document.createProcessingInstruction requires a DOM-backed document",
   ))?;
-  let node_id = dom.create_processing_instruction(&target, &data);
-
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let node_id = unsafe { dom_ptr.as_mut() }.create_processing_instruction(&target, &data);
+  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -28443,16 +28452,291 @@ fn dom_implementation_has_feature_native(
 fn dom_implementation_create_document_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
+  this: Value,
+  args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::Throw(make_dom_exception(vm, scope,
-    "NotSupportedError",
-    "DOMImplementation.createDocument is not supported yet.",
-  )?))
+  let Value::Object(impl_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let template_document_obj = {
+    let key = alloc_key(scope, DOM_IMPLEMENTATION_DOCUMENT_OBJ_KEY)?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(impl_obj, &key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => return Err(VmError::TypeError("Illegal invocation")),
+    }
+  };
+
+  // DOMImplementation.createDocument(DOMString? namespace, [LegacyNullToEmptyString] DOMString qualifiedName, optional DocumentType? doctype)
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+
+  let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let qualified_name = match qualified_name_value {
+    // `[LegacyNullToEmptyString]`.
+    Value::Null | Value::Undefined => String::new(),
+    other => value_to_rust_utf16_string(vm, scope, other)?,
+  };
+
+  let doctype_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let doctype: Option<(GcObject, DomNodeKey)> = match doctype_value {
+    Value::Null | Value::Undefined => None,
+    Value::Object(obj) => {
+      let handle = dom_platform_mut(vm)
+        .ok_or(VmError::TypeError("Illegal invocation"))?
+        .require_document_type_handle(scope.heap(), Value::Object(obj))
+        .map_err(|_| VmError::TypeError("DOMImplementation.createDocument: doctype must be a DocumentType or null"))?;
+      Some((obj, handle))
+    }
+    _ => {
+      return Err(VmError::TypeError(
+        "DOMImplementation.createDocument: doctype must be a DocumentType or null",
+      ))
+    }
+  };
+
+  // WHATWG DOM: content type for XML documents is determined by the `namespace` argument.
+  let content_type = match namespace.as_deref() {
+    Some(crate::dom::HTML_NAMESPACE) => "application/xhtml+xml",
+    Some(crate::dom::SVG_NAMESPACE) => "image/svg+xml",
+    _ => "application/xml",
+  };
+
+  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
+  scope.push_root(Value::String(about_blank_s))?;
+
+  // Create a realm-owned Document wrapper object (windowless).
+  //
+  // Keep the parent document as the prototype so the returned object inherits the same Document
+  // surface as the host document.
+  let document_obj = scope.alloc_object_with_prototype(Some(template_document_obj))?;
+  scope.push_root(Value::Object(document_obj))?;
+
+  {
+    // Root while allocating keys: string allocation can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    scope.push_root(Value::String(about_blank_s))?;
+
+    let default_view_key = alloc_key(&mut scope, "defaultView")?;
+    scope.define_property(
+      document_obj,
+      default_view_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+
+    let url_key = alloc_key(&mut scope, "URL")?;
+    scope.define_property(document_obj, url_key, data_desc(Value::String(about_blank_s)))?;
+
+    let location_key = alloc_key(&mut scope, "location")?;
+    scope.define_property(
+      document_obj,
+      location_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+
+    // Document.title (writable string shim, mirroring the host document).
+    let title_key = alloc_key(&mut scope, "title")?;
+    let title_s = scope.alloc_string("")?;
+    scope.push_root(Value::String(title_s))?;
+    scope.define_property(
+      document_obj,
+      title_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(title_s),
+          writable: true,
+        },
+      },
+    )?;
+
+    // Treat this as the canonical wrapper for `NodeId(0)` in its document.
+    let node_id_key = alloc_key(&mut scope, NODE_ID_KEY)?;
+    scope.define_property(document_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+
+    let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+    scope.define_property(
+      document_obj,
+      wrapper_document_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(document_obj),
+          writable: false,
+        },
+      },
+    )?;
+
+    // Store the DOM-standard content type for XML documents.
+    let content_type_key = alloc_key(&mut scope, DOCUMENT_CONTENT_TYPE_KEY)?;
+    let content_type_s = scope.alloc_string(content_type)?;
+    scope.push_root(Value::String(content_type_s))?;
+    scope.define_property(
+      document_obj,
+      content_type_key,
+      read_only_data_desc(Value::String(content_type_s)),
+    )?;
+  }
+
+  let document_id = gc_object_id(document_obj);
+
+  if let Some(platform) = dom_platform_mut(vm) {
+    // `DomPlatform::get_or_create_wrapper` sets up host slots, but we are creating the document
+    // wrapper object ourselves (to inherit instance properties from `template_document_obj`).
+    scope.heap_mut().object_set_host_slots(
+      document_obj,
+      HostSlots {
+        a: crate::js::dom_platform::DOM_WRAPPER_HOST_TAG,
+        b: 0,
+      },
+    )?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      vm_js::WeakGcObject::from(document_obj),
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+  }
+
+  // Copy internal wrapper helper methods from the host document so node wrappers created for this
+  // document can reuse them.
+  copy_wrapper_shared_methods(scope, template_document_obj, document_obj)?;
+
+  // Create a DOMImplementation object for the new document by copying method functions from the
+  // parent implementation object.
+  let new_impl = scope.alloc_object()?;
+  scope.push_root(Value::Object(new_impl))?;
+
+  let dom_implementation_brand_key = alloc_key(scope, DOM_IMPLEMENTATION_BRAND_KEY)?;
+  scope.define_property(
+    new_impl,
+    dom_implementation_brand_key,
+    non_configurable_read_only_data_desc(Value::Bool(true)),
+  )?;
+
+  let impl_doc_id_key = alloc_key(scope, DOM_IMPLEMENTATION_DOCUMENT_ID_KEY)?;
+  scope.define_property(
+    new_impl,
+    impl_doc_id_key,
+    non_configurable_read_only_data_desc(Value::Number(document_id as f64)),
+  )?;
+  let impl_doc_obj_key = alloc_key(scope, DOM_IMPLEMENTATION_DOCUMENT_OBJ_KEY)?;
+  scope.define_property(
+    new_impl,
+    impl_doc_obj_key,
+    non_configurable_read_only_data_desc(Value::Object(document_obj)),
+  )?;
+
+  for name in [
+    "hasFeature",
+    "createDocument",
+    "createDocumentType",
+    "createHTMLDocument",
+  ] {
+    let key = alloc_key(scope, name)?;
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(impl_obj, &key)?
+      .unwrap_or(Value::Undefined);
+    scope.define_property(new_impl, key, data_desc(value))?;
+  }
+
+  let implementation_key = alloc_key(scope, "implementation")?;
+  scope.define_property(
+    document_obj,
+    implementation_key,
+    read_only_data_desc(Value::Object(new_impl)),
+  )?;
+
+  let mut dom = dom2::Document::new_xml();
+  {
+    let root = dom.root();
+
+    macro_rules! append_child_or_throw {
+      ($parent:expr, $child:expr) => {{
+        if let Err(err) = dom.append_child($parent, $child) {
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
+        }
+      }};
+    }
+
+    if let Some((doctype_obj, doctype_handle)) = doctype {
+      let src_document_obj = node_wrapper_document_obj(scope, doctype_obj, doctype_handle.node_id)?;
+      let doctype_key = maybe_adopt_node_into_document(
+        vm,
+        scope,
+        host,
+        src_document_obj,
+        document_obj,
+        NonNull::from(&mut dom),
+        doctype_handle,
+      )?;
+      append_child_or_throw!(root, doctype_key.node_id);
+    }
+
+    if !qualified_name.is_empty() {
+      let dom2::ParsedQualifiedName { prefix, local_name } =
+        match dom2::validate_and_extract_element(namespace.as_deref(), &qualified_name) {
+          Ok(v) => v,
+          Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+        };
+      let ns_for_dom2 = match namespace.as_deref() {
+        Some(ns) => ns,
+        None => dom2::NULL_NAMESPACE,
+      };
+      let element = dom.create_element_ns(&local_name, ns_for_dom2, prefix.as_deref());
+      append_child_or_throw!(root, element);
+    }
+  }
+  // Owned documents: skip MutationObserver microtask scheduling.
+  let _ = dom.take_mutation_observer_microtask_needed();
+
+  {
+    let data = vm
+      .user_data_mut::<WindowRealmUserData>()
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    if data.owned_dom2_documents.borrow().contains_key(&document_id) {
+      return Err(VmError::InvariantViolation(
+        "createDocument generated a duplicate document id",
+      ));
+    }
+    data
+      .owned_dom2_documents
+      .borrow_mut()
+      .insert(document_id, Box::new(dom));
+  }
+
+  Ok(Value::Object(document_obj))
 }
 
 fn dom_implementation_create_document_type_native(
@@ -39319,16 +39603,56 @@ fn document_compat_mode_get_native(
 }
 
 fn document_content_type_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // The current harness only constructs HTML documents.
-  Ok(Value::String(scope.alloc_string("text/html")?))
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  // Realm-owned XML documents created via `DOMImplementation.createDocument(...)` store their
+  // content type explicitly (it is derived from the `namespace` argument, not the inserted root
+  // element).
+  let content_type_key = alloc_key(scope, DOCUMENT_CONTENT_TYPE_KEY)?;
+  if let Some(Value::String(content_type)) = scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &content_type_key)?
+  {
+    return Ok(Value::String(content_type));
+  }
+
+  let document_key = {
+    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+    platform.require_document_handle(scope.heap(), Value::Object(document_obj))?
+  };
+
+  let dom_ptr = match dom_ptr_for_document_id_read(vm, host, document_key.document_id) {
+    Some(dom_ptr) => dom_ptr,
+    None => {
+      if !is_host_document_id(vm, document_key.document_id) {
+        return Err(VmError::TypeError("Illegal invocation"));
+      }
+      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::TypeError("Illegal invocation"));
+      };
+      NonNull::from(&mut data.events_dom_fallback)
+    }
+  };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let content_type = if dom.is_html_document() {
+    "text/html"
+  } else {
+    "application/xml"
+  };
+
+  Ok(Value::String(scope.alloc_string(content_type)?))
 }
 
 fn document_cookie_get_native(
@@ -52824,6 +53148,32 @@ mod tests {
     assert_eq!(realm.exec_script("__dt.nodeType")?, Value::Number(10.0));
     let name = realm.exec_script("__dt.name.toLowerCase()")?;
     assert_eq!(get_string(realm.heap(), name), "html");
+    Ok(())
+  }
+
+  #[test]
+  fn dom_implementation_create_document_creates_xml_document() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const dt = document.implementation.createDocumentType("qorflesnorf", "abcde", "x\"'y");
+        const xmlDoc = document.implementation.createDocument(null, null, dt);
+        if (xmlDoc === document) throw new Error("expected createDocument to create a new Document");
+        if (xmlDoc.contentType !== "application/xml") throw new Error(`expected application/xml, got ${xmlDoc.contentType}`);
+        if (xmlDoc.doctype !== dt) throw new Error("expected doctype to be adopted into the new document");
+        const pi = xmlDoc.createProcessingInstruction("whippoorwill", "chirp chirp chirp");
+        const comment = xmlDoc.createComment("hello");
+        xmlDoc.appendChild(pi);
+        xmlDoc.appendChild(comment);
+        return true;
+      })()"#,
+    )?;
+
+    assert_eq!(result, Value::Bool(true));
     Ok(())
   }
 
