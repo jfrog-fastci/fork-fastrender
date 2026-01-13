@@ -7385,10 +7385,11 @@ impl BrowserTab {
   ) -> Result<RunUntilStableOutcome> {
     let mut frames_rendered = 0usize;
     let _ = self.commit_pending_navigation()?;
+    let raf_allowed = self.host.document.visibility_state() == DocumentVisibilityState::Visible;
     if !self.host.document.is_dirty()
       && !self.host.document.needs_animation_frame()
       && self.event_loop.is_idle()
-      && !self.event_loop.has_pending_animation_frame_callbacks()
+      && (!raf_allowed || !self.event_loop.has_pending_animation_frame_callbacks())
     {
       return Ok(RunUntilStableOutcome::Stable { frames_rendered });
     }
@@ -7444,9 +7445,14 @@ impl BrowserTab {
         continue;
       }
 
-      let raf_outcome = self
-        .event_loop
-        .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
+      let raf_outcome = if self.host.document.visibility_state() == DocumentVisibilityState::Visible
+      {
+        self
+          .event_loop
+          .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?
+      } else {
+        RunAnimationFrameOutcome::Idle
+      };
       if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
         // HTML: microtask checkpoint after rAF callbacks.
         //
@@ -7500,9 +7506,10 @@ impl BrowserTab {
         frames_rendered = frames_rendered.saturating_add(1);
       }
 
+      let raf_allowed = self.host.document.visibility_state() == DocumentVisibilityState::Visible;
       if !self.host.document.is_dirty()
         && self.event_loop.is_idle()
-        && !self.event_loop.has_pending_animation_frame_callbacks()
+        && (!raf_allowed || !self.event_loop.has_pending_animation_frame_callbacks())
       {
         return Ok(RunUntilStableOutcome::Stable { frames_rendered });
       }
@@ -7524,9 +7531,9 @@ impl BrowserTab {
       let tree = prepared.fragment_tree();
       !tree.keyframes.is_empty() || tree.transition_state.is_some()
     });
+    let raf_allowed = self.host.document.visibility_state() == DocumentVisibilityState::Visible;
 
-    let raf_wants_ticks = !self.host.document.visibility_state().hidden()
-      && self.event_loop.has_pending_animation_frame_callbacks();
+    let raf_wants_ticks = raf_allowed && self.event_loop.has_pending_animation_frame_callbacks();
 
     document_wants_ticks
       || self.host.document.is_dirty()
@@ -7685,7 +7692,7 @@ impl BrowserTab {
     // execution to a per-tab "next frame due" time.
     let mut ran_animation_frame = false;
     if self.event_loop.has_pending_animation_frame_callbacks()
-      && self.host.document.visibility_state() != DocumentVisibilityState::Hidden
+      && self.host.document.visibility_state() == DocumentVisibilityState::Visible
     {
       let now = self.event_loop.now();
       if now >= self.next_animation_frame_due {
@@ -7775,6 +7782,10 @@ impl BrowserTab {
   ///
   /// This ties the CSS animation sampling time to the same event-loop clock used for the rAF
   /// timestamp argument so JS-driven frame ticks advance visuals coherently.
+  ///
+  /// Like browsers, `requestAnimationFrame` callbacks are paused while `document.visibilityState` is
+  /// `"hidden"`. Pending callbacks remain queued and will run once the document becomes visible
+  /// again.
   pub fn tick_animation_frame(&mut self) -> Result<Option<Pixmap>> {
     let run_limits = self.host.js_execution_options.event_loop_run_limits;
     let trace = self.trace.clone();
@@ -7790,7 +7801,7 @@ impl BrowserTab {
       }
     };
 
-    if self.host.document.visibility_state() != DocumentVisibilityState::Hidden {
+    if self.host.document.visibility_state() == DocumentVisibilityState::Visible {
       let raf_outcome = self
         .event_loop
         .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
@@ -7881,7 +7892,7 @@ impl BrowserTab {
     let mut next = self.event_loop.next_timer_due_time().map(|due| due.max(now));
 
     if self.event_loop.has_pending_animation_frame_callbacks()
-      && self.host.document.visibility_state() != DocumentVisibilityState::Hidden
+      && self.host.document.visibility_state() == DocumentVisibilityState::Visible
     {
       let raf_due = self.next_animation_frame_due.max(now);
       next = Some(match next {
@@ -12591,52 +12602,33 @@ mod tests {
 
   #[test]
   fn browser_tab_request_animation_frame_paused_when_hidden() -> Result<()> {
-    let html = r#"<!doctype html>
-      <html>
-        <body>
-          <script>
-            globalThis.__ran = false;
-            requestAnimationFrame(() => { globalThis.__ran = true; });
-          </script>
-        </body>
-      </html>"#;
-    let mut tab = BrowserTab::from_html_with_vmjs_executor(html, RenderOptions::default())?;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
-    tab.set_hidden(true)?;
-    tab.tick_frame()?;
-    {
-      let realm = tab
-        .host
-        .executor
-        .window_realm_mut()
-        .expect("expected vm-js WindowRealm");
-      let ran = realm
-        .exec_script("globalThis.__ran")
-        .map_err(|err| Error::Other(err.to_string()))?;
-      assert_eq!(
-        ran,
-        Value::Bool(false),
-        "expected rAF callback to be skipped while hidden, got {ran:?}"
-      );
-    }
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), NoopExecutor::default())?;
 
-    tab.set_hidden(false)?;
-    tab.tick_frame()?;
-    {
-      let realm = tab
-        .host
-        .executor
-        .window_realm_mut()
-        .expect("expected vm-js WindowRealm");
-      let ran = realm
-        .exec_script("globalThis.__ran")
-        .map_err(|err| Error::Other(err.to_string()))?;
-      assert_eq!(
-        ran,
-        Value::Bool(true),
-        "expected rAF callback to run once visible again, got {ran:?}"
-      );
-    }
+    let called: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let called_for_cb = Rc::clone(&called);
+    tab
+      .event_loop
+      .request_animation_frame(move |_host, _event_loop, _ts| {
+        called_for_cb.set(true);
+        Ok(())
+      })?;
+
+    tab.set_visibility(DocumentVisibilityState::Hidden)?;
+    let _ = tab.tick_animation_frame()?;
+    assert!(
+      !called.get(),
+      "expected requestAnimationFrame callback to be paused while document is hidden"
+    );
+
+    tab.set_visibility(DocumentVisibilityState::Visible)?;
+    let _ = tab.tick_animation_frame()?;
+    assert!(
+      called.get(),
+      "expected requestAnimationFrame callback to run once document becomes visible"
+    );
 
     Ok(())
   }
