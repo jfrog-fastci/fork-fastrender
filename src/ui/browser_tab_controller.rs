@@ -411,10 +411,7 @@ impl BrowserTabController {
   }
 
   fn handle_tick(&mut self, delta: Duration) -> Result<Vec<WorkerToUi>> {
-    let wants_ticks = self.document.prepared().is_some_and(|prepared| {
-      let tree = prepared.fragment_tree();
-      !tree.keyframes.is_empty() || tree.transition_state.is_some()
-    });
+    let wants_ticks = crate::ui::document_ticks::browser_document_wants_ticks(&self.document);
     if !wants_ticks {
       return Ok(Vec::new());
     }
@@ -2139,13 +2136,7 @@ impl BrowserTabController {
             ),
           }
         },
-        next_tick: self
-          .document
-          .prepared()
-          .is_some_and(|prepared| {
-            let tree = prepared.fragment_tree();
-            !tree.keyframes.is_empty() || tree.transition_state.is_some()
-          })
+        next_tick: crate::ui::document_ticks::browser_document_wants_ticks(&self.document)
           .then_some(Duration::from_millis(16)),
       },
     });

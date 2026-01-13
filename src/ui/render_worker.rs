@@ -1533,10 +1533,7 @@ fn find_replaced_image_for_styled_node<'a>(
 /// `Some(...)` for other time-based effects (e.g. JS timers/rAF, animated images) depending on which
 /// subsystems are enabled for the tab.
 fn document_wants_ticks(doc: &BrowserDocument) -> bool {
-  doc.prepared().is_some_and(|prepared| {
-    let tree = prepared.fragment_tree();
-    !tree.keyframes.is_empty() || tree.transition_state.is_some()
-  })
+  crate::ui::document_ticks::browser_document_wants_ticks(doc)
 }
 
 fn normalize_url_without_fragment(mut url: url::Url) -> url::Url {

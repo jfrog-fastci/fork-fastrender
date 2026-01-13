@@ -20,6 +20,7 @@ pub mod chrome_compositor_layout;
 pub mod chrome_frame_document;
 pub mod chrome_loading_progress;
 pub mod process_assignment_config;
+pub mod document_ticks;
 pub mod theme_parsing;
 pub mod high_contrast;
 // UI↔worker messaging lives in `messages.rs`.

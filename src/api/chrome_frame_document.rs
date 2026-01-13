@@ -67,10 +67,7 @@ impl ChromeFrameDocument {
   /// Returns `true` when the most recently prepared fragment tree contains any time-based effects
   /// (currently CSS animations/transitions) that require periodic ticking.
   pub fn wants_ticks(&self) -> bool {
-    self.document.prepared().is_some_and(|prepared| {
-      let tree = prepared.fragment_tree();
-      !tree.keyframes.is_empty() || tree.transition_state.is_some()
-    })
+    crate::document_ticks::browser_document_wants_ticks(&self.document)
   }
 
   /// Advance the chrome document's animation timeline.
