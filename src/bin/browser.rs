@@ -988,15 +988,27 @@ mod browser_show_menu_bar_env_tests {
     assert_eq!(parse_browser_show_menu_bar_env(Some("   ")), Ok(None));
 
     assert_eq!(parse_browser_show_menu_bar_env(Some("1")), Ok(Some(true)));
-    assert_eq!(parse_browser_show_menu_bar_env(Some("true")), Ok(Some(true)));
-    assert_eq!(parse_browser_show_menu_bar_env(Some("TrUe")), Ok(Some(true)));
+    assert_eq!(
+      parse_browser_show_menu_bar_env(Some("true")),
+      Ok(Some(true))
+    );
+    assert_eq!(
+      parse_browser_show_menu_bar_env(Some("TrUe")),
+      Ok(Some(true))
+    );
     assert_eq!(parse_browser_show_menu_bar_env(Some("yes")), Ok(Some(true)));
     assert_eq!(parse_browser_show_menu_bar_env(Some("on")), Ok(Some(true)));
 
     assert_eq!(parse_browser_show_menu_bar_env(Some("0")), Ok(Some(false)));
-    assert_eq!(parse_browser_show_menu_bar_env(Some("false")), Ok(Some(false)));
+    assert_eq!(
+      parse_browser_show_menu_bar_env(Some("false")),
+      Ok(Some(false))
+    );
     assert_eq!(parse_browser_show_menu_bar_env(Some("no")), Ok(Some(false)));
-    assert_eq!(parse_browser_show_menu_bar_env(Some("off")), Ok(Some(false)));
+    assert_eq!(
+      parse_browser_show_menu_bar_env(Some("off")),
+      Ok(Some(false))
+    );
 
     assert!(parse_browser_show_menu_bar_env(Some("maybe")).is_err());
   }
@@ -2188,7 +2200,10 @@ mod page_context_menu_keyboard_shortcut_tests {
     let mut modifiers = shift_mods();
     modifiers.insert(ModifiersState::CTRL);
 
-    assert!(!is_page_context_menu_keyboard_gesture(VirtualKeyCode::F10, modifiers));
+    assert!(!is_page_context_menu_keyboard_gesture(
+      VirtualKeyCode::F10,
+      modifiers
+    ));
     assert!(keyboard_page_context_menu_request(
       VirtualKeyCode::F10,
       modifiers,
@@ -2206,10 +2221,10 @@ mod page_context_menu_keyboard_shortcut_tests {
 
   #[test]
   fn anchor_falls_back_to_content_center_when_page_rect_unknown() {
-    let content_rect =
-      Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, 300.0));
+    let content_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, 300.0));
     let cursor = Pos2::new(20.0, 30.0);
-    let anchor = page_context_menu_anchor_points_for_keyboard_open(None, Some(content_rect), Some(cursor));
+    let anchor =
+      page_context_menu_anchor_points_for_keyboard_open(None, Some(content_rect), Some(cursor));
     assert_eq!(anchor, content_rect.center());
   }
 }
@@ -2863,12 +2878,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let worker_name = format!("fastr-browser-ui-worker-{idx}");
-    let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
-      fastrender::ui::spawn_browser_ui_worker(&worker_name)?;
+    let renderer_backend =
+      fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name)?;
 
     // Set the download directory once during startup, before any `CreateTab { initial_url: Some(..) }`
     // messages trigger a navigation.
-    ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
+    renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
       path: download_dir.clone(),
     })?;
 
@@ -2876,8 +2891,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       window,
       &event_loop,
       event_loop_proxy.clone(),
-      ui_to_worker_tx,
-      worker_join,
+      renderer_backend.clone(),
       &gpu,
       browser_trace.clone(),
       appearance_env,
@@ -2911,10 +2925,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .name(format!("browser_worker_bridge_{window_id:?}"))
       .spawn({
         let event_loop_proxy = event_loop_proxy.clone();
+        let renderer_backend = renderer_backend.clone();
         let worker_wake_pending = Arc::clone(&worker_wake_pending);
         let worker_wake_counters = worker_wake_counters.clone();
         move || {
-          while let Ok(msg) = worker_to_ui_rx.recv() {
+          while let Ok(msg) = renderer_backend.recv() {
             if worker_msgs_pusher.push(msg).is_err() {
               break;
             }
@@ -3308,8 +3323,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let worker_name = format!("fastr-browser-ui-worker-{next_window_index}");
         next_window_index = next_window_index.saturating_add(1);
 
-        let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
-          match fastrender::ui::spawn_browser_ui_worker(&worker_name) {
+        let renderer_backend =
+          match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name) {
             Ok(v) => v,
             Err(err) => {
               eprintln!("failed to spawn browser worker for new window: {err}");
@@ -3317,7 +3332,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
           };
 
-        if let Err(err) = ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
+        if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: download_dir.clone(),
         }) {
           eprintln!("failed to send download dir to new window worker: {err}");
@@ -3327,8 +3342,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           window,
           event_loop_target,
           event_loop_proxy.clone(),
-          ui_to_worker_tx,
-          worker_join,
+          renderer_backend.clone(),
           &gpu,
           browser_trace.clone(),
           appearance_env,
@@ -3375,10 +3389,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .name(format!("browser_worker_bridge_{window_id:?}"))
           .spawn({
             let event_loop_proxy = event_loop_proxy.clone();
+            let renderer_backend = renderer_backend.clone();
             let worker_wake_pending = Arc::clone(&worker_wake_pending);
             let worker_wake_counters = worker_wake_counters.clone();
             move || {
-              while let Ok(msg) = worker_to_ui_rx.recv() {
+              while let Ok(msg) = renderer_backend.recv() {
                 if worker_msgs_pusher.push(msg).is_err() {
                   break;
                 }
@@ -3447,8 +3462,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let worker_name = format!("fastr-browser-ui-worker-{next_window_index}");
         next_window_index = next_window_index.saturating_add(1);
 
-        let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
-          match fastrender::ui::spawn_browser_ui_worker(&worker_name) {
+        let renderer_backend =
+          match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name) {
             Ok(v) => v,
             Err(err) => {
               eprintln!("failed to spawn browser worker for new window: {err}");
@@ -3456,7 +3471,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
           };
 
-        if let Err(err) = ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
+        if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
           path: download_dir.clone(),
         }) {
           eprintln!("failed to send download dir to new window worker: {err}");
@@ -3466,8 +3481,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           window,
           event_loop_target,
           event_loop_proxy.clone(),
-          ui_to_worker_tx,
-          worker_join,
+          renderer_backend.clone(),
           &gpu,
           browser_trace.clone(),
           appearance_env,
@@ -3509,10 +3523,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .name(format!("browser_worker_bridge_{window_id:?}"))
           .spawn({
             let event_loop_proxy = event_loop_proxy.clone();
+            let renderer_backend = renderer_backend.clone();
             let worker_wake_pending = Arc::clone(&worker_wake_pending);
             let worker_wake_counters = worker_wake_counters.clone();
             move || {
-              while let Ok(msg) = worker_to_ui_rx.recv() {
+              while let Ok(msg) = renderer_backend.recv() {
                 if worker_msgs_pusher.push(msg).is_err() {
                   break;
                 }
@@ -3855,16 +3870,17 @@ fn run_headless_smoke_mode(
   let active_window_idx = session.active_window_index;
   let active_window = &session.windows[active_window_idx];
 
-  let (ui_to_worker_tx, worker_to_ui_rx, join) =
-    fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
+  let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
+    "fastr-browser-headless-smoke-worker",
+  )?;
 
-  ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
+  renderer_backend.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
 
   let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
   for _tab in &active_window.tabs {
     let tab_id = TabId::new();
     tab_ids.push(tab_id);
-    ui_to_worker_tx.send(UiToWorker::CreateTab {
+    renderer_backend.send(UiToWorker::CreateTab {
       tab_id,
       // Do not start navigation until after the headless harness has applied viewport/DPR. This
       // avoids a race where the worker begins rendering with its default (800x600, DPR=1) and only
@@ -3879,24 +3895,24 @@ fn run_headless_smoke_mode(
     .active_tab_index
     .min(tab_ids.len().saturating_sub(1));
   let active_tab_id = tab_ids[active_idx];
-  ui_to_worker_tx.send(UiToWorker::ViewportChanged {
+  renderer_backend.send(UiToWorker::ViewportChanged {
     tab_id: active_tab_id,
     viewport_css: VIEWPORT_CSS,
     dpr: DPR,
   })?;
-  ui_to_worker_tx.send(UiToWorker::SetActiveTab {
+  renderer_backend.send(UiToWorker::SetActiveTab {
     tab_id: active_tab_id,
   })?;
   if let Some(tab) = active_window.tabs.get(active_idx) {
-    ui_to_worker_tx.send(UiToWorker::Navigate {
+    renderer_backend.send(UiToWorker::Navigate {
       tab_id: active_tab_id,
       url: tab.url.clone(),
       reason: NavigationReason::TypedUrl,
     })?;
   }
 
-  // Close the channel so the worker thread exits after completing the above messages.
-  drop(ui_to_worker_tx);
+  // Close the UI→worker channel so the worker thread exits after completing the above messages.
+  renderer_backend.shutdown();
 
   let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
   let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
@@ -3907,7 +3923,7 @@ fn run_headless_smoke_mode(
       let deadline = Instant::now() + timeout;
       while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        match worker_to_ui_rx.recv_timeout(remaining) {
+        match renderer_backend.recv_timeout(remaining) {
           Ok(WorkerToUi::FrameReady {
             tab_id: msg_tab,
             frame,
@@ -3932,7 +3948,7 @@ fn run_headless_smoke_mode(
       }
     }
     None => loop {
-      match worker_to_ui_rx.recv() {
+      match renderer_backend.recv() {
         Ok(WorkerToUi::FrameReady {
           tab_id: msg_tab,
           frame,
@@ -3998,7 +4014,7 @@ fn run_headless_smoke_mode(
     return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
   }
 
-  match join.join() {
+  match renderer_backend.join() {
     Ok(()) => {}
     Err(_) => return Err("headless smoke worker panicked".into()),
   }
@@ -4549,7 +4565,8 @@ fn keyboard_page_context_menu_request(
     last_cursor_pos_points,
   );
 
-  if let Some(pos_css) = mapping.and_then(|mapping| mapping.pos_points_to_pos_css_clamped(anchor_points))
+  if let Some(pos_css) =
+    mapping.and_then(|mapping| mapping.pos_points_to_pos_css_clamped(anchor_points))
   {
     let pending = PendingContextMenuRequest {
       tab_id,
@@ -4560,18 +4577,20 @@ fn keyboard_page_context_menu_request(
     return Some(KeyboardPageContextMenuOpenPlan::WorkerRequest { pending, msg });
   }
 
-  Some(KeyboardPageContextMenuOpenPlan::OpenUiOnly(OpenContextMenu {
-    tab_id,
-    pos_css: (-1.0, -1.0),
-    anchor_points,
-    link_url: None,
-    image_url: None,
-    can_copy: false,
-    can_cut: false,
-    can_paste: false,
-    can_select_all: false,
-    selected_idx: 0,
-  }))
+  Some(KeyboardPageContextMenuOpenPlan::OpenUiOnly(
+    OpenContextMenu {
+      tab_id,
+      pos_css: (-1.0, -1.0),
+      anchor_points,
+      link_url: None,
+      image_url: None,
+      can_copy: false,
+      can_cut: false,
+      can_paste: false,
+      can_select_all: false,
+      selected_idx: 0,
+    },
+  ))
 }
 
 #[cfg(feature = "browser_ui")]
@@ -5200,8 +5219,7 @@ struct App {
   theme: fastrender::ui::theme::BrowserTheme,
   clear_color: wgpu::Color,
 
-  ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
-  worker_join: Option<std::thread::JoinHandle<()>>,
+  renderer_backend: fastrender::ui::RendererBackendHandle,
   browser_state: fastrender::ui::BrowserAppState,
   /// Configured home page URL (default: `about:newtab`).
   home_url: String,
@@ -5445,7 +5463,7 @@ impl App {
       &self.applied_appearance,
       fastrender::ui::media_prefs::SystemTheme::from_winit(system_theme),
     );
-    self.send_worker_msg(UiToWorker::SetMediaPreferences { prefs });
+    let _ = self.send_worker_msg(UiToWorker::SetMediaPreferences { prefs });
   }
 
   fn refresh_theme_from_system_theme(
@@ -5722,8 +5740,7 @@ impl App {
     window: winit::window::Window,
     event_loop: &winit::event_loop::EventLoopWindowTarget<UserEvent>,
     event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-    ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
-    worker_join: std::thread::JoinHandle<()>,
+    renderer_backend: fastrender::ui::RendererBackendHandle,
     gpu: &GpuContext,
     trace: fastrender::debug::trace::TraceHandle,
     appearance_env_overrides: fastrender::ui::appearance::AppearanceEnvOverrides,
@@ -5907,8 +5924,7 @@ impl App {
       theme_accent,
       theme,
       clear_color,
-      ui_to_worker_tx,
-      worker_join: Some(worker_join),
+      renderer_backend,
       browser_state,
       home_url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
       search_suggest: fastrender::ui::SearchSuggestService::new_with_wake(
@@ -6098,7 +6114,7 @@ impl App {
       self.tab_cancel.insert(tab_id, cancel.clone());
       self.browser_state.push_tab(tab_state, false);
 
-      self.send_worker_msg(UiToWorker::CreateTab {
+      let _ = self.send_worker_msg(UiToWorker::CreateTab {
         tab_id,
         initial_url: Some(tab.url),
         cancel,
@@ -6109,7 +6125,7 @@ impl App {
       .or_else(|| tab_ids.first().copied())
       .expect("sanitized session should always provide at least one tab");
     self.browser_state.set_active_tab(active_tab_id);
-    self.send_worker_msg(UiToWorker::SetActiveTab {
+    let _ = self.send_worker_msg(UiToWorker::SetActiveTab {
       tab_id: active_tab_id,
     });
 
@@ -6222,7 +6238,7 @@ impl App {
     let now = std::time::Instant::now();
     let deadline = self.next_animation_tick.unwrap_or(now);
     if now >= deadline {
-      self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
       self.next_animation_tick = Some(now + Self::ANIMATION_TICK_INTERVAL);
     }
   }
@@ -6630,7 +6646,10 @@ impl App {
     }
   }
 
-  fn send_worker_msg(&mut self, msg: fastrender::ui::UiToWorker) {
+  fn send_worker_msg(
+    &mut self,
+    msg: fastrender::ui::UiToWorker,
+  ) -> Result<(), std::sync::mpsc::SendError<fastrender::ui::UiToWorker>> {
     use fastrender::ui::UiToWorker;
 
     // If the active tab changes while a scrollbar thumb drag is in progress, drop any unflushed
@@ -6768,7 +6787,7 @@ impl App {
       }
     }
 
-    let _ = self.ui_to_worker_tx.send(msg);
+    self.renderer_backend.send(msg)
   }
 
   fn update_effective_pixels_per_point(&mut self) {
@@ -6923,7 +6942,7 @@ impl App {
 
   fn cancel_select_dropdown(&mut self) {
     if let Some(dropdown) = self.open_select_dropdown.as_ref() {
-      self.send_worker_msg(fastrender::ui::UiToWorker::select_dropdown_cancel(
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::select_dropdown_cancel(
         dropdown.tab_id,
       ));
     }
@@ -6940,7 +6959,7 @@ impl App {
 
   fn cancel_date_time_picker(&mut self) {
     if let Some(picker) = self.open_date_time_picker.as_ref() {
-      self.send_worker_msg(fastrender::ui::UiToWorker::date_time_picker_cancel(
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::date_time_picker_cancel(
         picker.tab_id,
       ));
     }
@@ -6954,7 +6973,9 @@ impl App {
 
   fn cancel_file_picker(&mut self) {
     if let Some(picker) = self.open_file_picker.as_ref() {
-      self.send_worker_msg(fastrender::ui::UiToWorker::FilePickerCancel { tab_id: picker.tab_id });
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::FilePickerCancel {
+        tab_id: picker.tab_id,
+      });
     }
     self.close_file_picker();
   }
@@ -7031,7 +7052,7 @@ impl App {
         return;
       }
     }
-    self.send_worker_msg(msg);
+    let _ = self.send_worker_msg(msg);
   }
 
   fn page_pos_points_to_pos_css_for_drop(&self, pos_points: egui::Pos2) -> Option<(f32, f32)> {
@@ -7069,14 +7090,11 @@ impl App {
       return;
     };
 
-    let pos_css = self
-      .pending_dropped_files_pos_css
-      .take()
-      .or_else(|| {
-        self
-          .last_cursor_pos_points
-          .and_then(|pos| self.page_pos_points_to_pos_css_for_drop(pos))
-      });
+    let pos_css = self.pending_dropped_files_pos_css.take().or_else(|| {
+      self
+        .last_cursor_pos_points
+        .and_then(|pos| self.page_pos_points_to_pos_css_for_drop(pos))
+    });
     let Some(pos_css) = pos_css else {
       self.pending_dropped_files.clear();
       return;
@@ -7085,7 +7103,11 @@ impl App {
     let paths = std::mem::take(&mut self.pending_dropped_files);
     // Ensure any coalesced hover update is delivered before the drop message.
     self.flush_pending_pointer_move();
-    self.send_worker_msg(fastrender::ui::UiToWorker::DropFiles { tab_id, pos_css, paths });
+    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::DropFiles {
+      tab_id,
+      pos_css,
+      paths,
+    });
   }
 
   fn apply_page_cursor_icon(&mut self) {
@@ -7275,31 +7297,26 @@ impl App {
 
   fn shutdown(&mut self) {
     // Close the UI→worker channel so the worker can observe it and exit.
-    //
-    // We can't `drop(self.ui_to_worker_tx)` directly because `App` continues to exist until the
-    // winit loop exits; instead swap in a disconnected sender.
-    let (dummy_tx, _dummy_rx) = std::sync::mpsc::channel::<fastrender::ui::UiToWorker>();
-    drop(std::mem::replace(&mut self.ui_to_worker_tx, dummy_tx));
+    self.renderer_backend.shutdown();
 
-    if let Some(join) = self.worker_join.take() {
-      // Best-effort join: don't risk hanging the UI thread forever if the worker is stuck in a
-      // long render job.
-      let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
-      let _ = std::thread::spawn(move || {
-        let _ = done_tx.send(join.join());
-      });
+    // Best-effort join: don't risk hanging the UI thread forever if the worker is stuck in a long
+    // render job.
+    let renderer_backend = self.renderer_backend.clone();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
+    let _ = std::thread::spawn(move || {
+      let _ = done_tx.send(renderer_backend.join());
+    });
 
-      match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-        Ok(Ok(())) => {}
-        Ok(Err(_)) => {
-          eprintln!("browser worker thread panicked during shutdown");
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-          eprintln!("timed out waiting for browser worker thread to exit; shutting down anyway");
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-          eprintln!("browser worker join helper thread disconnected during shutdown");
-        }
+    match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+      Ok(Ok(())) => {}
+      Ok(Err(_)) => {
+        eprintln!("browser worker thread panicked during shutdown");
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+        eprintln!("timed out waiting for browser worker thread to exit; shutting down anyway");
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+        eprintln!("browser worker join helper thread disconnected during shutdown");
       }
     }
 
@@ -7319,7 +7336,7 @@ impl App {
     self.pending_pointer_move = None;
 
     for msg in msgs {
-      self.send_worker_msg(msg);
+      let _ = self.send_worker_msg(msg);
     }
     self.window.request_redraw();
   }
@@ -7414,18 +7431,18 @@ impl App {
     self.hover_sync_pending = true;
     self.pending_pointer_move = None;
 
-    self.send_worker_msg(UiToWorker::CreateTab {
+    let _ = self.send_worker_msg(UiToWorker::CreateTab {
       tab_id: new_tab_id,
       initial_url: None,
       cancel,
     });
-    self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
-    self.send_worker_msg(UiToWorker::NavigateRequest {
+    let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
+    let _ = self.send_worker_msg(UiToWorker::NavigateRequest {
       tab_id: new_tab_id,
       request,
       reason: NavigationReason::LinkClick,
     });
-    self.send_worker_msg(UiToWorker::RequestRepaint {
+    let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
       tab_id: new_tab_id,
       reason: RepaintReason::Explicit,
     });
@@ -7934,7 +7951,7 @@ impl App {
     self.viewport_cache_css = viewport_css;
     self.viewport_cache_dpr = dpr;
 
-    self.send_worker_msg(fastrender::ui::UiToWorker::ViewportChanged {
+    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ViewportChanged {
       tab_id,
       viewport_css,
       dpr,
@@ -7950,9 +7967,9 @@ impl App {
       return;
     };
 
-    self.send_worker_msg(UiToWorker::ScrollTo { tab_id, pos_css });
+    let _ = self.send_worker_msg(UiToWorker::ScrollTo { tab_id, pos_css });
     // Ensure the restored scroll becomes visible even if it lands after the initial paint.
-    self.send_worker_msg(UiToWorker::RequestRepaint {
+    let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
       tab_id,
       reason: RepaintReason::Scroll,
     });
@@ -9054,7 +9071,7 @@ impl App {
         }
 
         if let Some(tab_id) = self.page_input_tab.or(active_tab_id) {
-          self.send_worker_msg(UiToWorker::PointerMove {
+          let _ = self.send_worker_msg(UiToWorker::PointerMove {
             tab_id,
             pos_css: (-1.0, -1.0),
             button: PointerButton::None,
@@ -9557,18 +9574,18 @@ impl App {
 
     match action {
       PageContextMenuAction::CopySelection => {
-        self.send_worker_msg(UiToWorker::Copy { tab_id });
+        let _ = self.send_worker_msg(UiToWorker::Copy { tab_id });
       }
       PageContextMenuAction::Cut => {
-        self.send_worker_msg(UiToWorker::Cut { tab_id });
+        let _ = self.send_worker_msg(UiToWorker::Cut { tab_id });
       }
       PageContextMenuAction::Paste => {
         if let Some(text) = os_clipboard::read_text() {
-          self.send_worker_msg(UiToWorker::Paste { tab_id, text });
+          let _ = self.send_worker_msg(UiToWorker::Paste { tab_id, text });
         }
       }
       PageContextMenuAction::SelectAll => {
-        self.send_worker_msg(UiToWorker::SelectAll { tab_id });
+        let _ = self.send_worker_msg(UiToWorker::SelectAll { tab_id });
       }
       PageContextMenuAction::CopyImageAddress(url) => {
         if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
@@ -9577,7 +9594,7 @@ impl App {
       }
       PageContextMenuAction::DownloadImage(url) => {
         if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
-          self.send_worker_msg(UiToWorker::StartDownload {
+          let _ = self.send_worker_msg(UiToWorker::StartDownload {
             tab_id,
             url,
             filename_hint: None,
@@ -9606,7 +9623,7 @@ impl App {
       }
       PageContextMenuAction::DownloadLink(url) => {
         if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
-          self.send_worker_msg(UiToWorker::StartDownload {
+          let _ = self.send_worker_msg(UiToWorker::StartDownload {
             tab_id,
             url,
             filename_hint: None,
@@ -9718,13 +9735,13 @@ impl App {
     }
 
     for (tab_id, download_id) in output.cancel_requests {
-      self.send_worker_msg(UiToWorker::CancelDownload {
+      let _ = self.send_worker_msg(UiToWorker::CancelDownload {
         tab_id,
         download_id,
       });
     }
     for (tab_id, url) in output.retry_requests {
-      self.send_worker_msg(UiToWorker::StartDownload {
+      let _ = self.send_worker_msg(UiToWorker::StartDownload {
         tab_id,
         url,
         filename_hint: None,
@@ -10166,7 +10183,7 @@ impl App {
     }
 
     // Apply selection directly rather than synthesizing key events.
-    self.send_worker_msg(UiToWorker::select_dropdown_choose(
+    let _ = self.send_worker_msg(UiToWorker::select_dropdown_choose(
       tab_id,
       select_node_id,
       *option_dom_id,
@@ -10306,7 +10323,7 @@ impl App {
 
     match action {
       Some(Action::Choose(value)) => {
-        self.send_worker_msg(UiToWorker::date_time_picker_choose(
+        let _ = self.send_worker_msg(UiToWorker::date_time_picker_choose(
           tab_id,
           input_node_id,
           value,
@@ -10325,7 +10342,7 @@ impl App {
   fn render_file_picker(&mut self, ctx: &egui::Context) {
     use fastrender::ui::UiToWorker;
     use std::path::PathBuf;
- 
+
     let (tab_id, input_node_id, multiple, anchor_css, fallback_anchor_points) =
       match self.open_file_picker.as_ref() {
         Some(picker) => (
@@ -10340,35 +10357,35 @@ impl App {
           return;
         }
       };
- 
+
     // When the popup first opens, force keyboard focus into it so keyboard-only workflows work
     // without requiring an extra click.
     let request_initial_focus = self.open_file_picker_rect.is_none();
- 
+
     let mut anchor_pos_points = fallback_anchor_points;
     if let Some(mapping) = self.page_input_mapping {
       if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
         anchor_pos_points = egui::pos2(rect_points.min.x, rect_points.max.y);
       }
     }
- 
+
     if self.browser_state.active_tab_id() != Some(tab_id) {
       self.cancel_file_picker();
       self.window.request_redraw();
       return;
     }
- 
+
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
       self.cancel_file_picker();
       self.window.request_redraw();
       return;
     }
- 
+
     enum Action {
       Choose(String),
       Cancel,
     }
- 
+
     let popup = egui::Area::new(egui::Id::new((
       "fastr_file_picker_popup",
       tab_id.0,
@@ -10381,15 +10398,24 @@ impl App {
         let Some(picker) = self.open_file_picker.as_mut() else {
           return None;
         };
- 
+
         if picker.multiple {
           ui.label(egui::RichText::new("Multiple selection (separate paths with ';')").small());
         }
-        if let Some(accept) = picker.accept.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(accept) = picker
+          .accept
+          .as_deref()
+          .map(str::trim)
+          .filter(|s| !s.is_empty())
+        {
           ui.label(egui::RichText::new(format!("Accept: {accept}")).small());
         }
- 
-        let hint = if picker.multiple { "Path;path;..." } else { "Path" };
+
+        let hint = if picker.multiple {
+          "Path;path;..."
+        } else {
+          "Path"
+        };
         let resp = ui.add(
           egui::TextEdit::singleline(&mut picker.draft)
             .desired_width(360.0)
@@ -10398,7 +10424,7 @@ impl App {
         if request_initial_focus {
           resp.request_focus();
         }
- 
+
         let mut action: Option<Action> = None;
         ui.horizontal(|ui| {
           if ui.button("OK").clicked() {
@@ -10408,16 +10434,16 @@ impl App {
             action = Some(Action::Cancel);
           }
         });
- 
+
         action
       });
- 
+
       (frame.response.rect, frame.inner)
     });
- 
+
     let (popup_rect, action) = popup.inner;
     self.open_file_picker_rect = Some(popup_rect);
- 
+
     match action {
       Some(Action::Choose(draft)) => {
         let mut paths: Vec<PathBuf> = Vec::new();
@@ -10435,8 +10461,8 @@ impl App {
             paths.push(PathBuf::from(trimmed));
           }
         }
- 
-        self.send_worker_msg(UiToWorker::FilePickerChoose {
+
+        let _ = self.send_worker_msg(UiToWorker::FilePickerChoose {
           tab_id,
           input_node_id,
           paths,
@@ -10451,7 +10477,7 @@ impl App {
       None => {}
     }
   }
- 
+
   fn sync_hover_after_tab_change(&mut self, ctx: &egui::Context) {
     use fastrender::ui::PointerButton;
     use fastrender::ui::UiToWorker;
@@ -10651,7 +10677,7 @@ impl App {
     // Best-effort: when we lose pointer capture (e.g. cursor leaves the window), synthesize a
     // PointerUp so the worker can clear `:active` state and end in-progress drags.
     if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
-      self.send_worker_msg(fastrender::ui::UiToWorker::PointerUp {
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::PointerUp {
         tab_id,
         pos_css: (-1.0, -1.0),
         button,
@@ -10884,7 +10910,7 @@ impl App {
             }
 
             if let Some(tab_id) = self.page_input_tab.or(active_tab_id) {
-              self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
+              let _ = self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
                 tab_id,
                 pos_css: (-1.0, -1.0),
                 button: fastrender::ui::PointerButton::None,
@@ -11587,7 +11613,7 @@ impl App {
               }
 
               if let Some(tab_id) = self.page_input_tab.or(active_tab_id) {
-                self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
+                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
                   tab_id,
                   pos_css: (-1.0, -1.0),
                   button: fastrender::ui::PointerButton::None,
@@ -11686,7 +11712,7 @@ impl App {
                 .vertical
                 .and_then(|sb| sb.page_delta_css_for_track_click(pos))
               {
-                self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
                   tab_id,
                   delta_css: (0.0, delta_y),
                   pointer_css: None,
@@ -11699,7 +11725,7 @@ impl App {
                 .horizontal
                 .and_then(|sb| sb.page_delta_css_for_track_click(pos))
               {
-                self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
                   tab_id,
                   delta_css: (delta_x, 0.0),
                   pointer_css: None,
@@ -11756,7 +11782,7 @@ impl App {
                 pos_css,
                 anchor_points: pos_points,
               });
-              self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
+              let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
                 tab_id,
                 pos_css,
               });
@@ -11771,7 +11797,7 @@ impl App {
               self.captured_button = mapped_button;
             }
             self.cursor_in_page = true;
-            self.send_worker_msg(fastrender::ui::UiToWorker::PointerDown {
+            let _ = self.send_worker_msg(fastrender::ui::UiToWorker::PointerDown {
               tab_id,
               pos_css,
               button: mapped_button,
@@ -11814,7 +11840,7 @@ impl App {
             } else {
               (-1.0, -1.0)
             };
-            self.send_worker_msg(fastrender::ui::UiToWorker::PointerUp {
+            let _ = self.send_worker_msg(fastrender::ui::UiToWorker::PointerUp {
               tab_id,
               pos_css,
               button: mapped_button,
@@ -11891,7 +11917,7 @@ impl App {
               match plan {
                 KeyboardPageContextMenuOpenPlan::WorkerRequest { pending, msg } => {
                   self.pending_context_menu_request = Some(pending);
-                  self.send_worker_msg(msg);
+                  let _ = self.send_worker_msg(msg);
                 }
                 KeyboardPageContextMenuOpenPlan::OpenUiOnly(menu) => {
                   self.open_context_menu = Some(menu);
@@ -11930,7 +11956,7 @@ impl App {
             });
 
             if let Some((tab_id, select_node_id, option_node_id)) = choice {
-              self.send_worker_msg(fastrender::ui::UiToWorker::select_dropdown_choose(
+              let _ = self.send_worker_msg(fastrender::ui::UiToWorker::select_dropdown_choose(
                 tab_id,
                 select_node_id,
                 option_node_id,
@@ -12043,7 +12069,7 @@ impl App {
               if let Some(tab) = self.browser_state.tab_mut(tab_id) {
                 tab.find = fastrender::ui::FindInPageState::default();
               }
-              self.send_worker_msg(fastrender::ui::UiToWorker::FindStop { tab_id });
+              let _ = self.send_worker_msg(fastrender::ui::UiToWorker::FindStop { tab_id });
               self.page_has_focus = self.should_restore_page_focus();
               self.window.request_redraw();
               return;
@@ -12166,20 +12192,21 @@ impl App {
 
                 match action {
                   ShortcutAction::Copy => {
-                    self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id })
+                    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
                   }
                   ShortcutAction::Cut => {
-                    self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id })
+                    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
                   }
                   ShortcutAction::SelectAll => {
-                    self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id })
+                    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
                   }
                   ShortcutAction::Paste => {
                     if let Some(text) = os_clipboard::read_text() {
                       // egui-winit can also emit `egui::Event::Paste` from Ctrl/Cmd+V. Suppress it
                       // for this frame to avoid double pastes.
                       self.suppress_paste_events = true;
-                      self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                      let _ =
+                        self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
                     }
                   }
                   _ => {}
@@ -12243,7 +12270,7 @@ impl App {
           && !self.modifiers.alt()
           && matches!(key, VirtualKeyCode::A)
         {
-          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: fastrender::interaction::KeyAction::SelectAll,
           });
@@ -12257,7 +12284,7 @@ impl App {
         };
 
         if command && matches!(key, VirtualKeyCode::Z) {
-          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: if self.modifiers.shift() {
               fastrender::interaction::KeyAction::Redo
@@ -12273,7 +12300,7 @@ impl App {
           && !self.modifiers.shift()
           && matches!(key, VirtualKeyCode::Y)
         {
-          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: fastrender::interaction::KeyAction::Redo,
           });
@@ -12286,7 +12313,7 @@ impl App {
           self.modifiers.ctrl() && !self.modifiers.alt()
         };
         if word_mod && matches!(key, VirtualKeyCode::Left) {
-          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: if self.modifiers.shift() {
               fastrender::interaction::KeyAction::WordSelectLeft
@@ -12297,7 +12324,7 @@ impl App {
           return;
         }
         if word_mod && matches!(key, VirtualKeyCode::Right) {
-          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: if self.modifiers.shift() {
               fastrender::interaction::KeyAction::WordSelectRight
@@ -12314,14 +12341,14 @@ impl App {
           self.modifiers.ctrl() && !self.modifiers.alt()
         };
         if word_delete_mod && matches!(key, VirtualKeyCode::Back) {
-          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: fastrender::interaction::KeyAction::WordBackspace,
           });
           return;
         }
         if word_delete_mod && matches!(key, VirtualKeyCode::Delete) {
-          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: fastrender::interaction::KeyAction::WordDelete,
           });
@@ -12373,7 +12400,7 @@ impl App {
           return;
         };
 
-        self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+        let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
           tab_id,
           key: key_action,
         });
@@ -12406,10 +12433,10 @@ impl App {
         match ime {
           Ime::Preedit(text, cursor_range) => {
             if text.is_empty() {
-              self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
+              let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
             } else {
               let cursor = cursor_range.as_ref().copied();
-              self.send_worker_msg(fastrender::ui::UiToWorker::ImePreedit {
+              let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImePreedit {
                 tab_id,
                 text: text.clone(),
                 cursor,
@@ -12419,9 +12446,9 @@ impl App {
           }
           Ime::Commit(text) => {
             if text.is_empty() {
-              self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
+              let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
             } else {
-              self.send_worker_msg(fastrender::ui::UiToWorker::ImeCommit {
+              let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImeCommit {
                 tab_id,
                 text: text.clone(),
               });
@@ -12429,7 +12456,7 @@ impl App {
             self.window.request_redraw();
           }
           Ime::Disabled => {
-            self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
+            let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
             self.window.request_redraw();
           }
           Ime::Enabled => {}
@@ -12468,7 +12495,7 @@ impl App {
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
-        self.send_worker_msg(fastrender::ui::UiToWorker::TextInput {
+        let _ = self.send_worker_msg(fastrender::ui::UiToWorker::TextInput {
           tab_id,
           text: ch.to_string(),
         });
@@ -12542,20 +12569,20 @@ impl App {
           query,
           case_sensitive,
         } => {
-          self.send_worker_msg(UiToWorker::FindQuery {
+          let _ = self.send_worker_msg(UiToWorker::FindQuery {
             tab_id,
             query,
             case_sensitive,
           });
         }
         ChromeAction::FindNext(tab_id) => {
-          self.send_worker_msg(UiToWorker::FindNext { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::FindNext { tab_id });
         }
         ChromeAction::FindPrev(tab_id) => {
-          self.send_worker_msg(UiToWorker::FindPrev { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::FindPrev { tab_id });
         }
         ChromeAction::CloseFindInPage(tab_id) => {
-          self.send_worker_msg(UiToWorker::FindStop { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::FindStop { tab_id });
           self.page_has_focus = self.should_restore_page_focus();
           self.window.request_redraw();
         }
@@ -12680,13 +12707,13 @@ impl App {
           self.hover_sync_pending = true;
           self.pending_pointer_move = None;
 
-          self.send_worker_msg(UiToWorker::CreateTab {
+          let _ = self.send_worker_msg(UiToWorker::CreateTab {
             tab_id,
             initial_url: Some(initial_url),
             cancel,
           });
-          self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
-          self.send_worker_msg(UiToWorker::RequestRepaint {
+          let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
             tab_id,
             reason: RepaintReason::Explicit,
           });
@@ -12723,13 +12750,13 @@ impl App {
           self.hover_sync_pending = true;
           self.pending_pointer_move = None;
 
-          self.send_worker_msg(UiToWorker::CreateTab {
+          let _ = self.send_worker_msg(UiToWorker::CreateTab {
             tab_id,
             initial_url: Some(url),
             cancel,
           });
-          self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
-          self.send_worker_msg(UiToWorker::RequestRepaint {
+          let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
             tab_id,
             reason: RepaintReason::Explicit,
           });
@@ -12773,15 +12800,15 @@ impl App {
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
 
-            self.send_worker_msg(UiToWorker::CreateTab {
+            let _ = self.send_worker_msg(UiToWorker::CreateTab {
               tab_id: replacement_id,
               initial_url: Some(initial_url),
               cancel,
             });
-            self.send_worker_msg(UiToWorker::SetActiveTab {
+            let _ = self.send_worker_msg(UiToWorker::SetActiveTab {
               tab_id: replacement_id,
             });
-            self.send_worker_msg(UiToWorker::RequestRepaint {
+            let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id: replacement_id,
               reason: RepaintReason::Explicit,
             });
@@ -12869,7 +12896,7 @@ impl App {
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
             cancel.bump_nav();
           }
-          self.send_worker_msg(UiToWorker::CloseTab { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::CloseTab { tab_id });
 
           let close_result = self.browser_state.remove_tab(tab_id);
 
@@ -12891,18 +12918,18 @@ impl App {
               .map(|t| t.cancel.clone())
               .unwrap_or_else(fastrender::ui::cancel::CancelGens::new);
             self.tab_cancel.insert(created_tab, cancel.clone());
-            self.send_worker_msg(UiToWorker::CreateTab {
+            let _ = self.send_worker_msg(UiToWorker::CreateTab {
               tab_id: created_tab,
               initial_url: Some(initial_url),
               cancel,
             });
-            self.send_worker_msg(UiToWorker::SetActiveTab {
+            let _ = self.send_worker_msg(UiToWorker::SetActiveTab {
               tab_id: created_tab,
             });
             self.viewport_cache_tab = None;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
-            self.send_worker_msg(UiToWorker::RequestRepaint {
+            let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id: created_tab,
               reason: RepaintReason::Explicit,
             });
@@ -12910,11 +12937,11 @@ impl App {
             self.focus_address_bar_select_all();
             self.window.request_redraw();
           } else if let Some(new_active) = close_result.new_active {
-            self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+            let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
             self.viewport_cache_tab = None;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
-            self.send_worker_msg(UiToWorker::RequestRepaint {
+            let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id: new_active,
               reason: RepaintReason::Explicit,
             });
@@ -12972,7 +12999,7 @@ impl App {
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
             cancel.bump_nav();
           }
-          self.send_worker_msg(UiToWorker::CloseTab { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::CloseTab { tab_id });
 
           let close_result = self.browser_state.remove_tab(tab_id);
           self.browser_state.chrome.clear_tab_close(tab_id);
@@ -12995,18 +13022,18 @@ impl App {
               .map(|t| t.cancel.clone())
               .unwrap_or_else(fastrender::ui::cancel::CancelGens::new);
             self.tab_cancel.insert(created_tab, cancel.clone());
-            self.send_worker_msg(UiToWorker::CreateTab {
+            let _ = self.send_worker_msg(UiToWorker::CreateTab {
               tab_id: created_tab,
               initial_url: Some(initial_url),
               cancel,
             });
-            self.send_worker_msg(UiToWorker::SetActiveTab {
+            let _ = self.send_worker_msg(UiToWorker::SetActiveTab {
               tab_id: created_tab,
             });
             self.viewport_cache_tab = None;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
-            self.send_worker_msg(UiToWorker::RequestRepaint {
+            let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id: created_tab,
               reason: RepaintReason::Explicit,
             });
@@ -13014,11 +13041,11 @@ impl App {
             self.focus_address_bar_select_all();
             self.window.request_redraw();
           } else if let Some(new_active) = close_result.new_active {
-            self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+            let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
             self.viewport_cache_tab = None;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
-            self.send_worker_msg(UiToWorker::RequestRepaint {
+            let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id: new_active,
               reason: RepaintReason::Explicit,
             });
@@ -13050,7 +13077,7 @@ impl App {
             if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
               cancel.bump_nav();
             }
-            self.send_worker_msg(UiToWorker::CloseTab {
+            let _ = self.send_worker_msg(UiToWorker::CloseTab {
               tab_id: closed_tab_id,
             });
           }
@@ -13066,8 +13093,8 @@ impl App {
               self.cursor_in_page = false;
               self.hover_sync_pending = true;
               self.pending_pointer_move = None;
-              self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
-              self.send_worker_msg(UiToWorker::RequestRepaint {
+              let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+              let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
                 tab_id: new_active,
                 reason: RepaintReason::Explicit,
               });
@@ -13100,7 +13127,7 @@ impl App {
             if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
               cancel.bump_nav();
             }
-            self.send_worker_msg(UiToWorker::CloseTab {
+            let _ = self.send_worker_msg(UiToWorker::CloseTab {
               tab_id: closed_tab_id,
             });
           }
@@ -13116,8 +13143,8 @@ impl App {
               self.cursor_in_page = false;
               self.hover_sync_pending = true;
               self.pending_pointer_move = None;
-              self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
-              self.send_worker_msg(UiToWorker::RequestRepaint {
+              let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+              let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
                 tab_id: new_active,
                 reason: RepaintReason::Explicit,
               });
@@ -13140,7 +13167,7 @@ impl App {
             tab.stage = None;
             tab.title = None;
           }
-          self.send_worker_msg(UiToWorker::Reload { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::Reload { tab_id });
         }
         ChromeAction::DuplicateTab(source_tab_id) => {
           use fastrender::ui::about_pages;
@@ -13178,13 +13205,13 @@ impl App {
           self.hover_sync_pending = true;
           self.pending_pointer_move = None;
 
-          self.send_worker_msg(UiToWorker::CreateTab {
+          let _ = self.send_worker_msg(UiToWorker::CreateTab {
             tab_id,
             initial_url: Some(url),
             cancel,
           });
-          self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
-          self.send_worker_msg(UiToWorker::RequestRepaint {
+          let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
             tab_id,
             reason: RepaintReason::Explicit,
           });
@@ -13204,8 +13231,8 @@ impl App {
             self.cursor_in_page = false;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
-            self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
-            self.send_worker_msg(UiToWorker::RequestRepaint {
+            let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+            let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id,
               reason: RepaintReason::Explicit,
             });
@@ -13261,7 +13288,7 @@ impl App {
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
           }
-          self.send_worker_msg(msg);
+          let _ = self.send_worker_msg(msg);
         }
         ChromeAction::Reload => {
           // Ensure the worker has the latest viewport before starting a navigation-affecting
@@ -13279,7 +13306,7 @@ impl App {
             tab.title = None;
           }
 
-          self.send_worker_msg(UiToWorker::Reload { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::Reload { tab_id });
         }
         ChromeAction::StopLoading => {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
@@ -13297,7 +13324,7 @@ impl App {
           }
           self.browser_state.sync_address_bar_to_active();
 
-          self.send_worker_msg(UiToWorker::StopLoading { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::StopLoading { tab_id });
         }
         ChromeAction::Home => {
           // Ensure the worker has the latest viewport before starting a navigation-affecting
@@ -13326,7 +13353,7 @@ impl App {
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
           }
-          self.send_worker_msg(msg);
+          let _ = self.send_worker_msg(msg);
         }
         ChromeAction::ToggleBookmarksBar => {
           self.browser_state.chrome.bookmarks_bar_visible =
@@ -13357,7 +13384,7 @@ impl App {
           tab.error = None;
           tab.stage = None;
           tab.title = None;
-          self.send_worker_msg(UiToWorker::GoBack { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::GoBack { tab_id });
         }
         ChromeAction::Forward => {
           self.force_send_viewport_now();
@@ -13376,7 +13403,7 @@ impl App {
           tab.error = None;
           tab.stage = None;
           tab.title = None;
-          self.send_worker_msg(UiToWorker::GoForward { tab_id });
+          let _ = self.send_worker_msg(UiToWorker::GoForward { tab_id });
         }
       }
     }
@@ -13689,18 +13716,18 @@ impl App {
                 };
                 match cmd {
                   fastrender::ui::MenuCommand::Copy => {
-                    self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
+                    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
                   }
                   fastrender::ui::MenuCommand::Cut => {
-                    self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
+                    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
                   }
                   fastrender::ui::MenuCommand::Paste => {
                     if let Some(text) = os_clipboard::read_text() {
-                      self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
                     }
                   }
                   fastrender::ui::MenuCommand::SelectAll => {
-                    self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
+                    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
                   }
                   _ => {}
                 }
@@ -13775,7 +13802,7 @@ impl App {
         // Move the buffer out so we can call `send_worker_msg` while iterating.
         let mut paste_events = std::mem::take(&mut self.paste_events_buf);
         for text in paste_events.drain(..) {
-          self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+          let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
         }
         // Reuse the allocation next frame.
         self.paste_events_buf = paste_events;
@@ -14505,7 +14532,9 @@ impl App {
                           tab.unresponsive = false;
                         }
                         self.force_send_viewport_now();
-                        self.send_worker_msg(fastrender::ui::UiToWorker::Reload { tab_id: active_tab });
+                        let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Reload {
+                          tab_id: active_tab,
+                        });
                         ctx.request_repaint();
                       }
                     });
@@ -15409,7 +15438,9 @@ mod error_infobar_a11y_tests {
     has_focus: bool,
   }
 
-  fn accesskit_update_from_platform_output(output: &egui::PlatformOutput) -> &accesskit::TreeUpdate {
+  fn accesskit_update_from_platform_output(
+    output: &egui::PlatformOutput,
+  ) -> &accesskit::TreeUpdate {
     output.accesskit_update.as_ref().expect(
       "egui did not emit an AccessKit update. Ensure `ctx.enable_accesskit()` was called for the frame under test.",
     )
@@ -15507,13 +15538,18 @@ mod error_infobar_a11y_tests {
     let retry_resp = ui
       .push_id(infobar_id.with("retry"), |ui| ui.button("Retry"))
       .inner;
-    retry_resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Retry navigation")
-    });
+    retry_resp
+      .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Retry navigation"));
 
-    let details_label = if *details_open { "Hide details" } else { "Details" };
+    let details_label = if *details_open {
+      "Hide details"
+    } else {
+      "Details"
+    };
     let details_resp = ui
-      .push_id(infobar_id.with("toggle_details"), |ui| ui.button(details_label))
+      .push_id(infobar_id.with("toggle_details"), |ui| {
+        ui.button(details_label)
+      })
       .inner;
 
     let details_a11y_label = if *details_open {
@@ -15521,19 +15557,20 @@ mod error_infobar_a11y_tests {
     } else {
       "Show error details"
     };
-    details_resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, details_a11y_label)
-    });
-    let _ = details_resp.ctx.accesskit_node_builder(details_resp.id, |builder| {
-      builder.set_expanded(*details_open);
-      if *details_open {
-        builder.add_action(accesskit::Action::Collapse);
-        builder.remove_action(accesskit::Action::Expand);
-      } else {
-        builder.add_action(accesskit::Action::Expand);
-        builder.remove_action(accesskit::Action::Collapse);
-      }
-    });
+    details_resp
+      .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, details_a11y_label));
+    let _ = details_resp
+      .ctx
+      .accesskit_node_builder(details_resp.id, |builder| {
+        builder.set_expanded(*details_open);
+        if *details_open {
+          builder.add_action(accesskit::Action::Collapse);
+          builder.remove_action(accesskit::Action::Expand);
+        } else {
+          builder.add_action(accesskit::Action::Expand);
+          builder.remove_action(accesskit::Action::Collapse);
+        }
+      });
   }
 
   fn run_infobar_accesskit_frame(ctx: &egui::Context, details_open: &mut bool) -> egui::FullOutput {
@@ -15774,7 +15811,11 @@ mod select_dropdown_a11y_tests {
           optgroup_labels.push(App::select_dropdown_optgroup_a11y_label(label, *disabled));
         }
         SelectItem::Option { label, value, .. } => {
-          let base = if label.trim().is_empty() { value } else { label };
+          let base = if label.trim().is_empty() {
+            value
+          } else {
+            label
+          };
           option_labels.push(App::select_dropdown_option_a11y_label(base));
         }
       }

@@ -1,0 +1,151 @@
+use super::messages::{UiToWorker, WorkerToUi};
+use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError, SendError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Abstraction over how the browser UI talks to its renderer/worker implementation.
+///
+/// Today the browser UI runs a renderer worker in-process on a dedicated thread (see
+/// [`ThreadRendererBackend`]). Multiprocess security work will require swapping this out for a
+/// per-tab/per-site renderer *process* later; keeping the UI side behind this trait means the chrome
+/// and input handling code does not need to be rewritten.
+pub trait RendererBackend: Send + Sync {
+  /// Send a UI→worker protocol message.
+  ///
+  /// Returns a send error when the worker is no longer receiving (disconnected/crashed/shutdown).
+  fn send(&self, msg: UiToWorker) -> Result<(), SendError<UiToWorker>>;
+
+  /// Blocking receive for worker→UI protocol messages.
+  fn recv(&self) -> Result<WorkerToUi, RecvError>;
+
+  /// Non-blocking receive for worker→UI protocol messages.
+  fn try_recv(&self) -> Result<WorkerToUi, TryRecvError>;
+
+  /// Blocking receive with a timeout.
+  fn recv_timeout(&self, timeout: Duration) -> Result<WorkerToUi, RecvTimeoutError>;
+
+  /// Best-effort liveness check.
+  ///
+  /// Backends should treat this as a hint only (e.g. a process may still be alive even if we failed
+  /// to query its status).
+  fn is_alive(&self) -> bool;
+
+  /// Signal shutdown (best-effort).
+  ///
+  /// For channel-backed implementations this typically drops the UI→worker sender so the worker can
+  /// observe disconnection and exit.
+  fn shutdown(&self);
+
+  /// Join/wait for the backend to exit.
+  ///
+  /// Should be idempotent; joining twice should succeed.
+  fn join(&self) -> std::thread::Result<()>;
+}
+
+/// Shared renderer backend handle type used by the windowed browser and headless smoke mode.
+pub type RendererBackendHandle = Arc<dyn RendererBackend>;
+
+/// Renderer backend backed by an in-process worker thread and `std::sync::mpsc` channels.
+pub struct ThreadRendererBackend {
+  tx: Mutex<Option<Sender<UiToWorker>>>,
+  rx: Mutex<Receiver<WorkerToUi>>,
+  join: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl ThreadRendererBackend {
+  fn new(
+    tx: Sender<UiToWorker>,
+    rx: Receiver<WorkerToUi>,
+    join: std::thread::JoinHandle<()>,
+  ) -> Self {
+    Self {
+      tx: Mutex::new(Some(tx)),
+      rx: Mutex::new(rx),
+      join: Mutex::new(Some(join)),
+    }
+  }
+
+  /// Create a [`ThreadRendererBackend`] from a spawned [`super::render_worker::BrowserWorkerHandle`].
+  pub fn from_browser_worker_handle(handle: super::render_worker::BrowserWorkerHandle) -> Self {
+    Self::new(handle.tx, handle.rx, handle.join)
+  }
+
+  /// Spawn the production browser UI worker and wrap it in a [`ThreadRendererBackend`].
+  pub fn spawn_browser_ui_worker(
+    name: impl Into<String>,
+  ) -> std::io::Result<RendererBackendHandle> {
+    let (tx, rx, join) = super::render_worker::spawn_browser_ui_worker(name)?;
+    Ok(Arc::new(Self::new(tx, rx, join)))
+  }
+
+  /// Spawn the browser worker thread with an explicit name and wrap it in a [`ThreadRendererBackend`].
+  pub fn spawn_browser_worker_with_name(
+    name: impl Into<String>,
+  ) -> crate::Result<RendererBackendHandle> {
+    let handle = super::render_worker::spawn_browser_worker_with_name(name)?;
+    Ok(Arc::new(Self::from_browser_worker_handle(handle)))
+  }
+}
+
+impl RendererBackend for ThreadRendererBackend {
+  fn send(&self, msg: UiToWorker) -> Result<(), SendError<UiToWorker>> {
+    let tx = self
+      .tx
+      .lock()
+      .unwrap_or_else(|err| err.into_inner())
+      .as_ref()
+      .cloned();
+    match tx {
+      Some(tx) => tx.send(msg),
+      None => Err(SendError(msg)),
+    }
+  }
+
+  fn recv(&self) -> Result<WorkerToUi, RecvError> {
+    self.rx.lock().unwrap_or_else(|err| err.into_inner()).recv()
+  }
+
+  fn try_recv(&self) -> Result<WorkerToUi, TryRecvError> {
+    self
+      .rx
+      .lock()
+      .unwrap_or_else(|err| err.into_inner())
+      .try_recv()
+  }
+
+  fn recv_timeout(&self, timeout: Duration) -> Result<WorkerToUi, RecvTimeoutError> {
+    self
+      .rx
+      .lock()
+      .unwrap_or_else(|err| err.into_inner())
+      .recv_timeout(timeout)
+  }
+
+  fn is_alive(&self) -> bool {
+    self
+      .join
+      .lock()
+      .unwrap_or_else(|err| err.into_inner())
+      .as_ref()
+      .is_some_and(|join| !join.is_finished())
+  }
+
+  fn shutdown(&self) {
+    let _ = self.tx.lock().unwrap_or_else(|err| err.into_inner()).take();
+  }
+
+  fn join(&self) -> std::thread::Result<()> {
+    // Ensure the worker loop can observe channel closure before we block on joining.
+    self.shutdown();
+
+    let join = self
+      .join
+      .lock()
+      .unwrap_or_else(|err| err.into_inner())
+      .take();
+    match join {
+      Some(join) => join.join(),
+      None => Ok(()),
+    }
+  }
+}

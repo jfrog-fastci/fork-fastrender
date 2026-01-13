@@ -43,6 +43,7 @@ pub mod protocol_limits;
 pub mod untrusted;
 pub mod process_assignment;
 pub mod render_worker;
+pub mod renderer_backend;
 pub mod renderer_process_id;
 pub mod scrollbars;
 pub mod shortcuts;
@@ -174,6 +175,7 @@ pub use render_worker::{
   spawn_test_browser_worker, spawn_ui_worker, spawn_ui_worker_for_test,
   spawn_ui_worker_with_factory, BrowserWorkerHandle, UiThreadWorkerHandle,
 };
+pub use renderer_backend::{RendererBackend, RendererBackendHandle, ThreadRendererBackend};
 pub use worker::RenderWorker;
 
 #[cfg(feature = "browser_ui")]
