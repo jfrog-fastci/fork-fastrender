@@ -94,6 +94,35 @@ Enveloped fetch request:
 }
 ```
 
+Enveloped HTTP request (`FetchHttpRequest`, with method/headers/body):
+
+```json
+{
+  "id": 42,
+  "request": {
+    "FetchHttpRequest": {
+      "req": {
+        "fetch": {
+          "url": "https://example.com/api",
+          "destination": "Fetch",
+          "referrer_url": "https://example.com/",
+          "client_origin": { "scheme": "https", "host": "example.com", "port": 443 },
+          "referrer_policy": "StrictOriginWhenCrossOrigin",
+          "credentials_mode": "Include"
+        },
+        "method": "POST",
+        "redirect": "Follow",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "application/json"]
+        ],
+        "body_b64": "eyJmb28iOiJiYXIifQ=="
+      }
+    }
+  }
+}
+```
+
 Chunked fetch response start:
 
 ```json
@@ -117,6 +146,27 @@ Chunked fetch response start:
       "response_headers": null
     },
     "total_len": 2000000
+  }
+}
+```
+
+Chunked fetch body chunk:
+
+```json
+{
+  "FetchBodyChunk": {
+    "id": 42,
+    "bytes_b64": "AAECAwQF"
+  }
+}
+```
+
+Chunked fetch response end:
+
+```json
+{
+  "FetchEnd": {
+    "id": 42
   }
 }
 ```
