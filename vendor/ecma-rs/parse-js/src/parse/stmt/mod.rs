@@ -199,7 +199,16 @@ impl<'a> Parser<'a> {
         self.enum_decl(ctx, false, false, true)?.into_wrapped()
       },
       TT::KeywordConst | TT::KeywordVar => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
-      // `let` is a contextual keyword - only treat it as a declaration if followed by a pattern start
+      // `let` is a contextual keyword - only treat it as a declaration if followed by a pattern
+      // start.
+      //
+      // Note: `await` and `yield` must be treated as possible binding identifiers here even when
+      // disallowed by the current grammar parameters. This matches the spec's disambiguation rules
+      // (and test262) for cases like:
+      //   async function f(){ let\nawait 0; }
+      //   function* g(){ let\nyield 0; }
+      // which must be syntax errors rather than ASI-split expression statements.
+      //
       // TypeScript: `let identifier :` is a variable declaration with type annotation, not a labeled statement
       TT::KeywordLet if t1.typ == TT::BraceOpen || t1.typ == TT::BracketOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) || matches!(t1.typ, TT::KeywordAwait | TT::KeywordYield) => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
       // `using` is a contextual keyword for resource management

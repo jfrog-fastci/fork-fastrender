@@ -496,6 +496,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
           ) =>
         {
+          // Explicit Resource Management: `using` declarations are not yet supported at script /
+          // module top-level (only inside blocks).
+          if kind == StmtListKind::VarScope
+            && !ctx.return_allowed
+            && matches!(var.stx.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing)
+          {
+            self.push_error(stmt.loc, "using declarations are not allowed at top level")?;
+          }
           for declarator in &var.stx.declarators {
             self.step()?;
             self.collect_lexical_decl_names_from_pat(
@@ -582,6 +590,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
             ) =>
           {
+            // Explicit Resource Management: `using` declarations are not supported directly in
+            // switch clause bodies (wrap them in a block if needed).
+            if matches!(var.stx.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing) {
+              self.push_error(stmt.loc, "using declarations are not allowed in switch clauses")?;
+            }
             for declarator in &var.stx.declarators {
               self.step()?;
               self.collect_lexical_decl_names_from_pat(
@@ -1234,8 +1247,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         // BoundNames(LexicalDeclaration).
         let mut bound_names: Vec<(String, Loc)> = Vec::new();
         for declarator in &decl.stx.declarators {
-          self
-            .collect_bound_names_from_pat_budgeted(&declarator.pattern.stx.pat, &mut bound_names)?;
+          self.collect_bound_names_from_pat_budgeted(
+            &declarator.pattern.stx.pat,
+            &mut bound_names,
+          )?;
         }
 
         // VarDeclaredNames(Statement): only `var` (and var-scoped function declarations, where
@@ -1245,7 +1260,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           self.collect_var_declared_names_in_stmt(stmt, &mut var_names)?;
         }
         for (name, loc) in &bound_names {
-          if var_names.contains(name.as_str()) {
+          if var_names.contains(name) {
             self.push_error(*loc, "Identifier has already been declared")?;
           }
         }
@@ -1896,7 +1911,6 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           }
         }
       }
-
       // Explicit Resource Management: `using` / `await using` only permit BindingIdentifier in each
       // declarator (no destructuring patterns).
       if using_mode && !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
@@ -1905,7 +1919,6 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           "using declarations may not use destructuring patterns",
         )?;
       }
-
       if declarator.initializer.is_none() {
         if decl.mode == VarDeclMode::Const {
           self.push_error(
@@ -2364,6 +2377,64 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.await_allowed = saved_param_await_allowed;
     ctx.yield_allowed = saved_param_yield_allowed;
 
+    // ES early error: `LexicallyDeclaredNames(FunctionBody)` must not collide with parameter
+    // bound names.
+    //
+    // Note: this checks only the *direct* statement list items in the function body (nested blocks
+    // may legally shadow parameter names).
+    if let Some(FuncBody::Block(stmts)) = &func.stx.body {
+      let mut param_names: HashSet<String> = HashSet::new();
+      for param in params {
+        let mut names: Vec<(String, Loc)> = Vec::new();
+        self.collect_bound_names_from_pat_budgeted(&param.stx.pattern.stx.pat, &mut names)?;
+        for (name, _loc) in names {
+          param_names
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          param_names.insert(name);
+        }
+      }
+
+      if !param_names.is_empty() {
+        for stmt in stmts {
+          self.step()?;
+          match &*stmt.stx {
+            Stmt::VarDecl(var)
+              if matches!(
+                var.stx.mode,
+                VarDeclMode::Let
+                  | VarDeclMode::Const
+                  | VarDeclMode::Using
+                  | VarDeclMode::AwaitUsing
+              ) =>
+            {
+              for declarator in &var.stx.declarators {
+                self.step()?;
+                let mut names: Vec<(String, Loc)> = Vec::new();
+                self.collect_bound_names_from_pat_budgeted(
+                  &declarator.pattern.stx.pat,
+                  &mut names,
+                )?;
+                for (name, loc) in names {
+                  if param_names.contains(name.as_str()) {
+                    self.push_error(loc, "Identifier has already been declared")?;
+                  }
+                }
+              }
+            }
+            Stmt::ClassDecl(class) => {
+              if let Some(name) = class.stx.name.as_ref() {
+                if param_names.contains(name.stx.name.as_str()) {
+                  self.push_error(name.loc, "Identifier has already been declared")?;
+                }
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+    }
+
     match &func.stx.body {
       Some(FuncBody::Block(stmts)) => self.visit_stmt_list(ctx, StmtListKind::VarScope, stmts)?,
       Some(FuncBody::Expression(expr)) => self.visit_expr(ctx, expr)?,
@@ -2391,6 +2462,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             expr.loc,
             "arguments is not allowed in class static initialization blocks",
           )?;
+        }
+        // `yield` is a strict mode reserved word, and is also reserved in generator function
+        // bodies (where it introduces `YieldExpression`).
+        if (ctx.strict || ctx.yield_allowed) && id.stx.name == "yield" {
+          self.push_error(expr.loc, "yield is not allowed as an identifier in this context")?;
         }
         if id.stx.name.starts_with('#') {
           // parse-js parses `PrivateIdentifier` tokens as identifier expressions (e.g. `#x` is an
@@ -2957,6 +3033,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             "' is not allowed in strict mode",
           )?;
           self.push_error(pat.loc, message)?;
+        }
+        if (ctx.strict || ctx.yield_allowed) && id.stx.name == "yield" {
+          self.push_error(pat.loc, "yield is not allowed as an identifier in this context")?;
         }
         Ok(())
       }

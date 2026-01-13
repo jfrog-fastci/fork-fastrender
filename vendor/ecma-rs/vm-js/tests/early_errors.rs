@@ -260,3 +260,109 @@ fn function_constructor_early_errors_are_catchable_syntax_error() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn for_statement_head_const_decl_conflicts_with_body_var_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for (const x = 0; false; ) { var x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_statement_head_let_decl_conflicts_with_body_var_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for (let x = 0; false; ) { var x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn async_function_param_name_conflicts_with_body_lexical_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function foo(bar) { let bar; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn function_param_name_conflicts_with_body_lexical_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("function foo(bar) { let bar; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_yield_identifier_reference_in_destructuring_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; for ({ yield } in [{}]) ;"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn let_newline_await_disambiguates_to_lexical_decl_syntax_error_in_async_fn() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ let\nawait 0; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn let_newline_yield_disambiguates_to_lexical_decl_syntax_error_in_generator_fn() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("function* g(){ let\nyield 0; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn using_declaration_at_script_top_level_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("using x = null;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn using_declaration_in_for_in_head_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (using x in [1]) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn using_declaration_in_switch_case_clause_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("switch (true) { case true: using x = null; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn using_declaration_in_switch_default_clause_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("switch (true) { default: using x = null; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn using_declaration_does_not_allow_destructuring_pattern_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      {
+        using [] = null;
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}

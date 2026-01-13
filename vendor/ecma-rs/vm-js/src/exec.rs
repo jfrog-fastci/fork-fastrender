@@ -6984,10 +6984,7 @@ impl<'a> Evaluator<'a> {
     let mut ctor_length: u32 = 0;
     let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
       if func_node.stx.generator {
-        return Err(syntax_error(
-          loc,
-          "Class constructor may not be a generator",
-        ));
+        return Err(syntax_error(loc, "Class constructor may not be a generator"));
       }
 
       ctor_length = self.function_length(&func_node.stx)?;
@@ -7039,7 +7036,9 @@ impl<'a> Evaluator<'a> {
         .heap_mut()
         .set_function_realm(func_obj, self.env.global_object())?;
       if let Some(realm) = self.vm.current_realm() {
-        ctor_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+        ctor_scope
+          .heap_mut()
+          .set_function_job_realm(func_obj, realm)?;
       }
       if let Some(script_or_module) = self.vm.get_active_script_or_module() {
         let token = self.vm.intern_script_or_module(script_or_module)?;
@@ -7052,36 +7051,36 @@ impl<'a> Evaluator<'a> {
       None
     };
 
-      let func_obj = self.create_class_constructor_object(
-        scope,
-        func_name,
-        ctor_length,
-        ctor_body_func,
-        super_value,
-        instance_field_count,
-      )?;
+    let func_obj = self.create_class_constructor_object(
+      scope,
+      func_name,
+      ctor_length,
+      ctor_body_func,
+      super_value,
+      instance_field_count,
+    )?;
 
-      // ECMA-262 `NamedEvaluation` assigns inferred names to anonymous class expressions in specific
-      // syntactic positions (e.g. `{ key: class {} }`).
-      //
-      // This must happen *before* defining class elements: a class can define a `static name() {}`
-      // method which should override the constructor's initial `"name"` property. Setting the name
-      // after class evaluation would overwrite the method.
-      if func_name.is_empty() {
-        if let Some(name_key) = inferred_name {
-          let mut name_scope = scope.reborrow();
-          name_scope.push_root(Value::Object(func_obj))?;
-          match name_key {
-            PropertyKey::String(s) => {
-              name_scope.push_root(Value::String(s))?;
-            }
-            PropertyKey::Symbol(sym) => {
-              name_scope.push_root(Value::Symbol(sym))?;
-            }
+    // ECMA-262 `NamedEvaluation` assigns inferred names to anonymous class expressions in specific
+    // syntactic positions (e.g. `{ key: class {} }`).
+    //
+    // This must happen *before* defining class elements: a class can define a `static name() {}`
+    // method which should override the constructor's initial `"name"` property. Setting the name
+    // after class evaluation would overwrite the method.
+    if func_name.is_empty() {
+      if let Some(name_key) = inferred_name {
+        let mut name_scope = scope.reborrow();
+        name_scope.push_root(Value::Object(func_obj))?;
+        match name_key {
+          PropertyKey::String(s) => {
+            name_scope.push_root(Value::String(s))?;
           }
-          crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
+          PropertyKey::Symbol(sym) => {
+            name_scope.push_root(Value::Symbol(sym))?;
+          }
         }
+        crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
       }
+    }
 
       // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
       // object so `[[Construct]]` can implement class-field initialization and derived `super()`
@@ -17672,10 +17671,7 @@ fn async_eval_class_after_super(
     };
 
     if ctor_method.is_some() {
-      return Err(syntax_error(
-        member.loc,
-        "A class may only have one constructor",
-      ));
+      return Err(syntax_error(member.loc, "A class may only have one constructor"));
     }
     ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
   }
