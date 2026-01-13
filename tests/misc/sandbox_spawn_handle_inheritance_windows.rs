@@ -135,15 +135,15 @@ fn sandbox_spawn_empty_inherit_handle_list_does_not_leak_inheritable_handles() {
   ];
 
   let child = spawn_sandboxed(child_exe, &args, &[]).expect("spawn sandboxed child");
+  assert_child_exited_successfully(&child);
 
   unsafe {
-    let denied_wait = WaitForSingleObject(denied.0, 200);
+    let denied_wait = WaitForSingleObject(denied.0, 0);
     assert_eq!(
       denied_wait, WAIT_TIMEOUT,
       "inheritable handle should not be inherited when inherit_handles is empty"
     );
   }
-  assert_child_exited_successfully(&child);
 
   let _ = denied;
 }
