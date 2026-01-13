@@ -47,7 +47,7 @@ fn find_call_expr(body: &hir_js::Body, span: TextRange) -> ExprId {
 
 #[test]
 fn resolves_static_known_calls() {
-  let source = "const a = JSON.parse(\"x\");\nconst b = Promise.all([]);\nconst c = Promise.race([]);\nconst d = JSON[\"parse\"](\"x\");\nconst e = globalThis[\"fetch\"](\"x\");\nconst f = crypto.subtle.encrypt(algo, key, data);\nconst g = crypto.subtle.decrypt(algo, key, data);\nconst h = globalThis.crypto.subtle.sign(algo, key, data);\nconst i = crypto.subtle[\"verify\"](algo, key, sig, data);";
+  let source = "const a = JSON.parse(\"x\");\nconst b = Promise.all([]);\nconst c = Promise.race([]);\nconst d = JSON[\"parse\"](\"x\");\nconst e = globalThis[\"fetch\"](\"x\");\nconst f = crypto.subtle.encrypt(algo, key, data);\nconst g = crypto.subtle.decrypt(algo, key, data);\nconst h = globalThis.crypto.subtle.sign(algo, key, data);\nconst i = crypto.subtle[\"verify\"](algo, key, sig, data);\nconst j = crypto.subtle.generateKey(algo, extractable, usages);\nconst k = crypto.subtle.deriveBits(algo, key, length);\nconst l = crypto.subtle.deriveKey(algo, key, derivedAlgo, extractable, usages);\nconst m = crypto.subtle.importKey(format, keyData, algo, extractable, usages);\nconst n = crypto.subtle.exportKey(format, key);\nconst o = crypto.subtle.wrapKey(format, key, wrappingKey, wrapAlgo);\nconst p = crypto.subtle.unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgo, unwrappedAlgo, extractable, usages);";
   let lower = hir_js::lower_from_source_with_kind(FileKind::Ts, source).unwrap();
   let body_id = lower.root_body();
   let body = lower.body(body_id).unwrap();
@@ -123,6 +123,62 @@ fn resolves_static_known_calls() {
   assert_eq!(resolved.api, "crypto.subtle.verify");
   assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.verify"));
   assert_eq!(resolved.args.len(), 4);
+
+  let generate_span = range_of(source, "crypto.subtle.generateKey(algo, extractable, usages)");
+  let generate_call = find_call_expr(body, generate_span);
+  let resolved = resolve_call(&lower, body_id, body, generate_call, &db, None)
+    .expect("resolve crypto.subtle.generateKey");
+  assert_eq!(resolved.api, "crypto.subtle.generateKey");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.generateKey"));
+  assert_eq!(resolved.args.len(), 3);
+
+  let derive_bits_span = range_of(source, "crypto.subtle.deriveBits(algo, key, length)");
+  let derive_bits_call = find_call_expr(body, derive_bits_span);
+  let resolved = resolve_call(&lower, body_id, body, derive_bits_call, &db, None)
+    .expect("resolve crypto.subtle.deriveBits");
+  assert_eq!(resolved.api, "crypto.subtle.deriveBits");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.deriveBits"));
+  assert_eq!(resolved.args.len(), 3);
+
+  let derive_key_span = range_of(source, "crypto.subtle.deriveKey(algo, key, derivedAlgo, extractable, usages)");
+  let derive_key_call = find_call_expr(body, derive_key_span);
+  let resolved = resolve_call(&lower, body_id, body, derive_key_call, &db, None)
+    .expect("resolve crypto.subtle.deriveKey");
+  assert_eq!(resolved.api, "crypto.subtle.deriveKey");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.deriveKey"));
+  assert_eq!(resolved.args.len(), 5);
+
+  let import_span = range_of(source, "crypto.subtle.importKey(format, keyData, algo, extractable, usages)");
+  let import_call = find_call_expr(body, import_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, import_call, &db, None).expect("resolve crypto.subtle.importKey");
+  assert_eq!(resolved.api, "crypto.subtle.importKey");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.importKey"));
+  assert_eq!(resolved.args.len(), 5);
+
+  let export_span = range_of(source, "crypto.subtle.exportKey(format, key)");
+  let export_call = find_call_expr(body, export_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, export_call, &db, None).expect("resolve crypto.subtle.exportKey");
+  assert_eq!(resolved.api, "crypto.subtle.exportKey");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.exportKey"));
+  assert_eq!(resolved.args.len(), 2);
+
+  let wrap_span = range_of(source, "crypto.subtle.wrapKey(format, key, wrappingKey, wrapAlgo)");
+  let wrap_call = find_call_expr(body, wrap_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, wrap_call, &db, None).expect("resolve crypto.subtle.wrapKey");
+  assert_eq!(resolved.api, "crypto.subtle.wrapKey");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.wrapKey"));
+  assert_eq!(resolved.args.len(), 4);
+
+  let unwrap_span = range_of(source, "crypto.subtle.unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgo, unwrappedAlgo, extractable, usages)");
+  let unwrap_call = find_call_expr(body, unwrap_span);
+  let resolved = resolve_call(&lower, body_id, body, unwrap_call, &db, None)
+    .expect("resolve crypto.subtle.unwrapKey");
+  assert_eq!(resolved.api, "crypto.subtle.unwrapKey");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.unwrapKey"));
+  assert_eq!(resolved.args.len(), 7);
 }
 
 #[cfg(feature = "hir-semantic-ops")]
