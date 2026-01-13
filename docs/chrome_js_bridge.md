@@ -103,7 +103,15 @@ All APIs below are exposed under the global `chrome` object.
 Imperative navigation on the **active tab**.
 
 - `chrome.navigation.navigate(url)`
-  - Navigate the active tab to `url`.
+  - Navigate the active tab based on an address-bar-like input string.
+  - Embedders should treat `url` like typed omnibox input (not necessarily a fully-qualified URL):
+    - `example.com` → `https://example.com/`
+    - bare words → search URL
+    - filesystem-looking paths → `file://...`
+    - fragments like `#section` resolved against the current tab URL
+  - Blocked/unknown schemes (e.g. `javascript:`) must be rejected; see
+    [`validate_user_navigation_url_scheme`](../src/ui/url.rs) for the in-tree allowlist used by the
+    egui chrome today.
 - `chrome.navigation.goBack()`
 - `chrome.navigation.goForward()`
 - `chrome.navigation.reload()`
