@@ -499,8 +499,11 @@ When creating shared memory to send to another process:
      - prevents size changes (shrink/grow) that can cause SIGBUS in the receiver’s mapping
    - If the mapping is intended to be immutable after send: also `F_SEAL_WRITE`
      - apply only once the writer is completely done (Linux may require unmapping writable mappings)
-   - Optional: `F_SEAL_SEAL`, but only **after** applying all other seals you need.
-     - Do **not** set `F_SEAL_SEAL` “early” if you might later need to add `F_SEAL_WRITE`.
+    - Optional: `F_SEAL_SEAL`, but only **after** applying all other seals you need.
+      - Do **not** set `F_SEAL_SEAL` “early” if you might later need to add `F_SEAL_WRITE`.
+      - For pooled/reusable buffers that must remain writable (e.g. browser-allocated frame slots),
+        it can still be correct to apply `F_SEAL_SEAL` after `F_SEAL_SHRINK|F_SEAL_GROW` to prevent an
+        untrusted peer from later adding `F_SEAL_WRITE` and breaking reuse.
 
 ### Validation rules (receiver)
 
