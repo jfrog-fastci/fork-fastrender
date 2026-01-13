@@ -20,6 +20,19 @@ pub const MAX_WEBSOCKET_MESSAGE_BYTES: u32 = 4 * 1024 * 1024;
 /// This matches the WebSocket API limitation (123 bytes).
 pub const MAX_WEBSOCKET_CLOSE_REASON_BYTES: u32 = 123;
 
+fn is_valid_websocket_subprotocol_token(s: &str) -> bool {
+  if s.is_empty() {
+    return false;
+  }
+  s.bytes().all(|b| {
+    matches!(b, b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z')
+      || matches!(
+        b,
+        b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+      )
+  })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WebSocketConnectParams {
@@ -101,6 +114,12 @@ pub enum WebSocketValidationError {
   TooManyProtocols { len: u32, max: u32 },
   #[error("websocket protocol too long (len {len} bytes; max {max} bytes)")]
   ProtocolTooLong { len: u32, max: u32 },
+  #[error("websocket protocol is empty")]
+  ProtocolEmpty,
+  #[error("websocket protocol must be a token")]
+  ProtocolNotToken,
+  #[error("websocket protocols list must not contain duplicates")]
+  DuplicateProtocols,
   #[error("websocket message too large (len {len} bytes; max {max} bytes)")]
   MessageTooLarge { len: u32, max: u32 },
   #[error("websocket close reason too long (len {len} bytes; max {max} bytes)")]
@@ -128,13 +147,23 @@ impl WebSocketConnectParams {
       });
     }
 
+    let mut seen = std::collections::HashSet::<&str>::new();
     for proto in &self.protocols {
+      if proto.is_empty() {
+        return Err(WebSocketValidationError::ProtocolEmpty);
+      }
       let len = u32::try_from(proto.as_bytes().len()).unwrap_or(u32::MAX);
       if len > MAX_WEBSOCKET_PROTOCOL_BYTES {
         return Err(WebSocketValidationError::ProtocolTooLong {
           len,
           max: MAX_WEBSOCKET_PROTOCOL_BYTES,
         });
+      }
+      if !is_valid_websocket_subprotocol_token(proto) {
+        return Err(WebSocketValidationError::ProtocolNotToken);
+      }
+      if !seen.insert(proto.as_str()) {
+        return Err(WebSocketValidationError::DuplicateProtocols);
       }
     }
 
@@ -339,18 +368,25 @@ mod tests {
 
   #[test]
   fn validate_connect_params_protocols_len_boundary() {
-    let proto = "p".to_string();
+    let protocols: Vec<String> = (0..MAX_WEBSOCKET_PROTOCOLS)
+      .map(|i| format!("p{i}"))
+      .collect();
     let ok = WebSocketConnectParams {
       url: "ws://example.com".to_string(),
-      protocols: vec![proto.clone(); MAX_WEBSOCKET_PROTOCOLS as _],
+      protocols,
       origin: None,
       document_url: None,
     };
     assert!(ok.validate().is_ok());
 
+    let mut too_many: Vec<String> = (0..=MAX_WEBSOCKET_PROTOCOLS)
+      .map(|i| format!("p{i}"))
+      .collect();
+    // Ensure the last entry is unique even if MAX_WEBSOCKET_PROTOCOLS is 0 (should never happen).
+    too_many.push("p_extra".to_string());
     let bad = WebSocketConnectParams {
       url: "ws://example.com".to_string(),
-      protocols: vec![proto; (MAX_WEBSOCKET_PROTOCOLS + 1) as _],
+      protocols: too_many,
       origin: None,
       document_url: None,
     };
@@ -374,6 +410,54 @@ mod tests {
       document_url: None,
     };
     assert!(bad.validate().is_err());
+  }
+
+  #[test]
+  fn validate_connect_params_rejects_empty_protocol() {
+    let params = WebSocketConnectParams {
+      url: "ws://example.com".to_string(),
+      protocols: vec!["".to_string()],
+      origin: None,
+      document_url: None,
+    };
+    assert!(matches!(
+      params.validate(),
+      Err(WebSocketValidationError::ProtocolEmpty)
+    ));
+  }
+
+  #[test]
+  fn validate_connect_params_rejects_non_token_protocol() {
+    let cases = ["chat superchat", "chat,superchat", "chat, superchat"];
+    for proto in cases {
+      let params = WebSocketConnectParams {
+        url: "ws://example.com".to_string(),
+        protocols: vec![proto.to_string()],
+        origin: None,
+        document_url: None,
+      };
+      assert!(
+        matches!(
+          params.validate(),
+          Err(WebSocketValidationError::ProtocolNotToken)
+        ),
+        "expected token rejection for {proto:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn validate_connect_params_rejects_duplicate_protocols() {
+    let params = WebSocketConnectParams {
+      url: "ws://example.com".to_string(),
+      protocols: vec!["chat".to_string(), "chat".to_string()],
+      origin: None,
+      document_url: None,
+    };
+    assert!(matches!(
+      params.validate(),
+      Err(WebSocketValidationError::DuplicateProtocols)
+    ));
   }
 
   #[test]
