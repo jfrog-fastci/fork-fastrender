@@ -104,3 +104,15 @@ High-level steps:
 In addition to a basic version-string smoke test, this crate includes an integration test that
 parses the repo's deterministic CC0 WebM fixture and decodes a VP9 frame via libvpx to validate
 the FFI surface (`tests/decode_vp9.rs`).
+
+## Decoder helper (experimental)
+
+This crate also exposes a small convenience wrapper, [`Vp9Decoder`](src/vp9_decoder.rs), which:
+
+- wraps libvpx's VP9 decode API
+- converts decoded YUV frames to RGBA8
+- supports libvpx high-bit-depth output (`VPX_IMG_FMT_HIGHBITDEPTH`) by downshifting 10/12-bit
+  16-bit planes to 8-bit before RGB conversion (lossy, but avoids silent corruption)
+
+This is intended as a building block for higher-level container/media plumbing in the main
+FastRender crate.
