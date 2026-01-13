@@ -37039,6 +37039,64 @@ mod tests {
     assert_eq!(value, Value::Bool(true));
     Ok(())
   }
+
+  #[test]
+  fn typed_array_constructor_roots_args_across_gc_in_toindex() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Use a tiny GC threshold so allocations inside `valueOf()` reliably trigger a collection
+    // during argument coercion. The max size needs to be large enough for the transient
+    // ArrayBuffer churn.
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 16 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      const byteOffset = {
+        valueOf() {
+          // Trigger at least one GC during `ToIndex(byteOffset)`.
+          for (let i = 0; i < 16; i++) new ArrayBuffer(4096);
+          return 0;
+        }
+      };
+
+      const buf = new ArrayBuffer(8);
+      const ta = new Uint8Array(buf, byteOffset, { valueOf() { return 1; } });
+      ta[0] = 123;
+      ta.byteOffset + ta.byteLength + ta[0] + ta[0];
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Number(247.0));
+    Ok(())
+  }
+
+  #[test]
+  fn dataview_constructor_roots_args_across_gc_in_toindex() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Same rooting regression test as above, but for DataView's `byteLength` argument.
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 16 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      const byteOffset = {
+        valueOf() {
+          // Trigger at least one GC during `ToIndex(byteOffset)`.
+          for (let i = 0; i < 16; i++) new ArrayBuffer(4096);
+          return 0;
+        }
+      };
+
+      const buf = new ArrayBuffer(8);
+      const dv = new DataView(buf, byteOffset, { valueOf() { return 1; } });
+      dv.setUint8(0, 77);
+      dv.byteOffset + dv.byteLength + dv.getUint8(0) + dv.getUint8(0);
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Number(155.0));
+    Ok(())
+  }
 }
 
 #[cfg(test)]
