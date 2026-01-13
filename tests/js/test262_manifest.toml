@@ -656,8 +656,7 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/toReversed/length-exceeding-array-length-limit.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Array/prototype/toSorted/**"
@@ -665,8 +664,7 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/toSorted/length-exceeding-array-length-limit.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Array/prototype/toSpliced/**"
@@ -674,13 +672,11 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/toSpliced/length-exceeding-array-length-limit.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/toSpliced/length-clamped-to-2pow53minus1.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Array/prototype/with/**"
@@ -688,18 +684,15 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/with/length-exceeding-array-length-limit.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/with/index-smaller-than-minus-length.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/with/index-bigger-or-eq-than-length.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Array/prototype/concat/arg-length-exceeding-integer-limit.js"
@@ -1694,13 +1687,11 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-undef-limit-custom.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-undef-limit-zero.js"
-status = "xfail"
-reason = "vm-js does not yet implement the exponentiation operator (**)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/this-value-not-obj-coercible.js"

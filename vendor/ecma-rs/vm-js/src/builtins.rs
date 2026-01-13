@@ -11003,6 +11003,13 @@ pub fn array_prototype_to_sorted(
 
   let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
+  // `ArrayCreate(len)` can throw a RangeError when `len > 2**32 - 1`.
+  //
+  // test262 expects this RangeError to be thrown *before* any indexed property lookups occur, so
+  // perform the array creation up-front instead of after collecting/sorting values.
+  let out = array_create_with_intrinsics(vm, &mut scope, len)?;
+  scope.push_root(Value::Object(out))?;
+
   #[derive(Clone, Copy)]
   struct SortItem {
     value: Value,
@@ -11116,9 +11123,6 @@ pub fn array_prototype_to_sorted(
     return Err(err);
   }
 
-  let out = array_create_with_intrinsics(vm, &mut scope, len)?;
-  scope.push_root(Value::Object(out))?;
-
   for j in 0..len {
     if j % TICK_EVERY == 0 {
       vm.tick()?;
@@ -11177,6 +11181,14 @@ pub fn array_prototype_to_spliced(
     .checked_sub(actual_delete_count)
     .and_then(|v| v.checked_add(insert_count))
     .ok_or(VmError::OutOfMemory)?;
+
+  // Per spec, `newLen` is compared against 2**53 - 1 (MAX_SAFE_INTEGER) and throws a TypeError if
+  // exceeded, before attempting `ArrayCreate(newLen)` (which would otherwise throw a RangeError due
+  // to the 2**32 - 1 array length limit).
+  const MAX_SAFE_INTEGER: u64 = (1u64 << 53) - 1;
+  if (new_len as u64) > MAX_SAFE_INTEGER {
+    return Err(VmError::TypeError("Invalid array length"));
+  }
 
   let out = array_create_with_intrinsics(vm, &mut scope, new_len)?;
   scope.push_root(Value::Object(out))?;
