@@ -14,7 +14,7 @@
     "layout": 244.1365536768916,
     "paint": 23.012871862985687
   },
-  "notes": "",
+  "notes": "Visually close to Chrome overall. Remaining ~29% pixel diffs (perceptual ~0.13) appear primarily raster-level: widespread glyph-edge differences from text rasterization/hinting/subpixel snapping, plus minor per-channel differences in decoded/scaled WebP/JPEG imagery (hero + thumbnails). Layout/structure (header/nav + grid-based promo blocks) looks correct in the fixture render; no obvious missing layout primitives identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 378543,
