@@ -146,6 +146,21 @@ fn parenthesized_private_in_expression_is_syntax_error_even_when_declared() {
 }
 
 #[test]
+fn delete_private_member_is_syntax_error() {
+  let mut rt = new_runtime();
+  let diags = assert_syntax_error(
+    rt.exec_script("class C { #x; m(){ delete this.#x; } }")
+      .unwrap_err(),
+  );
+  assert!(
+    diags.iter().any(|d| {
+      d.code.as_str() == "VMJS0004" && d.message == "Private fields can not be deleted"
+    }),
+    "expected early error VMJS0004 for delete private member, got {diags:?}"
+  );
+}
+
+#[test]
 fn private_member_access_is_syntax_error_when_undeclared() {
   let mut rt = new_runtime();
   let diags = assert_syntax_error(rt.exec_script("class C { m(){ return this.#x; } }").unwrap_err());

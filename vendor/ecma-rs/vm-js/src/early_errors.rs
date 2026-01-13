@@ -2324,8 +2324,15 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         // - `delete obj?.#x`
         //
         // Note: this is independent of strict mode.
-        if matches!(&*expr.argument.stx, Expr::Member(member) if member.stx.right.starts_with('#')) {
-          self.push_error(expr.argument.loc, "Private fields can not be deleted")?;
+        //
+        // V8/Node reports: "Private fields can not be deleted".
+        if let Expr::Member(member) = &*expr.argument.stx {
+          if member.stx.right.starts_with('#') {
+            self.push_error(expr.argument.loc, "Private fields can not be deleted")?;
+            // Still traverse the base expression for nested early errors.
+            self.visit_expr(ctx, &member.stx.left)?;
+            return Ok(());
+          }
         }
 
         // `delete IdentifierReference` is a strict mode early error (ECMA-262 14.5.1 / 13.5.1.1).
