@@ -1416,7 +1416,12 @@ where
         prefix[end] - prefix[start] > 0
       };
 
-      let min_content_contribution_changed = items
+      // Note: we must iterate *all* probed items to update their intrinsic-contribution caches.
+      // `GridItem` caches are keyed only by axis (not by available-space). If we short-circuit on
+      // the first changed item (e.g. via `.any()`), then later probed items would retain stale
+      // cached values and the subsequent rerun sizing pass could compute incorrect track sizes.
+      let mut min_content_contribution_changed = false;
+      for item in items
         .iter_mut()
         .filter(|item| item.crosses_intrinsic_column && item.aspect_ratio.is_some())
         .filter(|item| {
@@ -1437,29 +1442,28 @@ where
           } else {
             range_has_any(&prefix_nonflex_probe_relevant, range.start, range.end)
           }
-        })
-        .any(|item| {
-          let range = item.track_range_excluding_lines(AbstractAxis::Block);
-          let other_axis_sum = row_prefix_sum[range.end] - row_prefix_sum[range.start];
-          let mut available_space = Size::NONE;
-          available_space.height = Some(other_axis_sum);
-          let new_min_content_contribution = item.min_content_contribution(
-            AbstractAxis::Inline,
-            tree,
-            available_space,
-            inner_node_size,
-          );
+        }) {
+        let range = item.track_range_excluding_lines(AbstractAxis::Block);
+        let other_axis_sum = row_prefix_sum[range.end] - row_prefix_sum[range.start];
+        let mut available_space = Size::NONE;
+        available_space.height = Some(other_axis_sum);
+        let new_min_content_contribution = item.min_content_contribution(
+          AbstractAxis::Inline,
+          tree,
+          available_space,
+          inner_node_size,
+        );
 
-          let has_changed =
-            Some(new_min_content_contribution) != item.min_content_contribution_cache.width;
+        let has_changed =
+          Some(new_min_content_contribution) != item.min_content_contribution_cache.width;
 
-          item.available_space_cache = Some(available_space);
-          item.min_content_contribution_cache.width = Some(new_min_content_contribution);
-          item.max_content_contribution_cache.width = None;
-          item.minimum_contribution_cache.width = None;
+        item.available_space_cache = Some(available_space);
+        item.min_content_contribution_cache.width = Some(new_min_content_contribution);
+        item.max_content_contribution_cache.width = None;
+        item.minimum_contribution_cache.width = None;
 
-          has_changed
-        });
+        min_content_contribution_changed |= has_changed;
+      }
       rerun_column_sizing = min_content_contribution_changed;
     }
   } else {
@@ -1573,7 +1577,10 @@ where
         prefix[end] - prefix[start] > 0
       };
 
-      let min_content_contribution_changed = items
+      // As with the inline-axis rerun probe, we must iterate all probed items to refresh their
+      // axis-specific intrinsic contribution caches before running the rerun sizing pass.
+      let mut min_content_contribution_changed = false;
+      for item in items
         .iter_mut()
         .filter(|item| item.crosses_intrinsic_row && item.aspect_ratio.is_some())
         .filter(|item| {
@@ -1591,29 +1598,28 @@ where
           } else {
             range_has_any(&prefix_nonflex_probe_relevant, range.start, range.end)
           }
-        })
-        .any(|item| {
-          let range = item.track_range_excluding_lines(AbstractAxis::Inline);
-          let other_axis_sum = column_prefix_sum[range.end] - column_prefix_sum[range.start];
-          let mut available_space = Size::NONE;
-          available_space.width = Some(other_axis_sum);
-          let new_min_content_contribution = item.min_content_contribution(
-            AbstractAxis::Block,
-            tree,
-            available_space,
-            inner_node_size,
-          );
+        }) {
+        let range = item.track_range_excluding_lines(AbstractAxis::Inline);
+        let other_axis_sum = column_prefix_sum[range.end] - column_prefix_sum[range.start];
+        let mut available_space = Size::NONE;
+        available_space.width = Some(other_axis_sum);
+        let new_min_content_contribution = item.min_content_contribution(
+          AbstractAxis::Block,
+          tree,
+          available_space,
+          inner_node_size,
+        );
 
-          let has_changed =
-            Some(new_min_content_contribution) != item.min_content_contribution_cache.height;
+        let has_changed =
+          Some(new_min_content_contribution) != item.min_content_contribution_cache.height;
 
-          item.available_space_cache = Some(available_space);
-          item.min_content_contribution_cache.height = Some(new_min_content_contribution);
-          item.max_content_contribution_cache.height = None;
-          item.minimum_contribution_cache.height = None;
+        item.available_space_cache = Some(available_space);
+        item.min_content_contribution_cache.height = Some(new_min_content_contribution);
+        item.max_content_contribution_cache.height = None;
+        item.minimum_contribution_cache.height = None;
 
-          has_changed
-        });
+        min_content_contribution_changed |= has_changed;
+      }
       rerun_row_sizing = min_content_contribution_changed;
     }
   } else {
