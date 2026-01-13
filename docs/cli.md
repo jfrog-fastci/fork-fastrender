@@ -67,7 +67,8 @@ Pageset wrappers enable the disk-backed subresource cache by default, persisting
 
 ## HTTP fetch knobs (env vars)
 
-The pageset-oriented CLI binaries (`fetch_pages`, `prefetch_assets`, `render_pages`, `fetch_and_render`, and `pageset_progress`) all build their network fetcher through [`common::render_pipeline::build_http_fetcher`](../src/bin/common/render_pipeline.rs), so they honor the `FASTR_HTTP_*` environment variables documented in [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning).
+The pageset-oriented CLI binaries (`fetch_pages`, `prefetch_assets`, `render_pages`, `fetch_and_render`, and `pageset_progress`) all build their network fetcher through
+[`cli_utils::render_pipeline::build_http_fetcher`](../src/cli_utils/render_pipeline.rs) (imported as `fastrender::cli_utils as common` in the bins), so they honor the `FASTR_HTTP_*` environment variables documented in [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning).
 
 This includes backend selection (`FASTR_HTTP_BACKEND`), browser header profiles (`FASTR_HTTP_BROWSER_HEADERS`), and retry logging (`FASTR_HTTP_LOG_RETRIES`). `bash scripts/cargo_agent.sh xtask pageset`, `scripts/pageset.sh`, and `pageset_progress` worker subprocesses inherit these env vars automatically—set them once on the outer command when triaging hard fetch failures.
 
