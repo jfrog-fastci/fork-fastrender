@@ -88,6 +88,45 @@ fn should_restore_page_focus_for_state(
     && !find_in_page_open
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn should_open_page_context_menu_from_keyboard(
+  page_has_focus: bool,
+  chrome_has_text_focus: bool,
+  page_loading_overlay_blocks_input: bool,
+) -> bool {
+  page_has_focus && !chrome_has_text_focus && !page_loading_overlay_blocks_input
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn should_forward_paste_events_to_page(
+  page_has_focus: bool,
+  chrome_has_text_focus: bool,
+  suppress_paste_events: bool,
+) -> bool {
+  page_has_focus && !chrome_has_text_focus && !suppress_paste_events
+}
+
+#[cfg(test)]
+mod input_focus_helpers_tests {
+  use super::{should_forward_paste_events_to_page, should_open_page_context_menu_from_keyboard};
+
+  #[test]
+  fn keyboard_context_menu_requires_page_focus_and_no_chrome_text_focus() {
+    assert!(!should_open_page_context_menu_from_keyboard(false, false, false));
+    assert!(!should_open_page_context_menu_from_keyboard(true, true, false));
+    assert!(!should_open_page_context_menu_from_keyboard(true, false, true));
+    assert!(should_open_page_context_menu_from_keyboard(true, false, false));
+  }
+
+  #[test]
+  fn paste_events_forwarding_respects_focus_and_suppression() {
+    assert!(!should_forward_paste_events_to_page(false, false, false));
+    assert!(!should_forward_paste_events_to_page(true, true, false));
+    assert!(!should_forward_paste_events_to_page(true, false, true));
+    assert!(should_forward_paste_events_to_page(true, false, false));
+  }
+}
+
 // Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
 // unit tests (which often run without the full winit/wgpu/egui stack).
 #[cfg(any(test, feature = "browser_ui"))]
@@ -3112,7 +3151,7 @@ fn keyboard_page_context_menu_request(
   key: winit::event::VirtualKeyCode,
   modifiers: winit::event::ModifiersState,
   page_has_focus: bool,
-  egui_wants_keyboard_input: bool,
+  chrome_has_text_focus: bool,
   page_loading_overlay_blocks_input: bool,
   tab_id: fastrender::ui::TabId,
   page_rect_points: Option<egui::Rect>,
@@ -3124,7 +3163,11 @@ fn keyboard_page_context_menu_request(
     return None;
   }
 
-  if !page_has_focus || egui_wants_keyboard_input || page_loading_overlay_blocks_input {
+  if !should_open_page_context_menu_from_keyboard(
+    page_has_focus,
+    chrome_has_text_focus,
+    page_loading_overlay_blocks_input,
+  ) {
     return None;
   }
 
@@ -3565,8 +3608,13 @@ struct App {
   window_occluded: bool,
   window_minimized: bool,
   window_fullscreen: bool,
-
+ 
   page_has_focus: bool,
+  /// Whether a browser-chrome (non-page) text input currently owns keyboard input.
+  ///
+  /// This is intentionally backend-agnostic: the egui backend updates it from widget focus state,
+  /// while a compositor backend can set it from chrome DOM focus without needing an `egui::Context`.
+  chrome_has_text_focus: bool,
   pointer_captured: bool,
   captured_button: fastrender::ui::PointerButton,
   primary_click_sequence: Option<PointerClickSequence>,
@@ -4141,6 +4189,7 @@ impl App {
       window_minimized: size.width == 0 || size.height == 0,
       window_fullscreen,
       page_has_focus: false,
+      chrome_has_text_focus: false,
       pointer_captured: false,
       captured_button: fastrender::ui::PointerButton::None,
       primary_click_sequence: None,
@@ -8358,6 +8407,16 @@ impl App {
     )
   }
 
+  fn refresh_chrome_text_focus_from_egui(&mut self, ctx: &egui::Context) {
+    // In the egui backend, `Context::wants_keyboard_input` is the most reliable way to detect
+    // whether any egui `TextEdit` currently owns keyboard input. We cache it into an egui-free flag
+    // so the winit input routing path can make the same decisions without depending on egui.
+    //
+    // Note: `address_bar_has_focus` is included defensively since some chrome states keep the
+    // address bar "focused" even while transitioning between display/edit widgets.
+    self.chrome_has_text_focus = ctx.wants_keyboard_input() || self.browser_state.chrome.address_bar_has_focus;
+  }
+
   fn handle_profile_shortcuts(&mut self, key: winit::event::VirtualKeyCode) -> bool {
     use fastrender::ui::ChromeAction;
 
@@ -9281,7 +9340,7 @@ impl App {
               key,
               self.modifiers,
               self.page_has_focus,
-              self.egui_ctx.wants_keyboard_input(),
+              self.chrome_has_text_focus,
               self.page_loading_overlay_blocks_input,
               tab_id,
               self.page_rect_points,
@@ -9460,7 +9519,7 @@ impl App {
             return;
           }
 
-          if !self.egui_ctx.wants_keyboard_input() {
+          if !self.chrome_has_text_focus {
             if self
               .browser_state
               .active_tab()
@@ -9559,7 +9618,7 @@ impl App {
               | ShortcutAction::PageDown => {
                 // If egui is actively editing text (e.g. the address bar), don't handle page-level
                 // key events.
-                if self.egui_ctx.wants_keyboard_input() {
+                if self.chrome_has_text_focus {
                   return;
                 }
                 if !self.page_has_focus {
@@ -9631,7 +9690,7 @@ impl App {
 
         // If egui is actively editing text (e.g. the address bar), don't handle page-level key
         // events.
-        if self.egui_ctx.wants_keyboard_input() {
+        if self.chrome_has_text_focus {
           return;
         }
 
@@ -9801,7 +9860,7 @@ impl App {
         }
         // If egui is actively editing text (e.g. the address bar), don't handle page-level IME
         // events.
-        if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {
+        if !self.page_has_focus || self.chrome_has_text_focus {
           return;
         }
 
@@ -9856,7 +9915,7 @@ impl App {
         if self.clear_browsing_data_dialog_open {
           return;
         }
-        if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {
+        if !self.page_has_focus || self.chrome_has_text_focus {
           return;
         }
         // Avoid forwarding browser-chrome shortcuts (e.g. Ctrl/Cmd+L) as text input to the page.
@@ -11122,11 +11181,16 @@ impl App {
     session_dirty |= self.handle_chrome_actions(chrome_actions);
     self.sync_window_title();
 
+    // Cache egui text focus state into our backend-agnostic focus model before routing any keyboard
+    // derived events (paste/menu commands/etc).
+    self.refresh_chrome_text_focus_from_egui(&ctx);
+ 
     let suppress_paste_events = std::mem::take(&mut self.suppress_paste_events);
-    if !paste_events.is_empty()
-      && self.page_has_focus
-      && !self.egui_ctx.wants_keyboard_input()
-      && !suppress_paste_events
+    if should_forward_paste_events_to_page(
+      self.page_has_focus,
+      self.chrome_has_text_focus,
+      suppress_paste_events,
+    ) && !paste_events.is_empty()
     {
       if let Some(tab_id) = self.browser_state.active_tab_id() {
         for text in paste_events {
@@ -11917,6 +11981,9 @@ impl App {
     // Coalesce pointer-move bursts to at most one message per rendered frame.
     self.flush_pending_pointer_move();
 
+    // Update the cached focus model for use by the winit input handler after this frame.
+    self.refresh_chrome_text_focus_from_egui(&ctx);
+ 
     let mut full_output = self.egui_ctx.end_frame();
     let repaint_after = full_output.repaint_after;
     if let Some(text) = self.pending_clipboard_text.take() {
