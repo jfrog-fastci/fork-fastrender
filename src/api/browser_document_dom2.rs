@@ -713,6 +713,35 @@ impl BrowserDocumentDom2 {
       self.invalidate_all();
     }
 
+    // If we detect a DOM generation mismatch but have no host-side dirty flags set, attempt to
+    // classify any pending dom2 mutation records before falling back to a full pipeline run.
+    //
+    // This handles out-of-band DOM mutations (e.g. via raw `dom2::Document` pointers) and avoids
+    // forcing expensive style/layout work for disconnected-only mutations that cannot affect
+    // rendering.
+    if !self.style_dirty
+      && !self.layout_dirty
+      && self.dirty_style_nodes.is_empty()
+      && self.dirty_text_nodes.is_empty()
+      && self.dirty_structure_nodes.is_empty()
+      && self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
+    {
+      let mutations = self.dom.take_mutations();
+      if mutations.is_empty() {
+        // Generation changed but there are no structured mutations (e.g. direct `node_mut` edits).
+        // Fall back to a full invalidation to preserve correctness.
+        self.invalidate_all();
+      } else {
+        let render_affecting = self.apply_mutation_log(mutations);
+        if !render_affecting {
+          // No render-affecting mutations: record that we've now seen this generation so callers do
+          // not repeatedly flush layout, but keep cached layout artifacts intact.
+          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+          return Ok(());
+        }
+      }
+    }
+
     let needs_layout = self.style_dirty
       || self.layout_dirty
       || interaction_hash != self.interaction_state_hash
