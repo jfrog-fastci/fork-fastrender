@@ -15923,6 +15923,12 @@ pub fn string_prototype_char_at(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Spec: `RequireObjectCoercible(this value)`.
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
   let s = scope.to_string(vm, host, hooks, this)?;
   scope.push_root(Value::String(s))?;
 
@@ -16163,6 +16169,12 @@ pub fn string_prototype_slice(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Spec: `RequireObjectCoercible(this value)`.
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
   let s = scope.to_string(vm, host, hooks, this)?;
   scope.push_root(Value::String(s))?;
 
@@ -16197,6 +16209,12 @@ pub fn string_prototype_index_of(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Spec: `RequireObjectCoercible(this value)`.
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
 
   let s = scope.to_string(vm, host, hooks, this)?;
   scope.push_root(Value::String(s))?;
@@ -16273,8 +16291,9 @@ pub fn string_prototype_last_index_of(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  let o = crate::spec_ops::require_object_coercible(this)?;
 
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -16316,6 +16335,95 @@ pub fn string_prototype_last_index_of(
   }
 
   Ok(Value::Number(-1.0))
+}
+
+/// `String.prototype.localeCompare` (ECMA-262) (minimal, non-Intl).
+pub fn string_prototype_locale_compare(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.localecompare
+  let mut scope = scope.reborrow();
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let that_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let that = scope.to_string(vm, host, hooks, that_val)?;
+  scope.push_root(Value::String(that))?;
+
+  // Minimal implementation: lexicographic UTF-16 code unit ordering. Ignore `locales` and `options`.
+  let (a_units, b_units) = {
+    let a = scope.heap().get_string(s)?;
+    let b = scope.heap().get_string(that)?;
+    (a.as_code_units(), b.as_code_units())
+  };
+
+  let min_len = a_units.len().min(b_units.len());
+  for i in 0..min_len {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let a = a_units[i];
+    let b = b_units[i];
+    if a != b {
+      return Ok(Value::Number(if a < b { -1.0 } else { 1.0 }));
+    }
+  }
+
+  Ok(Value::Number(match a_units.len().cmp(&b_units.len()) {
+    std::cmp::Ordering::Less => -1.0,
+    std::cmp::Ordering::Equal => 0.0,
+    std::cmp::Ordering::Greater => 1.0,
+  }))
+}
+
+/// `String.prototype.toLocaleLowerCase` (ECMA-262) (minimal).
+pub fn string_prototype_to_locale_lower_case(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.tolocalelowercase
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+  string_prototype_to_lower_case(vm, scope, host, hooks, callee, this, &[])
+}
+
+/// `String.prototype.toLocaleUpperCase` (ECMA-262) (minimal).
+pub fn string_prototype_to_locale_upper_case(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.tolocaleuppercase
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+  string_prototype_to_upper_case(vm, scope, host, hooks, callee, this, &[])
 }
 
 /// `String.prototype.includes` (ECMA-262) (minimal).
@@ -16648,6 +16756,12 @@ pub fn string_prototype_substring(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Spec: `RequireObjectCoercible(this value)`.
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
   let s = scope.to_string(vm, host, hooks, this)?;
   scope.push_root(Value::String(s))?;
 
@@ -17723,24 +17837,6 @@ pub fn string_prototype_to_lower_case(
   Ok(Value::String(out))
 }
 
-/// `String.prototype.toLocaleLowerCase([locales])` (ECMA-262 / ECMA-402) (minimal).
-///
-/// vm-js does not currently ship full Intl locale-sensitive case mapping; this builtin delegates to
-/// `String.prototype.toLowerCase`, which is sufficient for the core test262 descriptor checks and
-/// preserves non-ASCII case folding behavior using Rust's Unicode tables.
-pub fn string_prototype_to_locale_lower_case(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  // Ignore the optional `locales` argument and perform non-locale-sensitive case mapping.
-  string_prototype_to_lower_case(vm, scope, host, hooks, callee, this, &[])
-}
-
 /// `String.prototype.toUpperCase` (ECMA-262) (minimal).
 pub fn string_prototype_to_upper_case(
   vm: &mut Vm,
@@ -17805,75 +17901,6 @@ pub fn string_prototype_to_upper_case(
 
   let out = scope.alloc_string_from_u16_vec(out)?;
   Ok(Value::String(out))
-}
-
-/// `String.prototype.toLocaleUpperCase([locales])` (ECMA-262 / ECMA-402) (minimal).
-///
-/// vm-js does not currently ship full Intl locale-sensitive case mapping; this builtin delegates to
-/// `String.prototype.toUpperCase`.
-pub fn string_prototype_to_locale_upper_case(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  // Ignore the optional `locales` argument and perform non-locale-sensitive case mapping.
-  string_prototype_to_upper_case(vm, scope, host, hooks, callee, this, &[])
-}
-
-/// `String.prototype.localeCompare(that [, locales [, options]])` (ECMA-262 / ECMA-402) (minimal).
-///
-/// vm-js does not currently ship full Intl collation. This implementation performs a simple
-/// lexicographic comparison of the two strings' UTF-16 code units and returns -1, 0, or 1.
-pub fn string_prototype_locale_compare(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let mut scope = scope.reborrow();
-
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
-
-  let that_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let that_s = scope.to_string(vm, host, hooks, that_val)?;
-  scope.push_root(Value::String(that_s))?;
-
-  let (a, b) = {
-    let heap = scope.heap();
-    let a = heap.get_string(s)?.as_code_units();
-    let b = heap.get_string(that_s)?.as_code_units();
-    (a, b)
-  };
-
-  // Lexicographic comparison by UTF-16 code unit.
-  const TICK_EVERY: usize = 1024;
-  let min_len = a.len().min(b.len());
-  for i in 0..min_len {
-    if i % TICK_EVERY == 0 {
-      vm.tick()?;
-    }
-    match a[i].cmp(&b[i]) {
-      std::cmp::Ordering::Less => return Ok(Value::Number(-1.0)),
-      std::cmp::Ordering::Greater => return Ok(Value::Number(1.0)),
-      std::cmp::Ordering::Equal => {}
-    }
-  }
-
-  let ord = a.len().cmp(&b.len());
-  let out = match ord {
-    std::cmp::Ordering::Less => -1.0,
-    std::cmp::Ordering::Greater => 1.0,
-    std::cmp::Ordering::Equal => 0.0,
-  };
-  Ok(Value::Number(out))
 }
 
 /// `%String.prototype%[@@iterator]` (ECMA-262).
