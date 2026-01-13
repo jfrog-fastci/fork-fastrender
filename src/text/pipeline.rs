@@ -4060,7 +4060,98 @@ fn assign_fonts_internal(
     }
   }
 
-  Ok(font_runs)
+  Ok(coalesce_adjacent_font_runs(font_runs))
+}
+
+fn coalesce_adjacent_font_runs(runs: Vec<FontRun>) -> Vec<FontRun> {
+  if runs.len() <= 1 {
+    return runs;
+  }
+
+  fn features_equal(a: &Arc<[Feature]>, b: &Arc<[Feature]>) -> bool {
+    if Arc::ptr_eq(a, b) {
+      return true;
+    }
+    let a = a.as_ref();
+    let b = b.as_ref();
+    if a.len() != b.len() {
+      return false;
+    }
+    a.iter().zip(b.iter()).all(|(a, b)| {
+      a.tag == b.tag && a.value == b.value && a.start == b.start && a.end == b.end
+    })
+  }
+
+  fn variations_equal(a: &[Variation], b: &[Variation]) -> bool {
+    if a.len() != b.len() {
+      return false;
+    }
+    a.iter()
+      .zip(b.iter())
+      .all(|(a, b)| a.tag == b.tag && a.value == b.value)
+  }
+
+  #[inline]
+  fn starts_with_hard_break(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.starts_with(b"\n")
+      || bytes.starts_with(b"\r")
+      || bytes.starts_with(b"\xE2\x80\xA8") // U+2028 LINE SEPARATOR
+      || bytes.starts_with(b"\xE2\x80\xA9") // U+2029 PARAGRAPH SEPARATOR
+  }
+
+  #[inline]
+  fn ends_with_hard_break(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.ends_with(b"\n")
+      || bytes.ends_with(b"\r")
+      || bytes.ends_with(b"\xE2\x80\xA8") // U+2028 LINE SEPARATOR
+      || bytes.ends_with(b"\xE2\x80\xA9") // U+2029 PARAGRAPH SEPARATOR
+  }
+
+  fn can_merge(prev: &FontRun, next: &FontRun) -> bool {
+    if prev.end != next.start {
+      return false;
+    }
+
+    // Avoid coalescing across paragraph boundaries or hard breaks; those are adjacency breaks for
+    // shaping (and often come from `BidiInfo` paragraph segmentation).
+    if ends_with_hard_break(&prev.text) || starts_with_hard_break(&next.text) {
+      return false;
+    }
+
+    same_font_face(prev.font.as_ref(), next.font.as_ref())
+      && prev.font_size == next.font_size
+      && prev.baseline_shift == next.baseline_shift
+      && prev.synthetic_bold == next.synthetic_bold
+      && prev.synthetic_oblique == next.synthetic_oblique
+      && prev.script == next.script
+      && prev.direction == next.direction
+      && prev.level == next.level
+      && prev.vertical == next.vertical
+      && prev.rotation == next.rotation
+      && prev.language == next.language
+      && features_equal(&prev.features, &next.features)
+      && variations_equal(&prev.variations, &next.variations)
+      && prev.palette_index == next.palette_index
+      && prev.palette_override_hash == next.palette_override_hash
+      && (Arc::ptr_eq(&prev.palette_overrides, &next.palette_overrides)
+        || prev.palette_overrides.as_ref() == next.palette_overrides.as_ref())
+  }
+
+  let mut out: Vec<FontRun> = Vec::with_capacity(runs.len());
+  for run in runs {
+    if let Some(prev) = out.last_mut() {
+      if can_merge(prev, &run) {
+        prev.text.push_str(&run.text);
+        prev.end = run.end;
+        continue;
+      }
+    }
+    out.push(run);
+  }
+
+  out
 }
 
 fn is_vertical_typographic_mode(mode: crate::style::types::WritingMode) -> bool {
@@ -7974,6 +8065,182 @@ mod tests {
       assert!((a.y_offset - b.y_offset).abs() < 0.0001);
     }
     assert!((shaped_fast.advance - shaped_slow.advance).abs() < 0.0001);
+  }
+
+  #[test]
+  fn coalesces_adjacent_font_runs_with_identical_shaping_parameters() {
+    let ctx = dejavu_sans_fixture_context();
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
+    style.font_size = 16.0;
+
+    let text = "Hello world";
+    let split = 5;
+    let runs = [
+      ItemizedRun {
+        start: 0,
+        end: split,
+        text: text[..split].to_string(),
+        script: Script::Latin,
+        direction: Direction::LeftToRight,
+        level: 0,
+      },
+      ItemizedRun {
+        start: split,
+        end: text.len(),
+        text: text[split..].to_string(),
+        script: Script::Latin,
+        direction: Direction::LeftToRight,
+        level: 0,
+      },
+    ];
+
+    let font_runs = assign_fonts_internal(
+      &runs,
+      &style,
+      &ctx,
+      None,
+      ctx.font_generation(),
+      true,
+    )
+    .expect("assign fonts");
+
+    assert_eq!(
+      font_runs.len(),
+      1,
+      "adjacent runs with identical shaping params should be coalesced"
+    );
+    let run = &font_runs[0];
+    assert_eq!(run.start, 0);
+    assert_eq!(run.end, text.len());
+    assert_eq!(run.text, text);
+    assert_eq!(run.text.len(), run.end - run.start);
+  }
+
+  #[test]
+  fn coalescing_avoids_hard_break_boundaries() {
+    let ctx = dejavu_sans_fixture_context();
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
+    style.font_size = 16.0;
+
+    let text = "Hello\nworld";
+    let split = "Hello\n".len();
+    let runs = [
+      ItemizedRun {
+        start: 0,
+        end: split,
+        text: text[..split].to_string(),
+        script: Script::Latin,
+        direction: Direction::LeftToRight,
+        level: 0,
+      },
+      ItemizedRun {
+        start: split,
+        end: text.len(),
+        text: text[split..].to_string(),
+        script: Script::Latin,
+        direction: Direction::LeftToRight,
+        level: 0,
+      },
+    ];
+
+    let font_runs = assign_fonts_internal(
+      &runs,
+      &style,
+      &ctx,
+      None,
+      ctx.font_generation(),
+      true,
+    )
+    .expect("assign fonts");
+
+    assert_eq!(
+      font_runs.len(),
+      2,
+      "font runs should not coalesce across hard line breaks"
+    );
+    assert_eq!(
+      font_runs.iter().map(|run| run.text.as_str()).collect::<String>(),
+      text
+    );
+  }
+
+  #[test]
+  fn coalescing_reduces_shape_font_run_invocations_for_churny_input() {
+    let ctx = dejavu_sans_fixture_context();
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
+    style.font_size = 16.0;
+
+    let text = "The quick brown fox jumps over the lazy dog. "
+      .repeat(64)
+      .trim_end()
+      .to_string();
+
+    // Simulate an upstream stage splitting a paragraph into many adjacent itemized runs even
+    // though they share script/direction/level. Coalescing should collapse these back down so
+    // shaping work stays bounded.
+    let mut itemized = Vec::new();
+    let chunk_len = 5;
+    let mut start = 0;
+    while start < text.len() {
+      let end = (start + chunk_len).min(text.len());
+      itemized.push(ItemizedRun {
+        start,
+        end,
+        text: text[start..end].to_string(),
+        script: Script::Latin,
+        direction: Direction::LeftToRight,
+        level: 0,
+      });
+      start = end;
+    }
+    let segments = itemized.len();
+    assert!(segments > 8, "expected to build a churny run list");
+
+    let font_runs = assign_fonts_internal(
+      &itemized,
+      &style,
+      &ctx,
+      None,
+      ctx.font_generation(),
+      true,
+    )
+    .expect("assign fonts");
+
+    assert!(
+      font_runs.len() < segments,
+      "coalescing should reduce the number of font runs"
+    );
+    assert_eq!(
+      font_runs.iter().map(|run| run.text.as_str()).collect::<String>(),
+      text
+    );
+    assert_eq!(font_runs.first().unwrap().start, 0);
+    assert_eq!(font_runs.last().unwrap().end, text.len());
+
+    SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.set(0));
+    for run in &font_runs {
+      shape_font_run(run).expect("shape succeeds");
+    }
+    let first_calls = SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.get());
+    assert_eq!(first_calls, font_runs.len());
+    assert!(
+      first_calls < segments,
+      "expected fewer HarfBuzz shaping calls after coalescing"
+    );
+
+    SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.set(0));
+    for run in &font_runs {
+      shape_font_run(run).expect("shape succeeds");
+    }
+    let second_calls = SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.get());
+    assert_eq!(second_calls, font_runs.len());
+    assert!(
+      second_calls <= first_calls,
+      "shaping the same paragraph twice should not increase shaping churn"
+    );
   }
 
   #[test]
