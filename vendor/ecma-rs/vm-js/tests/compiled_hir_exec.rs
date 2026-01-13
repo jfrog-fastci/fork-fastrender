@@ -3361,10 +3361,19 @@ fn compiled_strict_equality_treats_nan_as_unequal_to_itself() -> Result<(), VmEr
       function f() {
         return NaN === NaN;
       }
-      f();
+      f
     "#,
   )?;
-  let result = rt.exec_compiled_script(script)?;
+  let f = rt.exec_compiled_script(script)?;
+
+  // Call through the compiled-function execution path (not just compiled-script execution) to
+  // ensure `===` semantics match the interpreter even when the global `NaN` binding is involved.
+  // Borrow-split `vm` and `heap` so we can hold a `Scope` while calling into the VM.
+  let vm = &mut rt.vm;
+  let heap = &mut rt.heap;
+  let mut scope = heap.scope();
+  scope.push_root(f)?;
+  let result = vm.call_without_host(&mut scope, f, Value::Undefined, &[])?;
   assert_eq!(result, Value::Bool(false));
   Ok(())
 }
