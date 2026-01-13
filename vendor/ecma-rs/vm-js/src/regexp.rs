@@ -2300,9 +2300,9 @@ impl<'a> Parser<'a> {
   fn parse_legacy_octal_escape_after_first(
     &mut self,
     first_digit: u16,
-  ) -> Result<u16, RegExpCompileError> {
+  ) -> Result<u32, RegExpCompileError> {
     debug_assert!(is_octal_digit(first_digit));
-    let mut value: u16 = (first_digit - (b'0' as u16)) as u16;
+    let mut value: u32 = (first_digit - (b'0' as u16)) as u32;
 
     if (b'0' as u16..=b'3' as u16).contains(&first_digit) {
       if let Some(d1) = self.peek() {
@@ -2310,13 +2310,13 @@ impl<'a> Parser<'a> {
           self.next();
           value = value
             .saturating_mul(8)
-            .saturating_add((d1 - (b'0' as u16)) as u16);
+            .saturating_add((d1 - (b'0' as u16)) as u32);
           if let Some(d2) = self.peek() {
             if is_octal_digit(d2) {
               self.next();
               value = value
                 .saturating_mul(8)
-                .saturating_add((d2 - (b'0' as u16)) as u16);
+                .saturating_add((d2 - (b'0' as u16)) as u32);
             }
           }
         }
@@ -2328,7 +2328,7 @@ impl<'a> Parser<'a> {
           self.next();
           value = value
             .saturating_mul(8)
-            .saturating_add((d1 - (b'0' as u16)) as u16);
+            .saturating_add((d1 - (b'0' as u16)) as u32);
         }
       }
     }
@@ -2876,7 +2876,7 @@ impl<'a> Parser<'a> {
               }
               .into());
             }
-            Ok(CharClassItem::Char(x))
+            Ok(CharClassItem::Char(x as u32))
           }
           x if x == (b'-' as u16) => {
             if self.flags.has_either_unicode_flag() {
@@ -3070,7 +3070,7 @@ impl<'a> Parser<'a> {
         if x == (b'8' as u16) || x == (b'9' as u16) {
           // IdentityEscape: keep only the first digit.
           self.idx = digit_start.saturating_add(1);
-          return Ok(Atom::Literal(x));
+          return Ok(Atom::Literal(x as u32));
         }
 
         // LegacyOctalEscapeSequence: rewind to after the first digit and consume the correct octal
