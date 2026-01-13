@@ -1927,6 +1927,36 @@ mod tests {
   }
 
   #[test]
+  fn deep_recursion_maps_to_stack_overflow_rangeerror() {
+    let exec = VmJsExecutor::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let err = exec
+      .execute(
+        &test_case("stack_overflow.js"),
+        r#"
+function f(n) {
+  if (n === 0) return 0;
+  // Not a tail call; should always grow the call stack even if PTC is implemented.
+  return 1 + f(n - 1);
+}
+f(2000);
+"#,
+        &cancel,
+      )
+      .unwrap_err();
+    let ExecError::Js(js) = err else {
+      panic!("expected JS error, got {err:?}");
+    };
+    assert_eq!(js.phase, ExecPhase::Runtime);
+    assert_eq!(js.typ.as_deref(), Some("RangeError"));
+    assert!(
+      js.message.contains("stack overflow"),
+      "expected stack overflow message, got: {}",
+      js.message
+    );
+  }
+
+  #[test]
   fn eval_script_creates_global_lexical_bindings() {
     let exec = VmJsExecutor::default();
     let cancel = Arc::new(AtomicBool::new(false));
