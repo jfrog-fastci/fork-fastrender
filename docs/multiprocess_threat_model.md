@@ -8,7 +8,9 @@ Related:
 - Site isolation process model (process assignment + OOPIF semantics): [`docs/site_isolation.md`](site_isolation.md)
 - Network process & IPC surface (HTTP, cookies, WebSocket, downloads): [`docs/network_process.md`](network_process.md)
 - Linux IPC checklist (shared memory + FD passing): [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
+- OS sandbox entrypoint / platform docs: [`docs/renderer_sandbox.md`](renderer_sandbox.md)
 - OS sandbox policy overview (seccomp/AppContainer/etc): [`docs/sandboxing.md`](sandboxing.md)
+- Linux sandbox design (rlimits/fd hygiene/namespaces/Landlock/seccomp): [`docs/security/sandbox.md`](security/sandbox.md)
 - Windows renderer sandbox boundary (Job/AppContainer details): [`docs/windows_sandbox.md`](windows_sandbox.md)
 - IPC transport invariants (framing + size caps + shared memory safety): [`docs/ipc.md`](ipc.md)
 
