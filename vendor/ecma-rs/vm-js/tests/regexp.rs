@@ -229,3 +229,19 @@ fn regexp_execution_backtracking_state_respects_heap_limits() {
     other => panic!("expected OOM/termination, got {other:?}"),
   }
 }
+
+#[test]
+fn regexp_negated_empty_class_matches_any_code_unit() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#""a\nb".match(/[^]/g).length === 3"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_negated_class_with_literal_closing_bracket_is_not_empty() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#""a]".match(/[^]]/g).join("") === "a""#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

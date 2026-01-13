@@ -1454,9 +1454,28 @@ impl<'a> Parser<'a> {
         }
         .into());
       };
-      if u == (b']' as u16) && !first {
-        self.next();
-        break;
+      if u == (b']' as u16) {
+        // In most cases, `]` terminates the character class unless it is the first class character,
+        // in which case it is treated as a literal `]` and a later `]` terminates the class.
+        //
+        // ECMAScript additionally allows `[^]` (a negated empty character class) to be parsed by
+        // treating the `]` immediately after `^` as the class terminator. This is widely used as a
+        // "dotAll" workaround that matches any UTF-16 code unit including line terminators.
+        //
+        // Ensure we do not break `[^]]`: in that pattern, the first `]` is intended to be a
+        // literal and the second `]` closes the class. A simple rule that matches JS engines:
+        // - If the class is negated, and the first char after `^` is `]`, and the following char is
+        //   NOT `]`, treat it as the terminator (empty class).
+        // - If it *is* followed by another `]`, treat the first as a literal and let the second
+        //   terminate.
+        if !first {
+          self.next();
+          break;
+        }
+        if negated && self.units.get(self.idx + 1).copied() != Some(b']' as u16) {
+          self.next();
+          break;
+        }
       }
       first = false;
 
