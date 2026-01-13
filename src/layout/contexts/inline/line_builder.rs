@@ -1670,7 +1670,8 @@ impl TextItem {
     let mut cluster_count = 0usize;
     let mut last_offset: Option<usize> = None;
 
-    let mut check_run = |run_idx: usize| -> bool {
+    let mut check_run =
+      |run_idx: usize, cluster_count: &mut usize, last_offset: &mut Option<usize>| -> bool {
       let run_len = runs[run_idx].glyphs.len();
       if run_len == 0 {
         return false;
@@ -1687,13 +1688,13 @@ impl TextItem {
             idx += 1;
           }
           let offset = run_start.saturating_add(cluster_value as usize);
-          cluster_count = cluster_count.saturating_add(1);
-          if let Some(prev) = last_offset {
+          *cluster_count = (*cluster_count).saturating_add(1);
+          if let Some(prev) = *last_offset {
             if offset < prev {
               return true;
             }
           }
-          last_offset = Some(offset);
+          *last_offset = Some(offset);
         }
       } else {
         let mut idx = run_len;
@@ -1705,13 +1706,13 @@ impl TextItem {
             idx -= 1;
           }
           let offset = run_start.saturating_add(cluster_value as usize);
-          cluster_count = cluster_count.saturating_add(1);
-          if let Some(prev) = last_offset {
+          *cluster_count = (*cluster_count).saturating_add(1);
+          if let Some(prev) = *last_offset {
             if offset < prev {
               return true;
             }
           }
-          last_offset = Some(offset);
+          *last_offset = Some(offset);
         }
       }
 
@@ -1720,22 +1721,22 @@ impl TextItem {
 
     let mut needs_sort = false;
     if run_starts_increasing {
-      for run_idx in 0..run_count {
-        if check_run(run_idx) {
+      for run_idx in 0..runs.len() {
+        if check_run(run_idx, &mut cluster_count, &mut last_offset) {
           needs_sort = true;
           break;
         }
       }
     } else if run_starts_decreasing {
-      for run_idx in (0..run_count).rev() {
-        if check_run(run_idx) {
+      for run_idx in (0..runs.len()).rev() {
+        if check_run(run_idx, &mut cluster_count, &mut last_offset) {
           needs_sort = true;
           break;
         }
       }
     } else {
       for &run_idx in &sorted_run_indices {
-        if check_run(run_idx) {
+        if check_run(run_idx, &mut cluster_count, &mut last_offset) {
           needs_sort = true;
           break;
         }
@@ -1764,8 +1765,6 @@ impl TextItem {
 
       let run_count = runs.len();
       let mut prev_cluster: Option<ClusterLite> = None;
-
-      let run_count = runs.len();
       let mut apply_run = |run_idx: usize| {
         let run_len = runs[run_idx].glyphs.len();
         if run_len == 0 {

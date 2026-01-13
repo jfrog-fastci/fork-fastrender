@@ -82,7 +82,6 @@ pub const WS_CLOSED: u16 = 3;
 /// This prevents untrusted scripts from enqueueing multi-GiB send queues even with a per-message
 /// size limit.
 const MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES: usize = 16 * 1024 * 1024;
-
 /// Hard cap on total queued inbound WebSocket message payload bytes per socket.
 ///
 /// WebSocket events are delivered to JS by queueing `EventLoop` tasks. A hostile server can send

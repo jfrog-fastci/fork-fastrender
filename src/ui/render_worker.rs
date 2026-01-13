@@ -4258,7 +4258,8 @@ impl BrowserRuntime {
                 );
                 let changed = result.unwrap_or(false);
                 (changed, result)
-              }) {
+              })
+            {
               scroll_handled = true;
               changed |= dom_changed;
             }

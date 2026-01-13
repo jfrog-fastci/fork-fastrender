@@ -390,7 +390,6 @@ impl PlaybackClock {
       PlaybackState::Paused
     }
   }
-
   pub fn play(&self) {
     // Capture current frozen timeline time so the transition is continuous.
     let timeline_now = self.now();

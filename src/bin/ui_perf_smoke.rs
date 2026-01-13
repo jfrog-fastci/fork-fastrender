@@ -1218,7 +1218,7 @@ fn run_scroll_fixture(
       frame = next;
       scroll_y = frame.scroll_css.1;
       bounds = frame.scroll_bounds_css;
-      break Ok(round_ms(start.elapsed().as_secs_f64() * 1000.0));
+      break Ok::<f64, WaitError>(round_ms(start.elapsed().as_secs_f64() * 1000.0));
     }
   }) {
     Ok(measured) => measured,

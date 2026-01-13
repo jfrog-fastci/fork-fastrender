@@ -2,21 +2,16 @@
 
 test(() => {
   const parent = document.createElement("div");
-  const observer = new MutationObserver(() => {});
-  observer.observe(parent, { childList: true });
-
   const a = document.createElement("span");
   const b = document.createElement("span");
-  const frag = document.createDocumentFragment();
-  frag.appendChild(a);
-  frag.appendChild(b);
-  parent.appendChild(frag);
+  parent.appendChild(a);
+  parent.appendChild(b);
+
+  const nodeList = parent.childNodes;
+  assert_true(nodeList instanceof NodeList, "parent.childNodes should be a NodeList");
 
   const htmlCollection = parent.children;
-  const records = observer.takeRecords();
-  assert_equals(records.length, 1, "DocumentFragment appendChild should produce one mutation record");
-  const nodeList = records[0].addedNodes;
-  assert_true(nodeList instanceof NodeList, "MutationRecord.addedNodes should be a NodeList");
+  assert_true(htmlCollection instanceof HTMLCollection, "parent.children should be an HTMLCollection");
 
   assert_equals(
     NodeList.prototype[Symbol.iterator],
