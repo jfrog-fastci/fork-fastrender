@@ -15,6 +15,7 @@ use crate::ast::expr::pat::Pat;
 use crate::ast::expr::BinaryExpr;
 use crate::ast::expr::Expr;
 use crate::ast::node::Node;
+use crate::ast::node::CoverInitializedName;
 use crate::ast::node::ParenthesizedExpr;
 use crate::ast::node::TrailingCommaAfterRestElement;
 use crate::error::SyntaxErrorType;
@@ -159,6 +160,21 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
         let ObjMember { typ } = *member.stx;
         match typ {
           ObjMemberType::Valued { key, val: value } => {
+            // Preserve syntactic shorthand (`{ a }` / `{ a = 1 }`) vs. `key: value` object pattern
+            // properties when converting from the object-literal cover grammar.
+            //
+            // `ObjMemberType::Valued` is used for both:
+            // - `key: value` members, and
+            // - shorthand members with default initializers (`{ a = 1 }`), which are parsed as a
+            //   synthetic assignment expression tagged with `CoverInitializedName`.
+            //
+            // Downstream emit/minify passes rely on `ObjPatProp.shorthand` to decide whether to emit
+            // the `: <target>` portion, so it must be accurate.
+            let shorthand = matches!(
+              &value,
+              ClassOrObjVal::Prop(Some(initializer))
+                if initializer.assoc.get::<CoverInitializedName>().is_some()
+            );
             let (target, default_value) = match value {
               ClassOrObjVal::Prop(Some(initializer)) => match *initializer.stx {
                 Expr::Binary(n) => {
@@ -189,7 +205,7 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
                 key,
                 target,
                 default_value,
-                shorthand: true,
+                shorthand,
               },
             ));
           }

@@ -303,4 +303,66 @@ mod tests {
     // references (and therefore valid shorthand property names).
     parse_with_options("'use strict'; ({ eval, arguments })", opts).unwrap();
   }
+
+  #[test]
+  fn cover_grammar_object_pattern_shorthand_flags_are_preserved() {
+    use crate::ast::class_or_object::ClassOrObjKey;
+    use crate::ast::expr::pat::Pat;
+    use crate::ast::expr::Expr;
+    use crate::ast::stmt::Stmt;
+    use crate::operator::OperatorName;
+
+    fn assert_first_prop(
+      src: &str,
+      expected_shorthand: bool,
+      expected_target: &str,
+      expect_default: bool,
+    ) {
+      let top = parse_with_options(src, ecma_script_opts()).unwrap();
+      let stmt = top.stx.body.first().expect("expected one statement");
+      let Stmt::Expr(expr_stmt) = &*stmt.stx else {
+        panic!("expected expression statement");
+      };
+      let Expr::Binary(bin) = expr_stmt.stx.expr.stx.as_ref() else {
+        panic!("expected binary expression");
+      };
+      assert_eq!(bin.stx.operator, OperatorName::Assignment);
+      let Expr::ObjPat(obj_pat) = bin.stx.left.stx.as_ref() else {
+        panic!("expected object pattern on LHS");
+      };
+      let prop = obj_pat
+        .stx
+        .properties
+        .first()
+        .expect("expected at least one property");
+      assert_eq!(
+        prop.stx.shorthand, expected_shorthand,
+        "unexpected shorthand flag for `{src}`"
+      );
+      let ClassOrObjKey::Direct(key) = &prop.stx.key else {
+        panic!("expected direct key");
+      };
+      assert_eq!(key.stx.key, "a");
+      match prop.stx.target.stx.as_ref() {
+        Pat::Id(id) => assert_eq!(id.stx.name, expected_target),
+        other => panic!("expected identifier pattern, got {other:?}"),
+      }
+      assert_eq!(
+        prop.stx.default_value.is_some(),
+        expect_default,
+        "unexpected default_value presence for `{src}`"
+      );
+    }
+
+    // `{ a: b }` must remain a non-shorthand property in the resulting object pattern.
+    assert_first_prop("({ a: b } = obj);", false, "b", false);
+
+    // `{ a = 1 }` is syntactic shorthand-with-default (CoverInitializedName) and must keep
+    // `shorthand=true` so emit/minify passes can reproduce it.
+    assert_first_prop("({ a = 1 } = obj);", true, "a", true);
+
+    // `{ a: b = 1 }` is a `key: value` property with an assignment expression on the RHS; it is
+    // *not* syntactic shorthand and must preserve `shorthand=false`.
+    assert_first_prop("({ a: b = 1 } = obj);", false, "b", true);
+  }
 }
