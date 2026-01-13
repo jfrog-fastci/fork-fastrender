@@ -309,7 +309,7 @@ fn browser_tab_controller_keyboard_scroll_fallback_scrolls_viewport_and_respects
   // Use a round height so viewport-height * 0.9 is easy to reason about (100 -> 90).
   let viewport_css = (200, 100);
 
-  let html = r#"<!doctype html>
+  let html = r##"<!doctype html>
     <html>
       <head>
         <style>
@@ -325,7 +325,7 @@ fn browser_tab_controller_keyboard_scroll_fallback_scrolls_viewport_and_respects
         <div id="target">target</div>
       </body>
     </html>
-  "#;
+  "##;
 
   let mut controller = BrowserTabController::from_html_with_renderer(
     deterministic_renderer(),
