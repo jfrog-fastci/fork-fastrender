@@ -875,10 +875,17 @@ fn main() {
     Err(VmError::Throw(_) | VmError::ThrowWithStack { .. }) if scenario == "captureStack" => {
       process::exit(0)
     }
-    // `parseFloat` is allowed to succeed here: upstream implementations may parse directly from
-    // UTF-16 without allocating an intermediate `String`. The key invariant is that it must not
-    // abort the process under memory pressure.
-    Ok(_) if scenario == "parseFloat" || scenario == "number" => process::exit(0),
+    // Some scenarios are allowed to succeed here: the key invariant for this harness is that we
+    // never abort the process under allocator OOM pressure.
+    //
+    // `parseFloat`/`Number` may parse directly from UTF-16 without allocating an intermediate
+    // `String`.
+    //
+    // `arrayMap` may be able to iterate indices without allocating (e.g. using integer keys rather
+    // than formatting each index into a Rust `String`).
+    Ok(_) if scenario == "parseFloat" || scenario == "number" || scenario == "arrayMap" => {
+      process::exit(0)
+    }
     Err(VmError::Termination(_)) if scenario == "register_ecma_function" => process::exit(0),
     Ok(_) if scenario == "register_ecma_function" => process::exit(0),
     Ok(v) => {
