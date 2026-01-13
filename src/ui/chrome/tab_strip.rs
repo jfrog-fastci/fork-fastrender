@@ -75,6 +75,17 @@ fn drag_autoscroll_delta_x(pointer_pos: Pos2, viewport_rect: Rect, dt: f32) -> f
     return 0.0;
   }
 
+  // Only auto-scroll while the pointer remains roughly aligned with the strip; this avoids
+  // unexpected scrolling if the user drags far above/below the tab strip.
+  if pointer_pos.y < viewport_rect.top() || pointer_pos.y > viewport_rect.bottom() {
+    return 0.0;
+  }
+  // Similarly, ignore pointer positions that are far outside the viewport horizontally (we only
+  // want to auto-scroll when the user is near an edge).
+  if pointer_pos.x < viewport_rect.left() - zone || pointer_pos.x > viewport_rect.right() + zone {
+    return 0.0;
+  }
+
   // Quadratic ramp: gentle when near the zone boundary, fast when hugging the edge.
   let mut delta_x = 0.0;
   if pointer_pos.x < viewport_rect.left() + zone {
@@ -2726,8 +2737,7 @@ mod tests {
     // One extra fixed-width chip (plus the extra gap it introduces) should force overflow even
     // though the same viewport fits tabs at `TAB_MIN_WIDTH` without it.
     // 4 tabs + 1 chip => 5 items => 4 gaps.
-    let sizing_with_chip =
-      compute_tab_strip_sizing_with_fixed_width(available, tabs, 100.0, tabs);
+    let sizing_with_chip = compute_tab_strip_sizing_with_fixed_width(available, tabs, 100.0, tabs);
     assert!(sizing_with_chip.overflow);
     assert!((sizing_with_chip.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
   }
@@ -2742,8 +2752,7 @@ mod tests {
     assert!(!sizing_no_chip.overflow);
 
     // 1 tab + 1 extra item => 2 items => 1 gap.
-    let sizing_with_chip_gap =
-      compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, 1);
+    let sizing_with_chip_gap = compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, 1);
     assert!(sizing_with_chip_gap.overflow);
     assert!((sizing_with_chip_gap.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
   }
