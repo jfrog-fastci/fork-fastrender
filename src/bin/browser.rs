@@ -106,6 +106,24 @@ fn should_forward_paste_events_to_page(
   page_has_focus && !chrome_has_text_focus && !suppress_paste_events
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+const RESIZE_BURST_TTL: std::time::Duration = std::time::Duration::from_millis(120);
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn is_resize_burst_active(
+  last_resize_event_at: Option<std::time::Instant>,
+  now: std::time::Instant,
+) -> bool {
+  last_resize_event_at.is_some_and(|t| now.duration_since(t) < RESIZE_BURST_TTL)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn resize_burst_deadline(
+  last_resize_event_at: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+  last_resize_event_at.map(|t| t + RESIZE_BURST_TTL)
+}
+
 #[cfg(test)]
 mod input_focus_helpers_tests {
   use super::{should_forward_paste_events_to_page, should_open_page_context_menu_from_keyboard};
@@ -232,6 +250,9 @@ fn main() {
 }
 
 const ENV_BROWSER_HUD: &str = "FASTR_BROWSER_HUD";
+
+#[cfg(feature = "browser_ui")]
+const ENV_BROWSER_RESIZE_DPR_SCALE: &str = "FASTR_BROWSER_RESIZE_DPR_SCALE";
 
 fn parse_browser_hud_env(raw: Option<&str>) -> Result<bool, String> {
   let Some(raw) = raw else {
@@ -1301,6 +1322,45 @@ mod viewport_throttle_integration_tests {
       .expect("trailing update should flush after debounce");
     assert_eq!(second.viewport_css, (120, 90));
     assert!((second.dpr() - 2.0).abs() < f32::EPSILON);
+  }
+}
+
+#[cfg(test)]
+mod resize_burst_detector_tests {
+  use super::*;
+  use std::time::{Duration, Instant};
+
+  #[test]
+  fn resize_burst_active_respects_ttl() {
+    let t0 = Instant::now();
+
+    assert!(!is_resize_burst_active(None, t0));
+    assert!(is_resize_burst_active(Some(t0), t0));
+
+    let near_end = t0 + RESIZE_BURST_TTL - Duration::from_millis(1);
+    assert!(
+      is_resize_burst_active(Some(t0), near_end),
+      "expected burst to remain active within ttl"
+    );
+
+    let at_end = t0 + RESIZE_BURST_TTL;
+    assert!(
+      !is_resize_burst_active(Some(t0), at_end),
+      "expected burst to end at ttl boundary"
+    );
+
+    let after_end = t0 + RESIZE_BURST_TTL + Duration::from_millis(1);
+    assert!(
+      !is_resize_burst_active(Some(t0), after_end),
+      "expected burst to end after ttl"
+    );
+  }
+
+  #[test]
+  fn resize_burst_deadline_is_last_event_plus_ttl() {
+    let t0 = Instant::now();
+    assert_eq!(resize_burst_deadline(None), None);
+    assert_eq!(resize_burst_deadline(Some(t0)), Some(t0 + RESIZE_BURST_TTL));
   }
 }
 
@@ -2934,6 +2994,36 @@ fn debug_log_ui_enabled() -> bool {
 }
 
 #[cfg(feature = "browser_ui")]
+fn resize_dpr_scale_from_env() -> f32 {
+  // Defaults tuned for interactive resize. Lowering DPR reduces the pixmap + upload size so the UI
+  // can stay responsive during a resize drag.
+  const DEFAULT: f32 = 0.5;
+  const MIN: f32 = 0.25;
+  const MAX: f32 = 1.0;
+
+  let raw = match std::env::var(ENV_BROWSER_RESIZE_DPR_SCALE) {
+    Ok(raw) => raw,
+    Err(_) => return DEFAULT,
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return DEFAULT;
+  }
+
+  let parsed = match raw.parse::<f32>() {
+    Ok(value) if value.is_finite() => value,
+    _ => {
+      eprintln!(
+        "{ENV_BROWSER_RESIZE_DPR_SCALE}: invalid value {raw:?}; expected a finite f32"
+      );
+      return DEFAULT;
+    }
+  };
+
+  parsed.clamp(MIN, MAX)
+}
+
+#[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
 struct OpenSelectDropdown {
   tab_id: fastrender::ui::TabId,
@@ -3592,7 +3682,11 @@ struct App {
   viewport_cache_css: (u32, u32),
   viewport_cache_dpr: f32,
   viewport_throttle: fastrender::ui::ViewportThrottle,
+  viewport_throttle_resizing: fastrender::ui::ViewportThrottle,
   viewport_throttle_tab: Option<fastrender::ui::TabId>,
+  last_resize_event_at: Option<std::time::Instant>,
+  resize_burst_active: bool,
+  resize_dpr_scale: f32,
   modifiers: winit::event::ModifiersState,
   /// Clipboard text received from the worker that should be forwarded to the OS clipboard on the
   /// next egui frame.
@@ -3700,6 +3794,11 @@ impl App {
   const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
   const CLOSE_ANIM_FAVICON_TTL: std::time::Duration = std::time::Duration::from_millis(250);
   const MAX_CLOSING_TAB_FAVICONS: usize = 64;
+  const RESIZE_VIEWPORT_THROTTLE_CONFIG: fastrender::ui::ViewportThrottleConfig =
+    fastrender::ui::ViewportThrottleConfig {
+      max_hz: 12,
+      debounce: std::time::Duration::from_millis(140),
+    };
   const SELECT_DROPDOWN_EDGE_PADDING_POINTS: f32 = 8.0;
   const SELECT_DROPDOWN_MIN_WIDTH_POINTS: f32 = 180.0;
   const SELECT_DROPDOWN_MAX_WIDTH_POINTS: f32 = 600.0;
@@ -4180,7 +4279,13 @@ impl App {
       viewport_cache_css: (0, 0),
       viewport_cache_dpr: 0.0,
       viewport_throttle: fastrender::ui::ViewportThrottle::new(),
+      viewport_throttle_resizing: fastrender::ui::ViewportThrottle::with_config(
+        Self::RESIZE_VIEWPORT_THROTTLE_CONFIG,
+      ),
       viewport_throttle_tab: None,
+      last_resize_event_at: None,
+      resize_burst_active: false,
+      resize_dpr_scale: resize_dpr_scale_from_env(),
       modifiers: winit::event::ModifiersState::default(),
       pending_clipboard_text: None,
       suppress_paste_events: false,
@@ -4356,6 +4461,35 @@ impl App {
     wants_ticks.then_some(tab_id)
   }
 
+  fn update_resize_burst_state(&mut self, now: std::time::Instant) {
+    let is_resizing = is_resize_burst_active(self.last_resize_event_at, now);
+    if is_resizing == self.resize_burst_active {
+      if !is_resizing {
+        // Once the TTL expires, clear the timestamp so we stop scheduling wakeups.
+        self.last_resize_event_at = None;
+      }
+      return;
+    }
+
+    let was_resizing = self.resize_burst_active;
+    self.resize_burst_active = is_resizing;
+
+    // When a resize burst ends, flush any pending low-quality viewport update immediately before
+    // returning to the normal throttle/DPR.
+    if was_resizing && !is_resizing {
+      self.force_send_viewport_now();
+      self.last_resize_event_at = None;
+    }
+
+    std::mem::swap(&mut self.viewport_throttle, &mut self.viewport_throttle_resizing);
+    self.viewport_throttle.reset();
+
+    if was_resizing && !is_resizing {
+      // Force a redraw so `render_frame` computes a full-DPR viewport and we repaint promptly.
+      self.window.request_redraw();
+    }
+  }
+
   fn drive_periodic_tasks_and_update_control_flow(
     &mut self,
     control_flow: &mut winit::event_loop::ControlFlow,
@@ -4364,6 +4498,7 @@ impl App {
     // the current event so that:
     // - animation ticks are driven even when a given window is otherwise idle, and
     // - the global `ControlFlow::WaitUntil` deadline accounts for the earliest wakeup across all windows.
+    self.update_resize_burst_state(std::time::Instant::now());
     self.drain_expired_closing_tab_favicons();
     self.drive_animation_tick();
     self.drive_viewport_throttle();
@@ -4524,6 +4659,14 @@ impl App {
       deadline = Some(match deadline {
         Some(existing) => existing.min(vp_deadline),
         None => vp_deadline,
+      });
+    }
+
+    // Resize-burst wakeup (window drag-resize detection).
+    if let Some(resize_deadline) = resize_burst_deadline(self.last_resize_event_at) {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(resize_deadline),
+        None => resize_deadline,
       });
     }
 
@@ -4710,6 +4853,7 @@ impl App {
   }
 
   fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    self.last_resize_event_at = Some(std::time::Instant::now());
     if new_size.width == 0 || new_size.height == 0 {
       return;
     }
@@ -5723,6 +5867,14 @@ impl App {
       self.viewport_throttle_tab = Some(tab_id);
       self.viewport_throttle.reset();
     }
+
+    // During interactive window drags we intentionally downscale DPR so the render worker has less
+    // pixmap/GPU upload work to do (keeps the UI responsive).
+    let dpr = if self.resize_burst_active {
+      dpr * self.resize_dpr_scale
+    } else {
+      dpr
+    };
 
     // Clamp *before* sending to the worker so we never request an absurd RGBA pixmap allocation.
     let clamp = self
