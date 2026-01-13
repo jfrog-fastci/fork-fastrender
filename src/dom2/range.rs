@@ -309,6 +309,46 @@ impl Document {
     Ok(container)
   }
 
+  /// Compare the boundary points of two ranges per `Range.compareBoundaryPoints()`.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-compareboundarypoints
+  pub fn range_compare_boundary_points(
+    &self,
+    range_a: RangeId,
+    how: u16,
+    range_b: RangeId,
+  ) -> DomResult<i16> {
+    let range_a = self.range(range_a)?;
+    let range_b = self.range(range_b)?;
+
+    // `how` is an `unsigned short` in WebIDL; callers are expected to convert before invoking this
+    // helper. We still validate the allowed values (0..=3) per the DOM Standard.
+    if how > 3 {
+      return Err(DomError::NotSupportedError);
+    }
+
+    // DOM `Range` objects always have both endpoints in the same root (ShadowRoot-aware); use the
+    // start container roots as the range roots.
+    if self.tree_root_for_range(range_a.start.node) != self.tree_root_for_range(range_b.start.node)
+    {
+      return Err(DomError::WrongDocumentError);
+    }
+
+    let (this_point, other_point) = match how {
+      0 => (range_a.start, range_b.start), // START_TO_START
+      1 => (range_a.end, range_b.start),   // START_TO_END
+      2 => (range_a.end, range_b.end),     // END_TO_END
+      3 => (range_a.start, range_b.end),   // END_TO_START
+      _ => unreachable!("checked above"),
+    };
+
+    Ok(match self.boundary_point_position(this_point, other_point) {
+      BoundaryPointPosition::Before => -1,
+      BoundaryPointPosition::Equal => 0,
+      BoundaryPointPosition::After => 1,
+    })
+  }
+
   pub fn range_set_start(&mut self, range: RangeId, node: NodeId, offset: usize) -> DomResult<()> {
     self.range_set_start_or_end(range, node, offset, /* is_start */ true)
   }

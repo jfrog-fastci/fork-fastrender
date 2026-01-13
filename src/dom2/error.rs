@@ -18,6 +18,8 @@ pub enum DomError {
   NotFoundError,
   #[error("NotSupportedError")]
   NotSupportedError,
+  #[error("WrongDocumentError")]
+  WrongDocumentError,
   #[error("InvalidNodeTypeError")]
   InvalidNodeTypeError,
   #[error("NoModificationAllowedError")]
@@ -35,6 +37,7 @@ impl DomError {
       Self::NamespaceError => "NamespaceError",
       Self::NotFoundError => "NotFoundError",
       Self::NotSupportedError => "NotSupportedError",
+      Self::WrongDocumentError => "WrongDocumentError",
       Self::InvalidNodeTypeError => "InvalidNodeTypeError",
       Self::NoModificationAllowedError => "NoModificationAllowedError",
       Self::SyntaxError => "SyntaxError",

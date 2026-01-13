@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::{parse_html, Document, DomError, NodeKind};
+use crate::dom::HTML_NAMESPACE;
 
 #[test]
 fn range_tree_root_stops_at_shadow_root_and_pre_remove_does_not_cross_shadow_boundary() {
@@ -505,4 +506,78 @@ fn range_split_text_moves_boundary_points_from_old_text_to_new_text() {
   assert_eq!(doc.range_start_offset(range).unwrap(), 1);
   assert_eq!(doc.range_end_container(range).unwrap(), new_text);
   assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
+fn range_compare_boundary_points_returns_not_supported_error_before_root_check() {
+  let mut doc: Document =
+    parse_html("<!doctype html><html><body><p id=a>abcd</p></body></html>").unwrap();
+
+  let p = doc.get_element_by_id("a").expect("missing <p id=a>");
+  let text = doc.node(p).children[0];
+
+  let in_doc = doc.create_range();
+  doc.range_set_start(in_doc, text, 0).unwrap();
+  doc.range_set_end(in_doc, text, 1).unwrap();
+
+  let detached_div = doc.create_element("div", HTML_NAMESPACE);
+  let detached_text = doc.create_text("x");
+  doc.append_child(detached_div, detached_text).unwrap();
+
+  let in_detached = doc.create_range();
+  doc.range_set_start(in_detached, detached_text, 0).unwrap();
+  doc.range_set_end(in_detached, detached_text, 1).unwrap();
+
+  // `how=4` is invalid; spec requires NotSupportedError before checking roots.
+  let err = doc
+    .range_compare_boundary_points(in_doc, 4, in_detached)
+    .unwrap_err();
+  assert_eq!(err, DomError::NotSupportedError);
+}
+
+#[test]
+fn range_compare_boundary_points_returns_wrong_document_error_for_different_roots() {
+  let mut doc: Document =
+    parse_html("<!doctype html><html><body><p id=a>abcd</p></body></html>").unwrap();
+
+  let p = doc.get_element_by_id("a").expect("missing <p id=a>");
+  let text = doc.node(p).children[0];
+
+  let in_doc = doc.create_range();
+  doc.range_set_start(in_doc, text, 0).unwrap();
+  doc.range_set_end(in_doc, text, 1).unwrap();
+
+  let detached_div = doc.create_element("div", HTML_NAMESPACE);
+  let detached_text = doc.create_text("x");
+  doc.append_child(detached_div, detached_text).unwrap();
+
+  let in_detached = doc.create_range();
+  doc.range_set_start(in_detached, detached_text, 0).unwrap();
+  doc.range_set_end(in_detached, detached_text, 1).unwrap();
+
+  let err = doc
+    .range_compare_boundary_points(in_doc, 0, in_detached)
+    .unwrap_err();
+  assert_eq!(err, DomError::WrongDocumentError);
+}
+
+#[test]
+fn range_compare_boundary_points_orders_boundary_points() {
+  let mut doc: Document =
+    parse_html("<!doctype html><html><body><p id=a>abcd</p></body></html>").unwrap();
+
+  let p = doc.get_element_by_id("a").expect("missing <p id=a>");
+  let text = doc.node(p).children[0];
+
+  let a = doc.create_range();
+  doc.range_set_start(a, text, 0).unwrap();
+  doc.range_set_end(a, text, 0).unwrap();
+
+  let b = doc.create_range();
+  doc.range_set_start(b, text, 1).unwrap();
+  doc.range_set_end(b, text, 1).unwrap();
+
+  assert_eq!(doc.range_compare_boundary_points(a, 0, b).unwrap(), -1);
+  assert_eq!(doc.range_compare_boundary_points(b, 0, a).unwrap(), 1);
+  assert_eq!(doc.range_compare_boundary_points(a, 0, a).unwrap(), 0);
 }
