@@ -645,6 +645,43 @@ impl TreeSink for Dom2TreeSink {
     // roots exist at `<script>` pause points.
     let mut doc = self.document.into_inner();
     doc.attach_shadow_roots();
+
+    // html5ever treats the HTML document element as a special-case root and may insert/move it
+    // before the doctype node. FastRender materializes doctypes as ordinary dom2 nodes (so
+    // `document.doctype` + `document.childNodes` are observable), so ensure the final child order
+    // matches the platform: the doctype must precede the documentElement.
+    if doc.is_html_document() {
+      let root = doc.root();
+      let mut doctype_pos = None;
+      let mut element_pos = None;
+      for (idx, &child) in doc.node(root).children.iter().enumerate() {
+        if child.index() >= doc.nodes_len() {
+          continue;
+        }
+        if doc.node(child).parent != Some(root) {
+          continue;
+        }
+        match &doc.node(child).kind {
+          NodeKind::Doctype { .. } => {
+            if doctype_pos.is_none() {
+              doctype_pos = Some(idx);
+            }
+          }
+          NodeKind::Element { .. } | NodeKind::Slot { .. } => {
+            if element_pos.is_none() {
+              element_pos = Some(idx);
+            }
+          }
+          _ => {}
+        }
+      }
+      if let (Some(dpos), Some(epos)) = (doctype_pos, element_pos) {
+        if dpos > epos {
+          let doctype = doc.node_mut(root).children.remove(dpos);
+          doc.node_mut(root).children.insert(epos, doctype);
+        }
+      }
+    }
     doc
   }
 
@@ -993,18 +1030,28 @@ impl TreeSink for Dom2TreeSink {
   ) {
     let mut doc = self.document.borrow_mut();
     let root = doc.root();
+    // HTML documents can only contain a single doctype node (extra doctypes are parse errors and
+    // should be ignored). Keep the first parsed doctype.
+    if doc
+      .node(root)
+      .children
+      .iter()
+      .copied()
+      .any(|id| id.index() < doc.nodes_len() && matches!(doc.node(id).kind, NodeKind::Doctype { .. }))
+    {
+      return;
+    }
+
     // html5ever can synthesize the `<html>` element early during parsing (before an authored
     // `<!doctype>` token is processed). The DOM tree, however, expects the doctype (when present) to
     // precede the document element in tree order.
     //
     // Insert the doctype before the first element/slot child so `document.firstChild` and
     // `document.childNodes` reflect spec ordering.
-    let reference = doc
-      .node(root)
-      .children
-      .iter()
-      .copied()
-      .find(|&child| matches!(&doc.node(child).kind, NodeKind::Element { .. } | NodeKind::Slot { .. }));
+    let reference = doc.node(root).children.iter().copied().find(|&child| {
+      child.index() < doc.nodes_len()
+        && matches!(&doc.node(child).kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+    });
     let doctype = doc.push_node(
       NodeKind::Doctype {
         name: name.to_string(),

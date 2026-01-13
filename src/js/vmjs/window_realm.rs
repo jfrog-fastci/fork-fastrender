@@ -17199,6 +17199,18 @@ fn dom_parser_parse_from_string_native(
     }
   };
 
+  // HTML DOMParser documents inherit the caller's document URL (spec behavior, and asserted by the
+  // curated WPT corpus). Detached documents still have no associated `Window`, so `defaultView` and
+  // `location` remain null.
+  let host_url_value = {
+    // Root host document while allocating the `URL` key: `alloc_key` can trigger GC.
+    scope.push_root(Value::Object(host_document_obj))?;
+    let url_key = alloc_key(scope, "URL")?;
+    vm.get(scope, host_document_obj, url_key)?
+  };
+  let host_url_s = scope.heap_mut().to_string(host_url_value)?;
+  scope.push_root(Value::String(host_url_s))?;
+
   // Construct a detached Document wrapper.
   let document_obj = scope.alloc_object_with_prototype(Some(host_document_obj))?;
   scope.push_root(Value::Object(document_obj))?;
@@ -17210,15 +17222,11 @@ fn dom_parser_parse_from_string_native(
     },
   )?;
 
-  // Detached documents have no associated window.
-  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
-  scope.push_root(Value::String(about_blank_s))?;
-
   {
     // Root while allocating property keys: string allocation can trigger GC.
     let mut scope = scope.reborrow();
     scope.push_root(Value::Object(document_obj))?;
-    scope.push_root(Value::String(about_blank_s))?;
+    scope.push_root(Value::String(host_url_s))?;
 
     let default_view_key = alloc_key(&mut scope, "defaultView")?;
     scope.define_property(
@@ -17238,7 +17246,7 @@ fn dom_parser_parse_from_string_native(
     scope.define_property(
       document_obj,
       url_key,
-      data_desc(Value::String(about_blank_s)),
+      data_desc(Value::String(host_url_s)),
     )?;
 
     let location_key = alloc_key(&mut scope, "location")?;

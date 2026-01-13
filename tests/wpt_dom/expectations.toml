@@ -498,9 +498,9 @@ reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up wo
 
 [[expectations]]
 id = "dom/ranges/Range-stringifier.html"
-backend = ["vmjs", "vmjs-rendered"]
+backend = "vmjs-rendered"
 status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+reason = "vmjs-rendered backend: Range methods throw TypeError ('Illegal invocation'); Range bindings are not implemented for renderer-backed documents yet."
 
 [[expectations]]
 id = "dom/ranges/Range-surroundContents.html"

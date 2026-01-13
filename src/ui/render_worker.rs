@@ -7006,7 +7006,7 @@ impl BrowserRuntime {
     if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
       // Right-click/etc: no default interaction engine actions, but still dispatch a DOM `mouseup`
       // event so JS can observe non-primary buttons.
-      let Some(doc) = tab.document.as_mut() else {
+      let Some(mut doc) = tab.document.as_mut() else {
         return;
       };
       let scroll_snapshot = tab.scroll_state.clone();
@@ -9592,7 +9592,7 @@ impl BrowserRuntime {
         .as_deref()
         .unwrap_or(about_pages::ABOUT_BASE_URL);
 
-      let Some(doc) = tab.document.as_mut() else {
+      let Some(mut doc) = tab.document.as_mut() else {
         return;
       };
 
