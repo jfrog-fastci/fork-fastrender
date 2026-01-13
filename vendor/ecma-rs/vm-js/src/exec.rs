@@ -34996,6 +34996,11 @@ fn gen_eval_assignment_apply_reference(
               };
               (Some(base), Some(key_value))
             }
+            Reference::SuperProperty { .. } => {
+              return Err(VmError::Unimplemented(
+                "super property assignment that yields (generator evaluator)",
+              ));
+            }
             Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym))),
           };
 
@@ -35055,6 +35060,11 @@ fn gen_eval_assignment_apply_reference(
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
               };
               (Some(base), Some(key_value))
+            }
+            Reference::SuperProperty { .. } => {
+              return Err(VmError::Unimplemented(
+                "super property assignment that yields (generator evaluator)",
+              ));
             }
             Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym))),
           };
