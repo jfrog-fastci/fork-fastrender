@@ -99,24 +99,52 @@ body {
   background: #eef2f7;
 }
 
+.toolbar-button.disabled {
+  opacity: 0.55;
+  background: #f3f4f6;
+  cursor: default;
+}
+
 .address-bar-wrap {
   flex: 1;
   position: relative;
   min-width: 180px;
 }
 
-.address-bar {
+.address-bar,
+.address-bar-form {
   margin: 0;
 }
 
 .address-input {
+  flex: 1;
   width: 100%;
+  min-width: 0;
   box-sizing: border-box;
   padding: 6px 10px;
   border-radius: 10px;
   border: 1px solid #c7cbd1;
   background: #ffffff;
   font: inherit;
+}
+
+.address-bar-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.address-bar-submit {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #c7cbd1;
+  background: #f8fafc;
+  color: inherit;
+  font: inherit;
+}
+
+.address-bar-submit:hover {
+  background: #eef2f7;
 }
 
 .omnibox-popup {
