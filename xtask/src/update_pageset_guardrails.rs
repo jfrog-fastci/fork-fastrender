@@ -423,6 +423,9 @@ requested --count={count}. The manifest will include all failures and {ok_pages}
       rewrite_scripts_flag
     );
     eprintln!(
+      "      # Note: media sources are placeholder-only by default. Add --include-media to vendor\n      #       playable media (subject to --media-max-bytes / --media-max-file-bytes; set to 0 to disable)."
+    );
+    eprintln!(
       "    Expected output: {}",
       fixture_dir.join("index.html").display()
     );

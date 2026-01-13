@@ -650,6 +650,13 @@ fn render_page_section(
       "bash scripts/cargo_agent.sh xtask import-page-fixture {DEFAULT_FIXTURE_BUNDLE_OUT_DIR}/{stem}.tar {stem}\n",
       stem = page.stem
     ));
+    out.push_str(
+      "# Note: media sources are rewritten to deterministic empty placeholder files by default.\n",
+    );
+    out.push_str(
+      "#       Add --include-media to vendor playable media into the fixture (subject to\n",
+    );
+    out.push_str("#       --media-max-bytes / --media-max-file-bytes; set to 0 to disable).\n");
     out.push_str(&format!(
       "bash scripts/cargo_agent.sh xtask validate-page-fixtures --only {stem}\n",
       stem = page.stem
