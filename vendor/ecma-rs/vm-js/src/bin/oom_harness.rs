@@ -57,7 +57,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions | promiseJob | generatorInstance | register_ecma_function"
+    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | globalVarDecl | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions | promiseJob | generatorInstance | register_ecma_function"
   );
   process::exit(2);
 }
@@ -569,6 +569,34 @@ fn main() {
       }
       bytes.extend_from_slice(b"break ");
       bytes.resize("break ".len() + len_code_units, b'a');
+      bytes.extend_from_slice(b";");
+      let script = unsafe { String::from_utf8_unchecked(bytes) };
+
+      // Keep `filler` alive for the duration of the run.
+      let _keep = &filler;
+
+      agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
+    }
+    "globalVarDecl" => {
+      // Construct a large script containing a valid global `var` declaration with an enormous
+      // identifier name. GlobalDeclarationInstantiation performs multiple name-scans over the
+      // script body; those scans must use fallible allocations so allocator OOM does not abort the
+      // process (e.g. avoid infallible `String::clone()` on attacker-controlled names).
+      let total_len = "var ".len()
+        .checked_add(len_code_units)
+        .and_then(|n| n.checked_add(";".len()))
+        .unwrap_or(usize::MAX);
+      if total_len == usize::MAX {
+        eprintln!("oom_harness: globalVarDecl script length overflow");
+        process::exit(1);
+      }
+      let mut bytes: Vec<u8> = Vec::new();
+      if bytes.try_reserve_exact(total_len).is_err() {
+        eprintln!("oom_harness: failed to allocate globalVarDecl script buffer");
+        process::exit(1);
+      }
+      bytes.extend_from_slice(b"var ");
+      bytes.resize("var ".len() + len_code_units, b'a');
       bytes.extend_from_slice(b";");
       let script = unsafe { String::from_utf8_unchecked(bytes) };
 

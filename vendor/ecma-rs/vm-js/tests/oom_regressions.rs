@@ -214,6 +214,23 @@ fn module_get_exported_names_large_export_name_does_not_abort_on_oom() {
 }
 
 #[test]
+fn global_var_decl_instantiation_large_name_does_not_abort_on_oom() {
+  // GlobalDeclarationInstantiation collects and validates var-scoped names, then records them for
+  // future instantiation checks. All name copies and set growth must be fallible under allocator
+  // OOM (no process abort).
+  //
+  // Use a larger filler than the default so parsing can still succeed, but subsequent instantiation
+  // work hits allocator OOM reliably.
+  const GLOBAL_VAR_DECL_FILLER_BYTES: usize = 135 * 1024 * 1024;
+  run_oom_harness_with_limits(
+    "globalVarDecl",
+    15_000_000,
+    LIMIT_AS_BYTES,
+    GLOBAL_VAR_DECL_FILLER_BYTES,
+  );
+}
+
+#[test]
 fn capture_stack_does_not_abort_on_oom() {
   // Capturing the VM stack for `ThrowWithStack` must not abort the process under allocator OOM.
   run_oom_harness("captureStack", 0);
