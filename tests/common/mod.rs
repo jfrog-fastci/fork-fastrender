@@ -5,6 +5,8 @@ pub(crate) mod env;
 pub(crate) mod global_state;
 pub(crate) mod locks;
 pub(crate) mod media_assets;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_sandbox_exec;
 pub(crate) mod net;
 pub(crate) mod rayon;
 // Compatibility shim (some older tests still reference `crate::common::rayon_test_util`).
