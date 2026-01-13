@@ -291,19 +291,22 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
   rows: &[GridTrack],
 ) {
   #[inline(always)]
-  fn build_prefix_counts(tracks: &[GridTrack]) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+  fn build_prefix_counts(tracks: &[GridTrack]) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     // Building each prefix array in separate passes would require scanning the full track list
     // 3x per axis. We compute all three in one pass to reduce CPU time for large grids.
-    let mut flexible_prefix: Vec<u32> = Vec::with_capacity(tracks.len() + 1);
-    let mut intrinsic_prefix: Vec<u32> = Vec::with_capacity(tracks.len() + 1);
-    let mut percentage_prefix: Vec<u32> = Vec::with_capacity(tracks.len() + 1);
+    //
+    // Use `u16` for the prefix values: the count of "real" tracks is bounded by `TrackCounts` (u16),
+    // and gutters/lines are never flexible/intrinsic/percentage tracks.
+    let mut flexible_prefix: Vec<u16> = Vec::with_capacity(tracks.len() + 1);
+    let mut intrinsic_prefix: Vec<u16> = Vec::with_capacity(tracks.len() + 1);
+    let mut percentage_prefix: Vec<u16> = Vec::with_capacity(tracks.len() + 1);
     flexible_prefix.push(0);
     intrinsic_prefix.push(0);
     percentage_prefix.push(0);
 
-    let mut flexible_count = 0u32;
-    let mut intrinsic_count = 0u32;
-    let mut percentage_count = 0u32;
+    let mut flexible_count = 0u16;
+    let mut intrinsic_count = 0u16;
+    let mut percentage_count = 0u16;
     for track in tracks {
       if track.is_flexible() {
         flexible_count += 1;
@@ -324,10 +327,10 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
   }
 
   #[inline(always)]
-  fn range_has_match(prefix: &[u32], start: usize, end: usize) -> bool {
+  fn range_has_match(prefix: &[u16], start: usize, end: usize) -> bool {
     // `GridItem::track_range_excluding_lines()` can return an empty range for degenerate spans.
     // This mirrors `Range::any()` which would also return `false` for empty ranges.
-    start < end && (prefix[end] - prefix[start]) > 0
+    start < end && prefix[end] != prefix[start]
   }
 
   let (column_flexible_prefix, column_intrinsic_prefix, column_percentage_prefix) =
