@@ -2511,14 +2511,14 @@ impl JsRuntime {
             return Err(err);
           }
 
-            let resolve_res = promise_resolve_for_await_with_host_and_hooks(
-              &mut *vm_frame,
-              &mut root_scope,
-              host,
-              &mut hooks,
-              await_value,
-            )
-            .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut root_scope,
+            host,
+            &mut hooks,
+            await_value,
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -17842,7 +17842,7 @@ fn async_eval_class_after_super(
       let token = evaluator.vm.intern_script_or_module(script_or_module)?;
       ctor_scope
         .heap_mut()
-      .set_function_script_or_module_token(func_obj, Some(token))?;
+        .set_function_script_or_module_token(func_obj, Some(token))?;
     }
     Some(func_obj)
   } else {
