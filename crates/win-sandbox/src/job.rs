@@ -241,10 +241,8 @@ mod tests {
 
   #[test]
   fn job_api_smoke() {
+    // Exercise the individual APIs on a fresh job.
     let job = Job::new(None).expect("create job");
-    job
-      .set_renderer_limits(Some(64 * 1024 * 1024))
-      .expect("renderer limits");
     job.set_kill_on_close().expect("kill on close");
     job
       .set_active_process_limit(1)
@@ -254,5 +252,13 @@ mod tests {
       .expect("job memory limit");
     job.set_ui_restrictions_headless().expect("ui restrictions");
     job.terminate(0).expect("terminate job");
+
+    // Exercise the convenience helper on its own job to avoid relying on whether UI restrictions
+    // can be set multiple times for the same job object.
+    let job = Job::new(None).expect("create second job");
+    job
+      .set_renderer_limits(Some(64 * 1024 * 1024))
+      .expect("renderer limits");
+    job.terminate(0).expect("terminate second job");
   }
 }
