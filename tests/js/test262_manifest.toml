@@ -1820,8 +1820,11 @@ reason = "vm-js: String.prototype.split does not yet implement RegExp separators
 
 [[expectations]]
 id = "built-ins/String/prototype/split/cstm-split-invocation.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet implement @@split hooks on separator objects."
+status = "pass"
+
+[[expectations]]
+id = "built-ins/String/prototype/split/cstm-split-on-bigint-primitive.js"
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-regexp.js"
@@ -1848,8 +1851,7 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/this-value-tostring-error.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split does not yet implement @@split hooks on separator objects."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Object/groupBy/**"
