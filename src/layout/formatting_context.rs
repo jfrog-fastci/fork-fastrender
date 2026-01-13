@@ -758,6 +758,15 @@ pub(crate) fn intrinsic_cache_clear() {
 }
 
 pub(crate) fn remembered_size_cache_lookup(node: &BoxNode) -> Option<Size> {
+  #[cfg(test)]
+  {
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0
+      && !intrinsic_cache_test_is_current_thread_allowed()
+    {
+      return None;
+    }
+  }
+
   let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
   ensure_intrinsic_thread_epoch(epoch);
   let id = node.id();
@@ -791,6 +800,15 @@ pub(crate) fn remembered_size_cache_lookup(node: &BoxNode) -> Option<Size> {
 }
 
 pub(crate) fn remembered_size_cache_store(node: &BoxNode, value: Size) {
+  #[cfg(test)]
+  {
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0
+      && !intrinsic_cache_test_is_current_thread_allowed()
+    {
+      return;
+    }
+  }
+
   let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
   ensure_intrinsic_thread_epoch(epoch);
   let id = node.id();
@@ -2183,6 +2201,15 @@ pub(crate) fn intrinsic_block_cache_lookup(
   node: &BoxNode,
   mode: IntrinsicSizingMode,
 ) -> Option<f32> {
+  #[cfg(test)]
+  {
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0
+      && !intrinsic_cache_test_is_current_thread_allowed()
+    {
+      return None;
+    }
+  }
+
   let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
   ensure_intrinsic_thread_epoch(epoch);
   let id = node.id();
@@ -2221,6 +2248,15 @@ pub(crate) fn intrinsic_block_cache_lookup(
 }
 
 pub(crate) fn intrinsic_block_cache_store(node: &BoxNode, mode: IntrinsicSizingMode, value: f32) {
+  #[cfg(test)]
+  {
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0
+      && !intrinsic_cache_test_is_current_thread_allowed()
+    {
+      return;
+    }
+  }
+
   let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
   ensure_intrinsic_thread_epoch(epoch);
   let id = node.id();
