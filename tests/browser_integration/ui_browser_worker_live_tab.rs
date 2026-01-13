@@ -154,11 +154,9 @@ fn tick_does_not_schedule_for_unused_keyframes() {
     initial.next_tick.is_none(),
     "expected unused @keyframes to not request periodic ticks"
   );
-  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
-  while handle.ui_rx.try_recv().is_ok() {}
+  // A navigation/initial paint does not guarantee a standalone `ScrollStateUpdated`, so just drain
+  // follow-up messages before asserting tick behaviour.
+  let _ = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
 
   handle
     .ui_tx
