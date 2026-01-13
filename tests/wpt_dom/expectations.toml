@@ -204,13 +204,7 @@ reason = "NodeIterator pre-remove edge cases (shadow root/template/moves) not fu
 id = "dom/document_doctype.window.js"
 backend = "vmjs"
 status = "xfail"
-reason = "DocumentType is not currently ordered before documentElement in `document.childNodes` / sibling traversal (doctype should be the first child)."
-
-[[expectations]]
-id = "dom/shadow_dom_get_root_node.window.js"
-backend = "vmjs"
-status = "xfail"
-reason = "ShadowRoot.getRootNode() traversal semantics (composed vs non-composed root) are not implemented yet."
+reason = "DocumentType ordering is incorrect: HTML documents must have the doctype before documentElement (`document.firstChild` / `childNodes[0]` should be `document.doctype`)."
 
 [[expectations]]
 id = "dom/shadow_dom_manual_slot_assignment.window.js"
