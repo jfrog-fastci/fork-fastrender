@@ -62,6 +62,8 @@ The `chrome` bridge is the trust boundary: it is effectively “native code capa
   - potentially escalate to other privileged operations as the API grows.
 - Chrome pages must not render or `innerHTML` untrusted strings without sanitization (XSS in chrome
   pages is privilege escalation).
+  - Treat tab titles, URLs, error strings, and any other renderer-provided data as **attacker
+    controlled** and render with `textContent` (or equivalent escaping).
 
 ---
 
