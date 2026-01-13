@@ -2835,13 +2835,15 @@ fn parse_fe_component_transfer(node: &roxmltree::Node) -> Option<FilterPrimitive
 
   for child in node.children().filter(|c| c.is_element()) {
     let func = parse_transfer_fn(&child).unwrap_or(TransferFn::Identity);
-    let name = child.tag_name().name().to_ascii_lowercase();
-    match name.as_str() {
-      "fefuncr" => r = func,
-      "fefuncg" => g = func,
-      "fefuncb" => b = func,
-      "fefunca" => a = func,
-      _ => {}
+    let name = child.tag_name().name();
+    if name.eq_ignore_ascii_case("fefuncr") {
+      r = func;
+    } else if name.eq_ignore_ascii_case("fefuncg") {
+      g = func;
+    } else if name.eq_ignore_ascii_case("fefuncb") {
+      b = func;
+    } else if name.eq_ignore_ascii_case("fefunca") {
+      a = func;
     }
   }
 
@@ -2849,10 +2851,12 @@ fn parse_fe_component_transfer(node: &roxmltree::Node) -> Option<FilterPrimitive
 }
 
 fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
-  let ty = node
-    .attribute("type")
-    .unwrap_or("identity")
-    .to_ascii_lowercase();
+  let ty_raw = trim_ascii_whitespace(node.attribute("type").unwrap_or("identity"));
+  let ty = if ty_raw.len() > 64 {
+    "identity"
+  } else {
+    ty_raw
+  };
   let parse_or_default = |name: &str, default: f32| -> Option<f32> {
     match node.attribute(name) {
       Some(raw) => {
@@ -2879,40 +2883,38 @@ fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
       .take(MAX_COMPONENT_TRANSFER_TABLE_VALUES)
       .collect::<Vec<f32>>()
   };
-  match ty.as_str() {
-    "linear" => {
-      let slope = parse_or_default("slope", 1.0)?;
-      let intercept = parse_or_default("intercept", 0.0)?;
-      Some(TransferFn::Linear { slope, intercept })
-    }
-    "gamma" => {
-      let exponent = parse_or_default("exponent", 1.0)?;
-      let amplitude = parse_or_default("amplitude", 1.0)?;
-      let offset = parse_or_default("offset", 0.0)?;
-      Some(TransferFn::Gamma {
-        amplitude,
-        exponent,
-        offset,
-      })
-    }
-    "table" => {
-      let values = parse_table_values();
-      if values.is_empty() {
-        Some(TransferFn::Identity)
-      } else {
-        Some(TransferFn::Table { values })
-      }
-    }
-    "discrete" => {
-      let values = parse_table_values();
-      if values.is_empty() {
-        Some(TransferFn::Identity)
-      } else {
-        Some(TransferFn::Discrete { values })
-      }
-    }
-    _ => Some(TransferFn::Identity),
+  if ty.eq_ignore_ascii_case("linear") {
+    let slope = parse_or_default("slope", 1.0)?;
+    let intercept = parse_or_default("intercept", 0.0)?;
+    return Some(TransferFn::Linear { slope, intercept });
   }
+  if ty.eq_ignore_ascii_case("gamma") {
+    let exponent = parse_or_default("exponent", 1.0)?;
+    let amplitude = parse_or_default("amplitude", 1.0)?;
+    let offset = parse_or_default("offset", 0.0)?;
+    return Some(TransferFn::Gamma {
+      amplitude,
+      exponent,
+      offset,
+    });
+  }
+  if ty.eq_ignore_ascii_case("table") {
+    let values = parse_table_values();
+    if values.is_empty() {
+      return Some(TransferFn::Identity);
+    } else {
+      return Some(TransferFn::Table { values });
+    }
+  }
+  if ty.eq_ignore_ascii_case("discrete") {
+    let values = parse_table_values();
+    if values.is_empty() {
+      return Some(TransferFn::Identity);
+    } else {
+      return Some(TransferFn::Discrete { values });
+    }
+  }
+  Some(TransferFn::Identity)
 }
 
 fn parse_fe_composite(node: &roxmltree::Node) -> Option<FilterPrimitive> {
@@ -3170,21 +3172,28 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     .and_then(|v| v.parse::<i32>().ok())
     .unwrap_or((order_y / 2) as i32)
     .clamp(0, order_y.saturating_sub(1) as i32);
-  let edge_mode = match node
-    .attribute("edgeMode")
-    .unwrap_or("duplicate")
-    .to_ascii_lowercase()
-    .as_str()
-  {
-    "none" => EdgeMode::None,
-    "wrap" => EdgeMode::Wrap,
-    _ => EdgeMode::Duplicate,
+  let edge_mode_raw = trim_ascii_whitespace(node.attribute("edgeMode").unwrap_or("duplicate"));
+  let edge_mode_raw = if edge_mode_raw.len() > 32 {
+    "duplicate"
+  } else {
+    edge_mode_raw
+  };
+  let edge_mode = if edge_mode_raw.eq_ignore_ascii_case("none") {
+    EdgeMode::None
+  } else if edge_mode_raw.eq_ignore_ascii_case("wrap") {
+    EdgeMode::Wrap
+  } else {
+    EdgeMode::Duplicate
   };
   let preserve_alpha = node
     .attribute("preserveAlpha")
     .map(|v| {
-      let lower = trim_ascii_whitespace(v).to_ascii_lowercase();
-      lower == "true" || lower == "1"
+      let v = trim_ascii_whitespace(v);
+      if v.len() > 16 {
+        false
+      } else {
+        v.eq_ignore_ascii_case("true") || v == "1"
+      }
     })
     .unwrap_or(false);
 
