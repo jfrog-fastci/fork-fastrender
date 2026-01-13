@@ -71,10 +71,14 @@ pub struct JsExecutionOptions {
   /// Bounds for how much work can be *executed* in a single event loop "spin" (run).
   pub event_loop_run_limits: RunLimits,
 
-  /// Interval at which `requestAnimationFrame` callbacks are eligible to run when the host drives
-  /// the event loop via a step-wise API (for example [`crate::BrowserTab::tick_frame`]).
+  /// Interval used to pace `requestAnimationFrame` callbacks ("vsync" / frame tick rate).
   ///
-  /// This is expressed in the event loop's clock domain (see [`crate::js::Clock`]).
+  /// When the host drives the event loop via a step-wise API (for example
+  /// [`crate::BrowserTab::tick_frame`]), pending rAF callbacks are eligible to run at most once per
+  /// interval. This is expressed in the event loop's clock domain (see [`crate::js::Clock`]).
+  ///
+  /// Embedding helpers like [`crate::BrowserTab::next_wake_time`] use this when the event loop is
+  /// otherwise idle but has pending animation frame callbacks.
   pub animation_frame_interval: Duration,
 
   /// Budget for how much HTML parsing work is performed per event-loop task turn when using a

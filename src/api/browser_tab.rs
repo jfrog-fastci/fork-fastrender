@@ -6795,12 +6795,31 @@ impl BrowserTab {
   }
 
   pub fn set_js_execution_options(&mut self, options: JsExecutionOptions) {
+    let old_animation_frame_interval = self.host.js_execution_options.animation_frame_interval;
     self.host.js_execution_options = options;
     self.host.scheduler.set_options(options);
     self.host.document_write_state.update_limits(options);
     self
       .event_loop
       .set_queue_limits(options.event_loop_queue_limits);
+
+    if old_animation_frame_interval != options.animation_frame_interval {
+      let now = self.event_loop.now();
+      // `next_animation_frame_due` is tracked as "last frame time + interval" when frames are being
+      // driven via `tick_frame()`. When the embedder updates the interval, adjust the due time so
+      // `next_wake_time()` reflects the new pacing immediately.
+      //
+      // If the stored due time is already in the past, schedule from "now" to avoid underflow and
+      // to preserve the invariant that wake times are not in the past.
+      self.next_animation_frame_due = if self.next_animation_frame_due > now {
+        self
+          .next_animation_frame_due
+          .saturating_sub(old_animation_frame_interval)
+          .saturating_add(options.animation_frame_interval)
+      } else {
+        now.saturating_add(options.animation_frame_interval)
+      };
+    }
   }
 
   /// Drive tasks + `requestAnimationFrame` + rendering until the tab reaches a quiescent state.
@@ -7241,6 +7260,7 @@ impl BrowserTab {
   /// Returns the next time (in the event loop's clock domain) at which calling [`BrowserTab::tick_frame`]
   /// would make progress.
   ///
+  /// - If rendering is needed (`render_if_needed()` would return `Some(_)`), this returns `Some(now)`.
   /// - If tasks/microtasks are runnable now, this returns `Some(now)`.
   /// - If only timers are pending, this returns their next due time.
   /// - If `requestAnimationFrame` callbacks are pending and nothing else is runnable, this returns
@@ -7249,6 +7269,15 @@ impl BrowserTab {
   /// - If the tab is fully idle, this returns `None`.
   pub fn next_wake_time(&mut self) -> Option<Duration> {
     let now = self.event_loop.now();
+
+    // Rendering/navigation can make progress even when the JS event loop is otherwise idle.
+    if self.pending_frame.is_some()
+      || self.host.document.is_dirty()
+      || self.host.document.needs_animation_frame()
+      || self.host.pending_navigation.is_some()
+    {
+      return Some(now);
+    }
 
     // Runnable work (tasks/microtasks/idle callbacks) should be processed immediately.
     if self.event_loop.pending_microtask_count() > 0 || !self.event_loop.is_idle() {
@@ -17213,6 +17242,98 @@ document.body.appendChild(second);"#,
     // `load` should now be queued and should advance `document.readyState` to `complete`.
     assert!(event_loop.run_next_task(&mut host)?);
     assert_eq!(host.dom().ready_state().as_str(), "complete");
+    Ok(())
+  }
+
+  #[test]
+  fn next_wake_time_schedules_pending_animation_frame_callbacks() -> Result<()> {
+    use crate::js::VirtualClock;
+    use std::time::Duration;
+
+    const DEFAULT_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+    assert_eq!(
+      JsExecutionOptions::default().animation_frame_interval,
+      DEFAULT_INTERVAL,
+      "expected JsExecutionOptions::default to use a ~60fps frame interval"
+    );
+
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::with_clock(clock);
+
+    let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
+      "<!doctype html><html></html>",
+      RenderOptions::default(),
+      NoopExecutor::default(),
+      event_loop,
+      JsExecutionOptions::default(),
+    )?;
+    // Drain any lifecycle tasks scheduled during construction so we start from a fully idle tab.
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    // Rendering clears the "dirty" bit so rAF scheduling becomes the only reason to wake.
+    let _ = tab.render_if_needed()?;
+
+    tab
+      .event_loop
+      .request_animation_frame(|_host, event_loop, _timestamp| {
+        // Queue another callback so we still have pending rAF work after running one frame turn.
+        event_loop.request_animation_frame(|_host, _event_loop, _timestamp| Ok(()))?;
+        Ok(())
+      })?;
+
+    // Drive one frame: this runs the first rAF callback, which schedules the next one, and sets
+    // `next_animation_frame_due` to `now + animation_frame_interval`.
+    let _ = tab.tick_frame()?;
+    assert!(
+      tab.event_loop.has_pending_animation_frame_callbacks(),
+      "expected a rAF callback queued for the next frame"
+    );
+
+    let now = tab.event_loop.now();
+    assert_eq!(tab.next_wake_time(), Some(now + DEFAULT_INTERVAL));
+    Ok(())
+  }
+
+  #[test]
+  fn next_wake_time_respects_updated_animation_frame_interval() -> Result<()> {
+    use crate::js::VirtualClock;
+    use std::time::Duration;
+
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::with_clock(clock);
+
+    let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
+      "<!doctype html><html></html>",
+      RenderOptions::default(),
+      NoopExecutor::default(),
+      event_loop,
+      JsExecutionOptions::default(),
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    let _ = tab.render_if_needed()?;
+
+    tab
+      .event_loop
+      .request_animation_frame(|_host, event_loop, _timestamp| {
+        event_loop.request_animation_frame(|_host, _event_loop, _timestamp| Ok(()))?;
+        Ok(())
+      })?;
+
+    let _ = tab.tick_frame()?;
+
+    let now = tab.event_loop.now();
+    let before = tab.next_wake_time().expect("expected wake time with pending rAF");
+
+    let new_interval = Duration::from_millis(40);
+    let mut options = tab.js_execution_options();
+    options.animation_frame_interval = new_interval;
+    tab.set_js_execution_options(options);
+
+    let after = tab.next_wake_time().expect("expected wake time with pending rAF");
+    assert_eq!(after, now + new_interval);
+    assert_ne!(
+      before, after,
+      "expected animation_frame_interval update to change next_wake_time"
+    );
     Ok(())
   }
 }
