@@ -56,9 +56,28 @@
 use crate::text::emoji::find_emoji_sequence_spans;
 use icu_segmenter::options::WordBreakOptions;
 use icu_segmenter::WordSegmenter;
+#[cfg(any(test, debug_assertions))]
+use std::cell::Cell;
 use std::ops::Range;
 use unicode_linebreak::linebreaks;
 use unicode_linebreak::BreakOpportunity as UnicodeBreakOpportunity;
+
+#[cfg(any(test, debug_assertions))]
+thread_local! {
+  static FIND_BREAK_OPPORTUNITIES_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub fn debug_find_break_opportunity_calls() -> usize {
+  FIND_BREAK_OPPORTUNITIES_CALLS.with(|c| c.get())
+}
+
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub fn debug_reset_find_break_opportunity_calls() {
+  FIND_BREAK_OPPORTUNITIES_CALLS.with(|c| c.set(0));
+}
 
 /// Type of line break opportunity
 ///
@@ -311,6 +330,9 @@ impl BreakOpportunity {
 /// // Note: The break is at position 12 (end of string), not at NBSP
 /// ```
 pub fn find_break_opportunities(text: &str) -> Vec<BreakOpportunity> {
+  #[cfg(any(test, debug_assertions))]
+  FIND_BREAK_OPPORTUNITIES_CALLS.with(|c| c.set(c.get() + 1));
+
   let mut opportunities: Vec<BreakOpportunity> = Vec::new();
   let text_len = text.len();
   let ends_with_newline = text.chars().last().is_some_and(is_newline);
