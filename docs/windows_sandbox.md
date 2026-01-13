@@ -540,6 +540,9 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
     active-process cap).
     - If the child cannot be assigned to the Job (nested-job restrictions), it runs jobless and
       prints a warning.
+  - Note: Windows spawn-time environment sanitization still applies by default (including the
+    sandbox-accessible `TEMP`/`TMP` override). Set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` if you need
+    the child to inherit the full parent environment for debugging.
 - `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1`: opt into inheriting the full parent environment for the
   sandboxed child.
   - By default `src/sandbox/windows.rs` builds a sanitized environment block (so secrets from the

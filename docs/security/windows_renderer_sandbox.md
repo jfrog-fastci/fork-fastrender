@@ -107,6 +107,10 @@ stderr when this is enabled.
 Note: disabling sandboxing does **not** necessarily remove Job Object guardrails (kill-on-close /
 active-process limit).
 
+Note: the spawn helper still uses environment sanitization by default (no secret env inheritance;
+`TEMP`/`TMP` override). If you need the child to inherit the full parent environment for debugging,
+set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` (debug only).
+
 ### Verbose sandbox spawn logs
 
 Set `FASTR_LOG_SANDBOX=1` to enable verbose Windows sandbox spawn logs (useful for debugging
