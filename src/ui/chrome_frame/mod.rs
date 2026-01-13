@@ -8,6 +8,7 @@ pub mod document;
 pub mod dom_mutation;
 pub mod modal_dialog;
 pub mod state_to_html;
+pub mod status_bar;
 pub mod dialog;
 pub mod ids;
 pub mod event;
@@ -20,6 +21,7 @@ pub use state_to_html::chrome_frame_html_from_state;
 pub use event::ChromeFrameEvent;
 pub use ids::{CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID, CHROME_CONTENT_FRAME_ID};
 pub use runtime::{ChromeFrameRuntime, ChromeFrameRuntimeOutput};
+pub use status_bar::StatusBarDocument;
 
 #[cfg(test)]
 mod clipboard_ime_tests;

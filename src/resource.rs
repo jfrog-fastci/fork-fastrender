@@ -13498,7 +13498,8 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       CacheCredentialsPartition::for_request(&req),
     );
 
-    if let Some(result) = self.with_cached_resource(&key, Some(req), |cached| -> Result<FetchedResource> {
+    if let Some(result) =
+      self.with_cached_resource(&key, Some(req), |cached| -> Result<FetchedResource> {
       let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), max_bytes)?;
       let mut out = clone_fetched_resource_with_bytes(cached, bytes);
       if !out.bytes.is_empty() {
@@ -13509,7 +13510,8 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
         apply_range_metadata(url, &mut out, start, end, total_len);
       }
       Ok(out)
-    }) {
+    })
+    {
       let res = result?;
       record_cache_fresh_hit();
       record_resource_cache_bytes(res.bytes.len());
