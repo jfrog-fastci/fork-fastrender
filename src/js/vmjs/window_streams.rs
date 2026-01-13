@@ -22,7 +22,6 @@
 //! constructors to exist and for host-owned byte sources to be consumed via
 //! `readable.getReader().read()`.
 
-use std::char;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
@@ -62,10 +61,10 @@ const ITER_PREVENT_CANCEL_KEY: &str = "__fastrender_readable_stream_iter_prevent
 /// large for network payloads.
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
-/// Upper bound for a single string chunk enqueued via a `ReadableStream` controller.
+/// Upper bound for a single string chunk enqueued via a `ReadableStream` controller, measured in
+/// UTF-16 bytes (i.e. `2 * value.length`).
 ///
-/// This mirrors the 32MiB cap used by `TextEncoder.encode` / `TextEncoderStream` to avoid
-/// unbounded host allocations when scripts enqueue attacker-controlled strings.
+/// This bounds host allocations when scripts enqueue attacker-controlled strings.
 const MAX_READABLE_STREAM_STRING_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 
 /// Upper bound for a single byte chunk enqueued via a `ReadableStream` controller.
@@ -336,25 +335,17 @@ fn buffer_source_byte_length(scope: &Scope<'_>, chunk: Value) -> Result<Option<u
   Ok(None)
 }
 
-fn utf8_len_from_utf16_units(units: &[u16]) -> Result<usize, VmError> {
-  let mut len: usize = 0;
-  for unit in char::decode_utf16(units.iter().copied()) {
-    let ch = unit.unwrap_or('\u{FFFD}');
-    len = len.checked_add(ch.len_utf8()).ok_or(VmError::OutOfMemory)?;
-  }
-  Ok(len)
+fn utf16_code_units_byte_len(units_len: usize) -> Result<usize, VmError> {
+  units_len.checked_mul(2).ok_or(VmError::OutOfMemory)
 }
 
-fn utf16_units_to_utf8_string_lossy(units: &[u16], byte_len: usize) -> Result<String, VmError> {
-  let mut out = String::new();
+fn utf16_code_units_to_vec(units: &[u16]) -> Result<Vec<u16>, VmError> {
+  // Avoid `units.to_vec()`, which allocates infallibly and can abort the host process on OOM.
+  let mut out: Vec<u16> = Vec::new();
   out
-    .try_reserve_exact(byte_len)
+    .try_reserve_exact(units.len())
     .map_err(|_| VmError::OutOfMemory)?;
-  for unit in char::decode_utf16(units.iter().copied()) {
-    let ch = unit.unwrap_or('\u{FFFD}');
-    out.push(ch);
-  }
-  debug_assert_eq!(out.len(), byte_len);
+  out.extend_from_slice(units);
   Ok(out)
 }
 
@@ -412,8 +403,10 @@ struct StreamState {
   /// Total number of bytes currently buffered across `byte_queue`.
   buffered_byte_len: usize,
   /// Queue of string chunks (only used when `kind == StreamKind::Strings`).
-  strings: VecDeque<String>,
-  /// Total number of UTF-8 bytes currently buffered across `strings`.
+  ///
+  /// Stored as UTF-16 code units so lone surrogates can roundtrip exactly.
+  strings: VecDeque<Vec<u16>>,
+  /// Total number of UTF-16 bytes currently buffered across `strings`.
   buffered_string_len: usize,
   /// Queue of rooted JS values (only used when `kind == StreamKind::Values`).
   values: VecDeque<RootId>,
@@ -3365,7 +3358,7 @@ fn readable_stream_tee_read_fulfilled_native(
   let chunk_val = vm.get_with_host_and_hooks(host, scope, hooks, result_obj, value_key)?;
   enum TeeChunk {
     Bytes(Vec<u8>),
-    String(String),
+    String(Vec<u16>),
     Value(Value),
   }
   let chunk = match chunk_val {
@@ -3374,7 +3367,7 @@ fn readable_stream_tee_read_fulfilled_native(
     }
     Value::String(s) => {
       let code_units = scope.heap().get_string(s)?.as_code_units();
-      let byte_len = utf8_len_from_utf16_units(code_units)?;
+      let byte_len = utf16_code_units_byte_len(code_units.len())?;
       if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
         let msg = "ReadableStream.tee: chunk too large".to_string();
         let pending0 = error_readable_stream(vm, scope, callee, branch0_obj, msg.clone())?;
@@ -3403,7 +3396,7 @@ fn readable_stream_tee_read_fulfilled_native(
         }
         return Ok(Value::Undefined);
       }
-      TeeChunk::String(utf16_units_to_utf8_string_lossy(code_units, byte_len)?)
+      TeeChunk::String(utf16_code_units_to_vec(code_units)?)
     }
     _ => TeeChunk::Value(chunk_val),
   };
@@ -3929,11 +3922,10 @@ fn readable_stream_controller_enqueue_native(
     StreamKind::Strings => match chunk {
       Value::String(s) => {
         let code_units = scope.heap().get_string(s)?.as_code_units();
-        let byte_len = utf8_len_from_utf16_units(code_units)?;
+        let byte_len = utf16_code_units_byte_len(code_units.len())?;
         if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
           return Err(VmError::TypeError("ReadableStream chunk too large"));
         }
-
         let new_total = buffered_string_len
           .checked_add(byte_len)
           .ok_or(VmError::OutOfMemory)?;
@@ -3962,8 +3954,8 @@ fn readable_stream_controller_enqueue_native(
           return Ok(Value::Undefined);
         }
 
-        let chunk_string = utf16_units_to_utf8_string_lossy(code_units, byte_len)?;
-        enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?
+        let chunk_units = utf16_code_units_to_vec(code_units)?;
+        enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_units)?
       }
       _ => enqueue_value_into_readable_stream(vm, scope, callee, stream_obj, chunk)?,
     },
@@ -4014,11 +4006,10 @@ fn readable_stream_controller_enqueue_native(
         enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
       } else if let Value::String(s) = chunk {
         let code_units = scope.heap().get_string(s)?.as_code_units();
-        let byte_len = utf8_len_from_utf16_units(code_units)?;
+        let byte_len = utf16_code_units_byte_len(code_units.len())?;
         if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
           return Err(VmError::TypeError("ReadableStream chunk too large"));
         }
-
         let new_total = buffered_string_len
           .checked_add(byte_len)
           .ok_or(VmError::OutOfMemory)?;
@@ -4047,8 +4038,8 @@ fn readable_stream_controller_enqueue_native(
           return Ok(Value::Undefined);
         }
 
-        let chunk_string = utf16_units_to_utf8_string_lossy(code_units, byte_len)?;
-        enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?
+        let chunk_units = utf16_code_units_to_vec(code_units)?;
+        enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_units)?
       } else {
         enqueue_value_into_readable_stream(vm, scope, callee, stream_obj, chunk)?
       }
@@ -4218,7 +4209,7 @@ fn reader_ctor_construct(
 
 enum ReadChunk {
   Bytes(Vec<u8>),
-  String(String),
+  String(Vec<u16>),
   Value(RootId),
 }
 
@@ -4279,7 +4270,7 @@ fn settle_read_promise(
         )?;
       }
       ReadChunk::String(chunk) => {
-        let s = scope.alloc_string(&chunk)?;
+        let s = scope.alloc_string_from_u16_vec(chunk)?;
         scope.push_root(Value::String(s))?;
 
         let result = scope.alloc_object()?;
@@ -4609,14 +4600,15 @@ fn reader_read_native(
             None,
           ));
         };
-        if chunk.len() > stream_state.buffered_string_len {
+        let chunk_byte_len = utf16_code_units_byte_len(chunk.len())?;
+        if chunk_byte_len > stream_state.buffered_string_len {
           stream_state.buffered_string_len = 0;
           return Ok((
             ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
             None,
           ));
         }
-        stream_state.buffered_string_len -= chunk.len();
+        stream_state.buffered_string_len -= chunk_byte_len;
 
         if stream_state.close_requested && stream_state.strings.is_empty() {
           stream_state.state = StreamLifecycleState::Closed;
@@ -5097,7 +5089,7 @@ fn enqueue_string_into_readable_stream(
   scope: &mut Scope<'_>,
   callee: GcObject,
   stream_obj: GcObject,
-  chunk: String,
+  chunk: Vec<u16>,
 ) -> Result<Option<PendingReadSettle>, VmError> {
   let (pending, value_roots) = with_realm_state_mut(vm, scope, callee, |state, _heap| {
     let stream_state = state
@@ -5127,7 +5119,7 @@ fn enqueue_string_into_readable_stream(
       return Err(VmError::TypeError("ReadableStream is closed"));
     }
 
-    let chunk_len = chunk.len();
+    let chunk_len = utf16_code_units_byte_len(chunk.len())?;
     let new_total = stream_state
       .buffered_string_len
       .checked_add(chunk_len)
@@ -5187,7 +5179,8 @@ fn enqueue_string_into_readable_stream(
         Vec::new(),
       ));
     };
-    if chunk.len() > stream_state.buffered_string_len {
+    let chunk_byte_len = utf16_code_units_byte_len(chunk.len())?;
+    if chunk_byte_len > stream_state.buffered_string_len {
       stream_state.buffered_string_len = 0;
       return Ok((
         Some(PendingReadSettle {
@@ -5198,7 +5191,7 @@ fn enqueue_string_into_readable_stream(
         Vec::new(),
       ));
     }
-    stream_state.buffered_string_len -= chunk.len();
+    stream_state.buffered_string_len -= chunk_byte_len;
 
     Ok((
       Some(PendingReadSettle {
@@ -5257,7 +5250,7 @@ fn enqueue_value_into_readable_stream(
 
   struct PromoteToValues {
     from_kind: StreamKind,
-    strings: VecDeque<String>,
+    strings: VecDeque<Vec<u16>>,
     buffered_string_len: usize,
     byte_queue: VecDeque<Vec<u8>>,
     buffered_byte_len: usize,
@@ -5336,7 +5329,7 @@ fn enqueue_value_into_readable_stream(
         })))
       }
       StreamKind::Strings => {
-        let strings: VecDeque<String> = stream_state.strings.drain(..).collect();
+        let strings: VecDeque<Vec<u16>> = stream_state.strings.drain(..).collect();
         let buffered_string_len = stream_state.buffered_string_len;
         stream_state.buffered_string_len = 0;
         let pending_reader = stream_state.pending_reader.take();
@@ -5393,7 +5386,7 @@ fn enqueue_value_into_readable_stream(
 
         // Convert queued string chunks back into JS strings.
         for s in promotion.strings.iter() {
-          let js_s = scope.alloc_string(s)?;
+          let js_s = scope.alloc_string_from_code_units(s.as_slice())?;
           scope.push_root(Value::String(js_s))?;
           let root_id = scope.heap_mut().add_root(Value::String(js_s))?;
           promoted_existing_roots.push(root_id);
@@ -6366,12 +6359,12 @@ fn transform_controller_enqueue_native(
     StreamKind::Strings => match chunk {
       Value::String(s) => {
         let code_units = scope.heap().get_string(s)?.as_code_units();
-        let byte_len = utf8_len_from_utf16_units(code_units)?;
+        let byte_len = utf16_code_units_byte_len(code_units.len())?;
         if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
           return Err(VmError::TypeError("ReadableStream chunk too large"));
         }
-        let chunk_string = utf16_units_to_utf8_string_lossy(code_units, byte_len)?;
-        enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?
+        let chunk_units = utf16_code_units_to_vec(code_units)?;
+        enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_units)?
       }
       _ => enqueue_value_into_readable_stream(vm, scope, callee, stream_obj, chunk)?,
     },
@@ -6380,12 +6373,12 @@ fn transform_controller_enqueue_native(
         enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
       } else if let Value::String(s) = chunk {
         let code_units = scope.heap().get_string(s)?.as_code_units();
-        let byte_len = utf8_len_from_utf16_units(code_units)?;
+        let byte_len = utf16_code_units_byte_len(code_units.len())?;
         if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
           return Err(VmError::TypeError("ReadableStream chunk too large"));
         }
-        let chunk_string = utf16_units_to_utf8_string_lossy(code_units, byte_len)?;
-        enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?
+        let chunk_units = utf16_code_units_to_vec(code_units)?;
+        enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_units)?
       } else {
         enqueue_value_into_readable_stream(vm, scope, callee, stream_obj, chunk)?
       }
@@ -8592,6 +8585,65 @@ mod tests {
   }
 
   #[test]
+  fn readable_stream_string_chunks_preserve_utf16_code_units() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.source = {
+          start(controller) { globalThis.controller = controller; }
+        };
+        globalThis.stream = new ReadableStream(globalThis.source);
+        globalThis.reader = stream.getReader();
+        globalThis.readPromise = reader.read();
+        globalThis.s = String.fromCharCode(0xD800);
+        controller.enqueue(s);
+        controller.close();
+      "#,
+    )?;
+
+    let read_p = realm.exec_script("readPromise")?;
+    let Value::Object(read_p_obj) = read_p else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+
+    assert_eq!(
+      realm.heap().promise_state(read_p_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result_val) = realm.heap().promise_result(read_p_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Value::Object(result_obj) = result_val else {
+      return Err(VmError::InvariantViolation(
+        "read() must resolve to an object",
+      ));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+
+      let done = read_result_prop(&mut scope, result_obj, "done")?;
+      assert_eq!(done, Value::Bool(false));
+      let value = read_result_prop(&mut scope, result_obj, "value")?;
+      let Value::String(s) = value else {
+        return Err(VmError::InvariantViolation(
+          "read() result.value must be a string",
+        ));
+      };
+      let units = scope.heap().get_string(s)?.as_code_units();
+      assert_eq!(units.len(), 1);
+      assert_eq!(units[0], 0xD800);
+    }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
   fn readable_stream_controller_enqueue_with_no_args_enqueues_undefined() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
@@ -9353,6 +9405,81 @@ mod tests {
       let done1 = read_result_prop(&mut scope, r1_done_obj, "done")?;
       assert_eq!(done0, Value::Bool(true));
       assert_eq!(done1, Value::Bool(true));
+    }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_tee_preserves_utf16_code_units_for_string_chunks() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let _ = realm.exec_script(
+      r#"
+        globalThis.s = String.fromCharCode(0xD800);
+        globalThis.stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(s);
+            controller.close();
+          }
+        });
+        globalThis.branches = stream.tee();
+        globalThis.branch0 = branches[0];
+        globalThis.branch1 = branches[1];
+        globalThis.reader0 = branch0.getReader();
+        globalThis.reader1 = branch1.getReader();
+        globalThis.p0 = reader0.read();
+        globalThis.p1 = reader1.read();
+      "#,
+    )?;
+
+    realm.perform_microtask_checkpoint()?;
+
+    let p0 = realm.exec_script("p0")?;
+    let p1 = realm.exec_script("p1")?;
+    let (Value::Object(p0_obj), Value::Object(p1_obj)) = (p0, p1) else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+
+    assert_eq!(realm.heap().promise_state(p0_obj)?, PromiseState::Fulfilled);
+    assert_eq!(realm.heap().promise_state(p1_obj)?, PromiseState::Fulfilled);
+
+    let Some(r0_val) = realm.heap().promise_result(p0_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Some(r1_val) = realm.heap().promise_result(p1_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let (Value::Object(r0_obj), Value::Object(r1_obj)) = (r0_val, r1_val) else {
+      return Err(VmError::InvariantViolation(
+        "read() must resolve to an object",
+      ));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+
+      let done0 = read_result_prop(&mut scope, r0_obj, "done")?;
+      let done1 = read_result_prop(&mut scope, r1_obj, "done")?;
+      assert_eq!(done0, Value::Bool(false));
+      assert_eq!(done1, Value::Bool(false));
+
+      let v0 = read_result_prop(&mut scope, r0_obj, "value")?;
+      let v1 = read_result_prop(&mut scope, r1_obj, "value")?;
+      let (Value::String(v0_s), Value::String(v1_s)) = (v0, v1) else {
+        return Err(VmError::InvariantViolation(
+          "read() result.value must be a string",
+        ));
+      };
+
+      let u0 = scope.heap().get_string(v0_s)?.as_code_units();
+      let u1 = scope.heap().get_string(v1_s)?.as_code_units();
+      assert_eq!(u0, &[0xD800]);
+      assert_eq!(u1, &[0xD800]);
     }
 
     realm.teardown();
