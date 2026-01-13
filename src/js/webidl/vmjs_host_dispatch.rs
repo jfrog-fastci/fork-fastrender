@@ -4043,7 +4043,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .ok_or(VmError::TypeError("Illegal invocation"))?
         };
 
-        let rect_obj = crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+        let rect_obj = crate::js::window_dom_rect::alloc_dom_rect_from_global(
           scope,
           global,
           rect.x() as f64,

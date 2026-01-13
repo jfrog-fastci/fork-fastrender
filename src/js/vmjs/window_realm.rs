@@ -11845,7 +11845,7 @@ fn element_get_bounding_client_rect_native(
       .ok_or(VmError::TypeError("Illegal invocation"))?,
   };
 
-  let rect_obj = crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+  let rect_obj = crate::js::window_dom_rect::alloc_dom_rect_from_global(
     scope,
     global,
     rect.x() as f64,
@@ -47381,7 +47381,7 @@ mod tests {
   }
 
   #[test]
-  fn webidl_element_get_bounding_client_rect_returns_dom_rect_read_only() -> Result<(), VmError> {
+  fn webidl_element_get_bounding_client_rect_returns_dom_rect() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html(
       "<!doctype html><html><body><div id=x></div></body></html>",
     )
@@ -47397,13 +47397,20 @@ mod tests {
       &mut realm,
       &mut host,
       "(() => {\n\
+        'use strict';\n\
         const el = document.getElementById('x');\n\
         const r = el.getBoundingClientRect();\n\
         if (!(r instanceof DOMRectReadOnly)) return false;\n\
+        if (!(r instanceof DOMRect)) return false;\n\
         const props = ['x', 'y', 'width', 'height', 'top', 'left', 'right', 'bottom'];\n\
         for (const p of props) { if (typeof r[p] !== 'number') return false; }\n\
         // Non-rendered host documents return a deterministic dummy rect.\n\
         if (!(r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0)) return false;\n\
+        // Returned DOMRect must be mutable (setters should work) but mutations must not affect DOM.\n\
+        try { r.x = 10; } catch (e) { return false; }\n\
+        if (r.x !== 10) return false;\n\
+        const r2 = el.getBoundingClientRect();\n\
+        if (!(r2.x === 0 && r2.y === 0 && r2.width === 0 && r2.height === 0)) return false;\n\
         let msg = null;\n\
         try { Element.prototype.getBoundingClientRect.call(document); } catch (e) { msg = e && e.message; }\n\
         return msg === 'Illegal invocation';\n\
@@ -47450,7 +47457,7 @@ mod tests {
          const r = document.getElementById('x').getBoundingClientRect();\n\
          return r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0 &&\n\
                 r.top === 0 && r.left === 0 && r.right === 0 && r.bottom === 0 &&\n\
-                r instanceof DOMRectReadOnly;\n\
+                r instanceof DOMRectReadOnly && r instanceof DOMRect;\n\
        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
@@ -47509,7 +47516,7 @@ mod tests {
   }
 
   #[test]
-  fn element_get_bounding_client_rect_returns_dom_rect_read_only() -> Result<(), VmError> {
+  fn element_get_bounding_client_rect_returns_dom_rect() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html(
       "<!doctype html><html><body><div id=x></div></body></html>",
     )
@@ -47521,13 +47528,20 @@ mod tests {
       &mut realm,
       &mut host,
       "(() => {\n\
+        'use strict';\n\
         const el = document.getElementById('x');\n\
         const r = el.getBoundingClientRect();\n\
         if (!(r instanceof DOMRectReadOnly)) return false;\n\
+        if (!(r instanceof DOMRect)) return false;\n\
         const props = ['x', 'y', 'width', 'height', 'top', 'left', 'right', 'bottom'];\n\
         for (const p of props) { if (typeof r[p] !== 'number') return false; }\n\
         // Non-rendered host documents return a deterministic dummy rect.\n\
         if (!(r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0)) return false;\n\
+        // Returned DOMRect must be mutable (setters should work) but mutations must not affect DOM.\n\
+        try { r.x = 10; } catch (e) { return false; }\n\
+        if (r.x !== 10) return false;\n\
+        const r2 = el.getBoundingClientRect();\n\
+        if (!(r2.x === 0 && r2.y === 0 && r2.width === 0 && r2.height === 0)) return false;\n\
         let msg = null;\n\
         try { Element.prototype.getBoundingClientRect.call(document); } catch (e) { msg = e && e.message; }\n\
         return msg === 'Illegal invocation';\n\
@@ -47568,11 +47582,11 @@ mod tests {
       &mut realm,
       &mut document,
       "(() => {\n\
-         const r = document.getElementById('x').getBoundingClientRect();\n\
-         return r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0 &&\n\
-                r.top === 0 && r.left === 0 && r.right === 0 && r.bottom === 0 &&\n\
-                r instanceof DOMRectReadOnly;\n\
-       })()",
+          const r = document.getElementById('x').getBoundingClientRect();\n\
+          return r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0 &&\n\
+                 r.top === 0 && r.left === 0 && r.right === 0 && r.bottom === 0 &&\n\
+                 r instanceof DOMRectReadOnly && r instanceof DOMRect;\n\
+        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
@@ -47621,7 +47635,8 @@ mod tests {
          const r = document.getElementById('x').getBoundingClientRect();\n\
          const close = (a, b) => Math.abs(a - b) < 0.01;\n\
          return close(r.x, 10) && close(r.y, 20) && close(r.width, 30) && close(r.height, 40)\n\
-            && close(r.top, 20) && close(r.left, 10) && close(r.right, 40) && close(r.bottom, 60);\n\
+            && close(r.top, 20) && close(r.left, 10) && close(r.right, 40) && close(r.bottom, 60)\n\
+            && r instanceof DOMRectReadOnly && r instanceof DOMRect;\n\
        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));

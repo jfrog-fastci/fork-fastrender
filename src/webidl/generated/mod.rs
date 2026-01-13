@@ -3249,7 +3249,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         name: Some("getBoundingClientRect"),
         ext_attrs: &[
         ],
-        raw: "DOMRectReadOnly getBoundingClientRect()",
+        raw: "DOMRect getBoundingClientRect()",
       },
       WebIdlInterfaceMember {
         name: Some("clientWidth"),
