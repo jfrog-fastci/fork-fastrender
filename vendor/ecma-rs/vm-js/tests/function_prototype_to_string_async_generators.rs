@@ -78,6 +78,26 @@ fn async_generator_function_expression_to_string_trims_trailing_semicolon() -> R
 }
 
 #[test]
+fn async_generator_function_declaration_to_string_preserves_comments() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script(
+    r#"/* before */async /* a */ function /* b */ * /* c */ f /* d */ ( /* e */ x /* f */ , /* g */ y /* h */ ) /* i */ { /* j */ ; /* k */ ; /* l */ }/* after */
+f.toString()"#,
+  ) {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(
+        s,
+        "async /* a */ function /* b */ * /* c */ f /* d */ ( /* e */ x /* f */ , /* g */ y /* h */ ) /* i */ { /* j */ ; /* k */ ; /* l */ }"
+      );
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
+
+#[test]
 fn async_generator_function_constructor_to_string_matches_test262() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
   match rt.exec_script(
@@ -107,6 +127,40 @@ fn async_generator_function_constructor_to_string_handles_line_comments() -> Res
         s,
         "async function* anonymous(a, /* a */ b, c /* b */ //\n) {\n/* c */ ; /* d */ //\n}"
       );
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
+
+#[test]
+fn async_generator_method_object_literal_to_string_preserves_comments() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script(
+    r#"let f = { /* before */async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }/* after */ }.f;
+f.toString()"#,
+  ) {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(s, "async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }");
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
+
+#[test]
+fn async_generator_method_class_to_string_preserves_comments() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script(
+    r#"class F { /* before */async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }/* after */ }
+F.prototype.f.toString()"#,
+  ) {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(s, "async /* a */ * /* b */ f /* c */ ( /* d */ ) /* e */ { /* f */ }");
     }
     Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
     Err(err) => return Err(err),
