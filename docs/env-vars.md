@@ -79,6 +79,9 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_BROWSER_PAGE_FILTER=nearest|linear|auto` – control the sampler filter used when drawing rendered page pixmaps in the windowed UI.
   - Default: `auto` (nearest at ~1:1 physical pixel mapping; linear when scaled).
   - Note: this affects page textures only; favicons continue to use linear filtering.
+- `FASTR_BROWSER_RESIZE_DPR_SCALE=<ratio>` – during interactive window resize drags, multiply the computed page DPR by this scale to reduce pixmap allocation + GPU upload work (helps keep the UI responsive).
+  - Default: `0.5`.
+  - Values are clamped to `0.25..=1.0` (set to `1.0` to disable DPR downscaling).
 - `FASTR_BROWSER_WGPU_FALLBACK=1` – force `wgpu` to use a fallback (software) adapter when creating the windowed UI.
   - CLI equivalent: `browser --force-fallback-adapter` (alias: `browser --wgpu-fallback`).
   - This can help in environments without a discrete GPU, under remote desktop, or when GPU driver setup is incomplete.
