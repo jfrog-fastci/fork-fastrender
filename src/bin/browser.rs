@@ -6249,7 +6249,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
           enabled: debug_log_ui_enabled(),
         }) {
-          eprintln!("failed to send debug log setting to new window worker: {err}");
+          if let Some(win) = windows.get_mut(&from_id) {
+            win
+              .app
+              .toast_new_window_error(format_args!("send debug log setting: {err}"));
+          }
+          return;
         }
 
         fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
@@ -6427,7 +6432,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = renderer_backend.send(fastrender::ui::UiToWorker::SetDebugLogEnabled {
           enabled: debug_log_ui_enabled(),
         }) {
-          eprintln!("failed to send debug log setting to new window worker: {err}");
+          if let Some(win) = windows.get_mut(&from_id) {
+            win
+              .app
+              .toast_new_window_error(format_args!("send debug log setting: {err}"));
+          }
+          return;
         }
 
         fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
