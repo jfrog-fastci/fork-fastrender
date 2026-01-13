@@ -49,10 +49,60 @@ pub struct DocumentSelectionPointDom2 {
   pub char_offset: usize,
 }
 
+impl DocumentSelectionPointDom2 {
+  /// Convert a renderer-preorder selection point into a stable `dom2` point.
+  ///
+  /// Returns `None` when `point.node_id` is not present in the current renderer DOM snapshot (for
+  /// example: out-of-bounds ids or snapshot-specific synthetic roots).
+  pub fn from_preorder(
+    point: DocumentSelectionPoint,
+    mapping: &RendererDomMapping,
+  ) -> Option<Self> {
+    let node_id = mapping.node_id_for_preorder(point.node_id)?;
+    Some(Self {
+      node_id,
+      char_offset: point.char_offset,
+    })
+  }
+
+  /// Project this stable point back into renderer preorder space.
+  ///
+  /// Returns `None` for nodes that are not reachable from the document root in the current snapshot
+  /// (detached subtrees).
+  pub fn project_to_preorder(self, mapping: &RendererDomMapping) -> Option<DocumentSelectionPoint> {
+    let node_id = mapping.preorder_for_node_id(self.node_id)?;
+    Some(DocumentSelectionPoint {
+      node_id,
+      char_offset: self.char_offset,
+    })
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentSelectionRangeDom2 {
   pub start: DocumentSelectionPointDom2,
   pub end: DocumentSelectionPointDom2,
+}
+
+impl DocumentSelectionRangeDom2 {
+  /// Convert a renderer-preorder selection range into a stable `dom2` range.
+  pub fn from_preorder(
+    range: DocumentSelectionRange,
+    mapping: &RendererDomMapping,
+  ) -> Option<Self> {
+    Some(Self {
+      start: DocumentSelectionPointDom2::from_preorder(range.start, mapping)?,
+      end: DocumentSelectionPointDom2::from_preorder(range.end, mapping)?,
+    })
+  }
+
+  /// Project this stable range back into renderer preorder space.
+  pub fn project_to_preorder(self, mapping: &RendererDomMapping) -> Option<DocumentSelectionRange> {
+    Some(DocumentSelectionRange {
+      start: self.start.project_to_preorder(mapping)?,
+      end: self.end.project_to_preorder(mapping)?,
+    })
+  }
 }
 
 /// Compare two `dom2` selection points in *DOM order* using the current renderer preorder mapping.
@@ -486,9 +536,7 @@ fn before_enter_box(
     && !builder.out.is_empty()
     && !matches!(
       builder.last(),
-      Some(
-        LastToken::StructuralNewline | LastToken::PreservedNewline | LastToken::StructuralTab
-      )
+      Some(LastToken::StructuralNewline | LastToken::PreservedNewline | LastToken::StructuralTab)
     )
   {
     builder.push_newline();

@@ -1,16 +1,76 @@
 #![cfg(test)]
 
 use crate::interaction::selection_serialize::{
-  DocumentSelectionPointDom2, DocumentSelectionRangeDom2,
+  DocumentSelectionPoint, DocumentSelectionPointDom2, DocumentSelectionRange,
+  DocumentSelectionRangeDom2,
 };
 use crate::interaction::state::InteractionStateDom2;
 use crate::interaction::state::{
-  DocumentSelectionRangesDom2, DocumentSelectionState, DocumentSelectionStateDom2, FileSelection,
-  FormStateDom2, ImePreeditStateDom2, TextEditPaintStateDom2,
+  DocumentSelectionRanges, DocumentSelectionRangesDom2, DocumentSelectionState,
+  DocumentSelectionStateDom2, FileSelection, FormStateDom2, ImePreeditStateDom2,
+  TextEditPaintStateDom2,
 };
 use crate::text::caret::CaretAffinity;
 use rustc_hash::FxHashSet;
 use std::path::PathBuf;
+
+#[test]
+fn document_selection_dom2_from_preorder_tracks_dom_mutations() {
+  let html = "<!doctype html><html><body><div id=a>hello</div></body></html>";
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+
+  let div = doc.get_element_by_id("a").expect("div");
+  let text = doc.node(div).children[0];
+
+  let snapshot1 = doc.to_renderer_dom_with_mapping();
+  let preorder_1 = snapshot1.mapping.preorder_for_node_id(text).unwrap();
+
+  let start_pre = DocumentSelectionPoint {
+    node_id: preorder_1,
+    char_offset: 1,
+  };
+  let end_pre = DocumentSelectionPoint {
+    node_id: preorder_1,
+    char_offset: 4,
+  };
+  let selection_preorder = DocumentSelectionState::Ranges(DocumentSelectionRanges {
+    ranges: vec![DocumentSelectionRange {
+      start: start_pre,
+      end: end_pre,
+    }],
+    primary: 0,
+    anchor: start_pre,
+    focus: end_pre,
+  });
+
+  let selection_dom2 =
+    DocumentSelectionStateDom2::from_preorder(&selection_preorder, &snapshot1.mapping)
+      .expect("convert selection to dom2");
+  let DocumentSelectionStateDom2::Ranges(ranges_dom2) = &selection_dom2 else {
+    panic!("expected dom2 selection to be a range");
+  };
+  assert_eq!(ranges_dom2.ranges.len(), 1);
+  assert_eq!(ranges_dom2.ranges[0].start.node_id, text);
+  assert_eq!(ranges_dom2.ranges[0].end.node_id, text);
+
+  // Insert a new earlier sibling before the selected text node.
+  let new_text = doc.create_text("X");
+  assert!(doc.insert_before(div, new_text, Some(text)).unwrap());
+
+  let snapshot2 = doc.to_renderer_dom_with_mapping();
+  let preorder_2 = snapshot2.mapping.preorder_for_node_id(text).unwrap();
+  assert_ne!(preorder_1, preorder_2);
+
+  let projected = selection_dom2.project_to_preorder(&snapshot2.mapping);
+  let DocumentSelectionState::Ranges(projected) = projected else {
+    panic!("expected projected selection to be a range");
+  };
+  assert_eq!(projected.ranges.len(), 1);
+  assert_eq!(projected.ranges[0].start.node_id, preorder_2);
+  assert_eq!(projected.ranges[0].end.node_id, preorder_2);
+  assert_eq!(projected.ranges[0].start.char_offset, 1);
+  assert_eq!(projected.ranges[0].end.char_offset, 4);
+}
 
 #[test]
 fn interaction_state_dom2_projection_projects_document_selection_and_updates_on_dom_mutation() {

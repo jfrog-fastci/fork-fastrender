@@ -117,28 +117,6 @@ impl DocumentSelectionStateDom2 {
   /// This keeps selection endpoints stable across DOM mutations while still allowing downstream
   /// systems (layout/paint/fragment highlighting) to operate on preorder ids.
   pub fn project_to_preorder(&self, mapping: &RendererDomMapping) -> DocumentSelectionState {
-    fn project_point(
-      point: DocumentSelectionPointDom2,
-      mapping: &RendererDomMapping,
-    ) -> Option<DocumentSelectionPoint> {
-      mapping
-        .preorder_for_node_id(point.node_id)
-        .map(|node_id| DocumentSelectionPoint {
-          node_id,
-          char_offset: point.char_offset,
-        })
-    }
-
-    fn project_range(
-      range: DocumentSelectionRangeDom2,
-      mapping: &RendererDomMapping,
-    ) -> Option<DocumentSelectionRange> {
-      Some(DocumentSelectionRange {
-        start: project_point(range.start, mapping)?,
-        end: project_point(range.end, mapping)?,
-      })
-    }
-
     match self {
       DocumentSelectionStateDom2::All => DocumentSelectionState::All,
       DocumentSelectionStateDom2::Ranges(ranges) => {
@@ -146,11 +124,11 @@ impl DocumentSelectionStateDom2 {
           .ranges
           .iter()
           .copied()
-          .filter_map(|r| project_range(r, mapping))
+          .filter_map(|r| r.project_to_preorder(mapping))
           .collect();
 
-        let mut anchor = project_point(ranges.anchor, mapping);
-        let mut focus = project_point(ranges.focus, mapping);
+        let mut anchor = ranges.anchor.project_to_preorder(mapping);
+        let mut focus = ranges.focus.project_to_preorder(mapping);
 
         if anchor.is_none() || focus.is_none() {
           // Fallback to the first projected range when the anchor/focus endpoints are no longer
@@ -175,6 +153,25 @@ impl DocumentSelectionStateDom2 {
         };
         projected.normalize();
         DocumentSelectionState::Ranges(projected)
+      }
+    }
+  }
+
+  /// Convert a renderer-preorder selection state into a stable `dom2` selection state.
+  ///
+  /// This is useful when callers initially create selections from renderer hit-testing/layout data
+  /// (which is keyed by preorder ids) but want to store selection endpoints robustly across DOM
+  /// mutations using `dom2::NodeId`.
+  pub fn from_preorder(
+    selection: &DocumentSelectionState,
+    mapping: &RendererDomMapping,
+  ) -> Option<Self> {
+    match selection {
+      DocumentSelectionState::All => Some(DocumentSelectionStateDom2::All),
+      DocumentSelectionState::Ranges(ranges) => {
+        let mut dom2 = DocumentSelectionRangesDom2::from_preorder(ranges, mapping)?;
+        dom2.normalize(mapping);
+        Some(DocumentSelectionStateDom2::Ranges(dom2))
       }
     }
   }
@@ -311,6 +308,29 @@ impl DocumentSelectionRangesDom2 {
 
   pub fn has_highlight(&self) -> bool {
     self.ranges.iter().any(|r| r.start != r.end)
+  }
+
+  /// Convert a renderer-preorder multi-range selection into a stable `dom2` selection.
+  ///
+  /// Returns `None` if any of the required endpoints are not mappable in `mapping`.
+  pub fn from_preorder(
+    ranges: &DocumentSelectionRanges,
+    mapping: &RendererDomMapping,
+  ) -> Option<Self> {
+    let mut ranges_dom2: Vec<DocumentSelectionRangeDom2> = Vec::with_capacity(ranges.ranges.len());
+    for &range in &ranges.ranges {
+      ranges_dom2.push(DocumentSelectionRangeDom2::from_preorder(range, mapping)?);
+    }
+
+    let anchor = DocumentSelectionPointDom2::from_preorder(ranges.anchor, mapping)?;
+    let focus = DocumentSelectionPointDom2::from_preorder(ranges.focus, mapping)?;
+
+    Some(Self {
+      ranges: ranges_dom2,
+      primary: ranges.primary,
+      anchor,
+      focus,
+    })
   }
 
   fn range_contains_range(
