@@ -40,3 +40,36 @@ fn generator_assignment_infers_function_name_for_property() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_assignment_infers_class_name_for_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ var C; C = (yield 0, class{}); return C.name; }
+      var it = g();
+      it.next();
+      var r = it.next(1);
+      r.done === true && r.value === "C"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_assignment_infers_function_name_for_computed_property() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ var o = {}; o["m"] = (yield 0, function(){}); return o.m.name; }
+      var it = g();
+      it.next();
+      var r = it.next(1);
+      r.done === true && r.value === "m"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
