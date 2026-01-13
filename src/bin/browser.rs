@@ -21374,13 +21374,17 @@ impl App {
           return;
         }
 
-        if matches!(state, ElementState::Pressed) && self.open_media_controls.is_some() {
-          // If the media controls overlay is open, clicks inside it are handled by egui.
+        if self.open_media_controls.is_some() {
+          // If the media controls overlay is open, pointer interactions inside it are handled by
+          // egui. Treat the overlay like other popups: do not forward either press or release
+          // events to the page worker while the cursor is over the overlay.
           if self
             .open_media_controls_rect
             .is_some_and(|rect| rect.contains(pos_points))
           {
-            if matches!(mapped_button, fastrender::ui::PointerButton::Primary) {
+            if matches!(state, ElementState::Pressed)
+              && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+            {
               // UI-owned clicks inside the overlay should not contribute to page multi-click
               // sequences (e.g. avoid a later page click being interpreted as a double-click).
               self.primary_click_sequence = None;
@@ -21391,31 +21395,33 @@ impl App {
             return;
           }
 
-          // Close the overlay before processing the click so we don't require a second click to
-          // interact with the underlying page/chrome.
-          //
-          // Special-case: clicking the underlying media element itself should typically just toggle
-          // the overlay closed (don't immediately reopen it by forwarding the click to the page).
-          let clicked_media_element =
-            matches!(mapped_button, fastrender::ui::PointerButton::Primary)
-              && self.open_media_controls.as_ref().is_some_and(|controls| {
-                self
-                  .page_input_mapping
-                  .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
-                  .or(Some(controls.anchor_rect_points))
-                  .is_some_and(|rect_points| rect_points.contains(pos_points))
-              });
+          if matches!(state, ElementState::Pressed) {
+            // Close the overlay before processing the click so we don't require a second click to
+            // interact with the underlying page/chrome.
+            //
+            // Special-case: clicking the underlying media element itself should typically just toggle
+            // the overlay closed (don't immediately reopen it by forwarding the click to the page).
+            let clicked_media_element =
+              matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+                && self.open_media_controls.as_ref().is_some_and(|controls| {
+                  self
+                    .page_input_mapping
+                    .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
+                    .or(Some(controls.anchor_rect_points))
+                    .is_some_and(|rect_points| rect_points.contains(pos_points))
+                });
 
-          self.cancel_media_controls();
-          self.window.request_redraw();
-          if clicked_media_element {
-            // The toggle-close click is UI-owned; prevent it from contributing to a later page
-            // multi-click count.
-            self.primary_click_sequence = None;
-            // Swallow the matching release event too so the toggle-close click is fully UI-owned
-            // (prevents page-side `pointerup`/`mouseup` observers from seeing a partial click).
-            self.media_controls_overlay_pointer_capture = true;
-            return;
+            self.cancel_media_controls();
+            self.window.request_redraw();
+            if clicked_media_element {
+              // The toggle-close click is UI-owned; prevent it from contributing to a later page
+              // multi-click count.
+              self.primary_click_sequence = None;
+              // Swallow the matching release event too so the toggle-close click is fully UI-owned
+              // (prevents page-side `pointerup`/`mouseup` observers from seeing a partial click).
+              self.media_controls_overlay_pointer_capture = true;
+              return;
+            }
           }
         }
 
