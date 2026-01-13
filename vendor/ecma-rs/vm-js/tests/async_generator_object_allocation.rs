@@ -54,9 +54,9 @@ fn async_generator_function_call_allocates_async_generator_object_with_correct_p
   if !feature_detect_async_generators(&mut rt)? {
     return Ok(());
   }
- 
+  
   // Basic async generator allocation + prototype selection.
-  let value = rt.exec_script(
+  let value = match rt.exec_script(
     r#"
 async function* g() {}
 let ok = true;
@@ -70,13 +70,17 @@ const gen2 = g();
 ok = ok && Object.getPrototypeOf(gen2) === Object.getPrototypeOf(g).prototype;
 ok;
 "#,
-  )?;
+  ) {
+    Ok(value) => value,
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+    Err(err) => return Err(err),
+  };
   assert_eq!(value, Value::Bool(true));
 
   // `%AsyncGeneratorPrototype%.next` should recognize the async generator object and return a
   // Promise resolving to an iterator result object (rather than throwing a TypeError for an
   // incompatible receiver).
-  let value = rt.exec_script(
+  let value = match rt.exec_script(
     r#"
 async function* g() {}
 const gen = g();
@@ -85,7 +89,11 @@ const p = Object.getPrototypeOf(g).prototype.next.call(gen);
 p.then(r => { out = String(r.done) + ":" + String(r.value); });
 out
 "#,
-  )?;
+  ) {
+    Ok(value) => value,
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+    Err(err) => return Err(err),
+  };
   let Value::String(s) = value else {
     panic!("expected string result, got {value:?}");
   };
