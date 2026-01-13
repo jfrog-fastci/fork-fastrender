@@ -29,6 +29,26 @@ fn unicode_mode_rejects_right_bracket_as_pattern_character() {
 }
 
 #[test]
+fn empty_character_classes_remain_valid() {
+  // The ECMAScript RegExp grammar permits empty character classes (`[]` / `[^]`),
+  // which are used in the wild (e.g. `[^]` as a "match-any" hack).
+  for src in ["/[]/", "/[]/u", "/[]/v", "/[^]/", "/[^]/u", "/[^]/v"] {
+    parse(src).unwrap();
+  }
+
+  // Still applies the UnicodeMode `]` restriction after a character class has ended.
+  parse("/[]]/").unwrap();
+  for src in ["/[]]/u", "/[]]/v"] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+}
+
+#[test]
 fn unicode_mode_rejects_character_class_escape_ranges() {
   for src in [
     r"/[\d-a]/u",
