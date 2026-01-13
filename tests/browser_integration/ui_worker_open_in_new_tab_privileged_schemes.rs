@@ -1,8 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
+use fastrender::interaction::FormSubmissionMethod;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+  FormSubmission, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -25,6 +26,29 @@ fn wait_for_open_in_new_tab(rx: &Receiver<WorkerToUi>, tab_id: TabId, expected_u
     } => {
       assert_eq!(got_tab, tab_id);
       assert_eq!(url, expected_url);
+    }
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  }
+}
+
+fn wait_for_open_in_new_tab_request(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  expected_url: &str,
+) -> FormSubmission {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::RequestOpenInNewTabRequest { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for RequestOpenInNewTabRequest for tab {tab_id:?}"));
+
+  match msg {
+    WorkerToUi::RequestOpenInNewTabRequest {
+      tab_id: got_tab,
+      request,
+    } => {
+      assert_eq!(got_tab, tab_id);
+      assert_eq!(request.url, expected_url);
+      request
     }
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   }
@@ -171,3 +195,106 @@ fn untrusted_open_in_new_tab_cannot_navigate_to_privileged_schemes() {
   join.join().expect("worker join");
 }
 
+#[test]
+fn untrusted_open_in_new_tab_request_cannot_navigate_to_privileged_schemes() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let page_url = site.write(
+    "page.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #submit_act { position: absolute; left: 0; top: 0; width: 200px; height: 40px; background: rgb(255, 0, 0); }
+            #submit_chr { position: absolute; left: 0; top: 50px; width: 200px; height: 40px; background: rgb(0, 0, 255); }
+          </style>
+        </head>
+        <body>
+          <form action="chrome-action:back" method="post" target="_blank">
+            <input type="hidden" name="q" value="a b">
+            <input id="submit_act" type="submit" value="action">
+          </form>
+          <form action="chrome://styles/chrome.css" method="post" target="_blank">
+            <input type="hidden" name="q" value="a b">
+            <input id="submit_chr" type="submit" value="chrome">
+          </form>
+        </body>
+      </html>
+    "#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-open-in-new-tab-request-privileged-scheme")
+    .expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+
+  ui_tx.send(support::create_tab_msg(tab_id, None)).unwrap();
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (240, 140), 1.0))
+    .unwrap();
+  ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      page_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
+    .unwrap();
+
+  // Wait for an initial frame so hit-testing has prepared layout artifacts.
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+
+  for (expected_url, pos_css) in [
+    ("chrome-action:back", (10.0, 10.0)),
+    ("chrome://styles/chrome.css", (10.0, 60.0)),
+  ] {
+    ui_tx
+      .send(UiToWorker::PointerDown {
+        tab_id,
+        pos_css,
+        button: PointerButton::Primary,
+        modifiers: PointerModifiers::NONE,
+        click_count: 1,
+      })
+      .unwrap();
+    ui_tx
+      .send(UiToWorker::PointerUp {
+        tab_id,
+        pos_css,
+        button: PointerButton::Primary,
+        modifiers: PointerModifiers::NONE,
+      })
+      .unwrap();
+
+    let request = wait_for_open_in_new_tab_request(&ui_rx, tab_id, expected_url);
+    assert_eq!(request.method, FormSubmissionMethod::Post);
+
+    let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+
+    let new_tab = TabId::new();
+    ui_tx.send(support::create_tab_msg(new_tab, None)).unwrap();
+    ui_tx
+      .send(support::viewport_changed_msg(new_tab, (240, 140), 1.0))
+      .unwrap();
+    ui_tx
+      .send(UiToWorker::NavigateRequest {
+        tab_id: new_tab,
+        request,
+        reason: NavigationReason::LinkClick,
+      })
+      .unwrap();
+
+    wait_for_navigation_failed_unsupported_scheme(&ui_rx, new_tab, expected_url);
+    let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+  }
+
+  drop(ui_tx);
+  join.join().expect("worker join");
+}

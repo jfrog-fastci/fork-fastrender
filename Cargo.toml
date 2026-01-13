@@ -62,7 +62,6 @@ browser_ui_base = [
 # Full egui-based desktop UI stack used by `src/bin/browser.rs` (depends on `browser_ui_base`).
 browser_ui = [
   "browser_ui_base",
-  "audio_cpal",
   "dep:egui",
   "dep:egui-winit",
   "dep:egui-wgpu",

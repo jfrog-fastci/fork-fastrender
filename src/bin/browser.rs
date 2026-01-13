@@ -11420,7 +11420,10 @@ impl App {
           // the window), leaving `last_cursor_pos_points` unset. Fall back to egui's tracked hover
           // position, then to a direct window query.
           let egui_hover_pos = self.egui_ctx.input(|i| i.pointer.hover_pos());
-          let window_cursor_pos = self.window.cursor_position().ok();
+          // Winit 0.28 does not expose a stable cross-platform cursor-position query API on
+          // `Window`. Fall back to egui's tracked hover position; if it's not available we treat
+          // the cursor position as unknown and conservatively avoid focusing the page.
+          let window_cursor_pos = None;
           let resolved = resolve_cursor_pos_points_for_mouse_input(
             egui_hover_pos,
             window_cursor_pos,
