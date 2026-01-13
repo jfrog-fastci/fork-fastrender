@@ -28,12 +28,19 @@ This is a quick reference. The full Windows sandbox design is layered as:
      best-effort / retried without on unsupported Windows builds).
 2. **Job object** limits (kill-on-close + active process limit; optional memory cap in `crates/win-sandbox`).
 3. **Handle inheritance allowlisting** (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) to prevent capability leaks.
-4. **Process mitigations** (Win32k lockdown, dynamic code prohibition, etc.) when enabled.
+4. **Spawn-time environment sanitization** (defense in depth):
+   - The Windows spawn helper passes an explicit, allowlisted environment block to avoid leaking
+     secrets from the parent process environment into the untrusted renderer.
+   - It also overrides `TEMP`/`TMP` to a sandbox-accessible temp directory (in AppContainer mode this
+     is typically `GetAppContainerFolderPath(AppContainerSid)\\Temp`).
+   - Debug escape hatch: `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` disables this sanitization and inherits
+     the full parent environment (**debug only**).
+5. **Process mitigations** (Win32k lockdown, dynamic code prohibition, etc.) when enabled.
    - Applied at process creation time via `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (best-effort; if
      the OS rejects the attribute, the spawn helper retries without mitigations).
    - Debug escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1` disables mitigation policies only (it does
      not disable AppContainer/restricted-token sandboxing, job limits, or handle allowlisting).
-5. **Fallback mode**: restricted token + Low IL (weaker; network not reliably blocked).
+6. **Fallback mode**: restricted token + Low IL (weaker; network not reliably blocked).
 
 ### Primary mode: AppContainer (zero capabilities)
 
@@ -104,6 +111,12 @@ active-process limit).
 
 Set `FASTR_LOG_SANDBOX=1` to enable verbose Windows sandbox spawn logs (useful for debugging
 AppContainer ACL/workdir issues in dev/test environments).
+
+If you need to debug environment-dependent behavior, you can opt into inheriting the full parent
+environment for sandboxed children:
+
+- `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` (debug only; disables environment sanitization and the
+  default `TEMP`/`TMP` override).
 
 ### Allow running without the full Windows sandbox (opt-in)
 
