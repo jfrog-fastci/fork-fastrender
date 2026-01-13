@@ -168,7 +168,7 @@ impl MixerState {
 
   /// Mixes up to `dst.len()` samples by draining from sink buffers.
   ///
-  /// Returns `true` if any sink contributed at least one sample.
+  /// Returns `true` if any sink had at least one sample drained.
   fn pop_mix_into(&self, dst: &mut [f32]) -> bool {
     dst.fill(0.0);
     if dst.is_empty() {
@@ -369,8 +369,8 @@ fn f32_to_i16(sample: f32) -> i16 {
 
 #[cfg(test)]
 mod tests {
-  use super::WavAudioBackend;
-  use crate::media::audio::{test_signal, AudioBackend, AudioStreamConfig};
+  use super::*;
+  use crate::media::audio::test_signal;
   use std::time::Duration;
 
   #[test]
@@ -410,5 +410,34 @@ mod tests {
     assert_eq!(out[0], i16::MAX);
     assert_eq!(out[1], i16::MAX);
     assert!(out[2..].iter().all(|v| *v == 0));
+  }
+
+  #[test]
+  fn pop_mix_into_drains_when_gain_is_zero() {
+    let config = AudioStreamConfig::new(48_000, 1);
+    let mixer = MixerState::new(config);
+    let sink = Arc::new(SinkState::new(config));
+    mixer.register_sink(&sink);
+
+    // 200ms worth of mono 48kHz samples.
+    let total = 48_000 / 5;
+    let half = total / 2;
+
+    sink.buffer.lock().extend(std::iter::repeat(1.0).take(total));
+    sink.set_volume(0.0);
+
+    // Muted mixing should still drain samples and return true (so the backend advances time).
+    let mut muted_out = vec![0.0; half];
+    assert!(mixer.pop_mix_into(&mut muted_out));
+    assert_eq!(muted_out, vec![0.0; half]);
+    assert_eq!(sink.buffer.lock().len(), total - half);
+
+    // Unmuting should play immediately without backlog (only the remaining samples should mix).
+    sink.set_volume(1.0);
+    let mut out = vec![0.0; total];
+    assert!(mixer.pop_mix_into(&mut out));
+    assert_eq!(&out[..half], &vec![1.0; half][..]);
+    assert_eq!(&out[half..], &vec![0.0; half][..]);
+    assert_eq!(sink.buffer.lock().len(), 0);
   }
 }
