@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(feature = "direct_websocket")]
 use tungstenite::client::IntoClientRequest;
+#[cfg(feature = "direct_websocket")]
 use tungstenite::protocol::{CloseFrame, Message as TungsteniteMessage};
+#[cfg(feature = "direct_websocket")]
 use tungstenite::Error as TungsteniteError;
 
 use super::ipc;
@@ -257,7 +260,15 @@ impl NetworkClient {
   /// Today this is a direct (in-process) backend; it is expected to be replaced by an IPC-backed
   /// implementation as multiprocess network isolation is built out.
   pub fn websocket_backend(&self) -> Arc<dyn WebSocketBackend> {
-    Arc::new(DirectWebSocketBackend)
+    #[cfg(feature = "direct_websocket")]
+    {
+      Arc::new(DirectWebSocketBackend)
+    }
+
+    #[cfg(not(feature = "direct_websocket"))]
+    {
+      Arc::new(DisabledWebSocketBackend)
+    }
   }
 
   /// Create a simple download client backed by this client's [`ResourceFetcher`].
@@ -349,8 +360,23 @@ pub trait WebSocketBackend: Send + Sync {
   fn connect(&self, url: &str, protocols: &[String]) -> Result<Box<dyn WebSocketStream>>;
 }
 
+#[cfg(not(feature = "direct_websocket"))]
+#[derive(Debug)]
+struct DisabledWebSocketBackend;
+
+#[cfg(not(feature = "direct_websocket"))]
+impl WebSocketBackend for DisabledWebSocketBackend {
+  fn connect(&self, _url: &str, _protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
+    Err(Error::Other(
+      "WebSocket backend is unavailable (direct_websocket feature disabled)".to_string(),
+    ))
+  }
+}
+
+#[cfg(feature = "direct_websocket")]
 struct DirectWebSocketBackend;
 
+#[cfg(feature = "direct_websocket")]
 struct DirectWebSocketStream {
   socket: tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
   protocol: String,
@@ -369,6 +395,7 @@ fn normalize_close_code_for_frame(code: u16) -> u16 {
   }
 }
 
+#[cfg(feature = "direct_websocket")]
 fn map_tungstenite_err(err: TungsteniteError) -> Error {
   match err {
     TungsteniteError::Io(err) => Error::Io(err),
@@ -418,6 +445,7 @@ fn validate_ws_subprotocol_handshake_response(
   Ok(value.to_string())
 }
 
+#[cfg(feature = "direct_websocket")]
 impl WebSocketBackend for DirectWebSocketBackend {
   fn connect(&self, url: &str, protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
     let mut req = url
@@ -438,6 +466,7 @@ impl WebSocketBackend for DirectWebSocketBackend {
   }
 }
 
+#[cfg(feature = "direct_websocket")]
 impl WebSocketStream for DirectWebSocketStream {
   fn send(&mut self, message: WebSocketMessage) -> Result<()> {
     let msg = match message {

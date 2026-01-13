@@ -71,29 +71,29 @@ pub enum DecodeError {
   Json(#[from] serde_json::Error),
 }
 
-/// Decode a length-prefixed frame from `data` and deserialize it as a [`protocol::RendererToBrowser`]
-/// message.
+/// Decode a length-prefixed frame from `data` and deserialize it as a
+/// [`protocol::renderer::RendererToBrowser`] message.
 pub fn decode_renderer_to_browser_from_bytes(
   data: &[u8],
-) -> Result<protocol::RendererToBrowser, DecodeError> {
+) -> Result<protocol::renderer::RendererToBrowser, DecodeError> {
   let frame = framing::decode_frame_from_bytes(data)?;
   decode_renderer_to_browser_json(frame.message_bytes).map_err(DecodeError::from)
 }
 
 /// Decode a frame from a prefix + payload byte slice and deserialize it as a
-/// [`protocol::RendererToBrowser`] message.
+/// [`protocol::renderer::RendererToBrowser`] message.
 pub fn decode_renderer_to_browser_from_parts(
   prefix: [u8; 4],
   payload: &[u8],
-) -> Result<protocol::RendererToBrowser, DecodeError> {
+) -> Result<protocol::renderer::RendererToBrowser, DecodeError> {
   let frame = framing::decode_frame_from_parts(prefix, payload)?;
   decode_renderer_to_browser_json(frame.message_bytes).map_err(DecodeError::from)
 }
 
-/// Deserialize a JSON payload as a [`protocol::RendererToBrowser`] message.
+/// Deserialize a JSON payload as a [`protocol::renderer::RendererToBrowser`] message.
 pub fn decode_renderer_to_browser_json(
   json: &[u8],
-) -> Result<protocol::RendererToBrowser, serde_json::Error> {
+) -> Result<protocol::renderer::RendererToBrowser, serde_json::Error> {
   serde_json::from_slice(json)
 }
 
