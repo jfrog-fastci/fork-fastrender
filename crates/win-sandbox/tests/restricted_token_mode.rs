@@ -44,6 +44,8 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
   const USERS_SID: &str = "S-1-5-32-545";
   // Generic access rights from winnt.h.
   const GENERIC_ALL: u32 = 0x1000_0000;
+  // `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not currently export it.
+  const NO_INHERITANCE: u32 = 0;
   // `DACL_SECURITY_INFORMATION` from winnt.h.
   const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
 
