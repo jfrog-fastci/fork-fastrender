@@ -26,6 +26,7 @@ fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
         var f = (async function* () { yield 1; });
         // Call `.next()` to ensure async generator execution is implemented, not just syntax.
         f().next();
+        true;
       } catch (e) {
         // Only treat the known feature-detection SyntaxError as "unsupported". Any other exception
         // should fail the test so we don't accidentally mask bugs once async generators exist.
