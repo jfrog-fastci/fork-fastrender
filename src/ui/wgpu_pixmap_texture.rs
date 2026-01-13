@@ -201,7 +201,10 @@ impl WgpuPixmapTexture {
 
     let padded_bytes_per_row = align_to(w.saturating_mul(4), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let mut staging = Vec::new();
-    staging.resize(staging_len(padded_bytes_per_row, h), 0);
+    // Pre-reserve the expected size so the first upload can grow `staging` without reallocating,
+    // but keep `len == 0` so we don't treat the allocation as initialized until we actually write
+    // into it.
+    staging.reserve_exact(staging_len(padded_bytes_per_row, h));
 
     Self {
       texture,
@@ -231,7 +234,10 @@ impl WgpuPixmapTexture {
 
     let padded_bytes_per_row = align_to(w.saturating_mul(4), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let mut staging = Vec::new();
-    staging.resize(staging_len(padded_bytes_per_row, h), 0);
+    // Pre-reserve the expected size so the first upload can grow `staging` without reallocating,
+    // but keep `len == 0` so we don't treat the allocation as initialized until we actually write
+    // into it.
+    staging.reserve_exact(staging_len(padded_bytes_per_row, h));
 
     Self {
       texture,
@@ -321,18 +327,19 @@ impl WgpuPixmapTexture {
     }
 
     // Upload staging buffers are based on *content* dimensions, not allocation size.
-    let desired_padded_bytes_per_row = align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    if self.padded_bytes_per_row != desired_padded_bytes_per_row {
-      self.padded_bytes_per_row = desired_padded_bytes_per_row;
-    }
-    let expected_staging_len = staging_len(self.padded_bytes_per_row, h);
-    if self.staging.len() != expected_staging_len {
-      self.staging.resize(expected_staging_len, 0);
-    }
+    let padded_bytes_per_row = align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    self.padded_bytes_per_row = padded_bytes_per_row;
 
     // Fast path: if the source row stride is already 256-byte aligned, we can upload directly
     // from the pixmap's backing bytes (no staging copy).
-    if self.padded_bytes_per_row == src_stride {
+    if padded_bytes_per_row == src_stride {
+      // Preserve shrinking behavior from the previous `Vec::resize` implementation, but avoid any
+      // growth/initialization (staging is unused in this fast path).
+      let expected_len = staging_len(padded_bytes_per_row, h);
+      if self.staging.len() > expected_len {
+        self.staging.truncate(expected_len);
+      }
+
       queue.write_texture(
         wgpu::ImageCopyTexture {
           texture: &self.texture,
@@ -357,9 +364,13 @@ impl WgpuPixmapTexture {
 
     // Ensure staging is correctly sized even if the pixmap dimensions match but the alignment
     // constant changes (unlikely) or we loaded older serialized state.
-    debug_assert_eq!(self.staging.len(), expected_staging_len);
+    let expected_len = staging_len(padded_bytes_per_row, h);
+    if self.staging.len() != expected_len {
+      resize_staging_buffer_for_copy(&mut self.staging, expected_len);
+    }
+    debug_assert_eq!(self.staging.len(), expected_len);
 
-    copy_pixmap_to_padded_staging(pixmap, self.padded_bytes_per_row, &mut self.staging);
+    copy_pixmap_to_padded_staging(pixmap, padded_bytes_per_row, &mut self.staging);
 
     queue.write_texture(
       wgpu::ImageCopyTexture {
@@ -371,7 +382,7 @@ impl WgpuPixmapTexture {
       &self.staging,
       wgpu::ImageDataLayout {
         offset: 0,
-        bytes_per_row: Some(self.padded_bytes_per_row),
+        bytes_per_row: Some(padded_bytes_per_row),
         rows_per_image: Some(h),
       },
       wgpu::Extent3d {
@@ -460,6 +471,23 @@ fn staging_len(padded_bytes_per_row: u32, height: u32) -> usize {
   padded_bytes_per_row as usize * height as usize
 }
 
+fn resize_staging_buffer_for_copy(dst: &mut Vec<u8>, new_len: usize) {
+  match dst.len().cmp(&new_len) {
+    std::cmp::Ordering::Less => {
+      // Avoid zero-filling potentially large allocations; the caller guarantees it will fully
+      // initialize the extended region before any read.
+      dst.reserve_exact(new_len - dst.len());
+      // SAFETY: The caller must fully initialize all bytes in `[old_len, new_len)` before any read
+      // or any subsequent operation that could copy elements (e.g. another growth reallocation).
+      unsafe {
+        dst.set_len(new_len);
+      }
+    }
+    std::cmp::Ordering::Equal => {}
+    std::cmp::Ordering::Greater => dst.truncate(new_len),
+  }
+}
+
 fn align_to(value: u32, alignment: u32) -> u32 {
   let rem = value % alignment;
   if rem == 0 {
@@ -517,6 +545,35 @@ mod tests {
     assert_eq!(padded, 256);
 
     let mut staging = vec![0xAA; staging_len(padded, 2)];
+    copy_pixmap_to_padded_staging(&pixmap, padded, &mut staging);
+
+    let src = pixmap.data();
+    assert_eq!(&staging[0..12], &src[0..12]);
+    assert!(staging[12..256].iter().all(|&b| b == 0));
+
+    assert_eq!(&staging[256..256 + 12], &src[12..24]);
+    assert!(staging[256 + 12..512].iter().all(|&b| b == 0));
+  }
+
+  #[test]
+  fn staging_copy_fully_initializes_after_growing_without_zero_fill() {
+    let mut pixmap = Pixmap::new(3, 2).unwrap();
+
+    // Fill pixmap with deterministic bytes.
+    for (i, b) in pixmap.data_mut().iter_mut().enumerate() {
+      *b = i as u8;
+    }
+
+    let padded = align_to(3 * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    assert_eq!(padded, 256);
+
+    let expected_len = staging_len(padded, 2);
+    let mut staging = vec![0xAA; expected_len / 2];
+
+    resize_staging_buffer_for_copy(&mut staging, expected_len);
+
+    // Safety contract: `resize_staging_buffer_for_copy` may leave new bytes uninitialized. Ensure
+    // we fully overwrite before reading.
     copy_pixmap_to_padded_staging(&pixmap, padded, &mut staging);
 
     let src = pixmap.data();
