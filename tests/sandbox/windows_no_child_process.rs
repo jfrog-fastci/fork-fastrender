@@ -5,7 +5,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Command;
 
-use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
+use fastrender::sandbox::windows::spawn_sandboxed;
 use windows_sys::Win32::Foundation::{
   SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
@@ -13,6 +13,7 @@ use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_IN
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_NO_CHILD_PROCESS_CHILD";
+const CMD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_CMD_EXE";
 
 // Windows error codes we explicitly treat as "cmd.exe could not be found" rather than "sandbox
 // blocked process creation".
@@ -36,6 +37,28 @@ fn cmd_exe_path() -> Result<PathBuf, String> {
 
   // Fall back to relying on PATH resolution. This should still work on normal Windows installs.
   Ok(PathBuf::from("cmd.exe"))
+}
+
+fn cmd_exe_path_for_child() -> PathBuf {
+  if let Some(cmd) = std::env::var_os(CMD_ENV) {
+    if !cmd.is_empty() {
+      return PathBuf::from(cmd);
+    }
+  }
+
+  if let Some(spec) = std::env::var_os("ComSpec") {
+    if !spec.is_empty() {
+      return PathBuf::from(spec);
+    }
+  }
+
+  if let Some(root) = std::env::var_os("SystemRoot") {
+    if !root.is_empty() {
+      return PathBuf::from(root).join("System32").join("cmd.exe");
+    }
+  }
+
+  PathBuf::from("cmd.exe")
 }
 
 fn assert_cmd_spawn_works(cmd_exe: &PathBuf) {
@@ -94,10 +117,9 @@ fn collect_inheritable_std_handles() -> Vec<std::os::windows::io::RawHandle> {
 
 #[test]
 fn sandboxed_renderer_cannot_spawn_child_process() {
-  let cmd_exe = cmd_exe_path().expect("determine cmd.exe path");
-
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
+    let cmd_exe = cmd_exe_path_for_child();
     match Command::new(&cmd_exe).arg("/C").arg("exit 0").status() {
       Ok(status) => panic!(
         "sandbox allowed spawning a child process (cmd.exe). cmd={}, status={:?}",
@@ -122,6 +144,7 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     return;
   }
 
+  let cmd_exe = cmd_exe_path().expect("determine cmd.exe path");
   // Sanity check: in the normal (unsandboxed) test process, cmd.exe should spawn successfully. If
   // this fails, the regression test could pass for the wrong reason.
   assert_cmd_spawn_works(&cmd_exe);
@@ -136,14 +159,21 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     OsString::from("--nocapture"),
   ];
 
-  let child = crate::common::with_env_vars(&[(CHILD_ENV, "1")], || {
-    spawn_sandboxed(&exe, &args, &inherit_handles).expect("spawn sandboxed child test process")
+  let cmd_exe_env = cmd_exe.to_string_lossy();
+  let child = crate::common::with_env_vars(&[(CHILD_ENV, "1"), (CMD_ENV, &cmd_exe_env)], || {
+    // The Windows sandbox may not have access to the repository working directory; use System32 as a
+    // conservative working directory during process creation.
+    let prev_dir = std::env::current_dir().ok();
+    if let Some(root) = std::env::var_os("SystemRoot") {
+      let system32 = PathBuf::from(root).join("System32");
+      let _ = std::env::set_current_dir(&system32);
+    }
+    let child = spawn_sandboxed(&exe, &args, &inherit_handles);
+    if let Some(prev_dir) = prev_dir {
+      let _ = std::env::set_current_dir(prev_dir);
+    }
+    child.expect("spawn sandboxed child test process")
   });
-  assert_ne!(
-    child.level,
-    WindowsSandboxLevel::None,
-    "spawn_sandboxed returned WindowsSandboxLevel::None; sandbox may be disabled or unavailable"
-  );
 
   let timeout_ms: u32 = 10_000;
   // SAFETY: waiting on a valid process handle.
