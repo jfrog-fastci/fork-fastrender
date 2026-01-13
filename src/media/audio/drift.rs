@@ -14,6 +14,8 @@
 
 use std::time::Duration;
 
+use super::queue::PcmF32QueueConsumer;
+
 #[derive(Debug, Clone, Copy)]
 pub struct DriftControllerConfig {
   /// Desired buffered duration, in seconds (media time).
@@ -143,75 +145,181 @@ fn slew_towards(current: f64, target: f64, max_delta: f64) -> f64 {
   }
 }
 
-/// Monotonic media-time clock for a single audio stream.
+/// A tiny drift-aware linear resampler that consumes frames from a [`PcmF32QueueConsumer`] at a
+/// slightly adjusted rate to keep buffering near a target.
 ///
-/// This clock is typically advanced by the number of *input* frames consumed (i.e. the stream
-/// timebase), not the number of device frames produced.
+/// This is intended to live in the real-time audio callback path:
+/// - it performs no allocations after construction,
+/// - it only touches a small amount of per-stream state (`phase` + two frames of history),
+/// - rate changes are driven by [`DriftController`] and are bounded/slew-limited there.
+///
+/// The resampling model is intentionally simple:
+/// - playback-rate adjustment is implemented by varying the resampling ratio
+///   (`effective_ratio = base_ratio * playback_rate`),
+/// - pitch changes by the same small factor (±1% default), which is typically preferable to
+///   discontinuous drop/dup strategies.
 #[derive(Debug, Clone)]
-pub struct AudioStreamClock {
-  sample_rate_hz: u32,
-  // Total frames consumed in the stream timebase.
-  frames: u64,
-  // Cached `floor(frames * 1e9 / sample_rate_hz)` in nanoseconds, with remainder tracked
-  // separately to keep the clock monotonic and deterministic.
-  nanos: u64,
-  nanos_remainder: u32,
-  nanos_per_frame: u32,
-  nanos_per_frame_remainder: u32,
+pub struct DriftResampler {
+  channels: usize,
+  src_rate_hz: u32,
+  dst_rate_hz: u32,
+  base_ratio: f64,
+  controller: DriftController,
+  /// Fractional position between `frame0` and `frame1`, in `[0, 1)`.
+  phase: f64,
+  /// Current input frame (`channels` interleaved samples).
+  frame0: Vec<f32>,
+  /// Next input frame used for interpolation.
+  frame1: Vec<f32>,
+  /// Whether `frame0`/`frame1` have been initialized.
+  initialized: bool,
+  last_input_frames: u64,
 }
 
-impl AudioStreamClock {
-  pub fn new(sample_rate_hz: u32) -> Self {
-    assert!(sample_rate_hz > 0);
-    let nanos_per_frame = 1_000_000_000u32 / sample_rate_hz;
-    let nanos_per_frame_remainder = 1_000_000_000u32 % sample_rate_hz;
+impl DriftResampler {
+  /// Create a resampler that reads from a source stream at `src_rate_hz` and produces output at
+  /// `dst_rate_hz`.
+  ///
+  /// For the common case where the decoder already outputs at the device rate, use
+  /// `src_rate_hz == dst_rate_hz` (base ratio = 1.0); drift correction will still compensate for
+  /// ppm-level clock mismatches.
+  pub fn new(
+    channels: usize,
+    src_rate_hz: u32,
+    dst_rate_hz: u32,
+    controller_cfg: DriftControllerConfig,
+  ) -> Self {
+    assert!(channels > 0, "channels must be > 0");
+    assert!(src_rate_hz > 0, "src_rate_hz must be > 0");
+    assert!(dst_rate_hz > 0, "dst_rate_hz must be > 0");
+    let base_ratio = f64::from(src_rate_hz) / f64::from(dst_rate_hz);
     Self {
-      sample_rate_hz,
-      frames: 0,
-      nanos: 0,
-      nanos_remainder: 0,
-      nanos_per_frame,
-      nanos_per_frame_remainder,
+      channels,
+      src_rate_hz,
+      dst_rate_hz,
+      base_ratio,
+      controller: DriftController::new(controller_cfg),
+      phase: 0.0,
+      frame0: vec![0.0; channels],
+      frame1: vec![0.0; channels],
+      initialized: false,
+      last_input_frames: 0,
     }
   }
 
+  /// Returns the controller's current playback-rate multiplier.
   #[inline]
-  pub fn time(&self) -> Duration {
-    Duration::from_nanos(self.nanos)
+  pub fn playback_rate(&self) -> f64 {
+    self.controller.playback_rate()
   }
 
+  /// Number of source frames popped from the queue during the last [`Self::pop_into`] call.
   #[inline]
-  pub fn frames(&self) -> u64 {
-    self.frames
+  pub fn last_input_frames_consumed(&self) -> u64 {
+    self.last_input_frames
   }
 
+  /// Returns the number of prefetched input frames held internally (0 or 2).
   #[inline]
-  pub fn sample_rate_hz(&self) -> u32 {
-    self.sample_rate_hz
+  pub fn prefetched_frames(&self) -> usize {
+    usize::from(self.initialized) * 2
   }
 
+  /// Clears interpolation state (drops prefetched frames and resets phase).
   #[inline]
-  pub fn advance_frames(&mut self, frames: u32) {
-    if frames == 0 {
-      return;
+  pub fn reset(&mut self) {
+    self.phase = 0.0;
+    self.initialized = false;
+  }
+
+  /// Pop interleaved f32 samples from `queue` into `out`, applying drift correction.
+  ///
+  /// `out.len()` must be a multiple of `channels` (any trailing partial frame is ignored and left
+  /// untouched, mirroring `PcmF32QueueConsumer::pop_into` semantics).
+  ///
+  /// This method always returns the number of samples written (a multiple of `channels`).
+  pub fn pop_into(&mut self, queue: &mut PcmF32QueueConsumer, out: &mut [f32]) -> usize {
+    let channels = self.channels;
+    let out_samples = out.len() - (out.len() % channels);
+    let out_frames = out_samples / channels;
+    if out_frames == 0 {
+      self.last_input_frames = 0;
+      return 0;
     }
-    self.frames += frames as u64;
 
-    self.nanos = self
-      .nanos
-      .saturating_add(frames as u64 * self.nanos_per_frame as u64);
+    debug_assert_eq!(queue.channels(), channels);
+    debug_assert_eq!(queue.sample_rate_hz(), self.src_rate_hz);
 
-    let sr = self.sample_rate_hz as u64;
-    let rem_add = frames as u64 * self.nanos_per_frame_remainder as u64;
-    let rem_total = self.nanos_remainder as u64 + rem_add;
-    self.nanos = self.nanos.saturating_add(rem_total / sr);
-    self.nanos_remainder = (rem_total % sr) as u32;
+    let dt_s = out_frames as f64 / f64::from(self.dst_rate_hz);
+    let buffered_frames = queue
+      .buffered_frames()
+      .saturating_add(self.prefetched_frames());
+    let buffered_s = buffered_frames as f64 / f64::from(self.src_rate_hz);
+
+    let playback_rate = self.controller.update(buffered_s, dt_s);
+    let mut step = self.base_ratio * playback_rate;
+    if !(step.is_finite()) || step <= 0.0 {
+      step = self.base_ratio;
+    }
+
+    // Default to silence; we'll overwrite as we successfully synthesize frames.
+    out[..out_samples].fill(0.0);
+    self.last_input_frames = 0;
+
+    if !self.initialized {
+      if !self.pop_frame(queue, &mut self.frame0) {
+        return out_samples;
+      }
+      if !self.pop_frame(queue, &mut self.frame1) {
+        // Not enough data for interpolation; keep silence (buffer will recover and re-init later).
+        self.reset();
+        return out_samples;
+      }
+      self.initialized = true;
+    }
+
+    let mut out_idx = 0usize;
+    for _ in 0..out_frames {
+      let frac = self.phase as f32;
+      for ch in 0..channels {
+        let a = self.frame0[ch];
+        let b = self.frame1[ch];
+        out[out_idx + ch] = a + (b - a) * frac;
+      }
+      out_idx += channels;
+
+      self.phase += step;
+      while self.phase >= 1.0 {
+        self.phase -= 1.0;
+        std::mem::swap(&mut self.frame0, &mut self.frame1);
+        if !self.pop_frame(queue, &mut self.frame1) {
+          // Underflow mid-block: reset so we re-sync to the next available audio.
+          self.reset();
+          return out_samples;
+        }
+      }
+    }
+
+    out_samples
+  }
+
+  #[inline]
+  fn pop_frame(&mut self, queue: &mut PcmF32QueueConsumer, dst: &mut [f32]) -> bool {
+    debug_assert_eq!(dst.len(), self.channels);
+    let n = queue.pop_into(dst);
+    if n == self.channels {
+      self.last_input_frames += 1;
+      true
+    } else {
+      false
+    }
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::media::audio::pcm_f32_queue;
 
   fn run_simulation(producer_rate_hz: f64) {
     let stream_rate_hz = 48_000.0_f64;
@@ -237,7 +345,7 @@ mod tests {
     let steps = (60.0 / dt_s) as usize;
 
     let mut controller = DriftController::new(cfg);
-    let mut clock = AudioStreamClock::new(stream_rate_u32);
+    let mut clock = StreamFrameClock::new(stream_rate_u32);
 
     // Start at the target buffered duration.
     let mut buffered_frames: i64 = (target_buffer_s * stream_rate_hz) as i64;
@@ -317,5 +425,156 @@ mod tests {
   #[test]
   fn drift_controller_keeps_buffer_bounded_slower_producer() {
     run_simulation(47_980.0);
+  }
+
+  fn run_queue_simulation(producer_rate_hz: f64) {
+    let src_rate_hz = 48_000u32;
+    let dst_rate_hz = 48_000u32;
+    let channels = 1usize;
+
+    let target_buffer_s = 0.100;
+    let low_watermark_s = 0.020;
+    let high_watermark_s = 0.020;
+
+    let cfg = DriftControllerConfig {
+      target_buffer_s,
+      low_watermark_s,
+      high_watermark_s,
+      max_playback_rate_adjust: 0.01,
+      max_slew_per_s: 0.005,
+      kp: 0.05,
+      ki: 0.01,
+    };
+
+    let callback_frames_out: usize = 480; // 10ms @ 48kHz
+    let dt_s = callback_frames_out as f64 / f64::from(dst_rate_hz);
+    let steps = (60.0 / dt_s) as usize;
+
+    // Generous capacity so the test never triggers queue drops.
+    let capacity_frames = 48_000usize * 4;
+    let (mut prod, mut cons) = pcm_f32_queue(channels, src_rate_hz, capacity_frames);
+
+    // Pre-fill to target buffered duration so the controller starts in steady state.
+    let target_frames = (target_buffer_s * f64::from(src_rate_hz)) as usize;
+    let mut zeros = vec![0.0f32; target_frames.max(callback_frames_out + 32) * channels];
+    prod.push(&zeros[..target_frames * channels], Duration::ZERO);
+
+    let mut resampler = DriftResampler::new(channels, src_rate_hz, dst_rate_hz, cfg);
+    let mut out = vec![0.0f32; callback_frames_out * channels];
+
+    let mut producer_phase = 0.0f64;
+    let mut min_buffer_s = f64::INFINITY;
+    let mut max_buffer_s = f64::NEG_INFINITY;
+
+    let mut clock = StreamFrameClock::new(src_rate_hz);
+    let mut last_clock = clock.time();
+
+    for _ in 0..steps {
+      // Producer: add decoded PCM frames.
+      let desired_produce = producer_rate_hz * dt_s + producer_phase;
+      let produce_frames = desired_produce.floor() as usize;
+      producer_phase = desired_produce - produce_frames as f64;
+      if produce_frames > 0 {
+        if zeros.len() < produce_frames * channels {
+          zeros.resize(produce_frames * channels, 0.0);
+        }
+        prod.push_without_pts(&zeros[..produce_frames * channels]);
+      }
+
+      // Consumer: produce `callback_frames_out` output frames, consuming a variable number of input
+      // frames based on drift correction.
+      resampler.pop_into(&mut cons, &mut out);
+      clock.advance_frames(resampler.last_input_frames_consumed() as u32);
+
+      let now = clock.time();
+      assert!(now >= last_clock, "stream clock must be monotonic");
+      last_clock = now;
+
+      let buffered_frames = cons
+        .buffered_frames()
+        .saturating_add(resampler.prefetched_frames());
+      let buffered_s = buffered_frames as f64 / f64::from(src_rate_hz);
+      min_buffer_s = min_buffer_s.min(buffered_s);
+      max_buffer_s = max_buffer_s.max(buffered_s);
+
+      assert!(
+        (1.0 - cfg.max_playback_rate_adjust..=1.0 + cfg.max_playback_rate_adjust)
+          .contains(&resampler.playback_rate())
+      );
+    }
+
+    let tol_s = 0.0005;
+    assert!(
+      min_buffer_s >= target_buffer_s - low_watermark_s - tol_s,
+      "min_buffer_s={min_buffer_s}"
+    );
+    assert!(
+      max_buffer_s <= target_buffer_s + high_watermark_s + tol_s,
+      "max_buffer_s={max_buffer_s}"
+    );
+
+    let expected_clock_s = 60.0 * producer_rate_hz / f64::from(src_rate_hz);
+    let actual_clock_s = clock.time().as_secs_f64();
+    assert!(
+      (actual_clock_s - expected_clock_s).abs() < 0.030,
+      "actual_clock_s={actual_clock_s} expected_clock_s={expected_clock_s}"
+    );
+  }
+
+  #[test]
+  fn drift_resampler_with_queue_keeps_buffer_bounded_faster_producer() {
+    run_queue_simulation(48_020.0);
+  }
+
+  #[test]
+  fn drift_resampler_with_queue_keeps_buffer_bounded_slower_producer() {
+    run_queue_simulation(47_980.0);
+  }
+
+  /// Monotonic stream-time clock used by the deterministic drift simulations.
+  ///
+  /// This accumulates `frames/sample_rate` in a way that avoids `f64` rounding drift.
+  #[derive(Debug, Clone)]
+  struct StreamFrameClock {
+    sample_rate_hz: u32,
+    nanos: u64,
+    nanos_remainder: u32,
+    nanos_per_frame: u32,
+    nanos_per_frame_remainder: u32,
+  }
+
+  impl StreamFrameClock {
+    fn new(sample_rate_hz: u32) -> Self {
+      assert!(sample_rate_hz > 0);
+      let nanos_per_frame = 1_000_000_000u32 / sample_rate_hz;
+      let nanos_per_frame_remainder = 1_000_000_000u32 % sample_rate_hz;
+      Self {
+        sample_rate_hz,
+        nanos: 0,
+        nanos_remainder: 0,
+        nanos_per_frame,
+        nanos_per_frame_remainder,
+      }
+    }
+
+    fn time(&self) -> Duration {
+      Duration::from_nanos(self.nanos)
+    }
+
+    fn advance_frames(&mut self, frames: u32) {
+      if frames == 0 {
+        return;
+      }
+
+      self.nanos = self
+        .nanos
+        .saturating_add(frames as u64 * self.nanos_per_frame as u64);
+
+      let sr = self.sample_rate_hz as u64;
+      let rem_add = frames as u64 * self.nanos_per_frame_remainder as u64;
+      let rem_total = self.nanos_remainder as u64 + rem_add;
+      self.nanos = self.nanos.saturating_add(rem_total / sr);
+      self.nanos_remainder = (rem_total % sr) as u32;
+    }
   }
 }
