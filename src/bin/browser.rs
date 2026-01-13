@@ -18401,12 +18401,26 @@ impl App {
         if input.state != ElementState::Pressed {
           return;
         }
-        if let Some(hud) = self.hud.as_mut() {
-          hud.note_keyboard_input(std::time::Instant::now());
-        }
         let Some(key) = input.virtual_keycode else {
           return;
         };
+        if let Some(hud) = self.hud.as_mut() {
+          // Avoid spamming the HUD with modifier-only key presses (which often don't trigger any
+          // repaint on their own).
+          if !matches!(
+            key,
+            VirtualKeyCode::LShift
+              | VirtualKeyCode::RShift
+              | VirtualKeyCode::LControl
+              | VirtualKeyCode::RControl
+              | VirtualKeyCode::LAlt
+              | VirtualKeyCode::RAlt
+              | VirtualKeyCode::LWin
+              | VirtualKeyCode::RWin
+          ) {
+            hud.note_keyboard_input(std::time::Instant::now());
+          }
+        }
 
         // Profile-level shortcuts that are *not* handled by `ui::chrome_ui` should never reach page
         // input (currently just "clear browsing data"). Most chrome shortcuts are handled in the
