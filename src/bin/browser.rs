@@ -4510,9 +4510,9 @@ impl App {
               // Expose the title as an expand/collapse control to assistive tech (AccessKit) so
               // screen readers can announce the expanded/collapsed state.
               let title_a11y_label = if expanded {
-                format!("{title_text}: hide details")
+                format!("Hide warning details: {title_text}")
               } else {
-                format!("{title_text}: show details")
+                format!("Show warning details: {title_text}")
               };
               title_resp.widget_info({
                 let label = title_a11y_label.clone();
