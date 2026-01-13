@@ -13,6 +13,9 @@ Related:
 
 For this project, prefer `memfd_create(2)` over `shm_open(3)` / POSIX shared memory.
 
+Repo reality:
+- Linux memfd-backed SHM helper with size caps + best-effort seals: [`src/ipc/shm.rs`](../src/ipc/shm.rs)
+
 ### Creation template (recommended)
 
 Create memfds with:
