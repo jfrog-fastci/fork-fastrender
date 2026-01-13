@@ -6032,8 +6032,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   // Throttle/clamp expensive "clone full store" autosave update messages so frequent history
   // mutations (e.g. navigating a lot) don't repeatedly clone large stores on the UI thread.
-  let mut bookmarks_autosave_send_scheduler =
-    fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_millis(250));
+  //
+  // Bookmarks are normally sent as incremental deltas (`AutosaveMsg::ApplyBookmarkDeltas`), so they
+  // no longer need a UI-thread snapshot send scheduler.
   let mut history_autosave_send_scheduler =
     fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_secs(1));
 
@@ -6488,12 +6489,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       session.home_url = home_url;
       session.did_exit_cleanly = true;
 
+      // Best-effort final profile sync on shutdown.
+      //
+      // The browser normally synchronizes bookmark/history changes across windows in
+      // `MainEventsCleared`, but the winit event loop can transition directly from handling an input
+      // event (that mutates profile state) to `LoopDestroyed` without another `MainEventsCleared`.
+      // Ensure we don't drop the last batch of profile updates before we shut down the autosave
+      // worker (or persist synchronously).
+      let mut bookmarks_dirty_for_autosave = false;
+      {
+        let mut dirty_bookmark_windows: Vec<WindowId> = Vec::new();
+        for id in &window_order {
+          if windows.get(id).is_some_and(|win| {
+            !win.app.pending_bookmark_deltas.is_empty()
+              || win.app.bookmarks.revision() != win.app.last_synced_bookmarks_revision
+          }) {
+            dirty_bookmark_windows.push(*id);
+          }
+        }
+
+        if let Some(source_window_id) = dirty_bookmark_windows.last().copied() {
+          if let Some(source) = windows.get(&source_window_id) {
+            global_bookmarks = source.app.bookmarks.clone();
+            bookmarks_dirty_for_autosave = true;
+          }
+        }
+      }
+
+      for id in &window_order {
+        if let Some(win) = windows.get_mut(id) {
+          if win.app.profile_history_dirty {
+            win.app.profile_history_dirty = false;
+            win.app.profile_history_flush_requested = false;
+            global_history = win.app.browser_state.history.clone();
+            history_autosave_send_scheduler.mark_dirty();
+          }
+        }
+      }
+
       if let Some(autosave) = profile_autosave.take() {
         if let Some(tx) = profile_autosave_tx.as_ref() {
           let now = std::time::Instant::now();
           // Ensure the autosave worker receives the final profile state even if updates are still
           // pending in the UI-thread scheduler.
-          if bookmarks_autosave_send_scheduler.take_force(now) {
+          if bookmarks_dirty_for_autosave {
             let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
               global_bookmarks.clone(),
             ));
