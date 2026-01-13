@@ -349,35 +349,97 @@ impl Agent {
 
     let heap = scope.heap();
 
-    let name = Self::get_data_string_property_from_chain(heap, obj, &name_key)
-      .and_then(|s| heap.get_string(s).ok())
-      .and_then(|js| crate::string::utf16_to_utf8_lossy(js.as_code_units()).ok());
-    let message = Self::get_data_string_property_from_chain(heap, obj, &message_key)
-      .and_then(|s| heap.get_string(s).ok())
-      .and_then(|js| crate::string::utf16_to_utf8_lossy(js.as_code_units()).ok());
+    let max_bytes = fallible_format::MAX_ERROR_MESSAGE_BYTES;
 
-    let (name, message) = match (name, message) {
-      (Some(name), Some(message)) => (name, message),
-      (None, Some(message)) => {
-        // If we can extract only a string `message`, prefer it over a Rust debug dump.
-        return Some(message);
+    // Convert a JS String value to a bounded UTF-8 `String`.
+    //
+    // This is best-effort: on OOM it returns a small placeholder rather than bubbling up `None`,
+    // since `format_vm_error` would otherwise fall back to `"uncaught exception"` for thrown objects.
+    let to_utf8_bounded = |s: crate::GcString, max: usize| -> Option<(String, bool)> {
+      let js = heap.get_string(s).ok()?;
+      match crate::string::utf16_to_utf8_lossy_bounded(js.as_code_units(), max) {
+        Ok(v) => Some(v),
+        Err(_) => Some((string_from_str_best_effort(OOM_PLACEHOLDER), false)),
       }
-      _ => return None,
     };
 
-    if message.is_empty() {
-      return Some(name);
-    }
-    if name.is_empty() {
+    let name_value = Self::get_data_string_property_from_chain(heap, obj, &name_key);
+    let message_value = Self::get_data_string_property_from_chain(heap, obj, &message_key);
+
+    // Fast-path emptiness checks without converting the full strings.
+    let name_is_empty = name_value
+      .and_then(|s| heap.get_string(s).ok())
+      .is_some_and(|js| js.as_code_units().is_empty());
+    let message_is_empty = message_value
+      .and_then(|s| heap.get_string(s).ok())
+      .is_some_and(|js| js.as_code_units().is_empty());
+
+    let name = name_value.and_then(|s| to_utf8_bounded(s, max_bytes));
+    // If we can't extract a string name, prefer message-only formatting over a generic placeholder.
+    if name.is_none() {
+      let Some((mut message, truncated)) =
+        message_value.and_then(|s| to_utf8_bounded(s, max_bytes))
+      else {
+        return None;
+      };
+      if truncated && message.len().saturating_add(3) <= max_bytes {
+        // Best-effort truncation marker.
+        let _ = push_str_best_effort(&mut message, "...");
+      }
       return Some(message);
     }
 
-    let mut out = String::new();
-    let needed = name.len().saturating_add(2).saturating_add(message.len());
-    out.try_reserve_exact(needed).ok()?;
-    out.push_str(&name);
-    out.push_str(": ");
-    out.push_str(&message);
+    let (mut name, mut truncated) = name.unwrap();
+    if message_value.is_none() || message_is_empty {
+      if truncated && name.len().saturating_add(3) <= max_bytes {
+        let _ = push_str_best_effort(&mut name, "...");
+      }
+      return Some(name);
+    }
+
+    // If `name` is empty, return `message` directly (spec-like `Error.prototype.toString`).
+    if name_is_empty {
+      let Some((mut message, message_truncated)) =
+        message_value.and_then(|s| to_utf8_bounded(s, max_bytes))
+      else {
+        return Some(name);
+      };
+      truncated |= message_truncated;
+      if truncated && message.len().saturating_add(3) <= max_bytes {
+        let _ = push_str_best_effort(&mut message, "...");
+      }
+      return Some(message);
+    }
+
+    // `name` + ": " + `message`, bounded to `MAX_ERROR_MESSAGE_BYTES`.
+    let separator = ": ";
+    if name.len().saturating_add(separator.len()) >= max_bytes {
+      if truncated && name.len().saturating_add(3) <= max_bytes {
+        let _ = push_str_best_effort(&mut name, "...");
+      }
+      return Some(name);
+    }
+
+    let mut out = name;
+    if !push_str_best_effort(&mut out, separator) {
+      return Some(out);
+    }
+
+    let remaining = max_bytes.saturating_sub(out.len());
+    let Some((mut message, message_truncated)) =
+      message_value.and_then(|s| to_utf8_bounded(s, remaining))
+    else {
+      return Some(out);
+    };
+    truncated |= message_truncated;
+
+    if !push_str_best_effort(&mut out, &message) {
+      return Some(out);
+    }
+
+    if truncated && out.len().saturating_add(3) <= max_bytes {
+      let _ = push_str_best_effort(&mut out, "...");
+    }
     Some(out)
   }
 
