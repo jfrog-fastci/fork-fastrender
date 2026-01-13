@@ -337,10 +337,13 @@ test(() => {
 }, "TreeWalker does not invoke the filter callback for nodes excluded by whatToShow");
 
 test(() => {
-  const { root, a1 } = make_tree();
+  const { root, a, a1, a2, b, b1, c } = make_tree();
 
+  const calls = [];
   const filter = {
     acceptNode(node) {
+      calls.push(this);
+      calls.push(node);
       return node === a1 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
     },
   };
@@ -348,4 +351,21 @@ test(() => {
   const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
   assert_equals(tw.nextNode(), a1);
   assert_equals(tw.nextNode(), null);
-}, "TreeWalker supports NodeFilter objects with an acceptNode() method");
+
+  // Ensure acceptNode is called with `this` bound to the filter object and in tree order for
+  // candidate nodes.
+  assert_array_equals(calls, [
+    filter,
+    a,
+    filter,
+    a1,
+    filter,
+    a2,
+    filter,
+    b,
+    filter,
+    b1,
+    filter,
+    c,
+  ]);
+}, "TreeWalker supports NodeFilter objects with an acceptNode() method (including this-binding)");
