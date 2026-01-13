@@ -138,6 +138,20 @@ in [Perfetto UI](https://ui.perfetto.dev):
   most recent render).
 - Browser UI trace: `FASTR_BROWSER_TRACE_OUT=/tmp/ui_trace.json` (legacy alias: `FASTR_PERF_TRACE_OUT`).
 
+## Browser perf logging (`FASTR_PERF_LOG`)
+
+The windowed `browser` UI can emit a newline-delimited JSON (JSONL) perf log when `FASTR_PERF_LOG`
+is enabled. The raw stream is useful for deep dives but hard to compare without tooling; use the
+`browser_perf_log_summary` helper to compute percentile summaries:
+
+```bash
+cat perf.jsonl | bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --json
+```
+
+The summary tool is resilient to unknown/extra JSON fields so older captures keep working as the
+schema evolves.
+
 ## Other useful profiling flags
 
 - `FASTR_RENDER_TIMINGS=1` — prints high-level timing for parse/cascade/box_tree/layout/paint per page in the render binaries.

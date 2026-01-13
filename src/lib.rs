@@ -230,6 +230,7 @@ pub mod accessibility_accesskit;
 
 pub mod bench;
 pub mod cli_utils;
+pub mod browser_perf_log;
 #[doc(hidden)]
 pub mod bench_utils;
 pub mod audio;

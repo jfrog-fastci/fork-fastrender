@@ -1,0 +1,64 @@
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+#[test]
+fn json_output_parses_and_contains_expected_keys() {
+  let input = r#"
+{"type":"ui_frame_time","frame_time_ms":10.0,"ts_ms":1,"extra_field":"ok"}
+{"type":"ui_frame_time","frame_time_ms":20.0,"ts_ms":2}
+{"type":"ui_frame_time","frame_time_ms":30.0,"ts_ms":3}
+{"type":"time_to_first_paint","ttfp_ms":100.0}
+{"type":"time_to_first_paint","ttfp_ms":200.0}
+{"type":"latency","kind":"scroll","latency_ms":5.0}
+{"type":"latency","kind":"resize","latency_ms":7.0}
+{"type":"latency","kind":"input","latency_ms":11.0}
+{"type":"latency","kind":"tab_switch","latency_ms":13.0}
+{"type":"resource_sample","cpu_percent":10.0,"rss_bytes":1000}
+{"type":"resource_sample","cpu_percent":20.0,"rss_bytes":2000,"unknown":true}
+{"type":"future_event","foo":1,"bar":"baz"}
+"#;
+
+  let mut child = Command::new(env!("CARGO_BIN_EXE_browser_perf_log_summary"))
+    .arg("--json")
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .expect("spawn browser_perf_log_summary");
+
+  {
+    let mut stdin = child.stdin.take().expect("stdin available");
+    stdin.write_all(input.as_bytes()).expect("write stdin");
+  }
+
+  let output = child
+    .wait_with_output()
+    .expect("wait for browser_perf_log_summary");
+
+  assert!(
+    output.status.success(),
+    "expected exit code 0; stderr:\n{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let value: serde_json::Value =
+    serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
+
+  for key in [
+    "meta",
+    "ui_frame_time_ms",
+    "ttfp_ms",
+    "scroll_latency_ms",
+    "resize_latency_ms",
+    "input_latency_ms",
+    "tab_switch_latency_ms",
+    "cpu_percent",
+    "rss_bytes",
+  ] {
+    assert!(
+      value.get(key).is_some(),
+      "expected JSON output to contain key {key}; got:\n{}",
+      String::from_utf8_lossy(&output.stdout)
+    );
+  }
+}
