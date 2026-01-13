@@ -219,6 +219,34 @@ impl AnimationTimingState {
       return;
     };
 
+    // If we already have a resolved hold time, the animation's current time is
+    // anchored and does not depend on the playback rate. In this state we
+    // should avoid calling `set_current_time`, which would clear a resolved
+    // `start_time` (used by finished animations to un-finish on non-monotonic
+    // timelines).
+    if self.hold_time.is_resolved() {
+      // Match the WA1 "finished" play state branch by preserving the
+      // unconstrained current time (ignoring the hold time) when possible.
+      if self.start_time.is_resolved() && timeline_time.is_resolved() {
+        if pending == 0.0 {
+          self.start_time = timeline_time;
+        } else {
+          let unconstrained =
+            self.calculate_current_time_at_timeline_time(timeline_time, /* ignore_hold_time */ true);
+          if unconstrained.is_resolved() {
+            let start_time =
+              timeline_time.checked_sub(unconstrained.checked_div_f64(pending));
+            if start_time.is_resolved() {
+              self.start_time = start_time;
+            }
+          }
+        }
+      }
+      self.playback_rate = pending;
+      self.pending_playback_rate = None;
+      return;
+    }
+
     // Calculate the current time using the existing playback rate so we can
     // preserve it once the pending rate is applied.
     let current = self.current_time_at_timeline_time(timeline_time);
@@ -788,6 +816,36 @@ mod tests {
     assert_eq!(
       state.current_time_at_timeline_time(TimeValue::resolved(90.0)),
       TimeValue::resolved(70.0)
+    );
+  }
+
+  #[test]
+  fn set_playback_rate_non_monotonic_finished_state_preserves_start_time_for_unfinish() {
+    let mut state = AnimationTimingState {
+      // Model a finished animation at effect-end=100ms with a start time of 0ms.
+      start_time: TimeValue::resolved(0.0),
+      hold_time: TimeValue::resolved(100.0),
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+
+    let at_200 = TimeValue::resolved(200.0);
+    state.set_playback_rate(2.0, at_200, false);
+
+    // Preserve the unconstrained current time (ignoring hold_time) by updating
+    // the start time: 200 - (200 / 2) = 100.
+    assert_eq!(state.start_time(), TimeValue::resolved(100.0));
+    assert_eq!(state.hold_time(), TimeValue::resolved(100.0));
+
+    // Move backwards past the end boundary. With the adjusted start time, the
+    // unconstrained current time at t=149 is 98, so the animation should leave
+    // the finished state.
+    state.set_timeline_time(TimeValue::resolved(149.0));
+    state.update_finished_state(/* associated_effect_end */ 100.0, /* did_seek */ false);
+    assert!(state.hold_time().is_unresolved());
+    assert_eq!(
+      state.current_time_at_timeline_time(TimeValue::resolved(149.0)),
+      TimeValue::resolved(98.0)
     );
   }
 
