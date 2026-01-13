@@ -893,7 +893,8 @@ pub fn format_termination(term: &Termination) -> String {
 
 #[cfg(test)]
 mod error_report_tests {
-  use crate::{Budget, HeapLimits, TerminationReason, VmError, VmOptions};
+  use crate::test_alloc::FailAllocsGuard;
+  use crate::{Budget, HeapLimits, TerminationReason, Value, VmError, VmOptions};
 
   use super::{Agent, VmErrorReport};
 
@@ -970,5 +971,57 @@ mod error_report_tests {
     let inv = VmError::InvariantViolation("boom");
     let report = agent.error_report(&inv);
     assert_eq!(report.kind, "invariant_violation");
+  }
+
+  #[test]
+  fn agent_error_report_does_not_invoke_error_name_getters() {
+    let mut agent = new_agent();
+
+    // Install an accessor on `%TypeError.prototype%.name` that would mutate global state if invoked.
+    // Host-side error reporting must not run arbitrary JS (no getters / no Proxy traps).
+    let err = agent
+      .run_script(
+        "error_name_getter.js",
+        r#"
+var called = 0;
+Object.defineProperty(TypeError.prototype, "name", {
+  get: function () { called++; return "TypeError"; }
+});
+throw new TypeError("boom");
+"#,
+        Budget::unlimited(1),
+        None,
+      )
+      .unwrap_err();
+
+    // Generate the structured report on the host. This must not invoke the getter above.
+    let _ = agent.error_report(&err);
+
+    let called = agent
+      .run_script("called.js", "called", Budget::unlimited(1), None)
+      .expect("script should run");
+    assert_eq!(called, Value::Number(0.0));
+  }
+
+  #[test]
+  fn agent_error_report_is_best_effort_under_host_oom() {
+    let mut agent = new_agent();
+
+    let err = agent
+      .run_script(
+        "throw.js",
+        "throw new TypeError('boom');",
+        Budget::unlimited(1),
+        None,
+      )
+      .unwrap_err();
+
+    // Force all host allocations to fail while formatting the report. This should not panic or
+    // abort, and should return a partial/empty report.
+    let _guard = FailAllocsGuard::new();
+    let report = agent.error_report(&err);
+    assert_eq!(report.kind, "throw");
+    assert!(report.message.is_empty());
+    assert!(report.stack.is_empty());
   }
 }
