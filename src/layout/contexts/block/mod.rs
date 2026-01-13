@@ -40,7 +40,7 @@ use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::contexts::positioned::PositionedLayout;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::float_context::FloatContext;
-use crate::layout::float_context::{resolve_clear_side, resolve_float_side, FloatSide};
+use crate::layout::float_context::{resolve_clear_side, resolve_float_side, ClearSide, FloatSide};
 use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_block_intrinsic_call;
 use crate::layout::formatting_context::intrinsic_block_cache_lookup;
@@ -6356,7 +6356,8 @@ impl BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         let child_bfc = BlockFormattingContext::with_factory(factory.clone());
-        let (preferred_min_content, preferred_content) = if fc_type == FormattingContextType::Block {
+        let (preferred_min_content, preferred_content) = if fc_type == FormattingContextType::Block
+        {
           match child_bfc.compute_intrinsic_inline_sizes(child) {
             Ok(values) => values,
             Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -7999,7 +8000,11 @@ impl BlockFormattingContext {
           Some(PageSide::Right) => crate::style::types::BreakBetween::Right,
           None => crate::style::types::BreakBetween::Page,
         };
-        fragments.push(FragmentNode::new_block_styled(bounds, Vec::new(), Arc::new(marker_style)));
+        fragments.push(FragmentNode::new_block_styled(
+          bounds,
+          Vec::new(),
+          Arc::new(marker_style),
+        ));
       };
 
     for (index, window) in boundaries.windows(2).enumerate() {
@@ -8419,12 +8424,11 @@ impl BlockFormattingContext {
         } else {
           parent.style.column_fill
         };
-        let _segment_offset_guard =
-          paged_multicol.then(|| {
-            crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
-              base_offset + logical_offset,
-            )
-          });
+        let _segment_offset_guard = paged_multicol.then(|| {
+          crate::layout::formatting_context::set_fragmentainer_block_offset_hint(
+            base_offset + logical_offset,
+          )
+        });
         let (mut seg_fragments, seg_height, mut seg_positioned, seg_flow_height) = self
           .layout_column_segment(
             parent,
@@ -11450,170 +11454,443 @@ impl FormattingContext for BlockFormattingContext {
     let mut float_line_width = 0.0f32;
     let mut float_line_has_left = false;
     let mut float_line_has_right = false;
-    let mut inline_run: Vec<&BoxNode> = Vec::new();
-    let flush_inline_run = |run: &mut Vec<&BoxNode>,
-                            widest_min: &mut f32,
-                            widest_max: &mut f32|
-     -> Result<(), LayoutError> {
-      if run.is_empty() {
-        return Ok(());
-      }
-
-      let (min_width, max_width) =
-        inline_fc.intrinsic_widths_for_children(style, run.as_slice())?;
-      if log_children {
-        let ids: Vec<usize> = run.iter().map(|c| c.id()).collect();
-        eprintln!(
-          "[intrinsic-inline-run] parent_id={} ids={:?} min={:.2} max={:.2}",
-          box_node.id, ids, min_width, max_width
-        );
-      }
-
-      *widest_min = widest_min.max(min_width);
-      *widest_max = widest_max.max(max_width);
-      run.clear();
-      Ok(())
-    };
 
     let mut inline_child_debug: Vec<(usize, Display)> = Vec::new();
-    let mut deadline_counter = 0usize;
-    for child in &box_node.children {
-      if let Err(RenderError::Timeout { elapsed, .. }) =
-        check_active_periodic(&mut deadline_counter, 64, RenderStage::Layout)
-      {
-        return Err(LayoutError::Timeout { elapsed });
+
+    // Avoid going through `factory.get(FormattingContextType::Block)` for block children:
+    // `FormattingContextFactory::block_context` constructs a BlockFormattingContext backed by a
+    // `detached()` factory clone (to avoid factory↔cached-FC Arc cycles). If we used `get(Block)`
+    // recursively we'd create a new detached factory per block depth during intrinsic sizing, which
+    // is exactly the kind of allocation churn tables can amplify.
+    let compute_child_intrinsic_sizes = |child: &BoxNode| -> Result<(f32, f32), LayoutError> {
+      let fc_type = child
+        .formatting_context()
+        .unwrap_or(FormattingContextType::Block);
+      if fc_type == FormattingContextType::Block {
+        self.compute_intrinsic_inline_sizes(child)
+      } else {
+        factory.get(fc_type).compute_intrinsic_inline_sizes(child)
       }
-      if is_out_of_flow(child) {
-        continue;
+    };
+
+    // Parallel intrinsic sizing path: pre-scan into DOM-order segments, compute expensive
+    // contributions in parallel, then combine deterministically.
+    if self.parallelism.should_parallelize(box_node.children.len()) && !box_node.children.is_empty()
+    {
+      #[derive(Debug)]
+      enum Segment<'a> {
+        InlineRun(Vec<&'a BoxNode>),
+        BlockChild(&'a BoxNode),
+        FloatChild(&'a BoxNode),
       }
 
-      if child.style.float.is_floating() {
-        flush_inline_run(
-          &mut inline_run,
-          &mut inline_min_width,
-          &mut inline_max_width,
-        )?;
+      #[derive(Clone, Copy, Debug)]
+      struct FloatMeta {
+        outer_min: f32,
+        outer_max: f32,
+        clear_side: ClearSide,
+        float_side: Option<FloatSide>,
+      }
 
-        let fc_type = child
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        let (child_min, child_max) = if fc_type == FormattingContextType::Block {
-          self.compute_intrinsic_inline_sizes(child)?
-        } else {
-          factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
+      #[derive(Clone, Copy, Debug)]
+      enum Contribution {
+        InlineRun { min: f32, max: f32 },
+        BlockChild { outer_min: f32, outer_max: f32 },
+        Float(FloatMeta),
+      }
+
+      let mut segments: Vec<Segment<'_>> = Vec::new();
+      let mut inline_run: Vec<&BoxNode> = Vec::new();
+      let mut deadline_counter = 0usize;
+      for child in &box_node.children {
+        if let Err(RenderError::Timeout { elapsed, .. }) =
+          check_active_periodic(&mut deadline_counter, 64, RenderStage::Layout)
+        {
+          return Err(LayoutError::Timeout { elapsed });
+        }
+        if is_out_of_flow(child) {
+          continue;
+        }
+
+        if child.style.float.is_floating() {
+          if !inline_run.is_empty() {
+            segments.push(Segment::InlineRun(std::mem::take(&mut inline_run)));
+          }
+          segments.push(Segment::FloatChild(child));
+          continue;
+        }
+
+        let treated_as_block = match child.box_type {
+          BoxType::Replaced(_) if child.style.display.is_inline_level() => false,
+          _ => child.is_block_level(),
         };
 
-        let (margin_start_side, margin_end_side) = inline_axis_sides(&child.style);
-        let margin_start = resolve_margin_side(
-          &child.style,
-          margin_start_side,
-          0.0,
-          &self.font_context,
-          self.viewport_size,
-          root_font_metrics,
-        );
-        let margin_end = resolve_margin_side(
-          &child.style,
-          margin_end_side,
-          0.0,
-          &self.font_context,
-          self.viewport_size,
-          root_font_metrics,
-        );
-        let outer_min = (child_min + margin_start + margin_end).max(0.0);
-        let outer_max = (child_max + margin_start + margin_end).max(0.0);
-
-        float_min_width = float_min_width.max(outer_min);
-        let clear_side = resolve_clear_side(child.style.clear, style.writing_mode, style.direction);
-        if (clear_side.clears_left() && float_line_has_left)
-          || (clear_side.clears_right() && float_line_has_right)
-        {
-          float_max_width = float_max_width.max(float_line_width);
-          float_line_width = 0.0;
-          float_line_has_left = false;
-          float_line_has_right = false;
+        if treated_as_block {
+          if !inline_run.is_empty() {
+            segments.push(Segment::InlineRun(std::mem::take(&mut inline_run)));
+          }
+          segments.push(Segment::BlockChild(child));
+        } else {
+          if log_children {
+            inline_child_debug.push((child.id, child.style.display));
+          }
+          inline_run.push(child);
         }
-        float_line_width += outer_max;
-        match resolve_float_side(child.style.float, style.writing_mode, style.direction) {
-          Some(FloatSide::Left) => float_line_has_left = true,
-          Some(FloatSide::Right) => float_line_has_right = true,
-          None => {}
-        }
-        continue;
       }
-      let treated_as_block = match child.box_type {
-        BoxType::Replaced(_) if child.style.display.is_inline_level() => false,
-        _ => child.is_block_level(),
+      if !inline_run.is_empty() {
+        segments.push(Segment::InlineRun(inline_run));
+      }
+
+      let parent_writing_mode = style.writing_mode;
+      let parent_direction = style.direction;
+
+      let compute_segment = |segment: &Segment<'_>| -> Result<Contribution, LayoutError> {
+        match segment {
+          Segment::InlineRun(run) => {
+            let (min_width, max_width) =
+              inline_fc.intrinsic_widths_for_children(style, run.as_slice())?;
+            if log_children {
+              let ids: Vec<usize> = run.iter().map(|c| c.id()).collect();
+              eprintln!(
+                "[intrinsic-inline-run] parent_id={} ids={:?} min={:.2} max={:.2}",
+                box_node.id, ids, min_width, max_width
+              );
+            }
+            Ok(Contribution::InlineRun {
+              min: min_width,
+              max: max_width,
+            })
+          }
+          Segment::BlockChild(child) => {
+            let (child_min, child_max) = compute_child_intrinsic_sizes(child)?;
+            let (margin_start_side, margin_end_side) = inline_axis_sides(&child.style);
+            let margin_start = resolve_margin_side(
+              &child.style,
+              margin_start_side,
+              0.0,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            );
+            let margin_end = resolve_margin_side(
+              &child.style,
+              margin_end_side,
+              0.0,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            );
+            let outer_min = (child_min + margin_start + margin_end).max(0.0);
+            let outer_max = (child_max + margin_start + margin_end).max(0.0);
+            if log_children {
+              let sel = child
+                .debug_info
+                .as_ref()
+                .map(|d| d.to_selector())
+                .unwrap_or_else(|| "<anon>".to_string());
+              let disp = child.style.display;
+              eprintln!(
+                "[intrinsic-child] parent_id={} child_id={} selector={} display={:?} min={:.2} max={:.2}",
+                box_node.id, child.id, sel, disp, outer_min, outer_max
+              );
+            }
+            Ok(Contribution::BlockChild {
+              outer_min,
+              outer_max,
+            })
+          }
+          Segment::FloatChild(child) => {
+            let (child_min, child_max) = compute_child_intrinsic_sizes(child)?;
+            let (margin_start_side, margin_end_side) = inline_axis_sides(&child.style);
+            let margin_start = resolve_margin_side(
+              &child.style,
+              margin_start_side,
+              0.0,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            );
+            let margin_end = resolve_margin_side(
+              &child.style,
+              margin_end_side,
+              0.0,
+              &self.font_context,
+              self.viewport_size,
+              root_font_metrics,
+            );
+            let outer_min = (child_min + margin_start + margin_end).max(0.0);
+            let outer_max = (child_max + margin_start + margin_end).max(0.0);
+            let clear_side =
+              resolve_clear_side(child.style.clear, parent_writing_mode, parent_direction);
+            let float_side =
+              resolve_float_side(child.style.float, parent_writing_mode, parent_direction);
+            Ok(Contribution::Float(FloatMeta {
+              outer_min,
+              outer_max,
+              clear_side,
+              float_side,
+            }))
+          }
+        }
       };
 
-      if treated_as_block {
-        flush_inline_run(
-          &mut inline_run,
-          &mut inline_min_width,
-          &mut inline_max_width,
-        )?;
+      let mut contributions: Vec<Contribution> = if segments.len() > 1 {
+        let deadline = active_deadline();
+        let stage = active_stage();
+        let heartbeat = active_heartbeat();
+        let mut segment_results = segments
+          .par_iter()
+          .enumerate()
+          .map_init(
+            || 0usize,
+            |deadline_counter, (idx, segment)| {
+              with_deadline(deadline.as_ref(), || {
+                let _hb_guard = StageHeartbeatGuard::install(heartbeat);
+                let _stage_guard = StageGuard::install(stage);
+                self.factory.debug_record_parallel_work();
+                if let Err(RenderError::Timeout { elapsed, .. }) =
+                  check_active_periodic(deadline_counter, 64, RenderStage::Layout)
+                {
+                  return Err(LayoutError::Timeout { elapsed });
+                }
+                compute_segment(segment).map(|value| (idx, value))
+              })
+            },
+          )
+          .collect::<Result<Vec<_>, LayoutError>>()?;
 
-        let fc_type = child
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        // Avoid going through `factory.get(FormattingContextType::Block)` for block children:
-        // `FormattingContextFactory::block_context` constructs a BlockFormattingContext backed by a
-        // `detached()` factory clone (to avoid factory↔cached-FC Arc cycles). If we used `get(Block)`
-        // recursively we'd create a new detached factory per block depth during intrinsic sizing,
-        // which is exactly the kind of allocation churn tables can amplify.
-        let (child_min, child_max) = if fc_type == FormattingContextType::Block {
-          self.compute_intrinsic_inline_sizes(child)?
-        } else {
-          factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
-        };
-        // Intrinsic sizes are defined in terms of the *outer* size of in-flow children, i.e. the
-        // margin box. Include the child's inline-axis margins when accumulating the min/max-content
-        // widths of this block container.
-        let (margin_start_side, margin_end_side) = inline_axis_sides(&child.style);
-        let margin_start = resolve_margin_side(
-          &child.style,
-          margin_start_side,
-          0.0,
-          &self.font_context,
-          self.viewport_size,
-          root_font_metrics,
-        );
-        let margin_end = resolve_margin_side(
-          &child.style,
-          margin_end_side,
-          0.0,
-          &self.font_context,
-          self.viewport_size,
-          root_font_metrics,
-        );
-        let outer_min = (child_min + margin_start + margin_end).max(0.0);
-        let outer_max = (child_max + margin_start + margin_end).max(0.0);
-        block_min_width = block_min_width.max(outer_min);
-        block_max_width = block_max_width.max(outer_max);
+        // `par_iter().enumerate()` is indexed, but collecting through `Result` does not guarantee
+        // stable ordering. Ensure deterministic DOM-order combination.
+        let mut ordered = true;
+        let mut prev_idx: Option<usize> = None;
+        for (idx, _) in &segment_results {
+          if let Some(prev) = prev_idx {
+            if *idx <= prev {
+              ordered = false;
+              break;
+            }
+          }
+          prev_idx = Some(*idx);
+        }
+        if !ordered {
+          if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+            return Err(LayoutError::Timeout { elapsed });
+          }
+          segment_results.sort_unstable_by_key(|(idx, _)| *idx);
+        }
+        segment_results
+          .into_iter()
+          .enumerate()
+          .map(|(expected_idx, (idx, value))| {
+            debug_assert_eq!(
+              idx, expected_idx,
+              "parallel block intrinsic segment index mismatch"
+            );
+            value
+          })
+          .collect()
+      } else {
+        let mut out = Vec::with_capacity(segments.len());
+        let mut deadline_counter = 0usize;
+        for segment in &segments {
+          if let Err(RenderError::Timeout { elapsed, .. }) =
+            check_active_periodic(&mut deadline_counter, 64, RenderStage::Layout)
+          {
+            return Err(LayoutError::Timeout { elapsed });
+          }
+          out.push(compute_segment(segment)?);
+        }
+        out
+      };
+
+      // Combine segment results deterministically in DOM order.
+      let mut combine_deadline_counter = 0usize;
+      for contribution in contributions.drain(..) {
+        if let Err(RenderError::Timeout { elapsed, .. }) =
+          check_active_periodic(&mut combine_deadline_counter, 64, RenderStage::Layout)
+        {
+          return Err(LayoutError::Timeout { elapsed });
+        }
+        match contribution {
+          Contribution::InlineRun { min, max } => {
+            inline_min_width = inline_min_width.max(min);
+            inline_max_width = inline_max_width.max(max);
+          }
+          Contribution::BlockChild {
+            outer_min,
+            outer_max,
+          } => {
+            block_min_width = block_min_width.max(outer_min);
+            block_max_width = block_max_width.max(outer_max);
+          }
+          Contribution::Float(meta) => {
+            float_min_width = float_min_width.max(meta.outer_min);
+            if (meta.clear_side.clears_left() && float_line_has_left)
+              || (meta.clear_side.clears_right() && float_line_has_right)
+            {
+              float_max_width = float_max_width.max(float_line_width);
+              float_line_width = 0.0;
+              float_line_has_left = false;
+              float_line_has_right = false;
+            }
+            float_line_width += meta.outer_max;
+            match meta.float_side {
+              Some(FloatSide::Left) => float_line_has_left = true,
+              Some(FloatSide::Right) => float_line_has_right = true,
+              None => {}
+            }
+          }
+        }
+      }
+    } else {
+      // Serial path (unchanged from the historical implementation).
+      let mut inline_run: Vec<&BoxNode> = Vec::new();
+      let flush_inline_run = |run: &mut Vec<&BoxNode>,
+                              widest_min: &mut f32,
+                              widest_max: &mut f32|
+       -> Result<(), LayoutError> {
+        if run.is_empty() {
+          return Ok(());
+        }
+
+        let (min_width, max_width) =
+          inline_fc.intrinsic_widths_for_children(style, run.as_slice())?;
         if log_children {
-          let sel = child
-            .debug_info
-            .as_ref()
-            .map(|d| d.to_selector())
-            .unwrap_or_else(|| "<anon>".to_string());
-          let disp = child.style.display;
+          let ids: Vec<usize> = run.iter().map(|c| c.id()).collect();
           eprintln!(
-            "[intrinsic-child] parent_id={} child_id={} selector={} display={:?} min={:.2} max={:.2}",
-            box_node.id, child.id, sel, disp, outer_min, outer_max
+            "[intrinsic-inline-run] parent_id={} ids={:?} min={:.2} max={:.2}",
+            box_node.id, ids, min_width, max_width
           );
         }
-      } else {
-        if log_children {
-          inline_child_debug.push((child.id, child.style.display));
+
+        *widest_min = widest_min.max(min_width);
+        *widest_max = widest_max.max(max_width);
+        run.clear();
+        Ok(())
+      };
+
+      let mut deadline_counter = 0usize;
+      for child in &box_node.children {
+        if let Err(RenderError::Timeout { elapsed, .. }) =
+          check_active_periodic(&mut deadline_counter, 64, RenderStage::Layout)
+        {
+          return Err(LayoutError::Timeout { elapsed });
         }
-        inline_run.push(child);
+        if is_out_of_flow(child) {
+          continue;
+        }
+
+        if child.style.float.is_floating() {
+          flush_inline_run(
+            &mut inline_run,
+            &mut inline_min_width,
+            &mut inline_max_width,
+          )?;
+
+          let (child_min, child_max) = compute_child_intrinsic_sizes(child)?;
+
+          let (margin_start_side, margin_end_side) = inline_axis_sides(&child.style);
+          let margin_start = resolve_margin_side(
+            &child.style,
+            margin_start_side,
+            0.0,
+            &self.font_context,
+            self.viewport_size,
+            root_font_metrics,
+          );
+          let margin_end = resolve_margin_side(
+            &child.style,
+            margin_end_side,
+            0.0,
+            &self.font_context,
+            self.viewport_size,
+            root_font_metrics,
+          );
+          let outer_min = (child_min + margin_start + margin_end).max(0.0);
+          let outer_max = (child_max + margin_start + margin_end).max(0.0);
+
+          float_min_width = float_min_width.max(outer_min);
+          let clear_side =
+            resolve_clear_side(child.style.clear, style.writing_mode, style.direction);
+          if (clear_side.clears_left() && float_line_has_left)
+            || (clear_side.clears_right() && float_line_has_right)
+          {
+            float_max_width = float_max_width.max(float_line_width);
+            float_line_width = 0.0;
+            float_line_has_left = false;
+            float_line_has_right = false;
+          }
+          float_line_width += outer_max;
+          match resolve_float_side(child.style.float, style.writing_mode, style.direction) {
+            Some(FloatSide::Left) => float_line_has_left = true,
+            Some(FloatSide::Right) => float_line_has_right = true,
+            None => {}
+          }
+          continue;
+        }
+        let treated_as_block = match child.box_type {
+          BoxType::Replaced(_) if child.style.display.is_inline_level() => false,
+          _ => child.is_block_level(),
+        };
+
+        if treated_as_block {
+          flush_inline_run(
+            &mut inline_run,
+            &mut inline_min_width,
+            &mut inline_max_width,
+          )?;
+
+          let (child_min, child_max) = compute_child_intrinsic_sizes(child)?;
+          // Intrinsic sizes are defined in terms of the *outer* size of in-flow children, i.e. the
+          // margin box. Include the child's inline-axis margins when accumulating the min/max-content
+          // widths of this block container.
+          let (margin_start_side, margin_end_side) = inline_axis_sides(&child.style);
+          let margin_start = resolve_margin_side(
+            &child.style,
+            margin_start_side,
+            0.0,
+            &self.font_context,
+            self.viewport_size,
+            root_font_metrics,
+          );
+          let margin_end = resolve_margin_side(
+            &child.style,
+            margin_end_side,
+            0.0,
+            &self.font_context,
+            self.viewport_size,
+            root_font_metrics,
+          );
+          let outer_min = (child_min + margin_start + margin_end).max(0.0);
+          let outer_max = (child_max + margin_start + margin_end).max(0.0);
+          block_min_width = block_min_width.max(outer_min);
+          block_max_width = block_max_width.max(outer_max);
+          if log_children {
+            let sel = child
+              .debug_info
+              .as_ref()
+              .map(|d| d.to_selector())
+              .unwrap_or_else(|| "<anon>".to_string());
+            let disp = child.style.display;
+            eprintln!(
+              "[intrinsic-child] parent_id={} child_id={} selector={} display={:?} min={:.2} max={:.2}",
+              box_node.id, child.id, sel, disp, outer_min, outer_max
+            );
+          }
+        } else {
+          if log_children {
+            inline_child_debug.push((child.id, child.style.display));
+          }
+          inline_run.push(child);
+        }
       }
+      flush_inline_run(
+        &mut inline_run,
+        &mut inline_min_width,
+        &mut inline_max_width,
+      )?;
     }
-    flush_inline_run(
-      &mut inline_run,
-      &mut inline_min_width,
-      &mut inline_max_width,
-    )?;
+
     let min_content_width = inline_min_width.max(block_min_width).max(float_min_width);
     float_max_width = float_max_width.max(float_line_width);
     let max_content_width = block_max_width
@@ -15544,7 +15821,11 @@ mod tests {
     );
     float_node.id = 42424;
 
-    let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![float_node]);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![float_node],
+    );
 
     // Warm the intrinsic cache for the float subtree (as would happen during an earlier intrinsic
     // sizing probe on the parent).
@@ -15557,7 +15838,9 @@ mod tests {
     crate::layout::formatting_context::intrinsic_cache_reset_counters();
 
     let constraints = LayoutConstraints::definite(200.0, 200.0);
-    let _ = bfc.layout(&root, &constraints).expect("layout should succeed");
+    let _ = bfc
+      .layout(&root, &constraints)
+      .expect("layout should succeed");
 
     let (lookups, hits, stores, block_calls, flex_calls, inline_calls) =
       crate::layout::formatting_context::intrinsic_cache_stats();
@@ -15586,14 +15869,15 @@ mod tests {
     float_style.border_left_width = Length::percent(5.0);
     float_style.border_right_width = Length::percent(5.0);
 
-    let mut float_node = BoxNode::new_block(
-      Arc::new(float_style),
-      FormattingContextType::Block,
-      vec![],
-    );
+    let mut float_node =
+      BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
     float_node.id = 42425;
 
-    let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![float_node]);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![float_node],
+    );
     let fragment = bfc.layout(&root, &constraints).expect("layout");
 
     let float_fragment = find_block_fragment(&fragment, 42425).expect("float fragment");
