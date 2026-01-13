@@ -99,6 +99,10 @@ Use UNIX-domain sockets for message passing + FD passing, and prefer:
 Why `SOCK_SEQPACKET`:
 - **Preserves message boundaries**: FD passing is per-message (`SCM_RIGHTS`). With message boundaries preserved, your protocol can be “one logical IPC message per `recvmsg()`”.
 - **Prevents framing bugs** common with `SOCK_STREAM`: on a stream, you can accidentally read a partial header or partial payload while still receiving the ancillary FD(s), desynchronizing your parser.
+- **Avoids stream “ancillary barrier” confusion**: on `SOCK_STREAM`, ancillary data forms a barrier for
+  the byte stream (see `unix(7)`). If you aren’t extremely careful, you can accidentally associate
+  an `SCM_RIGHTS` FD with the wrong logical message bytes. With `SOCK_SEQPACKET`, message boundaries
+  are explicit and this class of bug largely goes away.
 - **Truncation is explicit**: if your receive buffer is too small, the kernel sets `MSG_TRUNC` / `MSG_CTRUNC`. With `SOCK_STREAM`, there is no concept of message truncation.
 - **Encourages bounded control messages**: keep large payloads (frames, blobs) out of the socket and in
   shared memory. This avoids `sendmsg()` size limits (`EMSGSIZE`) and makes it easier to enforce
