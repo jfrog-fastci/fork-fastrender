@@ -61,31 +61,46 @@ pub fn clear_browsing_data_dialog_ui(
       ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Time range").strong());
         ui.add_space(8.0);
-        egui::ComboBox::from_id_source("clear_browsing_data_range_combo")
+        let combo = egui::ComboBox::from_id_source("clear_browsing_data_range_combo")
           .selected_text(range.label())
           .width(ui.available_width().min(220.0))
           .show_ui(ui, |ui| {
-            ui.selectable_value(
+            let last_hour = ui.selectable_value(
               range,
               ClearBrowsingDataRange::LastHour,
               ClearBrowsingDataRange::LastHour.label(),
             );
-            ui.selectable_value(
+            last_hour.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Time range: Last hour")
+            });
+            let last_24 = ui.selectable_value(
               range,
               ClearBrowsingDataRange::Last24Hours,
               ClearBrowsingDataRange::Last24Hours.label(),
             );
-            ui.selectable_value(
+            last_24.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Time range: Last 24 hours")
+            });
+            let last_7 = ui.selectable_value(
               range,
               ClearBrowsingDataRange::Last7Days,
               ClearBrowsingDataRange::Last7Days.label(),
             );
-            ui.selectable_value(
+            last_7.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Time range: Last 7 days")
+            });
+            let all_time = ui.selectable_value(
               range,
               ClearBrowsingDataRange::AllTime,
               ClearBrowsingDataRange::AllTime.label(),
             );
+            all_time.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Time range: All time")
+            });
           });
+        combo.response.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Time range")
+        });
       });
 
       ui.add_space(12.0);
@@ -103,12 +118,19 @@ pub fn clear_browsing_data_dialog_ui(
           .fill(with_alpha(danger, 24))
           .stroke(egui::Stroke::new(ui.visuals().widgets.inactive.bg_stroke.width, danger));
 
-        if ui.add(clear_button).clicked() {
+        let clear_resp = ui.add(clear_button);
+        clear_resp.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear browsing data")
+        });
+        if clear_resp.clicked() {
           out.clear_now = true;
           close_dialog = true;
         }
 
-        if ui.button("Cancel").clicked() {
+        let cancel_resp = ui.button("Cancel");
+        cancel_resp
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel"));
+        if cancel_resp.clicked() {
           close_dialog = true;
         }
       });
