@@ -254,12 +254,17 @@ fn js_timer_dom_mutation_affects_rendered_pixels() {
             html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: rgb(0, 0, 0); }
           </style>
           <script>
-            setTimeout(function () {
-              // Use `setProperty` because our CSSStyleDeclaration shim only exposes a limited set of
-              // named property accessors (but supports `setProperty` for arbitrary declarations).
-              document.documentElement.style.setProperty('background-color', 'rgb(255,0,0)');
-              document.body.style.setProperty('background-color', 'rgb(255,0,0)');
-            }, 0);
+            // Schedule a timer from inside an rAF callback so it won't run during the worker's
+            // post-navigation JS pump (which does not execute rAF). This ensures `UiToWorker::Tick`
+            // is responsible for driving both the rAF callback and the timer task.
+            requestAnimationFrame(() => {
+              setTimeout(function () {
+                // Use `setProperty` because our CSSStyleDeclaration shim only exposes a limited set of
+                // named property accessors (but supports `setProperty` for arbitrary declarations).
+                document.documentElement.style.setProperty('background-color', 'rgb(255,0,0)');
+                document.body.style.setProperty('background-color', 'rgb(255,0,0)');
+              }, 0);
+            });
           </script>
         </head>
         <body></body>
