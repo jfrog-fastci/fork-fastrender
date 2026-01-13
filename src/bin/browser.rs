@@ -236,9 +236,15 @@ fn date_picker_day_a11y_label(year: i32, month: u32, day: u32, selected: bool) -
 /// Apply browser-like Shift+wheel semantics (treat vertical wheel deltas as horizontal scrolling).
 #[cfg(any(test, feature = "browser_ui"))]
 fn remap_wheel_delta_for_shift(delta: (f32, f32), shift: bool) -> (f32, f32) {
-  if shift {
-    // Preserve any true horizontal delta (e.g. from a trackpad) while reinterpreting vertical
-    // scrolling as horizontal.
+  if !shift {
+    return delta;
+  }
+
+  // Only reinterpret the scroll when the device is otherwise reporting a "pure" vertical delta.
+  // Many platforms report classic mouse wheels as vertical-only even with Shift held. Trackpads and
+  // high-resolution wheels can report true horizontal deltas; preserve those.
+  const DX_EPSILON: f32 = 1e-3;
+  if delta.0.abs() < DX_EPSILON && delta.1 != 0.0 {
     (delta.0 + delta.1, 0.0)
   } else {
     delta
@@ -2473,7 +2479,7 @@ mod wheel_delta_shift_mapping_tests {
   #[test]
   fn shift_wheel_preserves_existing_horizontal_delta() {
     assert_eq!(remap_wheel_delta_for_shift((3.0, 0.0), true), (3.0, 0.0));
-    assert_eq!(remap_wheel_delta_for_shift((3.0, 7.0), true), (10.0, 0.0));
+    assert_eq!(remap_wheel_delta_for_shift((3.0, 7.0), true), (3.0, 7.0));
   }
 }
 #[cfg(feature = "browser_ui")]
@@ -7997,7 +8003,7 @@ struct App {
   ///
   /// PERF: `RawInput::events` is scanned every frame; reusing this buffer avoids per-frame `Vec`
   /// allocations for the common "no wheel events" case.
-  wheel_events_buf: Vec<(egui::MouseWheelUnit, egui::Vec2)>,
+  wheel_events_buf: Vec<(egui::MouseWheelUnit, egui::Vec2, egui::Modifiers)>,
   /// Scratch buffer for extracting `egui::Event::Paste` payloads from `RawInput`.
   ///
   /// PERF: Reused across frames so that frames without paste input don't allocate.
@@ -15087,6 +15093,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         let Some(delta_css) = mapping.wheel_delta_to_delta_css(wheel_delta) else {
           return;
         };
+        let delta_css = remap_wheel_delta_for_shift(delta_css, self.modifiers.shift());
         if delta_css.0 == 0.0 && delta_css.1 == 0.0 {
           return;
         }
@@ -17837,9 +17844,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               // Ctrl/Cmd+wheel is treated as zoom (handled in `ui::chrome_ui`), so do not forward it
               // to the page scroll pipeline.
               if !modifiers.command {
-                let (dx, dy) =
-                  remap_wheel_delta_for_shift((delta.x, delta.y), modifiers.shift);
-                self.wheel_events_buf.push((*unit, egui::vec2(dx, dy)));
+                self.wheel_events_buf.push((*unit, *delta, *modifiers));
               }
             }
             egui::Event::Paste(text) => {
@@ -18683,12 +18688,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                   .is_some_and(|pos| self.cursor_over_egui_overlay(pos));
               if !cursor_over_overlay {
                 let mut delta_css = (0.0, 0.0);
-                for (unit, delta) in &self.wheel_events_buf {
+                for (unit, delta, modifiers) in &self.wheel_events_buf {
                   let Some((dx, dy)) = mapping
                     .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
                   else {
                     continue;
                   };
+                  let (dx, dy) = remap_wheel_delta_for_shift((dx, dy), modifiers.shift);
                   delta_css.0 += dx;
                   delta_css.1 += dy;
                 }
