@@ -3305,6 +3305,27 @@ fn compiled_arrow_function_use_strict_makes_unbound_assignment_throw_reference_e
 }
 
 #[test]
+fn compiled_arrow_function_expression_body_use_strict_is_not_a_directive() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Only *block-bodied* arrow functions can have directive prologues. An expression-bodied arrow
+  // like `() => ("use strict", x = 1)` must remain non-strict.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      (() => ("use strict", x = 1))();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_strict_block_function_decls_are_block_scoped() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
