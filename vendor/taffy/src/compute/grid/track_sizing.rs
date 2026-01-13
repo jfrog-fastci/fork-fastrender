@@ -803,8 +803,10 @@ pub(super) fn resolve_item_baselines(
     return;
   }
 
-  // (item_index, baseline_value)
-  let mut baseline_entries: Vec<(usize, f32)> = Vec::with_capacity(baseline_entries_capacity);
+  // Indices of baseline-aligned items in groups with > 1 participants. We store the measured
+  // baseline value directly on the item in the relevant `baseline_shim` axis component, and later
+  // overwrite it with the computed shim.
+  let mut baseline_entries: Vec<usize> = Vec::with_capacity(baseline_entries_capacity);
 
   for (idx, item) in items.iter_mut().enumerate() {
     check_layout_abort();
@@ -843,13 +845,17 @@ pub(super) fn resolve_item_baselines(
     }
 
     let value = measure_item_baseline_value(item);
-    baseline_entries.push((idx, value));
+    match axis {
+      AbstractAxis::Inline => item.baseline_shim.y = value,
+      AbstractAxis::Block => item.baseline_shim.x = value,
+    }
+    baseline_entries.push(idx);
     if let Some(entry) = group_stats.get_mut(key as usize) {
       entry.max_baseline = f32_max(entry.max_baseline, value);
     }
   }
 
-  for (idx, value) in baseline_entries {
+  for idx in baseline_entries {
     let item = &mut items[idx];
     let key = match other_axis {
       AbstractAxis::Inline => item.column_indexes.start,
@@ -857,6 +863,10 @@ pub(super) fn resolve_item_baselines(
     };
     let Some(group_max) = group_stats.get(key as usize).map(|s| s.max_baseline) else {
       continue;
+    };
+    let value = match axis {
+      AbstractAxis::Inline => item.baseline_shim.y,
+      AbstractAxis::Block => item.baseline_shim.x,
     };
     let shim = group_max - value;
     let shim = if shim.is_finite() { shim } else { 0.0 };
