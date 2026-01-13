@@ -96,25 +96,9 @@ fn await_promise_no_species(
   hooks: &mut dyn VmHostHooks,
   value: Value,
 ) -> Result<Value, VmError> {
-  // Match vm-js `await` semantics: if `value` is already a Promise object, do not wrap it via
-  // `PromiseResolve` (which can trigger Promise species side effects). Still observe the
-  // `constructor` property for side effects/throws.
-  if let Value::Object(obj) = value {
-    if scope.heap().is_promise_object(obj) {
-      let ctor_key = property_key(scope, "constructor")?;
-      let _ = scope.ordinary_get_with_host_and_hooks(
-        vm,
-        host,
-        hooks,
-        obj,
-        ctor_key,
-        Value::Object(obj),
-      )?;
-      return Ok(value);
-    }
-  }
-
-  crate::promise_ops::promise_resolve_with_host_and_hooks(vm, scope, host, hooks, value)
+  // Delegate to the shared `await` Promise resolution helper so async-generator `yield*` uses the
+  // same "do not invoke Promise species" semantics as the AST/HIR async evaluators.
+  crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(vm, scope, host, hooks, value)
 }
 
 fn call_method_1arg_await(
