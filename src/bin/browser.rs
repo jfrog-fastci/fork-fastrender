@@ -2635,6 +2635,29 @@ fn show_menu_bar_override_from_env() -> Option<bool> {
   }
 }
 
+// `FASTR_BROWSER_SHOW_MENU_BAR` is a runtime-only override (useful for CI/scripting). It should
+// affect whether the menu bar is *rendered* in this process, but it must not mutate the persisted
+// preference (`BrowserAppState.chrome.show_menu_bar`) that ends up written into the session JSON.
+//
+// This mirrors the behaviour of appearance env overrides, which intentionally do not mutate the
+// persisted `browser_state.appearance`.
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MenuBarVisibility {
+  /// Persisted preference (what should be stored in the session snapshot).
+  persisted: bool,
+  /// Effective runtime visibility after applying an optional env override.
+  effective: bool,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn resolve_menu_bar_visibility(persisted: bool, env_override: Option<bool>) -> MenuBarVisibility {
+  MenuBarVisibility {
+    persisted,
+    effective: env_override.unwrap_or(persisted),
+  }
+}
+
 #[cfg(test)]
 mod browser_hud_env_tests {
   use super::*;
@@ -2745,6 +2768,18 @@ mod browser_renderer_watchdog_env_tests {
     assert_eq!(parse_allow_crash_urls_env(Some("no")), Ok(false));
     assert_eq!(parse_allow_crash_urls_env(Some("off")), Ok(false));
     assert!(parse_allow_crash_urls_env(Some("maybe")).is_err());
+  }
+}
+
+#[cfg(test)]
+mod menu_bar_visibility_tests {
+  use super::resolve_menu_bar_visibility;
+
+  #[test]
+  fn env_override_does_not_mutate_persisted_preference() {
+    let visibility = resolve_menu_bar_visibility(true, Some(false));
+    assert_eq!(visibility.persisted, true);
+    assert_eq!(visibility.effective, false);
   }
 }
 
@@ -10794,6 +10829,11 @@ struct App {
   page_texture_filter_policy: PageTextureFilterPolicy,
   appearance_env_overrides: fastrender::ui::appearance::AppearanceEnvOverrides,
   applied_appearance: fastrender::ui::appearance::AppearanceSettings,
+  /// Runtime-only env override for menu bar visibility (`FASTR_BROWSER_SHOW_MENU_BAR`).
+  ///
+  /// This must not be persisted into the session snapshot; `browser_state.chrome.show_menu_bar`
+  /// remains the persisted preference.
+  show_menu_bar_env_override: Option<bool>,
   theme_override: Option<fastrender::ui::theme::ThemeMode>,
   theme_accent: Option<egui::Color32>,
   theme: fastrender::ui::theme::BrowserTheme,
@@ -11794,6 +11834,7 @@ impl App {
       page_texture_filter_policy: PageTextureFilterPolicy::from_env(),
       appearance_env_overrides,
       applied_appearance,
+      show_menu_bar_env_override: show_menu_bar_override_from_env(),
       theme_override,
       theme_accent,
       theme,
@@ -11993,9 +12034,10 @@ impl App {
       self.window_minimized,
     );
 
-    // Allow CI/scripts to force showing/hiding the menu bar regardless of persisted state.
-    self.browser_state.chrome.show_menu_bar =
-      show_menu_bar_override_from_env().unwrap_or(show_menu_bar);
+    // `show_menu_bar` is a persisted session preference. Do not apply
+    // `FASTR_BROWSER_SHOW_MENU_BAR` here; the env override is runtime-only and is applied at render
+    // time via `effective_show_menu_bar` so it doesn't get written back into the session file.
+    self.browser_state.chrome.show_menu_bar = show_menu_bar;
 
     self.browser_state.chrome.bookmarks_bar_visible = bookmarks_bar_visible;
 
@@ -12085,6 +12127,14 @@ impl App {
 
     // Keep debug `about:` pages (e.g. `about:processes`) updated with the current open tabs list.
     self.sync_about_open_tabs_snapshot();
+  }
+
+  fn effective_show_menu_bar(&self) -> bool {
+    resolve_menu_bar_visibility(
+      self.browser_state.chrome.show_menu_bar,
+      self.show_menu_bar_env_override,
+    )
+    .effective
   }
 
   fn update_last_known_good_window_state(&mut self, capture: fastrender::ui::BrowserWindowState) {
@@ -23249,7 +23299,7 @@ impl App {
     //
     // Render this before `ui::chrome_ui` so clipboard commands can inject egui events for the
     // address bar (TextEdit reads input during widget construction).
-    if self.browser_state.chrome.show_menu_bar {
+    if self.effective_show_menu_bar() {
       let page_url = self
         .browser_state
         .active_tab()
