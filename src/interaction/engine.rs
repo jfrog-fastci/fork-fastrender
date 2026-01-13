@@ -6295,6 +6295,15 @@ impl InteractionEngine {
     if matches!(button, PointerButton::Primary | PointerButton::Middle) {
       self.last_click_target = click_target;
     }
+    // If a click lands within a details summary but does not qualify for our generic semantic
+    // click-target heuristics (e.g. pointer-down on a non-interactive descendant, pointer-up on the
+    // summary background), still report the `<summary>` as the click target so higher-level layers
+    // can dispatch `"click"` events.
+    if is_primary_button && self.last_click_target.is_none() {
+      if let Some((summary_id, _details_id)) = summary_toggle {
+        self.last_click_target = Some(summary_id);
+      }
+    }
 
     if click_qualifies {
       if let Some(target_id) = click_target {

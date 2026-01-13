@@ -144,6 +144,102 @@ fn find_box_id_for_styled_node(box_tree: &BoxTree, styled_node_id: usize) -> usi
 }
 
 #[test]
+fn details_summary_click_on_descendant_sets_click_target_and_toggles_open() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "details",
+        vec![("id", "d")],
+        vec![
+          el(
+            "summary",
+            vec![("id", "s")],
+            vec![el("span", vec![("id", "inner")], vec![text("Title")])],
+          ),
+          el("div", vec![("id", "content")], vec![text("Hidden")]),
+        ],
+      )],
+    )],
+  )]);
+
+  let summary_dom_id = node_id(&dom, "s");
+  let inner_dom_id = node_id(&dom, "inner");
+
+  let mut inner_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  inner_box.styled_node_id = Some(inner_dom_id);
+  let mut summary_box =
+    BoxNode::new_block(default_style(), FormattingContextType::Block, vec![inner_box]);
+  summary_box.styled_node_id = Some(summary_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![summary_box],
+  ));
+
+  let summary_box_id = find_box_id_for_styled_node(&box_tree, summary_dom_id);
+  let inner_box_id = find_box_id_for_styled_node(&box_tree, inner_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 200.0, 40.0),
+      summary_box_id,
+      vec![FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+        inner_box_id,
+        vec![],
+      )],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+
+  let (_dom_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    // Release within the `<summary>` but outside the `<span id=inner>`.
+    Point::new(190.0, 10.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged {
+      node_id: Some(summary_dom_id),
+    }
+  );
+
+  assert!(
+    has_attr(&dom, "d", "open"),
+    "expected click within <summary> subtree to toggle <details open>"
+  );
+  assert_eq!(
+    engine.interaction_state().focused,
+    Some(summary_dom_id),
+    "summary activation should focus the <summary>"
+  );
+  assert_eq!(
+    engine.take_last_click_target(),
+    Some(summary_dom_id),
+    "summary activation should report the <summary> as the click target"
+  );
+}
+
+#[test]
 fn radio_click_is_scoped_to_nearest_form() {
   let mut dom = doc(vec![el(
     "html",
