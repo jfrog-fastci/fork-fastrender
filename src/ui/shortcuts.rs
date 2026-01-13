@@ -475,9 +475,9 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
 
 /// Returns true when handling the shortcut should immediately remove page focus.
 ///
-/// Some shortcuts open a chrome-controlled text input surface (address bar, find bar, tab search,
-/// etc). The `browser` binary uses this to prevent `WindowEvent::ReceivedCharacter` events (which can
-/// arrive before the next egui frame) from being forwarded into the page.
+/// Some shortcuts open a chrome-controlled UI surface (address bar, find bar, tab search, downloads
+/// panel, etc). The `browser` binary uses this to prevent `WindowEvent::ReceivedCharacter` events
+/// (which can arrive before the next egui frame) from being forwarded into the page.
 pub fn shortcut_preempts_page_focus(action: ShortcutAction) -> bool {
   matches!(
     action,
@@ -1334,13 +1334,14 @@ mod tests {
   }
 
   #[test]
-  fn shortcuts_that_open_chrome_text_inputs_preempt_page_focus() {
+  fn shortcuts_that_preempt_page_focus() {
     for action in [
       ShortcutAction::FocusAddressBar,
       ShortcutAction::FindInPage,
       ShortcutAction::NewTab,
       ShortcutAction::OpenTabSearch,
       ShortcutAction::ToggleBookmarksManager,
+      ShortcutAction::ToggleDownloadsPanel,
       ShortcutAction::ShowBookmarksManager,
       ShortcutAction::ShowHistory,
       ShortcutAction::OpenClearBrowsingDataDialog,
