@@ -42,7 +42,11 @@ impl AudioMixer {
   }
 
   pub fn add_stream(&mut self, id: AudioStreamId, params: AudioStreamParams) {
-    let queue = TimedAudioQueue::new(self.channels, self.sample_rate, self.max_buffered_duration);
+    let queue = TimedAudioQueue::with_max_buffered_duration(
+      self.channels,
+      self.sample_rate,
+      self.max_buffered_duration,
+    );
     self.streams.insert(id, AudioStreamState { params, queue });
   }
 

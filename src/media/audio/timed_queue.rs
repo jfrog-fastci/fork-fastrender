@@ -90,7 +90,27 @@ impl TimedAudioQueue {
   /// seek would cause repeated cursor resets and audible glitches.
   const TARGET_PTS_TOLERANCE_FRAMES: u64 = 1;
 
-  pub fn new(channels: u16, sample_rate: u32, max_buffered_duration: Duration) -> Self {
+  /// Create a new queue with an unbounded internal buffer.
+  ///
+  /// This is the simplest constructor and matches the typical decoder-facing usage: packets can be
+  /// pushed in arbitrary timestamp order and the consumer can request aligned PCM via `pop_into`.
+  ///
+  /// Note: for real-time playback pipelines that want to bound memory usage, prefer
+  /// [`Self::with_max_buffered_duration`].
+  #[must_use]
+  pub fn new(channels: u16, sample_rate: u32) -> Self {
+    Self::with_max_buffered_duration(channels, sample_rate, Duration::ZERO)
+  }
+
+  /// Create a new queue with a maximum buffered duration.
+  ///
+  /// When the predicted buffered audio exceeds `max_buffered_duration`, pushes return
+  /// [`PushError::Backpressure`].
+  pub fn with_max_buffered_duration(
+    channels: u16,
+    sample_rate: u32,
+    max_buffered_duration: Duration,
+  ) -> Self {
     assert!(channels > 0, "channels must be non-zero");
     assert!(sample_rate > 0, "sample_rate must be non-zero");
     let max_buffered_frames = if max_buffered_duration == Duration::ZERO {
@@ -111,10 +131,10 @@ impl TimedAudioQueue {
 
   /// Convenience constructor with an unbounded internal buffer (no backpressure).
   ///
-  /// Equivalent to `TimedAudioQueue::new(channels, sample_rate, Duration::ZERO)`.
+  /// Equivalent to `TimedAudioQueue::new(channels, sample_rate)`.
   #[must_use]
   pub fn new_unbounded(channels: u16, sample_rate: u32) -> Self {
-    Self::new(channels, sample_rate, Duration::ZERO)
+    Self::new(channels, sample_rate)
   }
 
   pub fn channels(&self) -> u16 {
@@ -122,6 +142,12 @@ impl TimedAudioQueue {
   }
 
   pub fn sample_rate(&self) -> u32 {
+    self.sample_rate
+  }
+
+  /// Alias for [`Self::sample_rate`], naming the unit explicitly.
+  #[must_use]
+  pub fn sample_rate_hz(&self) -> u32 {
     self.sample_rate
   }
 
@@ -532,7 +558,7 @@ mod tests {
 
   #[test]
   fn contiguous_segments_read_back_continuously() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0]))
       .unwrap();
     q.push_segment(seg(400, &[5.0, 6.0, 7.0, 8.0]))
@@ -554,7 +580,7 @@ mod tests {
 
   #[test]
   fn gap_inserts_silence() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_segment(seg(0, &[1.0, 2.0])).unwrap();
     q.push_segment(seg(400, &[3.0, 4.0])).unwrap();
 
@@ -569,7 +595,7 @@ mod tests {
 
   #[test]
   fn overlap_drops_samples() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0]))
       .unwrap();
     // Starts at 200ms (2 frames) and overlaps with the first segment.
@@ -583,7 +609,7 @@ mod tests {
 
   #[test]
   fn timed_audio_queue_exact_alignment() {
-    let mut q = TimedAudioQueue::new(2, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(2, 10, Duration::from_secs(10));
     let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
     q.push_packet(Duration::ZERO, &samples).unwrap();
 
@@ -597,7 +623,7 @@ mod tests {
 
   #[test]
   fn timed_audio_queue_gap_insertion() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_packet(Duration::from_secs(1), &[1.0, 2.0, 3.0])
       .unwrap();
 
@@ -613,7 +639,7 @@ mod tests {
 
   #[test]
   fn timed_audio_queue_overlap_drops() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_packet(Duration::ZERO, &[1.0, 2.0, 3.0, 4.0, 5.0])
       .unwrap(); // frames 0..5
     q.push_packet(Duration::from_millis(300), &[10.0, 11.0, 12.0, 13.0])
@@ -629,7 +655,7 @@ mod tests {
 
   #[test]
   fn reset_cursor_seeks_forward() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
       .unwrap();
 
@@ -645,7 +671,7 @@ mod tests {
 
   #[test]
   fn small_target_pts_jitter_does_not_force_seek() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
       .unwrap();
 
@@ -664,7 +690,7 @@ mod tests {
   #[test]
   fn overlap_with_future_segment_does_not_trigger_spurious_backpressure() {
     // 10 Hz sample rate => 1 frame = 100 ms. Buffer cap: 20 frames.
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(2));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(2));
 
     // Existing audio covers frames 10..20 (1s..2s).
     q.push_segment(seg(
@@ -700,7 +726,7 @@ mod tests {
 
   #[test]
   fn stereo_gap_inserts_silence() {
-    let mut q = TimedAudioQueue::new(2, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(2, 10, Duration::from_secs(10));
     // 1 frame of stereo audio (2 samples), then another frame after a 1-frame gap.
     q.push_segment(seg_stereo(0, &[1.0, 2.0])).unwrap();
     q.push_segment(seg_stereo(200, &[3.0, 4.0])).unwrap();
@@ -715,7 +741,7 @@ mod tests {
 
   #[test]
   fn invalid_interleaved_sample_count_rejected() {
-    let mut q = TimedAudioQueue::new(2, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(2, 10, Duration::from_secs(10));
     // 3 samples cannot be evenly divided into 2-channel frames.
     let err = q.push_segment(seg_stereo(0, &[1.0, 2.0, 3.0])).unwrap_err();
     assert_eq!(err, PushError::InvalidSamples);
@@ -723,7 +749,7 @@ mod tests {
 
   #[test]
   fn format_mismatch_rejected() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     // Wrong channel count.
     let err = q.push_segment(TimedAudioSegment {
       start_pts: Duration::ZERO,
@@ -747,7 +773,7 @@ mod tests {
 
   #[test]
   fn read_into_frames_can_seek_and_skip_audio() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
       .unwrap();
 
@@ -764,7 +790,7 @@ mod tests {
 
   #[test]
   fn backpressure_enforced_by_buffered_frames() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(1)); // 10 frames max.
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(1)); // 10 frames max.
     q.push_segment(seg(0, &[1.0; 10])).unwrap();
 
     // Exceeds capacity by 1 frame.
@@ -784,7 +810,7 @@ mod tests {
 
   #[test]
   fn out_of_order_contiguous_segments_merge() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     q.push_segment(seg(400, &[5.0, 6.0, 7.0, 8.0]))
       .unwrap();
     q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0]))
@@ -799,7 +825,7 @@ mod tests {
 
   #[test]
   fn out_of_order_overlap_trims_later_segment() {
-    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
     // Overlapping segment pushed first.
     q.push_segment(seg(200, &[5.0, 6.0, 7.0, 8.0]))
       .unwrap();
