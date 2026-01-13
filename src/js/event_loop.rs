@@ -378,6 +378,13 @@ pub struct EventLoop<Host: 'static> {
   timer_nesting_level: u32,
   idle_callbacks: HashMap<IdleCallbackId, IdleCallbackState<Host>>,
   idle_callback_queue: VecDeque<IdleCallbackId>,
+  /// Shared deadline for the current "idle period" (HTML/requestIdleCallback terminology).
+  ///
+  /// When the event loop is idle, `requestIdleCallback` callbacks are dispatched with a single
+  /// computed deadline. Multiple idle callbacks dispatched within the same idle period should
+  /// observe a shrinking `timeRemaining()` budget; they should *not* get a fresh 50ms budget per
+  /// callback.
+  idle_period_deadline: Option<Duration>,
   next_idle_callback_id: IdleCallbackId,
   next_idle_callback_seq: u64,
   animation_frame_callbacks: HashMap<AnimationFrameId, AnimationFrameCallback<Host>>,
@@ -409,6 +416,7 @@ impl<Host: 'static> Default for EventLoop<Host> {
       timer_nesting_level: 0,
       idle_callbacks: HashMap::new(),
       idle_callback_queue: VecDeque::new(),
+      idle_period_deadline: None,
       next_idle_callback_id: 1,
       next_idle_callback_seq: 0,
       animation_frame_callbacks: HashMap::new(),
@@ -618,6 +626,7 @@ impl<Host: 'static> EventLoop<Host> {
     self.timer_nesting_level = 0;
     self.idle_callbacks.clear();
     self.idle_callback_queue.clear();
+    self.idle_period_deadline = None;
     self.animation_frame_callbacks.clear();
     self.animation_frame_queue.clear();
     let _ = self.external_task_queue.drain();
@@ -698,6 +707,13 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
   {
+    // If new work becomes pending, the event loop is no longer in an idle period, so discard any
+    // previously computed idle deadline.
+    //
+    // Do not clear when queueing idle callback tasks; those are dispatched *within* an idle period.
+    if source != TaskSource::IdleCallback {
+      self.idle_period_deadline = None;
+    }
     if self.pending_task_count() >= self.queue_limits.max_pending_tasks {
       return Err(Error::Other(format!(
         "EventLoop exceeded max pending tasks (limit={})",
@@ -719,6 +735,19 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
   {
+    // Microtasks indicate that the event loop is not idle, so reset any active idle period budget.
+    //
+    // However, microtasks queued *during* an idle callback are part of that idle callback's task
+    // turn and should not reset the shared idle period deadline.
+    if !matches!(
+      self.currently_running_task,
+      Some(RunningTask {
+        source: TaskSource::IdleCallback,
+        is_microtask: false,
+      })
+    ) {
+      self.idle_period_deadline = None;
+    }
     if self.microtask_queue.len() >= self.queue_limits.max_pending_microtasks {
       return Err(Error::Other(format!(
         "EventLoop exceeded max pending microtasks (limit={})",
@@ -2017,6 +2046,18 @@ impl<Host: 'static> EventLoop<Host> {
     // Only run non-timed-out idle callbacks when the event loop is otherwise idle: no pending
     // tasks or microtasks.
     if self.pending_tasks != 0 || !self.microtask_queue.is_empty() {
+      self.idle_period_deadline = None;
+      return Ok(false);
+    }
+
+    // If the idle period deadline has expired, stop scheduling non-timeout idle callbacks and
+    // defer remaining callbacks to a future idle period.
+    let now = self.clock.now();
+    if self
+      .idle_period_deadline
+      .is_some_and(|deadline| now >= deadline)
+    {
+      self.idle_period_deadline = None;
       return Ok(false);
     }
 
@@ -2059,15 +2100,34 @@ impl<Host: 'static> EventLoop<Host> {
     let did_timeout = state.timeout_at.is_some_and(|t| t <= now);
 
     let remaining_ms: f64 = if did_timeout {
+      // Timed-out idle callbacks run even when the event loop is busy and do not observe an idle
+      // period budget.
+      self.idle_period_deadline = None;
       0.0
     } else {
       const DEFAULT_IDLE_BUDGET: Duration = Duration::from_millis(50);
-      let mut remaining = DEFAULT_IDLE_BUDGET;
-      if let Some(next_due) = self.next_timer_due_time() {
-        let until_next = next_due.saturating_sub(now);
-        remaining = remaining.min(until_next);
+
+      let deadline = match self.idle_period_deadline {
+        Some(deadline) => deadline,
+        None => {
+          let mut deadline = now.checked_add(DEFAULT_IDLE_BUDGET).unwrap_or(Duration::MAX);
+          if let Some(next_due) = self.next_timer_due_time() {
+            deadline = deadline.min(next_due);
+          }
+          self.idle_period_deadline = Some(deadline);
+          deadline
+        }
+      };
+
+      // The caller should avoid dispatching idle callbacks after the deadline has expired, but be
+      // defensive in case time advances between scheduling and execution.
+      if now >= deadline {
+        self.idle_period_deadline = None;
+        0.0
+      } else {
+        let remaining = deadline.saturating_sub(now);
+        duration_to_ms_f64(remaining).max(0.0)
       }
-      duration_to_ms_f64(remaining).max(0.0)
     };
 
     let Some(mut callback) = state.callback.take() else {
@@ -3970,6 +4030,97 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
     assert_eq!(host.count, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn idle_callbacks_share_a_single_idle_period_deadline() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      remaining: Vec<f64>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    let clock_for_first = clock.clone();
+    event_loop.request_idle_callback(None, move |host, _event_loop, did_timeout, remaining_ms| {
+      assert!(!did_timeout);
+      host.remaining.push(remaining_ms);
+      // Simulate time passing during the idle period so subsequent callbacks see less time.
+      clock_for_first.advance(Duration::from_millis(10));
+      Ok(())
+    })?;
+
+    event_loop.request_idle_callback(None, |host, _event_loop, did_timeout, remaining_ms| {
+      assert!(!did_timeout);
+      host.remaining.push(remaining_ms);
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(host.remaining.len(), 2);
+    assert!(
+      host.remaining[1] <= host.remaining[0],
+      "expected idle callback budget to be non-increasing within an idle period; first={}ms second={}ms",
+      host.remaining[0],
+      host.remaining[1]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn idle_callbacks_do_not_run_past_the_idle_period_deadline() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    let clock_for_first = clock.clone();
+    event_loop.request_idle_callback(None, move |host, _event_loop, did_timeout, _remaining_ms| {
+      assert!(!did_timeout);
+      host.log.push("a");
+      // Advance beyond the default idle budget (50ms) so the idle period expires.
+      clock_for_first.advance(Duration::from_millis(60));
+      Ok(())
+    })?;
+
+    event_loop.request_idle_callback(None, |host, _event_loop, did_timeout, _remaining_ms| {
+      assert!(!did_timeout);
+      host.log.push("b");
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(
+      host.log,
+      vec!["a"],
+      "second idle callback should not run in the same idle period once the deadline is exceeded"
+    );
+    assert_eq!(event_loop.idle_callbacks.len(), 1);
+    assert_eq!(event_loop.idle_callback_queue.len(), 1);
+
+    // A subsequent run can start a new idle period and deliver the remaining callback.
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.log, vec!["a", "b"]);
     Ok(())
   }
 
