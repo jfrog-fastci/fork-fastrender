@@ -1709,9 +1709,15 @@ fn p3_window_onerror_fires_for_uncaught_errors() -> Result<()> {
     vec![
       "scheduled".to_string(),
       "timer".to_string(),
-      "error".to_string(),
       "onerror".to_string(),
+      "error".to_string(),
     ]
+  );
+
+  let exc = js_exception_messages(&h.tab).join("\n");
+  assert!(
+    exc.contains("boom"),
+    "expected JS exception mentioning boom, got: {exc:?}"
   );
   Ok(())
 }

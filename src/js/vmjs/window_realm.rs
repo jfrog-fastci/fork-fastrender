@@ -28044,9 +28044,17 @@ pub(crate) fn event_target_dispatch_event_dom2(
 
     let handler_name = format!("on{}", rust_event.type_);
     let handler_key = alloc_key(scope, &handler_name)?;
-    let handler = scope
+    let handler = match scope
       .heap()
-      .object_get_own_data_property_value(handler_target_obj, &handler_key)?;
+      .object_get_own_data_property_value(handler_target_obj, &handler_key)
+    {
+      Ok(value) => value,
+      // EventHandler IDL attributes (like `window.onerror`) are implemented as accessor properties
+      // that register an internal wrapper listener. In that case, the handler has already been
+      // invoked during the main DOM dispatch and we should not attempt to call it again.
+      Err(VmError::PropertyNotData) => None,
+      Err(err) => return Err(err),
+    };
 
     if let Some(handler) = handler {
       if !scope.heap().is_callable(handler).unwrap_or(false) {
