@@ -19989,32 +19989,83 @@ fn refresh_replaced_type_styles(
   styled_id: usize,
   styles: &HashMap<usize, Arc<ComputedStyle>>,
 ) {
-  let base = styled_id << STYLE_KEY_SHIFT;
-  let placeholder = styles.get(&(base | STYLE_KEY_PLACEHOLDER)).cloned();
-  let slider_thumb = styles.get(&(base | STYLE_KEY_SLIDER_THUMB)).cloned();
-  let slider_track = styles.get(&(base | STYLE_KEY_SLIDER_TRACK)).cloned();
-  let file_button = styles
-    .get(&(base | STYLE_KEY_FILE_SELECTOR_BUTTON))
-    .cloned();
-
   if let ReplacedType::FormControl(control) = replaced_type {
-    match &mut control.control {
-      FormControlKind::Text {
-        placeholder_style, ..
-      }
-      | FormControlKind::TextArea {
-        placeholder_style, ..
-      } => {
-        *placeholder_style = placeholder.clone();
-      }
-      _ => {}
-    }
-
-    control.placeholder_style = placeholder;
-    control.slider_thumb_style = slider_thumb;
-    control.slider_track_style = slider_track;
-    control.file_selector_button_style = file_button;
+    let pseudo = form_control_pseudo_styles(styled_id, styles);
+    apply_form_control_pseudo_styles(control, &pseudo);
   }
+}
+
+#[derive(Clone)]
+struct FormControlPseudoStyles {
+  placeholder: Option<Arc<ComputedStyle>>,
+  slider_thumb: Option<Arc<ComputedStyle>>,
+  slider_track: Option<Arc<ComputedStyle>>,
+  file_selector_button: Option<Arc<ComputedStyle>>,
+}
+
+fn form_control_pseudo_styles(
+  styled_id: usize,
+  styles: &HashMap<usize, Arc<ComputedStyle>>,
+) -> FormControlPseudoStyles {
+  let base = styled_id << STYLE_KEY_SHIFT;
+  FormControlPseudoStyles {
+    placeholder: styles.get(&(base | STYLE_KEY_PLACEHOLDER)).cloned(),
+    slider_thumb: styles.get(&(base | STYLE_KEY_SLIDER_THUMB)).cloned(),
+    slider_track: styles.get(&(base | STYLE_KEY_SLIDER_TRACK)).cloned(),
+    file_selector_button: styles
+      .get(&(base | STYLE_KEY_FILE_SELECTOR_BUTTON))
+      .cloned(),
+  }
+}
+
+fn form_control_has_pseudo_styles(
+  control: &crate::tree::box_tree::FormControl,
+  pseudo: &FormControlPseudoStyles,
+) -> bool {
+  if control.placeholder_style != pseudo.placeholder {
+    return false;
+  }
+  if control.slider_thumb_style != pseudo.slider_thumb {
+    return false;
+  }
+  if control.slider_track_style != pseudo.slider_track {
+    return false;
+  }
+  if control.file_selector_button_style != pseudo.file_selector_button {
+    return false;
+  }
+
+  match &control.control {
+    FormControlKind::Text {
+      placeholder_style, ..
+    }
+    | FormControlKind::TextArea {
+      placeholder_style, ..
+    } => placeholder_style == &pseudo.placeholder,
+    _ => true,
+  }
+}
+
+fn apply_form_control_pseudo_styles(
+  control: &mut crate::tree::box_tree::FormControl,
+  pseudo: &FormControlPseudoStyles,
+) {
+  match &mut control.control {
+    FormControlKind::Text {
+      placeholder_style, ..
+    }
+    | FormControlKind::TextArea {
+      placeholder_style, ..
+    } => {
+      *placeholder_style = pseudo.placeholder.clone();
+    }
+    _ => {}
+  }
+
+  control.placeholder_style = pseudo.placeholder.clone();
+  control.slider_thumb_style = pseudo.slider_thumb.clone();
+  control.slider_track_style = pseudo.slider_track.clone();
+  control.file_selector_button_style = pseudo.file_selector_button.clone();
 }
 
 fn merge_first_line_overrides(base: &ComputedStyle, first_line: &ComputedStyle) -> ComputedStyle {
@@ -20348,6 +20399,34 @@ fn refresh_fragment_tree_styles(
   refresh_fragment_styles(&mut tree.root, boxes, styles, None, false);
   for root in &mut tree.additional_fragments {
     refresh_fragment_styles(root, boxes, styles, None, false);
+  }
+
+  let Some(controls) = tree.appearance_none_form_controls.as_ref() else {
+    return;
+  };
+  let mut refreshed: Option<HashMap<usize, Arc<crate::tree::box_tree::FormControl>>> = None;
+
+  for (&box_id, control) in controls.iter() {
+    let Some(node) = boxes.get(&box_id) else {
+      continue;
+    };
+    let Some(styled_id) = node.styled_node_id else {
+      continue;
+    };
+
+    let pseudo = form_control_pseudo_styles(styled_id, styles);
+    if form_control_has_pseudo_styles(control, &pseudo) {
+      continue;
+    }
+
+    let map = refreshed.get_or_insert_with(|| (**controls).clone());
+    let mut updated = control.as_ref().clone();
+    apply_form_control_pseudo_styles(&mut updated, &pseudo);
+    map.insert(box_id, Arc::new(updated));
+  }
+
+  if let Some(map) = refreshed {
+    tree.appearance_none_form_controls = Some(Arc::new(map));
   }
 }
 
@@ -23781,6 +23860,243 @@ mod tests {
         &new_child
       ),
       "expected additional root fragments to refresh styles"
+    );
+  }
+
+  #[test]
+  fn refresh_fragment_tree_styles_refreshes_appearance_none_form_control_pseudo_styles() {
+    let base_style = Arc::new(ComputedStyle::default());
+
+    let old_placeholder = Arc::new(ComputedStyle::default());
+    let mut new_placeholder = ComputedStyle::default();
+    new_placeholder.font_size = 22.0;
+    let new_placeholder = Arc::new(new_placeholder);
+
+    let old_file_button = Arc::new(ComputedStyle::default());
+    let mut new_file_button = ComputedStyle::default();
+    new_file_button.font_size = 18.0;
+    let new_file_button = Arc::new(new_file_button);
+
+    let mut text_box = BoxNode::new_block(base_style.clone(), FormattingContextType::Block, vec![]);
+    text_box.styled_node_id = Some(1);
+
+    let mut file_box = BoxNode::new_block(base_style.clone(), FormattingContextType::Block, vec![]);
+    file_box.styled_node_id = Some(2);
+
+    let mut checkbox_box =
+      BoxNode::new_block(base_style.clone(), FormattingContextType::Block, vec![]);
+    checkbox_box.styled_node_id = Some(3);
+
+    let mut root = BoxNode::new_block(
+      base_style.clone(),
+      FormattingContextType::Block,
+      vec![text_box, file_box, checkbox_box],
+    );
+    root.styled_node_id = Some(4);
+    let box_tree = BoxTree::new(root);
+    let text_box_id = box_tree.root.children[0].id;
+    let file_box_id = box_tree.root.children[1].id;
+    let checkbox_box_id = box_tree.root.children[2].id;
+
+    let mut box_map = HashMap::new();
+    super::collect_box_nodes(&box_tree.root, &mut box_map);
+
+    let text_control = Arc::new(crate::tree::box_tree::FormControl {
+      control: FormControlKind::Text {
+        value: String::new(),
+        placeholder: Some("hint".to_string()),
+        placeholder_style: Some(old_placeholder.clone()),
+        size_attr: None,
+        kind: TextControlKind::Plain,
+        caret: 0,
+        caret_affinity: crate::text::caret::CaretAffinity::Downstream,
+        selection: None,
+      },
+      appearance: crate::style::types::Appearance::None,
+      placeholder_style: Some(old_placeholder.clone()),
+      slider_thumb_style: None,
+      slider_track_style: None,
+      progress_bar_style: None,
+      progress_value_style: None,
+      meter_bar_style: None,
+      meter_optimum_value_style: None,
+      meter_suboptimum_value_style: None,
+      meter_even_less_good_value_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+      ime_preedit: None,
+    });
+
+    let file_control = Arc::new(crate::tree::box_tree::FormControl {
+      control: FormControlKind::File { value: None },
+      appearance: crate::style::types::Appearance::None,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      progress_bar_style: None,
+      progress_value_style: None,
+      meter_bar_style: None,
+      meter_optimum_value_style: None,
+      meter_suboptimum_value_style: None,
+      meter_even_less_good_value_style: None,
+      file_selector_button_style: Some(old_file_button.clone()),
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+      ime_preedit: None,
+    });
+
+    let checkbox_control = Arc::new(crate::tree::box_tree::FormControl {
+      control: FormControlKind::Checkbox {
+        is_radio: false,
+        checked: false,
+        indeterminate: false,
+      },
+      appearance: crate::style::types::Appearance::None,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      progress_bar_style: None,
+      progress_value_style: None,
+      meter_bar_style: None,
+      meter_optimum_value_style: None,
+      meter_suboptimum_value_style: None,
+      meter_even_less_good_value_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+      ime_preedit: None,
+    });
+
+    let mut appearance_map: HashMap<usize, Arc<crate::tree::box_tree::FormControl>> = HashMap::new();
+    appearance_map.insert(text_box_id, Arc::clone(&text_control));
+    appearance_map.insert(file_box_id, Arc::clone(&file_control));
+    appearance_map.insert(checkbox_box_id, Arc::clone(&checkbox_control));
+
+    let mut fragment_tree = FragmentTree::with_viewport(
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+        box_tree.root.id,
+        vec![],
+      ),
+      Size::new(100.0, 100.0),
+    );
+    fragment_tree.root.style = Some(base_style.clone());
+    fragment_tree.appearance_none_form_controls = Some(Arc::new(appearance_map));
+    let previous_map = fragment_tree
+      .appearance_none_form_controls
+      .as_ref()
+      .expect("appearance map set")
+      .clone();
+
+    let mut style_map = HashMap::new();
+    style_map.insert(1 << super::STYLE_KEY_SHIFT, base_style.clone());
+    style_map.insert(
+      (1 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_PLACEHOLDER,
+      new_placeholder.clone(),
+    );
+    style_map.insert(2 << super::STYLE_KEY_SHIFT, base_style.clone());
+    style_map.insert(
+      (2 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_FILE_SELECTOR_BUTTON,
+      new_file_button.clone(),
+    );
+    style_map.insert(3 << super::STYLE_KEY_SHIFT, base_style.clone());
+    style_map.insert(4 << super::STYLE_KEY_SHIFT, base_style);
+
+    super::refresh_fragment_tree_styles(&mut fragment_tree, &box_map, &style_map);
+
+    let refreshed_map = fragment_tree
+      .appearance_none_form_controls
+      .as_ref()
+      .expect("appearance map preserved");
+    assert!(
+      !Arc::ptr_eq(refreshed_map, &previous_map),
+      "expected refreshed map to be replaced when control pseudo styles change"
+    );
+
+    let refreshed_text = refreshed_map
+      .get(&text_box_id)
+      .expect("text control entry");
+    assert!(
+      !Arc::ptr_eq(refreshed_text, &text_control),
+      "expected changed control to be replaced"
+    );
+    match &refreshed_text.control {
+      FormControlKind::Text {
+        placeholder_style, ..
+      } => assert!(
+        placeholder_style
+          .as_ref()
+          .is_some_and(|style| Arc::ptr_eq(style, &new_placeholder)),
+        "expected text control ::placeholder style to refresh"
+      ),
+      other => panic!("expected text control, got {other:?}"),
+    }
+    assert!(
+      refreshed_text
+        .placeholder_style
+        .as_ref()
+        .is_some_and(|style| Arc::ptr_eq(style, &new_placeholder)),
+      "expected top-level placeholder style to refresh"
+    );
+
+    let refreshed_file = refreshed_map
+      .get(&file_box_id)
+      .expect("file control entry");
+    assert!(
+      !Arc::ptr_eq(refreshed_file, &file_control),
+      "expected changed control to be replaced"
+    );
+    assert!(
+      refreshed_file
+        .file_selector_button_style
+        .as_ref()
+        .is_some_and(|style| Arc::ptr_eq(style, &new_file_button)),
+      "expected ::file-selector-button style to refresh"
+    );
+
+    let refreshed_checkbox = refreshed_map
+      .get(&checkbox_box_id)
+      .expect("checkbox control entry");
+    assert!(
+      Arc::ptr_eq(refreshed_checkbox, &checkbox_control),
+      "expected unchanged control to preserve original Arc"
+    );
+
+    // Ensure previously stored arcs were not mutated.
+    match &text_control.control {
+      FormControlKind::Text {
+        placeholder_style, ..
+      } => assert!(
+        placeholder_style
+          .as_ref()
+          .is_some_and(|style| Arc::ptr_eq(style, &old_placeholder)),
+        "expected original text control placeholder style to remain unchanged"
+      ),
+      other => panic!("expected text control, got {other:?}"),
+    }
+    assert!(
+      text_control
+        .placeholder_style
+        .as_ref()
+        .is_some_and(|style| Arc::ptr_eq(style, &old_placeholder)),
+      "expected original top-level placeholder style to remain unchanged"
+    );
+    assert!(
+      file_control
+        .file_selector_button_style
+        .as_ref()
+        .is_some_and(|style| Arc::ptr_eq(style, &old_file_button)),
+      "expected original file selector button style to remain unchanged"
     );
   }
 
