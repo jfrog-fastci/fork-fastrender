@@ -7541,11 +7541,7 @@ impl App {
             self.history_panel_request_focus_search = true;
             self.page_has_focus = false;
           } else {
-            self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-              && !self.bookmarks_panel_open
-              && !self.downloads_panel_open
-              && !self.browser_state.chrome.tab_search.open
-              && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
+            self.page_has_focus = self.should_restore_page_focus();
           }
           self.window.request_redraw();
         }
@@ -7560,11 +7556,7 @@ impl App {
             self.page_has_focus = false;
           } else {
             self.bookmarks_manager.clear_transient();
-            self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
-              && !self.history_panel_open
-              && !self.downloads_panel_open
-              && !self.browser_state.chrome.tab_search.open
-              && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
+            self.page_has_focus = self.should_restore_page_focus();
           }
           self.window.request_redraw();
         }
