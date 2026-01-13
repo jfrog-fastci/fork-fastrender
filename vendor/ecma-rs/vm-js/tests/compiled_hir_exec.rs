@@ -2180,6 +2180,79 @@ fn compiled_member_compound_add_assign_to_nullish_base_does_not_evaluate_rhs() -
 }
 
 #[test]
+fn compiled_object_destructuring_computed_member_target_delays_to_property_key() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // For destructuring assignment targets like `o[key()]`, the key *expression* is evaluated before
+  // reading the source property value, but `ToPropertyKey` is delayed until `PutValue` (after `GetV`
+  // and default evaluation). This matches interpreter behaviour + test262.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = '';
+      let o = {};
+      function key() {
+        log += 'k';
+        return { toString() { log += 't'; return 'x'; } };
+      }
+      function def() { log += 'd'; return 1; }
+      let src = { get a() { log += 'g'; return undefined; } };
+      ({a: o[key()] = def()} = src);
+      log
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("kgdt")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
+fn compiled_array_destructuring_computed_member_target_delays_to_property_key() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // For iterator destructuring assignment targets like `o[key()]`, the key *expression* is
+  // evaluated before advancing the iterator, but `ToPropertyKey` is delayed until `PutValue` (after
+  // consuming the iterator value and evaluating any default).
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = '';
+      let o = {};
+      function key() {
+        log += 'k';
+        return { toString() { log += 't'; return 'x'; } };
+      }
+      let it = {
+        [Symbol.iterator]() {
+          return {
+            next() { log += 'n'; return { value: 1, done: true }; }
+          };
+        }
+      };
+      [o[key()]] = it;
+      log
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("knt")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_simple_assignment_evaluates_member_lhs_before_rhs() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
