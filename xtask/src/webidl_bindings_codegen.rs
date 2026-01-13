@@ -12,7 +12,7 @@ use fastrender::webidl::{
 
 use crate::webidl::analyze::AnalyzedWebIdlWorld;
 use crate::webidl::ast::{Argument, BuiltinType, IdlLiteral, IdlType, InterfaceMember};
-use crate::webidl::resolve::{ExposureTarget, ResolvedWebIdlWorld};
+use crate::webidl::resolve::{ExposureTarget, ResolvedInterface, ResolvedWebIdlWorld};
 use crate::webidl::type_resolution;
 use crate::webidl::type_resolution::{build_type_context, expand_typedefs_in_type};
 use crate::webidl::ExtendedAttribute;
@@ -165,7 +165,16 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
   // Prefer the committed snapshot (`src/webidl/generated`) so running this xtask does not require
   // vendored spec submodules.
   let snapshot_world: &WebIdlWorld = &fastrender::webidl::generated::WORLD;
-  let snapshot_idl = snapshot_world_to_idl(snapshot_world);
+  let mut snapshot_idl = snapshot_world_to_idl(snapshot_world);
+  // Append project-local WebIDL definitions that are intentionally *not* part of the committed
+  // upstream snapshot (`src/webidl/generated`). This keeps the snapshot spec-shaped while still
+  // allowing our custom, Window-exposed bridge APIs (e.g. browser chrome JS ↔ host dispatch) to use
+  // the same WebIDL argument conversion + overload resolution infrastructure as standard APIs.
+  let local_chrome_idl_path = repo_root.join("tools/webidl/local/chrome.idl");
+  let local_chrome_idl = fs::read_to_string(&local_chrome_idl_path)
+    .with_context(|| format!("read local WebIDL {}", local_chrome_idl_path.display()))?;
+  snapshot_idl.push_str("\n\n");
+  snapshot_idl.push_str(&local_chrome_idl);
 
   let window_config = if allow_interfaces.is_empty() {
     let allowlist_text = fs::read_to_string(&window_allowlist_path).with_context(|| {
@@ -176,8 +185,12 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
     })?;
     let manifest: WindowBindingsAllowlistManifest =
       toml::from_str(&allowlist_text).context("parse WebIDL Window bindings allowlist TOML")?;
+    // Parse+resolve the same combined IDL input that will be used for codegen so allowlist entries
+    // can reference local additions (e.g. `FastRenderChrome`) while still catching typos.
+    let parsed = crate::webidl::parse_webidl(&snapshot_idl).context("parse WebIDL")?;
+    let resolved = crate::webidl::resolve::resolve_webidl_world(&parsed);
     let interface_allowlist =
-      window_parse_allowlisted_interfaces(snapshot_world, &manifest.interfaces)?;
+      window_parse_allowlisted_interfaces(&resolved, &manifest.interfaces)?;
     WebIdlBindingsCodegenConfig {
       mode: WebIdlBindingsGenerationMode::Allowlist,
       allow_interfaces: interface_allowlist.keys().cloned().collect(),
@@ -711,7 +724,7 @@ struct WindowBindingsAllowlistInterface {
 }
 
 fn window_parse_allowlisted_interfaces(
-  world: &WebIdlWorld,
+  world: &ResolvedWebIdlWorld,
   allowlist: &[WindowBindingsAllowlistInterface],
 ) -> Result<BTreeMap<String, WebIdlInterfaceAllowlist>> {
   let mut out = BTreeMap::new();
@@ -727,7 +740,7 @@ fn window_parse_allowlisted_interfaces(
 
     let iface = world.interface(&entry.name).with_context(|| {
       format!(
-        "allowlisted interface `{}` is missing from WORLD",
+        "allowlisted interface `{}` is missing from the WebIDL world",
         entry.name
       )
     })?;
@@ -742,17 +755,17 @@ fn window_parse_allowlisted_interfaces(
 }
 
 fn window_parse_interface_entry(
-  iface: &WebIdlInterface,
+  iface: &ResolvedInterface,
   allow: &WindowBindingsAllowlistInterface,
 ) -> Result<WebIdlInterfaceAllowlist> {
   // Constructors.
   if allow.constructors {
     let mut found_ctor = false;
-    for member in iface.members {
-      if member.name != Some("constructor") {
+    for member in &iface.members {
+      if member.name.as_deref() != Some("constructor") {
         continue;
       }
-      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+      let parsed = crate::webidl::parse_interface_member(&member.raw).with_context(|| {
         format!(
           "failed to parse WebIDL member `{}` constructor `{}`",
           iface.name, member.raw
@@ -764,7 +777,7 @@ fn window_parse_interface_entry(
     }
     if !found_ctor {
       bail!(
-        "Window bindings allowlist requested constructors for `{}`, but none were found in WORLD",
+        "Window bindings allowlist requested constructors for `{}`, but none were found",
         iface.name
       );
     }
@@ -782,11 +795,11 @@ fn window_parse_interface_entry(
     }
 
     let mut matches = Vec::new();
-    for member in iface.members {
-      if member.name != Some(attr_name.as_str()) {
+    for member in &iface.members {
+      if member.name.as_deref() != Some(attr_name.as_str()) {
         continue;
       }
-      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+      let parsed = crate::webidl::parse_interface_member(&member.raw).with_context(|| {
         format!(
           "failed to parse WebIDL member `{}` attribute `{}`",
           iface.name, member.raw
@@ -824,11 +837,11 @@ fn window_parse_interface_entry(
     }
 
     let mut found = false;
-    for member in iface.members {
-      if member.name != Some(op_name.as_str()) {
+    for member in &iface.members {
+      if member.name.as_deref() != Some(op_name.as_str()) {
         continue;
       }
-      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+      let parsed = crate::webidl::parse_interface_member(&member.raw).with_context(|| {
         format!(
           "failed to parse WebIDL member `{}` operation `{}`",
           iface.name, member.raw
@@ -1598,6 +1611,7 @@ fn generate_bindings_module_unformatted(
   out.push_str(
     "// - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)\n",
   );
+  out.push_str("// - tools/webidl/local/chrome.idl (FastRender-local chrome bridge APIs)\n");
   out.push_str("\n");
   // Legacy bindings call `binding_value_to_js` to translate host-returned values into the
   // `webidl-js-runtime` value representation. The per-target modules (`window`/`worker`) import the
@@ -1661,6 +1675,7 @@ fn generate_bindings_module_unformatted_vmjs(
   out.push_str(
     "// - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)\n",
   );
+  out.push_str("// - tools/webidl/local/chrome.idl (FastRender-local chrome bridge APIs)\n");
   out.push_str("\n");
 
   let targets: &[ExposureTarget] = match exposure_target {

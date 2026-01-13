@@ -1,0 +1,33 @@
+// FastRender-local WebIDL definitions for browser chrome JS bridge APIs.
+//
+// These are intentionally non-standard and prefixed with `FastRender*` to avoid colliding with
+// real browser or extension APIs (e.g. `chrome.*` in Chromium).
+
+[Exposed=Window]
+interface FastRenderChrome {
+  readonly attribute FastRenderNavigation navigation;
+  readonly attribute FastRenderTabs tabs;
+};
+
+[Exposed=Window]
+interface FastRenderNavigation {
+  undefined navigate(DOMString url);
+  undefined back();
+  undefined forward();
+  undefined reload();
+};
+
+[Exposed=Window]
+interface FastRenderTabs {
+  unsigned long long newTab(optional DOMString url);
+  undefined closeTab(unsigned long long id);
+  undefined activateTab(unsigned long long id);
+  sequence<FastRenderTabInfo> list();
+};
+
+dictionary FastRenderTabInfo {
+  unsigned long long id;
+  DOMString url;
+  DOMString title;
+  boolean active;
+};

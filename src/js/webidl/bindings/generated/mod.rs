@@ -2,6 +2,7 @@
 //
 // Source inputs:
 // - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)
+// - tools/webidl/local/chrome.idl (FastRender-local chrome bridge APIs)
 
 pub mod window {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
@@ -290,6 +291,78 @@ pub mod window {
         rt.define_data_property_str(
           out_obj,
           "capture",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    Ok(Value::Object(out_obj))
+  }
+
+  #[allow(dead_code)]
+  fn js_to_dict_fast_render_tab_info(
+    rt: &mut BindingsRuntime<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<Value, VmError> {
+    let _ = (&mut *host, &mut *hooks);
+    if matches!(value, Value::Undefined | Value::Null) {
+      let obj = rt.alloc_object()?;
+      return Ok(Value::Object(obj));
+    }
+    let Value::Object(input) = value else {
+      return Err(rt.throw_type_error("expected object for dictionary FastRenderTabInfo"));
+    };
+    rt.scope.push_root(Value::Object(input))?;
+    let out_obj = rt.alloc_object()?;
+    {
+      let key = rt.property_key("id")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Number(rt.scope.to_number(&mut *rt.vm, host, hooks, v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "id",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("url")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "url",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("title")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "title",
+          converted,
+          DataPropertyAttributes::new(true, true, true),
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("active")?;
+      let v = rt.vm.get(&mut rt.scope, input, key)?;
+      if !matches!(v, Value::Undefined) {
+        let converted = Value::Bool(rt.scope.heap().to_boolean(v)?);
+        rt.define_data_property_str(
+          out_obj,
+          "active",
           converted,
           DataPropertyAttributes::new(true, true, true),
         )?;
@@ -3552,6 +3625,419 @@ pub mod window {
     } else {
       Err(rt.throw_type_error("no matching overload for EventTarget constructor"))
     }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_chrome_get_attribute_navigation(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "FastRenderChrome",
+      "navigation",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_chrome_get_attribute_tabs(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "FastRenderChrome",
+      "tabs",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_chrome_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_chrome_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_back(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "FastRenderNavigation",
+        "back",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_forward(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "FastRenderNavigation",
+        "forward",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_navigate(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "FastRenderNavigation",
+        "navigate",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_reload(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "FastRenderNavigation",
+        "reload",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_activate_tab(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::Number(rt.scope.to_number(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "FastRenderTabs",
+        "activateTab",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_close_tab(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::Number(rt.scope.to_number(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "FastRenderTabs",
+        "closeTab",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_list(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "FastRenderTabs",
+        "list",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_new_tab(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = if matches!(v0, Value::Undefined) {
+        Value::Undefined
+      } else {
+        Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?)
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "FastRenderTabs",
+        "newTab",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]
@@ -8110,6 +8596,440 @@ pub mod window {
     Ok(())
   }
 
+  pub fn install_fast_render_chrome_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_fast_render_chrome, proto_fast_render_chrome) = {
+      let ctor_key = rt.property_key("FastRenderChrome")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          fast_render_chrome_call_without_new,
+          Some(fast_render_chrome_construct),
+          "FastRenderChrome",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "FastRenderChrome",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("navigation")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_chrome, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          fast_render_chrome_get_attribute_navigation,
+          None,
+          "get navigation",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_fast_render_chrome,
+          "navigation",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("tabs")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_chrome, &key)?
+        .is_none()
+      {
+        let get =
+          rt.alloc_native_function(fast_render_chrome_get_attribute_tabs, None, "get tabs", 0)?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_fast_render_chrome,
+          "tabs",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
+  pub fn install_fast_render_navigation_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_fast_render_navigation, proto_fast_render_navigation) = {
+      let ctor_key = rt.property_key("FastRenderNavigation")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          fast_render_navigation_call_without_new,
+          Some(fast_render_navigation_construct),
+          "FastRenderNavigation",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "FastRenderNavigation",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("back")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_navigation, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(fast_render_navigation_back, None, "back", 0)?;
+        rt.define_data_property_str(
+          proto_fast_render_navigation,
+          "back",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("forward")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_navigation, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(fast_render_navigation_forward, None, "forward", 0)?;
+        rt.define_data_property_str(
+          proto_fast_render_navigation,
+          "forward",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("navigate")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_navigation, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(fast_render_navigation_navigate, None, "navigate", 1)?;
+        rt.define_data_property_str(
+          proto_fast_render_navigation,
+          "navigate",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("reload")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_navigation, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(fast_render_navigation_reload, None, "reload", 0)?;
+        rt.define_data_property_str(
+          proto_fast_render_navigation,
+          "reload",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
+  pub fn install_fast_render_tabs_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_fast_render_tabs, proto_fast_render_tabs) = {
+      let ctor_key = rt.property_key("FastRenderTabs")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          fast_render_tabs_call_without_new,
+          Some(fast_render_tabs_construct),
+          "FastRenderTabs",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "FastRenderTabs",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("activateTab")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_tabs, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(fast_render_tabs_activate_tab, None, "activateTab", 1)?;
+        rt.define_data_property_str(
+          proto_fast_render_tabs,
+          "activateTab",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("closeTab")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_tabs, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(fast_render_tabs_close_tab, None, "closeTab", 1)?;
+        rt.define_data_property_str(
+          proto_fast_render_tabs,
+          "closeTab",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("list")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_tabs, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(fast_render_tabs_list, None, "list", 0)?;
+        rt.define_data_property_str(
+          proto_fast_render_tabs,
+          "list",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("newTab")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_fast_render_tabs, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(fast_render_tabs_new_tab, None, "newTab", 0)?;
+        rt.define_data_property_str(
+          proto_fast_render_tabs,
+          "newTab",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
   pub fn install_html_collection_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
@@ -10126,6 +11046,9 @@ pub mod window {
     install_document_bindings_vm_js(vm, heap, realm)?;
     install_document_fragment_bindings_vm_js(vm, heap, realm)?;
     install_element_bindings_vm_js(vm, heap, realm)?;
+    install_fast_render_chrome_bindings_vm_js(vm, heap, realm)?;
+    install_fast_render_navigation_bindings_vm_js(vm, heap, realm)?;
+    install_fast_render_tabs_bindings_vm_js(vm, heap, realm)?;
     install_html_collection_bindings_vm_js(vm, heap, realm)?;
     install_node_list_bindings_vm_js(vm, heap, realm)?;
     install_text_bindings_vm_js(vm, heap, realm)?;
@@ -12661,6 +13584,9 @@ pub use window::install_dom_token_list_bindings_vm_js;
 pub use window::install_element_bindings_vm_js;
 pub use window::install_event_bindings_vm_js;
 pub use window::install_event_target_bindings_vm_js;
+pub use window::install_fast_render_chrome_bindings_vm_js;
+pub use window::install_fast_render_navigation_bindings_vm_js;
+pub use window::install_fast_render_tabs_bindings_vm_js;
 pub use window::install_html_collection_bindings_vm_js;
 pub use window::install_node_bindings_vm_js;
 pub use window::install_node_list_bindings_vm_js;

@@ -160,6 +160,24 @@ attributes = ["size"]
 operations = ["append", "delete", "get", "getAll", "has", "set"]
 
 [[interface]]
+name = "FastRenderChrome"
+constructors = false
+attributes = ["navigation", "tabs"]
+operations = []
+
+[[interface]]
+name = "FastRenderNavigation"
+constructors = false
+attributes = []
+operations = ["navigate", "back", "forward", "reload"]
+
+[[interface]]
+name = "FastRenderTabs"
+constructors = false
+attributes = []
+operations = ["newTab", "closeTab", "activateTab", "list"]
+
+[[interface]]
 name = "Window"
 constructors = false
 attributes = ["document"]
