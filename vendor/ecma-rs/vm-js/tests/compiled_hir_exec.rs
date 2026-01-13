@@ -7208,6 +7208,49 @@ fn compiled_instanceof_custom_has_instance() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_instanceof_has_instance_not_callable_throws() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let C = { [Symbol.hasInstance]: 1 };
+      ({} instanceof C)
+    "#,
+  )?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::ThrowWithStack { .. } | VmError::Throw(_) | VmError::TypeError(_) => Ok(()),
+    other => panic!("expected TypeError, got {other:?}"),
+  }
+}
+
+#[test]
+fn compiled_instanceof_function_prototype_not_object_throws() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function C() {}
+      C.prototype = 1;
+      ({} instanceof C)
+    "#,
+  )?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::ThrowWithStack { .. } | VmError::Throw(_) | VmError::TypeError(_) => Ok(()),
+    other => panic!("expected TypeError, got {other:?}"),
+  }
+}
+
+#[test]
 fn compiled_instanceof_uses_proxy_get_trap_for_has_instance() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
