@@ -227,22 +227,79 @@ mod tests {
     );
     assert_eq!(a.as_ref(), "Example");
 
-    let c = cache.get_or_update("Example", true, false, false, false, false);
+    let active = cache.get_or_update("Example", true, false, false, false, false);
     assert!(
-      !Arc::ptr_eq(&a, &c),
+      !Arc::ptr_eq(&b, &active),
       "expected cache miss when active flag changes"
     );
-    assert_eq!(c.as_ref(), "Example (current tab)");
+    assert_eq!(active.as_ref(), "Example (current tab)");
 
-    let d = cache.get_or_update("Example", true, false, false, false, false);
-    assert!(Arc::ptr_eq(&c, &d), "expected cache hit after recompute");
+    let active2 = cache.get_or_update("Example", true, false, false, false, false);
+    assert!(Arc::ptr_eq(&active, &active2), "expected cache hit after recompute");
 
-    let e = cache.get_or_update("Example 2", true, false, false, false, false);
+    let pinned = cache.get_or_update("Example", true, true, false, false, false);
     assert!(
-      !Arc::ptr_eq(&d, &e),
+      !Arc::ptr_eq(&active2, &pinned),
+      "expected cache miss when pinned flag changes"
+    );
+    assert_eq!(pinned.as_ref(), "Example (current tab, pinned)");
+
+    let pinned2 = cache.get_or_update("Example", true, true, false, false, false);
+    assert!(
+      Arc::ptr_eq(&pinned, &pinned2),
+      "expected cache hit after recompute"
+    );
+
+    let loading = cache.get_or_update("Example", true, true, true, false, false);
+    assert!(
+      !Arc::ptr_eq(&pinned2, &loading),
+      "expected cache miss when loading flag changes"
+    );
+    assert_eq!(loading.as_ref(), "Example (current tab, pinned, loading)");
+
+    let loading2 = cache.get_or_update("Example", true, true, true, false, false);
+    assert!(
+      Arc::ptr_eq(&loading, &loading2),
+      "expected cache hit after recompute"
+    );
+
+    let error = cache.get_or_update("Example", true, true, true, true, false);
+    assert!(
+      !Arc::ptr_eq(&loading2, &error),
+      "expected cache miss when error flag changes"
+    );
+    assert_eq!(error.as_ref(), "Example (current tab, pinned, loading, error)");
+
+    let error2 = cache.get_or_update("Example", true, true, true, true, false);
+    assert!(Arc::ptr_eq(&error, &error2), "expected cache hit after recompute");
+
+    let warning = cache.get_or_update("Example", true, true, true, true, true);
+    assert!(
+      !Arc::ptr_eq(&error2, &warning),
+      "expected cache miss when warning flag changes"
+    );
+    assert_eq!(
+      warning.as_ref(),
+      "Example (current tab, pinned, loading, error, warning)"
+    );
+
+    let warning2 = cache.get_or_update("Example", true, true, true, true, true);
+    assert!(
+      Arc::ptr_eq(&warning, &warning2),
+      "expected cache hit after recompute"
+    );
+
+    let e = cache.get_or_update("Example 2", true, true, true, true, true);
+    assert!(
+      !Arc::ptr_eq(&warning2, &e),
       "expected cache miss when title changes"
     );
-    assert_eq!(e.as_ref(), "Example 2 (current tab)");
+    assert_eq!(
+      e.as_ref(),
+      "Example 2 (current tab, pinned, loading, error, warning)"
+    );
+
+    let f = cache.get_or_update("Example 2", true, true, true, true, true);
+    assert!(Arc::ptr_eq(&e, &f), "expected cache hit after recompute");
   }
 }
-
