@@ -7,6 +7,8 @@ use std::collections::HashMap;
 /// This is a lightweight wrapper around the tree-order logic used by Range algorithms:
 /// - Only nodes in the same Range tree root (Document or ShadowRoot) are comparable.
 /// - Detached nodes are treated as unordered (`Ordering::Equal`) so callers can prune them.
+/// - If the tree structure is inconsistent (e.g. missing parent/child linkage), nodes are treated
+///   as unordered rather than falling back to `NodeId::index()` ordering.
 ///
 /// Callers **must** handle the `Ordering::Equal` fallback case for distinct nodes (e.g. by dropping
 /// selection points/ranges that are disconnected or cross a shadow boundary).
@@ -26,7 +28,53 @@ pub(crate) fn cmp_dom2_nodes(dom: &Document, a: NodeId, b: NodeId) -> Ordering {
     return Ordering::Equal;
   }
 
-  dom.compare_tree_order_for_range(a, b)
+  // We want true DOM tree order, not arena insertion order. `compare_tree_order_for_range` has an
+  // internal `NodeId::index()` fallback when the tree is inconsistent; that is useful as a
+  // deterministic tie-breaker for internal Range algorithms, but for selection ordering we treat
+  // such nodes as unordered and let callers prune them.
+  fn path_to_root(doc: &Document, node: NodeId) -> Option<Vec<NodeId>> {
+    let mut out: Vec<NodeId> = Vec::new();
+    let mut current = Some(node);
+    let mut remaining = doc.nodes.len() + 1;
+    while let Some(id) = current {
+      if remaining == 0 {
+        return None;
+      }
+      remaining -= 1;
+      out.push(id);
+      current = doc.range_parent(id);
+    }
+    out.reverse();
+    Some(out)
+  }
+
+  let Some(path_a) = path_to_root(dom, a) else {
+    return Ordering::Equal;
+  };
+  let Some(path_b) = path_to_root(dom, b) else {
+    return Ordering::Equal;
+  };
+
+  let mut i = 0usize;
+  let min_len = path_a.len().min(path_b.len());
+  while i < min_len && path_a[i] == path_b[i] {
+    i += 1;
+  }
+
+  if i == path_a.len() {
+    // a is an ancestor of b, so it precedes b in tree order.
+    return Ordering::Less;
+  }
+  if i == path_b.len() {
+    return Ordering::Greater;
+  }
+
+  let child_a = path_a[i];
+  let child_b = path_b[i];
+  match (dom.node_index(child_a), dom.node_index(child_b)) {
+    (Some(a_idx), Some(b_idx)) => a_idx.cmp(&b_idx),
+    _ => Ordering::Equal,
+  }
 }
 
 /// A DOM boundary point (node, offset) used by Range algorithms.
