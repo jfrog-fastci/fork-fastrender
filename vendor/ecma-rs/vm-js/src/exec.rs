@@ -2174,11 +2174,7 @@ impl JsRuntime {
         return Err(err);
       }
     };
-    self.exec_script_source_with_host_and_hooks(
-      host,
-      hooks,
-      source,
-    )
+    self.exec_script_source_with_host_and_hooks(host, hooks, source)
   }
 
   /// Parse and execute a classic script, using a custom host hook implementation.
@@ -2345,29 +2341,29 @@ impl JsRuntime {
                 this_root_idx: None,
               };
 
-            evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+              evaluator.instantiate_script(&mut scope, &top.stx.body)?;
 
-            let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
-            return match completion {
-              Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
-              Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
-                value: thrown.value,
-                stack: thrown.stack,
-              }),
-              Completion::Return(_) => Err(VmError::InvariantViolation(
-                "script evaluation produced Return completion (early errors should prevent this)",
-              )),
-              Completion::Break(..) => Err(VmError::InvariantViolation(
-                "script evaluation produced Break completion (early errors should prevent this)",
-              )),
-              Completion::Continue(..) => Err(VmError::InvariantViolation(
-                "script evaluation produced Continue completion (early errors should prevent this)",
-              )),
-            };
-          }
+              let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
+              return match completion {
+                Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+                Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+                  value: thrown.value,
+                  stack: thrown.stack,
+                }),
+                Completion::Return(_) => Err(VmError::InvariantViolation(
+                  "script evaluation produced Return completion (early errors should prevent this)",
+                )),
+                Completion::Break(..) => Err(VmError::InvariantViolation(
+                  "script evaluation produced Break completion (early errors should prevent this)",
+                )),
+                Completion::Continue(..) => Err(VmError::InvariantViolation(
+                  "script evaluation produced Continue completion (early errors should prevent this)",
+                )),
+              };
+            }
 
-          // Async classic script execution: evaluate the statement list using the async evaluator and
-          // return a Promise representing completion.
+            // Async classic script execution: evaluate the statement list using the async evaluator and
+            // return a Promise representing completion.
           let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
             &mut *vm_frame,
             &mut scope,
@@ -6979,7 +6975,6 @@ impl<'a> Evaluator<'a> {
       let ClassOrObjVal::Method(method) = &member.stx.val else {
         continue;
       };
-
       if ctor_method.is_some() {
         return Err(syntax_error(
           member.loc,
@@ -16244,9 +16239,7 @@ fn async_eval_throw_stmt(
   stmt: &Node<ThrowStmt>,
 ) -> Result<AsyncEval<Completion>, VmError> {
   match async_eval_expr(evaluator, scope, &stmt.stx.value) {
-    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(
-      evaluator, scope, stmt, v,
-    ))),
+    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v))),
     Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,

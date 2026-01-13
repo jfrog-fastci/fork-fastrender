@@ -5306,7 +5306,7 @@ mod tests {
   #[test]
   fn incremental_relayout_preserves_svg_id_defs_raw_metadata() -> Result<()> {
     let renderer = renderer_for_tests();
-    let html = r#"
+    let html = r##"
       <svg width="0" height="0" style="position:absolute">
         <symbol id="icon" viewBox="0 0 10 10">
           <rect width="10" height="10" fill="currentColor" />
@@ -5316,7 +5316,7 @@ mod tests {
         <use href="#icon"></use>
       </svg>
       <p id="text">Hello</p>
-    "#;
+    "##;
     let mut doc =
       BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
     doc.render_frame()?;

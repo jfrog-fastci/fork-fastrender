@@ -1360,6 +1360,7 @@ mod tests {
       let outcome = std::panic::catch_unwind(|| decode_message(&payload, &limits));
       assert!(outcome.is_ok(), "decode panicked on payload {payload:?}");
     }
+  }
 
   #[test]
   fn recv_closes_on_decode_error() {
