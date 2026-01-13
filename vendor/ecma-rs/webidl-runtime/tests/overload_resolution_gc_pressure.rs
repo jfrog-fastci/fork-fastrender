@@ -204,3 +204,90 @@ fn overload_resolution_frozen_array_conversion_is_gc_safe_under_extreme_gc_press
     Ok(())
   })
 }
+
+#[test]
+fn overload_resolution_converts_args_left_of_distinguishing_index_under_extreme_gc_pressure(
+) -> Result<(), VmError> {
+  // Trigger a GC cycle before every allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+  let iterable = rt.alloc_object_value()?;
+
+  // Root the input arguments for the duration of setup + resolution.
+  let first_arg = Value::Number(42.5);
+  rt.with_stack_roots(&[first_arg, iterable], |rt| {
+    let items: Rc<Vec<Value>> = Rc::new(vec![
+      Value::Number(1.5),
+      Value::Number(2.5),
+      Value::Number(3.5),
+    ]);
+
+    define_allocating_iterable(rt, iterable, items)?;
+
+    // Overloads:
+    //   f(DOMString, sequence<DOMString>)
+    //   f(DOMString, DOMString)
+    //
+    // The distinguishing argument index is 1, so overload resolution must convert the first
+    // argument (DOMString) and keep it alive across the sequence conversion of the second argument.
+    let overloads = vec![
+      OverloadSig {
+        args: vec![
+          OverloadArg {
+            ty: IdlType::String(StringType::DomString),
+            optionality: Optionality::Required,
+            default: None,
+          },
+          OverloadArg {
+            ty: IdlType::Sequence(Box::new(IdlType::String(StringType::DomString))),
+            optionality: Optionality::Required,
+            default: None,
+          },
+        ],
+        decl_index: 0,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+      OverloadSig {
+        args: vec![
+          OverloadArg {
+            ty: IdlType::String(StringType::DomString),
+            optionality: Optionality::Required,
+            default: None,
+          },
+          OverloadArg {
+            ty: IdlType::String(StringType::DomString),
+            optionality: Optionality::Required,
+            default: None,
+          },
+        ],
+        decl_index: 1,
+        distinguishing_arg_index_by_arg_count: None,
+      },
+    ];
+
+    let out = resolve_overload(rt, &overloads, &[first_arg, iterable])?;
+    assert_eq!(out.overload_index, 0);
+
+    let [ConvertedArgument::Value(WebIdlValue::String(first)), ConvertedArgument::Value(WebIdlValue::Sequence { elem_ty, values })] =
+      out.values.as_slice()
+    else {
+      panic!("unexpected resolved values: {:?}", out.values);
+    };
+
+    assert_eq!(as_utf8_lossy(rt, *first), "42.5");
+    assert_eq!(elem_ty.as_ref(), &IdlType::String(StringType::DomString));
+    let strs = values
+      .iter()
+      .map(|v| match v {
+        WebIdlValue::String(s) => as_utf8_lossy(rt, *s),
+        other => panic!("expected DOMString element, got {other:?}"),
+      })
+      .collect::<Vec<_>>();
+    assert_eq!(
+      strs,
+      vec!["1.5".to_string(), "2.5".to_string(), "3.5".to_string()]
+    );
+
+    Ok(())
+  })
+}
