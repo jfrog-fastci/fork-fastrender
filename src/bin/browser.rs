@@ -4195,6 +4195,72 @@ struct OpenFilePicker {
 }
 
 #[cfg(feature = "browser_ui")]
+fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
+  let Some(accept) = accept.map(str::trim).filter(|s| !s.is_empty()) else {
+    return Vec::new();
+  };
+
+  let mut exts: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+  let mut push_all = |values: &[&str]| {
+    for ext in values {
+      let ext = ext.trim().trim_start_matches('.');
+      if ext.is_empty() {
+        continue;
+      }
+      exts.insert(ext.to_ascii_lowercase());
+    }
+  };
+
+  for raw_token in accept.split(',') {
+    let token = raw_token.trim();
+    if token.is_empty() {
+      continue;
+    }
+
+    let token = token.to_ascii_lowercase();
+    if token == "*/*" {
+      // Explicitly accept anything; no filter.
+      continue;
+    }
+
+    if let Some(ext) = token.strip_prefix('.') {
+      let ext = ext.trim();
+      if ext.is_empty() {
+        continue;
+      }
+      exts.insert(ext.to_string());
+      continue;
+    }
+
+    match token.as_str() {
+      // Wildcard MIME groups.
+      "image/*" => push_all(&["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg"]),
+      "text/*" => push_all(&["txt", "md", "markdown", "csv", "json", "xml", "html", "htm"]),
+      "audio/*" => push_all(&["mp3", "wav", "ogg", "flac", "m4a", "aac"]),
+      "video/*" => push_all(&["mp4", "mov", "webm", "mkv", "avi", "mpeg", "mpg"]),
+
+      // Common specific MIME types.
+      "image/png" => push_all(&["png"]),
+      "image/jpeg" | "image/jpg" => push_all(&["jpg", "jpeg"]),
+      "image/gif" => push_all(&["gif"]),
+      "image/webp" => push_all(&["webp"]),
+      "image/bmp" => push_all(&["bmp"]),
+      "image/svg+xml" => push_all(&["svg"]),
+      "text/plain" => push_all(&["txt"]),
+      "text/markdown" => push_all(&["md", "markdown"]),
+      "text/csv" => push_all(&["csv"]),
+      "text/html" => push_all(&["html", "htm"]),
+      "application/json" => push_all(&["json"]),
+      "application/pdf" => push_all(&["pdf"]),
+      _ => {}
+    }
+  }
+
+  exts.into_iter().collect()
+}
+
+#[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
 struct PendingContextMenuRequest {
   tab_id: fastrender::ui::TabId,
@@ -6614,6 +6680,56 @@ impl App {
     self.close_file_picker();
   }
 
+  fn launch_native_file_picker_dialog(
+    &self,
+    tab_id: fastrender::ui::TabId,
+    input_node_id: usize,
+    multiple: bool,
+    accept: Option<String>,
+  ) {
+    let tx = self.ui_to_worker_tx.clone();
+    let cancel: Option<fastrender::ui::cancel::CancelGens> = self.tab_cancel.get(&tab_id).cloned();
+
+    let spawn_result = std::thread::Builder::new()
+      .name(format!("fastr-file-picker-{}", tab_id.0))
+      .spawn(move || {
+        let extensions = rfd_extensions_from_html_accept(accept.as_deref());
+
+        let dialog = if extensions.is_empty() {
+          rfd::FileDialog::new()
+        } else {
+          let ext_refs: Vec<&str> = extensions.iter().map(|s| s.as_str()).collect();
+          rfd::FileDialog::new().add_filter("Allowed files", &ext_refs)
+        };
+
+        let chosen: Option<Vec<std::path::PathBuf>> = if multiple {
+          dialog.pick_files()
+        } else {
+          dialog.pick_file().map(|path| vec![path])
+        };
+
+        let msg = match chosen {
+          Some(paths) if !paths.is_empty() => fastrender::ui::UiToWorker::FilePickerChoose {
+            tab_id,
+            input_node_id,
+            paths,
+          },
+          _ => fastrender::ui::UiToWorker::FilePickerCancel { tab_id },
+        };
+
+        if let Some(cancel) = cancel {
+          // Mirror `App::send_worker_msg` cancellation semantics for repaint-driving UI events.
+          cancel.bump_paint();
+        }
+        // Best-effort: the UI may have already shut down.
+        let _ = tx.send(msg);
+      });
+
+    if let Err(err) = spawn_result {
+      eprintln!("failed to spawn native file picker dialog thread: {err}");
+    }
+  }
+
   fn flush_pending_scroll_drag(&mut self) {
     let Some(pending) = self.pending_scroll_drag.take() else {
       return;
@@ -7257,40 +7373,23 @@ impl App {
       input_node_id,
       multiple,
       accept,
-      anchor_css,
+      anchor_css: _,
     } = &msg
     {
       if self.browser_state.active_tab_id() == Some(*tab_id) {
-        let mut anchor_points = self
-          .last_cursor_pos_points
-          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
-          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
-        if self.page_input_tab == Some(*tab_id) {
-          if let Some(mapping) = self.page_input_mapping {
-            if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(*anchor_css) {
-              anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
-            }
-          }
-        }
+        let accept = accept
+          .as_deref()
+          .map(|raw| {
+            fastrender::ui::untrusted::sanitize_untrusted_text(
+              raw,
+              fastrender::ui::protocol_limits::MAX_ACCEPT_ATTR_BYTES,
+            )
+          })
+          .filter(|s| !s.is_empty());
 
-        self.open_file_picker = Some(OpenFilePicker {
-          tab_id: *tab_id,
-          input_node_id: *input_node_id,
-          multiple: *multiple,
-          accept: accept
-            .as_deref()
-            .map(|a| {
-              fastrender::ui::untrusted::sanitize_untrusted_text(
-                a,
-                fastrender::ui::protocol_limits::MAX_ACCEPT_ATTR_BYTES,
-              )
-            })
-            .filter(|s| !s.is_empty()),
-          anchor_css: *anchor_css,
-          anchor_points,
-          draft: String::new(),
-        });
-        self.open_file_picker_rect = None;
+        // `rfd` dialogs are blocking; launch them on a helper thread so the egui frame loop stays
+        // responsive.
+        self.launch_native_file_picker_dialog(*tab_id, *input_node_id, *multiple, accept);
         request_redraw = true;
       }
     }
