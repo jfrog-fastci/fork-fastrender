@@ -1,4 +1,9 @@
 use crate::api::{FastRender, LayoutDocumentOptions, PageStacking, RenderOptions};
+use crate::geometry::Point;
+use crate::image_loader::ImageCache;
+use crate::paint::display_list_renderer::PaintParallelism;
+use crate::paint::painter::paint_tree_display_list_with_resources_scaled_offset;
+use crate::scroll::ScrollState;
 use crate::style::media::MediaType;
 use crate::style::types::{BreakBetween, BreakInside};
 use crate::tree::box_tree::ReplacedType;
@@ -7625,4 +7630,152 @@ fn mixed_footnotes_preserve_order_when_one_is_huge() {
     .expect("last page footnote area");
   assert!(find_text(last_footnote_area, "Footnote two line 40").is_some());
   assert!(find_text(last_footnote_area, "Footnote one").is_none());
+}
+
+#[test]
+fn box_decoration_break_clone_vs_slice_across_page_boundary() {
+  const PAGE_WIDTH: u32 = 120;
+  const PAGE_HEIGHT: u32 = 80;
+  const BORDER_PX: u32 = 10;
+
+  let border_rgba = Rgba::new(255, 0, 0, 1.0);
+  let bg_rgba = Rgba::new(0, 255, 0, 1.0);
+  let page_bg_rgba = Rgba::new(255, 255, 255, 1.0);
+
+  let border_px = [255, 0, 0, 255];
+  let bg_px = [0, 255, 0, 255];
+
+  fn render_first_two_pages(
+    box_decoration_break: &str,
+    border_px: u32,
+    border_rgba: Rgba,
+    bg_rgba: Rgba,
+    page_bg: Rgba,
+  ) -> (resvg::tiny_skia::Pixmap, resvg::tiny_skia::Pixmap, FragmentNode, FragmentNode) {
+    let html = format!(
+      r#"
+      <html>
+        <head>
+          <style>
+            @page {{ size: {PAGE_WIDTH}px {PAGE_HEIGHT}px; margin: 0; background: rgb({page_r}, {page_g}, {page_b}); }}
+            html, body {{ margin: 0; padding: 0; background: transparent; }}
+            #box {{
+              height: 140px;
+              margin: 0;
+              border: {border_px}px solid rgb({border_r}, {border_g}, {border_b});
+              background: rgb({bg_r}, {bg_g}, {bg_b});
+              background-clip: border-box;
+              box-decoration-break: {box_decoration_break};
+            }}
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>
+    "#
+    ,
+      page_r = page_bg.r,
+      page_g = page_bg.g,
+      page_b = page_bg.b,
+      border_r = border_rgba.r,
+      border_g = border_rgba.g,
+      border_b = border_rgba.b,
+      bg_r = bg_rgba.r,
+      bg_g = bg_rgba.g,
+      bg_b = bg_rgba.b,
+    );
+
+    let mut renderer = FastRender::new().unwrap();
+    let dom = renderer.parse_html(&html).unwrap();
+    let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+    let tree = renderer
+      .layout_document_for_media_with_options(
+        &dom,
+        PAGE_WIDTH,
+        PAGE_HEIGHT,
+        MediaType::Print,
+        options,
+        None,
+      )
+      .unwrap();
+    let page_roots = pages(&tree);
+    assert!(
+      page_roots.len() >= 2,
+      "expected at least two pages; got {}",
+      page_roots.len()
+    );
+
+    let font_ctx = renderer.font_context().clone();
+    let image_cache = ImageCache::new();
+    let scroll_state = ScrollState::default();
+
+    let render_page = |page: &FragmentNode| -> (resvg::tiny_skia::Pixmap, FragmentNode) {
+      let offset = Point::new(-page.bounds.x(), -page.bounds.y());
+      let translated_page = page.translate(offset);
+      let viewport = translated_page.bounds.size;
+      let page_tree = FragmentTree::with_viewport(translated_page.clone(), viewport);
+      let pixmap = paint_tree_display_list_with_resources_scaled_offset(
+        &page_tree,
+        PAGE_WIDTH,
+        PAGE_HEIGHT,
+        page_bg,
+        font_ctx.clone(),
+        image_cache.clone(),
+        1.0,
+        Point::ZERO,
+        PaintParallelism::disabled(),
+        &scroll_state,
+      )
+      .expect("paint paged media page");
+      (pixmap, translated_page)
+    };
+
+    let (pixmap1, page1) = render_page(page_roots[0]);
+    let (pixmap2, page2) = render_page(page_roots[1]);
+    (pixmap1, pixmap2, page1, page2)
+  }
+
+  for (mode, expect_border_on_page2) in [("clone", true), ("slice", false)] {
+    let (page1_pixmap, page2_pixmap, page1_root, page2_root) = render_first_two_pages(
+      mode,
+      BORDER_PX,
+      border_rgba,
+      bg_rgba,
+      page_bg_rgba,
+    );
+
+    let page1_box = find_fragment_by_background(&page1_root, bg_rgba).expect("box fragment page 1");
+    let page2_box = find_fragment_by_background(&page2_root, bg_rgba).expect("box fragment page 2");
+
+    let mid_x1 = (page1_box.bounds.x() + page1_box.bounds.width() / 2.0).round() as u32;
+    let mid_x2 = (page2_box.bounds.x() + page2_box.bounds.width() / 2.0).round() as u32;
+    let body_y1 = (page1_box.bounds.y() + BORDER_PX as f32 + 10.0).round() as u32;
+    let body_y2 = (page2_box.bounds.y() + BORDER_PX as f32 + 10.0).round() as u32;
+    let border_y2 = (page2_box.bounds.y() + (BORDER_PX as f32 / 2.0)).round() as u32;
+
+    assert_eq!(
+      pixel(&page1_pixmap, mid_x1, body_y1),
+      bg_px,
+      "expected box background to paint on page 1 for {mode}"
+    );
+    assert_eq!(
+      pixel(&page2_pixmap, mid_x2, body_y2),
+      bg_px,
+      "expected box background to paint on page 2 for {mode}"
+    );
+
+    let page2_border_sample = pixel(&page2_pixmap, mid_x2, border_y2);
+    if expect_border_on_page2 {
+      assert_eq!(
+        page2_border_sample, border_px,
+        "expected cloned top border to paint on page 2 for {mode}"
+      );
+    } else {
+      assert_eq!(
+        page2_border_sample, bg_px,
+        "expected sliced fragment edge to not paint a border on page 2 for {mode}"
+      );
+    }
+  }
 }
