@@ -6797,6 +6797,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   fastrender::ui::WorkerToUi::NavigationCommitted { .. }
                     | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
                     | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
+                    | fastrender::ui::WorkerToUi::DownloadStarted { .. }
+                    | fastrender::ui::WorkerToUi::DownloadFinished { .. }
                 );
               }
 
@@ -7225,6 +7227,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             pinned: false,
             group: None,
           }],
+          downloads: Vec::new(),
           tab_groups: Vec::new(),
           active_tab_index: 0,
           bookmarks_bar_visible: inherit_bookmarks_bar_visible.unwrap_or(false),
@@ -12203,6 +12206,7 @@ impl App {
 
     let fastrender::ui::BrowserSessionWindow {
       tabs,
+      downloads,
       tab_groups,
       active_tab_index,
       bookmarks_bar_visible,
@@ -12304,6 +12308,34 @@ impl App {
     let _ = self.send_worker_msg(UiToWorker::SetActiveTab {
       tab_id: active_tab_id,
     });
+
+    // Restore persisted download history for the window. Download ids are process-unique, so we
+    // allocate fresh ids for restored entries.
+    for download in downloads {
+      let status = match download.status {
+        fastrender::ui::session::BrowserSessionDownloadStatus::Completed => {
+          fastrender::ui::DownloadStatus::Completed
+        }
+        fastrender::ui::session::BrowserSessionDownloadStatus::Cancelled => {
+          fastrender::ui::DownloadStatus::Cancelled
+        }
+        fastrender::ui::session::BrowserSessionDownloadStatus::Failed => fastrender::ui::DownloadStatus::Failed {
+          error: download.error.unwrap_or_default(),
+        },
+        fastrender::ui::session::BrowserSessionDownloadStatus::InProgress
+        | fastrender::ui::session::BrowserSessionDownloadStatus::Unknown => {
+          fastrender::ui::DownloadStatus::Cancelled
+        }
+      };
+      self.browser_state.downloads.downloads.push(fastrender::ui::DownloadEntry {
+        download_id: fastrender::ui::DownloadId::new(),
+        tab_id: active_tab_id,
+        url: download.url,
+        file_name: download.file_name,
+        path: download.path,
+        status,
+      });
+    }
 
     self.sync_window_title();
 
@@ -22452,6 +22484,7 @@ impl App {
               pinned,
               group,
             }],
+            downloads: Vec::new(),
             tab_groups,
             active_tab_index: 0,
             bookmarks_bar_visible: self.browser_state.chrome.bookmarks_bar_visible,

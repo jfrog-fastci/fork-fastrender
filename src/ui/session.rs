@@ -5,7 +5,7 @@
 use crate::ui::about_pages;
 use crate::ui::appearance;
 use crate::ui::appearance::AppearanceSettings;
-use crate::ui::browser_app::{BrowserAppState, TabGroupColor, TabGroupId};
+use crate::ui::browser_app::{BrowserAppState, DownloadStatus, TabGroupColor, TabGroupId};
 use crate::ui::protocol_limits;
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
@@ -34,6 +34,7 @@ const MAX_WINDOW_POS_ABS_PX: i64 = 1_000_000;
 const FALLBACK_WINDOW_WIDTH_PX: i64 = 1_024;
 const FALLBACK_WINDOW_HEIGHT_PX: i64 = 768;
 const MAX_SCROLL_CSS: f32 = 1e9;
+const MAX_PERSISTED_DOWNLOADS: usize = 200;
 
 // -----------------------------------------------------------------------------
 // Session sanitization safety limits
@@ -154,6 +155,90 @@ impl BrowserSessionTabGroup {
   }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserSessionDownload {
+  #[serde(default)]
+  pub url: String,
+  #[serde(default)]
+  pub file_name: String,
+  #[serde(default)]
+  pub path: PathBuf,
+  #[serde(default)]
+  pub status: BrowserSessionDownloadStatus,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserSessionDownloadStatus {
+  Completed,
+  Failed,
+  Cancelled,
+  InProgress,
+  #[serde(other)]
+  Unknown,
+}
+
+impl BrowserSessionDownloadStatus {
+  fn sanitized(self) -> Self {
+    match self {
+      Self::InProgress | Self::Unknown => Self::Cancelled,
+      other => other,
+    }
+  }
+}
+
+impl Default for BrowserSessionDownloadStatus {
+  fn default() -> Self {
+    Self::Cancelled
+  }
+}
+
+impl BrowserSessionDownload {
+  fn from_app_state(entry: &crate::ui::DownloadEntry) -> Self {
+    let (status, error) = match &entry.status {
+      DownloadStatus::Completed => (BrowserSessionDownloadStatus::Completed, None),
+      DownloadStatus::Cancelled => (BrowserSessionDownloadStatus::Cancelled, None),
+      DownloadStatus::InProgress { .. } => (BrowserSessionDownloadStatus::InProgress, None),
+      DownloadStatus::Failed { error } => (BrowserSessionDownloadStatus::Failed, Some(error.clone())),
+    };
+
+    Self {
+      url: entry.url.clone(),
+      file_name: entry.file_name.clone(),
+      path: entry.path.clone(),
+      status,
+      error,
+    }
+    .sanitized()
+  }
+
+  fn sanitized(mut self) -> Self {
+    self.url = self.url.trim().to_string();
+
+    let file_name = self.file_name.trim();
+    if file_name.is_empty() {
+      self.file_name = self
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "download".to_string());
+    } else {
+      self.file_name = file_name.to_string();
+    }
+
+    self.status = self.status.sanitized();
+    if self.status != BrowserSessionDownloadStatus::Failed {
+      self.error = None;
+    } else if let Some(err) = self.error.as_mut() {
+      *err = err.trim().to_string();
+    }
+    self
+  }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserWindowState {
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,6 +281,8 @@ impl BrowserWindowState {
 pub struct BrowserSessionWindow {
   #[serde(default)]
   pub tabs: Vec<BrowserSessionTab>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub downloads: Vec<BrowserSessionDownload>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub tab_groups: Vec<BrowserSessionTabGroup>,
   #[serde(default)]
@@ -273,8 +360,20 @@ impl BrowserSessionWindow {
       .and_then(|id| app.tabs.iter().position(|t| t.id == id))
       .unwrap_or(0);
 
+    let mut downloads = app
+      .downloads
+      .downloads
+      .iter()
+      .map(BrowserSessionDownload::from_app_state)
+      .collect::<Vec<_>>();
+    if downloads.len() > MAX_PERSISTED_DOWNLOADS {
+      let overflow = downloads.len() - MAX_PERSISTED_DOWNLOADS;
+      downloads.drain(0..overflow);
+    }
+
     Self {
       tabs,
+      downloads,
       tab_groups,
       active_tab_index,
       bookmarks_bar_visible: app.chrome.bookmarks_bar_visible,
@@ -304,6 +403,18 @@ impl BrowserSessionWindow {
 
     for tab in &mut self.tabs {
       sanitize_tab(tab);
+    }
+
+    // Downloads history:
+    // - Ensure all entries have a final status (no InProgress carry-over).
+    // - Cap the number of entries so session files remain bounded in size.
+    self.downloads = std::mem::take(&mut self.downloads)
+      .into_iter()
+      .map(|d| d.sanitized())
+      .collect();
+    if self.downloads.len() > MAX_PERSISTED_DOWNLOADS {
+      let overflow = self.downloads.len() - MAX_PERSISTED_DOWNLOADS;
+      self.downloads.drain(0..overflow);
     }
 
     // Sanitize tab group state/membership:
@@ -429,6 +540,7 @@ impl BrowserSession {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
@@ -498,6 +610,7 @@ impl BrowserSession {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
@@ -670,6 +783,7 @@ mod tests {
             group: None,
           },
         ],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
@@ -807,6 +921,7 @@ mod tests {
             group: None,
           },
         ],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
@@ -867,6 +982,7 @@ mod tests {
           group: Some(0),
         },
       ],
+      downloads: Vec::new(),
       tab_groups: vec![
         BrowserSessionTabGroup {
           title: "unused".to_string(),
@@ -922,6 +1038,7 @@ mod tests {
           group: Some(0),
         },
       ],
+      downloads: Vec::new(),
       tab_groups: vec![BrowserSessionTabGroup {
         title: "g".to_string(),
         color: TabGroupColor::Blue,
@@ -1062,6 +1179,7 @@ mod tests {
             group: Some(1),
           },
         ],
+        downloads: Vec::new(),
         tab_groups: vec![
           BrowserSessionTabGroup {
             title: "Work".to_string(),
@@ -1090,6 +1208,128 @@ mod tests {
     let json = serde_json::to_string(&session).expect("serialize session");
     let parsed = parse_session_json(&json).expect("parse session JSON");
     assert_eq!(parsed, session);
+  }
+
+  #[test]
+  fn session_roundtrips_downloads() {
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: None,
+        }],
+        downloads: vec![
+          BrowserSessionDownload {
+            url: "https://example.com/a.txt".to_string(),
+            file_name: "a.txt".to_string(),
+            path: PathBuf::from("/tmp/a.txt"),
+            status: BrowserSessionDownloadStatus::Completed,
+            error: None,
+          },
+          BrowserSessionDownload {
+            url: "https://example.com/b.txt".to_string(),
+            file_name: "b.txt".to_string(),
+            path: PathBuf::from("/tmp/b.txt"),
+            status: BrowserSessionDownloadStatus::Cancelled,
+            error: None,
+          },
+          BrowserSessionDownload {
+            url: "https://example.com/c.txt".to_string(),
+            file_name: "c.txt".to_string(),
+            path: PathBuf::from("/tmp/c.txt"),
+            status: BrowserSessionDownloadStatus::Failed,
+            error: Some("network error".to_string()),
+          },
+        ],
+        tab_groups: Vec::new(),
+        active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
+        window_state: None,
+      }],
+      active_window_index: 0,
+      appearance: AppearanceSettings::default(),
+      did_exit_cleanly: true,
+      ui_scale: None,
+    }
+    .sanitized();
+
+    let json = serde_json::to_string(&session).expect("serialize session");
+    let parsed = parse_session_json(&json).expect("parse session JSON");
+    assert_eq!(parsed, session);
+  }
+
+  #[test]
+  fn session_sanitizes_in_progress_downloads_as_cancelled() {
+    let window = BrowserSessionWindow {
+      tabs: vec![BrowserSessionTab {
+        url: "about:newtab".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      }],
+      downloads: vec![BrowserSessionDownload {
+        url: "https://example.com/a.bin".to_string(),
+        file_name: "a.bin".to_string(),
+        path: PathBuf::from("/tmp/a.bin"),
+        status: BrowserSessionDownloadStatus::InProgress,
+        error: None,
+      }],
+      tab_groups: Vec::new(),
+      active_tab_index: 0,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.downloads.len(), 1);
+    assert_eq!(window.downloads[0].status, BrowserSessionDownloadStatus::Cancelled);
+  }
+
+  #[test]
+  fn session_caps_persisted_downloads_and_eviction_is_fifo() {
+    let mut downloads = Vec::new();
+    for idx in 0..(MAX_PERSISTED_DOWNLOADS + 2) {
+      downloads.push(BrowserSessionDownload {
+        url: format!("https://example.com/{idx}"),
+        file_name: format!("{idx}.bin"),
+        path: PathBuf::from(format!("/tmp/{idx}.bin")),
+        status: BrowserSessionDownloadStatus::Completed,
+        error: None,
+      });
+    }
+
+    let window = BrowserSessionWindow {
+      tabs: vec![BrowserSessionTab {
+        url: "about:newtab".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      }],
+      downloads,
+      tab_groups: Vec::new(),
+      active_tab_index: 0,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.downloads.len(), MAX_PERSISTED_DOWNLOADS);
+    assert_eq!(
+      window.downloads[0].file_name,
+      "2.bin",
+      "expected oldest downloads to be evicted first"
+    );
+    assert_eq!(
+      window.downloads[MAX_PERSISTED_DOWNLOADS - 1].file_name,
+      format!("{}.bin", MAX_PERSISTED_DOWNLOADS + 1)
+    );
   }
 
   #[test]
@@ -1180,6 +1420,7 @@ mod tests {
       windows: vec![
         BrowserSessionWindow {
           tabs: vec![],
+          downloads: Vec::new(),
           tab_groups: Vec::new(),
           active_tab_index: 123,
           bookmarks_bar_visible: false,
@@ -1194,6 +1435,7 @@ mod tests {
             pinned: false,
             group: None,
           }],
+          downloads: Vec::new(),
           tab_groups: Vec::new(),
           active_tab_index: 999,
           bookmarks_bar_visible: false,
@@ -1440,6 +1682,7 @@ mod tests {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
@@ -1569,6 +1812,7 @@ mod tests {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
@@ -1601,6 +1845,7 @@ mod tests {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
@@ -1633,6 +1878,7 @@ mod tests {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
@@ -1956,6 +2202,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
     home_url: default_home_url(),
     windows: vec![BrowserSessionWindow {
       tabs: v1.tabs,
+      downloads: Vec::new(),
       tab_groups: Vec::new(),
       active_tab_index: v1.active_tab_index,
       bookmarks_bar_visible: false,
