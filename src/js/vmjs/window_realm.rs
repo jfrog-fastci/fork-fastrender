@@ -2608,6 +2608,7 @@ const NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
 const HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
 const HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_options_collection_prototype";
 const HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
+const NODE_LIST_ROOT_KEY: &str = "__fastrender_node_list_root";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_REMOVE_ATTRIBUTE_KEY: &str = "__fastrender_element_remove_attribute";
@@ -26164,19 +26165,37 @@ fn node_child_nodes_get_native(
   let dom = unsafe { dom_ptr.as_ref() };
 
   let child_nodes_key = alloc_key(scope, NODE_CHILD_NODES_KEY)?;
-  let array = match scope
+  let list_obj = match scope
     .heap()
     .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
   {
     Some(Value::Object(obj)) => obj,
     _ => {
-      let array = scope.alloc_array(0)?;
-      scope.push_root(Value::Object(array))?;
-      if let Some(intrinsics) = vm.intrinsics() {
-        scope
-          .heap_mut()
-          .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
-      }
+      let list_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(list_obj))?;
+
+      // Use the realm's NodeList prototype so `instanceof NodeList` works and `Array.isArray`
+      // remains false. The prototype is stored on the owning document wrapper so we don't need to
+      // walk the global object.
+      let proto = node_list_prototype_from_document(scope, handle.document_obj)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(list_obj, Some(proto))?;
+
+      // Keep the root wrapper alive even if the caller only holds the NodeList object.
+      let root_key = alloc_key(scope, NODE_LIST_ROOT_KEY)?;
+      scope.define_property(
+        list_obj,
+        root_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(wrapper_obj),
+            writable: false,
+          },
+        },
+      )?;
       scope.define_property(
         wrapper_obj,
         child_nodes_key,
@@ -26184,17 +26203,17 @@ fn node_child_nodes_get_native(
           enumerable: false,
           configurable: false,
           kind: PropertyKind::Data {
-            value: Value::Object(array),
+            value: Value::Object(list_obj),
             writable: false,
           },
         },
       )?;
-      array
+      list_obj
     }
   };
 
-  sync_child_nodes_array(vm, scope, handle.document_obj, dom, handle.node_id, array)?;
-  Ok(Value::Object(array))
+  sync_child_nodes_array(vm, scope, handle.document_obj, dom, handle.node_id, list_obj)?;
+  Ok(Value::Object(list_obj))
 }
 
 fn html_collection_item_native(
