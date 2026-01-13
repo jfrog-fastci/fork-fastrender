@@ -45,13 +45,14 @@ fn block_intrinsic_parallel_respects_deadline() {
   // sizing path spawns parallel work items (segments). Each inline run contains enough children to
   // trigger `check_active_periodic` inside the inline intrinsic sizing hot loop.
   let mut children = Vec::new();
-  let runs = 4usize;
-  let per_run = 64usize;
+  // Keep this test reasonably small: we only need enough inline children per run to trigger at
+  // least one `check_active_periodic(..., 32, ...)` inside inline intrinsic sizing so the cancel
+  // callback fires on a Rayon worker thread.
+  let runs = 2usize;
+  let per_run = 32usize;
   for run_idx in 0..runs {
     for i in 0..per_run {
-      children.push(span(&format!(
-        "run-{run_idx}-{i} lorem ipsum dolor sit amet"
-      )));
+      children.push(span(&format!("run-{run_idx}-{i} x")));
     }
     if run_idx + 1 < runs {
       children.push(separator());

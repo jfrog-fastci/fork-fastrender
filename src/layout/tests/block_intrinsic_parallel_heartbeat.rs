@@ -63,12 +63,15 @@ fn block_intrinsic_parallel_propagates_stage_heartbeat() {
   // Multiple inline runs separated by block children so the block intrinsic sizing logic produces
   // multiple segments, which can be processed in parallel by Rayon.
   let mut children = Vec::new();
-  let runs = 4usize;
-  let per_run = 64usize;
+  // Keep this test reasonably small: we only need enough inline children per run to trigger at
+  // least one `check_active_periodic(..., 32, ...)` inside inline intrinsic sizing so the cancel
+  // callback runs on Rayon worker threads.
+  let runs = 2usize;
+  let per_run = 32usize;
   for run_idx in 0..runs {
     for i in 0..per_run {
       children.push(span(&format!(
-        "run-{run_idx}-{i} supercalifragilisticexpialidocious lorem ipsum"
+        "run-{run_idx}-{i} supercalifragilisticexpialidocious"
       )));
     }
     if run_idx + 1 < runs {
