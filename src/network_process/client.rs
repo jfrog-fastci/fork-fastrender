@@ -376,6 +376,48 @@ fn map_tungstenite_err(err: TungsteniteError) -> Error {
   }
 }
 
+fn validate_ws_subprotocol_handshake_response(
+  requested_protocols: &[String],
+  response_headers: &http::HeaderMap,
+) -> Result<String> {
+  let mut values = response_headers.get_all("Sec-WebSocket-Protocol").iter();
+  let Some(value) = values.next() else {
+    // No protocol selected.
+    return Ok(String::new());
+  };
+
+  // Multiple protocol headers are invalid for WebSocket subprotocol negotiation.
+  if values.next().is_some() {
+    return Err(Error::Other("invalid websocket subprotocol".to_string()));
+  }
+
+  let value = value
+    .to_str()
+    .map_err(|_| Error::Other("invalid websocket subprotocol".to_string()))?;
+  if value.is_empty() {
+    return Err(Error::Other("invalid websocket subprotocol".to_string()));
+  }
+
+  // The server's Sec-WebSocket-Protocol must be a single token (no commas/whitespace).
+  if value
+    .bytes()
+    .any(|b| b == b',' || b.is_ascii_whitespace())
+  {
+    return Err(Error::Other("invalid websocket subprotocol".to_string()));
+  }
+
+  if requested_protocols.is_empty() {
+    // If no subprotocols were requested, the server must not select one.
+    return Err(Error::Other("invalid websocket subprotocol".to_string()));
+  }
+
+  if !requested_protocols.iter().any(|p| p == value) {
+    return Err(Error::Other("invalid websocket subprotocol".to_string()));
+  }
+
+  Ok(value.to_string())
+}
+
 impl WebSocketBackend for DirectWebSocketBackend {
   fn connect(&self, url: &str, protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
     let mut req = url
@@ -390,12 +432,7 @@ impl WebSocketBackend for DirectWebSocketBackend {
     }
 
     let (socket, response) = tungstenite::connect(req).map_err(map_tungstenite_err)?;
-    let protocol = response
-      .headers()
-      .get("sec-websocket-protocol")
-      .and_then(|h| h.to_str().ok())
-      .unwrap_or("")
-      .to_string();
+    let protocol = validate_ws_subprotocol_handshake_response(protocols, response.headers())?;
 
     Ok(Box::new(DirectWebSocketStream { socket, protocol }))
   }
@@ -466,6 +503,8 @@ impl WebSocketStream for DirectWebSocketStream {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::testing::{net_test_lock, try_bind_localhost};
+  use std::time::Instant;
 
   #[test]
   fn normalize_close_code_rejects_reserved_codes() {
@@ -480,6 +519,154 @@ mod tests {
     assert_eq!(normalize_close_code_for_frame(0), 1000);
     assert_eq!(normalize_close_code_for_frame(2000), 1000);
     assert_eq!(normalize_close_code_for_frame(5000), 1000);
+  }
+
+  #[test]
+  fn websocket_rejects_unrequested_protocol_selected_by_server() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("network_process_websocket_rejects_unrequested_protocol_selected_by_server")
+    else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+            // Deliberately violate RFC6455 by returning a comma-separated protocol list even though
+            // the client requested a single protocol.
+            let _ws = tungstenite::accept_hdr(stream, |_req, mut resp| {
+              resp
+                .headers_mut()
+                .insert("Sec-WebSocket-Protocol", "chat, superchat".parse().unwrap());
+              Ok(resp)
+            })
+            .expect("accept websocket");
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let backend = DirectWebSocketBackend;
+    let url = format!("ws://{addr}/");
+    let res = backend.connect(&url, &[String::from("chat")]);
+    assert!(res.is_err(), "expected invalid subprotocol negotiation to fail");
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_protocol_is_set_from_server_handshake_response() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("network_process_websocket_protocol_is_set_from_server_handshake_response")
+    else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+            let mut ws = tungstenite::accept_hdr(stream, |_req, mut resp| {
+              resp
+                .headers_mut()
+                .insert("Sec-WebSocket-Protocol", "superchat".parse().unwrap());
+              Ok(resp)
+            })
+            .expect("accept websocket");
+            let _ = ws.close(None);
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let backend = DirectWebSocketBackend;
+    let url = format!("ws://{addr}/");
+    let mut ws = backend.connect(&url, &[String::from("chat"), String::from("superchat")])?;
+    assert_eq!(ws.protocol(), "superchat");
+    let _ = ws.close(Some(1000), None);
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_rejects_protocol_when_none_were_requested() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("network_process_websocket_rejects_protocol_when_none_were_requested")
+    else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+            let _ws = tungstenite::accept_hdr(stream, |_req, mut resp| {
+              resp
+                .headers_mut()
+                .insert("Sec-WebSocket-Protocol", "chat".parse().unwrap());
+              Ok(resp)
+            })
+            .expect("accept websocket");
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let backend = DirectWebSocketBackend;
+    let url = format!("ws://{addr}/");
+    let res = backend.connect(&url, &[]);
+    assert!(res.is_err(), "expected unrequested protocol selection to fail");
+
+    server.join().expect("server thread panicked");
+    Ok(())
   }
 }
 
