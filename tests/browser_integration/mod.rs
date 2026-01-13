@@ -167,6 +167,7 @@ mod ui_worker_drag_drop_cursor;
 mod ui_worker_hover_cursor_none;
 mod ui_worker_hover_text_cursor;
 mod ui_worker_js_viewport_sync;
+mod ui_worker_js_scroll_sync;
 mod ui_worker_interaction;
 mod ui_worker_js_form_control_state;
 mod ui_details_toggle;
