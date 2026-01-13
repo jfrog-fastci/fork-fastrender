@@ -761,7 +761,20 @@ fn string_prototype_last_index_of_is_generic_and_coerces_position() {
 fn string_prototype_to_locale_lower_case_and_to_locale_upper_case_work() {
   let mut rt = new_runtime();
   let value = rt
-    .exec_script(r#""AbÇ".toLocaleLowerCase() === "abç" && "abç".toLocaleUpperCase() === "ABÇ""#)
+    .exec_script(
+      r#"
+        var threwLower = false;
+        try { String.prototype.toLocaleLowerCase.call(null); } catch (e) { threwLower = e && e.name === "TypeError"; }
+        var threwUpper = false;
+        try { String.prototype.toLocaleUpperCase.call(undefined); } catch (e) { threwUpper = e && e.name === "TypeError"; }
+        "AbÇ".toLocaleLowerCase() === "abç"
+          && "abç".toLocaleUpperCase() === "ABÇ"
+          && String.prototype.toLocaleLowerCase.call(123) === "123"
+          && String.prototype.toLocaleUpperCase.call(123) === "123"
+          && threwLower
+          && threwUpper
+      "#,
+    )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
@@ -771,8 +784,15 @@ fn string_prototype_locale_compare_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
-      r#""a".localeCompare("b") < 0 && "b".localeCompare("a") > 0 && "a".localeCompare("a") === 0 &&
-         String.prototype.localeCompare.call({toString:function(){return "a";}}, {toString:function(){return "b";}}) < 0"#,
+      r#"
+        var threwNull = false;
+        try { String.prototype.localeCompare.call(null, "a"); } catch (e) { threwNull = e && e.name === "TypeError"; }
+        var threwUndef = false;
+        try { String.prototype.localeCompare.call(undefined, "a"); } catch (e) { threwUndef = e && e.name === "TypeError"; }
+        "a".localeCompare("b") < 0 && "b".localeCompare("a") > 0 && "a".localeCompare("a") === 0 &&
+          String.prototype.localeCompare.call({toString:function(){return "a";}}, {toString:function(){return "b";}}) < 0 &&
+          threwNull && threwUndef
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
