@@ -2189,6 +2189,58 @@ fn column_width_without_count_generates_auto_columns() {
 }
 
 #[test]
+fn multicol_column_gap_normal_is_1em() {
+  let html = r#"<!doctype html>
+    <style>html,body{margin:0;font-size:16px;}</style>
+    <div id=multi style="width:300px; column-width:100px; column-gap: normal;">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
+
+  assert!(
+    info.column_count > 1,
+    "expected multi-column layout (got {})",
+    info.column_count
+  );
+  assert!(
+    (info.column_gap - 16.0).abs() < 0.1,
+    "expected 1em column gap for column-gap: normal (got {})",
+    info.column_gap
+  );
+}
+
+#[test]
+fn multicol_gap_shorthand_normal_is_1em() {
+  let html = r#"<!doctype html>
+    <style>html,body{margin:0;font-size:16px;}</style>
+    <div id=multi style="width:300px; column-width:100px; gap: normal;">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
+
+  assert!(
+    info.column_count > 1,
+    "expected multi-column layout (got {})",
+    info.column_count
+  );
+  assert!(
+    (info.column_gap - 16.0).abs() < 0.1,
+    "expected 1em column gap for gap: normal (got {})",
+    info.column_gap
+  );
+}
+
+#[test]
 fn columns_shorthand_single_length_sets_column_width() {
   let html = r#"<!doctype html>
     <style>
