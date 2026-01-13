@@ -16094,9 +16094,21 @@ mod tests {
     let parallel_factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
       .with_parallelism(parallelism);
     let parallel_bfc = BlockFormattingContext::with_factory(parallel_factory);
-    let (parallel_min, parallel_max) = parallel_bfc
-      .compute_intrinsic_inline_sizes(&root)
-      .expect("parallel intrinsic sizing");
+
+    // Run inside a dedicated 2-thread pool when possible so we exercise true parallel execution
+    // even if the global pool was initialized with a single thread (e.g. CPU budget = 1).
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().ok();
+    let (parallel_min, parallel_max) = if let Some(pool) = pool {
+      pool.install(|| {
+        parallel_bfc
+          .compute_intrinsic_inline_sizes(&root)
+          .expect("parallel intrinsic sizing")
+      })
+    } else {
+      parallel_bfc
+        .compute_intrinsic_inline_sizes(&root)
+        .expect("parallel intrinsic sizing")
+    };
 
     const EPS: f32 = 1e-3;
     assert!(
