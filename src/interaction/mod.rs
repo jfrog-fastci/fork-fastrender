@@ -1,5 +1,6 @@
 pub mod anchor_scroll;
 pub mod autofocus;
+pub mod autofocus_dom2;
 pub mod document_selection;
 pub mod dom_index;
 pub mod dom_mutation;
