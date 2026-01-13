@@ -133,16 +133,36 @@ generated headers.
 
 ## Vendored Unicode input files (and other pinned sources)
 
-### Property names/aliases (spec tables)
+### UCD snapshot (Unicode v17.0.0)
 
-For property *names* and *aliases*, the source of truth is the ECMA-262 tables:
+`vm-js` vendors a minimal Unicode Character Database (UCD) snapshot under:
 
-* “Binary Unicode properties” (53 names + aliases)
-* “Binary Unicode properties of strings”
-* “Non-binary Unicode properties”
+* `tools/unicode/ucd-17.0.0/`
 
-These tables are guaranteed to match the spellings in the Unicode Character Database
-(`PropertyAliases.txt` / `PropertyValueAliases.txt`) and are stable.
+Files currently used for RegExp Unicode property escapes:
+
+* `PropertyAliases.txt` (property name + alias spellings)
+* `PropertyValueAliases.txt` (property value + alias spellings; used for `gc/sc/scx` values)
+* `DerivedBinaryProperties.txt` (binary code point property sets)
+* `DerivedGeneralCategory.txt` (General_Category sets)
+* `Scripts.txt` (Script sets)
+* `ScriptExtensions.txt` (Script_Extensions sets)
+* `emoji-data.txt` (UCD emoji code point properties like `Emoji`, `Extended_Pictographic`, etc.)
+* `CaseFolding.txt` (simple/common foldings; used by `Canonicalize`/`scf`)
+
+Interoperability policy: while the UCD contains many properties/aliases, RegExp property escapes
+must expose **only** the properties mandated by ECMA-262:
+
+* Non-binary properties: `gc` / `sc` / `scx`
+* Binary code point properties: the 53 properties in ECMA-262 “Binary Unicode properties”
+* Binary properties of strings: the 7 emoji properties in ECMA-262 “Binary Unicode properties of strings”
+
+The code point table generator enforces this by hard-coding the spec-required binary property list
+and erroring if required properties are missing.
+
+Note: `tools/unicode/emoji-data.txt` at the repo root is a separate input used by the **renderer**
+emoji fallback code (currently Unicode 15.1.0). RegExp property escapes use the **Unicode 17.0.0**
+copy under `tools/unicode/ucd-17.0.0/emoji-data.txt`.
 
 ### `v`-mode properties of strings (emoji sequences)
 
@@ -179,34 +199,38 @@ case folding and any other consumers of `scf`.
 
 ### Code point properties (UCD)
 
-For `gc/sc/scx` and binary code point properties, the upstream source is the Unicode Character
-Database. When updating the engine’s code-point property data, expect to consult:
+Code point property membership (`gc/sc/scx` and binary code point properties) is generated from the
+vendored UCD snapshot into a compact range-table module:
 
-* `PropertyAliases.txt` / `PropertyValueAliases.txt`
-* `DerivedGeneralCategory.txt`
-* `Scripts.txt` / `ScriptExtensions.txt`
-* `DerivedBinaryProperties.txt`
+* Generated output: `vendor/ecma-rs/vm-js/src/regexp_unicode_tables.rs` (`@generated`)
+* Generator: `vendor/ecma-rs/vm-js/src/bin/generate_regexp_unicode_tables.rs`
 
-`vm-js` vendors a pinned Unicode snapshot under `tools/unicode/ucd-17.0.0/` so the RegExp property
-tables can be regenerated offline and kept aligned with test262’s Unicode version.
+## Regenerating the generated tables
 
-Generated output (Rust):
+### RegExp code point property tables (`\p` / `\P`, `gc/sc/scx`)
 
-* `vendor/ecma-rs/vm-js/src/regexp_unicode_tables.rs` (`@generated`)
+The main code point property tables are generated from `tools/unicode/ucd-17.0.0/*` into:
 
-Regeneration:
+* `vendor/ecma-rs/vm-js/src/regexp_unicode_tables.rs`
+
+Regenerate (writes the file):
 
 ```bash
-# From the repo root (agent-safe):
-
-# Regenerate (writes vendor/ecma-rs/vm-js/src/regexp_unicode_tables.rs):
 timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p vm-js --bin generate_regexp_unicode_tables
+```
 
-# Check-only mode:
+Check-only mode (does not modify files):
+
+```bash
 timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p vm-js --bin generate_regexp_unicode_tables -- --check
 ```
 
-## Regenerating the generated tables
+This generator is responsible for:
+
+* The **exact** supported binary property names/aliases (driven by `PropertyAliases.txt` but
+  filtered to the ECMA-262-required set)
+* `gc/sc/scx` value alias resolution (`PropertyValueAliases.txt`)
+* The code point membership range tables (including surrogate code points where applicable)
 
 ### RegExp `v` flag properties of strings table
 
@@ -255,18 +279,27 @@ RegExp case folding is derived from the pinned `CaseFolding.txt` snapshot:
 
 If you’re updating RegExp Unicode property escape support, these are the main entry points:
 
-* `vendor/ecma-rs/vm-js/src/regexp_unicode_resolver.rs` — resolves the raw
-  `UnicodePropertyValueExpression` string with **strict matching** rules into an internal query.
+* `vendor/ecma-rs/vm-js/src/regexp_unicode_tables.rs` — generated code point property tables:
+  property-name/alias resolution, `gc/sc/scx` value resolution, and `contains_code_point(...)`
+  membership checks.
+* `vendor/ecma-rs/vm-js/src/bin/generate_regexp_unicode_tables.rs` — generator that reads
+  `tools/unicode/ucd-17.0.0/*` and rewrites `src/regexp_unicode_tables.rs` (supports `--check`).
 * `vendor/ecma-rs/vm-js/src/regexp_unicode_property_strings.rs` — generated trie + exact-name
   lookup for `v`-mode properties of strings (Emoji); generated from test262 `strings/*.js`.
 * `xtask/src/generate_regexp_unicode_property_strings.rs` — generator (parses test262 input files,
   validates the `RGI_Emoji` union, supports `--check`).
+* `vendor/ecma-rs/vm-js/src/regexp_unicode_resolver.rs` — older/unit-test-focused implementation
+  of `UnicodePropertyValueExpression` parsing (name/value vs lone). When changing the main
+  implementation, consider updating/removing this to avoid drift.
 * Case folding:
   * `vendor/ecma-rs/vm-js/src/regexp.rs` — `canonicalize` implementation for `u`/`v` ignoreCase.
   * `vendor/ecma-rs/vm-js/src/unicode_case_folding.rs` — `scf` table used for `v`-mode
     `MaybeSimpleCaseFolding`.
   * `vendor/ecma-rs/vm-js/src/regexp_case_folding.rs` + `vendor/ecma-rs/vm-js/build.rs` — build-time
     generation of the compact RegExp folding table from `vm-js/unicode/CaseFolding.txt`.
+* (Exploration) `vendor/ecma-rs/vm-js/src/regexp_unicode_icu.rs` and
+  `vendor/ecma-rs/vm-js/docs/regexp_unicode_properties_icu4x.md` — ICU4X feasibility spike (not
+  wired into the engine).
 
 ## Surrogates: property sets include them (tests rely on this)
 
