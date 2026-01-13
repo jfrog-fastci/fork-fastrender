@@ -14,7 +14,8 @@ use crate::js::{ExternalTaskQueueHandle, TaskSource};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
 use crate::js::window_realm::{
-  is_secure_context_for_document_url, WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG,
+  is_secure_context_for_document_url, make_dom_exception, WindowRealmHost, WindowRealmUserData,
+  EVENT_TARGET_HOST_TAG,
 };
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
@@ -1582,7 +1583,6 @@ fn is_valid_websocket_close_code(code: u16) -> bool {
   // them on the wire.
   code == 1000 || (3000..=4999).contains(&code)
 }
-
 fn websocket_close<Host: WindowRealmHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1605,16 +1605,33 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
     // Treat NaN/±Infinity/negative/out-of-range as invalid so we don't send reserved/illegal close
     // codes due to wrapping.
     let n = scope.to_number(vm, host, hooks, code_value)?;
+    // WHATWG WebSocket: invalid `code` must throw `InvalidAccessError`.
     if !n.is_finite() {
-      return Err(VmError::TypeError("WebSocket close code is invalid"));
+      return Err(VmError::Throw(make_dom_exception(
+        vm,
+        scope,
+        "InvalidAccessError",
+        "The close code must be either 1000, or between 3000 and 4999.",
+      )?));
     }
     let n = n.trunc();
-    if n < 0.0 || n > 65535.0 {
-      return Err(VmError::TypeError("WebSocket close code is invalid"));
+    // Reject values outside the uint16 range instead of wrapping.
+    if n < 0.0 || n > u16::MAX as f64 {
+      return Err(VmError::Throw(make_dom_exception(
+        vm,
+        scope,
+        "InvalidAccessError",
+        "The close code must be either 1000, or between 3000 and 4999.",
+      )?));
     }
     let code = n as u16;
     if !is_valid_websocket_close_code(code) {
-      return Err(VmError::TypeError("WebSocket close code is invalid"));
+      return Err(VmError::Throw(make_dom_exception(
+        vm,
+        scope,
+        "InvalidAccessError",
+        "The close code must be either 1000, or between 3000 and 4999.",
+      )?));
     }
     Some(code)
   };
@@ -1622,12 +1639,26 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
   let reason: Option<String> = if matches!(reason_value, Value::Undefined | Value::Null) {
     None
   } else {
-    let s = to_rust_string_limited(
+    // `WebSocket.prototype.close` requires the UTF-8 encoded close reason to be <= 123 bytes.
+    // Over-limit must throw `SyntaxError`.
+    const TOO_LONG_ERROR: &str = "WebSocket close reason too long";
+    let s = match to_rust_string_limited(
       scope.heap_mut(),
       reason_value,
       MAX_WEBSOCKET_CLOSE_REASON_BYTES_USIZE,
-      "WebSocket close reason too long",
-    )?;
+      TOO_LONG_ERROR,
+    ) {
+      Ok(s) => s,
+      Err(VmError::TypeError(msg)) if msg == TOO_LONG_ERROR => {
+        return Err(VmError::Throw(make_dom_exception(
+          vm,
+          scope,
+          "SyntaxError",
+          "The close reason must not be longer than 123 bytes.",
+        )?));
+      }
+      Err(err) => return Err(err),
+    };
     Some(s)
   };
 
@@ -5891,7 +5922,7 @@ mod tests {
 
     let throw_name = get_global_prop_utf8(&mut host, "__throw_name").unwrap_or_default();
     if expect_throw {
-      assert_eq!(throw_name, "TypeError");
+      assert_eq!(throw_name, "InvalidAccessError");
     } else {
       assert_eq!(throw_name, "");
     }
@@ -6012,8 +6043,80 @@ mod tests {
   }
 
   #[test]
+  fn websocket_close_accepts_valid_code() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "http://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__err = "";
+      const ws = new WebSocket("ws://127.0.0.1:0/");
+      try {
+        ws.close(3000);
+      } catch (e) {
+        globalThis.__err = String(e && e.name);
+      }
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_close_accepts_short_reason() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "http://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__err = "";
+      const ws = new WebSocket("ws://127.0.0.1:0/");
+      try {
+        ws.close(1000, "x");
+      } catch (e) {
+        globalThis.__err = String(e && e.name);
+      }
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_close_rejects_overlong_reason() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "http://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__err = "";
+      const ws = new WebSocket("ws://127.0.0.1:0/");
+      try {
+        ws.close(1000, "a".repeat(124));
+        globalThis.__err = "did not throw";
+      } catch (e) {
+        globalThis.__err = String(e && e.name);
+      }
+      "#,
+    )?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").as_deref(),
+      Some("SyntaxError")
+    );
+    Ok(())
+  }
+
+  #[test]
   fn websocket_close_code_1000_ok() -> Result<()> {
     websocket_close_code_test("1000", false)
+  }
+
+  #[test]
+  fn websocket_close_code_1001_throws() -> Result<()> {
+    websocket_close_code_test("1001", true)
   }
 
   #[test]
