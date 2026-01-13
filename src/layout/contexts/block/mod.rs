@@ -11508,7 +11508,7 @@ impl FormattingContext for BlockFormattingContext {
     {
       #[derive(Debug)]
       enum Segment<'a> {
-        InlineRun(Vec<&'a BoxNode>),
+        InlineRun { start: usize, end: usize },
         BlockChild(&'a BoxNode),
         FloatChild(&'a BoxNode),
       }
@@ -11529,7 +11529,10 @@ impl FormattingContext for BlockFormattingContext {
       }
 
       let mut segments: Vec<Segment<'_>> = Vec::new();
-      let mut inline_run: Vec<&BoxNode> = Vec::new();
+      // Store inline-run children in a single arena so we can reference them by index range without
+      // allocating a new Vec for every flushed run.
+      let mut inline_nodes: Vec<&BoxNode> = Vec::new();
+      let mut run_start: Option<usize> = None;
       let mut deadline_counter = 0usize;
       for child in &box_node.children {
         if let Err(RenderError::Timeout { elapsed, .. }) =
@@ -11542,8 +11545,11 @@ impl FormattingContext for BlockFormattingContext {
         }
 
         if child.style.float.is_floating() {
-          if !inline_run.is_empty() {
-            segments.push(Segment::InlineRun(std::mem::take(&mut inline_run)));
+          if let Some(start) = run_start.take() {
+            let end = inline_nodes.len();
+            if start != end {
+              segments.push(Segment::InlineRun { start, end });
+            }
           }
           segments.push(Segment::FloatChild(child));
           continue;
@@ -11555,19 +11561,28 @@ impl FormattingContext for BlockFormattingContext {
         };
 
         if treated_as_block {
-          if !inline_run.is_empty() {
-            segments.push(Segment::InlineRun(std::mem::take(&mut inline_run)));
+          if let Some(start) = run_start.take() {
+            let end = inline_nodes.len();
+            if start != end {
+              segments.push(Segment::InlineRun { start, end });
+            }
           }
           segments.push(Segment::BlockChild(child));
         } else {
           if log_children {
             inline_child_debug.push((child.id, child.style.display));
           }
-          inline_run.push(child);
+          if run_start.is_none() {
+            run_start = Some(inline_nodes.len());
+          }
+          inline_nodes.push(child);
         }
       }
-      if !inline_run.is_empty() {
-        segments.push(Segment::InlineRun(inline_run));
+      if let Some(start) = run_start {
+        let end = inline_nodes.len();
+        if start != end {
+          segments.push(Segment::InlineRun { start, end });
+        }
       }
 
       let parent_writing_mode = style.writing_mode;
@@ -11575,9 +11590,9 @@ impl FormattingContext for BlockFormattingContext {
 
       let compute_segment = |segment: &Segment<'_>| -> Result<Contribution, LayoutError> {
         match segment {
-          Segment::InlineRun(run) => {
-            let (min_width, max_width) =
-              inline_fc.intrinsic_widths_for_children(style, run.as_slice())?;
+          Segment::InlineRun { start, end } => {
+            let run = &inline_nodes[*start..*end];
+            let (min_width, max_width) = inline_fc.intrinsic_widths_for_children(style, run)?;
             if log_children {
               let ids: Vec<usize> = run.iter().map(|c| c.id()).collect();
               eprintln!(
