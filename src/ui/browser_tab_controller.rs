@@ -39,6 +39,7 @@ pub struct BrowserTabController {
   viewport_css: (u32, u32),
   dpr: f32,
   tick_animation_time_ms: f32,
+  datalist_open_input: Option<usize>,
   find_query: String,
   find_case_sensitive: bool,
   find_matches: Vec<FindMatch>,
@@ -126,6 +127,7 @@ impl BrowserTabController {
       viewport_css,
       dpr,
       tick_animation_time_ms: 0.0,
+      datalist_open_input: None,
       find_query: String::new(),
       find_case_sensitive: false,
       find_matches: Vec::new(),
@@ -245,9 +247,10 @@ impl BrowserTabController {
         input_node_id,
         option_node_id,
       } if tab_id == self.tab_id => self.handle_datalist_choose(input_node_id, option_node_id),
-      UiToWorker::DatalistCancel { tab_id } if tab_id == self.tab_id => Ok(vec![
-        WorkerToUi::DatalistClosed { tab_id },
-      ]),
+      UiToWorker::DatalistCancel { tab_id } if tab_id == self.tab_id => {
+        self.datalist_open_input = None;
+        Ok(vec![WorkerToUi::DatalistClosed { tab_id }])
+      }
       UiToWorker::DateTimePickerChoose {
         tab_id,
         input_node_id,
@@ -1238,6 +1241,7 @@ impl BrowserTabController {
   }
 
   fn handle_text_input(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
+    let prev_open = self.datalist_open_input;
     let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
     // Prefer using cached layout artifacts when available so `<select>` typeahead can use the
     // painted option list (skipping options hidden via computed `display:none`, etc).
@@ -1274,13 +1278,17 @@ impl BrowserTabController {
         options,
         anchor_css,
       });
+      self.datalist_open_input = Some(input_node_id);
+    } else if prev_open.is_some() {
+      out.push(WorkerToUi::DatalistClosed { tab_id: self.tab_id });
+      self.datalist_open_input = None;
     }
+
     if changed {
       out.extend(self.paint_if_needed()?);
-      Ok(out)
-    } else {
-      Ok(out)
     }
+
+    Ok(out)
   }
 
   fn handle_datalist_choose(
@@ -1291,6 +1299,7 @@ impl BrowserTabController {
     // Mirror the threaded worker semantics: choosing any option in the datalist overlay should close
     // the popup even when the selection is rejected (disabled option) or a no-op.
     let mut out = vec![WorkerToUi::DatalistClosed { tab_id: self.tab_id }];
+    self.datalist_open_input = None;
     let engine = &mut self.interaction;
     let changed = self
       .document
@@ -1327,6 +1336,18 @@ impl BrowserTabController {
       self.paint_if_needed()
     } else {
       Ok(Vec::new())
+    }
+  }
+
+  fn close_datalist_if_focus_changed(&mut self, out: &mut Vec<WorkerToUi>) {
+    let Some(open_input) = self.datalist_open_input else {
+      return;
+    };
+    if self.interaction_state().focused != Some(open_input) {
+      out.push(WorkerToUi::DatalistClosed {
+        tab_id: self.tab_id,
+      });
+      self.datalist_open_input = None;
     }
   }
 
@@ -1679,6 +1700,9 @@ impl BrowserTabController {
       }
       _ => {}
     }
+
+    // Datalist popup should close when the focused input loses focus (e.g. Tab traversal).
+    self.close_datalist_if_focus_changed(&mut out);
 
     if changed || scroll_changed {
       out.extend(self.paint_if_needed()?);

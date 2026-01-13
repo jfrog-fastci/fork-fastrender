@@ -86,6 +86,7 @@ mod ui_browser_worker_thread_naming;
 mod ui_cancellation;
 mod ui_clipboard;
 mod ui_clipboard_size_limit;
+mod ui_datalist_close_on_tab;
 mod ui_datalist_disabled_option_choose;
 mod ui_datalist_template_inert;
 mod ui_document_drag_drop;

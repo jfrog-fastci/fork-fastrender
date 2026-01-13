@@ -1031,8 +1031,8 @@ pub enum WorkerToUi {
   },
   /// Notification that a datalist popup should be dismissed.
   ///
-  /// Workers emit this in response to [`UiToWorker::DatalistChoose`] and [`UiToWorker::DatalistCancel`]
-  /// so front-ends can close the overlay deterministically.
+  /// Workers emit this whenever the overlay should be dismissed (e.g. after choosing/cancelling a
+  /// suggestion, or when the focused input loses focus).
   DatalistClosed {
     tab_id: TabId,
   },

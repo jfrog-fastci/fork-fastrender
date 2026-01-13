@@ -505,6 +505,7 @@ struct TabState {
   last_hovered_url: Option<String>,
   last_tooltip: Option<String>,
   last_cursor: CursorKind,
+  datalist_open_input: Option<usize>,
 
   pending_navigation: Option<NavigationRequest>,
   needs_repaint: bool,
@@ -560,6 +561,7 @@ impl TabState {
       last_hovered_url: None,
       last_tooltip: None,
       last_cursor: CursorKind::Default,
+      datalist_open_input: None,
       pending_navigation: None,
       needs_repaint: false,
       force_repaint: false,
@@ -3226,6 +3228,9 @@ impl BrowserRuntime {
       UiToWorker::DatalistCancel { tab_id } => {
         // Front-ends typically own the overlay state, so cancellation is a no-op on the worker
         // side. Emit `DatalistClosed` anyway so UIs can dismiss the popup deterministically.
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+          tab.datalist_open_input = None;
+        }
         let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
       }
       UiToWorker::DateTimePickerChoose {
@@ -6854,6 +6859,7 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    tab.datalist_open_input = None;
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
@@ -6941,6 +6947,7 @@ impl BrowserRuntime {
       return;
     };
 
+    let prev_open = tab.datalist_open_input;
     let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
     let box_tree_ptr = doc
       .prepared()
@@ -7011,6 +7018,11 @@ impl BrowserRuntime {
         options,
         anchor_css,
       });
+      tab.datalist_open_input = Some(input_node_id);
+    } else if prev_open.is_some() {
+      // Close the popup deterministically when suggestions become empty.
+      let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
+      tab.datalist_open_input = None;
     }
 
     if changed {
@@ -7640,6 +7652,12 @@ impl BrowserRuntime {
           scroll: tab.scroll_state.clone(),
         });
         tab.last_reported_scroll_state = tab.scroll_state.clone();
+      }
+
+      // Datalist popup should close when the focused input loses focus (e.g. Tab traversal).
+      if tab.datalist_open_input.is_some() && focused != tab.datalist_open_input {
+        let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
+        tab.datalist_open_input = None;
       }
 
       let mut default_allowed = true;
