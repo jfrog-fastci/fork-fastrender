@@ -331,39 +331,186 @@ status = "skip"
 reason = "Crash regression HTML does not use testharness.js (runner expects testharness tests)."
 
 [[expectations]]
-id = "dom/ranges/Range-attributes.html"
-backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-
-[[expectations]]
-id = "dom/ranges/Range-detach.html"
-backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-
-[[expectations]]
-id = "dom/ranges/Range-constructor.html"
-backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-
-[[expectations]]
-id = "dom/ranges/Range-commonAncestorContainer-2.html"
-backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-
-[[expectations]]
-id = "dom/ranges/Range-commonAncestorContainer.html"
-backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-
-[[expectations]]
-id = "dom/ranges/Range-compareBoundaryPoints.html"
-backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-
-[[expectations]]
 glob = "dom/ranges/*.html"
+backend = "quickjs"
 status = "xfail"
-reason = "Range/StaticRange APIs are still incomplete; keep the full dom/ranges/*.html corpus xfail while bring-up continues."
+reason = "QuickJS backend does not implement Range/StaticRange yet."
+
+# vm-js backends: keep the remaining `dom/ranges/*.html` bring-up gaps explicit so newly passing
+# tests don't become hidden behind a broad glob xfail.
+[[expectations]]
+id = "dom/ranges/Range-adopt-test.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-cloneContents.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-cloneRange.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-collapse.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-comparePoint-2.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-comparePoint.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-deleteContents.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-extractContents.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-insertNode.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-intersectsNode-2.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-intersectsNode-binding.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-intersectsNode-shadow.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-intersectsNode.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-isPointInRange.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-appendChild.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-appendData.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-dataChange.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-deleteData.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-insertBefore.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-insertData.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-removeChild.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-replaceChild.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-replaceData.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-mutations-splitText.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range mutation-update semantics are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-selectNode.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-set.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-stringifier.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/Range-surroundContents.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+
+[[expectations]]
+id = "dom/ranges/StaticRange-constructor.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "StaticRange is not implemented yet."
 
 [[expectations]]
 id = "html_integration/module_script_importmap_before_domcontentloaded.html"
