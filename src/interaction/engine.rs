@@ -5982,6 +5982,24 @@ impl InteractionEngine {
     scroll: &ScrollState,
     viewport_point: Point,
   ) -> bool {
+    self
+      .pointer_move_and_hit(dom, box_tree, fragment_tree, scroll, viewport_point)
+      .0
+  }
+
+  /// Like [`InteractionEngine::pointer_move`], but also returns the hit-test result.
+  ///
+  /// Returning the hit test allows UI layers to reuse the interaction engine's source-of-truth
+  /// hover target for tasks like cursor selection and JS event dispatch without performing a second
+  /// DOM hit test.
+  pub fn pointer_move_and_hit(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    viewport_point: Point,
+  ) -> (bool, Option<HitTestResult>) {
     let page_point = viewport_point.translate(scroll.viewport);
     let mut index = DomIndexMut::new(dom);
     let mut dom_changed = false;
@@ -6279,13 +6297,14 @@ impl InteractionEngine {
 
     let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let new_chain = hit
+      .as_ref()
       .and_then(|hit| nearest_element_ancestor(&index, hit.styled_node_id))
       .map(|target| collect_element_chain_with_label_associated_controls(&index, target))
       .unwrap_or_default();
 
     let changed = self.state.hover_chain() != new_chain.as_slice();
     self.state.set_hover_chain(new_chain);
-    dom_changed | changed
+    (dom_changed | changed, hit)
   }
 
   /// Handle mouse wheel stepping for a focused `<input type="number">`.

@@ -100,3 +100,60 @@ fn ui_worker_pointer_down_up_reuses_interaction_engine_hit_test() {
   join.join().expect("join ui worker thread");
 }
 
+#[test]
+fn ui_worker_pointer_move_reuses_interaction_engine_hit_test() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "page.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #t { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+    </style>
+  </head>
+  <body>
+    <div id="t"></div>
+  </body>
+</html>
+"#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-pointer-move-hit-test-dedup").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+  wait_for_frame_ready(&ui_rx, tab_id);
+
+  // Count hit tests only for the pointer move below.
+  set_hit_test_dom_counting_enabled_for_test(true);
+  reset_hit_test_dom_call_count_for_test();
+
+  ui_tx
+    .send(support::pointer_move(tab_id, (10.0, 10.0), PointerButton::None))
+    .expect("PointerMove");
+  wait_for_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    hit_test_dom_call_count_for_test(),
+    1,
+    "expected exactly one hit_test_dom call for PointerMove when layout artifacts are available",
+  );
+
+  set_hit_test_dom_counting_enabled_for_test(false);
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
+}
