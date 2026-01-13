@@ -3213,6 +3213,24 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
     // The renderer is unable to enqueue callback delivery onto the JS event loop (e.g. external
     // task queue is full/closed). Treat this as backpressure and close the connection to avoid
     // buffering/dropping data indefinitely.
+    //
+    // IMPORTANT: the handshake path clears any socket read/write timeouts so the main loop can
+    // install its own short polling timeout. Ensure we install a short write timeout before
+    // attempting a close handshake here; otherwise `socket.close()` could block indefinitely on
+    // a stalled network.
+    match socket.get_ref() {
+      tungstenite::stream::MaybeTlsStream::Plain(stream) => {
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(50)));
+      }
+      tungstenite::stream::MaybeTlsStream::Rustls(stream) => {
+        let tcp = stream.get_ref();
+        let _ = tcp.set_read_timeout(Some(Duration::from_millis(50)));
+        let _ = tcp.set_write_timeout(Some(Duration::from_millis(50)));
+      }
+      #[allow(unreachable_patterns)]
+      _ => {}
+    }
     let _ = socket.close(None);
     with_env_state_mut(env_id, |state| {
       if let Some(ws) = state.sockets.get_mut(&ws_id) {
