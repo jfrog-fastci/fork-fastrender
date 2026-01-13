@@ -3778,6 +3778,62 @@ fn select_control_snapshot_from_dom(index: &DomIndexMut, select_node_id: usize) 
     return None;
   }
 
+  fn inline_style_display_is_none(node: &DomNode) -> Option<bool> {
+    let style = node.get_attribute_ref("style")?;
+    let mut display_is_none: Option<bool> = None;
+    for decl in style.split(';') {
+      let Some((name, value)) = decl.split_once(':') else {
+        continue;
+      };
+      if !trim_ascii_whitespace(name).eq_ignore_ascii_case("display") {
+        continue;
+      }
+      let token = trim_ascii_whitespace(value)
+        .split(|c: char| c.is_ascii_whitespace() || c == '!' || c == ';')
+        .next()
+        .unwrap_or("");
+      if token.is_empty() {
+        continue;
+      }
+      // Inline style declarations follow standard CSS rules: later declarations override earlier ones.
+      display_is_none = Some(token.eq_ignore_ascii_case("none"));
+    }
+    display_is_none
+  }
+
+  fn node_hidden_for_select(node: &DomNode) -> bool {
+    // Inline `style="display: ..."` wins over the boolean `[hidden]` attribute. This keeps
+    // `<option hidden style="display:block">` consistent with the computed `display` used by the
+    // rendering pipeline.
+    if let Some(is_none) = inline_style_display_is_none(node) {
+      return is_none;
+    }
+    node.get_attribute_ref("hidden").is_some()
+      || node
+        .get_attribute_ref("data-fastr-hidden")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+  }
+
+  fn node_or_ancestor_hidden_for_select(
+    index: &DomIndexMut,
+    mut node_id: usize,
+    select_id: usize,
+  ) -> bool {
+    while node_id != 0 {
+      let Some(node) = index.node(node_id) else {
+        break;
+      };
+      if node_hidden_for_select(node) {
+        return true;
+      }
+      if node_id == select_id {
+        break;
+      }
+      node_id = *index.parent.get(node_id).unwrap_or(&0);
+    }
+    false
+  }
+
   fn collect_descendant_text_content(node: &DomNode) -> String {
     let mut text = String::new();
     let mut stack: Vec<&DomNode> = vec![node];
@@ -3844,6 +3900,9 @@ fn select_control_snapshot_from_dom(index: &DomIndexMut, select_node_id: usize) 
     let Some(node) = index.node(id) else {
       continue;
     };
+    if node_or_ancestor_hidden_for_select(index, id, select_node_id) {
+      continue;
+    }
     let Some(tag) = node.tag_name() else {
       continue;
     };
@@ -7261,7 +7320,84 @@ impl InteractionEngine {
 
     let focused_is_text_input = index.node(focused).is_some_and(is_text_input);
     let focused_is_textarea = index.node(focused).is_some_and(is_textarea);
+    let focused_is_select = index.node(focused).is_some_and(is_select);
     if !(focused_is_text_input || focused_is_textarea) {
+      if !focused_is_select {
+        return changed;
+      }
+
+      // `<select>` typeahead: when a dropdown select is focused, typing should jump to the next
+      // matching *visible* option.
+      //
+      // Keep this conservative: only apply to dropdown selects (non-multiple, size=1) to avoid
+      // changing behaviour for listbox/multiple selects.
+      let query = trim_ascii_whitespace(text);
+      if query.is_empty() {
+        return changed;
+      }
+      if node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused) {
+        return changed;
+      }
+
+      let Some(control) = select_control_snapshot_from_dom(&index, focused) else {
+        return changed;
+      };
+      if control.multiple || control.size != 1 {
+        return changed;
+      }
+
+      // Collect enabled options in paint order.
+      let mut options: Vec<(usize, usize, String)> = Vec::new();
+      for (item_idx, item) in control.items.iter().enumerate() {
+        let SelectItem::Option {
+          node_id,
+          label,
+          value,
+          disabled,
+          ..
+        } = item
+        else {
+          continue;
+        };
+        if *disabled {
+          continue;
+        }
+        let display = if trim_ascii_whitespace(label).is_empty() {
+          value.as_str()
+        } else {
+          label.as_str()
+        };
+        options.push((*node_id, item_idx, display.to_string()));
+      }
+      if options.is_empty() {
+        return changed;
+      }
+
+      // Start searching just after the currently selected option, wrapping to the beginning.
+      let anchor_item_idx = control.selected.last().copied();
+      let anchor_pos = anchor_item_idx
+        .and_then(|idx| options.iter().position(|(_, item_idx, _)| *item_idx == idx));
+      let start = anchor_pos.map(|p| p + 1).unwrap_or(0) % options.len();
+
+      fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+        if needle.is_empty() {
+          return false;
+        }
+        haystack
+          .as_bytes()
+          .get(..needle.len())
+          .is_some_and(|prefix| prefix.eq_ignore_ascii_case(needle.as_bytes()))
+      }
+
+      for offset in 0..options.len() {
+        let pos = (start + offset) % options.len();
+        let (option_node_id, _, label) = &options[pos];
+        if starts_with_ignore_ascii_case(label, query) {
+          changed |= self.activate_select_option(dom, focused, *option_node_id, false);
+          break;
+        }
+      }
+
       return changed;
     }
 
