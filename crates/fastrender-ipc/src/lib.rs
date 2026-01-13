@@ -296,6 +296,31 @@ impl NavigationContext {
       site_key,
     }
   }
+
+  /// Construct a child-frame navigation context using the browser-computed site/origin metadata.
+  ///
+  /// This helper encapsulates the tricky origin inheritance rules for `about:blank` and
+  /// `about:srcdoc`:
+  /// - they inherit the parent site key when `info.opaque_origin` is false
+  /// - sandboxed opaque origins force a unique `SiteKey::Opaque`
+  ///
+  /// Callers should use this when sending `Navigate` for an out-of-process iframe so that the child
+  /// renderer cannot "guess" the wrong origin from the URL alone.
+  pub fn for_subframe_navigation_from_info(
+    factory: &SiteKeyFactory,
+    url: &str,
+    parent_site_key: Option<&SiteKey>,
+    referrer_url: String,
+    parent_referrer_policy: ReferrerPolicy,
+    info: &SubframeInfo,
+  ) -> Self {
+    let site_key = factory.site_key_for_subframe_navigation(url, parent_site_key, info.opaque_origin);
+    Self {
+      referrer_url: Some(referrer_url),
+      referrer_policy: info.referrer_policy.unwrap_or(parent_referrer_policy),
+      site_key,
+    }
+  }
 }
 
 /// Axis-aligned rectangle in the embedder's coordinate space.
@@ -956,6 +981,8 @@ mod navigation_tests {
 
   #[test]
   fn subframe_referrer_policy_is_forwarded_into_child_navigation_context() {
+    let factory = SiteKeyFactory::new_with_seed(1);
+    let parent_site = factory.site_key_for_navigation("https://parent.example/", None);
     let subframe = SubframeInfo {
       child: FrameId(2),
       transform: AffineTransform::IDENTITY,
@@ -966,11 +993,13 @@ mod navigation_tests {
       opaque_origin: false,
     };
 
-    let ctx = NavigationContext::for_subframe_navigation(
+    let ctx = NavigationContext::for_subframe_navigation_from_info(
+      &factory,
+      "https://child.example/",
+      Some(&parent_site),
       "https://parent.example/".to_string(),
       ReferrerPolicy::StrictOriginWhenCrossOrigin,
-      subframe.referrer_policy,
-      SiteKey::Opaque(1),
+      &subframe,
     );
 
     assert_eq!(ctx.referrer_url.as_deref(), Some("https://parent.example/"));
@@ -979,11 +1008,25 @@ mod navigation_tests {
 
   #[test]
   fn subframe_without_override_inherits_parent_referrer_policy() {
-    let ctx = NavigationContext::for_subframe_navigation(
+    let factory = SiteKeyFactory::new_with_seed(1);
+    let parent_site = factory.site_key_for_navigation("https://parent.example/", None);
+    let subframe = SubframeInfo {
+      child: FrameId(2),
+      transform: AffineTransform::IDENTITY,
+      clip_stack: vec![],
+      z_index: 0,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+
+    let ctx = NavigationContext::for_subframe_navigation_from_info(
+      &factory,
+      "https://child.example/",
+      Some(&parent_site),
       "https://parent.example/".to_string(),
       ReferrerPolicy::OriginWhenCrossOrigin,
-      None,
-      SiteKey::Opaque(1),
+      &subframe,
     );
 
     assert_eq!(ctx.referrer_policy, ReferrerPolicy::OriginWhenCrossOrigin);
@@ -1012,6 +1055,45 @@ mod navigation_tests {
     let child = factory.site_key_for_subframe_navigation("about:blank", Some(&parent), true);
     assert_ne!(child, parent);
     assert!(matches!(child, SiteKey::Opaque(33)));
+  }
+
+  #[test]
+  fn navigation_context_site_key_respects_about_blank_inheritance_and_sandbox() {
+    let factory = SiteKeyFactory::new_with_seed(50);
+    let parent_site = factory.site_key_for_navigation("https://example.com/", None);
+
+    let unsandboxed = SubframeInfo {
+      child: FrameId(1),
+      transform: AffineTransform::IDENTITY,
+      clip_stack: vec![],
+      z_index: 0,
+      referrer_policy: None,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+    let inherited = NavigationContext::for_subframe_navigation_from_info(
+      &factory,
+      "about:blank",
+      Some(&parent_site),
+      "https://example.com/".to_string(),
+      ReferrerPolicy::default(),
+      &unsandboxed,
+    );
+    assert_eq!(inherited.site_key, parent_site);
+
+    let sandboxed = SubframeInfo {
+      opaque_origin: true,
+      ..unsandboxed
+    };
+    let opaque = NavigationContext::for_subframe_navigation_from_info(
+      &factory,
+      "about:blank",
+      Some(&parent_site),
+      "https://example.com/".to_string(),
+      ReferrerPolicy::default(),
+      &sandboxed,
+    );
+    assert!(matches!(opaque.site_key, SiteKey::Opaque(50)));
   }
 }
 

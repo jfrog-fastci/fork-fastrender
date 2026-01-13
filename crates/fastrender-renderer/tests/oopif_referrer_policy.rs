@@ -1,7 +1,7 @@
 use bincode::Options;
 use fastrender_ipc::{
-  BrowserToRenderer, DocumentOrigin, FrameId, NavigationContext, ReferrerPolicy, RendererToBrowser,
-  SiteKey, SubframeInfo, MAX_IPC_MESSAGE_BYTES,
+  BrowserToRenderer, FrameId, NavigationContext, ReferrerPolicy, RendererToBrowser, SiteKeyFactory,
+  SubframeInfo, MAX_IPC_MESSAGE_BYTES,
 };
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -396,15 +396,6 @@ impl RendererProc {
   }
 }
 
-fn site_key_for_url(url: &str) -> SiteKey {
-  let parsed = Url::parse(url).expect("parse url");
-  SiteKey::Origin(DocumentOrigin {
-    scheme: parsed.scheme().to_ascii_lowercase(),
-    host: parsed.host_str().map(|h| h.to_ascii_lowercase()),
-    port: parsed.port_or_known_default(),
-  })
-}
-
 #[test]
 fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fetches() {
   let _net_guard = net_test_lock();
@@ -441,6 +432,8 @@ fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fe
     return;
   };
   let parent_url = parent_server.url("index.html");
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
 
   let mut parent_renderer = RendererProc::spawn();
   let parent_frame = FrameId(1);
@@ -453,14 +446,16 @@ fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fe
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
-      site_key: site_key_for_url(&parent_url),
+      site_key: parent_site_key.clone(),
     },
   });
   parent_renderer.send(&BrowserToRenderer::RequestRepaint {
     frame_id: parent_frame,
   });
 
-  let (got_frame, subframes, err) = parent_renderer.recv_frame_ready(Duration::from_secs(2));
+  // Spawning a fresh renderer process can be slow on heavily loaded CI runners; keep the timeout
+  // generous to avoid flaky test failures.
+  let (got_frame, subframes, err) = parent_renderer.recv_frame_ready(Duration::from_secs(5));
   assert_eq!(
     got_frame, parent_frame,
     "expected FrameReady for parent frame (err={err:?})"
@@ -480,11 +475,13 @@ fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fe
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
     url: child_url.clone(),
-    context: NavigationContext::for_subframe_navigation(
+    context: NavigationContext::for_subframe_navigation_from_info(
+      &site_keys,
+      &child_url,
+      Some(&parent_site_key),
       parent_url.clone(),
       ReferrerPolicy::default(),
-      iframe.referrer_policy,
-      site_key_for_url(&child_url),
+      iframe,
     ),
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
