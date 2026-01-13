@@ -9,6 +9,9 @@ This document defines two *privileged* URL schemes reserved for that trusted chr
 - `chrome-action:` — pseudo-URLs embedded in trusted chrome HTML to request browser actions (new tab,
   close tab, etc).
 
+Note: This `chrome://` scheme is **FastRender-internal**. It is unrelated to external tooling docs
+that mention Google Chrome’s `chrome://tracing` trace viewer.
+
 These schemes **must never be interpreted for untrusted web content**. Treat them as a hard
 trust-boundary: if untrusted HTML/JS can trigger these, it becomes a browser-escape primitive.
 
