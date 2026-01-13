@@ -893,48 +893,6 @@ impl Document {
     }
   }
 
-  /// Split a `Text` node at a UTF-16 code unit offset, returning the newly created trailing node.
-  ///
-  /// Spec: https://dom.spec.whatwg.org/#concept-text-split
-  pub fn split_text(&mut self, node: NodeId, offset: usize) -> Result<NodeId, DomError> {
-    let node_id = node;
-    self.node_checked(node_id)?;
-
-    let old_value = match &self.node(node_id).kind {
-      NodeKind::Text { content } => content.clone(),
-      _ => return Err(DomError::InvalidNodeTypeError),
-    };
-
-    // NOTE: DOM `Text.splitText(offset)` offsets are defined in UTF-16 code units.
-    let units: Vec<u16> = old_value.encode_utf16().collect();
-    if offset > units.len() {
-      return Err(DomError::IndexSizeError);
-    }
-
-    let new_data = String::from_utf16_lossy(&units[offset..]);
-    let new_node = self.create_text(&new_data);
-
-    // Step 6: Let parent be the node's parent.
-    let parent = self.nodes[node_id.index()].parent;
-    if let Some(parent_id) = parent {
-      // Step 7.1: Insert newNode into parent before node's next sibling.
-      let index = self
-        .index_of_child_internal(parent_id, node_id)?
-        .ok_or(DomError::NotFoundError)?;
-      let reference = self.nodes[parent_id.index()].children.get(index + 1).copied();
-      let _ = self.insert_before(parent_id, new_node, reference)?;
-
-      // Step 7.2–7.5: Live range updates.
-      let tree_index = self.tree_child_index_from_raw_index_for_range(parent_id, index);
-      self.live_range_split_text_steps(node_id, offset, new_node, parent_id, tree_index);
-    }
-
-    // Step 8: Replace the data from `offset` to the end with the empty string.
-    let _ = self.replace_data(node_id, offset, usize::MAX, "")?;
-
-    Ok(new_node)
-  }
-
   pub fn comment_data(&self, node: NodeId) -> Result<&str, DomError> {
     let node = self.node_checked(node)?;
     match &node.kind {
