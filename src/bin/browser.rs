@@ -17351,6 +17351,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping);
         self.page_input_tab = Some(active_tab);
         self.page_input_mapping = Some(mapping);
+        handle_page_host_accesskit_focus_actions(ui, &response, &mut self.page_has_focus);
         if self.page_has_focus {
           response.request_focus();
         }
@@ -18344,6 +18345,27 @@ fn ensure_page_focus_cleared_for_chrome_click(
   false
 }
 
+#[cfg(feature = "browser_ui")]
+fn handle_page_host_accesskit_focus_actions(
+  ui: &egui::Ui,
+  response: &egui::Response,
+  page_has_focus: &mut bool,
+) {
+  // Some assistive technologies trigger actions on the page host container node (the egui widget
+  // that hosts the page viewport) instead of a descendant. Treat these actions as a request to
+  // focus the rendered page so subsequent keyboard input is routed to the page worker.
+  let focus_requested = ui.input(|i| {
+    i.has_accesskit_action_request(response.id, accesskit::Action::Focus)
+  });
+  let default_requested = ui.input(|i| {
+    i.has_accesskit_action_request(response.id, accesskit::Action::Default)
+  });
+
+  if focus_requested || default_requested {
+    *page_has_focus = true;
+  }
+}
+
 #[cfg(test)]
 mod debug_log_env_tests {
   use super::{parse_env_bool, should_show_debug_log_ui};
@@ -18611,6 +18633,88 @@ mod page_focus_tests {
     assert!(!ok);
     assert!(!page_has_focus);
     assert!(!cursor_in_page);
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod page_host_accesskit_action_tests {
+  use super::handle_page_host_accesskit_focus_actions;
+
+  fn run_page_host_frame(
+    ctx: &egui::Context,
+    page_has_focus: &mut bool,
+    action_requests: Vec<accesskit::ActionRequest>,
+  ) -> egui::FullOutput {
+    let mut raw = egui::RawInput::default();
+    raw.focused = true;
+    raw.pixels_per_point = Some(1.0);
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::pos2(0.0, 0.0),
+      egui::vec2(320.0, 200.0),
+    ));
+    raw.events = action_requests
+      .into_iter()
+      .map(egui::Event::AccessKitActionRequest)
+      .collect();
+
+    ctx.begin_frame(raw);
+    egui::CentralPanel::default().show(ctx, |ui| {
+      let size_points = ui.available_size().max(egui::Vec2::ZERO);
+      let response = ui.add(
+        egui::Image::new((egui::TextureId::User(0), size_points)).sense(egui::Sense::click()),
+      );
+      response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, "Web page content (rendered image)")
+      });
+      handle_page_host_accesskit_focus_actions(ui, &response, page_has_focus);
+      if *page_has_focus {
+        response.request_focus();
+      }
+    });
+    ctx.end_frame()
+  }
+
+  fn accesskit_node_id_for_page_host(output: &egui::FullOutput) -> accesskit::NodeId {
+    let update = output
+      .platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update to be emitted; ensure ctx.enable_accesskit() was called");
+
+    update
+      .nodes
+      .iter()
+      .find_map(|(id, node)| {
+        let name = node.name().unwrap_or("").trim();
+        (name == "Web page content (rendered image)").then_some(*id)
+      })
+      .expect("expected to find page host node in AccessKit update")
+  }
+
+  #[test]
+  fn accesskit_focus_action_on_page_host_sets_page_focus() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let mut page_has_focus = false;
+    let output = run_page_host_frame(&ctx, &mut page_has_focus, Vec::new());
+    assert!(
+      !page_has_focus,
+      "expected page to start unfocused before any AccessKit action"
+    );
+
+    let node_id = accesskit_node_id_for_page_host(&output);
+    let focus_request = accesskit::ActionRequest {
+      action: accesskit::Action::Focus,
+      target: node_id,
+      data: None,
+    };
+
+    let _ = run_page_host_frame(&ctx, &mut page_has_focus, vec![focus_request]);
+    assert!(
+      page_has_focus,
+      "expected AccessKit Focus action on page host to set page_has_focus"
+    );
   }
 }
 
