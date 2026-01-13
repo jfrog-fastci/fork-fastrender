@@ -31,32 +31,49 @@ fn main() {
 mod windows {
   use std::ffi::c_void;
   use std::ffi::{OsStr, OsString};
+  use std::fs;
   use std::io;
   use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+  use std::os::windows::ffi::OsStrExt;
   use std::os::windows::io::{AsRawHandle, RawHandle};
+  use std::os::windows::io::{FromRawHandle, OwnedHandle};
+  use std::path::Path;
   use std::path::PathBuf;
   use std::time::Duration;
+  use std::time::{SystemTime, UNIX_EPOCH};
 
   use windows_sys::Win32::Foundation::{
-    CloseHandle, SetHandleInformation, BOOL, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, SetHandleInformation, BOOL, ERROR_ACCESS_DENIED, FALSE,
+    HANDLE_FLAG_INHERIT,
+    INVALID_HANDLE_VALUE, TRUE,
   };
   use windows_sys::Win32::Security::{
     ConvertSidToStringSidW, GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation,
-    OpenProcessToken, TokenIntegrityLevel, TokenIsAppContainer, PSID, TOKEN_MANDATORY_LABEL,
-    TOKEN_QUERY,
+    OpenProcessToken, TokenIntegrityLevel, TokenIsAppContainer, PSID, SECURITY_CAPABILITIES,
+    DACL_SECURITY_INFORMATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
+  use windows_sys::Win32::Security::Authorization::{
+    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+    NO_MULTIPLE_TRUSTEE, NO_INHERITANCE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
+    TRUSTEE_W,
+  };
+  use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
   use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
   };
   use windows_sys::Win32::System::JobObjects::IsProcessInJob;
   use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetExitCodeProcess, GetProcessMitigationPolicy, TerminateProcess,
-    WaitForSingleObject, ProcessDynamicCodePolicy, ProcessExtensionPointDisablePolicy,
-    ProcessImageLoadPolicy, ProcessStrictHandleCheckPolicy, ProcessSystemCallDisablePolicy,
-    PROCESS_MITIGATION_POLICY,
+    CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
+    GetExitCodeProcess, GetProcessMitigationPolicy, InitializeProcThreadAttributeList,
+    ProcessDynamicCodePolicy, ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy,
+    ProcessStrictHandleCheckPolicy, ProcessSystemCallDisablePolicy, ResumeThread, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED,
+    EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_MITIGATION_POLICY, STARTUPINFOEXW,
+    STARTUPINFOW, LPPROC_THREAD_ATTRIBUTE_LIST,
   };
 
-  use fastrender::sandbox::windows::spawn_sandboxed;
+  use win_sandbox::{mitigations, AppContainerProfile, Job, RestrictedToken, WinSandboxError};
 
   // WaitForSingleObject return codes.
   const WAIT_OBJECT_0: u32 = 0;
@@ -73,6 +90,684 @@ mod windows {
     connect: Option<OsString>,
     connect_localhost: bool,
     timeout_ms: u32,
+  }
+
+  // -----------------------------------------------------------------------------
+  // RendererSandbox spawner (parent-side)
+  // -----------------------------------------------------------------------------
+
+  /// The environment variable used by the production Windows renderer sandbox as a debug escape
+  /// hatch.
+  const ENV_DISABLE_RENDERER_SANDBOX: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
+
+  /// Legacy/alternate spelling for disabling the Windows renderer sandbox.
+  const ENV_WINDOWS_RENDERER_SANDBOX: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
+
+  /// Proc thread attribute value for `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`.
+  ///
+  /// This matches `ProcThreadAttributeValue(7, FALSE, TRUE, FALSE)` from the Windows SDK headers.
+  const PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY: usize = 0x0002_0007;
+
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  enum SandboxMode {
+    AppContainer,
+    RestrictedToken,
+    Unsandboxed,
+  }
+
+  #[derive(Debug)]
+  struct SpawnedChild {
+    process: OwnedHandle,
+    pid: u32,
+    mode: SandboxMode,
+    job: Job,
+    job_assigned: bool,
+    used_breakaway_from_job: bool,
+    // Keep relocated image directory alive while the process runs.
+    _relocated_image_dir: Option<TempDir>,
+  }
+
+  struct RendererSandbox;
+
+  impl RendererSandbox {
+    fn spawn(
+      exe: &Path,
+      args: &[OsString],
+      inherit_handles: &[RawHandle],
+    ) -> io::Result<SpawnedChild> {
+      let mitigation_policy = if std::env::var_os("FASTR_DISABLE_WIN_MITIGATIONS").is_some() {
+        0
+      } else {
+        mitigations::renderer_mitigation_policy()
+      };
+
+      let parent_in_job = current_process_in_job().unwrap_or(false);
+
+      if renderer_sandbox_disabled_via_env() {
+        eprintln!("warning: renderer sandbox disabled via env; spawning unsandboxed");
+        return spawn_process_unsandboxed(
+          exe,
+          args,
+          inherit_handles,
+          mitigation_policy,
+          parent_in_job,
+        );
+      }
+
+      match spawn_process_appcontainer(
+        exe,
+        args,
+        inherit_handles,
+        mitigation_policy,
+        parent_in_job,
+      ) {
+        Ok(child) => return Ok(child),
+        Err(err) => {
+          eprintln!("warning: AppContainer spawn failed: {err}; falling back to restricted token");
+        }
+      }
+
+      match spawn_process_restricted_token(
+        exe,
+        args,
+        inherit_handles,
+        mitigation_policy,
+        parent_in_job,
+      ) {
+        Ok(child) => Ok(child),
+        Err(err) => {
+          eprintln!("warning: restricted-token spawn failed: {err}; spawning unsandboxed");
+          spawn_process_unsandboxed(
+            exe,
+            args,
+            inherit_handles,
+            mitigation_policy,
+            parent_in_job,
+          )
+        }
+      }
+    }
+  }
+
+  fn renderer_sandbox_disabled_via_env() -> bool {
+    if env_var_truthy(std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX).as_deref()) {
+      return true;
+    }
+
+    let Some(raw) = std::env::var_os(ENV_WINDOWS_RENDERER_SANDBOX) else {
+      return false;
+    };
+    let raw = raw.to_string_lossy();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+      return false;
+    }
+    matches!(
+      trimmed.to_ascii_lowercase().as_str(),
+      "0" | "false" | "no" | "off"
+    )
+  }
+
+  fn env_var_truthy(raw: Option<&OsStr>) -> bool {
+    let Some(raw) = raw else {
+      return false;
+    };
+    if raw.is_empty() {
+      return false;
+    }
+    let raw = raw.to_string_lossy();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+      return false;
+    }
+    !matches!(
+      trimmed.to_ascii_lowercase().as_str(),
+      "0" | "false" | "no" | "off"
+    )
+  }
+
+  fn spawn_process_appcontainer(
+    exe: &Path,
+    args: &[OsString],
+    inherit_handles: &[RawHandle],
+    mitigation_policy: u64,
+    parent_in_job: bool,
+  ) -> io::Result<SpawnedChild> {
+    let profile = AppContainerProfile::ensure(
+      "FastRender.Renderer",
+      "FastRender.Renderer",
+      "FastRender renderer sandbox",
+    )
+    .map_err(win_err)?;
+
+    let job = Job::new(None).map_err(win_err)?;
+    job.set_renderer_limits(None).map_err(win_err)?;
+
+    // Always relocate the image to a temp dir that we can ACL for the AppContainer SID; this avoids
+    // common `ERROR_ACCESS_DENIED` failures when running from a dev checkout.
+    let (temp_dir, relocated_exe) = relocate_exe_for_appcontainer(exe, profile.sid().as_ptr())?;
+
+    let current_dir_w = wide_from_os(temp_dir.path.as_os_str());
+    let current_dir_ptr = current_dir_w.as_ptr();
+
+    let (pi, used_breakaway) = spawn_with_optional_breakaway(parent_in_job, |flags| {
+      spawn_with_attributes(
+        Some(profile.sid().as_ptr()),
+        None,
+        &relocated_exe,
+        args,
+        inherit_handles,
+        mitigation_policy,
+        flags,
+        Some(current_dir_ptr),
+      )
+    })?;
+
+    let child = finish_spawn(pi, SandboxMode::AppContainer, job, used_breakaway)?;
+    Ok(SpawnedChild {
+      _relocated_image_dir: Some(temp_dir),
+      ..child
+    })
+  }
+
+  fn spawn_process_restricted_token(
+    exe: &Path,
+    args: &[OsString],
+    inherit_handles: &[RawHandle],
+    mitigation_policy: u64,
+    parent_in_job: bool,
+  ) -> io::Result<SpawnedChild> {
+    let token = RestrictedToken::for_current_process_low_integrity().map_err(win_err)?;
+
+    let job = Job::new(None).map_err(win_err)?;
+    job.set_renderer_limits(None).map_err(win_err)?;
+
+    let (pi, used_breakaway) = spawn_with_optional_breakaway(parent_in_job, |flags| {
+      spawn_with_attributes(
+        None,
+        Some(token.handle()),
+        exe,
+        args,
+        inherit_handles,
+        mitigation_policy,
+        flags,
+        None,
+      )
+    })?;
+
+    finish_spawn(pi, SandboxMode::RestrictedToken, job, used_breakaway)
+  }
+
+  fn spawn_process_unsandboxed(
+    exe: &Path,
+    args: &[OsString],
+    inherit_handles: &[RawHandle],
+    mitigation_policy: u64,
+    parent_in_job: bool,
+  ) -> io::Result<SpawnedChild> {
+    // Best-effort: still apply mitigations + job limits even when the sandbox is disabled/fails.
+    let job = Job::new(None).map_err(win_err)?;
+    job.set_renderer_limits(None).map_err(win_err)?;
+
+    let (pi, used_breakaway) = spawn_with_optional_breakaway(parent_in_job, |flags| {
+      spawn_with_attributes(
+        None,
+        None,
+        exe,
+        args,
+        inherit_handles,
+        mitigation_policy,
+        flags,
+        None,
+      )
+    })?;
+
+    finish_spawn(pi, SandboxMode::Unsandboxed, job, used_breakaway)
+  }
+
+  fn spawn_with_optional_breakaway<F>(
+    parent_in_job: bool,
+    mut create: F,
+  ) -> io::Result<(PROCESS_INFORMATION, bool)>
+  where
+    F: FnMut(u32) -> io::Result<PROCESS_INFORMATION>,
+  {
+    let base_flags = CREATE_SUSPENDED;
+    if !parent_in_job {
+      return create(base_flags).map(|pi| (pi, false));
+    }
+
+    match create(base_flags | CREATE_BREAKAWAY_FROM_JOB) {
+      Ok(pi) => Ok((pi, true)),
+      Err(err) => {
+        if err.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32) {
+          return Err(err);
+        }
+        eprintln!(
+          "warning: CreateProcess* with CREATE_BREAKAWAY_FROM_JOB returned ERROR_ACCESS_DENIED; retrying without breakaway"
+        );
+        create(base_flags).map(|pi| (pi, false))
+      }
+    }
+  }
+
+  fn spawn_with_attributes(
+    appcontainer_sid: Option<PSID>,
+    restricted_token: Option<windows_sys::Win32::Foundation::HANDLE>,
+    exe: &Path,
+    args: &[OsString],
+    inherit_handles: &[RawHandle],
+    mitigation_policy: u64,
+    creation_flags: u32,
+    current_dir: Option<*const u16>,
+  ) -> io::Result<PROCESS_INFORMATION> {
+    let application_name = wide_from_os(exe.as_os_str());
+    let mut command_line = build_command_line(exe, args);
+
+    let handles: Vec<windows_sys::Win32::Foundation::HANDLE> = inherit_handles
+      .iter()
+      .copied()
+      .map(|h| h as windows_sys::Win32::Foundation::HANDLE)
+      .collect();
+    let mut handles = handles;
+    let inherit = if handles.is_empty() { FALSE } else { TRUE };
+
+    let mut security_caps = SECURITY_CAPABILITIES {
+      AppContainerSid: appcontainer_sid.unwrap_or(std::ptr::null_mut()),
+      Capabilities: std::ptr::null_mut(),
+      CapabilityCount: 0,
+      Reserved: 0,
+    };
+
+    let mut mitigation_policy_value = mitigation_policy;
+
+    let mut attr_count = 0u32;
+    if appcontainer_sid.is_some() {
+      attr_count += 1;
+    }
+    if !handles.is_empty() {
+      attr_count += 1;
+    }
+    if mitigation_policy != 0 {
+      attr_count += 1;
+    }
+
+    if attr_count == 0 {
+      let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+      startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+
+      let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+      let ok = unsafe {
+        if let Some(token) = restricted_token {
+          CreateProcessAsUserW(
+            token,
+            application_name.as_ptr(),
+            command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            inherit,
+            creation_flags,
+            std::ptr::null(),
+            current_dir.unwrap_or(std::ptr::null()),
+            &mut startup,
+            &mut pi,
+          )
+        } else {
+          CreateProcessW(
+            application_name.as_ptr(),
+            command_line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            inherit,
+            creation_flags,
+            std::ptr::null(),
+            current_dir.unwrap_or(std::ptr::null()),
+            &mut startup,
+            &mut pi,
+          )
+        }
+      };
+      if ok == 0 {
+        return Err(io::Error::last_os_error());
+      }
+      return Ok(pi);
+    }
+
+    let mut startup_info_ex: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    startup_info_ex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+
+    let mut attr_list = ProcThreadAttributeList::new(attr_count)?;
+    if appcontainer_sid.is_some() {
+      attr_list.update(
+        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+        std::ptr::addr_of_mut!(security_caps).cast(),
+        std::mem::size_of::<SECURITY_CAPABILITIES>(),
+      )?;
+    }
+    if !handles.is_empty() {
+      attr_list.update(
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        handles.as_mut_ptr().cast(),
+        handles.len() * std::mem::size_of::<windows_sys::Win32::Foundation::HANDLE>(),
+      )?;
+    }
+    if mitigation_policy != 0 {
+      attr_list.update(
+        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+        std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
+        std::mem::size_of::<u64>(),
+      )?;
+    }
+    startup_info_ex.lpAttributeList = attr_list.ptr;
+
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+      if let Some(token) = restricted_token {
+        CreateProcessAsUserW(
+          token,
+          application_name.as_ptr(),
+          command_line.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          inherit,
+          creation_flags | EXTENDED_STARTUPINFO_PRESENT,
+          std::ptr::null(),
+          current_dir.unwrap_or(std::ptr::null()),
+          std::ptr::addr_of_mut!(startup_info_ex).cast::<STARTUPINFOW>(),
+          &mut pi,
+        )
+      } else {
+        CreateProcessW(
+          application_name.as_ptr(),
+          command_line.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          inherit,
+          creation_flags | EXTENDED_STARTUPINFO_PRESENT,
+          std::ptr::null(),
+          current_dir.unwrap_or(std::ptr::null()),
+          std::ptr::addr_of_mut!(startup_info_ex).cast::<STARTUPINFOW>(),
+          &mut pi,
+        )
+      }
+    };
+    drop(attr_list);
+    if ok == 0 {
+      return Err(io::Error::last_os_error());
+    }
+    Ok(pi)
+  }
+
+  fn finish_spawn(
+    pi: PROCESS_INFORMATION,
+    mode: SandboxMode,
+    job: Job,
+    used_breakaway_from_job: bool,
+  ) -> io::Result<SpawnedChild> {
+    // SAFETY: handles returned by CreateProcess*.
+    let process = unsafe { OwnedHandle::from_raw_handle(pi.hProcess as RawHandle) };
+
+    let job_assigned = match job.assign_process(&process) {
+      Ok(()) => true,
+      Err(err) => {
+        match &err {
+          WinSandboxError::Win32 { code, .. } if *code == ERROR_ACCESS_DENIED => {
+            eprintln!(
+              "warning: AssignProcessToJobObject returned ERROR_ACCESS_DENIED; continuing without job enforcement"
+            );
+          }
+          _ => eprintln!("warning: AssignProcessToJobObject failed: {err}"),
+        }
+        false
+      }
+    };
+
+    // Resume the main thread after job assignment.
+    let resume = unsafe { ResumeThread(pi.hThread) };
+    if resume == u32::MAX {
+      unsafe {
+        let _ = CloseHandle(pi.hThread);
+      }
+      return Err(io::Error::last_os_error());
+    }
+    unsafe {
+      CloseHandle(pi.hThread);
+    }
+
+    Ok(SpawnedChild {
+      process,
+      pid: pi.dwProcessId,
+      mode,
+      job,
+      job_assigned,
+      used_breakaway_from_job,
+      _relocated_image_dir: None,
+    })
+  }
+
+  fn win_err(err: WinSandboxError) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, err.to_string())
+  }
+
+  #[derive(Debug)]
+  struct TempDir {
+    path: PathBuf,
+  }
+
+  impl TempDir {
+    fn new(prefix: &str) -> io::Result<Self> {
+      let mut path = std::env::temp_dir();
+      let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+      path.push(format!("{prefix}{}-{nanos}", std::process::id()));
+      fs::create_dir(&path)?;
+      Ok(Self { path })
+    }
+  }
+
+  impl Drop for TempDir {
+    fn drop(&mut self) {
+      let _ = fs::remove_dir_all(&self.path);
+    }
+  }
+
+  fn relocate_exe_for_appcontainer(exe: &Path, appcontainer_sid: PSID) -> io::Result<(TempDir, PathBuf)> {
+    let temp_dir = TempDir::new("win-sandbox-probe-image-")?;
+    let file_name = exe
+      .file_name()
+      .filter(|name| !name.is_empty())
+      .unwrap_or_else(|| OsStr::new("probe.exe"));
+    let dst = temp_dir.path.join(file_name);
+    fs::copy(exe, &dst)?;
+
+    // Best-effort grant directory access.
+    let _ = grant_read_execute_acl(&temp_dir.path, appcontainer_sid);
+    grant_read_execute_acl(&dst, appcontainer_sid)?;
+
+    Ok((temp_dir, dst))
+  }
+
+  fn grant_read_execute_acl(path: &Path, sid: PSID) -> io::Result<()> {
+    let mut name = wide_from_os(path.as_os_str());
+
+    let mut dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
+    let mut sd: *mut c_void = std::ptr::null_mut();
+
+    // SAFETY: output pointers are writable.
+    let status = unsafe {
+      GetNamedSecurityInfoW(
+        name.as_mut_ptr(),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        &mut dacl,
+        std::ptr::null_mut(),
+        &mut sd,
+      )
+    };
+    if status != 0 {
+      return Err(io::Error::from_raw_os_error(status as i32));
+    }
+
+    let mut ea: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
+    ea.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+    ea.grfAccessMode = GRANT_ACCESS;
+    ea.grfInheritance = NO_INHERITANCE;
+    ea.Trustee = TRUSTEE_W {
+      pMultipleTrustee: std::ptr::null_mut(),
+      MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+      TrusteeForm: TRUSTEE_IS_SID,
+      TrusteeType: TRUSTEE_IS_UNKNOWN,
+      ptstrName: sid as *mut _,
+    };
+
+    let mut new_dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
+    let status = unsafe { SetEntriesInAclW(1, &mut ea, dacl, &mut new_dacl) };
+    if status != 0 {
+      unsafe {
+        windows_sys::Win32::Foundation::LocalFree(sd as isize);
+      }
+      return Err(io::Error::from_raw_os_error(status as i32));
+    }
+
+    let status = unsafe {
+      SetNamedSecurityInfoW(
+        name.as_mut_ptr(),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        new_dacl,
+        std::ptr::null_mut(),
+      )
+    };
+
+    unsafe {
+      windows_sys::Win32::Foundation::LocalFree(sd as isize);
+      windows_sys::Win32::Foundation::LocalFree(new_dacl as isize);
+    }
+
+    if status != 0 {
+      return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(())
+  }
+
+  fn wide_from_os(value: &OsStr) -> Vec<u16> {
+    value.encode_wide().chain(Some(0)).collect()
+  }
+
+  fn append_arg_escaped(cmd: &mut Vec<u16>, arg: &OsStr) {
+    let arg_wide: Vec<u16> = arg.encode_wide().collect();
+    let needs_quotes = arg_wide.is_empty()
+      || arg_wide
+        .iter()
+        .any(|&c| c == b' ' as u16 || c == b'\t' as u16 || c == b'"' as u16);
+
+    if !needs_quotes {
+      cmd.extend_from_slice(&arg_wide);
+      return;
+    }
+
+    cmd.push(b'"' as u16);
+    let mut backslashes = 0usize;
+    for &ch in &arg_wide {
+      if ch == b'\\' as u16 {
+        backslashes += 1;
+        continue;
+      }
+
+      if ch == b'"' as u16 {
+        for _ in 0..(backslashes * 2 + 1) {
+          cmd.push(b'\\' as u16);
+        }
+        cmd.push(b'"' as u16);
+        backslashes = 0;
+        continue;
+      }
+
+      for _ in 0..backslashes {
+        cmd.push(b'\\' as u16);
+      }
+      backslashes = 0;
+      cmd.push(ch);
+    }
+
+    for _ in 0..(backslashes * 2) {
+      cmd.push(b'\\' as u16);
+    }
+    cmd.push(b'"' as u16);
+  }
+
+  fn build_command_line(program: &Path, args: &[OsString]) -> Vec<u16> {
+    let mut cmd: Vec<u16> = Vec::new();
+    append_arg_escaped(&mut cmd, program.as_os_str());
+    for arg in args {
+      cmd.push(b' ' as u16);
+      append_arg_escaped(&mut cmd, arg.as_os_str());
+    }
+    cmd.push(0);
+    cmd
+  }
+
+  struct ProcThreadAttributeList {
+    buf: Vec<u64>,
+    ptr: LPPROC_THREAD_ATTRIBUTE_LIST,
+  }
+
+  impl ProcThreadAttributeList {
+    fn new(attribute_count: u32) -> io::Result<Self> {
+      let mut size: usize = 0;
+      let ok = unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), attribute_count, 0, &mut size) };
+      if ok != 0 {
+        return Err(io::Error::new(
+          io::ErrorKind::Other,
+          "InitializeProcThreadAttributeList(size query) unexpectedly succeeded",
+        ));
+      }
+      let err = unsafe { GetLastError() };
+      const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+      if err != ERROR_INSUFFICIENT_BUFFER {
+        return Err(io::Error::from_raw_os_error(err as i32));
+      }
+
+      let mut buf: Vec<u64> = vec![0; (size + 7) / 8];
+      let ptr = buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+      let ok = unsafe { InitializeProcThreadAttributeList(ptr, attribute_count, 0, &mut size) };
+      if ok == 0 {
+        return Err(io::Error::last_os_error());
+      }
+      Ok(Self { buf, ptr })
+    }
+
+    fn update(&mut self, attribute: usize, value: *mut c_void, size: usize) -> io::Result<()> {
+      let ok = unsafe {
+        UpdateProcThreadAttribute(
+          self.ptr,
+          0,
+          attribute,
+          value,
+          size,
+          std::ptr::null_mut(),
+          std::ptr::null_mut(),
+        )
+      };
+      if ok == 0 {
+        return Err(io::Error::last_os_error());
+      }
+      Ok(())
+    }
+  }
+
+  impl Drop for ProcThreadAttributeList {
+    fn drop(&mut self) {
+      unsafe {
+        DeleteProcThreadAttributeList(self.ptr);
+      }
+    }
   }
 
   pub(super) fn main() {
@@ -209,19 +904,20 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
       args.timeout_ms
     );
 
-    let child = match spawn_sandboxed(&exe, &child_args, &inherit) {
+    let child = match RendererSandbox::spawn(&exe, &child_args, &inherit) {
       Ok(child) => child,
       Err(err) => {
-        eprintln!("error: spawn_sandboxed failed: {err}");
+        eprintln!("error: failed to spawn sandboxed child: {err}");
         return 2;
       }
     };
 
     println!(
-      "parent: spawned child pid={} level={:?} job_assigned={}",
+      "parent: spawned child pid={} mode={:?} job_assigned={} breakaway_from_job={}",
       child.pid,
-      child.level,
-      child.job.is_some()
+      child.mode,
+      child.job_assigned,
+      child.used_breakaway_from_job
     );
 
     // Keep any listener alive until after the child returns from its connect probe.
