@@ -76,7 +76,12 @@ pub fn send_fd(sock: &UnixStream, fd: BorrowedFd<'_>) -> io::Result<()> {
 
   // SAFETY: `sendmsg` reads the iov and control buffers for the duration of the call. They are
   // stack-allocated and remain valid.
-  let rc = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, 0) };
+  #[cfg(any(target_os = "linux", target_os = "android"))]
+  let flags = libc::MSG_NOSIGNAL;
+  #[cfg(not(any(target_os = "linux", target_os = "android")))]
+  let flags = 0;
+
+  let rc = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, flags) };
   if rc < 0 {
     return Err(io::Error::last_os_error());
   }
@@ -172,4 +177,3 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
   // SAFETY: `received_fd` came from the kernel via SCM_RIGHTS; we now own it.
   Ok(unsafe { OwnedFd::from_raw_fd(received_fd) })
 }
-

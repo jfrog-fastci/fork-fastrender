@@ -127,7 +127,7 @@ impl UnixSeqpacket {
     };
 
     // SAFETY: `hdr` points to valid data and control buffers for the duration of the call.
-    let rc = unsafe { libc::sendmsg(self.fd.as_raw_fd(), &hdr, 0) };
+    let rc = unsafe { libc::sendmsg(self.fd.as_raw_fd(), &hdr, libc::MSG_NOSIGNAL) };
     if rc < 0 {
       return Err(Error::Io(io::Error::last_os_error()));
     }

@@ -292,7 +292,7 @@ mod tests {
     }
 
     // SAFETY: msghdr is correctly initialized with valid pointers.
-    let rc = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, 0) };
+    let rc = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, libc::MSG_NOSIGNAL) };
     if rc < 0 {
       return Err(io::Error::last_os_error());
     }
@@ -384,4 +384,3 @@ mod tests {
     assert!(matches!(err, ShmValidateError::SizeMismatch { .. }));
   }
 }
-
