@@ -19643,42 +19643,74 @@ fn collect_fragment_sizes(
   sizes: &mut HashMap<usize, (f32, f32)>,
   scrollbars: &mut HashMap<usize, ScrollbarReservation>,
 ) {
-  let box_id = match &fragment.content {
-    FragmentContent::Block { box_id }
-    | FragmentContent::Inline { box_id, .. }
-    | FragmentContent::Text { box_id, .. }
-    | FragmentContent::Replaced { box_id, .. } => *box_id,
-    FragmentContent::RunningAnchor { .. } => None,
-    FragmentContent::FootnoteAnchor { .. } => None,
-    FragmentContent::Line { .. } => None,
-  };
+  // Fragment trees can be arbitrarily deep (especially with nested anchors/footnotes), so avoid
+  // recursion to prevent stack overflow on degenerate inputs.
+  let mut stack: Vec<&FragmentNode> = vec![fragment];
+  while let Some(fragment) = stack.pop() {
+    let box_id = match &fragment.content {
+      FragmentContent::Block { box_id }
+      | FragmentContent::Inline { box_id, .. }
+      | FragmentContent::Text { box_id, .. }
+      | FragmentContent::Replaced { box_id, .. } => *box_id,
+      FragmentContent::RunningAnchor { .. } => None,
+      FragmentContent::FootnoteAnchor { .. } => None,
+      FragmentContent::Line { .. } => None,
+    };
 
-  if let Some(id) = box_id {
-    let entry = sizes.entry(id).or_insert((0.0, 0.0));
-    entry.0 = entry.0.max(fragment.bounds.width());
-    entry.1 = entry.1.max(fragment.bounds.height());
+    if let Some(id) = box_id {
+      let entry = sizes.entry(id).or_insert((0.0, 0.0));
+      entry.0 = entry.0.max(fragment.bounds.width());
+      entry.1 = entry.1.max(fragment.bounds.height());
 
-    let reservation = scrollbars
-      .entry(id)
-      .or_insert_with(ScrollbarReservation::default);
-    reservation.left = reservation.left.max(fragment.scrollbar_reservation.left);
-    reservation.right = reservation.right.max(fragment.scrollbar_reservation.right);
-    reservation.top = reservation.top.max(fragment.scrollbar_reservation.top);
-    reservation.bottom = reservation
-      .bottom
-      .max(fragment.scrollbar_reservation.bottom);
-  }
-
-  match &fragment.content {
-    FragmentContent::RunningAnchor { snapshot, .. }
-    | FragmentContent::FootnoteAnchor { snapshot, .. } => {
-      collect_fragment_sizes(snapshot, sizes, scrollbars);
+      let reservation = scrollbars
+        .entry(id)
+        .or_insert_with(ScrollbarReservation::default);
+      reservation.left = reservation.left.max(fragment.scrollbar_reservation.left);
+      reservation.right = reservation.right.max(fragment.scrollbar_reservation.right);
+      reservation.top = reservation.top.max(fragment.scrollbar_reservation.top);
+      reservation.bottom = reservation
+        .bottom
+        .max(fragment.scrollbar_reservation.bottom);
     }
-    _ => {}
-  }
 
-  for child in fragment.children.iter() {
-    collect_fragment_sizes(child, sizes, scrollbars);
+    if let FragmentContent::RunningAnchor { snapshot, .. }
+    | FragmentContent::FootnoteAnchor { snapshot, .. } = &fragment.content
+    {
+      stack.push(snapshot);
+    }
+
+    for child in fragment.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+}
+
+#[cfg(test)]
+mod collect_fragment_sizes_tests {
+  use super::*;
+
+  #[test]
+  fn collect_fragment_sizes_does_not_overflow_stack_on_deep_trees() {
+    let handle = std::thread::Builder::new()
+      .name("collect_fragment_sizes_deep".into())
+      .stack_size(64 * 1024)
+      .spawn(|| {
+        let depth = 10_000usize;
+        let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+
+        let mut current = FragmentNode::new_block_with_id(rect, depth, vec![]);
+        for id in (1..depth).rev() {
+          current = FragmentNode::new_block_with_id(rect, id, vec![current]);
+        }
+
+        let mut sizes: HashMap<usize, (f32, f32)> = HashMap::new();
+        let mut scrollbars: HashMap<usize, ScrollbarReservation> = HashMap::new();
+        collect_fragment_sizes(&current, &mut sizes, &mut scrollbars);
+        assert_eq!(sizes.len(), depth);
+        assert_eq!(scrollbars.len(), depth);
+      })
+      .expect("spawn thread");
+    handle.join().expect("thread should complete without panic");
   }
 }
 
