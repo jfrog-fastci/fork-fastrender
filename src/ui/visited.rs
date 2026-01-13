@@ -14,7 +14,7 @@
 //! Recording all `about:*` pages quickly pollutes history and makes omnibox suggestions noisy.
 //! We therefore keep a small allowlist of useful `about:` pages and ignore the rest.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::SystemTime;
 
 use super::about_pages;
@@ -77,6 +77,22 @@ pub struct VisitedUrlRecord {
 pub struct VisitedUrlStore {
   records: VecDeque<VisitedUrlRecord>,
   capacity: usize,
+  /// Monotonic revision counter incremented on every mutation of `records`.
+  ///
+  /// This allows UI callers to cheaply detect whether cached search results are still valid.
+  revision: u64,
+  /// Fast URL → record index lookup for [`VisitedUrlStore::get`] / [`VisitedUrlStore::record_visit`].
+  ///
+  /// This is derived state and is rebuilt by constructors/seeders.
+  ///
+  /// ## Index base
+  ///
+  /// `VecDeque` supports `pop_front()` without shifting elements, but logical indices still change
+  /// (every remaining element's index is decremented). To avoid `O(n)` index rewrites on every
+  /// capacity eviction, we store indices as `url_index_base + logical_index`, and update
+  /// `url_index_base` when we pop from the front.
+  url_index: HashMap<String, usize>,
+  url_index_base: usize,
 }
 
 impl VisitedUrlStore {
@@ -88,7 +104,19 @@ impl VisitedUrlStore {
     Self {
       records: VecDeque::new(),
       capacity,
+      revision: 0,
+      url_index: HashMap::new(),
+      url_index_base: 0,
     }
+  }
+
+  /// Monotonic revision counter incremented on every mutation of the store.
+  pub fn revision(&self) -> u64 {
+    self.revision
+  }
+
+  fn bump_revision(&mut self) {
+    self.revision = self.revision.wrapping_add(1);
   }
 
   pub fn len(&self) -> usize {
@@ -100,7 +128,13 @@ impl VisitedUrlStore {
   }
 
   pub fn clear(&mut self) {
+    if self.records.is_empty() {
+      return;
+    }
     self.records.clear();
+    self.url_index.clear();
+    self.url_index_base = 0;
+    self.bump_revision();
   }
 
   pub fn iter_recent(&self) -> impl Iterator<Item = &VisitedUrlRecord> {
@@ -151,28 +185,85 @@ impl VisitedUrlStore {
     };
     let visit_count = visit_count.max(1);
 
-    if let Some(idx) = self.records.iter().position(|r| r.url == url) {
-      if let Some(mut existing) = self.records.remove(idx) {
+    // Dedup/update existing entry when present.
+    if let Some(idx) = self.lookup_index(url.as_str()) {
+      // Fast path: the entry is already most-recent; update in place without shifting.
+      if idx == self.records.len().saturating_sub(1)
+        && self.records.get(idx).is_some_and(|r| r.url == url)
+      {
+        let existing = self.records.get_mut(idx).expect("idx in-bounds");
         existing.last_visited = visited_at;
         existing.visit_count = existing.visit_count.saturating_add(visit_count);
         if title.is_some() {
           existing.title = title;
         }
-        self.records.push_back(existing);
+        self.bump_revision();
+        return;
       }
-      return;
+
+      // Slow-ish path: shift the entry to the end to preserve recency ordering.
+      if idx < self.records.len() && self.records.get(idx).is_some_and(|r| r.url == url) {
+        if let Some(mut existing) = self.records.remove(idx) {
+          existing.last_visited = visited_at;
+          existing.visit_count = existing.visit_count.saturating_add(visit_count);
+          if title.is_some() {
+            existing.title = title;
+          }
+          self.records.push_back(existing);
+          self.reindex_from(idx);
+          self.bump_revision();
+          return;
+        }
+      }
+
+      // Defensive fallback: if the index got out of sync (e.g. someone mutated `records`
+      // directly), rebuild and retry once.
+      self.rebuild_url_index();
+      if let Some(idx) = self.lookup_index(url.as_str()) {
+        if idx == self.records.len().saturating_sub(1)
+          && self.records.get(idx).is_some_and(|r| r.url == url)
+        {
+          let existing = self.records.get_mut(idx).expect("idx in-bounds");
+          existing.last_visited = visited_at;
+          existing.visit_count = existing.visit_count.saturating_add(visit_count);
+          if title.is_some() {
+            existing.title = title;
+          }
+          self.bump_revision();
+          return;
+        }
+
+        if idx < self.records.len() && self.records.get(idx).is_some_and(|r| r.url == url) {
+          if let Some(mut existing) = self.records.remove(idx) {
+            existing.last_visited = visited_at;
+            existing.visit_count = existing.visit_count.saturating_add(visit_count);
+            if title.is_some() {
+              existing.title = title;
+            }
+            self.records.push_back(existing);
+            self.reindex_from(idx);
+            self.bump_revision();
+            return;
+          }
+        }
+      }
     }
 
     self.records.push_back(VisitedUrlRecord {
-      url,
+      url: url.clone(),
       title,
       last_visited: visited_at,
       visit_count,
     });
+    self
+      .url_index
+      .insert(url, self.url_index_base.wrapping_add(self.records.len() - 1));
 
     while self.records.len() > self.capacity {
-      self.records.pop_front();
+      self.pop_front();
     }
+
+    self.bump_revision();
   }
 
   /// Populate the visited URL store from a persisted [`GlobalHistoryStore`].
@@ -259,12 +350,12 @@ impl VisitedUrlStore {
 
     let mut out = Vec::with_capacity(limit.min(self.len()));
     'records: for record in self.iter_recent() {
-      for token_lower in &tokens {
-        let in_url = contains_ascii_case_insensitive(&record.url, token_lower);
+      for token in &tokens {
+        let in_url = contains_ascii_case_insensitive(&record.url, token);
         let in_title = record
           .title
           .as_deref()
-          .is_some_and(|t| contains_ascii_case_insensitive(t, token_lower));
+          .is_some_and(|t| contains_ascii_case_insensitive(t, token));
         if !in_url && !in_title {
           continue 'records;
         }
@@ -280,8 +371,159 @@ impl VisitedUrlStore {
   }
 
   pub fn get(&self, url: &str) -> Option<&VisitedUrlRecord> {
-    self.records.iter().find(|r| r.url == url)
+    let idx = self.lookup_index(url)?;
+    self.records.get(idx).filter(|r| r.url == url)
   }
+
+  fn lookup_index(&self, url: &str) -> Option<usize> {
+    let abs = *self.url_index.get(url)?;
+    Some(abs.wrapping_sub(self.url_index_base))
+  }
+
+  fn pop_front(&mut self) -> Option<VisitedUrlRecord> {
+    let removed = self.records.pop_front()?;
+    self.url_index.remove(removed.url.as_str());
+    self.url_index_base = self.url_index_base.wrapping_add(1);
+    Some(removed)
+  }
+
+  fn rebuild_url_index(&mut self) {
+    self.url_index.clear();
+    for (idx, record) in self.records.iter().enumerate() {
+      self
+        .url_index
+        .insert(record.url.clone(), self.url_index_base.wrapping_add(idx));
+    }
+  }
+
+  fn reindex_from(&mut self, start: usize) {
+    for (idx, record) in self.records.iter().enumerate().skip(start) {
+      let abs = self.url_index_base.wrapping_add(idx);
+      if let Some(existing) = self.url_index.get_mut(record.url.as_str()) {
+        *existing = abs;
+      } else {
+        self.url_index.insert(record.url.clone(), abs);
+      }
+    }
+  }
+}
+
+/// Cached search helper for [`VisitedUrlStore`].
+///
+/// This is intended for UI callers (like omnibox) that re-run the same search query every frame.
+/// When both the query string and the visited store revision are unchanged, the per-call work is
+/// O(1) (returning a slice of cached match indices).
+#[derive(Debug, Default, Clone)]
+pub struct VisitedUrlSearcher {
+  last_query: String,
+  /// Cached lowercase tokens for `last_query`.
+  ///
+  /// Tokens are ASCII-lowercased so they can be passed directly to
+  /// [`contains_ascii_case_insensitive`].
+  last_tokens_lower: Vec<String>,
+  last_revision: u64,
+  cached_limit: usize,
+  cached_complete: bool,
+  cached_match_indices: Vec<usize>,
+}
+
+impl VisitedUrlSearcher {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Search `store` for `query`, returning indices into the store ordered by recency (most recent
+  /// first).
+  ///
+  /// - When `query` and `store.revision()` are unchanged, this returns cached indices without
+  ///   re-tokenizing or rescanning the store.
+  /// - `limit == 0` always returns an empty slice.
+  pub fn search_indices<'a>(
+    &'a mut self,
+    store: &VisitedUrlStore,
+    query: &str,
+    limit: usize,
+  ) -> &'a [usize] {
+    if limit == 0 {
+      self.cached_match_indices.clear();
+      self.cached_limit = 0;
+      self.cached_complete = true;
+      // Keep `last_query`/`last_revision` as-is; `limit == 0` is not a meaningful cache state.
+      return &self.cached_match_indices;
+    }
+
+    let store_revision = store.revision();
+    let query_changed = query != self.last_query;
+    let store_changed = store_revision != self.last_revision;
+    let needs_more = limit > self.cached_limit && !self.cached_complete;
+    if query_changed || store_changed || needs_more {
+      // Only re-tokenize when the query itself changes; if the store mutates while the query stays
+      // stable we can reuse the cached tokens.
+      if query_changed {
+        self.last_query = query.to_string();
+        let query_lower = query.to_ascii_lowercase();
+        self.last_tokens_lower = query_lower
+          .split_whitespace()
+          .filter(|t| !t.is_empty())
+          .map(|t| t.to_string())
+          .collect();
+      }
+      self.last_revision = store_revision;
+
+      let (indices, complete) = compute_search_match_indices(store, &self.last_tokens_lower, limit);
+      self.cached_match_indices = indices;
+      self.cached_complete = complete;
+      self.cached_limit = limit;
+    }
+
+    let n = limit.min(self.cached_match_indices.len());
+    &self.cached_match_indices[..n]
+  }
+}
+
+fn compute_search_match_indices(
+  store: &VisitedUrlStore,
+  tokens: &[String],
+  limit: usize,
+) -> (Vec<usize>, bool) {
+  if limit == 0 {
+    return (Vec::new(), true);
+  }
+
+  if tokens.is_empty() {
+    let indices: Vec<usize> = store
+      .records
+      .iter()
+      .enumerate()
+      .rev()
+      .take(limit)
+      .map(|(idx, _)| idx)
+      .collect();
+    let complete = store.records.len() <= limit;
+    return (indices, complete);
+  }
+
+  let mut out = Vec::with_capacity(limit.min(store.records.len()));
+  'records: for (idx, record) in store.records.iter().enumerate().rev() {
+    for token in tokens {
+      let in_url = contains_ascii_case_insensitive(&record.url, token);
+      let in_title = record
+        .title
+        .as_deref()
+        .is_some_and(|t| contains_ascii_case_insensitive(t, token));
+      if !in_url && !in_title {
+        continue 'records;
+      }
+    }
+
+    out.push(idx);
+    if out.len() >= limit {
+      break;
+    }
+  }
+
+  let complete = out.len() < limit;
+  (out, complete)
 }
 
 impl Default for VisitedUrlStore {
@@ -294,6 +536,31 @@ impl Default for VisitedUrlStore {
 mod tests {
   use super::*;
   use std::time::Duration;
+
+  fn assert_url_index_consistent(store: &VisitedUrlStore) {
+    assert_eq!(
+      store.url_index.len(),
+      store.records.len(),
+      "url index should track every record"
+    );
+    for (idx, record) in store.records.iter().enumerate() {
+      let expected_abs = store.url_index_base.wrapping_add(idx);
+      assert_eq!(
+        store.url_index.get(record.url.as_str()),
+        Some(&expected_abs),
+        "url index should map {} to {} (abs)",
+        record.url,
+        expected_abs
+      );
+      assert_eq!(
+        store.lookup_index(record.url.as_str()),
+        Some(idx),
+        "lookup_index should map {} to {} (logical)",
+        record.url,
+        idx
+      );
+    }
+  }
 
   #[test]
   fn dedup_refreshes_last_visited_and_preserves_title_when_none() {
@@ -325,6 +592,7 @@ mod tests {
     assert_eq!(b.url, "https://b.example/");
     assert_eq!(b.last_visited, t2);
     assert_eq!(b.visit_count, 1);
+    assert_url_index_consistent(&store);
   }
 
   #[test]
@@ -345,6 +613,7 @@ mod tests {
 
     let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
     assert_eq!(urls, vec!["c", "b"]);
+    assert_url_index_consistent(&store);
   }
 
   #[test]
@@ -404,6 +673,7 @@ mod tests {
       a.visit_count, 5,
       "expected visit_count to be accumulated across duplicate history entries"
     );
+    assert_url_index_consistent(&store);
   }
 
   #[test]
@@ -430,6 +700,7 @@ mod tests {
     assert_eq!(store.len(), 1);
     let record = store.iter_recent().next().unwrap();
     assert_eq!(record.url, "https://example.com/");
+    assert_url_index_consistent(&store);
   }
 
   #[test]
@@ -486,6 +757,7 @@ mod tests {
       example_com.last_visited,
       std::time::UNIX_EPOCH + Duration::from_millis(1_000)
     );
+    assert_url_index_consistent(&store);
   }
 
   #[test]
@@ -520,6 +792,7 @@ mod tests {
       store.iter_recent().next().unwrap().url,
       "https://example.com/"
     );
+    assert_url_index_consistent(&store);
   }
 
   #[test]
@@ -551,6 +824,123 @@ mod tests {
 
     let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
     assert_eq!(urls, vec!["https://c.example/", "https://b.example/"]);
+    assert_url_index_consistent(&store);
+  }
+
+  #[test]
+  fn url_index_tracks_record_updates_and_recency_ordering() {
+    let mut store = VisitedUrlStore::with_capacity(10);
+    let t1 = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+    let t2 = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
+    let t3 = SystemTime::UNIX_EPOCH + Duration::from_secs(3);
+    let t4 = SystemTime::UNIX_EPOCH + Duration::from_secs(4);
+    let t5 = SystemTime::UNIX_EPOCH + Duration::from_secs(5);
+
+    store.record_visit_at("https://a.example/".to_string(), Some("A".to_string()), t1);
+    store.record_visit_at("https://b.example/".to_string(), Some("B".to_string()), t2);
+    store.record_visit_at("https://c.example/".to_string(), Some("C".to_string()), t3);
+    assert_eq!(
+      store.records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+      vec!["https://a.example/", "https://b.example/", "https://c.example/"]
+    );
+    assert_url_index_consistent(&store);
+
+    // Updating a middle entry should move it to the back and rewrite shifted indices.
+    store.record_visit_at("https://b.example/".to_string(), None, t4);
+    assert_eq!(
+      store.records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+      vec!["https://a.example/", "https://c.example/", "https://b.example/"]
+    );
+    assert_eq!(store.get("https://b.example/").unwrap().last_visited, t4);
+    assert_url_index_consistent(&store);
+
+    // Updating the most-recent entry should not reorder.
+    store.record_visit_at("https://b.example/".to_string(), None, t5);
+    assert_eq!(
+      store.records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+      vec!["https://a.example/", "https://c.example/", "https://b.example/"]
+    );
+    assert_eq!(store.get("https://b.example/").unwrap().last_visited, t5);
+    assert_url_index_consistent(&store);
+  }
+
+  #[test]
+  fn url_index_is_correct_after_capacity_eviction() {
+    let mut store = VisitedUrlStore::with_capacity(3);
+    let t1 = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+    let t2 = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
+    let t3 = SystemTime::UNIX_EPOCH + Duration::from_secs(3);
+    let t4 = SystemTime::UNIX_EPOCH + Duration::from_secs(4);
+    let t5 = SystemTime::UNIX_EPOCH + Duration::from_secs(5);
+    let t6 = SystemTime::UNIX_EPOCH + Duration::from_secs(6);
+
+    store.record_visit_at("a".to_string(), None, t1);
+    store.record_visit_at("b".to_string(), None, t2);
+    store.record_visit_at("c".to_string(), None, t3);
+    assert_url_index_consistent(&store);
+
+    // Add a new entry at capacity; oldest should be evicted.
+    store.record_visit_at("d".to_string(), None, t4);
+    assert_eq!(
+      store.records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+      vec!["b", "c", "d"]
+    );
+    assert!(store.get("a").is_none());
+    assert!(store.get("b").is_some());
+    assert!(store.get("c").is_some());
+    assert!(store.get("d").is_some());
+    assert_url_index_consistent(&store);
+
+    // Moving an entry after eviction should still preserve index consistency.
+    store.record_visit_at("b".to_string(), None, t5);
+    assert_eq!(
+      store.records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+      vec!["c", "d", "b"]
+    );
+    assert_url_index_consistent(&store);
+
+    // Another eviction should drop the new oldest.
+    store.record_visit_at("e".to_string(), None, t6);
+    assert_eq!(
+      store.records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+      vec!["d", "b", "e"]
+    );
+    assert!(store.get("c").is_none());
+    assert_url_index_consistent(&store);
+  }
+
+  #[test]
+  fn cached_search_matches_uncached_for_repeated_calls() {
+    let mut store = VisitedUrlStore::with_capacity(10);
+    let t1 = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+    let t2 = SystemTime::UNIX_EPOCH + Duration::from_secs(2);
+    let t3 = SystemTime::UNIX_EPOCH + Duration::from_secs(3);
+
+    store.record_visit_at(
+      "https://example.com/".to_string(),
+      Some("Example Domain".to_string()),
+      t1,
+    );
+    store.record_visit_at("https://www.rust-lang.org/".to_string(), Some("Rust".to_string()), t2);
+    store.record_visit_at("https://example.org/other".to_string(), None, t3);
+
+    let uncached: Vec<&str> = store
+      .search("example", 10)
+      .into_iter()
+      .map(|r| r.url.as_str())
+      .collect();
+
+    let mut searcher = VisitedUrlSearcher::default();
+    let cached1 = searcher.search_indices(&store, "example", 10).to_vec();
+    let cached_urls1: Vec<&str> = cached1
+      .iter()
+      .filter_map(|idx| store.records.get(*idx))
+      .map(|r| r.url.as_str())
+      .collect();
+    assert_eq!(cached_urls1, uncached);
+
+    let cached2 = searcher.search_indices(&store, "example", 10).to_vec();
+    assert_eq!(cached2, cached1);
   }
 
   #[test]
@@ -590,5 +980,29 @@ mod tests {
     // Non-about URLs should be recorded normally.
     assert!(should_record_visit_in_history("https://example.com/"));
     assert!(should_record_visit_in_history("file:///tmp/a.html"));
+  }
+
+  #[test]
+  #[ignore]
+  fn record_benchmark_does_not_linear_scan_urls() {
+    use std::time::Instant;
+
+    let mut store = VisitedUrlStore::with_capacity(10_000);
+    let t0 = SystemTime::UNIX_EPOCH;
+    for i in 0..10_000_u32 {
+      store.record_visit_at(format!("https://example.test/{i}"), None, t0);
+    }
+
+    let start = Instant::now();
+    // Update a middle entry repeatedly; with a URL index this should avoid O(n) URL comparisons.
+    for i in 0..1000_u32 {
+      store.record_visit_at(
+        "https://example.test/5000".to_string(),
+        None,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1 + i as u64),
+      );
+    }
+    let dt = start.elapsed();
+    eprintln!("record 1000 updates into 10k-entry store: {dt:?}");
   }
 }
