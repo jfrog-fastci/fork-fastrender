@@ -6,6 +6,13 @@ use crate::tree::fragment_tree::ScrollbarReservation;
 
 use super::{FastRender, PreparedDocument};
 
+fn sanitize_viewport_scroll(scroll: Point) -> Point {
+  Point::new(
+    if scroll.x.is_finite() { scroll.x } else { 0.0 },
+    if scroll.y.is_finite() { scroll.y } else { 0.0 },
+  )
+}
+
 /// Scroll- and sticky-aware DOM2 geometry queries.
 ///
 /// This context is intended for DOM geometry APIs that need to mirror how the renderer positions
@@ -34,7 +41,8 @@ impl<'a> Dom2GeometryContext<'a> {
     // Mirror the paint pipeline: apply scroll snap before sticky offsets so sticky positioning is
     // computed against the snapped scroll state.
     let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
-    let scroll_state = scroll_result.state;
+    let mut scroll_state = scroll_result.state;
+    scroll_state.viewport = sanitize_viewport_scroll(scroll_state.viewport);
 
     renderer.apply_sticky_offsets_to_tree_with_scroll_state(&mut fragment_tree, &scroll_state);
     crate::scroll::apply_scroll_offsets(&mut fragment_tree, &scroll_state);
@@ -172,5 +180,94 @@ impl<'a> Dom2GeometryContext<'a> {
       padding_box,
       reservation,
     ))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::api::{FastRenderConfig, FontConfig, LayoutParallelism, PaintParallelism, RenderOptions, RuntimeToggles};
+  use crate::dom2::Document;
+
+  fn test_renderer() -> FastRender {
+    let config = FastRenderConfig::default()
+      .with_runtime_toggles(RuntimeToggles::default())
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled());
+    FastRender::with_config(config).expect("renderer")
+  }
+
+  fn mapping_for_prepared(prepared: &PreparedDocument) -> (Document, dom2::RendererDomMapping) {
+    let doc = Document::from_renderer_dom(prepared.dom());
+    let snapshot = doc.to_renderer_dom_with_mapping();
+    (doc, snapshot.mapping)
+  }
+
+  #[test]
+  fn viewport_fixed_position_cancels_viewport_scroll() {
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #fixed { position: fixed; left: 20px; top: 10px; width: 30px; height: 40px; }
+            #spacer { height: 2000px; }
+          </style>
+        </head>
+        <body>
+          <div id="fixed"></div>
+          <div id="spacer"></div>
+        </body>
+      </html>"#;
+
+    let mut renderer = test_renderer();
+    let prepared = renderer
+      .prepare_html(html, RenderOptions::new().with_viewport(200, 100))
+      .expect("prepare_html");
+
+    let (doc, mapping) = mapping_for_prepared(&prepared);
+    let fixed = doc.get_element_by_id("fixed").expect("fixed element");
+
+    let scroll_state = ScrollState::with_viewport(Point::new(0.0, 50.0));
+    let ctx = Dom2GeometryContext::new(&renderer, &prepared, &mapping, scroll_state);
+
+    let rect = ctx.border_box_in_viewport(fixed).expect("fixed rect");
+    assert_eq!(rect, Rect::from_xywh(20.0, 10.0, 30.0, 40.0));
+  }
+
+  #[test]
+  fn fixed_inside_fixed_containing_block_does_not_cancel_viewport_scroll() {
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #container { transform: translateX(0px); }
+            #fixed { position: fixed; left: 20px; top: 10px; width: 30px; height: 40px; }
+            #spacer { height: 2000px; }
+          </style>
+        </head>
+        <body>
+          <div id="container">
+            <div id="fixed"></div>
+          </div>
+          <div id="spacer"></div>
+        </body>
+      </html>"#;
+
+    let mut renderer = test_renderer();
+    let prepared = renderer
+      .prepare_html(html, RenderOptions::new().with_viewport(200, 100))
+      .expect("prepare_html");
+
+    let (doc, mapping) = mapping_for_prepared(&prepared);
+    let fixed = doc.get_element_by_id("fixed").expect("fixed element");
+
+    let scroll_state = ScrollState::with_viewport(Point::new(0.0, 50.0));
+    let ctx = Dom2GeometryContext::new(&renderer, &prepared, &mapping, scroll_state);
+
+    let rect = ctx.border_box_in_viewport(fixed).expect("fixed rect");
+    assert_eq!(rect, Rect::from_xywh(20.0, -40.0, 30.0, 40.0));
   }
 }
