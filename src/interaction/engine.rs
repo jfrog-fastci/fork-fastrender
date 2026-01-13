@@ -1121,6 +1121,21 @@ mod tests {
   }
 
   #[test]
+  fn clipboard_select_all_cancels_ime_preedit_for_input() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.state.ime_preedit.is_some());
+
+    assert!(engine.clipboard_select_all(&mut dom));
+    assert!(engine.state.ime_preedit.is_none());
+  }
+
+  #[test]
   fn arrow_keys_cancel_ime_preedit_for_focused_input() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"abcd\"></body></html>").expect("parse");
@@ -7132,6 +7147,14 @@ impl InteractionEngine {
     if self.state.focused != Some(node_id) {
       return;
     }
+    if self
+      .state
+      .ime_preedit
+      .as_ref()
+      .is_some_and(|ime_state| ime_state.node_id == node_id)
+    {
+      self.ime_cancel_internal();
+    }
     self.text_drag = None;
     self.text_drag_drop = None;
     match self.text_edit.as_mut() {
@@ -7161,6 +7184,14 @@ impl InteractionEngine {
     if start == end {
       self.set_text_selection_caret(node_id, start);
       return;
+    }
+    if self
+      .state
+      .ime_preedit
+      .as_ref()
+      .is_some_and(|ime_state| ime_state.node_id == node_id)
+    {
+      self.ime_cancel_internal();
     }
     self.text_drag = None;
     self.text_drag_drop = None;
@@ -7216,6 +7247,16 @@ impl InteractionEngine {
     let start = start.min(len);
     let end = end.min(len);
 
+    let mut changed = false;
+    if self
+      .state
+      .ime_preedit
+      .as_ref()
+      .is_some_and(|ime_state| ime_state.node_id == node_id)
+    {
+      changed |= self.ime_cancel_internal();
+    }
+
     self.text_drag = None;
     self.text_drag_drop = None;
 
@@ -7237,7 +7278,8 @@ impl InteractionEngine {
       }
     }
 
-    self.sync_text_edit_paint_state()
+    changed |= self.sync_text_edit_paint_state();
+    changed
   }
 
   /// Place the caret in the currently-focused text control based on a page-space point.
@@ -7309,9 +7351,18 @@ impl InteractionEngine {
       }
     }
 
+    let mut changed = false;
+    if self
+      .state
+      .ime_preedit
+      .as_ref()
+      .is_some_and(|ime_state| ime_state.node_id == node_id)
+    {
+      changed |= self.ime_cancel_internal();
+    }
+
     self.text_drag = None;
 
-    let mut changed = false;
     match self.text_edit.as_mut() {
       Some(edit) if edit.node_id == node_id => {
         let prev = (edit.caret, edit.caret_affinity, edit.selection_anchor);
@@ -10447,6 +10498,17 @@ impl InteractionEngine {
           let is_textarea = is_textarea(node);
           if is_text_input || is_textarea {
             handled_text_control = true;
+
+            // Selecting all moves the caret/selection via a non-IME interaction, so mirror native UX
+            // by cancelling any active preedit for this control.
+            if self
+              .state
+              .ime_preedit
+              .as_ref()
+              .is_some_and(|ime_state| ime_state.node_id == focused)
+            {
+              changed |= self.ime_cancel_internal();
+            }
 
             let current = if is_textarea {
               textarea_value_for_editing(node)
