@@ -10813,21 +10813,76 @@ impl InteractionEngine {
             }
           }
         }
-        KeyAction::Home | KeyAction::End => {
-          let next = if matches!(key, KeyAction::Home) {
-            0usize
-          } else {
-            current_len
-          };
-          edit.set_caret_and_maybe_extend_selection(next, false);
-        }
-        KeyAction::ShiftHome | KeyAction::ShiftEnd => {
-          let next = if matches!(key, KeyAction::ShiftHome) {
-            0usize
-          } else {
-            current_len
-          };
-          edit.set_caret_and_maybe_extend_selection(next, true);
+        KeyAction::Home | KeyAction::End | KeyAction::ShiftHome | KeyAction::ShiftEnd => {
+          let is_home = matches!(key, KeyAction::Home | KeyAction::ShiftHome);
+          let extend_selection = matches!(key, KeyAction::ShiftHome | KeyAction::ShiftEnd);
+
+          let mut next = if is_home { 0usize } else { current_len };
+
+          if focused_is_textarea {
+            let total_chars = current_len;
+            let caret = edit.caret.min(total_chars);
+
+            // Prefer a soft-wrap-aware visual line mapping when layout artifacts are available.
+            let mut visual_line_bounds: Option<(usize, usize)> = None;
+            if let (Some(box_tree), Some(fragment_tree)) = (box_tree, fragment_tree) {
+              if let Some((textarea_box_id, style)) =
+                textarea_control_snapshot_from_box_tree(box_tree, focused)
+              {
+                if let Some(border_rect) = fragment_rect_for_box_id(fragment_tree, textarea_box_id) {
+                  let style = style.as_ref();
+                  let viewport_size = fragment_tree.viewport_size();
+                  let content_rect =
+                    content_rect_for_border_rect(border_rect, style, viewport_size);
+                  let rect = inset_rect_uniform(content_rect, 2.0);
+                  if rect.width() > 0.0 && rect.width().is_finite() {
+                    let chars_per_line =
+                      crate::textarea::textarea_chars_per_line(style, rect.width());
+                    let layout =
+                      crate::textarea::build_textarea_visual_lines(&current, chars_per_line);
+                    let line_idx = crate::textarea::textarea_visual_line_index_for_caret(
+                      &current,
+                      &layout,
+                      caret,
+                    );
+                    if let Some(line) = layout.lines.get(line_idx).copied() {
+                      visual_line_bounds = Some((line.start_char, line.end_char));
+                    }
+                  }
+                }
+              }
+            }
+
+            // Fallback: newline-delimited line boundaries (no soft-wrap support).
+            if visual_line_bounds.is_none() {
+              let mut line_starts: Vec<usize> = vec![0];
+              let mut idx = 0usize;
+              for ch in current.chars() {
+                if ch == '\n' {
+                  line_starts.push(idx + 1);
+                }
+                idx += 1;
+              }
+              let total = idx;
+              let caret = caret.min(total);
+              let line_idx = line_starts
+                .partition_point(|&start| start <= caret)
+                .saturating_sub(1);
+              let line_start = *line_starts.get(line_idx).unwrap_or(&0);
+              let line_end = if let Some(next_start) = line_starts.get(line_idx + 1) {
+                next_start.saturating_sub(1)
+              } else {
+                total
+              };
+              visual_line_bounds = Some((line_start, line_end));
+            }
+
+            if let Some((start, end)) = visual_line_bounds {
+              next = if is_home { start } else { end };
+            }
+          }
+
+          edit.set_caret_and_maybe_extend_selection(next, extend_selection);
         }
         KeyAction::SelectAll => {
           edit.preferred_x = None;

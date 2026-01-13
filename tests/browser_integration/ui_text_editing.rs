@@ -294,7 +294,9 @@ def</textarea>
   )?;
   let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
 
-  let click = (10.0, 80.0);
+  // Click on the second line so `End` moves to the end of the textarea value (not just the first
+  // line).
+  let click = (10.0, 100.0);
   let _ =
     controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
@@ -326,6 +328,127 @@ def</textarea>
     "expected ArrowDown to move caret back to last line before insertion"
   );
 
+  Ok(())
+}
+
+#[test]
+fn textarea_home_moves_to_start_of_current_line_not_document() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 200);
+  let url = "https://example.com/index.html";
+
+  let html = "<!doctype html>\
+    <html>\
+      <head>\
+        <meta charset=\"utf-8\">\
+        <style>\
+          html, body { margin: 0; padding: 0; }\
+          #ta { position: absolute; left: 0; top: 0; width: 280px; height: 80px; font-family: \"Noto Sans Mono\"; font-size: 20px; }\
+        </style>\
+      </head>\
+      <body>\
+        <textarea id=\"ta\">abc\ndef</textarea>\
+      </body>\
+    </html>";
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus on the second (newline-delimited) line.
+  let click = (10.0, 35.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Force caret to the end of the textarea, then Home should move to the start of the current line
+  // ("def"), not the start of the whole textarea.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(textarea.get_attribute_ref("data-fastr-value"), Some("abc\nXdef"));
+  Ok(())
+}
+
+#[test]
+fn textarea_end_moves_to_end_of_current_visual_line_when_wrapped() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+
+  // Keep this identical to the textarea visual-line layout heuristics used by interaction code:
+  // - monospace font
+  // - width chosen so that (content_width - 4px inset) / (font_size * 0.6) floors to 10 chars/line.
+  let initial = "012345678901234567890123456789";
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body {{ margin: 0; padding: 0; }}
+            #ta {{
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 124px;
+              height: 80px;
+              padding: 0;
+              border: 0;
+              font-family: "Noto Sans Mono";
+              font-size: 20px;
+            }}
+          </style>
+        </head>
+        <body>
+          <textarea id="ta">{initial}</textarea>
+        </body>
+      </html>
+    "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the textarea.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Move to the second wrapped (visual) line and place the caret somewhere in the middle.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowDown))?;
+  for _ in 0..3 {
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowRight))?;
+  }
+
+  // End should move to the end of the *current visual line*, not to the end of the entire value.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let textarea = find_element_by_id(controller.document().dom(), "ta");
+  assert_eq!(
+    textarea.get_attribute_ref("data-fastr-value"),
+    Some("01234567890123456789X0123456789")
+  );
   Ok(())
 }
 
