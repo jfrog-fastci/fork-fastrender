@@ -8693,14 +8693,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let is_active_window = Some(*id) == active_window_id;
         let omnibox_open_before = win.app.browser_state.chrome.omnibox.open;
 
-        let active_url_for_star = win
+        let star_state_before = win
           .app
           .browser_state
           .active_tab()
           .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()))
-          .map(str::to_string);
-        let star_state_before = active_url_for_star
-          .as_deref()
           .is_some_and(|url| win.app.bookmarks.contains_url(url));
 
         if !is_source_window || force_full_sync {
@@ -8714,8 +8711,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         win.app.last_synced_bookmarks_revision = win.app.bookmarks.revision();
 
-        let star_state_after = active_url_for_star
-          .as_deref()
+        let star_state_after = win
+          .app
+          .browser_state
+          .active_tab()
+          .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()))
           .is_some_and(|url| win.app.bookmarks.contains_url(url));
         let star_state_changed = star_state_before != star_state_after;
 
