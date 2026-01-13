@@ -373,7 +373,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Ctrl/Cmd+Click link | Open link in new tab |
 | Middle-click link | Open link in new tab |
 | Mouse Back / Mouse Forward (buttons 4/5 on Windows/macOS, 8/9 on X11) | Back / Forward |
-| Shift+F10 (page focus); Apps/Menu key (page focus, Win/Linux) | Open page context menu |
+| Shift+F10 (focused element); Apps/Menu key (page focus, Win/Linux) | Open context menu |
 | PageUp (page focus) | Scroll up |
 | PageDown (page focus) | Scroll down |
 | ArrowUp (page focus, no element focused) | Scroll up |
@@ -395,6 +395,9 @@ Notes:
 - Zoom is tracked per-tab and persisted in the browser session file (see `src/ui/session.rs`).
 - Ctrl/Cmd+S and Ctrl/Cmd+P are reserved by browser chrome: they currently show a “not implemented
   yet” toast and are not forwarded to the rendered page.
+- Shift+F10 opens the context menu for the currently focused surface:
+  - page focus → page context menu
+  - focused tab group chip → tab group context menu (rename/color/ungroup)
 
 ## Menu bar
 
