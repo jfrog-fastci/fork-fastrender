@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use thiserror::Error;
@@ -120,6 +121,10 @@ impl VolumeControl {
     self.ramp.gain()
   }
 
+  fn is_potentially_nonzero(&self) -> bool {
+    self.ramp.current_gain > 0.0 || self.ramp.target_gain > 0.0
+  }
+
   fn set_volume(&mut self, volume: f32, ramp_frames: u32) {
     let volume = sanitize_unit_f32(volume);
     self.unmuted_volume = volume;
@@ -145,6 +150,7 @@ impl VolumeControl {
 pub struct AudioMixer {
   sample_rate_hz: u32,
   channels: usize,
+  counts: Arc<MixerCounts>,
   streams: Mutex<Vec<Weak<AudioStreamInner>>>,
   master: Mutex<VolumeControl>,
   gain_ramp_frames: u32,
@@ -158,6 +164,7 @@ impl AudioMixer {
     Self {
       sample_rate_hz,
       channels,
+      counts: Arc::new(MixerCounts::default()),
       streams: Mutex::new(Vec::new()),
       master: Mutex::new(VolumeControl::new(1.0)),
       gain_ramp_frames: gain_ramp_frames(sample_rate_hz),
@@ -195,6 +202,11 @@ impl AudioMixer {
       channels: self.channels,
       gain_ramp_frames: self.gain_ramp_frames,
       state: Mutex::new(AudioStreamState::new(self.gain_ramp_frames)),
+      counts: Arc::clone(&self.counts),
+      is_playing: AtomicBool::new(false),
+      has_samples: AtomicBool::new(false),
+      is_active: AtomicBool::new(false),
+      is_audible: AtomicBool::new(false),
     });
 
     self.streams.lock().push(Arc::downgrade(&inner));
@@ -225,13 +237,67 @@ impl AudioMixer {
       "output buffer must be a multiple of channel count"
     );
 
+    let frames_requested = out.len() / self.channels;
+
+    // Fast path: nothing is active/audible, so avoid taking the streams lock entirely.
+    if self.counts.active_streams.load(Ordering::Acquire) == 0 {
+      out.fill(0.0);
+      // Still advance the master gain ramp so volume changes progress while idle.
+      let mut master = self.master.lock();
+      for _ in 0..frames_requested {
+        master.advance_frame();
+      }
+      return;
+    }
+
+    // Fast path: some streams are active (we must drain for clock progression) but none are
+    // currently audible.
+    if self.counts.audible_streams.load(Ordering::Acquire) == 0 {
+      out.fill(0.0);
+
+      {
+        // Important: keep this allocation-free for audio callbacks. We retain dead streams in-place
+        // without collecting into a temporary Vec.
+        let mut guard = self.streams.lock();
+        guard.retain(|weak| {
+          if let Some(stream) = weak.upgrade() {
+            if stream.is_active.load(Ordering::Acquire) {
+              stream.drain_frames(frames_requested);
+            }
+            true
+          } else {
+            false
+          }
+        });
+      }
+
+      // Output is already silent, but still advance the master gain ramp.
+      let mut master = self.master.lock();
+      for _ in 0..frames_requested {
+        master.advance_frame();
+      }
+      return;
+    }
+
+    // At least one stream is audible. Avoid clearing `out` up-front by initializing it from the
+    // first audible stream and then accumulating the rest.
+    let mut out_initialized = false;
     {
       // Important: keep this allocation-free for audio callbacks. We retain dead streams in-place
       // without collecting into a temporary Vec.
       let mut guard = self.streams.lock();
       guard.retain(|weak| {
         if let Some(stream) = weak.upgrade() {
-          stream.mix_into(out);
+          if stream.is_audible.load(Ordering::Acquire) {
+            if !out_initialized {
+              stream.mix_write_into(out);
+              out_initialized = true;
+            } else {
+              stream.mix_add_into(out);
+            }
+          } else if stream.is_active.load(Ordering::Acquire) {
+            stream.drain_frames(frames_requested);
+          }
           true
         } else {
           false
@@ -239,11 +305,15 @@ impl AudioMixer {
       });
     }
 
+    if !out_initialized {
+      // Defensive: counts can temporarily drift during concurrent state updates/teardown.
+      out.fill(0.0);
+    }
+
     // Apply master gain after mixing so gain changes affect amplitude but never affect stream drain
     // or time progression.
     let mut master = self.master.lock();
-    let frames = out.len() / self.channels;
-    for frame in 0..frames {
+    for frame in 0..frames_requested {
       let gain_raw = master.gain();
       let gain = if gain_raw.is_finite() && (gain_raw == 0.0 || gain_raw.is_normal()) {
         gain_raw
@@ -273,6 +343,12 @@ impl AudioMixer {
     // misbehaves or in the face of extreme cancellation.
     sanitize_mix_buffer_in_place(out);
   }
+}
+
+#[derive(Debug, Default)]
+struct MixerCounts {
+  active_streams: AtomicUsize,
+  audible_streams: AtomicUsize,
 }
 
 #[derive(Debug, Clone)]
@@ -330,6 +406,9 @@ impl AudioStreamHandle {
   ///
   /// The input must have a length that is a multiple of the stream's channel count.
   pub fn enqueue_samples(&self, samples: Vec<f32>) -> Result<(), AudioStreamEnqueueError> {
+    if samples.is_empty() {
+      return Ok(());
+    }
     if samples.len() % self.inner.channels != 0 {
       return Err(AudioStreamEnqueueError::InvalidInterleavedSampleCount {
         len: samples.len(),
@@ -347,6 +426,16 @@ impl AudioStreamHandle {
     let mut state = self.inner.state.lock();
     if state.eos {
       return Err(AudioStreamEnqueueError::StreamFinished);
+    }
+    let was_empty = state.queue.is_empty();
+    if was_empty {
+      // Ensure the mixer observes this stream as active before we extend the queue. This prevents
+      // callback fast-paths from outputting silence while producers are in the middle of queueing
+      // the first samples.
+      self.inner.has_samples.store(true, Ordering::Release);
+      self
+        .inner
+        .refresh_flags(AudioStreamInner::gain_potential_nonzero(&state));
     }
     state.queue.extend(samples);
     Ok(())
@@ -370,14 +459,20 @@ impl AudioStreamHandle {
   ///
   /// This is idempotent.
   pub fn play(&self) {
-    let mut state = self.inner.state.lock();
-    state.is_playing = true;
+    self.inner.is_playing.store(true, Ordering::Release);
+    let state = self.inner.state.lock();
+    self
+      .inner
+      .refresh_flags(AudioStreamInner::gain_potential_nonzero(&state));
   }
 
   /// Sets the per-stream volume in the range `[0.0, 1.0]`.
   pub fn set_volume(&self, volume: f32) {
     let mut state = self.inner.state.lock();
     state.volume.set_volume(volume, self.inner.gain_ramp_frames);
+    let gain_potential = AudioStreamInner::gain_potential_nonzero(&state);
+    drop(state);
+    self.inner.refresh_flags(gain_potential);
   }
 
   /// Mutes/unmutes the stream output.
@@ -386,6 +481,9 @@ impl AudioStreamHandle {
   pub fn set_muted(&self, muted: bool) {
     let mut state = self.inner.state.lock();
     state.volume.set_muted(muted, self.inner.gain_ramp_frames);
+    let gain_potential = AudioStreamInner::gain_potential_nonzero(&state);
+    drop(state);
+    self.inner.refresh_flags(gain_potential);
   }
 
   /// Sets the stream's "group" volume in the range `[0.0, 1.0]`.
@@ -397,6 +495,9 @@ impl AudioStreamHandle {
     state
       .group_volume
       .set_volume(volume, self.inner.gain_ramp_frames);
+    let gain_potential = AudioStreamInner::gain_potential_nonzero(&state);
+    drop(state);
+    self.inner.refresh_flags(gain_potential);
   }
 
   /// Mutes/unmutes the stream's "group" gain.
@@ -405,6 +506,9 @@ impl AudioStreamHandle {
     state
       .group_volume
       .set_muted(muted, self.inner.gain_ramp_frames);
+    let gain_potential = AudioStreamInner::gain_potential_nonzero(&state);
+    drop(state);
+    self.inner.refresh_flags(gain_potential);
   }
 
   /// Pauses the stream if it is not already paused.
@@ -413,8 +517,11 @@ impl AudioStreamHandle {
   ///
   /// This is idempotent.
   pub fn pause(&self) {
-    let mut state = self.inner.state.lock();
-    state.is_playing = false;
+    self.inner.is_playing.store(false, Ordering::Release);
+    let state = self.inner.state.lock();
+    self
+      .inner
+      .refresh_flags(AudioStreamInner::gain_potential_nonzero(&state));
   }
 
   /// Drops all queued samples immediately.
@@ -423,6 +530,10 @@ impl AudioStreamHandle {
   pub fn flush(&self) {
     let mut state = self.inner.state.lock();
     state.queue.clear();
+    self.inner.has_samples.store(false, Ordering::Release);
+    drop(state);
+    // Gaining potential doesn't matter if there are no samples, but keeps counts consistent.
+    self.inner.refresh_flags(false);
   }
 
   /// Flushes queued samples and resets the stream clock mapping so the media time jumps to
@@ -436,6 +547,9 @@ impl AudioStreamHandle {
     state.played_frames = 0;
     // Seeking resets stream completion state so new samples can be pushed for the new timeline.
     state.eos = false;
+    self.inner.has_samples.store(false, Ordering::Release);
+    drop(state);
+    self.inner.refresh_flags(false);
   }
 
   /// Alias for [`Self::seek_to`].
@@ -484,29 +598,135 @@ struct AudioStreamInner {
   channels: usize,
   gain_ramp_frames: u32,
   state: Mutex<AudioStreamState>,
+  counts: Arc<MixerCounts>,
+  is_playing: AtomicBool,
+  has_samples: AtomicBool,
+  is_active: AtomicBool,
+  is_audible: AtomicBool,
 }
 
 impl AudioStreamInner {
-  fn mix_into(&self, out: &mut [f32]) {
-    let frames_requested = out.len() / self.channels;
+  fn gain_potential_nonzero(state: &AudioStreamState) -> bool {
+    state.volume.is_potentially_nonzero() && state.group_volume.is_potentially_nonzero()
+  }
 
-    let mut state = self.state.lock();
-    if !state.is_playing {
+  fn refresh_flags(&self, gain_potential_nonzero: bool) {
+    let playing = self.is_playing.load(Ordering::Acquire);
+    let has_samples = self.has_samples.load(Ordering::Acquire);
+
+    let should_active = playing && has_samples;
+    let should_audible = should_active && gain_potential_nonzero;
+
+    let prev_active = self.is_active.swap(should_active, Ordering::AcqRel);
+    let prev_audible = self.is_audible.swap(should_audible, Ordering::AcqRel);
+
+    if prev_active && !should_active {
+      // Deactivating: audible must be dropped first to preserve `audible <= active` invariant.
+      if prev_audible {
+        self
+          .counts
+          .audible_streams
+          .fetch_sub(1, Ordering::AcqRel);
+      }
+      self.counts.active_streams.fetch_sub(1, Ordering::AcqRel);
       return;
     }
 
+    if !prev_active && should_active {
+      // Activating: active must be incremented before audible.
+      self.counts.active_streams.fetch_add(1, Ordering::AcqRel);
+      if should_audible {
+        self
+          .counts
+          .audible_streams
+          .fetch_add(1, Ordering::AcqRel);
+      }
+      return;
+    }
+
+    // Active state unchanged; adjust audible if needed.
+    if prev_audible != should_audible {
+      if should_audible {
+        self
+          .counts
+          .audible_streams
+          .fetch_add(1, Ordering::AcqRel);
+      } else {
+        self
+          .counts
+          .audible_streams
+          .fetch_sub(1, Ordering::AcqRel);
+      }
+    }
+  }
+
+  fn mix_write_into(&self, out: &mut [f32]) {
+    let frames_requested = out.len() / self.channels;
+    if !self.is_playing.load(Ordering::Acquire) {
+      out.fill(0.0);
+      return;
+    }
+
+    let mut state = self.state.lock();
     let available_frames = state.queue.len() / self.channels;
     let frames_to_mix = available_frames.min(frames_requested);
     if frames_to_mix == 0 {
+      out.fill(0.0);
+      let has_samples = !state.queue.is_empty();
+      self.has_samples.store(has_samples, Ordering::Release);
+      let gain_potential = Self::gain_potential_nonzero(&state);
+      drop(state);
+      self.refresh_flags(gain_potential);
       return;
     }
 
-    // Mix by consuming samples from the front of the queue.
-    //
-    // Important semantics:
-    // - We only advance the playhead by the number of frames actually consumed (so underflow
-    //   behaves like a stalled clock, not a drifting one).
-    // - When paused, we return early above so we neither drain the queue nor advance the clock.
+    let mut frames_mixed = 0usize;
+    for frame in 0..frames_to_mix {
+      let gain = state.volume.gain() * state.group_volume.gain();
+      let out_base = frame * self.channels;
+      for ch in 0..self.channels {
+        let Some(sample) = state.queue.pop_front() else {
+          break;
+        };
+        out[out_base + ch] = sample * gain;
+      }
+      state.volume.advance_frame();
+      state.group_volume.advance_frame();
+      frames_mixed += 1;
+    }
+
+    let samples_mixed = frames_mixed.saturating_mul(self.channels);
+    if samples_mixed < out.len() {
+      out[samples_mixed..].fill(0.0);
+    }
+
+    state.played_frames = state.played_frames.saturating_add(frames_mixed as u64);
+    let has_samples = !state.queue.is_empty();
+    self.has_samples.store(has_samples, Ordering::Release);
+    let gain_potential = Self::gain_potential_nonzero(&state);
+    drop(state);
+    self.refresh_flags(gain_potential);
+  }
+
+  fn mix_add_into(&self, out: &mut [f32]) {
+    let frames_requested = out.len() / self.channels;
+    if !self.is_playing.load(Ordering::Acquire) {
+      return;
+    }
+
+    let mut state = self.state.lock();
+    let available_frames = state.queue.len() / self.channels;
+    let frames_to_mix = available_frames.min(frames_requested);
+    if frames_to_mix == 0 {
+      let has_samples = !state.queue.is_empty();
+      self.has_samples.store(has_samples, Ordering::Release);
+      let gain_potential = Self::gain_potential_nonzero(&state);
+      drop(state);
+      self.refresh_flags(gain_potential);
+      return;
+    }
+
+    let mut frames_mixed = 0usize;
     for frame in 0..frames_to_mix {
       let gain_raw = state.volume.gain() * state.group_volume.gain();
       // Treat non-finite/denormal gains as silence so we never poison the mix. Still drain queued
@@ -518,7 +738,6 @@ impl AudioStreamInner {
       };
       let out_base = frame * self.channels;
       for ch in 0..self.channels {
-        // The queue length check above guarantees availability, but keep this robust.
         let Some(sample) = state.queue.pop_front() else {
           break;
         };
@@ -544,15 +763,70 @@ impl AudioStreamInner {
       }
       state.volume.advance_frame();
       state.group_volume.advance_frame();
+      frames_mixed += 1;
     }
 
-    state.played_frames = state.played_frames.saturating_add(frames_to_mix as u64);
+    state.played_frames = state.played_frames.saturating_add(frames_mixed as u64);
+    let has_samples = !state.queue.is_empty();
+    self.has_samples.store(has_samples, Ordering::Release);
+    let gain_potential = Self::gain_potential_nonzero(&state);
+    drop(state);
+    self.refresh_flags(gain_potential);
+  }
+
+  fn drain_frames(&self, frames_requested: usize) {
+    if !self.is_playing.load(Ordering::Acquire) {
+      return;
+    }
+
+    let mut state = self.state.lock();
+    let available_frames = state.queue.len() / self.channels;
+    let frames_to_drain = available_frames.min(frames_requested);
+    if frames_to_drain == 0 {
+      let has_samples = !state.queue.is_empty();
+      self.has_samples.store(has_samples, Ordering::Release);
+      let gain_potential = Self::gain_potential_nonzero(&state);
+      drop(state);
+      self.refresh_flags(gain_potential);
+      return;
+    }
+
+    for _frame in 0..frames_to_drain {
+      for _ch in 0..self.channels {
+        if state.queue.pop_front().is_none() {
+          break;
+        }
+      }
+      state.volume.advance_frame();
+      state.group_volume.advance_frame();
+    }
+
+    state.played_frames = state.played_frames.saturating_add(frames_to_drain as u64);
+    let has_samples = !state.queue.is_empty();
+    self.has_samples.store(has_samples, Ordering::Release);
+    let gain_potential = Self::gain_potential_nonzero(&state);
+    drop(state);
+    self.refresh_flags(gain_potential);
+  }
+}
+
+impl Drop for AudioStreamInner {
+  fn drop(&mut self) {
+    // Preserve `audible <= active` invariant.
+    if self.is_audible.load(Ordering::Acquire) {
+      self
+        .counts
+        .audible_streams
+        .fetch_sub(1, Ordering::AcqRel);
+    }
+    if self.is_active.load(Ordering::Acquire) {
+      self.counts.active_streams.fetch_sub(1, Ordering::AcqRel);
+    }
   }
 }
 
 #[derive(Debug)]
 struct AudioStreamState {
-  is_playing: bool,
   base_pts: Duration,
   /// Output latency/preroll, expressed in frames at `sample_rate_hz`.
   preroll_frames: u64,
@@ -566,7 +840,6 @@ struct AudioStreamState {
 impl AudioStreamState {
   fn new(_gain_ramp_frames: u32) -> Self {
     Self {
-      is_playing: false,
       base_pts: Duration::ZERO,
       preroll_frames: 0,
       played_frames: 0,
@@ -1095,5 +1368,33 @@ mod tests {
     // After the preroll, timeline should advance with rendered frames.
     let _ = backend.render(480); // +10ms
     assert_eq!(stream.current_time(), Duration::from_millis(10));
+  }
+
+  #[test]
+  fn muted_stream_outputs_silence_after_ramp() {
+    // Use a low sample rate so the gain ramp is very short.
+    let backend = NullAudioBackend::new(100, 1);
+    let ramp_frames = gain_ramp_frames(backend.mixer().sample_rate_hz()) as usize;
+
+    let stream = backend.create_stream();
+    stream.play();
+    stream.enqueue_samples(vec![1.0; 16]).unwrap();
+    stream.set_muted(true);
+
+    let out = backend.render(ramp_frames + 8);
+    assert!(
+      out[ramp_frames..].iter().all(|sample| sample.abs() <= 1e-6),
+      "expected silence after mute ramp (ramp_frames={}, out={:?})",
+      ramp_frames,
+      out
+    );
+  }
+
+  #[test]
+  fn mixer_zeroes_output_when_no_active_streams() {
+    let mixer = AudioMixer::new(48_000, 1);
+    let mut out = vec![1.0; 240];
+    mixer.mix_into(&mut out);
+    assert!(all_samples_eq(&out, 0.0));
   }
 }
