@@ -21143,7 +21143,12 @@ impl App {
     let _span = self.trace.span("handle_winit_input_event", "ui.input");
 
     if let ChromeA11yBackend::FastRender(a11y) = &self.chrome_a11y {
-      let _ = a11y.on_window_event(&self.window, event);
+      // Mirror the recommended `accesskit_winit` integration pattern: when the adapter asks for a
+      // redraw (e.g. when assistive technology becomes active), schedule one so `render_frame`
+      // can publish an up-to-date tree update via `update_if_active`.
+      if a11y.on_window_event(&self.window, event) {
+        self.window.request_redraw();
+      }
     }
 
     match event {
