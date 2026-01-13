@@ -89,6 +89,23 @@ The **A/V sync layer** should reason in terms of:
 
 ---
 
+### Timestamp representation (avoid floats)
+
+Most drift bugs are caused by choosing the wrong **clock**, but a surprising number come from
+choosing the wrong **number type**.
+
+Guidelines:
+
+* Prefer `std::time::Duration` (or integer tick counters) for internal media timestamps.
+* Avoid accumulating `f32` / `f64` deltas over long playback: floating point rounding error can
+  accumulate into noticeable drift, especially with high-resolution container timebases (e.g. 90kHz
+  PTS) and long-running playback.
+* Use `src/media/timebase.rs` for tick ↔ `Duration` conversions (it rounds and saturates instead of
+  overflowing).
+* Only convert to `f64` seconds at API boundaries like `HTMLMediaElement.currentTime` / UI displays.
+
+---
+
 ### Audio device time
 
 *What it is:* the audio hardware’s notion of time, expressed as “when samples will be heard”.

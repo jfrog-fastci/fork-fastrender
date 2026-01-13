@@ -1,3 +1,11 @@
+//! Media timestamp helpers.
+//!
+//! This module is the canonical “timebase math” for the media pipeline: converting container
+//! timestamps (typically i64 ticks in an arbitrary timebase) into `Duration` and back.
+//!
+//! See `docs/media_clocking.md` for the overall A/V clocking model (audio master clock, tick as
+//! wake-up only).
+
 use std::time::Duration;
 
 /// A rational timebase describing the duration of a single "tick".
