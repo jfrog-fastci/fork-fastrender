@@ -28,6 +28,8 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Browser page interaction (forms, focus): [`instructions/browser_interaction.md`](../instructions/browser_interaction.md)
 - Desktop browser app (`browser` binary): [browser.md](browser.md)
 - Running the desktop browser UI locally: [browser_ui.md](browser_ui.md)
+- Manual chrome test matrix (quick): [chrome_test_matrix.md](chrome_test_matrix.md)
+- Manual chrome regression checklist (full): [browser_chrome_manual_test_matrix.md](browser_chrome_manual_test_matrix.md)
 - Internal `about:` pages (debugging surfaces like `about:gpu` / `about:processes`): [about_pages.md](about_pages.md)
 - Chrome accessibility (AccessKit + debugging): [chrome_accessibility.md](chrome_accessibility.md)
 - Page accessibility (a11y tree, bounds, screen reader integration): [page_accessibility.md](page_accessibility.md)
