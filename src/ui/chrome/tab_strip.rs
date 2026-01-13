@@ -2752,6 +2752,27 @@ mod tests {
   }
 
   #[test]
+  fn sizing_clamps_non_finite_and_negative_inputs() {
+    let tabs: usize = 3;
+
+    // Non-finite available width is treated as 0 (matches the original sizing helper semantics).
+    let sizing_nan = compute_tab_strip_sizing_with_fixed_width(f32::NAN, tabs, 0.0, tabs - 1);
+    let sizing_zero = compute_tab_strip_sizing_with_fixed_width(0.0, tabs, 0.0, tabs - 1);
+    assert_eq!(sizing_nan, sizing_zero);
+
+    // Non-finite/negative fixed widths are treated as 0.
+    let available = 500.0;
+    let sizing_inf_fixed =
+      compute_tab_strip_sizing_with_fixed_width(available, tabs, f32::INFINITY, tabs - 1);
+    let sizing_neg_fixed =
+      compute_tab_strip_sizing_with_fixed_width(available, tabs, -10.0, tabs - 1);
+    let sizing_fixed_zero =
+      compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, tabs - 1);
+    assert_eq!(sizing_inf_fixed, sizing_fixed_zero);
+    assert_eq!(sizing_neg_fixed, sizing_fixed_zero);
+  }
+
+  #[test]
   fn sizing_with_group_chips_can_overflow_even_when_few_tabs() {
     // 2 tabs + 1 chip => 3 items => 2 gaps.
     let sizing = compute_tab_strip_sizing_with_fixed_width(400.0, 2, 160.0, 2);
