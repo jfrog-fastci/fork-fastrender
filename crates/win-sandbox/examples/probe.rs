@@ -250,6 +250,9 @@ mod windows {
             format!("invalid environment variable `{JOB_MEM_LIMIT_ENV}`: `{raw}`"),
           )
         })?;
+        if mb == 0 {
+          return Ok(None);
+        }
         let bytes = mb.saturating_mul(1024 * 1024);
         Ok(Some(bytes.min(usize::MAX as u64) as usize))
       }
