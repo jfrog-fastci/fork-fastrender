@@ -41,9 +41,9 @@ use crate::ui::messages::{
   PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
-use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
 #[cfg(feature = "browser_ui")]
 use crate::ui::page_accesskit_subtree;
+use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
 use crate::ui::url::navigation_to_file_is_allowed;
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
@@ -8591,6 +8591,7 @@ impl BrowserRuntime {
       js_dom_mapping_miss_log_last,
       js_dom_dirty,
       js_dom_mutation_generation,
+      history_original_url,
     ) = {
       let tab = self.tabs.get_mut(&tab_id)?;
       let doc = tab.document.take();
@@ -8616,6 +8617,7 @@ impl BrowserRuntime {
         std::mem::take(&mut tab.js_dom_mapping_miss_log_last),
         std::mem::take(&mut tab.js_dom_dirty),
         std::mem::take(&mut tab.js_dom_mutation_generation),
+        tab.history.current().map(|e| e.url.clone()),
       )
     };
     let mut js_tab = js_tab;
@@ -8626,6 +8628,10 @@ impl BrowserRuntime {
     let mut js_dom_mutation_generation = js_dom_mutation_generation;
     // Capture the original URL before any redirects/mutations for history bookkeeping.
     let original_url = request.url.clone();
+    // For history commit bookkeeping, we need the URL that was current in history when this
+    // navigation started. This is normally the same as `original_url`, but site-isolation restarts
+    // can re-run the navigation with a different request URL while keeping the same history entry.
+    let history_original_url = history_original_url.unwrap_or_else(|| original_url.clone());
 
     // Ensure we always put the document back into the tab state before returning.
     let mut doc = match doc {
@@ -9199,10 +9205,6 @@ impl BrowserRuntime {
         });
       }
 
-      // Keep the provisional history entry in sync with the final URL so the restarted navigation
-      // can commit it in-place.
-      tab.history.replace_current_url(committed_url.clone());
-
       let mut restart_request = request_for_retry;
       restart_request.request.url = committed_url;
       restart_request.apply_fragment_scroll = apply_fragment_scroll;
@@ -9485,7 +9487,7 @@ impl BrowserRuntime {
 
           let _ = tab
             .history
-            .commit_navigation(&original_url, Some(committed_url.as_str()));
+            .commit_navigation(&history_original_url, Some(committed_url.as_str()));
           let title = tab
             .document
             .as_ref()
@@ -9726,7 +9728,7 @@ impl BrowserRuntime {
 
     let _ = tab
       .history
-      .commit_navigation(&original_url, Some(committed_url.as_str()));
+      .commit_navigation(&history_original_url, Some(committed_url.as_str()));
     let title = tab
       .document
       .as_ref()
@@ -10098,8 +10100,7 @@ impl BrowserRuntime {
       });
     }
     #[cfg(feature = "browser_ui")]
-    if let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback.clone())
-    {
+    if let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback.clone()) {
       msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
     }
     msgs.push(WorkerToUi::LoadingState {
@@ -10284,8 +10285,7 @@ impl BrowserRuntime {
         }
       }
       #[cfg(feature = "browser_ui")]
-      if let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback.clone())
-      {
+      if let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback.clone()) {
         msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
       }
     }
