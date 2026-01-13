@@ -2,10 +2,16 @@ use super::{
   MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
   MediaVideoInfo,
 };
+#[cfg(feature = "media_mp4")]
 use super::mp4 as mp4_index;
+#[cfg(feature = "media_mp4")]
 use std::collections::HashMap;
+#[cfg(feature = "media_mp4")]
 use std::fs::File;
-use std::io::{BufReader, Read, Seek};
+#[cfg(feature = "media_mp4")]
+use std::io::BufReader;
+use std::io::{Read, Seek};
+#[cfg(feature = "media_mp4")]
 use std::path::Path;
 
 /// A container demuxer that yields compressed packets in demux order.
@@ -33,6 +39,7 @@ impl<R: Read + Seek + Send> MediaDemuxer for super::demux::webm::WebmDemuxer<R> 
 // MP4 packet demuxer (mp4 crate)
 // ============================================================================
 
+#[cfg(feature = "media_mp4")]
 struct Mp4TrackCursor {
   id: u32,
   timescale: u32,
@@ -45,6 +52,7 @@ struct Mp4TrackCursor {
 ///
 /// Note: the existing `crate::media::mp4` module focuses on sample tables and efficient seeking,
 /// whereas this type focuses on producing compressed packets with codec metadata for decoding.
+#[cfg(feature = "media_mp4")]
 pub struct Mp4PacketDemuxer<R: Read + Seek + Send> {
   mp4: mp4::Mp4Reader<R>,
   tracks: Vec<MediaTrackInfo>,
@@ -52,6 +60,7 @@ pub struct Mp4PacketDemuxer<R: Read + Seek + Send> {
   seek_index: Option<mp4_index::Mp4SeekIndex>,
 }
 
+#[cfg(feature = "media_mp4")]
 impl Mp4PacketDemuxer<BufReader<File>> {
   pub fn open(path: impl AsRef<Path>) -> MediaResult<Self> {
     let mut file = File::open(path.as_ref())?;
@@ -84,6 +93,7 @@ impl Mp4PacketDemuxer<BufReader<File>> {
   }
 }
 
+#[cfg(feature = "media_mp4")]
 impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
   pub fn from_reader(mp4: mp4::Mp4Reader<R>) -> MediaResult<Self> {
     Self::from_reader_with_vp9_tracks(mp4, HashMap::new())
@@ -233,6 +243,7 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
   }
 }
 
+#[cfg(feature = "media_mp4")]
 #[derive(Debug, Clone)]
 struct Mp4Vp9TrackMeta {
   width: u32,
@@ -240,8 +251,10 @@ struct Mp4Vp9TrackMeta {
   codec_private: Vec<u8>,
 }
 
+#[cfg(feature = "media_mp4")]
 fn mp4parse_vp9_tracks<R: Read>(reader: &mut R) -> MediaResult<HashMap<u32, Mp4Vp9TrackMeta>> {
-  let ctx = mp4parse::read_mp4(reader).map_err(|e| MediaError::Demux(format!("mp4parse: {e:?}")))?;
+  let ctx =
+    mp4parse::read_mp4(reader).map_err(|e| MediaError::Demux(format!("mp4parse: {e:?}")))?;
 
   let mut out = HashMap::new();
 
@@ -322,7 +335,7 @@ fn mp4parse_vp9_tracks<R: Read>(reader: &mut R) -> MediaResult<HashMap<u32, Mp4V
   Ok(out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "media_mp4", feature = "codec_vp9_libvpx"))]
 mod tests {
   use super::Mp4PacketDemuxer;
   use crate::media::decoder::create_video_decoder;
@@ -365,6 +378,7 @@ mod tests {
   }
 }
 
+#[cfg(feature = "media_mp4")]
 impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
   fn tracks(&self) -> &[MediaTrackInfo] {
     &self.tracks
@@ -437,6 +451,7 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
   }
 }
 
+#[cfg(feature = "media_mp4")]
 fn read_top_level_box_bytes(
   reader: &mut File,
   file_len: u64,
@@ -493,6 +508,7 @@ fn read_top_level_box_bytes(
   Ok(None)
 }
 
+#[cfg(feature = "media_mp4")]
 fn mp4_fill_peeked<R: Read + Seek>(
   mp4: &mut mp4::Mp4Reader<R>,
   cursor: &mut Mp4TrackCursor,
@@ -535,6 +551,7 @@ fn mp4_fill_peeked<R: Read + Seek>(
   Ok(())
 }
 
+#[cfg(feature = "media_mp4")]
 fn mp4_track_audio_params(track: &mp4::Mp4Track) -> std::result::Result<(u32, u16), String> {
   let mp4a = track
     .trak
@@ -553,6 +570,7 @@ fn mp4_track_audio_params(track: &mp4::Mp4Track) -> std::result::Result<(u32, u1
   Ok((sample_rate, channels))
 }
 
+#[cfg(feature = "media_mp4")]
 fn build_aac_lc_audio_specific_config(sample_rate: u32, channels: u16) -> MediaResult<Vec<u8>> {
   // AAC LC.
   let audio_object_type: u8 = 2;
@@ -595,4 +613,41 @@ fn build_aac_lc_audio_specific_config(sample_rate: u32, channels: u16) -> MediaR
   let byte0 = (audio_object_type << 3) | (sampling_frequency_index >> 1);
   let byte1 = ((sampling_frequency_index & 0b1) << 7) | ((channels as u8) << 3);
   Ok(vec![byte0, byte1])
+}
+
+// ============================================================================
+// MP4 packet demuxer (feature-disabled stub)
+// ============================================================================
+
+#[cfg(not(feature = "media_mp4"))]
+pub struct Mp4PacketDemuxer<R: Read + Seek + Send> {
+  _phantom: std::marker::PhantomData<R>,
+}
+
+#[cfg(not(feature = "media_mp4"))]
+impl Mp4PacketDemuxer<std::io::BufReader<std::fs::File>> {
+  pub fn open(_path: impl AsRef<std::path::Path>) -> MediaResult<Self> {
+    Err(MediaError::Unsupported(
+      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+    ))
+  }
+}
+
+#[cfg(not(feature = "media_mp4"))]
+impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
+  fn tracks(&self) -> &[MediaTrackInfo] {
+    &[]
+  }
+
+  fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
+    Err(MediaError::Unsupported(
+      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+    ))
+  }
+
+  fn seek(&mut self, _time_ns: u64) -> MediaResult<()> {
+    Err(MediaError::Unsupported(
+      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+    ))
+  }
 }

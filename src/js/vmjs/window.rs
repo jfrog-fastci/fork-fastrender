@@ -7981,9 +7981,40 @@ mod tests {
 mod import_map_tests {
   use super::tests::make_host_state;
   use crate::dom2;
+  use crate::error::{Error, Result};
   use crate::js::import_maps::{ImportMapError, SpecifierAsUrlKind};
+  use crate::resource::{FetchedResource, ResourceFetcher};
+  #[cfg(feature = "direct_network")]
+  use crate::resource::HttpFetcher;
   use selectors::context::QuirksMode;
+  use std::sync::Arc;
   use url::Url;
+
+  #[derive(Debug, Default)]
+  struct NoFetchResourceFetcher;
+
+  impl ResourceFetcher for NoFetchResourceFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      Err(Error::Other(format!(
+        "NoFetchResourceFetcher does not support fetch: {url}"
+      )))
+    }
+  }
+
+  fn default_test_fetcher() -> Arc<dyn ResourceFetcher> {
+    #[cfg(feature = "direct_network")]
+    {
+      return Arc::new(HttpFetcher::new());
+    }
+    #[cfg(not(feature = "direct_network"))]
+    {
+      return Arc::new(NoFetchResourceFetcher);
+    }
+  }
+
+  fn make_host_state(dom: dom2::Document, document_url: impl Into<String>) -> Result<WindowHostState> {
+    WindowHostState::new_with_fetcher(dom, document_url, default_test_fetcher())
+  }
 
   #[test]
   fn window_host_state_starts_with_empty_import_map_state() {

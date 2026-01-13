@@ -126,9 +126,27 @@ pub fn ensure_media_mime_sane(url: &str, content_type: Option<&str>) -> MediaRes
 }
 
 /// Parses MP4 bytes after running [`ensure_media_mime_sane`].
-pub fn open_mp4_demuxer(url: &str, content_type: Option<&str>, bytes: &[u8]) -> MediaResult<Mp4Demuxer> {
+#[cfg(feature = "media_mp4")]
+pub fn open_mp4_demuxer(
+  url: &str,
+  content_type: Option<&str>,
+  bytes: &[u8],
+) -> MediaResult<Mp4Demuxer> {
   ensure_media_mime_sane(url, content_type)?;
   Mp4Demuxer::new(bytes).map_err(|err| MediaError::Demux(err.to_string()))
+}
+
+/// Parses MP4 bytes after running [`ensure_media_mime_sane`].
+#[cfg(not(feature = "media_mp4"))]
+pub fn open_mp4_demuxer(
+  url: &str,
+  content_type: Option<&str>,
+  _bytes: &[u8],
+) -> MediaResult<Mp4Demuxer> {
+  ensure_media_mime_sane(url, content_type)?;
+  Err(MediaError::Unsupported(
+    "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+  ))
 }
 
 /// Opens a WebM demuxer after running [`ensure_media_mime_sane`].
@@ -221,4 +239,3 @@ mod tests {
     });
   }
 }
-

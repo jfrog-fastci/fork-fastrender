@@ -1,3 +1,5 @@
+#![cfg(feature = "media")]
+
 use fastrender::media::demuxer::Mp4PacketDemuxer;
 use fastrender::media::{DecodedItem, MediaDecodePipeline, MediaError, MediaResult};
 use std::fs::File;

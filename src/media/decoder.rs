@@ -2,6 +2,7 @@ use super::{
   DecodedAudioChunk, DecodedVideoFrame, MediaCodec, MediaError, MediaPacket, MediaResult,
   MediaTrackInfo,
 };
+#[cfg(feature = "codec_h264_openh264")]
 use openh264::formats::YUVSource;
 
 /// A video decoder consumes demuxed packets and outputs 0..N decoded frames.
@@ -16,12 +17,32 @@ pub trait AudioDecoder: Send {
 
 pub fn create_video_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn VideoDecoder>> {
   match &track.codec {
-    MediaCodec::H264 => Ok(Box::new(H264Decoder::from_codec_private(&track.codec_private)?)),
+    MediaCodec::H264 => {
+      #[cfg(feature = "codec_h264_openh264")]
+      {
+        Ok(Box::new(H264Decoder::from_codec_private(&track.codec_private)?))
+      }
+      #[cfg(not(feature = "codec_h264_openh264"))]
+      {
+        Err(MediaError::Unsupported(
+          "`codec_h264_openh264` feature disabled (enable Cargo feature `codec_h264_openh264` or `media`)",
+        ))
+      }
+    }
     MediaCodec::Vp9 => {
-      let info = track
-        .video
-        .ok_or(MediaError::Unsupported("VP9 track missing video info"))?;
-      Ok(Box::new(Vp9Decoder::new(info.width, info.height)))
+      #[cfg(feature = "codec_vp9_libvpx")]
+      {
+        let info = track
+          .video
+          .ok_or(MediaError::Unsupported("VP9 track missing video info"))?;
+        Ok(Box::new(Vp9Decoder::new(info.width, info.height)))
+      }
+      #[cfg(not(feature = "codec_vp9_libvpx"))]
+      {
+        Err(MediaError::Unsupported(
+          "`codec_vp9_libvpx` feature disabled (enable Cargo feature `codec_vp9_libvpx` or `media`)",
+        ))
+      }
     }
     _ => Err(MediaError::Unsupported("unsupported video codec")),
   }
@@ -65,6 +86,7 @@ impl AudioDecoder for super::codecs::opus::OpusDecoder {
 // H264 (OpenH264)
 // ============================================================================
 
+#[cfg(feature = "codec_h264_openh264")]
 #[derive(Clone, Debug)]
 struct H264CodecConfig {
   nal_length_size: u8,
@@ -72,6 +94,7 @@ struct H264CodecConfig {
   pps: Vec<Vec<u8>>,
 }
 
+#[cfg(feature = "codec_h264_openh264")]
 pub struct H264Decoder {
   decoder: openh264::decoder::Decoder,
   cfg: H264CodecConfig,
@@ -79,6 +102,7 @@ pub struct H264Decoder {
   scratch: Vec<u8>,
 }
 
+#[cfg(feature = "codec_h264_openh264")]
 impl H264Decoder {
   pub fn from_codec_private(codec_private: &[u8]) -> MediaResult<Self> {
     let cfg = parse_h264_codec_private(codec_private)?;
@@ -141,6 +165,7 @@ impl H264Decoder {
   }
 }
 
+#[cfg(feature = "codec_h264_openh264")]
 impl VideoDecoder for H264Decoder {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVideoFrame>> {
     self.mp4_to_annexb(packet.as_slice())?;
@@ -178,6 +203,7 @@ impl VideoDecoder for H264Decoder {
 /// u8  pps_count
 /// [pps_count] { u16be len, [len] bytes }
 /// ```
+#[cfg(feature = "codec_h264_openh264")]
 fn parse_h264_codec_private(data: &[u8]) -> MediaResult<H264CodecConfig> {
   let mut i = 0usize;
   let read_u8 = |data: &[u8], i: &mut usize| -> MediaResult<u8> {
@@ -240,17 +266,20 @@ fn parse_h264_codec_private(data: &[u8]) -> MediaResult<H264CodecConfig> {
 /// For now this yields a black frame with the correct dimensions. This is enough to exercise the
 /// demux→decode plumbing; the actual VP9 bitstream decode can be implemented behind this trait
 /// later.
+#[cfg(feature = "codec_vp9_libvpx")]
 pub struct Vp9Decoder {
   width: u32,
   height: u32,
 }
 
+#[cfg(feature = "codec_vp9_libvpx")]
 impl Vp9Decoder {
   pub fn new(width: u32, height: u32) -> Self {
     Self { width, height }
   }
 }
 
+#[cfg(feature = "codec_vp9_libvpx")]
 impl VideoDecoder for Vp9Decoder {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVideoFrame>> {
     let rgba_len = self

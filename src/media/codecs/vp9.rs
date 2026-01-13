@@ -29,7 +29,7 @@ impl Vp9Decoder {
   pub fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVp9Frame>> {
     let frames = self
       .inner
-      .decode(&packet.data)
+      .decode(packet.as_slice())
       .map_err(map_libvpx_error)?;
     Ok(
       frames
@@ -55,4 +55,3 @@ fn map_libvpx_error(err: libvpx_sys_bundled::MediaError) -> MediaError {
     libvpx_sys_bundled::MediaError::Decode(msg) => MediaError::Decode(msg),
   }
 }
-

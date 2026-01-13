@@ -1,3 +1,5 @@
+#![cfg(feature = "codec_aac")]
+
 use fastrender::media::codecs::aac::AacDecoder;
 use fastrender::media::MediaPacket;
 use symphonia_core::codecs::CODEC_TYPE_AAC;
@@ -53,9 +55,10 @@ fn aac_packet_duration_matches_decoded_samples() {
   // by the decoded output.
   let media_packet = MediaPacket {
     track_id: u64::from(pkt.track_id()),
+    dts_ns: 0,
     pts_ns: 0,
     duration_ns: expected_ns.saturating_add(123),
-    data: pkt.data().to_vec(),
+    data: pkt.data().to_vec().into(),
     is_keyframe: false,
   };
 

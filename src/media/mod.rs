@@ -32,7 +32,154 @@ pub mod player;
 pub mod frame_provider;
 pub mod track_selection;
 pub mod master_clock;
+#[cfg(feature = "media_mp4")]
 pub mod mp4;
+
+#[cfg(not(feature = "media_mp4"))]
+pub mod mp4 {
+  use super::packet::MediaPacket;
+  use std::fmt;
+  use std::sync::Arc;
+
+  #[derive(Debug, Clone)]
+  pub struct Mp4Error;
+
+  impl fmt::Display for Mp4Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      write!(
+        f,
+        "MP4 support is disabled (enable Cargo feature `media_mp4` or `media`)"
+      )
+    }
+  }
+
+  impl std::error::Error for Mp4Error {}
+
+  pub type Result<T> = std::result::Result<T, Mp4Error>;
+
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub enum SeekMethod {
+    MonotonicBinarySearch,
+    SortedBinarySearch,
+    LinearScan,
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct Mp4Sample {
+    pub offset: u64,
+    pub size: u32,
+    pub dts_ticks: u64,
+    pub duration_ticks: u32,
+    pub is_sync: bool,
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct Mp4Track;
+
+  impl Mp4Track {
+    #[must_use]
+    pub fn id(&self) -> u32 {
+      0
+    }
+
+    #[must_use]
+    pub fn timescale(&self) -> u32 {
+      0
+    }
+
+    #[must_use]
+    pub fn samples(&self) -> &[Mp4Sample] {
+      &[]
+    }
+
+    #[must_use]
+    pub fn pts_ns_by_sample(&self) -> &[u64] {
+      &[]
+    }
+
+    #[must_use]
+    pub fn next_sample(&self) -> usize {
+      0
+    }
+
+    #[must_use]
+    pub fn last_seek_method(&self) -> Option<SeekMethod> {
+      None
+    }
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct Mp4Demuxer;
+
+  impl Mp4Demuxer {
+    pub fn new(_bytes: &[u8]) -> Result<Self> {
+      Err(Mp4Error)
+    }
+
+    pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
+      Err(Mp4Error)
+    }
+
+    pub fn from_arc(_bytes: Arc<[u8]>) -> Result<Self> {
+      Err(Mp4Error)
+    }
+
+    #[must_use]
+    pub fn tracks(&self) -> &[Mp4Track] {
+      &[]
+    }
+
+    pub fn packets_for_track(&self, _track_index: usize) -> Result<Vec<MediaPacket>> {
+      Err(Mp4Error)
+    }
+
+    pub fn seek(&mut self, _time_ns: u64) {}
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct Mp4SeekIndex;
+
+  impl Mp4SeekIndex {
+    pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
+      Err(Mp4Error)
+    }
+
+    #[must_use]
+    pub fn tracks(&self) -> &[Mp4SeekTrack] {
+      &[]
+    }
+
+    #[must_use]
+    pub fn track(&self, _track_id: u32) -> Option<&Mp4SeekTrack> {
+      None
+    }
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct Mp4SeekTrack;
+
+  impl Mp4SeekTrack {
+    #[must_use]
+    pub fn id(&self) -> u32 {
+      0
+    }
+
+    #[must_use]
+    pub fn timescale(&self) -> u32 {
+      0
+    }
+
+    #[must_use]
+    pub fn sample_count(&self) -> usize {
+      0
+    }
+
+    #[must_use]
+    pub fn sample_index_at_or_after(&self, _time_ns: u64) -> usize {
+      0
+    }
+  }
+}
 pub mod packet;
 pub mod pipeline;
 pub mod timestamp;
