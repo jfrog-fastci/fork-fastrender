@@ -6,6 +6,14 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn new_runtime_large_heap() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  // `yield*` can allocate a non-trivial amount of delegation state; use a larger heap so this test
+  // focuses on eval semantics rather than heap pressure.
+  let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
 #[test]
 fn generator_direct_eval_with_yield_argument_sees_lexical_bindings() {
   let mut rt = new_runtime();
@@ -237,6 +245,29 @@ fn generator_direct_eval_var_decl_conflicts_with_outer_let_across_yield() {
           it.next();
           var r = it.next("var x = 2");
           ok = r.done === true && r.value === "SyntaxError";
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_direct_eval_with_yield_star_argument_is_direct() {
+  let mut rt = new_runtime_large_heap();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          function* inner(){ yield 0; return "x"; }
+          function* g(){ let x = 1; return eval(yield* inner()); }
+          var it = g();
+          var r1 = it.next();
+          var r2 = it.next();
+          ok = r1.done === false && r1.value === 0 && r2.done === true && r2.value === 1;
         } catch (e) { ok = false; }
         ok
       "#,
