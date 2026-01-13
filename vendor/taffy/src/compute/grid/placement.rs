@@ -26,7 +26,9 @@ fn clamp_span_to_explicit_tracks(
   // otherwise extend beyond the explicit grid (e.g. `grid-column: 2` in a 1-track subgrid), clamp
   // the resolved span back into the explicit track range. This matches browser behaviour where the
   // item falls back into the available tracks rather than expanding the grid.
-  let track_count = explicit_track_count as i16;
+  // `OriginZeroLine` is backed by i16, so extremely large explicit grids are already outside the
+  // representable coordinate range. Clamp the effective track count to avoid i16 wrapping.
+  let track_count = min(explicit_track_count, i16::MAX as u16) as i32;
   if track_count <= 0 {
     return Line {
       start: OriginZeroLine(0),
@@ -34,7 +36,7 @@ fn clamp_span_to_explicit_tracks(
     };
   }
 
-  let mut span_len = span.end.0 - span.start.0;
+  let mut span_len = (span.end.0 as i32) - (span.start.0 as i32);
   if span_len <= 0 {
     span_len = 1;
   }
@@ -43,10 +45,10 @@ fn clamp_span_to_explicit_tracks(
   }
 
   let max_start = track_count - span_len;
-  let start = span.start.0.clamp(0, max_start);
+  let start = (span.start.0 as i32).clamp(0, max_start);
   Line {
-    start: OriginZeroLine(start),
-    end: OriginZeroLine(start + span_len),
+    start: OriginZeroLine(start as i16),
+    end: OriginZeroLine((start + span_len) as i16),
   }
 }
 

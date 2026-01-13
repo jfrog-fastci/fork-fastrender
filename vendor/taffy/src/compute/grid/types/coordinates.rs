@@ -31,13 +31,31 @@ impl GridLine {
 
   /// Convert into OriginZero coordinates using the specified explicit track count
   pub(crate) fn into_origin_zero_line(self, explicit_track_count: u16) -> OriginZeroLine {
-    let explicit_line_count = explicit_track_count + 1;
+    // `explicit_track_count` is a u16, so `+ 1` can overflow at `u16::MAX`. Use i32 arithmetic to
+    // keep this conversion panic-free even for hostile/degenerate inputs.
+    let explicit_line_count = (explicit_track_count as i32) + 1;
     let oz_line = match self.0.cmp(&0) {
       Ordering::Greater => (self.0 as i32) - 1,
-      Ordering::Less => (self.0 as i32) + (explicit_line_count as i32),
+      Ordering::Less => (self.0 as i32) + explicit_line_count,
       Ordering::Equal => panic!("Grid line of zero is invalid"),
     };
     OriginZeroLine(oz_line.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn into_origin_zero_line_does_not_overflow_on_u16_max_explicit_tracks() {
+    // Regression: `explicit_track_count + 1` on u16 can overflow. Ensure large explicit grids don't
+    // panic/wrap during conversion.
+    let line = GridLine::from(-1);
+    let oz = line.into_origin_zero_line(u16::MAX);
+    // With an enormous explicit grid, `-1` resolves to a large positive origin-zero line that is
+    // clamped into the representable i16 range.
+    assert_eq!(oz, OriginZeroLine(i16::MAX));
   }
 }
 

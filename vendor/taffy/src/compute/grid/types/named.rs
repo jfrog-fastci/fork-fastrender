@@ -106,11 +106,12 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
   }
 
   fn origin_zero_to_grid_line(line: OriginZeroLine, explicit_track_count: u16) -> GridLine {
-    let explicit_line_count = explicit_track_count + 1;
+    // Avoid u16 overflow when the explicit grid is extremely large.
+    let explicit_line_count = (explicit_track_count as i32) + 1;
     let line = if line.0 >= 0 {
       line.0 as i32 + 1
     } else {
-      line.0 as i32 - explicit_line_count as i32
+      line.0 as i32 - explicit_line_count
     };
     GridLine::from(line.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
   }
@@ -687,5 +688,20 @@ impl<S: CheapCloneStr> Debug for NamedLineResolver<S> {
     }
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn origin_zero_to_grid_line_does_not_overflow_on_u16_max_explicit_tracks() {
+    // Regression: `explicit_track_count + 1` on u16 can overflow. Ensure conversion remains
+    // deterministic/panic-free for huge explicit grids.
+    let line = NamedLineResolver::<String>::origin_zero_to_grid_line(OriginZeroLine(-1), u16::MAX);
+    // The exact clamped value is not semantically meaningful (Taffy uses i16 grid lines), but it
+    // must remain within range and not panic.
+    assert_eq!(line.as_i16(), i16::MIN);
   }
 }
