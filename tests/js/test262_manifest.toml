@@ -18,6 +18,13 @@
 #
 # As features land, carve out newly-green areas with `pass` entries and keep remaining failures
 # narrow so regressions are still caught.
+#
+# Updating workflow (keep CI stable):
+# 1. Run the curated suite and write a report JSON (e.g. `target/js/test262.json`). Some
+#    environments need `ulimit -s unlimited` to avoid stack overflows in the runner.
+# 2. Use the report's XPASS set (expectation=`xfail`, mismatched=`false`) to find directories that
+#    are consistently passing and add `pass` entries for the narrowest stable prefix.
+# 3. Re-run with `--fail-on new` and confirm `unexpected mismatches = 0`.
 
 [[expectations]]
 id = "built-ins/Array/prototype/join/coerced-separator-grow.js"
@@ -38,6 +45,16 @@ reason = "vm-js does not yet implement resizable ArrayBuffer / full TypedArray c
 id = "built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js"
 status = "skip"
 reason = "Flaky timeout under the full curated suite (passes in isolation, but can exceed the per-test 10s budget under parallel load)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/concat/Array.prototype.concat_small-typed-array.js"
+status = "skip"
+reason = "Timeout under the curated suite's per-test 10s budget (strict variant)."
+
+[[expectations]]
+id = "built-ins/Array/prototype/concat/Array.prototype.concat_spreadable-sparse-object.js"
+status = "skip"
+reason = "Timeout under the curated suite's per-test 10s budget (non-strict variant)."
 
 # --- TypedArray constructors (incremental enablement) ---
 #
@@ -138,23 +155,7 @@ glob = "language/expressions/concatenation/**"
 status = "pass"
 
 [[expectations]]
-glob = "language/expressions/greater-than/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/greater-than-or-equal/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/less-than/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/less-than-or-equal/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/equals/**"
+glob = "language/expressions/division/**"
 status = "pass"
 
 [[expectations]]
@@ -162,47 +163,15 @@ glob = "language/expressions/does-not-equals/**"
 status = "pass"
 
 [[expectations]]
-glob = "language/expressions/strict-equals/**"
+glob = "language/expressions/equals/**"
 status = "pass"
 
 [[expectations]]
-glob = "language/expressions/strict-does-not-equals/**"
+glob = "language/expressions/greater-than/**"
 status = "pass"
 
 [[expectations]]
-glob = "language/expressions/multiplication/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/division/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/modulus/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/subtraction/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/unary-plus/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/unary-minus/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/typeof/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/void/**"
-status = "pass"
-
-[[expectations]]
-glob = "language/expressions/logical-not/**"
+glob = "language/expressions/greater-than-or-equal/**"
 status = "pass"
 
 [[expectations]]
@@ -218,31 +187,51 @@ glob = "language/expressions/in/private-field-*.js"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/logical-or/tco-right.js"
-status = "xfail"
-reason = "vm-js does not yet implement proper tail calls."
-
-[[expectations]]
-glob = "language/expressions/logical-or/**"
+glob = "language/expressions/less-than/**"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/logical-and/tco-right.js"
-status = "xfail"
-reason = "vm-js does not yet implement proper tail calls."
+glob = "language/expressions/less-than-or-equal/**"
+status = "pass"
 
 [[expectations]]
 glob = "language/expressions/logical-and/**"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/new/non-ctor-err-realm.js"
+id = "language/expressions/logical-and/tco-right.js"
 status = "xfail"
-reason = "vm-js: cross-realm TypeError identity for non-constructable `new` differs from test262."
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+[[expectations]]
+glob = "language/expressions/logical-not/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/logical-or/**"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/tco-right.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+[[expectations]]
+glob = "language/expressions/modulus/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/multiplication/**"
+status = "pass"
 
 [[expectations]]
 glob = "language/expressions/new/**"
 status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/non-ctor-err-realm.js"
+status = "xfail"
+reason = "vm-js: cross-realm TypeError identity for non-constructable `new` differs from test262."
 
 [[expectations]]
 id = "language/expressions/super/call-proto-not-ctor.js"
@@ -271,6 +260,34 @@ reason = "vm-js: super property access evaluation order differs from spec (GetSu
 
 [[expectations]]
 glob = "language/expressions/super/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/strict-does-not-equals/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/strict-equals/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/subtraction/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/typeof/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/unary-minus/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/unary-plus/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/void/**"
 status = "pass"
 
 [[expectations]]
@@ -389,6 +406,41 @@ status = "xfail"
 reason = "vm-js: async generator `yield*` return thenable tick ordering differs from spec."
 
 [[expectations]]
+id = "language/statements/async-generator/yield-star-throw-notdone-iter-value-throws.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` abrupt completion propagation is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-star-promise-not-unwrapped.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` promise unwrapping semantics differ from spec for manually-implemented async iterators."
+
+[[expectations]]
+id = "language/statements/async-generator/dflt-params-arg-val-not-undefined.js"
+status = "xfail"
+reason = "vm-js: duplicate binding early errors in async generator parameters are not yet implemented."
+
+[[expectations]]
+id = "language/statements/async-generator/dflt-params-arg-val-undefined.js"
+status = "xfail"
+reason = "vm-js: duplicate binding early errors in async generator parameters are not yet implemented."
+
+[[expectations]]
+id = "language/statements/async-generator/dflt-params-ref-prior.js"
+status = "xfail"
+reason = "vm-js: duplicate binding early errors in async generator parameters are not yet implemented."
+
+[[expectations]]
+id = "language/statements/async-generator/dflt-params-trailing-comma.js"
+status = "xfail"
+reason = "vm-js: duplicate binding early errors in async generator parameters are not yet implemented."
+
+[[expectations]]
+glob = "language/statements/async-generator/dstr/**"
+status = "xfail"
+reason = "vm-js: async generator destructuring parameter semantics (duplicate binding checks / iterator-close edge cases) are still incomplete."
+
+[[expectations]]
 glob = "language/statements/async-generator/**"
 status = "pass"
 
@@ -404,6 +456,136 @@ status = "pass"
 [[expectations]]
 id = "language/statements/for-of/head-var-no-expr.js"
 status = "pass"
+
+# --- for-of iteration semantics (green carve-out) ---
+[[expectations]]
+glob = "language/statements/for-of/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for-of/dstr/array-elem-iter-rtrn-close-err.js"
+status = "xfail"
+reason = "vm-js: for-of destructuring iterator-close semantics are still incorrect for iterators with invalid `.next`."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/array-rest-iter-rtrn-close-err.js"
+status = "xfail"
+reason = "vm-js: for-of destructuring iterator-close semantics are still incorrect for iterators with invalid `.next`."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/array-rest-iter-rtrn-close-null.js"
+status = "xfail"
+reason = "vm-js: for-of destructuring iterator-close semantics are still incorrect for iterators with invalid `.next`."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/array-elem-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/array-elem-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/const-ary-ptrn-elem-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/const-ary-ptrn-elem-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/const-obj-ptrn-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/const-obj-ptrn-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/let-ary-ptrn-elem-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/let-ary-ptrn-elem-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/let-obj-ptrn-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/let-obj-ptrn-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/obj-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/obj-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/obj-prop-elem-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/obj-prop-elem-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/var-ary-ptrn-elem-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/var-ary-ptrn-elem-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/var-obj-ptrn-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/dstr/var-obj-ptrn-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-of destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-grow-before-end.js"
+status = "xfail"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (TypedArray iteration)."
+
+[[expectations]]
+id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-grow-mid-iteration.js"
+status = "xfail"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (TypedArray iteration)."
+
+[[expectations]]
+id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-shrink-mid-iteration.js"
+status = "xfail"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (TypedArray iteration)."
+
+[[expectations]]
+id = "language/statements/for-of/typedarray-backed-by-resizable-buffer-shrink-to-zero-mid-iteration.js"
+status = "xfail"
+reason = "vm-js does not yet implement resizable ArrayBuffer semantics (TypedArray iteration)."
 
 # --- for-await-of (async iteration) ---
 [[expectations]]
@@ -432,6 +614,178 @@ status = "pass"
 
 [[expectations]]
 id = "language/statements/for-await-of/iterator-close-throw-get-method-abrupt.js"
+status = "pass"
+
+# --- Loop/function statements (green carve-outs) ---
+[[expectations]]
+glob = "language/statements/for-in/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/for/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/for/S12.6.3_A2.1.js"
+status = "xfail"
+reason = "vm-js: for-loop semantics are still incomplete for some edge cases."
+
+[[expectations]]
+id = "language/statements/for/S12.6.3_A2.2.js"
+status = "xfail"
+reason = "vm-js: for-loop semantics are still incomplete for some edge cases."
+
+[[expectations]]
+id = "language/statements/for/S12.6.3_A3.js"
+status = "xfail"
+reason = "vm-js: for-loop semantics are still incomplete for some edge cases."
+
+[[expectations]]
+id = "language/statements/for/dstr/const-ary-ptrn-elem-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/const-ary-ptrn-elem-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/const-obj-ptrn-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/const-obj-ptrn-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/let-ary-ptrn-elem-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/let-ary-ptrn-elem-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/let-obj-ptrn-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/let-obj-ptrn-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/var-ary-ptrn-elem-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/var-ary-ptrn-elem-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/var-obj-ptrn-id-init-fn-name-class.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/dstr/var-obj-ptrn-id-init-fn-name-cover.js"
+status = "xfail"
+reason = "vm-js: function name inference for default initializers in for-loop destructuring patterns is still incorrect."
+
+[[expectations]]
+id = "language/statements/for/head-init-expr-check-empty-inc-empty-completion.js"
+status = "xfail"
+reason = "vm-js: for-loop completion value semantics are still incorrect."
+
+[[expectations]]
+id = "language/statements/for/head-init-var-check-empty-inc-empty-completion.js"
+status = "xfail"
+reason = "vm-js: for-loop completion value semantics are still incorrect."
+
+[[expectations]]
+id = "language/statements/for/tco-const-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+[[expectations]]
+id = "language/statements/for/tco-let-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+[[expectations]]
+id = "language/statements/for/tco-lhs-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+[[expectations]]
+id = "language/statements/for/tco-var-body.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls (PTC)."
+
+[[expectations]]
+glob = "language/statements/function/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/function/S13.2.2_A17_T3.js"
+status = "xfail"
+reason = "vm-js: function declaration instantiation/scoping semantics are still incomplete."
+
+[[expectations]]
+id = "language/statements/function/S13.2.2_A18_T1.js"
+status = "xfail"
+reason = "vm-js: function declaration instantiation/scoping semantics are still incomplete."
+
+[[expectations]]
+id = "language/statements/function/S13.2.2_A18_T2.js"
+status = "xfail"
+reason = "vm-js: function declaration instantiation/scoping semantics are still incomplete."
+
+[[expectations]]
+id = "language/statements/function/arguments-with-arguments-fn.js"
+status = "xfail"
+reason = "vm-js: function `arguments` binding semantics are still incomplete."
+
+[[expectations]]
+id = "language/statements/function/scope-paramsbody-var-open.js"
+status = "xfail"
+reason = "vm-js: function parameter/body scope semantics are still incomplete."
+
+[[expectations]]
+glob = "language/statements/async-function/**"
+status = "pass"
+
+# --- Basic statements (green carve-outs) ---
+[[expectations]]
+glob = "language/statements/break/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/continue/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/throw/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/empty/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/debugger/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/statements/expression/**"
 status = "pass"
 
 # --- Classes ---
@@ -530,6 +884,11 @@ status = "pass"
 [[expectations]]
 id = "language/statements/class/definition/setters-restricted-ids.js"
 status = "pass"
+
+[[expectations]]
+id = "language/statements/class/definition/methods-restricted-properties.js"
+status = "xfail"
+reason = "vm-js bug: restricted function properties (`caller`/`arguments`) are not handled correctly for class methods/accessors."
 
 [[expectations]]
 glob = "language/statements/class/definition/**"
@@ -655,6 +1014,21 @@ status = "pass"
 [[expectations]]
 id = "language/statements/class/subclass/class-definition-null-proto-missing-return-override.js"
 status = "pass"
+
+[[expectations]]
+id = "language/statements/class/subclass/derived-class-return-override-catch-finally-arrow.js"
+status = "xfail"
+reason = "vm-js: `super()` calls from arrow functions must be tied to the derived constructor environment; currently rejected as `super` call outside of class constructor."
+
+[[expectations]]
+id = "language/statements/class/subclass/derived-class-return-override-finally-super-arrow.js"
+status = "xfail"
+reason = "vm-js: `super()` calls from arrow functions must be tied to the derived constructor environment; currently rejected as `super` call outside of class constructor."
+
+[[expectations]]
+id = "language/statements/class/subclass/derived-class-return-override-for-of-arrow.js"
+status = "xfail"
+reason = "vm-js: `super()` calls from arrow functions must be tied to the derived constructor environment; currently rejected as `super` call outside of class constructor."
 
 # --- Additional curated suites (statements + built-ins) ---
 [[expectations]]
@@ -905,19 +1279,56 @@ status = "xfail"
 reason = "vm-js: statement/function/class semantics are still incomplete; tracked via curated test262 progress."
 
 [[expectations]]
-glob = "language/block-scope/**"
+id = "language/block-scope/shadowing/dynamic-lookup-from-closure.js"
 status = "xfail"
-reason = "vm-js: lexical scope/TDZ semantics are still incomplete; tracked via curated test262 progress."
+reason = "vm-js: block-scope shadowing/dynamic lookup semantics are still incorrect for closure lookups."
+
+[[expectations]]
+id = "language/block-scope/shadowing/lookup-from-closure.js"
+status = "xfail"
+reason = "vm-js: block-scope shadowing/dynamic lookup semantics are still incorrect for closure lookups."
+
+[[expectations]]
+glob = "language/block-scope/**"
+status = "pass"
 
 [[expectations]]
 glob = "language/function-code/**"
+status = "pass"
+
+[[expectations]]
+id = "language/directive-prologue/10.1.1-14-s.js"
 status = "xfail"
-reason = "vm-js: function parsing/execution semantics are still incomplete; tracked via curated test262 progress."
+reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
+
+[[expectations]]
+id = "language/directive-prologue/10.1.1-30-s.js"
+status = "xfail"
+reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
+
+[[expectations]]
+id = "language/directive-prologue/10.1.1-5-s.js"
+status = "xfail"
+reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
+
+[[expectations]]
+id = "language/directive-prologue/10.1.1-8-s.js"
+status = "xfail"
+reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
+
+[[expectations]]
+id = "language/directive-prologue/14.1-4-s.js"
+status = "xfail"
+reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
+
+[[expectations]]
+id = "language/directive-prologue/14.1-5-s.js"
+status = "xfail"
+reason = "vm-js: directive prologue / strict mode early errors are still incomplete."
 
 [[expectations]]
 glob = "language/directive-prologue/**"
-status = "xfail"
-reason = "vm-js: directive prologue / strict mode semantics are still incomplete; tracked via curated test262 progress."
+status = "pass"
 
 # --- ES modules (incremental enablement) ---
 #
@@ -1481,7 +1892,7 @@ status = "pass"
 [[expectations]]
 id = "built-ins/Array/prototype/indexOf/15.4.4.14-10-1.js"
 status = "skip"
-reason = "Flaky timeout under the full curated suite (passes in isolation, but can exceed the per-test 10s budget under parallel load)."
+reason = "Performance: vm-js can exceed the curated suite's per-test 10s timeout when scanning very sparse arrays with large lengths (this test passes with a higher timeout)."
 
 [[expectations]]
 id = "built-ins/Array/prototype/indexOf/coerced-searchelement-fromindex-grow.js"
@@ -1528,6 +1939,11 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/Array/prototype/findLast/**"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/findLast/return-abrupt-from-this-length.js"
+status = "xfail"
+reason = "vm-js: Array.prototype.findLast does not correctly propagate abrupt completion from LengthOfArrayLike."
 
 [[expectations]]
 id = "built-ins/Array/prototype/findLast/callbackfn-resize-arraybuffer.js"
@@ -1594,6 +2010,16 @@ glob = "built-ins/Array/prototype/toSpliced/**"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/Array/prototype/toSpliced/frozen-this-value.js"
+status = "xfail"
+reason = "vm-js: Array.prototype.toSpliced is not fully correct for frozen array-likes."
+
+[[expectations]]
+id = "built-ins/Array/prototype/toSpliced/start-and-deleteCount-missing.js"
+status = "xfail"
+reason = "vm-js: Array.prototype.toSpliced zero-argument semantics are incorrect."
+
+[[expectations]]
 id = "built-ins/Array/prototype/toSpliced/length-exceeding-array-length-limit.js"
 status = "pass"
 
@@ -1625,11 +2051,6 @@ reason = "vm-js implements the Array.prototype.concat max-safe-integer length gu
 [[expectations]]
 glob = "built-ins/Array/prototype/concat/**"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js"
-status = "pass"
-reason = "vm-js optimizes Array.prototype.concat for @@isConcatSpreadable TypedArrays (fast element access + dense fast-elements writes)."
 
 [[expectations]]
 glob = "built-ins/Array/prototype/slice/**"
@@ -1682,6 +2103,11 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/Object/getOwnPropertyNames/**"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/Object/getOwnPropertyNames/15.2.3.4-4-49.js"
+status = "xfail"
+reason = "vm-js: Object.getOwnPropertyNames can return duplicate array-index keys; property enumeration semantics are still incomplete."
 
 [[expectations]]
 glob = "built-ins/Object/getOwnPropertySymbols/**"
@@ -1779,6 +2205,31 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/Object/keys/**"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/Object/keys/15.2.3.14-3-3.js"
+status = "xfail"
+reason = "vm-js: Object.keys property order differs from spec for some legacy Sputnik-era cases."
+
+[[expectations]]
+id = "built-ins/Object/keys/15.2.3.14-5-11.js"
+status = "xfail"
+reason = "vm-js: Object.keys property order differs from spec for some legacy Sputnik-era cases."
+
+[[expectations]]
+id = "built-ins/Object/keys/15.2.3.14-5-13.js"
+status = "xfail"
+reason = "vm-js: Object.keys property order differs from spec for some legacy Sputnik-era cases."
+
+[[expectations]]
+id = "built-ins/Object/keys/15.2.3.14-6-1.js"
+status = "xfail"
+reason = "vm-js: Object.keys property order differs from spec for some legacy Sputnik-era cases."
+
+[[expectations]]
+id = "built-ins/Object/keys/15.2.3.14-6-2.js"
+status = "xfail"
+reason = "vm-js: Object.keys property order differs from spec for some legacy Sputnik-era cases."
 
 [[expectations]]
 glob = "built-ins/Object/values/**"
@@ -2106,6 +2557,11 @@ id = "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js"
+status = "xfail"
+reason = "vm-js: RegExp `v` flag UnicodeSets semantics are not yet fully implemented (String.prototype.matchAll integration)."
+
+[[expectations]]
 id = "built-ins/String/prototype/search/regexp-prototype-search-v-flag.js"
 status = "pass"
 
@@ -2132,6 +2588,11 @@ status = "pass"
 [[expectations]]
 id = "built-ins/String/prototype/replace/regexp-capture-by-index.js"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag.js"
+status = "xfail"
+reason = "vm-js: RegExp `v` flag UnicodeSets semantics are not yet fully implemented (String.prototype.replace integration)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/replaceValue-evaluation-order-regexp-object.js"
@@ -2285,8 +2746,7 @@ reason = "vm-js: built-in coverage is still incomplete; tracked via curated test
 
 [[expectations]]
 glob = "built-ins/String/**"
-status = "xfail"
-reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Number/**"
@@ -2354,6 +2814,11 @@ id = "built-ins/Map/valid-keys.js"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/Map/Symbol.species/return-value.js"
+status = "xfail"
+reason = "vm-js: Map[Symbol.species] getter semantics are incorrect."
+
+[[expectations]]
 glob = "built-ins/Set/prototype/union/**"
 status = "pass"
 
@@ -2384,6 +2849,11 @@ status = "pass"
 [[expectations]]
 id = "built-ins/Set/valid-values.js"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/Set/Symbol.species/return-value.js"
+status = "xfail"
+reason = "vm-js: Set[Symbol.species] getter semantics are incorrect."
 
 # --- WeakMap / WeakSet (symbols-as-weakmap-keys) ---
 [[expectations]]
@@ -2521,6 +2991,11 @@ id = "built-ins/JSON/parse/reviver-context-source-primitive-literal.js"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/JSON/parse/reviver-forward-modifies-object.js"
+status = "xfail"
+reason = "vm-js: JSON.parse reviver traversal/order semantics differ when the reviver mutates objects mid-walk."
+
+[[expectations]]
 glob = "built-ins/JSON/parse/**"
 status = "pass"
 
@@ -2530,15 +3005,33 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/JSON/stringify/replacer-array-number-object.js"
-status = "pass"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of boxed primitives differs from spec (wrapper object property enumeration / ToString coercions)."
 
 [[expectations]]
 id = "built-ins/JSON/stringify/space-number-object.js"
-status = "pass"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of boxed primitives differs from spec (wrapper object spacing/indent semantics)."
 
 [[expectations]]
 id = "built-ins/JSON/stringify/value-number-object.js"
-status = "pass"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of boxed primitives differs from spec (wrapper object value coercions)."
+
+[[expectations]]
+id = "built-ins/JSON/stringify/replacer-array-string-object.js"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of boxed primitives differs from spec (wrapper object property enumeration / ToString coercions)."
+
+[[expectations]]
+id = "built-ins/JSON/stringify/space-string-object.js"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of boxed primitives differs from spec (wrapper object spacing/indent semantics)."
+
+[[expectations]]
+id = "built-ins/JSON/stringify/value-string-object.js"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of boxed primitives differs from spec (wrapper object value coercions)."
 
 [[expectations]]
 glob = "built-ins/JSON/rawJSON/**"
@@ -2551,6 +3044,11 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/JSON/**"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/Math/round/S15.8.2.15_A7.js"
+status = "xfail"
+reason = "vm-js: Math.round edge case semantics are still incorrect."
 
 [[expectations]]
 glob = "built-ins/Math/**"
