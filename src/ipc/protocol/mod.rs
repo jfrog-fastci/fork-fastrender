@@ -27,8 +27,11 @@ pub const MAX_FRAME_BUFFERS: usize = 32;
 /// Upper bound for identifiers sent over IPC (shared memory IDs, etc).
 pub const MAX_ID_LEN: usize = 256;
 
+/// Upper bound for arbitrary protocol strings (UTF-8 bytes).
+pub const MAX_IPC_STRING_BYTES: usize = 1024;
+
 /// Upper bound for renderer crash strings.
-pub const MAX_CRASH_REASON_LEN: usize = 1024;
+pub const MAX_CRASH_REASON_LEN: usize = MAX_IPC_STRING_BYTES;
 
 /// Sane bounds for device pixel ratio (DPR).
 ///
@@ -138,6 +141,11 @@ pub enum BrowserToRenderer {
     generation: u64,
     buffer_index: u32,
   },
+
+  /// Request that the renderer exit gracefully.
+  ///
+  /// The optional `reason` is intended for diagnostics only and must stay bounded.
+  Shutdown { reason: Option<String> },
 }
 
 /// Messages sent from the **untrusted renderer** to the **trusted browser**.
@@ -147,6 +155,9 @@ pub enum BrowserToRenderer {
 #[serde(deny_unknown_fields)]
 pub enum RendererToBrowser {
   HelloAck { protocol_version: u32 },
+
+  /// Acknowledges a [`BrowserToRenderer::Shutdown`] request.
+  ShutdownAck,
 
   /// Indicates that a buffer contains a fully-rendered frame.
   ///
@@ -169,6 +180,70 @@ pub enum RendererToBrowser {
   ///
   /// Note: `reason` is a string (allocating), so callers must validate its length.
   Crashed { reason: String },
+}
+
+impl BrowserToRenderer {
+  /// Deserialize a browser message from a framed payload and validate it before returning.
+  ///
+  /// This is the recommended entry point for the **renderer** process when receiving messages from
+  /// the browser.
+  pub fn decode_and_validate_payload(payload: &[u8]) -> Result<Self, IpcError> {
+    let msg: Self = super::framing::decode_bincode_payload(payload)?;
+    msg.validate()?;
+    Ok(msg)
+  }
+
+  /// Validate a browser → renderer message.
+  ///
+  /// Even though the browser is trusted, this provides a deterministic, bounded contract for the
+  /// renderer process and helps avoid self-DoS footguns (e.g. accidentally sending huge shutdown
+  /// reasons).
+  pub fn validate(&self) -> Result<(), IpcError> {
+    match self {
+      BrowserToRenderer::Hello { protocol_version } => {
+        if *protocol_version != IPC_PROTOCOL_VERSION {
+          return Err(IpcError::ProtocolVersionMismatch {
+            got: *protocol_version,
+            expected: IPC_PROTOCOL_VERSION,
+          });
+        }
+        Ok(())
+      }
+
+      BrowserToRenderer::SetFrameBuffers { buffers, .. } => {
+        if buffers.len() > MAX_FRAME_BUFFERS {
+          return Err(IpcError::TooManyFrameBuffers {
+            len: buffers.len(),
+            max: MAX_FRAME_BUFFERS,
+          });
+        }
+        for (idx, desc) in buffers.iter().enumerate() {
+          desc.validate()?;
+          if desc.buffer_index != idx as u32 {
+            return Err(IpcError::InvalidBufferIndex {
+              buffer_index: desc.buffer_index,
+              buffer_count: buffers.len(),
+            });
+          }
+        }
+        Ok(())
+      }
+
+      BrowserToRenderer::ReleaseFrameBuffer { .. } => Ok(()),
+
+      BrowserToRenderer::Shutdown { reason } => {
+        if let Some(reason) = reason {
+          if reason.len() > MAX_IPC_STRING_BYTES {
+            return Err(IpcError::ShutdownReasonTooLong {
+              len: reason.len(),
+              max: MAX_IPC_STRING_BYTES,
+            });
+          }
+        }
+        Ok(())
+      }
+    }
+  }
 }
 
 /// State held by the browser to validate renderer messages that reference negotiated buffers.
@@ -325,6 +400,8 @@ impl RendererToBrowser {
         }
         Ok(())
       }
+
+      RendererToBrowser::ShutdownAck => Ok(()),
     }
   }
 }
@@ -441,5 +518,16 @@ mod tests {
     let err = RendererToBrowser::decode_and_validate_payload(&payload, &ctx)
       .expect_err("expected dpr to be rejected");
     assert!(matches!(err, IpcError::InvalidDpr { .. }));
+  }
+
+  #[test]
+  fn shutdown_reason_too_long_rejected() {
+    let msg = BrowserToRenderer::Shutdown {
+      reason: Some("a".repeat(MAX_IPC_STRING_BYTES + 1)),
+    };
+    let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
+    let err =
+      BrowserToRenderer::decode_and_validate_payload(&payload).expect_err("expected shutdown to fail");
+    assert!(matches!(err, IpcError::ShutdownReasonTooLong { .. }));
   }
 }

@@ -21,6 +21,7 @@ pub mod network_service;
 pub mod pixels;
 pub mod protocol;
 pub mod received_frame;
+pub mod session;
 pub mod shm;
 pub mod transport;
 #[cfg(unix)]

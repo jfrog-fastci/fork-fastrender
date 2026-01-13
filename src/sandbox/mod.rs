@@ -277,7 +277,6 @@ pub enum RendererSeccompPolicy {
   /// network sockets.
   RendererDefault,
 }
-
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSandboxConfig {
   /// Enable a seccomp syscall filter.

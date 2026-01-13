@@ -1,11 +1,24 @@
 use std::fmt;
 use url::Url;
 
+// --- vm-js privileged chrome bindings ----------------------------------------
+//
+// vm-js bindings for the privileged chrome API live in `src/js/vmjs/chrome_api.rs`. We keep the
+// shared validation/types in this module and re-export the vm-js bindings so callers can continue
+// using the stable `crate::js::chrome_api::*` paths.
+//
+// The canonical vm-js implementation lives under `crate::js::vmjs_chrome_api` (declared in
+// `src/js/mod.rs`) to avoid a `js::chrome_api` module name collision, so re-export it here rather
+// than compiling the file twice.
+pub use super::vmjs_chrome_api::{
+  install_chrome_api_bindings_vm_js, ChromeApiHost, ChromeCommand, MAX_CHROME_API_URL_CODE_UNITS,
+};
+
 /// Maximum length allowed for `chrome.navigation.navigate(url)` URLs, measured in UTF-16 code units.
 ///
 /// This is enforced in the native `vm-js` binding *before* converting the JS string to a Rust
 /// `String`, preventing hostile pages from forcing large allocations outside the VM heap.
-pub const MAX_CHROME_NAVIGATION_URL_CODE_UNITS: usize = 8 * 1024;
+pub const MAX_CHROME_NAVIGATION_URL_CODE_UNITS: usize = MAX_CHROME_API_URL_CODE_UNITS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChromeApiError {
@@ -65,13 +78,3 @@ pub fn validate_chrome_navigation_url(url: &str) -> Result<(), ChromeApiError> {
     other => Err(ChromeApiError::RejectedScheme(other.to_string())),
   }
 }
-
-// --- vm-js privileged chrome bindings ----------------------------------------
-//
-// Keep the public path stable as `crate::js::chrome_api::*` (used by the DOM VM embedding and
-// chrome-frame helpers). The canonical vm-js implementation lives under `crate::js::vmjs_chrome_api`
-// (declared in `src/js/mod.rs`) to avoid a `js::chrome_api` module name collision, so re-export it
-// here rather than compiling the file twice.
-pub use super::vmjs_chrome_api::{
-  install_chrome_api_bindings_vm_js, ChromeApiHost, ChromeCommand, MAX_CHROME_API_URL_CODE_UNITS,
-};

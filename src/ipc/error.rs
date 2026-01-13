@@ -135,6 +135,9 @@ pub enum IpcError {
   // Protocol validation errors (browser → renderer)
   // ==========================================================================
 
+  #[error("shutdown reason too long: {len} (max {max})")]
+  ShutdownReasonTooLong { len: usize, max: usize },
+
   #[error("too many files: {len} (max {max})")]
   TooManyFiles { len: usize, max: usize },
 
