@@ -185,3 +185,40 @@ test(() => {
   assert_equals(it.referenceNode, a);
   assert_false(it.pointerBeforeReferenceNode);
 }, "NodeIterator previousNode()/nextNode() move vs toggle based on pointerBeforeReferenceNode");
+
+test(() => {
+  const { root, a, a1, b } = make_tree_with_text();
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, null);
+  assert_equals(it.nextNode(), root);
+  assert_equals(it.nextNode(), a);
+  assert_equals(it.nextNode(), a1);
+  assert_equals(it.nextNode(), b);
+  assert_equals(it.nextNode(), null);
+
+  // When nextNode() returns null, the iterator's state should remain unchanged.
+  assert_equals(it.referenceNode, b);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator nextNode() returns null at the end without moving the iterator");
+
+test(() => {
+  const { root } = make_tree_with_text();
+
+  let did_throw = false;
+  const filter = () => {
+    if (!did_throw) {
+      did_throw = true;
+      throw new Error("boom");
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, filter);
+  assert_throws_js(Error, () => it.nextNode());
+  assert_equals(it.referenceNode, root, "referenceNode should remain unchanged when the filter throws");
+  assert_true(
+    it.pointerBeforeReferenceNode,
+    "pointerBeforeReferenceNode should remain unchanged when the filter throws"
+  );
+  assert_equals(it.nextNode(), root, "Traversal should continue after a filter exception");
+}, "NodeIterator clears the re-entrancy guard when the filter throws");

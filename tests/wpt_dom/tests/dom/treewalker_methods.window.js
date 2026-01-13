@@ -93,6 +93,12 @@ test(() => {
 }, "TreeWalker navigation methods (parentNode/firstChild/lastChild/nextSibling/previousSibling) update currentNode per spec");
 
 test(() => {
+  const root = document.createElement("div");
+  const tw = document.createTreeWalker(root, -1, null);
+  assert_equals(tw.whatToShow, NodeFilter.SHOW_ALL);
+}, "Document.createTreeWalker: whatToShow is converted using ToUint32 (-1 => SHOW_ALL)");
+
+test(() => {
   const { root, a, a1, a2, b, b1, c } = make_tree();
   const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
 
@@ -168,6 +174,24 @@ test(() => {
   tw_reject.currentNode = b;
   assert_equals(tw_reject.previousSibling(), null);
 }, "TreeWalker traverse-siblings algorithm: FILTER_SKIP descends; FILTER_REJECT does not");
+
+test(() => {
+  const { root, a, b, b1, c } = make_tree();
+
+  // traverse-siblings should walk into the first/last accepted descendant of a FILTER_SKIP sibling,
+  // but treat FILTER_REJECT as a subtree prune.
+  const skip_b = (node) => (node === b ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+  const tw_skip = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, skip_b);
+  tw_skip.currentNode = a;
+  assert_equals(tw_skip.nextSibling(), b1);
+  assert_equals(tw_skip.currentNode, b1);
+
+  const reject_b = (node) => (node === b ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
+  const tw_reject = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, reject_b);
+  tw_reject.currentNode = a;
+  assert_equals(tw_reject.nextSibling(), c);
+  assert_equals(tw_reject.currentNode, c);
+}, "TreeWalker nextSibling(): FILTER_SKIP descends into skipped siblings; FILTER_REJECT prunes their subtrees");
 
 test(() => {
   const { root, a, a2, b } = make_tree();
@@ -265,6 +289,24 @@ test(() => {
   assert_true(nested_threw, "Re-entrant nextNode() should throw");
   assert_equals(nested_name, "InvalidStateError");
 }, "TreeWalker rejects re-entrant nextNode() calls from the filter callback (InvalidStateError)");
+
+test(() => {
+  const { root, a } = make_tree();
+
+  let did_throw = false;
+  const filter = () => {
+    if (!did_throw) {
+      did_throw = true;
+      throw new Error("boom");
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+  assert_throws_js(Error, () => tw.nextNode());
+  assert_equals(tw.currentNode, root, "currentNode should remain unchanged when the filter throws");
+  assert_equals(tw.nextNode(), a, "Traversal should continue after a filter exception");
+}, "TreeWalker clears the re-entrancy guard when the filter throws");
 
 test(() => {
   clear_children(document.body);
