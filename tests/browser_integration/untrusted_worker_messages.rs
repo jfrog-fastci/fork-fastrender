@@ -4,7 +4,7 @@
 //! process. Even in the thread-based worker configuration, we want to enforce the same trust
 //! boundary so malicious or malformed messages cannot spoof UI state or crash the browser.
 
-use fastrender::ui::messages::{TabId, WorkerToUi};
+use fastrender::ui::messages::{CursorKind, TabId, WorkerToUi};
 use fastrender::ui::{BrowserAppState, BrowserTabState};
 
 fn has_control_chars(s: &str) -> bool {
@@ -174,3 +174,21 @@ fn browser_validates_untrusted_worker_messages() {
   );
 }
 
+#[test]
+fn hovered_url_from_worker_rejects_javascript_scheme() {
+  let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+  let tab_id = app.active_tab_id().unwrap_or(TabId(1));
+
+  app.apply_worker_msg(WorkerToUi::HoverChanged {
+    tab_id,
+    hovered_url: Some("javascript:alert(1)".to_string()),
+    cursor: CursorKind::Pointer,
+  });
+
+  let tab = app.tab(tab_id).expect("tab state should exist");
+  assert!(
+    tab.hovered_url.is_none(),
+    "expected javascript: hovered_url to be dropped, got {:?}",
+    tab.hovered_url
+  );
+}
