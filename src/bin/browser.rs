@@ -7614,6 +7614,7 @@ struct BrowserHud {
   surface_configure_calls_total: u64,
   page_texture_recreates_total: u64,
   last_upload_ms: f32,
+  upload_total_ms: f32,
   last_upload_bytes: u64,
   uploads_this_frame: u32,
   last_upload_textures_updated: u32,
@@ -7677,6 +7678,7 @@ impl BrowserHud {
       surface_configure_calls_total: 0,
       page_texture_recreates_total: 0,
       last_upload_ms: 0.0,
+      upload_total_ms: 0.0,
       last_upload_bytes: 0,
       uploads_this_frame: 0,
       last_upload_textures_updated: 0,
@@ -12951,14 +12953,17 @@ impl App {
       hud.uploads_this_frame = 0;
       hud.last_upload_bytes = 0;
       hud.last_upload_ms = 0.0;
+      hud.upload_total_ms = 0.0;
       hud.last_upload_textures_created = 0;
       hud.last_upload_textures_updated = 0;
     }
 
     let record_frame_upload_stats = |app: &mut Self| {
+      let stats = app.pending_frame_uploads.take_stats();
       if let Some(hud) = app.hud.as_mut() {
-        hud.frame_upload_stats = app.pending_frame_uploads.take_stats();
+        hud.frame_upload_stats = stats;
       }
+      stats
     };
     if let Some(hud) = self.hud.as_mut() {
       hud.begin_frame_upload_flush(self.pending_frame_uploads.pending_tab_count());
@@ -13013,7 +13018,7 @@ impl App {
 
     self.next_page_upload_redraw = None;
 
-    let upload_start = self.hud.is_some().then(std::time::Instant::now);
+    let should_time_uploads = self.hud.is_some() || self.perf_log_enabled;
     let Some(frame_ready) = self.pending_frame_uploads.take(tab_id) else {
       record_frame_upload_stats(self);
       return;
@@ -13029,9 +13034,19 @@ impl App {
     let uploaded_bytes = u64::from(pixmap.width())
       .saturating_mul(u64::from(pixmap.height()))
       .saturating_mul(4);
+    let mut upload_last_ms = 0.0f32;
+    let mut upload_total_ms = 0.0f32;
     if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
       let textures_updated = 1u32;
+      let upload_start = should_time_uploads.then(std::time::Instant::now);
       let recreated = tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+      if let Some(t0) = upload_start {
+        let ms = t0.elapsed().as_secs_f32() * 1000.0;
+        if ms.is_finite() {
+          upload_last_ms = ms;
+          upload_total_ms += ms;
+        }
+      }
       if recreated {
         if let Some(hud) = self.hud.as_mut() {
           hud.page_texture_recreates_total = hud.page_texture_recreates_total.saturating_add(1);
@@ -13045,7 +13060,15 @@ impl App {
       let textures_updated = 1u32;
       let mut tex =
         fastrender::ui::WgpuPixmapTexture::new_page(&self.device, &mut self.egui_renderer, &pixmap);
+      let upload_start = should_time_uploads.then(std::time::Instant::now);
       let recreated = tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+      if let Some(t0) = upload_start {
+        let ms = t0.elapsed().as_secs_f32() * 1000.0;
+        if ms.is_finite() {
+          upload_last_ms = ms;
+          upload_total_ms += ms;
+        }
+      }
       if recreated {
         if let Some(hud) = self.hud.as_mut() {
           hud.page_texture_recreates_total = hud.page_texture_recreates_total.saturating_add(1);
@@ -13066,13 +13089,22 @@ impl App {
     if let Some(hud) = self.hud.as_mut() {
       hud.uploads_this_frame = 1;
       hud.last_upload_bytes = uploaded_bytes;
-      hud.last_upload_ms = upload_start
-        .map(|t| t.elapsed().as_secs_f32() * 1000.0)
-        .filter(|ms| ms.is_finite())
-        .unwrap_or(0.0);
+      hud.last_upload_ms = upload_last_ms;
+      hud.upload_total_ms = upload_total_ms;
     }
 
-    record_frame_upload_stats(self);
+    let frame_upload_stats = record_frame_upload_stats(self);
+    if self.perf_log_enabled {
+      let pending_bytes = self.pending_frame_uploads.total_estimated_bytes();
+      eprintln!(
+        "[{ENV_PERF_LOG}] page_upload: tab={tab_id:?} bytes={uploaded_bytes} upload_last_ms={upload_last_ms:.2} upload_total_ms={upload_total_ms:.2} push={} overwrite={} drained={} pending_tabs={} max_pending_tabs={} pending_bytes={pending_bytes}",
+        frame_upload_stats.push_calls,
+        frame_upload_stats.overwritten_frames,
+        frame_upload_stats.drained_frames,
+        frame_upload_stats.pending_tabs,
+        frame_upload_stats.max_pending_tabs,
+      );
+    }
   }
 
   fn send_viewport_changed_clamped_if_needed(
@@ -14023,7 +14055,19 @@ impl App {
       hud.surface_configure_calls_total, hud.page_texture_recreates_total
     );
     let upload_pixels = hud.last_upload_bytes / 4;
-    if hud.last_upload_ms.is_finite() {
+    if hud.last_upload_ms.is_finite() && hud.upload_total_ms.is_finite() {
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "upload: {}  last {:.2}ms  total {:.2}ms  {} px  {} bytes  tex(u{} c{})",
+        hud.uploads_this_frame,
+        hud.last_upload_ms,
+        hud.upload_total_ms,
+        upload_pixels,
+        hud.last_upload_bytes,
+        hud.last_upload_textures_updated,
+        hud.last_upload_textures_created
+      );
+    } else if hud.last_upload_ms.is_finite() {
       let _ = writeln!(
         &mut hud.text_buf,
         "upload: {}  {:.2}ms  {} px  {} bytes  tex(u{} c{})",
