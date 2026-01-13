@@ -135,18 +135,21 @@ reason = "QuickJS backend uses minimal DOM shims; Element.children and element-s
 
 [[expectations]]
 id = "dom/collections/getelementsbytagname-live.window.js"
+backend = "quickjs"
 status = "xfail"
-reason = "Document/Element.getElementsByTagName is not implemented yet (including live HTMLCollection semantics and template inert-subtree behavior)."
+reason = "QuickJS backend does not implement Document/Element.getElementsByTagName yet."
 
 [[expectations]]
 id = "dom/collections/getelementsbyclassname-live.window.js"
+backend = "quickjs"
 status = "xfail"
-reason = "Document/Element.getElementsByClassName is not implemented yet (including live HTMLCollection semantics and template inert-subtree behavior)."
+reason = "QuickJS backend does not implement Document/Element.getElementsByClassName yet."
 
 [[expectations]]
 id = "dom/collections/getelementsbyname-live.window.js"
+backend = "quickjs"
 status = "xfail"
-reason = "Document.getElementsByName is not implemented yet (including live NodeList semantics and template inert-subtree behavior)."
+reason = "QuickJS backend does not implement Document.getElementsByName yet."
 
 [[expectations]]
 id = "dom/collections/getelementsbytagnamens.window.js"
