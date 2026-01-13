@@ -717,7 +717,7 @@ fn paint_tab_pin_ghost(
     let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
     painter.image(tex_id, icon_rect, uv, Color32::WHITE);
   } else {
-    placeholder_favicon(&painter, icon_rect, &visuals);
+    placeholder_favicon(&painter, icon_rect, &visuals, 1.0);
     let title = tab.display_title();
     let glyph = title
       .trim()
