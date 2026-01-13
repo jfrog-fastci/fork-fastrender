@@ -194,3 +194,93 @@ fn drag_drop_document_selection_into_text_input_inserts_text() -> Result<()> {
   assert_eq!(dst.get_attribute_ref("value"), Some("hello"));
   Ok(())
 }
+
+#[test]
+fn click_inside_document_selection_defers_collapse_until_mouseup() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (320, 180);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          body { font: 40px/80px monospace; }
+          #src { position: absolute; top: 0; left: 10px; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <p id="src">hello</p>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Double-click selects the word, producing a highlighted document selection.
+  let src_click = (20.0, 40.0);
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+  assert!(
+    controller
+      .interaction_state()
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| sel.has_highlight()),
+    "expected document selection highlight after double-click"
+  );
+
+  // Clicking inside the highlight should *not* collapse the selection on pointer down (so the user
+  // can still begin a drag-and-drop), but should collapse on mouseup if no drag occurs.
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+  assert!(
+    controller
+      .interaction_state()
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| sel.has_highlight()),
+    "selection should remain highlighted during pointer down"
+  );
+
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+  assert!(
+    controller
+      .interaction_state()
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| !sel.has_highlight()),
+    "selection should collapse on click release when no drag/drop occurs"
+  );
+
+  Ok(())
+}
