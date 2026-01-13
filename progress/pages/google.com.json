@@ -16,12 +16,13 @@
     "layout": 8.002919129251701,
     "paint": 40.014595646258506
   },
-  "notes": "Diff was dominated by a non-standard internal focus/required/invalid tint overlay painted inside native text controls (e.g. the search field). Control state visuals should be driven by CSS pseudo-classes instead, so the internal tint overlay was removed.",
+  "notes": "Previously the diff was dominated by a non-standard internal focus/required/invalid tint overlay painted inside native text controls (e.g. the search field); that overlay was removed so control state visuals are driven by CSS pseudo-classes instead. The earlier very-high perceptual score was a stale snapshot—after refreshing accuracy, remaining diffs are small and mostly minor text/paint shading differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 78107,
-    "diff_percent": 8.1361,
-    "perceptual": 0.4685,
+    "diff_pixels": 58364,
+    "diff_percent": 6.0796,
+    "perceptual": 0.0303,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 1119,
       "y": 8,
@@ -32,15 +33,15 @@
         255
       ],
       "rendered_rgba": [
-        255,
-        255,
-        255,
+        224,
+        233,
+        249,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "211684cd9c51358a36c94f5a2064b73ad61c4602"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
