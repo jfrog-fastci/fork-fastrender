@@ -16133,8 +16133,14 @@ mod tests {
       "expected intrinsic sizing to take the parallel path (children={})",
       root.children.len()
     );
-    let parallel_factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
-      .with_parallelism(parallelism);
+    let collector = Arc::new(crate::layout::engine::LayoutParallelDebugCollector::default());
+    let _debug_guard = crate::layout::engine::LayoutParallelDebugCollectorThreadGuard::install(Some(
+      collector.clone(),
+    ));
+    let parallel_factory =
+      FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+        .with_parallelism(parallelism)
+        .with_layout_parallel_debug(Some(collector));
     let parallel_bfc = BlockFormattingContext::with_factory(parallel_factory);
 
     // Run inside a dedicated 2-thread pool when possible so we exercise true parallel execution
@@ -16151,6 +16157,12 @@ mod tests {
         .compute_intrinsic_inline_sizes(&root)
         .expect("parallel intrinsic sizing")
     };
+
+    let counters = crate::layout::engine::layout_parallel_debug_counters();
+    assert!(
+      counters.work_items > 0,
+      "expected parallel intrinsic sizing to record debug work items"
+    );
 
     const EPS: f32 = 1e-3;
     assert!(
