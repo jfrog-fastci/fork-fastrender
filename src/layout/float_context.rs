@@ -302,6 +302,78 @@ struct FloatEvent {
   float_id: usize,
 }
 
+#[derive(Debug, Clone)]
+enum PendingEvents {
+  /// Cursor into `FloatContext::events` when float start events are appended in non-decreasing `y`.
+  ///
+  /// This avoids duplicating the full event list into a heap and allows O(1) per-event consumption.
+  Cursor { next_idx: usize },
+  /// Heap of pending events when floats are inserted out-of-order.
+  Heap(BinaryHeap<Reverse<FloatEvent>>),
+}
+
+impl PendingEvents {
+  fn new(events: &[FloatEvent], monotonic: bool) -> Self {
+    if monotonic {
+      Self::Cursor { next_idx: 0 }
+    } else {
+      profile_count_pending_events_heap_use(1);
+      Self::Heap(events.iter().copied().map(Reverse).collect())
+    }
+  }
+
+  fn reset(&mut self, events: &[FloatEvent], monotonic: bool) {
+    match (self, monotonic) {
+      (Self::Cursor { next_idx }, true) => {
+        *next_idx = 0;
+      }
+      (Self::Heap(heap), false) => {
+        heap.clear();
+        heap.extend(events.iter().copied().map(Reverse));
+      }
+      (slot, _) => {
+        *slot = Self::new(events, monotonic);
+      }
+    }
+  }
+
+  fn pending_len(&self, total_events_len: usize) -> usize {
+    match self {
+      Self::Cursor { next_idx } => total_events_len.saturating_sub(*next_idx),
+      Self::Heap(heap) => heap.len(),
+    }
+  }
+
+  fn is_cursor(&self) -> bool {
+    matches!(self, Self::Cursor { .. })
+  }
+
+  fn push(&mut self, event: FloatEvent) {
+    if let Self::Heap(heap) = self {
+      profile_count_pending_events_heap_use(1);
+      heap.push(Reverse(event));
+    }
+  }
+
+  fn peek(&self, events: &[FloatEvent]) -> Option<FloatEvent> {
+    match self {
+      Self::Cursor { next_idx } => events.get(*next_idx).copied(),
+      Self::Heap(heap) => heap.peek().map(|rev| rev.0),
+    }
+  }
+
+  fn pop(&mut self, events: &[FloatEvent]) -> Option<FloatEvent> {
+    match self {
+      Self::Cursor { next_idx } => {
+        let event = events.get(*next_idx).copied()?;
+        *next_idx = next_idx.saturating_add(1);
+        Some(event)
+      }
+      Self::Heap(heap) => heap.pop().map(|rev| rev.0),
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveEdgeSetKind {
   /// Represents active left floats by their (right_edge -> max_bottom) constraint.
@@ -457,14 +529,14 @@ impl Ord for FloatEvent {
 #[derive(Debug)]
 struct FloatSweepState {
   current_y: f32,
-  pending_events: BinaryHeap<Reverse<FloatEvent>>,
+  pending_events: PendingEvents,
   /// Pending float start events, used to cheaply detect whether a range scan can become more
   /// constrained (i.e. whether any floats start inside the queried range).
   ///
   /// This is kept as a separate min-heap so `edges_in_range_min_width_with_state` can avoid
   /// scanning through unrelated start events when the caller's `y` is constant and many floats
   /// share a start edge.
-  pending_start_events: BinaryHeap<Reverse<FloatEvent>>,
+  pending_start_events: PendingEvents,
   /// Coalesced active rectangular left floats (right_edge -> max_bottom).
   active_left: ActiveEdgeSet,
   /// Coalesced active rectangular right floats (left_edge -> max_bottom).
@@ -474,10 +546,10 @@ struct FloatSweepState {
 }
 
 impl FloatSweepState {
-  fn new(float_count: usize, events: &[FloatEvent]) -> Self {
+  fn new(float_count: usize, events: &[FloatEvent], monotonic_events: bool) -> Self {
     let _ = float_count;
-    let pending_events = events.iter().copied().map(Reverse).collect();
-    let pending_start_events = events.iter().copied().map(Reverse).collect();
+    let pending_events = PendingEvents::new(events, monotonic_events);
+    let pending_start_events = PendingEvents::new(events, monotonic_events);
     Self {
       current_y: f32::NEG_INFINITY,
       pending_events,
@@ -489,19 +561,15 @@ impl FloatSweepState {
     }
   }
 
-  fn reset(&mut self, _float_count: usize, events: &[FloatEvent]) {
+  fn reset(&mut self, _float_count: usize, events: &[FloatEvent], monotonic_events: bool) {
     self.current_y = f32::NEG_INFINITY;
 
-    self.pending_events.clear();
-    self.pending_events.extend(events.iter().copied().map(Reverse));
+    self.pending_events.reset(events, monotonic_events);
 
     // Float events are start events only (floats expire lazily based on `bottom`), but we keep a
-    // separate heap so range scans can cheaply tell whether any new floats begin within a queried
+    // separate queue so range scans can cheaply tell whether any new floats begin within a queried
     // band.
-    self.pending_start_events.clear();
-    self
-      .pending_start_events
-      .extend(events.iter().copied().map(Reverse));
+    self.pending_start_events.reset(events, monotonic_events);
 
     self.active_left.clear();
     self.active_right.clear();
@@ -627,7 +695,7 @@ impl FloatRangeCache {
     Self {
       float_count: 0,
       events_len: 0,
-      sweep_state: FloatSweepState::new(0, &[]),
+      sweep_state: FloatSweepState::new(0, &[], true),
       segments: Vec::new(),
       block_min_cache: None,
     }
@@ -637,18 +705,21 @@ impl FloatRangeCache {
     self.float_count = 0;
     self.events_len = 0;
     self.segments.clear();
-    self.sweep_state.reset(0, &[]);
+    self.sweep_state.reset(0, &[], true);
     self.block_min_cache = None;
   }
 
-  fn ensure_current(&mut self, float_count: usize, events: &[FloatEvent]) {
-    if self.float_count == float_count && self.events_len == events.len() {
+  fn ensure_current(&mut self, float_count: usize, events: &[FloatEvent], monotonic_events: bool) {
+    if self.float_count == float_count
+      && self.events_len == events.len()
+      && self.sweep_state.pending_events.is_cursor() == monotonic_events
+    {
       return;
     }
     self.float_count = float_count;
     self.events_len = events.len();
     self.segments.clear();
-    self.sweep_state = FloatSweepState::new(float_count, events);
+    self.sweep_state = FloatSweepState::new(float_count, events, monotonic_events);
     self.block_min_cache = None;
   }
 
@@ -866,6 +937,9 @@ static FLOAT_CLEARANCE_STEPS: AtomicU64 = AtomicU64::new(0);
 static FLOAT_CONTEXT_CLONES: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
+static FLOAT_PENDING_EVENTS_HEAP_USES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
 thread_local! {
   static FLOAT_PROFILE_OVERRIDE: Cell<Option<bool>> = Cell::new(None);
 }
@@ -888,12 +962,32 @@ pub(crate) fn float_context_clone_count() -> u64 {
   FLOAT_CONTEXT_CLONES.load(AtomicOrdering::Relaxed)
 }
 
+#[cfg(test)]
+pub(crate) fn float_pending_events_heap_use_count() -> u64 {
+  FLOAT_PENDING_EVENTS_HEAP_USES.load(AtomicOrdering::Relaxed)
+}
+
 fn profile_enabled() -> bool {
   #[cfg(test)]
   if let Some(enabled) = FLOAT_PROFILE_OVERRIDE.with(|cell| cell.get()) {
     return enabled;
   }
   runtime::runtime_toggles().truthy("FASTR_LAYOUT_PROFILE")
+}
+
+#[inline]
+fn profile_count_pending_events_heap_use(delta: u64) {
+  if !profile_enabled() {
+    return;
+  }
+  #[cfg(test)]
+  {
+    FLOAT_PENDING_EVENTS_HEAP_USES.fetch_add(delta, AtomicOrdering::Relaxed);
+  }
+  #[cfg(not(test))]
+  {
+    let _ = delta;
+  }
 }
 
 fn profile_count_width_query() {
@@ -1022,6 +1116,10 @@ pub fn reset_float_profile_counters() {
   FLOAT_ACTIVE_RIGHT_MAX_EDGES.store(0, AtomicOrdering::Relaxed);
   FLOAT_CLEARANCE_QUERIES.store(0, AtomicOrdering::Relaxed);
   FLOAT_CLEARANCE_STEPS.store(0, AtomicOrdering::Relaxed);
+  #[cfg(test)]
+  {
+    FLOAT_PENDING_EVENTS_HEAP_USES.store(0, AtomicOrdering::Relaxed);
+  }
   crate::layout::float_shape::reset_float_shape_profile_counters();
 }
 
@@ -1114,6 +1212,16 @@ pub struct FloatContext {
   /// The append-only event list is kept so the sweep can be rebuilt when queries move backwards.
   events: Vec<FloatEvent>,
 
+  /// True iff `events` is sorted by non-decreasing `FloatEvent::y` (and implicitly by `float_id`).
+  ///
+  /// In the common layout pattern where floats are added in source order, start events are appended
+  /// in monotonically increasing Y. When this holds, `FloatSweepState` can consume events via a
+  /// simple cursor into `events` instead of maintaining a min-heap.
+  events_are_monotonic: bool,
+
+  /// Last inserted start-event Y (used to detect monotonic insertion).
+  last_event_y: f32,
+
   /// Sweep state used to answer monotonic Y queries efficiently.
   sweep_state: RefCell<FloatSweepState>,
 
@@ -1158,9 +1266,15 @@ impl Clone for FloatContext {
       right_floats: self.right_floats.clone(),
       float_map,
       events,
+      events_are_monotonic: self.events_are_monotonic,
+      last_event_y: self.last_event_y,
       // Do not clone the sweep state / range cache; they can contain large heaps/vectors and are
       // purely derived from `events`/`float_map`.
-      sweep_state: RefCell::new(FloatSweepState::new(self.float_map.len(), &self.events)),
+      sweep_state: RefCell::new(FloatSweepState::new(
+        self.float_map.len(),
+        &self.events,
+        self.events_are_monotonic,
+      )),
       range_cache: RefCell::new(FloatRangeCache::new()),
       max_float_bottom: self.max_float_bottom,
       clearance_left_max_bottom: self.clearance_left_max_bottom,
@@ -1176,13 +1290,16 @@ impl Clone for FloatContext {
     self.right_floats.clone_from(&source.right_floats);
     self.float_map.clone_from(&source.float_map);
     self.events.clone_from(&source.events);
+    self.events_are_monotonic = source.events_are_monotonic;
+    self.last_event_y = source.last_event_y;
 
     // Do not clone the sweep state / range cache; they can contain large heaps/vectors and are
     // purely derived from `events`/`float_map`. Reset them, but reuse existing allocations.
-    self
-      .sweep_state
-      .get_mut()
-      .reset(self.float_map.len(), &self.events);
+    self.sweep_state.get_mut().reset(
+      self.float_map.len(),
+      &self.events,
+      self.events_are_monotonic,
+    );
     self.range_cache.get_mut().reset();
 
     self.max_float_bottom = source.max_float_bottom;
@@ -1215,7 +1332,9 @@ impl FloatContext {
       right_floats: Vec::new(),
       float_map: Vec::new(),
       events: Vec::new(),
-      sweep_state: RefCell::new(FloatSweepState::new(0, &[])),
+      events_are_monotonic: true,
+      last_event_y: f32::NEG_INFINITY,
+      sweep_state: RefCell::new(FloatSweepState::new(0, &[], true)),
       range_cache: RefCell::new(FloatRangeCache::new()),
       max_float_bottom: 0.0,
       // Use a finite sentinel so non-finite float geometry cannot permanently poison clearance.
@@ -1243,7 +1362,11 @@ impl FloatContext {
   }
 
   fn reset_sweep_state(&mut self) {
-    self.sweep_state = RefCell::new(FloatSweepState::new(self.float_map.len(), &self.events));
+    self.sweep_state = RefCell::new(FloatSweepState::new(
+      self.float_map.len(),
+      &self.events,
+      self.events_are_monotonic,
+    ));
     self.range_cache = RefCell::new(FloatRangeCache::new());
   }
 
@@ -1319,8 +1442,8 @@ impl FloatContext {
       eprintln!(
         "  sweep_state: current_y={:.2} pending_events={} pending_start_events={} active_edges=(left={}, right={}) active_shapes=(left={}, right={})",
         current_y,
-        state.pending_events.len(),
-        state.pending_start_events.len(),
+        state.pending_events.pending_len(self.events.len()),
+        state.pending_start_events.pending_len(self.events.len()),
         active_left_edges,
         active_right_edges,
         state.active_shape_left.len(),
@@ -1483,8 +1606,19 @@ impl FloatContext {
 
   fn ensure_sweep_state(&self, y: f32) -> std::cell::RefMut<'_, FloatSweepState> {
     let mut state = self.sweep_state.borrow_mut();
+    // If the context transitioned from monotonic to non-monotonic insertion, any cursor-based sweep
+    // state must be rebuilt into heap mode.
+    if !self.events_are_monotonic && state.pending_events.is_cursor() {
+      let current_y = state.current_y;
+      *state = FloatSweepState::new(self.float_map.len(), &self.events, false);
+      self.advance_sweep_to(current_y, &mut state);
+    }
     if y < state.current_y {
-      *state = FloatSweepState::new(self.float_map.len(), &self.events);
+      *state = FloatSweepState::new(
+        self.float_map.len(),
+        &self.events,
+        self.events_are_monotonic,
+      );
     }
     state
   }
@@ -1517,15 +1651,29 @@ impl FloatContext {
     if target_y.is_nan() {
       return;
     }
+
+    // If the context transitioned from cursor -> heap mode, rebuild this state before advancing.
+    if !self.events_are_monotonic && state.pending_events.is_cursor() {
+      let current_y = state.current_y;
+      *state = FloatSweepState::new(self.float_map.len(), &self.events, false);
+      // Preserve the previously advanced y so callers that advance monotonically don't
+      // accidentally re-scan from scratch.
+      self.advance_sweep_to(current_y, state);
+    }
+
     if target_y < state.current_y {
-      *state = FloatSweepState::new(self.float_map.len(), &self.events);
+      *state = FloatSweepState::new(
+        self.float_map.len(),
+        &self.events,
+        self.events_are_monotonic,
+      );
     }
     let mut steps = 0;
-    while let Some(Reverse(event)) = state.pending_events.peek().copied() {
+    while let Some(event) = state.pending_events.peek(&self.events) {
       if event.y > target_y {
         break;
       }
-      state.pending_events.pop();
+      state.pending_events.pop(&self.events);
       self.apply_event(&event, state);
       steps += 1;
     }
@@ -1653,7 +1801,8 @@ impl FloatContext {
       .is_some_and(|seg| start_y < seg.start_y)
     {
       cache.segments.clear();
-      cache.sweep_state = FloatSweepState::new(cache.float_count, &self.events);
+      cache.sweep_state =
+        FloatSweepState::new(cache.float_count, &self.events, self.events_are_monotonic);
       cache.invalidate_block_min_cache();
     }
 
@@ -1766,15 +1915,15 @@ impl FloatContext {
       }
 
       // Discard already-processed start events.
-      while let Some(Reverse(event)) = state.pending_start_events.peek().copied() {
+      while let Some(event) = state.pending_start_events.peek(&self.events) {
         if event.y <= state.current_y {
-          state.pending_start_events.pop();
+          state.pending_start_events.pop(&self.events);
           continue;
         }
         break;
       }
 
-      let Some(Reverse(event)) = state.pending_start_events.peek().copied() else {
+      let Some(event) = state.pending_start_events.peek(&self.events) else {
         return next_end.0;
       };
       let event_y = FloatKey(event.y);
@@ -1801,13 +1950,13 @@ impl FloatContext {
               // edge is unchanged, but the y at which it can relax is now later.
               left_bottom = bottom;
               next_end = left_bottom.min(right_bottom).min(shape_boundary);
-              state.pending_start_events.pop();
+              state.pending_start_events.pop(&self.events);
               continue;
             }
           }
 
           // This start cannot affect constraints before `next_end`.
-          state.pending_start_events.pop();
+          state.pending_start_events.pop(&self.events);
         }
         FloatSide::Right => {
           let edge = FloatKey(float.left_edge());
@@ -1819,12 +1968,12 @@ impl FloatContext {
             if bottom > right_bottom && right_bottom == next_end {
               right_bottom = bottom;
               next_end = left_bottom.min(right_bottom).min(shape_boundary);
-              state.pending_start_events.pop();
+              state.pending_start_events.pop(&self.events);
               continue;
             }
           }
 
-          state.pending_start_events.pop();
+          state.pending_start_events.pop(&self.events);
         }
       }
     }
@@ -1877,7 +2026,11 @@ impl FloatContext {
     // Full scan: use a cached piecewise representation rather than cloning and re-advancing heaps
     // for each query.
     let mut cache = self.range_cache.borrow_mut();
-    cache.ensure_current(self.float_map.len(), &self.events);
+    cache.ensure_current(
+      self.float_map.len(),
+      &self.events,
+      self.events_are_monotonic,
+    );
     self.ensure_range_cache_coverage(&mut cache, start, end);
     profile_update_max_range_cache_segments_len(cache.segments.len() as u64);
 
@@ -2124,7 +2277,11 @@ impl FloatContext {
     let mut last_right = containing_right;
 
     let mut cache = self.range_cache.borrow_mut();
-    cache.ensure_current(self.float_map.len(), &self.events);
+    cache.ensure_current(
+      self.float_map.len(),
+      &self.events,
+      self.events_are_monotonic,
+    );
 
     // Ensure we have a starting segment, even when `height` is zero.
     self.ensure_range_cache_coverage(&mut cache, y, y + target_height);
@@ -2184,7 +2341,11 @@ impl FloatContext {
           if scanned_segments > threshold as u64 {
             // Release the range-cache borrow so `debug_dump` can print segments.
             drop(cache);
-            let mut state = FloatSweepState::new(self.float_map.len(), &self.events);
+            let mut state = FloatSweepState::new(
+              self.float_map.len(),
+              &self.events,
+              self.events_are_monotonic,
+            );
             self.advance_sweep_to(y, &mut state);
             self.debug_dump_with_sweep_state(
               &format!(
@@ -2318,7 +2479,11 @@ impl FloatContext {
         if scanned_segments > threshold as u64 {
           // Release the range-cache borrow so `debug_dump` can print segments.
           drop(cache);
-          let mut state = FloatSweepState::new(self.float_map.len(), &self.events);
+          let mut state = FloatSweepState::new(
+            self.float_map.len(),
+            &self.events,
+            self.events_are_monotonic,
+          );
           self.advance_sweep_to(y, &mut state);
           self.debug_dump_with_sweep_state(
             &format!(
@@ -2334,11 +2499,11 @@ impl FloatContext {
   }
 
   fn next_float_start_y(&self, state: &mut FloatSweepState) -> f32 {
-    while let Some(Reverse(event)) = state.pending_start_events.peek().copied() {
+    while let Some(event) = state.pending_start_events.peek(&self.events) {
       // `advance_sweep_to` consumes all events with `event.y <= current_y`, so anything at or below
       // `current_y` has already been applied to the active set.
       if event.y <= state.current_y {
-        state.pending_start_events.pop();
+        state.pending_start_events.pop(&self.events);
         continue;
       }
       return event.y;
@@ -2549,6 +2714,17 @@ impl FloatContext {
       float_info.rect = Rect::from_xywh(x, self.current_y, width, 0.0);
     }
 
+    let was_monotonic = self.events_are_monotonic;
+    if !self.last_event_y.is_finite() {
+      // Defend against upstream corruption; treat it like an empty event list.
+      self.last_event_y = f32::NEG_INFINITY;
+    }
+    if self.events_are_monotonic && start_y < self.last_event_y {
+      self.events_are_monotonic = false;
+    }
+    self.last_event_y = start_y;
+    let became_non_monotonic = was_monotonic && !self.events_are_monotonic;
+
     let float_bottom = float_info.bottom();
     if float_bottom.is_finite() {
       self.max_float_bottom = self.max_float_bottom.max(float_bottom);
@@ -2579,13 +2755,30 @@ impl FloatContext {
     };
     self.events.push(start_event);
 
+    if became_non_monotonic {
+      // `events` is no longer sorted, so any cursor-based sweep state must be rebuilt into heap
+      // mode. The range cache is an optimization; conservatively discard it so it can rebuild from
+      // the authoritative event list.
+      {
+        let mut sweep_state = self.sweep_state.borrow_mut();
+        let current_y = sweep_state.current_y;
+        *sweep_state = FloatSweepState::new(self.float_map.len(), &self.events, false);
+        self.advance_sweep_to(current_y, &mut sweep_state);
+      }
+      {
+        let mut range_cache = self.range_cache.borrow_mut();
+        range_cache.ensure_current(self.float_map.len(), &self.events, false);
+      }
+      return;
+    }
+
     // Keep the sweep state usable across interleaved insertions + monotonic queries (the common
     // pattern during BFC layout). Resetting here destroys the incremental sweep and turns
     // float-heavy pages into O(n^2) boundary rescans.
     {
       let mut sweep_state = self.sweep_state.borrow_mut();
-      sweep_state.pending_events.push(Reverse(start_event));
-      sweep_state.pending_start_events.push(Reverse(start_event));
+      sweep_state.pending_events.push(start_event);
+      sweep_state.pending_start_events.push(start_event);
       let current_y = sweep_state.current_y;
       self.advance_sweep_to(current_y, &mut sweep_state);
     }
@@ -2609,21 +2802,26 @@ impl FloatContext {
         if let Some(edge) = rect_edge_for_range_cache {
           range_cache.apply_rect_float(start_y, end_y, side, edge);
         }
-        range_cache
-          .sweep_state
-          .pending_events
-          .push(Reverse(start_event));
+        range_cache.sweep_state.pending_events.push(start_event);
         range_cache
           .sweep_state
           .pending_start_events
-          .push(Reverse(start_event));
+          .push(start_event);
         let current_y = range_cache.sweep_state.current_y;
         self.advance_sweep_to(current_y, &mut range_cache.sweep_state);
       } else {
-        range_cache.ensure_current(self.float_map.len(), &self.events);
+        range_cache.ensure_current(
+          self.float_map.len(),
+          &self.events,
+          self.events_are_monotonic,
+        );
       }
     } else {
-      range_cache.ensure_current(self.float_map.len(), &self.events);
+      range_cache.ensure_current(
+        self.float_map.len(),
+        &self.events,
+        self.events_are_monotonic,
+      );
     }
   }
 
@@ -3171,6 +3369,8 @@ impl FloatContext {
     self.right_floats.clear();
     self.float_map.clear();
     self.events.clear();
+    self.events_are_monotonic = true;
+    self.last_event_y = f32::NEG_INFINITY;
     self.reset_sweep_state();
     self.max_float_bottom = 0.0;
     self.clearance_left_max_bottom = f32::MIN;

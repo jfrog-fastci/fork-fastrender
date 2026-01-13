@@ -186,6 +186,7 @@ mod float_context_non_finite_float_coords;
 mod float_context_non_finite_y;
 mod float_context_stress_timeout;
 mod float_context_naive_equivalence;
+mod float_pending_events_cursor;
 mod float_external_context_width;
 mod float_grid_container_uses_own_formatting_context;
 mod float_inline_floats_do_not_expand_non_bfc_height;
