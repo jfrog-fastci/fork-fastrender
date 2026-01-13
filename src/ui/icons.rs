@@ -36,6 +36,9 @@ pub enum BrowserIcon {
   Error,
   Spinner,
   Info,
+  Trash,
+  Edit,
+  Folder,
   BookmarkOutline,
   BookmarkFilled,
 }
@@ -71,6 +74,9 @@ impl BrowserIcon {
       Self::Error => "error",
       Self::Spinner => "spinner",
       Self::Info => "info",
+      Self::Trash => "trash",
+      Self::Edit => "edit",
+      Self::Folder => "folder",
       Self::BookmarkOutline => "bookmark_outline",
       Self::BookmarkFilled => "bookmark_filled",
     }
@@ -108,6 +114,9 @@ impl BrowserIcon {
       Self::Error => "Error",
       Self::Spinner => "Loading",
       Self::Info => "Info",
+      Self::Trash => "Delete",
+      Self::Edit => "Edit",
+      Self::Folder => "Folder",
       Self::BookmarkOutline => "Bookmark",
       Self::BookmarkFilled => "Bookmark",
     }
@@ -141,6 +150,9 @@ impl BrowserIcon {
       Self::Error => include_bytes!("../../assets/browser_icons/error.svg"),
       Self::Spinner => include_bytes!("../../assets/browser_icons/spinner.svg"),
       Self::Info => include_bytes!("../../assets/browser_icons/info.svg"),
+      Self::Trash => include_bytes!("../../assets/browser_icons/trash.svg"),
+      Self::Edit => include_bytes!("../../assets/browser_icons/edit.svg"),
+      Self::Folder => include_bytes!("../../assets/browser_icons/folder.svg"),
       Self::BookmarkOutline => include_bytes!("../../assets/browser_icons/bookmark_outline.svg"),
       Self::BookmarkFilled => include_bytes!("../../assets/browser_icons/bookmark_filled.svg"),
     }
@@ -574,6 +586,9 @@ mod tests {
       BrowserIcon::Error,
       BrowserIcon::Spinner,
       BrowserIcon::Info,
+      BrowserIcon::Trash,
+      BrowserIcon::Edit,
+      BrowserIcon::Folder,
       BrowserIcon::BookmarkOutline,
       BrowserIcon::BookmarkFilled,
     ] {
@@ -721,6 +736,9 @@ mod tests {
       BrowserIcon::Error,
       BrowserIcon::Spinner,
       BrowserIcon::Info,
+      BrowserIcon::Trash,
+      BrowserIcon::Edit,
+      BrowserIcon::Folder,
       BrowserIcon::BookmarkOutline,
       BrowserIcon::BookmarkFilled,
     ];
