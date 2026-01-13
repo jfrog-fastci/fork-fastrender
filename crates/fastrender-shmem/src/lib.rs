@@ -699,18 +699,33 @@ fn create_linux_memfd_file(len: usize) -> io::Result<File> {
 
 #[cfg(target_os = "linux")]
 fn lock_linux_memfd_seals(fd: RawFd) -> io::Result<()> {
-  // If the fd doesn't support sealing (e.g. memfd created without MFD_ALLOW_SEALING), `F_ADD_SEALS`
-  // will fail with EPERM and `F_GET_SEALS` may fail with EINVAL. Treat those as best-effort
+  // If the fd doesn't support sealing (e.g. memfd created without `MFD_ALLOW_SEALING` or restricted
+  // by sandbox policy), `F_ADD_SEALS` fails with EPERM/EINVAL/ENOSYS. Treat those as best-effort
   // unsupported rather than hard errors.
-  let seals: libc::c_int = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+  //
+  // Apply the required size-stability seals first so they still take effect on kernels that can't
+  // lock the seal set (`F_SEAL_SEAL`).
+  let required: libc::c_int = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
   // SAFETY: `fcntl(F_ADD_SEALS)` takes the fd and an int seal mask.
-  let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) };
+  let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, required) };
+  if rc != 0 {
+    let err = io::Error::last_os_error();
+    match err.raw_os_error() {
+      Some(code) if code == libc::EPERM || code == libc::EINVAL || code == libc::ENOSYS => Ok(()),
+      _ => Err(err),
+    }?;
+    return Ok(());
+  }
+
+  // Best-effort: lock the seal set so an untrusted peer cannot persistently add restrictive seals
+  // like `F_SEAL_WRITE` (persistent DoS when buffers are pooled).
+  let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
   if rc == 0 {
     return Ok(());
   }
   let err = io::Error::last_os_error();
   match err.raw_os_error() {
-    Some(code) if code == libc::EPERM || code == libc::EINVAL => Ok(()),
+    Some(code) if code == libc::EPERM || code == libc::EINVAL || code == libc::ENOSYS => Ok(()),
     _ => Err(err),
   }
 }
@@ -781,12 +796,13 @@ mod tests {
     let initial_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     assert!(initial_flags & libc::FD_CLOEXEC != 0);
 
-    // If sealing is supported, we lock the seal set (F_SEAL_SEAL) and prevent resizing.
+    // If sealing is supported, we prevent resizing (`F_SEAL_SHRINK|F_SEAL_GROW`). Locking the seal
+    // set (`F_SEAL_SEAL`) is best-effort and may be blocked by sandbox policy, so don't require it
+    // here.
     let seals = unsafe { libc::fcntl(fd, libc::F_GET_SEALS) };
     if seals >= 0 {
       assert!(seals & libc::F_SEAL_SHRINK != 0);
       assert!(seals & libc::F_SEAL_GROW != 0);
-      assert!(seals & libc::F_SEAL_SEAL != 0);
     }
 
     handle.clear_cloexec().expect("clear cloexec on memfd");
@@ -816,12 +832,27 @@ mod tests {
       // restrictive sandbox policy. Treat this as best-effort: other tests cover the happy path.
       return;
     }
-    assert_eq!(
-      seals & (libc::F_SEAL_SHRINK | libc::F_SEAL_GROW),
-      libc::F_SEAL_SHRINK | libc::F_SEAL_GROW,
-      "expected size seals to be applied"
-    );
-    assert_ne!(seals & libc::F_SEAL_SEAL, 0, "expected seals to be locked");
+    let required = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
+    if (seals & required) != required {
+      // Some sandboxes may allow `F_GET_SEALS` but deny `F_ADD_SEALS` (EPERM), leaving seals unset.
+      // Treat sealing as best-effort for this crate; other integration tests cover strict modes.
+      return;
+    }
+
+    // `F_SEAL_SEAL` is defense-in-depth: when supported it prevents untrusted peers from adding
+    // restrictive seals (e.g. `F_SEAL_WRITE`) to pooled buffers.
+    if (seals & libc::F_SEAL_SEAL) == 0 {
+      // If we can lock seals now, the backend should have done so during creation.
+      let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+      if rc == 0 {
+        panic!("expected Linux memfd backend to lock the seal set with F_SEAL_SEAL");
+      }
+      let err = std::io::Error::last_os_error();
+      match err.raw_os_error() {
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => return,
+        _ => panic!("unexpected error attempting to add F_SEAL_SEAL: {err}"),
+      }
+    }
 
     // Once the seal set is locked, untrusted peers must not be able to add F_SEAL_WRITE.
     let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, libc::F_SEAL_WRITE) };
