@@ -4762,6 +4762,76 @@ mod tests {
   }
 
   #[test]
+  fn focus_traversal_tab_strip_with_pinned_and_group_chip_is_stable_expanded_and_collapsed() {
+    let mut app = BrowserAppState::new();
+    let tab_pinned = TabId(1);
+    let tab_b = TabId(2);
+    let tab_c = TabId(3);
+    let tab_d = TabId(4);
+    let mut pinned = BrowserTabState::new(tab_pinned, "https://pinned.example/".to_string());
+    pinned.pinned = true;
+    app.push_tab(pinned, true);
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_c, "https://c.example/".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_d, "https://d.example/".to_string()),
+      false,
+    );
+    let group_id = app.create_group_with_tabs(&[tab_b, tab_c]);
+    assert_ne!(group_id, TabGroupId(0));
+
+    let ctx = egui::Context::default();
+
+    // Expanded group.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let close_ids = tab_strip_close_ids(&ctx);
+    let chip_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_tab_group_chip_id")))
+      .expect("expected test_tab_group_chip_id to be stored");
+    let new_tab_id = tab_strip_new_tab_id(&ctx);
+
+    let expanded_order = vec![
+      tab_strip_tab_widget_id(tab_pinned),
+      chip_id,
+      tab_strip_tab_widget_id(tab_b),
+      *close_ids.get(&tab_b).expect("expected close id for tab_b"),
+      tab_strip_tab_widget_id(tab_c),
+      *close_ids.get(&tab_c).expect("expected close id for tab_c"),
+      tab_strip_tab_widget_id(tab_d),
+      *close_ids.get(&tab_d).expect("expected close id for tab_d"),
+      new_tab_id,
+    ];
+    assert_tab_traversal_forward(&ctx, &mut app, &expanded_order);
+    assert_tab_traversal_reverse(&ctx, &mut app, &expanded_order);
+
+    // Collapsed group: member tabs disappear.
+    app.toggle_group_collapsed(group_id);
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let new_tab_id = tab_strip_new_tab_id(&ctx);
+    let collapsed_order = vec![
+      tab_strip_tab_widget_id(tab_pinned),
+      chip_id,
+      tab_strip_tab_widget_id(tab_d),
+      *close_ids.get(&tab_d).expect("expected close id for tab_d"),
+      new_tab_id,
+    ];
+    assert_tab_traversal_forward(&ctx, &mut app, &collapsed_order);
+    assert_tab_traversal_reverse(&ctx, &mut app, &collapsed_order);
+  }
+
+  #[test]
   fn shift_tab_focus_traversal_tab_strip_is_right_to_left() {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
