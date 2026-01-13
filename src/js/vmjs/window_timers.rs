@@ -10,6 +10,7 @@
 
 use crate::js::event_loop::{EventLoop, IdleCallbackId, TaskSource, TimerId};
 use crate::js::realm_module_loader::ModuleLoadOutcome;
+use crate::js::time::duration_to_ms_f64;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
   dispatch_host_exotic_delete, dispatch_host_exotic_get, dispatch_host_exotic_set,
@@ -2318,7 +2319,8 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
 
 // --- requestIdleCallback / cancelIdleCallback ---
 
-const IDLE_DEADLINE_TIME_REMAINING_VALUE_SLOT: usize = 0;
+const IDLE_DEADLINE_DEADLINE_MS_SLOT: usize = 0;
+const IDLE_DEADLINE_DID_TIMEOUT_SLOT: usize = 1;
 
 fn request_idle_callback_time_remaining_call_id_from_callee(
   scope: &Scope<'_>,
@@ -2339,32 +2341,49 @@ fn request_idle_callback_time_remaining_call_id_from_callee(
   }
 }
 
-fn idle_deadline_time_remaining_native(
+fn idle_deadline_time_remaining_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
-  let remaining = match slots
-    .get(IDLE_DEADLINE_TIME_REMAINING_VALUE_SLOT)
+  let did_timeout = matches!(
+    slots
+      .get(IDLE_DEADLINE_DID_TIMEOUT_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined),
+    Value::Bool(true)
+  );
+  if did_timeout {
+    return Ok(Value::Number(0.0));
+  }
+
+  let deadline_ms = match slots
+    .get(IDLE_DEADLINE_DEADLINE_MS_SLOT)
     .copied()
     .unwrap_or(Value::Undefined)
   {
     Value::Number(n) if n.is_finite() && !n.is_nan() && n >= 0.0 => n,
-    _ => 0.0,
+    _ => return Ok(Value::Number(0.0)),
   };
-  Ok(Value::Number(remaining))
+
+  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
+    // Best-effort: if we do not have an active event loop, report no remaining idle time.
+    return Ok(Value::Number(0.0));
+  };
+  let now_ms = duration_to_ms_f64(event_loop.now());
+  Ok(Value::Number((deadline_ms - now_ms).max(0.0)))
 }
 
 fn make_idle_deadline_object(
   vm: &Vm,
   scope: &mut Scope<'_>,
   did_timeout: bool,
-  time_remaining_ms: f64,
+  deadline_ms: f64,
   time_remaining_call_id: NativeFunctionId,
 ) -> Result<vm_js::GcObject, VmError> {
   let mut scope = scope.reborrow();
@@ -2374,14 +2393,14 @@ fn make_idle_deadline_object(
   let did_timeout_key = alloc_key(&mut scope, "didTimeout")?;
   scope.define_property(obj, did_timeout_key, data_desc(Value::Bool(did_timeout)))?;
 
-  let mut remaining = time_remaining_ms;
-  if !remaining.is_finite() || remaining.is_nan() || remaining < 0.0 {
-    remaining = 0.0;
+  let mut deadline_ms = deadline_ms;
+  if !deadline_ms.is_finite() || deadline_ms.is_nan() || deadline_ms < 0.0 {
+    deadline_ms = 0.0;
   }
 
   let name_s = scope.alloc_string("timeRemaining")?;
   scope.push_root(Value::String(name_s))?;
-  let slots = [Value::Number(remaining)];
+  let slots = [Value::Number(deadline_ms), Value::Bool(did_timeout)];
   let func = scope.alloc_native_function_with_slots(
     time_remaining_call_id,
     None,
@@ -2465,7 +2484,7 @@ fn request_idle_callback_native<Host: WindowRealmHost + 'static>(
           &*vm,
           &mut scope,
           did_timeout,
-          time_remaining_ms,
+          duration_to_ms_f64(event_loop.now()) + time_remaining_ms,
           time_remaining_call_id,
         )?;
         vm.call_with_host_and_hooks(
@@ -2697,7 +2716,8 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   )?;
   scope.push_root(Value::Object(queue_microtask))?;
 
-  let idle_deadline_time_remaining_id = vm.register_native_call(idle_deadline_time_remaining_native)?;
+  let idle_deadline_time_remaining_id =
+    vm.register_native_call(idle_deadline_time_remaining_native::<Host>)?;
 
   let request_idle_callback_id = vm.register_native_call(request_idle_callback_native::<Host>)?;
   let request_idle_callback_name = scope.alloc_string("requestIdleCallback")?;
@@ -2959,6 +2979,131 @@ mod tests {
       "#,
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn idle_deadline_time_remaining_decreases_within_callback() -> crate::error::Result<()> {
+    #[derive(Default)]
+    struct ClockVmHost {
+      clock: Arc<VirtualClock>,
+    }
+
+    struct ClockHost {
+      window: WindowRealm,
+      vm_host: ClockVmHost,
+    }
+
+    impl ClockHost {
+      fn new(clock: Arc<VirtualClock>) -> Self {
+        let window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).unwrap();
+        Self {
+          window,
+          vm_host: ClockVmHost { clock },
+        }
+      }
+    }
+
+    impl WindowRealmHost for ClockHost {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+        Ok((&mut self.vm_host, &mut self.window))
+      }
+    }
+
+    fn advance_clock_native(
+      _vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: vm_js::GcObject,
+      _this: Value,
+      args: &[Value],
+    ) -> Result<Value, VmError> {
+      let ms_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
+      let ms = normalize_delay_ms(scope.heap_mut(), ms_value)?;
+      let Some(host) = host.as_any_mut().downcast_mut::<ClockVmHost>() else {
+        return Err(VmError::Unimplemented(
+          "__advanceClock expected ClockVmHost",
+        ));
+      };
+      host.clock.advance(Duration::from_millis(ms));
+      Ok(Value::Undefined)
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<ClockHost>::with_clock(Arc::clone(&clock));
+    let mut host = ClockHost::new(Arc::clone(&clock));
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<ClockHost>(vm, realm, heap).unwrap();
+
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global))?;
+
+      let advance_cb = make_callback(vm, &mut scope, global, "__advanceClock", advance_clock_native);
+      set_prop(&mut scope, global, "__advanceClock", Value::Object(advance_cb));
+      set_prop(&mut scope, global, "__ok", Value::Bool(false));
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<ClockHost>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+
+      window_realm
+        .exec_script_with_host_and_hooks(
+          vm_host,
+          &mut hooks,
+          r#"
+          globalThis.__ok = false;
+          requestIdleCallback((deadline) => {
+            const t1 = deadline.timeRemaining();
+            globalThis.__advanceClock(10);
+            const t2 = deadline.timeRemaining();
+            globalThis.__t1 = t1;
+            globalThis.__t2 = t2;
+            globalThis.__ok = t2 <= Math.max(0, t1 - 10);
+          });
+          "#,
+        )
+        .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))?;
+
+      if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+        return Err(err);
+      }
+
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let (ok, t1, t2) = {
+      let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      (
+        get_prop(&mut scope, global, "__ok"),
+        get_prop(&mut scope, global, "__t1"),
+        get_prop(&mut scope, global, "__t2"),
+      )
+    };
+    assert_eq!(ok, Value::Bool(true));
+
+    let (Value::Number(t1), Value::Number(t2)) = (t1, t2) else {
+      panic!("expected numeric __t1/__t2 values");
+    };
+    assert!(
+      t2 <= t1,
+      "expected deadline.timeRemaining() to be non-increasing, got t1={t1} t2={t2}"
+    );
+
     Ok(())
   }
 
