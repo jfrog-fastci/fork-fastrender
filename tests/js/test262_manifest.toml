@@ -1906,6 +1906,14 @@ glob = "built-ins/Map/prototype/getOrInsertComputed/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/WeakMap/prototype/getOrInsert/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakMap/prototype/getOrInsertComputed/**"
+status = "pass"
+
+[[expectations]]
 id = "built-ins/Map/valid-keys.js"
 status = "xfail"
 reason = "vm-js: language operator support is incomplete (test uses an unimplemented binary operator)."

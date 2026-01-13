@@ -98,6 +98,10 @@ include = [
   "built-ins/WeakSet/prototype/has/**/*.js",
   "built-ins/WeakSet/prototype/delete/**/*.js",
   "built-ins/WeakSet/iterable-with-symbol-values.js",
+
+  # WeakMap (upsert / stage-4)
+  "built-ins/WeakMap/prototype/getOrInsert/**/*.js",
+  "built-ins/WeakMap/prototype/getOrInsertComputed/**/*.js",
 ]
 
 exclude = [

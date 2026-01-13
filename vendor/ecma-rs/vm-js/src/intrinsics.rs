@@ -5892,6 +5892,38 @@ impl Intrinsics {
         key,
         data_desc(Value::Object(func), true, false, true),
       )?;
+
+      let get_or_insert_call = vm.register_native_call(builtins::weak_map_prototype_get_or_insert)?;
+      let get_or_insert_s = scope.alloc_string("getOrInsert")?;
+      scope.push_root(Value::String(get_or_insert_s))?;
+      let key = PropertyKey::from_string(get_or_insert_s);
+      let func = scope.alloc_native_function(get_or_insert_call, None, get_or_insert_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_map_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+
+      let get_or_insert_computed_call =
+        vm.register_native_call(builtins::weak_map_prototype_get_or_insert_computed)?;
+      let get_or_insert_computed_s = scope.alloc_string("getOrInsertComputed")?;
+      scope.push_root(Value::String(get_or_insert_computed_s))?;
+      let key = PropertyKey::from_string(get_or_insert_computed_s);
+      let func =
+        scope.alloc_native_function(get_or_insert_computed_call, None, get_or_insert_computed_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        weak_map_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
     }
 
     // `%WeakSet%`

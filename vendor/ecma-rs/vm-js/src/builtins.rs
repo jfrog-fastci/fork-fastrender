@@ -26188,6 +26188,98 @@ pub fn weak_map_prototype_delete(
   ))
 }
 
+pub fn weak_map_prototype_get_or_insert(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.getOrInsert called on non-object",
+    ));
+  };
+  if !scope.heap().is_weak_map_object(map) {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.getOrInsert called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().can_be_held_weakly(key)? {
+    return Err(VmError::TypeError("WeakMap key cannot be held weakly"));
+  };
+
+  if let Some(existing) = scope
+    .heap()
+    .weak_map_get_with_tick(map, key, || vm.tick())?
+  {
+    return Ok(existing);
+  }
+
+  let value = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope
+    .heap_mut()
+    .weak_map_set_with_tick(map, key, value, || vm.tick())?;
+  Ok(value)
+}
+
+pub fn weak_map_prototype_get_or_insert_computed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.getOrInsertComputed called on non-object",
+    ));
+  };
+  if !scope.heap().is_weak_map_object(map) {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.getOrInsertComputed called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().can_be_held_weakly(key)? {
+    return Err(VmError::TypeError("WeakMap key cannot be held weakly"));
+  };
+
+  let callbackfn = args.get(1).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callbackfn)? {
+    return Err(VmError::TypeError(
+      "WeakMap.prototype.getOrInsertComputed callbackfn is not callable",
+    ));
+  }
+
+  if let Some(existing) = scope
+    .heap()
+    .weak_map_get_with_tick(map, key, || vm.tick())?
+  {
+    return Ok(existing);
+  }
+
+  // Call `callbackfn` with `thisArg = undefined` and one argument (key).
+  let computed = vm.call_with_host_and_hooks(host, &mut scope, hooks, callbackfn, Value::Undefined, &[key])?;
+  // Root the returned value across the subsequent insert, which may allocate and trigger GC.
+  scope.push_root(computed)?;
+
+  // If the callback inserted `key` into the map, overwrite it; otherwise append a new entry.
+  scope
+    .heap_mut()
+    .weak_map_set_with_tick(map, key, computed, || vm.tick())?;
+  Ok(computed)
+}
+
 pub fn weak_set_prototype_add(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
