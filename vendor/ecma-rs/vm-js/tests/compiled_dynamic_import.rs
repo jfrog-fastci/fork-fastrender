@@ -872,3 +872,89 @@ fn compiled_dynamic_import_does_not_evaluate_options_when_specifier_expr_throws(
   hooks.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn compiled_dynamic_import_from_promise_callback_works() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // Build a tiny module graph with a dependency.
+  let dep_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const y = 1;")?;
+  let dep = rt.modules_mut().add_module(dep_record)?;
+  let m_record = SourceTextModuleRecord::parse(
+    &mut rt.heap,
+    "export { y } from './dep.js'; export const x = 1;",
+  )?;
+  let m = rt.modules_mut().add_module(m_record)?;
+
+  let mut hooks = TestHostHooks::new();
+  hooks.register_module("./m.js", m);
+  hooks.register_module("./dep.js", dep);
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    "var result; Promise.resolve().then(function(){ return import('./m.js'); }).then(function(ns){ result = ns; });",
+  )?;
+
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  // No microtask checkpoint yet → no dynamic import started.
+  assert_eq!(hooks.pending_count(), 0);
+
+  hooks.perform_microtask_checkpoint(&mut rt)?;
+  assert_eq!(hooks.pending_count(), 1);
+
+  hooks.complete_load_for(&mut rt, "./m.js");
+  hooks.complete_load_for(&mut rt, "./dep.js");
+
+  // Run the `.then(ns => result = ns)` callback (and any Promise jobs enqueued by dynamic import).
+  hooks.perform_microtask_checkpoint(&mut rt)?;
+
+  // Read `result` off the global object.
+  let result_value = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("result")?);
+    scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?
+  };
+  let Value::Object(ns_obj) = result_value else {
+    return Err(VmError::InvariantViolation(
+      "result should be set to a namespace object",
+    ));
+  };
+
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
+
+  let x_value = scope.get_with_host_and_hooks(
+    &mut rt.vm,
+    &mut dummy_host,
+    &mut hooks,
+    ns_obj,
+    x_key,
+    Value::Object(ns_obj),
+  )?;
+  let y_value = scope.get_with_host_and_hooks(
+    &mut rt.vm,
+    &mut dummy_host,
+    &mut hooks,
+    ns_obj,
+    y_key,
+    Value::Object(ns_obj),
+  )?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+  assert!(matches!(y_value, Value::Number(n) if n == 1.0));
+
+  drop(scope);
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
