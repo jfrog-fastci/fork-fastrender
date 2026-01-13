@@ -6,6 +6,7 @@
 pub mod bench_limits;
 #[cfg(target_os = "macos")]
 pub mod macos_sandbox_exec;
+pub mod process_supervisor;
 
 use std::path::Path;
 use std::sync::OnceLock;

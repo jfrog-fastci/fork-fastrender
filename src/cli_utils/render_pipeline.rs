@@ -26,10 +26,8 @@ use memchr::memchr;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1131,39 +1129,9 @@ pub fn apply_test_render_delay(stem: Option<&str>) {
   std::thread::sleep(Duration::from_millis(delay_ms));
 }
 
-/// Lightweight summary of a process exit status (code + optional signal).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExitStatusSummary {
-  pub code: Option<i32>,
-  pub signal: Option<i32>,
-}
-
-/// Extract a platform-agnostic summary from an ExitStatus.
-pub fn summarize_exit_status(status: &ExitStatus) -> ExitStatusSummary {
-  ExitStatusSummary {
-    code: status.code(),
-    signal: {
-      #[cfg(unix)]
-      {
-        status.signal()
-      }
-      #[cfg(not(unix))]
-      {
-        None
-      }
-    },
-  }
-}
-
-/// Human-readable formatting for ExitStatusSummary.
-pub fn format_exit_status(status: ExitStatusSummary) -> String {
-  match (status.code, status.signal) {
-    (Some(code), Some(signal)) => format!("code {code} (signal {signal})"),
-    (Some(code), None) => format!("code {code}"),
-    (None, Some(signal)) => format!("signal {signal}"),
-    (None, None) => "unknown status".to_string(),
-  }
-}
+pub use crate::system::process_supervisor::{
+  format_exit_status, summarize_exit_status, ExitStatusSummary,
+};
 
 /// Append a timeout note into the provided stderr path (best-effort).
 pub fn append_timeout_stderr_note(stderr_path: &Path, elapsed: Duration) {

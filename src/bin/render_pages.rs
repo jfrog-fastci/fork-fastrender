@@ -16,9 +16,8 @@ use common::render_pipeline::{
   append_timeout_stderr_note, apply_test_render_delay, apply_worker_common_args,
   build_http_fetcher, build_render_configs, compute_soft_timeout_ms, configure_worker_stdio,
   decode_html_resource, follow_client_redirects_resource, format_error_with_chain,
-  format_exit_status, log_diagnostics, read_cached_document,
-  render_fetched_document_with_artifacts, summarize_exit_status, ExitStatusSummary,
-  RenderConfigBundle, RenderSurface, WorkerCommonArgs, CLI_RENDER_STACK_SIZE,
+  log_diagnostics, read_cached_document, render_fetched_document_with_artifacts, RenderConfigBundle,
+  RenderSurface, WorkerCommonArgs, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{BrowserTab, FastRenderPool, FastRenderPoolConfig};
 use fastrender::debug::runtime::RuntimeToggles;
@@ -67,6 +66,10 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+
+use fastrender::system::process_supervisor::{
+  kill_with_escalation, format_exit_status, summarize_exit_status, ExitStatusSummary,
+};
 
 const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
 const DEFAULT_RENDER_DIR: &str = "fetches/renders";
@@ -1704,8 +1707,7 @@ fn run_workers(
 
       if timed_out {
         let mut entry = running.swap_remove(i);
-        let _ = entry.child.kill();
-        let _ = entry.child.wait();
+        let _ = kill_with_escalation(&mut entry.child);
         append_timeout_stderr_note(
           &stderr_path_for(&args.out_dir, &entry.entry.cache_stem),
           elapsed,
