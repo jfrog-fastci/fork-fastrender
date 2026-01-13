@@ -5,7 +5,15 @@ use fastrender::resource::{HttpFetcher, ResourceFetcher};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 
-fn handle_client(stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> io::Result<()> {
+const ENV_NETWORK_AUTH_TOKEN_RENDERER: &str = "FASTR_NETWORK_AUTH_TOKEN";
+const ENV_NETWORK_AUTH_TOKEN_BROWSER: &str = "FASTR_NETWORK_AUTH_TOKEN_BROWSER";
+
+fn handle_client(
+  stream: TcpStream,
+  fetcher: HttpFetcher,
+  renderer_auth_token: &str,
+  browser_auth_token: &str,
+) -> io::Result<()> {
   stream.set_nodelay(true)?;
   let mut conn = ipc::NetworkService::new(stream);
 
@@ -20,12 +28,27 @@ fn handle_client(stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> i
 
   let role = match hello {
     ipc::NetworkRequest::Hello { token, role } => {
-      if token.len() > ipc::MAX_AUTH_TOKEN_BYTES || token != auth_token {
-        // Wrong token: close the connection without sending a response.
+      if token.len() > ipc::MAX_AUTH_TOKEN_BYTES {
+        // Treat invalid tokens as authentication failure: close without sending a response.
         return Ok(());
       }
+
+      // Token determines the effective role; the claimed role must match so untrusted clients cannot
+      // escalate privileges by lying about their role.
+      let expected_role = if token == browser_auth_token {
+        ipc::ClientRole::Browser
+      } else if token == renderer_auth_token {
+        ipc::ClientRole::Renderer
+      } else {
+        // Wrong token: close the connection without sending a response.
+        return Ok(());
+      };
+      if role != expected_role {
+        return Ok(());
+      }
+
       conn.send_response(&ipc::NetworkResponse::HelloAck)?;
-      role
+      expected_role
     }
     _ => {
       // Protocol violation: first frame must be Hello.
@@ -152,9 +175,12 @@ fn handle_client(stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> i
 }
 
 fn main() -> io::Result<()> {
-  // Minimal arg parser: `network --bind 127.0.0.1:0 --auth-token <token>`
+  // Minimal arg parser:
+  // - Renderer token: `--auth-token <token>` / `FASTR_NETWORK_AUTH_TOKEN`
+  // - Browser token: `--browser-auth-token <token>` / `FASTR_NETWORK_AUTH_TOKEN_BROWSER`
   let mut bind_addr = "127.0.0.1:0".to_string();
-  let mut auth_token: Option<String> = None;
+  let mut renderer_auth_token: Option<String> = None;
+  let mut browser_auth_token: Option<String> = None;
   let mut args = std::env::args().skip(1);
   while let Some(arg) = args.next() {
     match arg.as_str() {
@@ -164,12 +190,22 @@ fn main() -> io::Result<()> {
           .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--bind requires a value"))?;
       }
       "--auth-token" => {
-        auth_token = Some(args.next().ok_or_else(|| {
+        renderer_auth_token = Some(args.next().ok_or_else(|| {
           io::Error::new(io::ErrorKind::InvalidInput, "--auth-token requires a value")
         })?);
       }
+      "--browser-auth-token" => {
+        browser_auth_token = Some(args.next().ok_or_else(|| {
+          io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--browser-auth-token requires a value",
+          )
+        })?);
+      }
       "--help" | "-h" => {
-        eprintln!("Usage: network [--bind <addr>] [--auth-token <token>]");
+        eprintln!(
+          "Usage: network [--bind <addr>] [--auth-token <token>] [--browser-auth-token <token>]"
+        );
         return Ok(());
       }
       other => {
@@ -181,26 +217,55 @@ fn main() -> io::Result<()> {
     }
   }
 
-  let auth_token = auth_token
-    .or_else(|| std::env::var("FASTR_NETWORK_AUTH_TOKEN").ok())
+  let renderer_auth_token = renderer_auth_token
+    .or_else(|| std::env::var(ENV_NETWORK_AUTH_TOKEN_RENDERER).ok())
     .ok_or_else(|| {
       io::Error::new(
         io::ErrorKind::InvalidInput,
-        "missing --auth-token (or FASTR_NETWORK_AUTH_TOKEN)",
+        format!(
+          "missing --auth-token (or {ENV_NETWORK_AUTH_TOKEN_RENDERER})",
+        ),
       )
     })?;
-  if auth_token.is_empty() {
+  if renderer_auth_token.is_empty() {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
-      "auth token is empty",
+      "renderer auth token is empty",
     ));
   }
-  if auth_token.len() > ipc::MAX_AUTH_TOKEN_BYTES {
+  if renderer_auth_token.len() > ipc::MAX_AUTH_TOKEN_BYTES {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
       format!(
-        "auth token too large: {} bytes (max {})",
-        auth_token.len(),
+        "renderer auth token too large: {} bytes (max {})",
+        renderer_auth_token.len(),
+        ipc::MAX_AUTH_TOKEN_BYTES
+      ),
+    ));
+  }
+
+  let browser_auth_token = browser_auth_token
+    .or_else(|| std::env::var(ENV_NETWORK_AUTH_TOKEN_BROWSER).ok())
+    .ok_or_else(|| {
+      io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+          "missing --browser-auth-token (or {ENV_NETWORK_AUTH_TOKEN_BROWSER})",
+        ),
+      )
+    })?;
+  if browser_auth_token.is_empty() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "browser auth token is empty",
+    ));
+  }
+  if browser_auth_token.len() > ipc::MAX_AUTH_TOKEN_BYTES {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      format!(
+        "browser auth token too large: {} bytes (max {})",
+        browser_auth_token.len(),
         ipc::MAX_AUTH_TOKEN_BYTES
       ),
     ));
@@ -219,9 +284,10 @@ fn main() -> io::Result<()> {
     match conn {
       Ok(stream) => {
         let fetcher = fetcher.clone();
-        let auth_token = auth_token.clone();
+        let renderer_auth_token = renderer_auth_token.clone();
+        let browser_auth_token = browser_auth_token.clone();
         std::thread::spawn(move || {
-          let _ = handle_client(stream, fetcher, &auth_token);
+          let _ = handle_client(stream, fetcher, &renderer_auth_token, &browser_auth_token);
         });
       }
       Err(err) => {
@@ -233,4 +299,3 @@ fn main() -> io::Result<()> {
 
   Ok(())
 }
-

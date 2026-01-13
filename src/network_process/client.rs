@@ -21,6 +21,12 @@ use tungstenite::Error as TungsteniteError;
 use super::ipc;
 
 const ENV_NETWORK_AUTH_TOKEN: &str = "FASTR_NETWORK_AUTH_TOKEN";
+// Privileged token used by trusted browser clients.
+//
+// The browser should never pass this token to an untrusted renderer. The network process uses it to
+// distinguish browser vs renderer connections even when the renderer can authenticate with its own
+// token.
+const ENV_NETWORK_AUTH_TOKEN_BROWSER: &str = "FASTR_NETWORK_AUTH_TOKEN_BROWSER";
 const ENV_NETWORK_AUTH_TOKEN_DEBUG: &str = "FASTR_NETWORK_AUTH_TOKEN_DEBUG";
 
 fn env_flag_truthy(key: &str) -> bool {
@@ -159,12 +165,16 @@ pub fn spawn_network_process(config: NetworkProcessConfig) -> NetworkProcessHand
 pub fn try_spawn_network_process(config: NetworkProcessConfig) -> Result<NetworkProcessHandle> {
   let binary_path = resolve_network_binary_path(&config)?;
 
-  let auth_token = NetworkAuthToken::generate()?;
+  // Use separate tokens for browser and renderer clients so a compromised renderer cannot escalate
+  // to browser privileges even if it can authenticate.
+  let renderer_auth_token = NetworkAuthToken::generate()?;
+  let browser_auth_token = NetworkAuthToken::generate()?;
 
   let mut cmd = Command::new(binary_path);
   cmd.arg("--bind").arg("127.0.0.1:0");
-  // Avoid exposing the token via `ps` argv output; the child process also accepts the env var.
-  cmd.env(ENV_NETWORK_AUTH_TOKEN, auth_token.as_str());
+  // Avoid exposing the tokens via `ps` argv output; the child process also accepts the env vars.
+  cmd.env(ENV_NETWORK_AUTH_TOKEN, renderer_auth_token.as_str());
+  cmd.env(ENV_NETWORK_AUTH_TOKEN_BROWSER, browser_auth_token.as_str());
   cmd.stdin(Stdio::null());
   cmd.stdout(Stdio::piped());
   if config.inherit_stderr {
@@ -223,7 +233,8 @@ pub fn try_spawn_network_process(config: NetworkProcessConfig) -> Result<Network
     addr,
     connect_timeout: config.connect_timeout,
     pid,
-    auth_token,
+    renderer_auth_token,
+    browser_auth_token,
     child: Mutex::new(Some(child)),
   })
 }
@@ -235,7 +246,8 @@ pub struct NetworkProcessHandle {
   addr: SocketAddr,
   connect_timeout: Duration,
   pid: u32,
-  auth_token: NetworkAuthToken,
+  renderer_auth_token: NetworkAuthToken,
+  browser_auth_token: NetworkAuthToken,
   child: Mutex<Option<Child>>,
 }
 
@@ -250,10 +262,14 @@ impl NetworkProcessHandle {
 
   /// Create a new IPC client object with an explicit [`ipc::ClientRole`].
   pub fn connect_client_with_role(&self, role: ipc::ClientRole) -> NetworkClient {
+    let auth_token = match role {
+      ipc::ClientRole::Browser => self.browser_auth_token.clone(),
+      ipc::ClientRole::Renderer => self.renderer_auth_token.clone(),
+    };
     NetworkClient {
       addr: self.addr,
       connect_timeout: self.connect_timeout,
-      auth_token: self.auth_token.clone(),
+      auth_token,
       role,
     }
   }
@@ -275,7 +291,12 @@ impl NetworkProcessHandle {
 
   /// Authentication token required to connect to this network process instance.
   pub fn auth_token(&self) -> &str {
-    self.auth_token.as_str()
+    self.renderer_auth_token.as_str()
+  }
+
+  /// Authentication token required for privileged browser connections.
+  pub fn browser_auth_token(&self) -> &str {
+    self.browser_auth_token.as_str()
   }
 }
 
@@ -300,7 +321,7 @@ impl Drop for NetworkProcessHandle {
       let mut conn = ipc::NetworkClient::new(stream);
 
       let _ = conn.send_request(&ipc::NetworkRequest::Hello {
-        token: self.auth_token.as_str().to_string(),
+        token: self.browser_auth_token.as_str().to_string(),
         role: ipc::ClientRole::Browser,
       });
       let _ = conn.recv_response::<ipc::NetworkResponse>();
