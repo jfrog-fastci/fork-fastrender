@@ -19,6 +19,7 @@ Options:
 Notes:
   - Perf events are emitted on stdout by the `browser` process when FASTR_PERF_LOG=1.
   - Script progress messages go to stderr so the captured JSONL stays clean.
+  - Relative --out paths are interpreted relative to the repo root.
 EOF
 }
 
@@ -71,11 +72,10 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-caller_pwd="$(pwd -P)"
 
 out_path="${out}"
 if [[ "${out_path}" != /* ]]; then
-  out_path="${caller_pwd}/${out_path}"
+  out_path="${repo_root}/${out_path}"
 fi
 
 out_dir="$(dirname "${out_path}")"
@@ -130,12 +130,18 @@ find_summary_bin() {
     command -v browser_perf_log_summary
     return 0
   fi
-  if [[ -x "${repo_root}/target/release/browser_perf_log_summary" ]]; then
-    echo "${repo_root}/target/release/browser_perf_log_summary"
+
+  target_dir="${CARGO_TARGET_DIR:-target}"
+  if [[ "${target_dir}" != /* ]]; then
+    target_dir="${repo_root}/${target_dir}"
+  fi
+
+  if [[ -x "${target_dir}/release/browser_perf_log_summary" ]]; then
+    echo "${target_dir}/release/browser_perf_log_summary"
     return 0
   fi
-  if [[ -x "${repo_root}/target/debug/browser_perf_log_summary" ]]; then
-    echo "${repo_root}/target/debug/browser_perf_log_summary"
+  if [[ -x "${target_dir}/debug/browser_perf_log_summary" ]]; then
+    echo "${target_dir}/debug/browser_perf_log_summary"
     return 0
   fi
   return 1
