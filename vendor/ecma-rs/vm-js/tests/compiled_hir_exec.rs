@@ -1125,7 +1125,7 @@ fn compiled_regex_literal_parsing_handles_char_classes_and_escaped_slash() -> Re
 }
 
 #[test]
-fn compiled_regex_literal_parsing_handles_unicode_sets_v_flag_nested_char_classes() -> Result<(), VmError> {
+fn compiled_regex_literal_accepts_v_flag() -> Result<(), VmError> {
   // Basic `/v` flag support: ensure the compiled HIR path forwards the `v` flag to `%RegExp%`.
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
