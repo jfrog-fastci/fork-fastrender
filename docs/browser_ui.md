@@ -588,8 +588,9 @@ Accessibility sources:
 
 - **Chrome widgets (egui):** tabs, toolbar buttons, address bar, menus/panels/popups are exposed via
   egui-winit + AccessKit when compiled with `--features browser_ui`.
-- **Page content (renderer tree):** the worker sends a `PageA11ySnapshot`, and the UI injects it into
-  egui’s AccessKit tree so assistive tech can traverse page content nodes.
+- **Page content (renderer tree):** the render worker builds a page accessibility snapshot (derived
+  from the renderer’s accessibility tree) and the UI injects it into egui’s AccessKit tree (currently
+  sent as `PageA11ySnapshot`) so assistive tech can traverse page content nodes.
 
 For background and developer workflow:
 
