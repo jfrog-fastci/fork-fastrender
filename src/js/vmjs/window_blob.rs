@@ -68,6 +68,14 @@ fn data_desc(value: Value, writable: bool) -> PropertyDescriptor {
   }
 }
 
+fn accessor_desc(get: Value, set: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Accessor { get, set },
+  }
+}
+
 fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
   let s = scope.alloc_string(name)?;
   scope.push_root(Value::String(s))?;
@@ -154,6 +162,55 @@ fn require_blob<'a>(
   })?;
 
   Ok((obj, data))
+}
+
+fn blob_size_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Blob: illegal invocation"));
+  };
+
+  let len = with_realm_state_mut(vm, scope, callee, |state| {
+    state
+      .blobs
+      .get(&WeakGcObject::from(obj))
+      .map(|data| data.bytes.len())
+      .ok_or(VmError::TypeError("Blob: illegal invocation"))
+  })?;
+
+  Ok(Value::Number(len as f64))
+}
+
+fn blob_type_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Blob: illegal invocation"));
+  };
+
+  let r#type = with_realm_state_mut(vm, scope, callee, |state| {
+    state
+      .blobs
+      .get(&WeakGcObject::from(obj))
+      .map(|data| data.r#type.clone())
+      .ok_or(VmError::TypeError("Blob: illegal invocation"))
+  })?;
+
+  let ty = scope.alloc_string(&r#type)?;
+  Ok(Value::String(ty))
 }
 
 pub(crate) fn normalize_type(s: &str) -> String {
@@ -371,19 +428,6 @@ fn blob_ctor_construct(
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
-  // Expose read-only `size` and `type` instance properties (common real-world usage).
-  let size_key = alloc_key(&mut scope, "size")?;
-  scope.define_property(
-    obj,
-    size_key,
-    data_desc(Value::Number(bytes.len() as f64), false),
-  )?;
-
-  let type_key = alloc_key(&mut scope, "type")?;
-  let type_js = scope.alloc_string(&type_string)?;
-  scope.push_root(Value::String(type_js))?;
-  scope.define_property(obj, type_key, data_desc(Value::String(type_js), false))?;
-
   with_realm_state_mut(vm, &mut scope, callee, |state| {
     state.blobs.insert(
       WeakGcObject::from(obj),
@@ -447,18 +491,6 @@ pub(crate) fn create_blob_with_proto(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
-
-  let size_key = alloc_key(scope, "size")?;
-  scope.define_property(
-    obj,
-    size_key,
-    data_desc(Value::Number(data.bytes.len() as f64), false),
-  )?;
-
-  let type_key = alloc_key(scope, "type")?;
-  let type_js = scope.alloc_string(&data.r#type)?;
-  scope.push_root(Value::String(type_js))?;
-  scope.define_property(obj, type_key, data_desc(Value::String(type_js), false))?;
 
   with_realm_state_mut(vm, scope, callee, |state| {
     state.blobs.insert(WeakGcObject::from(obj), data);
@@ -694,6 +726,48 @@ pub fn install_window_blob_bindings(
     .heap_mut()
     .object_set_prototype(proto, Some(intr.object_prototype()))?;
 
+  let size_get_call_id: NativeFunctionId = vm.register_native_call(blob_size_get_native)?;
+  let size_get_name = scope.alloc_string("get size")?;
+  scope.push_root(Value::String(size_get_name))?;
+  let size_get_fn = scope.alloc_native_function_with_slots(
+    size_get_call_id,
+    None,
+    size_get_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(size_get_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(size_get_fn, Some(intr.function_prototype()))?;
+  let size_key = alloc_key(&mut scope, "size")?;
+  scope.define_property(
+    proto,
+    size_key,
+    accessor_desc(Value::Object(size_get_fn), Value::Undefined),
+  )?;
+
+  let type_get_call_id: NativeFunctionId = vm.register_native_call(blob_type_get_native)?;
+  let type_get_name = scope.alloc_string("get type")?;
+  scope.push_root(Value::String(type_get_name))?;
+  let type_get_fn = scope.alloc_native_function_with_slots(
+    type_get_call_id,
+    None,
+    type_get_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(type_get_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(type_get_fn, Some(intr.function_prototype()))?;
+  let type_key = alloc_key(&mut scope, "type")?;
+  scope.define_property(
+    proto,
+    type_key,
+    accessor_desc(Value::Object(type_get_fn), Value::Undefined),
+  )?;
+
   let slice_call_id: NativeFunctionId = vm.register_native_call(blob_slice_native)?;
   let slice_name = scope.alloc_string("slice")?;
   scope.push_root(Value::String(slice_name))?;
@@ -805,6 +879,17 @@ mod tests {
   #[test]
   fn blob_size_and_type() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let v = realm.exec_script("Object.getOwnPropertyDescriptor(new Blob(['x']), 'size') === undefined")?;
+    assert_eq!(v, Value::Bool(true));
+    let v = realm.exec_script("typeof Object.getOwnPropertyDescriptor(Blob.prototype, 'size').get === 'function'")?;
+    assert_eq!(v, Value::Bool(true));
+
+    let v = realm.exec_script("Object.getOwnPropertyDescriptor(new Blob(['x']), 'type') === undefined")?;
+    assert_eq!(v, Value::Bool(true));
+    let v = realm.exec_script("typeof Object.getOwnPropertyDescriptor(Blob.prototype, 'type').get === 'function'")?;
+    assert_eq!(v, Value::Bool(true));
+
     let size = realm.exec_script("new Blob(['hi'], { type: 'Text/Plain' }).size")?;
     assert_eq!(size, Value::Number(2.0));
 
@@ -814,6 +899,28 @@ mod tests {
     // Non-ASCII types are clamped to empty string.
     let ty2 = realm.exec_script("new Blob(['hi'], { type: 'text/plain\\u00FF' }).type")?;
     assert_eq!(get_string(realm.heap(), ty2), "");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn file_inherits_blob_size_and_type() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let v = realm.exec_script("new File(['hi'], 'x.txt', { type: 'text/plain' }).size")?;
+    assert_eq!(v, Value::Number(2.0));
+    let v = realm.exec_script("new File(['hi'], 'x.txt', { type: 'text/plain' }).type")?;
+    assert_eq!(get_string(realm.heap(), v), "text/plain");
+
+    let v = realm.exec_script(
+      "Object.getOwnPropertyDescriptor(new File(['hi'], 'x.txt', { type: 'text/plain' }), 'size') === undefined",
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    let v = realm.exec_script(
+      "Object.getOwnPropertyDescriptor(new File(['hi'], 'x.txt', { type: 'text/plain' }), 'type') === undefined",
+    )?;
+    assert_eq!(v, Value::Bool(true));
 
     realm.teardown();
     Ok(())
