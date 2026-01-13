@@ -294,11 +294,23 @@ impl SharedMemory {
       return Err(Error::Io(io::Error::last_os_error()));
     }
 
-    // Best-effort: prevent the renderer from shrinking/growing the slot (SIGBUS footgun) and lock
-    // the seal set so the renderer cannot persistently add `F_SEAL_WRITE` (breaking future reuse of
-    // pooled slots). See `docs/ipc_linux_fd_passing.md` (seals checklist).
-    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
-    let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+    // Best-effort: prevent the renderer from shrinking/growing the slot (SIGBUS footgun), and then
+    // lock the seal set so the renderer cannot persistently add `F_SEAL_WRITE` (breaking future
+    // reuse of pooled slots). See `docs/ipc_linux_fd_passing.md` (seals checklist).
+    //
+    // Apply required size-stability seals first; treat `F_SEAL_SEAL` as optional so a kernel that
+    // can't lock the seal set still gets the SIGBUS protection.
+    let required_seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
+    let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_ADD_SEALS, required_seals) };
+    if rc != 0 {
+      let err = io::Error::last_os_error();
+      match err.raw_os_error() {
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => return Ok(Self { fd: owned, size: size_usize }),
+        _ => return Err(Error::Io(err)),
+      }
+    }
+
+    let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
     if rc != 0 {
       let err = io::Error::last_os_error();
       match err.raw_os_error() {
