@@ -3213,7 +3213,90 @@ mod tests {
  
     Ok(())
   }
- 
+
+  #[test]
+  fn window_realm_teardown_releases_inflight_module_load_payload_roots() -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut opts = JsExecutionOptions::default();
+    opts.supports_module_scripts = true;
+    let mut host = crate::js::WindowHost::new_with_options(dom, "https://example.com/", opts)?;
+
+    // Start a module graph load from inside an event loop task so `host_load_imported_module` uses
+    // the async (networking-task) fetch path instead of the synchronous fast path.
+    host.queue_task(TaskSource::Script, |host_state, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<crate::js::WindowHostState>::new_with_host(host_state)?;
+      hooks.set_event_loop(event_loop);
+
+      let (vm_host, window_realm) = host_state.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+
+      let (vm, heap) = window_realm.vm_and_heap_mut();
+      let Some(modules_ptr) = vm.module_graph_ptr() else {
+        return Err(crate::error::Error::Other(
+          "expected module graph to be installed when supports_module_scripts=true".to_string(),
+        ));
+      };
+      // SAFETY: `WindowRealm::enable_module_loader` installs a stable pointer to a realm-owned boxed
+      // `ModuleGraph`, cleared during teardown.
+      let modules = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+
+      // Register an inline entry module through the host module loader so it has a URL/depth
+      // recorded (needed for resolving its dependencies).
+      let module_loader = window_realm.module_loader_handle();
+      let entry_key = crate::js::realm_module_loader::ModuleKey {
+        url: "https://example.com/root.js".to_string(),
+        attributes: Vec::new(),
+      };
+      let entry_id = module_loader
+        .borrow_mut()
+        .get_or_parse_inline_module(heap, modules, entry_key, "import './dep.js'; export const x = 1;")
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
+
+      let mut scope = heap.scope();
+      let _promise = vm_js::load_requested_modules_with_host_and_hooks(
+        vm,
+        &mut scope,
+        modules,
+        vm_host,
+        &mut hooks,
+        entry_id,
+        HostDefined::default(),
+      )
+      .map_err(|err| crate::error::Error::Other(err.to_string()))?;
+
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+
+      Ok(())
+    })?;
+
+    // Run exactly one task (the script task above), leaving the queued networking task unrun and
+    // therefore leaving inflight module loader state behind.
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 1,
+      max_microtasks: 100,
+      max_wall_time: None,
+    })?;
+
+    let inflight_len = host
+      .host_mut()
+      .window_mut()
+      .module_loader_handle()
+      .borrow()
+      .inflight
+      .len();
+    assert!(
+      inflight_len > 0,
+      "expected module loader to have inflight entries before teardown"
+    );
+
+    // Dropping `host` will teardown the realm. This test passes as long as teardown does not panic
+    // due to leaked persistent roots in `ModuleLoadPayload`.
+    drop(host);
+    Ok(())
+  }
+
   #[test]
   fn request_idle_callback_is_exposed_and_runs_when_idle() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;

@@ -760,6 +760,32 @@ impl WindowRealm {
     // drops the realm without running a microtask checkpoint.
     self.runtime.teardown_microtasks();
 
+    // If the embedding tears down the realm while module loading is in flight (for example, a page
+    // triggers `import()` or starts loading a module graph, but the event loop is dropped before the
+    // queued networking tasks run), the host-side `ModuleLoader` can still hold `ModuleLoadPayload`s
+    // with persistent roots (promise capabilities).
+    //
+    // Tear down those payload roots here so dropping the loader cannot leak roots or trip `vm-js`
+    // leaked-root debug assertions.
+    {
+      let heap = &mut self.runtime.heap;
+      if let Ok(mut loader) = self.module_loader.try_borrow_mut() {
+        for (_key, waiters) in loader.inflight.drain() {
+          for waiter in waiters {
+            waiter.payload.teardown_roots(heap);
+          }
+        }
+      } else if let Ok(loader) = self.module_loader.try_borrow() {
+        // Best-effort fallback when a mutable borrow isn't available: release roots even if we
+        // cannot drain the inflight map.
+        for waiters in loader.inflight.values() {
+          for waiter in waiters {
+            waiter.payload.teardown_roots(heap);
+          }
+        }
+      }
+    }
+
     // If module support was enabled for this realm, `Vm::module_graph_ptr` points into the
     // realm-owned module graph allocation.
     //
