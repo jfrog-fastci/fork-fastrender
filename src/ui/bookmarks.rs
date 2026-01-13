@@ -619,7 +619,7 @@ impl BookmarkStore {
     }
 
     // Fallback: record a full root ordering vector.
-    let folder_order_changed = self.folder_subsequence(&self.roots) != self.folder_subsequence(ids_in_new_order);
+    let folder_order_changed = !self.folder_subsequence_equal(&self.roots, ids_in_new_order);
 
     let new_vec = ids_in_new_order.to_vec();
     self.roots = new_vec.clone();
@@ -950,12 +950,23 @@ impl BookmarkStore {
     self.move_node(id, new_parent)
   }
 
-  fn folder_subsequence(&self, ids: &[BookmarkId]) -> Vec<BookmarkId> {
-    ids
+  fn folder_subsequence_equal(&self, a: &[BookmarkId], b: &[BookmarkId]) -> bool {
+    let mut iter_a = a
       .iter()
       .copied()
-      .filter(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))))
-      .collect()
+      .filter(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))));
+    let mut iter_b = b
+      .iter()
+      .copied()
+      .filter(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))));
+
+    loop {
+      match (iter_a.next(), iter_b.next()) {
+        (None, None) => return true,
+        (Some(a_id), Some(b_id)) if a_id == b_id => {}
+        _ => return false,
+      }
+    }
   }
 
   pub fn reorder_root(&mut self, ids_in_new_order: &[BookmarkId]) -> Result<(), BookmarkError> {
@@ -971,7 +982,7 @@ impl BookmarkStore {
       return Ok(());
     }
 
-    let folder_order_changed = self.folder_subsequence(&self.roots) != self.folder_subsequence(ids_in_new_order);
+    let folder_order_changed = !self.folder_subsequence_equal(&self.roots, ids_in_new_order);
 
     self.roots = ids_in_new_order.to_vec();
     if folder_order_changed {
