@@ -1,6 +1,7 @@
 use crate::multiprocess::RendererProcessId;
 use crate::site_isolation::{site_key_for_navigation, SiteKey};
 use std::collections::HashMap;
+use url::Url;
 
 /// Controls how the browser assigns renderer processes to navigations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +68,12 @@ impl ProcessAssignmentState {
       .ok_or_else(|| format!("unknown renderer process: {:?}", process))?
       .clone();
 
+    // `site_key_for_navigation` treats unparseable URLs as opaque site keys. For a committed
+    // navigation this is almost certainly a renderer bug or hostile input; reject it explicitly so
+    // callers can treat it as a protocol violation.
+    Url::parse(committed_url)
+      .map_err(|err| format!("invalid committed URL {committed_url:?}: {err}"))?;
+
     // When deriving a SiteKey from a commit, treat the current process lock as the "parent" so
     // special URLs like `about:blank` inherit the existing site key.
     let committed_site = site_key_for_navigation(committed_url, Some(&locked_site));
@@ -75,7 +82,7 @@ impl ProcessAssignmentState {
       ProcessModel::PerSiteKey => {
         if committed_site != locked_site {
           return Err(format!(
-            "site lock violation: process {:?} locked to {:?} attempted to commit {:?} ({})",
+            "site lock violation: process {:?} locked to {} attempted to commit {} ({})",
             process, locked_site, committed_site, committed_url
           ));
         }
@@ -137,5 +144,14 @@ mod tests {
       .expect("about:blank should inherit the existing site lock");
 
     assert_eq!(state.site_lock(process), Some(&initial));
+  }
+
+  #[test]
+  fn unknown_process_is_an_error() {
+    let mut state = ProcessAssignmentState::new(ProcessModel::PerTab);
+    let err = state
+      .validate_or_update_site_lock(RendererProcessId::new(42), "https://example.com")
+      .expect_err("unknown process must error");
+    assert!(err.contains("unknown renderer process"));
   }
 }

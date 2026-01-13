@@ -1,5 +1,6 @@
 use crate::resource::{origin_from_url, DocumentOrigin};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use url::Url;
@@ -15,6 +16,15 @@ pub enum SiteKey {
   /// Unique (opaque) site key for documents with a unique origin (e.g. `data:`), as well as
   /// unparseable/unsupported navigations.
   Opaque(u64),
+}
+
+impl fmt::Display for SiteKey {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      SiteKey::Origin(origin) => origin.fmt(f),
+      SiteKey::Opaque(id) => write!(f, "opaque:{id}"),
+    }
+  }
 }
 
 /// Canonical origin key for origin-partitioned state.
