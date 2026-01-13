@@ -1606,6 +1606,21 @@ fn sample_pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) 
   (px.red(), px.green(), px.blue(), px.alpha())
 }
 
+fn render_html_to_pixmap(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new()
+    .with_runtime_toggles(toggles)
+    .with_paint_parallelism(PaintParallelism::disabled())
+    .with_layout_parallelism(LayoutParallelism::disabled());
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  renderer
+    .render_html(html, width, height)
+    .expect("render html")
+}
+
 fn render_multicol_overflow(overflow: &str) -> tiny_skia::Pixmap {
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
@@ -1661,6 +1676,143 @@ fn overflow_hidden_clips_overflow_columns() {
     (255, 0, 255, 255),
     "overflow:hidden should clip overflow columns outside the multicol container"
   );
+}
+
+#[test]
+fn column_rule_is_painted_centered_in_gap() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; background: rgb(255, 0, 255); }
+      #multi {
+        width: 200px;
+        height: 100px;
+        column-count: 2;
+        column-gap: 20px;
+        column-rule: 10px solid rgb(255, 0, 0);
+        column-fill: auto;
+        background: rgb(255, 255, 255);
+      }
+      #left {
+        height: 100px;
+        break-after: column;
+        background: rgb(0, 255, 0);
+      }
+      #right {
+        height: 100px;
+        background: rgb(0, 0, 255);
+      }
+    </style>
+    <div id="multi">
+      <div id="left"></div>
+      <div id="right"></div>
+    </div>
+  "#;
+
+  let pixmap = render_html_to_pixmap(html, 220, 120);
+
+  // Rule should be centered in the 20px gap: with 10px width it leaves 5px background on each side.
+  assert_eq!(sample_pixel(&pixmap, 92, 50), (255, 255, 255, 255));
+  assert_eq!(sample_pixel(&pixmap, 100, 5), (255, 0, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 100, 50), (255, 0, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 100, 95), (255, 0, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 108, 50), (255, 255, 255, 255));
+
+  // Sanity: both columns should have visible content.
+  assert_eq!(sample_pixel(&pixmap, 10, 50), (0, 255, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 150, 50), (0, 0, 255, 255));
+}
+
+#[test]
+fn column_rule_width_is_clamped_to_column_gap() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; background: rgb(255, 0, 255); }
+      #multi {
+        width: 200px;
+        height: 100px;
+        column-count: 2;
+        column-gap: 20px;
+        column-rule: 50px solid rgb(255, 0, 0);
+        column-fill: auto;
+        background: rgb(255, 255, 255);
+      }
+      #left {
+        height: 100px;
+        break-after: column;
+        background: rgb(0, 255, 0);
+      }
+      #right {
+        height: 100px;
+        background: rgb(0, 0, 255);
+      }
+    </style>
+    <div id="multi">
+      <div id="left"></div>
+      <div id="right"></div>
+    </div>
+  "#;
+
+  let pixmap = render_html_to_pixmap(html, 220, 120);
+
+  // Rule width must clamp to the 20px column-gap, i.e. fill the entire gap but not intrude into columns.
+  assert_eq!(sample_pixel(&pixmap, 92, 50), (255, 0, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 100, 50), (255, 0, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 108, 50), (255, 0, 0, 255));
+
+  // If the rule width was not clamped, it would extend into the columns.
+  assert_eq!(sample_pixel(&pixmap, 80, 50), (0, 255, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 120, 50), (0, 0, 255, 255));
+}
+
+#[test]
+fn column_rule_is_segmented_around_spanners() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; background: rgb(255, 0, 255); }
+      #multi {
+        width: 200px;
+        column-count: 2;
+        column-gap: 20px;
+        column-rule: 10px solid rgb(255, 0, 0);
+        background: rgb(255, 255, 255);
+      }
+      .left {
+        height: 80px;
+        break-after: column;
+        background: rgb(0, 255, 0);
+      }
+      .right {
+        height: 80px;
+        background: rgb(0, 0, 255);
+      }
+      .spanner {
+        column-span: all;
+        width: 60px;
+        height: 40px;
+        background: rgb(255, 255, 0);
+      }
+    </style>
+    <div id="multi">
+      <div class="left"></div>
+      <div class="right"></div>
+      <div class="spanner"></div>
+      <div class="left"></div>
+      <div class="right"></div>
+    </div>
+  "#;
+
+  let pixmap = render_html_to_pixmap(html, 220, 240);
+
+  // First column-set: rule should be present in the gap.
+  assert_eq!(sample_pixel(&pixmap, 100, 40), (255, 0, 0, 255));
+
+  // Spanner region should not have a column rule segment. Sample x=100 outside the spanner's 60px
+  // width, where we'd see the rule if it were incorrectly drawn through the spanning element.
+  assert_eq!(sample_pixel(&pixmap, 10, 100), (255, 255, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 100, 100), (255, 255, 255, 255));
+
+  // Second column-set: rule should resume after the spanner.
+  assert_eq!(sample_pixel(&pixmap, 100, 160), (255, 0, 0, 255));
 }
 
 fn find_first_multicol_container<'a>(fragment: &'a FragmentNode) -> Option<&'a FragmentNode> {
