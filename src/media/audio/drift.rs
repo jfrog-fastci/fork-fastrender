@@ -331,12 +331,118 @@ impl DriftResampler {
 
     out_samples
   }
+
+  /// Pop interleaved f32 samples from `queue` and add them into `out` after applying `gain`,
+  /// applying drift correction.
+  ///
+  /// `out.len()` must be a multiple of `channels` (any trailing partial frame is ignored and left
+  /// untouched, mirroring `PcmF32QueueConsumer::pop_into` semantics).
+  ///
+  /// Like the rest of the callback-path mixing code, this method:
+  /// - treats non-finite/denormal gains as `0.0` (silence),
+  /// - flushes any non-normal resampler outputs (including denormals after scaling) to `0.0`.
+  ///
+  /// Note: even when the effective `gain` is `0.0` (mute), this method still advances the queue
+  /// read cursor by consuming audio, so muting does **not** behave like pausing.
+  ///
+  /// Returns the number of samples mixed (a multiple of `channels`).
+  pub fn pop_add_into(
+    &mut self,
+    queue: &mut PcmF32QueueConsumer,
+    out: &mut [f32],
+    gain: f32,
+  ) -> usize {
+    let channels = self.channels;
+    let out_samples = out.len() - (out.len() % channels);
+    let out_frames = out_samples / channels;
+    if out_frames == 0 {
+      self.last_input_frames = 0;
+      return 0;
+    }
+
+    debug_assert_eq!(queue.channels(), channels);
+    debug_assert_eq!(queue.sample_rate_hz(), self.src_rate_hz);
+
+    // Defensively treat non-finite/denormal gains as silence so we never poison the mix.
+    // Note: we still drain the queue even when the effective gain is 0, so muting does not behave
+    // like pausing.
+    let gain = if gain.is_finite() && gain.is_normal() {
+      gain
+    } else {
+      0.0
+    };
+
+    let dt_s = out_frames as f64 / f64::from(self.dst_rate_hz);
+    let buffered_frames = queue
+      .buffered_frames()
+      .saturating_add(self.prefetched_frames());
+    let buffered_s = buffered_frames as f64 / f64::from(self.src_rate_hz);
+
+    let playback_rate = self.controller.update(buffered_s, dt_s);
+    let mut step = self.base_ratio * playback_rate;
+    if !(step.is_finite()) || step <= 0.0 {
+      step = self.base_ratio;
+    }
+
+    self.last_input_frames = 0;
+
+    if !self.initialized {
+      if queue.pop_into(&mut self.frame0) != channels {
+        return out_samples;
+      }
+      self.last_input_frames += 1;
+
+      if queue.pop_into(&mut self.frame1) != channels {
+        // Not enough data for interpolation yet: hold the first frame until more audio arrives.
+        self.frame1.copy_from_slice(&self.frame0);
+      } else {
+        self.last_input_frames += 1;
+      }
+      self.initialized = true;
+    }
+
+    let mut out_idx = 0usize;
+    for _ in 0..out_frames {
+      let frac = self.phase as f32;
+
+      if gain != 0.0 {
+        for ch in 0..channels {
+          let a = self.frame0[ch];
+          let b = self.frame1[ch];
+          let sample = a + (b - a) * frac;
+          if sample.is_normal() {
+            let scaled = sample * gain;
+            if scaled.is_normal() {
+              out[out_idx + ch] += scaled;
+            }
+          }
+        }
+      }
+      out_idx += channels;
+
+      self.phase += step;
+      while self.phase >= 1.0 {
+        self.phase -= 1.0;
+        std::mem::swap(&mut self.frame0, &mut self.frame1);
+        if queue.pop_into(&mut self.frame1) != channels {
+          // Underflow mid-block: hold the last frame rather than discarding already-consumed audio.
+          self.frame1.copy_from_slice(&self.frame0);
+          self.phase = 0.0;
+          break;
+        }
+        self.last_input_frames += 1;
+      }
+    }
+
+    out_samples
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::media::audio::pcm_f32_queue;
+  use std::time::Duration;
 
   fn run_simulation(producer_rate_hz: f64) {
     let stream_rate_hz = 48_000.0_f64;
@@ -580,6 +686,40 @@ mod tests {
     );
     // We flush non-normal outputs to +0.0.
     assert_eq!(out[0].to_bits(), 0.0f32.to_bits());
+  }
+
+  #[test]
+  fn drift_resampler_pop_add_into_mixes_and_drains_when_muted() {
+    // Configure the controller to be a no-op so the resampler uses a 1:1 ratio.
+    let cfg = DriftControllerConfig {
+      target_buffer_s: 0.0,
+      low_watermark_s: 0.0,
+      high_watermark_s: 0.0,
+      max_playback_rate_adjust: 0.0,
+      max_slew_per_s: 0.0,
+      kp: 0.0,
+      ki: 0.0,
+    };
+
+    // Mix into an existing buffer.
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16);
+    prod.push(&[1.0, 2.0, 3.0, 4.0], Duration::ZERO);
+
+    let mut resampler = DriftResampler::new(1, 48_000, 48_000, cfg);
+    let mut out = [10.0f32; 4];
+    resampler.pop_add_into(&mut cons, &mut out, 0.5);
+    assert_eq!(out, [10.5, 11.0, 11.5, 12.0]);
+    assert_eq!(cons.buffered_frames(), 0, "expected queue to be drained");
+
+    // Muting must still drain the queue so buffering/time does not accumulate while silent.
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16);
+    prod.push(&[1.0, 2.0, 3.0, 4.0], Duration::ZERO);
+
+    let mut resampler = DriftResampler::new(1, 48_000, 48_000, cfg);
+    let mut out = [10.0f32; 4];
+    resampler.pop_add_into(&mut cons, &mut out, 0.0);
+    assert_eq!(out, [10.0, 10.0, 10.0, 10.0]);
+    assert_eq!(cons.buffered_frames(), 0, "expected queue to be drained while muted");
   }
 
   /// Monotonic stream-time clock used by the deterministic drift simulations.

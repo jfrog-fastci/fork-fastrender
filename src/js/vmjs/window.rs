@@ -7988,8 +7988,7 @@ mod import_map_tests {
   #[test]
   fn window_host_state_starts_with_empty_import_map_state() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let host =
-      super::tests::make_host_state(dom, "https://example.com/index.html").expect("new host state");
+    let host = make_host_state(dom, "https://example.com/index.html").expect("new host state");
 
     let state = host.import_map_state();
     assert!(state.import_map.imports.is_empty());
@@ -8001,8 +8000,7 @@ mod import_map_tests {
   #[test]
   fn window_host_can_register_import_map_and_resolve_specifier() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host =
-      super::tests::make_host_state(dom, "https://example.com/index.html").expect("new host state");
+    let mut host = make_host_state(dom, "https://example.com/index.html").expect("new host state");
     let base_url = Url::parse("https://example.com/index.html").expect("parse base URL");
 
     let warnings = host
@@ -8038,8 +8036,7 @@ mod import_map_tests {
   #[test]
   fn window_host_register_import_map_propagates_errors() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host =
-      super::tests::make_host_state(dom, "https://example.com/index.html").expect("new host state");
+    let mut host = make_host_state(dom, "https://example.com/index.html").expect("new host state");
     let base_url = Url::parse("https://example.com/index.html").expect("parse base URL");
 
     let err = host

@@ -21851,6 +21851,7 @@ mod tests {
   use crate::style::types::Isolation;
   use crate::style::types::MaskClip;
   use crate::style::types::MaskComposite;
+  use crate::text::caret::CaretAffinity;
   use crate::style::types::MaskLayer;
   use crate::style::types::MaskMode;
   use crate::style::types::MaskOrigin;

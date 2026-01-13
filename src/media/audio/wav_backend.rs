@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
+use super::ring_buffer::AudioRingBuffer;
 use super::{
   frames_to_duration, AudioBackend, AudioClock, AudioOutputInfo, AudioSink, AudioStreamConfig,
 };
 use crate::media::audio_clock::InterpolatedAudioClock;
-use super::ring_buffer::AudioRingBuffer;
 
 /// Offline audio backend that mixes to a fixed output format and writes into a `.wav` file.
 ///
