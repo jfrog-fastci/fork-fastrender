@@ -49383,49 +49383,98 @@ mod tests {
 
   #[test]
   fn location_protocol_set_requests_navigation() -> Result<(), VmError> {
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
     assert!(realm.exec_script("location.protocol = 'http:'; 1 + 2").is_err());
     let req = realm
       .take_pending_navigation_request()
       .expect("expected pending navigation request");
-    assert_eq!(req.url, "http://example.com/path");
+    assert_eq!(req.url, "http://example.invalid:8443/path?x=1#h");
     assert_eq!(req.replace, false);
+    realm.reset_interrupt();
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), req.url);
     Ok(())
   }
 
   #[test]
   fn location_host_set_requests_navigation() -> Result<(), VmError> {
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
-    assert!(realm.exec_script("location.host = 'example.org:8080'; 1 + 2").is_err());
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
+    assert!(realm
+      .exec_script("location.host = 'example.invalid:1234'; 1 + 2")
+      .is_err());
     let req = realm
       .take_pending_navigation_request()
       .expect("expected pending navigation request");
-    assert_eq!(req.url, "https://example.org:8080/path");
+    assert_eq!(req.url, "https://example.invalid:1234/path?x=1#h");
     assert_eq!(req.replace, false);
+    realm.reset_interrupt();
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), req.url);
     Ok(())
   }
 
   #[test]
   fn location_hostname_set_requests_navigation() -> Result<(), VmError> {
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
-    assert!(realm.exec_script("location.hostname = 'example.org'; 1 + 2").is_err());
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
+    assert!(realm
+      .exec_script("location.hostname = 'example2.invalid'; 1 + 2")
+      .is_err());
     let req = realm
       .take_pending_navigation_request()
       .expect("expected pending navigation request");
-    assert_eq!(req.url, "https://example.org/path");
+    assert_eq!(req.url, "https://example2.invalid:8443/path?x=1#h");
     assert_eq!(req.replace, false);
+    realm.reset_interrupt();
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), req.url);
     Ok(())
   }
 
   #[test]
   fn location_port_set_requests_navigation() -> Result<(), VmError> {
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
-    assert!(realm.exec_script("location.port = '8080'; 1 + 2").is_err());
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
+    assert!(realm.exec_script("location.port = ''; 1 + 2").is_err());
     let req = realm
       .take_pending_navigation_request()
       .expect("expected pending navigation request");
-    assert_eq!(req.url, "https://example.com:8080/path");
+    assert_eq!(req.url, "https://example.invalid/path?x=1#h");
     assert_eq!(req.replace, false);
+    realm.reset_interrupt();
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), req.url);
+    let port_v = realm.exec_script("location.port")?;
+    assert_eq!(get_string(realm.heap(), port_v), "");
+    Ok(())
+  }
+
+  #[test]
+  fn location_protocol_set_invalid_does_not_request_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
+    let before_v = realm.exec_script("location.href")?;
+    let before = get_string(realm.heap(), before_v);
+
+    // Invalid scheme input should be ignored (or throw, if the VM implementation changes), but must
+    // never crash or request navigation.
+    realm.exec_script("try { location.protocol = ':::'; } catch (e) {}")?;
+
+    assert!(
+      realm.take_pending_navigation_request().is_none(),
+      "invalid protocol assignment should not request navigation"
+    );
+
+    let after_v = realm.exec_script("location.href")?;
+    let after = get_string(realm.heap(), after_v);
+    assert_eq!(after, before);
     Ok(())
   }
 
