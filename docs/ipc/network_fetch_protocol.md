@@ -777,3 +777,49 @@ Security note:
 
 - The client must **not** expose `Set-Cookie` response headers directly to untrusted JS; `Set-Cookie`
   is a forbidden response header in Fetch.
+
+---
+
+## Operational notes (non-normative, but matches in-tree behavior)
+
+### Socket timeouts
+
+The renderer-side `IpcResourceFetcher` configures the underlying stream with a read/write timeout
+(`IPC_IO_TIMEOUT`, currently 30 seconds) to avoid deadlocking the renderer forever if the network
+process becomes unresponsive mid-request.
+
+This is not a wire-level protocol feature, but other implementations should set conservative
+timeouts and treat timeout errors like connection loss (reconnect + redo the hello handshake).
+
+### Concurrency
+
+Because v1 is strictly sequential on a single connection, clients that need parallelism should open
+multiple independent connections, each with its own `Hello`/`HelloAck` handshake and independent
+request ID space.
+
+### JSON integer precision
+
+All integer fields (`id`, `status`, `total_len`, `max_bytes`, …) are serialized as **JSON numbers**.
+
+Implementations must decode these values as *integers* (not floats) and should be careful with
+languages/parsers that only provide IEEE-754 doubles for JSON numbers (notably JavaScript). For such
+languages, use a JSON library that supports 64-bit integers / big integers.
+
+---
+
+## Related protocols (do not confuse)
+
+FastRender has multiple IPC / IPC-like protocols in-tree. This document is specifically for the
+JSON `ipc_fetcher` protocol (`src/resource/ipc_fetcher.rs` + `src/ipc/network_service.rs`).
+
+Other network-related protocols you may encounter:
+
+- **Planned browser ↔ network schema**: `src/ipc/protocol/network.rs`
+  - Has an explicit `Cancel { request_id }` message and `expected_fds()` planning for FD-backed body
+    transfer.
+  - Uses `#[serde(deny_unknown_fields)]` at the top-level message enums.
+- **Prototype `network` subprocess protocol**: `src/network_process/ipc.rs`
+  - Different framing (`u32_be` length prefix + JSON) and a smaller request surface.
+- **Binary network transport** (requests/responses/events): `src/net/transport.rs`
+  - Explicit per-field limits and streaming/event types for WebSockets/downloads; not the JSON
+    `ipc_fetcher` protocol.
