@@ -7,8 +7,6 @@ use std::{collections::hash_map::DefaultHasher, path::Path};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // The libvpx sources are vendored. Re-run if anything in the vendored tree changes.
-    println!("cargo:rerun-if-changed=upstream/libvpx");
     // Re-run if the toolchain environment changes. These vars are honored by libvpx's configure
     // script and affect the produced `libvpx.a`.
     println!("cargo:rerun-if-env-changed=CC");
@@ -29,6 +27,9 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let src_dir = manifest_dir.join("upstream").join("libvpx");
+    // Make sure Cargo reruns this build script when any vendored file changes. Note: `rerun-if-changed`
+    // on a directory is not guaranteed to be recursive, so list all files explicitly.
+    emit_rerun_if_changed_recursively(&src_dir);
     let configure_src_path = src_dir.join("configure");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
@@ -142,9 +143,21 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
         let ty = entry.file_type().unwrap_or_else(|e| panic!("failed to get file type for {}: {e}", path.display()));
         if ty.is_dir() {
             collect_files(root, &path, out);
-        } else if ty.is_file() {
+        } else if ty.is_file() || ty.is_symlink() {
             let rel = path.strip_prefix(root).expect("strip_prefix").to_path_buf();
             out.push(rel);
         }
+    }
+}
+
+fn emit_rerun_if_changed_recursively(src_dir: &Path) {
+    let mut files = Vec::new();
+    collect_files(src_dir, src_dir, &mut files);
+    files.sort();
+    for rel in files {
+        let rel_str = rel
+            .to_str()
+            .unwrap_or_else(|| panic!("non-utf8 path under {}: {}", src_dir.display(), rel.display()));
+        println!("cargo:rerun-if-changed=upstream/libvpx/{rel_str}");
     }
 }
