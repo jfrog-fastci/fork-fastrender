@@ -215,6 +215,125 @@ fn arrow_left_moves_across_zwj_emoji_grapheme_cluster() -> Result<()> {
 }
 
 #[test]
+fn arrow_right_moves_across_zwj_emoji_grapheme_cluster() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+  let emoji = "👨‍👩‍👧‍👦";
+
+  let html = format!(
+    r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body {{ margin: 0; padding: 0; }}
+          #txt {{ position: absolute; left: 0; top: 0; width: 280px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }}
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="{emoji}">
+      </body>
+    </html>
+  "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let click = (10.0, 20.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowRight))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  let expected = format!("{emoji}X");
+  assert_eq!(input.get_attribute_ref("value"), Some(expected.as_str()));
+  Ok(())
+}
+
+#[test]
+fn click_to_place_caret_on_zwj_emoji_snaps_to_grapheme_boundary() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+  let emoji = "👨‍👩‍👧‍👦";
+
+  let html = format!(
+    r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body {{ margin: 0; padding: 0; }}
+          #txt {{
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 280px;
+            height: 40px;
+            font-family: "Noto Sans Mono";
+            font-size: 20px;
+            text-align: left;
+          }}
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="{emoji}">
+      </body>
+    </html>
+  "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Click within the rendered emoji (not at the edges). Even though the emoji is multiple Unicode
+  // scalar values, the caret must snap to a grapheme boundary (start/end), never inside the ZWJ
+  // sequence.
+  let click = (40.0, 20.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  let value = input
+    .get_attribute_ref("value")
+    .expect("expected input value after typing X");
+  let left = format!("X{emoji}");
+  let right = format!("{emoji}X");
+  assert!(
+    value == left || value == right,
+    "expected click placement to snap to a grapheme boundary; got {value:?}"
+  );
+  Ok(())
+}
+
+#[test]
 fn shift_arrow_creates_selection_and_typing_replaces_it() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
