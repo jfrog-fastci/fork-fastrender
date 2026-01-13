@@ -176,6 +176,30 @@ impl InputMapping {
     Some(Rect::from_min_max(min, max))
   }
 
+  /// Convert an egui rect (points) into the coordinate space used by egui's emitted AccessKit
+  /// bounds.
+  ///
+  /// This helper exists for the browser UI's "rendered page image" accessibility injection: when
+  /// we generate AccessKit nodes for page content, their bounds must match egui's own nodes so that
+  /// screen-reader highlights align.
+  pub fn rect_points_to_accesskit_rect(
+    rect_points: Rect,
+    pixels_per_point: f32,
+  ) -> accesskit::Rect {
+    crate::ui::accesskit_bounds::accesskit_rect_from_egui_rect(rect_points, pixels_per_point)
+  }
+
+  /// Convert a viewport-local CSS rect into an AccessKit rect in the coordinate system used by
+  /// egui's emitted AccessKit nodes.
+  pub fn rect_css_to_accesskit_rect(
+    &self,
+    rect_css: crate::geometry::Rect,
+    pixels_per_point: f32,
+  ) -> Option<accesskit::Rect> {
+    let rect_points = self.rect_css_to_rect_points(rect_css)?;
+    Some(Self::rect_points_to_accesskit_rect(rect_points, pixels_per_point))
+  }
+
   /// Convert a wheel delta (from egui/winit) to a delta in viewport CSS pixels.
   ///
   /// Sign convention:

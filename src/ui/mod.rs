@@ -129,6 +129,10 @@ pub mod page_accesskit_ids;
 #[cfg(feature = "browser_ui")]
 pub mod accesskit_winit_adapter;
 
+// AccessKit bounds conversion helpers (egui points ↔ AccessKit coordinate space).
+#[cfg(feature = "browser_ui")]
+pub mod accesskit_bounds;
+
 // Test-only helpers for extracting egui/AccessKit accessibility output.
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;
