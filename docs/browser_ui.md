@@ -48,6 +48,20 @@ If you run the `browser` binary without the feature, it will print a short messa
 (the real implementation is behind the `browser_ui` feature gate; see
 [`src/bin/browser.rs`](../src/bin/browser.rs)).
 
+### Native dialogs (file/color) on Linux
+
+The browser UI uses the [`rfd`](https://crates.io/crates/rfd) crate for native file pickers and
+color pickers.
+
+On Linux, `rfd` is configured to use the `xdg-portal` backend (via Cargo feature selection) so
+`--features browser_ui` stays **CI-friendly** and does **not** require GTK development packages
+(`libgtk-3-dev`, etc).
+
+Runtime note: the portal backend requires an `xdg-desktop-portal` implementation to be running. If
+your environment doesn't provide one (common on minimal/headless setups), file/color pickers may
+fail to open at runtime, but the browser UI will still compile and run (including headless CI
+smoke tests).
+
 When running the browser UI against arbitrary real-world pages, consider using the repo’s resource
 limit wrapper (especially on multi-agent hosts):
 
