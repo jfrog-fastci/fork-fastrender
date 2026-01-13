@@ -1582,12 +1582,14 @@ impl FrameHitTester {
   /// Replace the subframe list for `parent_frame_id`.
   pub fn set_subframes(&mut self, parent_frame_id: FrameId, mut subframes: Vec<SubframeInfo>) {
     // Mirror compositor ordering so hit testing respects paint order (topmost = last composited).
-    subframes.sort_by_key(|info| (info.z_index, info.child.0));
     if subframes.len() > MAX_SUBFRAMES_PER_FRAME {
-      // Keep only the topmost subframes to bound worst-case hit-test work. Truncating from the front
-      // preserves highest z-index (paint order) items.
-      subframes = subframes.split_off(subframes.len() - MAX_SUBFRAMES_PER_FRAME);
+      // Keep only the topmost subframes to bound worst-case hit-test work. Avoid sorting the entire
+      // list when the renderer attempts to send a pathological number of entries.
+      let keep_start = subframes.len() - MAX_SUBFRAMES_PER_FRAME;
+      subframes.select_nth_unstable_by_key(keep_start, |info| (info.z_index, info.child.0));
+      subframes = subframes.split_off(keep_start);
     }
+    subframes.sort_by_key(|info| (info.z_index, info.child.0));
     let child_ids: Vec<FrameId> = subframes.iter().map(|info| info.child).collect();
 
     self
