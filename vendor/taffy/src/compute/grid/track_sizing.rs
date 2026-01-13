@@ -1815,27 +1815,40 @@ fn expand_flexible_tracks<Tree: LayoutPartialTree>(
     AvailableSpace::MinContent => 0.0,
     // Otherwise, if the free space is an indefinite length:
     AvailableSpace::MaxContent => {
+      let other_axis = axis.other();
+      let other_axis_available_space = inner_node_size.get(other_axis);
+
       // Compute prefix sums of other-axis track size estimates. This is used when probing
       // max-content contributions of flex items under an indefinite sizing constraint to supply an
       // other-axis available space estimate without iterating each item's spanned tracks.
-      let other_axis = axis.other();
-      let other_axis_available_space = inner_node_size.get(other_axis);
-      let mut other_axis_prefix_sum: Vec<f32> = Vec::with_capacity(other_axis_tracks.len() + 1);
-      let mut other_axis_prefix_none: Vec<u32> = Vec::with_capacity(other_axis_tracks.len() + 1);
-      other_axis_prefix_sum.push(0.0);
-      other_axis_prefix_none.push(0);
-      let mut running_sum = 0.0;
-      let mut running_none = 0u32;
-      for track in other_axis_tracks.iter() {
-        match get_track_size_estimate(track, other_axis_available_space, tree) {
-          Some(v) => {
-            running_sum += v + track.content_alignment_adjustment;
+      //
+      // We only compute these sums if we detect any flex item that still needs its
+      // `available_space_cache` populated (e.g. when intrinsic sizing was skipped).
+      let needs_other_axis_estimate = items
+        .iter()
+        .any(|item| item.crosses_flexible_track(axis) && item.available_space_cache.is_none());
+
+      let (other_axis_prefix_sum, other_axis_prefix_none) = if needs_other_axis_estimate {
+        let mut prefix_sum: Vec<f32> = Vec::with_capacity(other_axis_tracks.len() + 1);
+        let mut prefix_none: Vec<u32> = Vec::with_capacity(other_axis_tracks.len() + 1);
+        prefix_sum.push(0.0);
+        prefix_none.push(0);
+        let mut running_sum = 0.0;
+        let mut running_none = 0u32;
+        for track in other_axis_tracks.iter() {
+          match get_track_size_estimate(track, other_axis_available_space, tree) {
+            Some(v) => {
+              running_sum += v + track.content_alignment_adjustment;
+            }
+            None => running_none += 1,
           }
-          None => running_none += 1,
+          prefix_sum.push(running_sum);
+          prefix_none.push(running_none);
         }
-        other_axis_prefix_sum.push(running_sum);
-        other_axis_prefix_none.push(running_none);
-      }
+        (prefix_sum, prefix_none)
+      } else {
+        (Vec::new(), Vec::new())
+      };
 
       #[inline(always)]
       fn sum_range(prefix_sum: &[f32], prefix_none: &[u32], range: core::ops::Range<usize>) -> Option<f32> {
@@ -1875,6 +1888,7 @@ fn expand_flexible_tracks<Tree: LayoutPartialTree>(
             // `GridItem::known_dimensions()` cannot apply stretch alignment + aspect-ratio, causing
             // intrinsic contributions to incorrectly collapse to 0.
             if item.available_space_cache.is_none() {
+              debug_assert!(needs_other_axis_estimate);
               let other_axis_size = sum_range(
                 &other_axis_prefix_sum,
                 &other_axis_prefix_none,
