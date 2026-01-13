@@ -635,9 +635,9 @@ pub enum UiToWorker {
   ///
   /// The UI should send this after receiving [`WorkerToUi::DatalistOpened`].
   ///
-  /// Workers respond with [`WorkerToUi::DatalistClosed`] so front-ends can dismiss the popup
-  /// deterministically even when the selection is a no-op (e.g. choosing a disabled option or
-  /// spoofing an option id).
+  /// Workers should respond with [`WorkerToUi::DatalistClosed`] so front-ends can dismiss the popup
+  /// deterministically, even when applying the choice is a no-op (e.g. choosing the already-set
+  /// value, choosing a disabled option, or spoofing an option id).
   DatalistChoose {
     tab_id: TabId,
     /// The `<input>` element that owns the datalist popup.
@@ -1093,7 +1093,10 @@ pub enum WorkerToUi {
   SelectDropdownClosed {
     tab_id: TabId,
   },
-  /// Request that the UI open a datalist suggestion popup for an `<input list=...>` control.
+  /// Request that the UI open a `<datalist>` suggestion popup for an `<input list=...>` control.
+  ///
+  /// Workers may emit this repeatedly as the user edits the input value; UIs should treat each
+  /// message as an updated suggestion list and reposition the popup accordingly.
   DatalistOpened {
     tab_id: TabId,
     input_node_id: usize,
@@ -1103,7 +1106,7 @@ pub enum WorkerToUi {
     /// (0,0 is the top-left of the rendered viewport; does not include scroll offset.)
     anchor_css: Rect,
   },
-  /// Notification that a datalist popup should be dismissed.
+  /// Notification that an open `<datalist>` popup should be dismissed.
   ///
   /// Workers emit this whenever the overlay should be dismissed (e.g. after choosing/cancelling a
   /// suggestion, or when the focused input loses focus).
