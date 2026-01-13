@@ -1,12 +1,18 @@
 use crate::api::BrowserDocument;
 use crate::dom::{DomNode, DomNodeType};
 use crate::geometry::Point;
-use crate::interaction::{fragment_tree_with_scroll, InteractionEngine, InteractionState};
+use crate::interaction::{
+  fragment_tree_with_scroll, InteractionAction, InteractionEngine, InteractionState, KeyAction,
+};
 use crate::ui::omnibox_nav::{apply_omnibox_nav_key, OmniboxNavKey};
-use crate::ui::{BrowserAppState, ChromeAction, OmniboxSuggestion, PointerButton, PointerModifiers};
+use crate::ui::{
+  BrowserAppState, ChromeAction, ChromeActionUrl, OmniboxSuggestion, PointerButton, PointerModifiers,
+};
 use crate::{FastRender, Pixmap, RenderOptions, Result};
 
 pub mod dom_mutation;
+
+const ADDRESS_BAR_ID: &str = "address-bar";
 
 const CHROME_FRAME_HTML: &str = r#"<!doctype html>
 <html>
@@ -49,6 +55,10 @@ const CHROME_FRAME_HTML: &str = r#"<!doctype html>
         background: rgb(255, 0, 0);
       }
 
+      #address-form {
+        margin: 0;
+      }
+
       #address-bar {
         width: 220px;
         height: 22px;
@@ -87,7 +97,9 @@ const CHROME_FRAME_HTML: &str = r#"<!doctype html>
       <button id="nav-back" disabled aria-label="Back">←</button>
       <button id="nav-forward" disabled aria-label="Forward">→</button>
       <div id="loading-indicator" hidden></div>
-      <input id="address-bar" type="text" value="" />
+      <form id="address-form" action="chrome-action:navigate" method="get" autocomplete="off">
+        <input id="address-bar" name="url" type="text" value="" />
+      </form>
       <span id="tab-title"></span>
     </div>
     <div id="omnibox" hidden></div>
@@ -214,6 +226,190 @@ impl ChromeFrameDocument {
 
   pub fn interaction_state(&self) -> &InteractionState {
     self.interaction.interaction_state()
+  }
+
+  fn address_bar_node_id(dom: &DomNode) -> Option<usize> {
+    // Node ids are pre-order traversal indices (see `crate::dom::enumerate_dom_ids`).
+    let mut next_id = 1usize;
+    let mut stack: Vec<&DomNode> = vec![dom];
+    while let Some(node) = stack.pop() {
+      let current_id = next_id;
+      next_id = next_id.saturating_add(1);
+      if node
+        .is_element()
+        .then(|| node.get_attribute_ref("id"))
+        .flatten()
+        .is_some_and(|value| value == ADDRESS_BAR_ID)
+      {
+        return Some(current_id);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn address_bar_value(dom: &mut DomNode) -> String {
+    dom_mutation::find_element_by_id_mut(dom, ADDRESS_BAR_ID)
+      .and_then(|node| node.get_attribute_ref("value"))
+      .unwrap_or_default()
+      .to_string()
+  }
+
+  fn sync_address_bar_focus_flags(&mut self, app: &mut BrowserAppState) {
+    let address_id = Self::address_bar_node_id(self.document.dom());
+    let has_focus = address_id.is_some_and(|id| self.interaction_state().focused == Some(id));
+
+    if has_focus == app.chrome.address_bar_has_focus {
+      return;
+    }
+
+    app.chrome.address_bar_has_focus = has_focus;
+
+    if !has_focus {
+      if app.chrome.address_bar_editing {
+        // Discard uncommitted edits and close the dropdown.
+        app.set_address_bar_editing(false);
+      } else {
+        app.chrome.omnibox.reset();
+      }
+    }
+  }
+
+  /// Programmatically focus the address bar input.
+  ///
+  /// When `focus_visible` is true (keyboard modality), this selects all text so the next typed
+  /// character replaces the current value (matching typical browser omnibox behavior).
+  pub fn focus_address_bar(&mut self, app: &mut BrowserAppState, focus_visible: bool) -> bool {
+    let Some(address_id) = Self::address_bar_node_id(self.document.dom()) else {
+      return false;
+    };
+
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let mut action = InteractionAction::None;
+    let changed = document.mutate_dom(|dom| {
+      let (interaction_changed, got_action) =
+        interaction.focus_node_id(dom, Some(address_id), focus_visible);
+      action = got_action;
+
+      if focus_visible {
+        // Select all so typing replaces the full value.
+        let len = Self::address_bar_value(dom).chars().count();
+        interaction.set_text_selection_range(address_id, 0, len);
+      }
+
+      interaction_changed
+    });
+
+    if matches!(action, InteractionAction::FocusChanged { .. }) {
+      self.sync_address_bar_focus_flags(app);
+    }
+
+    self.dirty |= changed;
+    changed
+  }
+
+  /// Apply a text input event to the DOM and sync the address bar value into `BrowserAppState`.
+  pub fn text_input_address_bar(&mut self, app: &mut BrowserAppState, text: &str) -> bool {
+    let address_id = Self::address_bar_node_id(self.document.dom());
+    let mut before = String::new();
+    let mut after = String::new();
+
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom(|dom| {
+      let focused = address_id.is_some_and(|id| interaction.interaction_state().focused == Some(id));
+      if focused {
+        before = Self::address_bar_value(dom);
+      }
+      let interaction_changed = interaction.text_input(dom, text);
+      if focused {
+        after = Self::address_bar_value(dom);
+      }
+      interaction_changed
+    });
+
+    if before != after
+      && address_id.is_some_and(|id| self.interaction_state().focused == Some(id))
+    {
+      app.set_address_bar_text(after);
+      app.chrome.address_bar_editing = true;
+      app.chrome.address_bar_has_focus = true;
+    }
+
+    self.dirty |= changed;
+    changed
+  }
+
+  /// Apply a keyboard action to the chrome DOM, returning any dispatched chrome action.
+  pub fn key_action(
+    &mut self,
+    app: &mut BrowserAppState,
+    key: KeyAction,
+  ) -> (bool, Option<ChromeAction>) {
+    let address_id = Self::address_bar_node_id(self.document.dom());
+    let mut before = String::new();
+    let mut after = String::new();
+
+    let document_url = self
+      .document
+      .document_url()
+      .unwrap_or("chrome://chrome-frame/")
+      .to_string();
+    let base_url = self
+      .document
+      .base_url()
+      .unwrap_or(document_url.as_str())
+      .to_string();
+
+    let mut interaction_action = InteractionAction::None;
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom(|dom| {
+      let focused = address_id.is_some_and(|id| interaction.interaction_state().focused == Some(id));
+      if focused {
+        before = Self::address_bar_value(dom);
+      }
+
+      let (interaction_changed, action) = interaction.key_activate(dom, key, &document_url, &base_url);
+      interaction_action = action;
+
+      let focused = address_id.is_some_and(|id| interaction.interaction_state().focused == Some(id));
+      if focused {
+        after = Self::address_bar_value(dom);
+      }
+
+      interaction_changed
+    });
+
+    if matches!(interaction_action, InteractionAction::FocusChanged { .. }) {
+      self.sync_address_bar_focus_flags(app);
+    }
+
+    if before != after
+      && address_id.is_some_and(|id| self.interaction_state().focused == Some(id))
+    {
+      app.set_address_bar_text(after);
+      app.chrome.address_bar_editing = true;
+      app.chrome.address_bar_has_focus = true;
+    }
+
+    let chrome_action = match interaction_action {
+      InteractionAction::Navigate { href } | InteractionAction::OpenInNewTab { href } => {
+        ChromeActionUrl::parse(&href)
+          .and_then(|parsed| parsed.into_chrome_action())
+          .ok()
+      }
+      _ => None,
+    };
+
+    // Submitting the address bar should stop "editing" so future navigation commits can resync.
+    if matches!(chrome_action, Some(ChromeAction::NavigateTo(_))) {
+      app.chrome.address_bar_editing = false;
+      app.chrome.omnibox.reset();
+    }
+
+    self.dirty |= changed;
+    (changed, chrome_action)
   }
 
   pub(crate) fn text_input(&mut self, text: &str) -> bool {
@@ -397,7 +593,7 @@ impl ChromeFrameDocument {
       // - When the user is editing, mirror `ChromeState::address_bar_text` so keyboard omnibox
       //   navigation can preview suggestions by updating the value.
       // - Otherwise, display the current committed URL from the active tab.
-      if let Some(address) = dom_mutation::find_element_by_id_mut(dom, "address-bar") {
+      if let Some(address) = dom_mutation::find_element_by_id_mut(dom, ADDRESS_BAR_ID) {
         let desired = if app.chrome.address_bar_has_focus || app.chrome.address_bar_editing {
           app.chrome.address_bar_text.as_str()
         } else {
@@ -773,6 +969,35 @@ mod tests {
     );
     let action = chrome.handle_address_bar_key(&mut app, OmniboxNavKey::Enter);
     assert_eq!(action, Some(ChromeAction::ActivateTab(tab2)));
+    Ok(())
+  }
+
+  #[test]
+  fn chrome_frame_address_bar_sync_updates_app_state_and_emits_navigate_action() -> Result<()> {
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.com/".to_string());
+    app.chrome.address_bar_text.clear();
+
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()?;
+    let mut chrome =
+      ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(360, 40))?;
+    chrome.sync_state(&app);
+
+    chrome.focus_address_bar(&mut app, true);
+    assert!(app.chrome.address_bar_has_focus);
+    assert!(!app.chrome.address_bar_editing);
+
+    chrome.text_input_address_bar(&mut app, "example.com");
+    assert_eq!(app.chrome.address_bar_text, "example.com");
+    assert!(app.chrome.address_bar_editing);
+
+    let (_changed, action) = chrome.key_action(&mut app, KeyAction::Enter);
+    assert_eq!(
+      action,
+      Some(ChromeAction::NavigateTo("example.com".to_string()))
+    );
+    assert!(!app.chrome.address_bar_editing);
     Ok(())
   }
 
