@@ -118,6 +118,11 @@ fn node_self_is_hidden(node: NodeId, dom: &Document) -> bool {
 }
 
 pub(crate) fn is_effectively_inert(node: NodeId, dom: &dom2::Document) -> bool {
+  // Keep legacy semantics: invalid node ids are treated as not inert (callers should validate ids).
+  if dom.nodes().get(node.index()).is_none() {
+    return false;
+  }
+
   // `dom2` represents `<template>` contents as normal descendants, but exposes `is_connected_for_scripting`
   // to model the platform behaviour that scripts/interaction treat template contents as disconnected.
   if !dom.is_connected_for_scripting(node) {
@@ -340,5 +345,12 @@ mod tests {
 
     assert!(is_effectively_inert(inert_btn, &doc));
     assert!(is_effectively_hidden(hidden_btn, &doc));
+  }
+
+  #[test]
+  fn invalid_node_ids_are_not_treated_as_inert() {
+    let doc = crate::dom2::parse_html("<!doctype html><div></div>").unwrap();
+    let invalid = NodeId::from_index(doc.nodes_len() + 10);
+    assert!(!is_effectively_inert(invalid, &doc));
   }
 }
