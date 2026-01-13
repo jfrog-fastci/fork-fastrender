@@ -97,16 +97,16 @@
       <span class="hint">Headless UI perf smoke (scroll / resize / input).</span>
     </header>
     <main>
-      <div class="row"><div class="box"></div><div class="text"><h2>Row 1</h2><p>Deterministic scroll content. This page is intentionally offline and stable.</p></div></div>
-      <div class="row"><div class="box"></div><div class="text"><h2>Row 2</h2><p>Used by ui_perf_smoke to measure scroll, resize, and input-to-frame latency.</p></div></div>
-      <div class="row"><div class="box"></div><div class="text"><h2>Row 3</h2><p>Keep the structure simple but non-trivial to exercise layout + paint.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 1</h2><p>Deterministic offline content. This page is intentionally stable (no network resources).</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 2</h2><p>Used by ui_perf_smoke to measure input-to-frame latency (typing into the fixed header input).</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 3</h2><p>Keep the structure simple but non-trivial so the page still exercises layout + paint.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 4</h2><p>Each row includes a gradient box and a small text block.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 5</h2><p>Repeated rows create a long page so scroll bounds are meaningful.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 6</h2><p>The fixed header keeps an input field at a stable pointer coordinate.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 7</h2><p>Baseline comparisons look for relative regressions rather than absolute thresholds.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 8</h2><p>Rows continue below to ensure a large max scroll offset.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 9</h2><p>Scrolling triggers paints with a different scroll offset.</p></div></div>
-      <div class="row"><div class="box"></div><div class="text"><h2>Row 10</h2><p>Resizing triggers layout and paint work.</p></div></div>
+      <div class="row"><div class="box"></div><div class="text"><h2>Row 10</h2><p>Note: ui_perf_smoke scroll/resize scenarios use about:test-layout-stress; this fixture focuses on input.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 11</h2><p>Typing into the input triggers DOM mutation and repaint.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 12</h2><p>These rows are duplicated to keep the fixture deterministic.</p></div></div>
       <div class="row"><div class="box"></div><div class="text"><h2>Row 13</h2><p>Row content intentionally avoids network resources (no external fonts/images).</p></div></div>
@@ -209,4 +209,3 @@
     </main>
   </body>
 </html>
-
