@@ -2422,11 +2422,11 @@ impl<'vm> HirEvaluator<'vm> {
         Ok(Value::BigInt(handle))
       }
       hir_js::Literal::Regex(literal) => {
+        // Mirror `exec.rs::eval_lit_regex`.
         let intr = self
           .vm
           .intrinsics()
           .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-
         let literal = literal.as_str();
         // `hir-js` stores regexp literals verbatim including the leading `/` and any flags (matching
         // the parse-js AST representation).
@@ -2466,6 +2466,7 @@ impl<'vm> HirEvaluator<'vm> {
         let pattern = &literal[1..end_pat];
         let flags = &literal[end_pat + 1..];
 
+        let mut scope = scope.reborrow();
         let pattern_s = scope.alloc_string(pattern)?;
         scope.push_root(Value::String(pattern_s))?;
         let flags_s = scope.alloc_string(flags)?;
@@ -2474,7 +2475,7 @@ impl<'vm> HirEvaluator<'vm> {
         let ctor = Value::Object(intr.regexp_constructor());
         self.vm.construct_with_host_and_hooks(
           &mut *self.host,
-          scope,
+          &mut scope,
           &mut *self.hooks,
           ctor,
           &[Value::String(pattern_s), Value::String(flags_s)],
