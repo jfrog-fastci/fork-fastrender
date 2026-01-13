@@ -472,7 +472,7 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
   now: SystemTime,
 ) -> Vec<OmniboxSuggestion> {
   let input = input.trim();
-  if input.is_empty() {
+  if input.is_empty() || limit == 0 {
     return Vec::new();
   }
   let tokens_lower = tokenize_lower(input);
@@ -480,39 +480,68 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
     return Vec::new();
   }
 
-  let mut scored = Vec::<ScoredSuggestion>::new();
+  // We only ever return the top `limit` suggestions. Keeping a bounded working set avoids the
+  // `O(n log n)` sort of potentially large provider outputs (visited/history/bookmarks), reducing
+  // per-keystroke omnibox overhead.
+  let mut selected = Vec::<ScoredSuggestion>::new();
   for provider in providers {
     for suggestion in provider.suggestions(ctx, input) {
       let Some(score) = score_suggestion(ctx, now, &suggestion, &tokens_lower) else {
         continue;
       };
-      scored.push(ScoredSuggestion {
+
+      // Fast prune: once we have `limit` suggestions, any candidate with a lower score than the
+      // current minimum cannot be part of the top set (score is the primary sort key).
+      if selected.len() == limit {
+        if let Some(min_score) = selected.iter().map(|s| s.score).min() {
+          if score < min_score {
+            continue;
+          }
+        }
+      }
+
+      let primary_raw = suggestion_primary_key_raw(&suggestion);
+
+      // De-dupe by primary key (case-insensitive), matching the previous behaviour of using
+      // `to_ascii_lowercase` keys.
+      if let Some(existing_idx) = selected
+        .iter()
+        .position(|s| primary_raw.eq_ignore_ascii_case(&s.sort_key.primary))
+      {
+        if score < selected[existing_idx].score {
+          continue;
+        }
+
+        let candidate = ScoredSuggestion {
+          sort_key: suggestion_sort_key(&suggestion),
+          suggestion,
+          score,
+        };
+        if compare_scored_suggestions(&candidate, &selected[existing_idx]) == Ordering::Less {
+          selected[existing_idx] = candidate;
+        }
+        continue;
+      }
+
+      let candidate = ScoredSuggestion {
         sort_key: suggestion_sort_key(&suggestion),
         suggestion,
         score,
-      });
+      };
+
+      if selected.len() < limit {
+        selected.push(candidate);
+        continue;
+      }
+
+      let worst_idx = worst_scored_suggestion_index(&selected);
+      if compare_scored_suggestions(&candidate, &selected[worst_idx]) == Ordering::Less {
+        selected[worst_idx] = candidate;
+      }
     }
   }
-
-  scored.sort_by(compare_scored_suggestions);
-
-  let mut seen: HashSet<String> = HashSet::new();
-  let mut out = Vec::new();
-  for scored in scored {
-    let ScoredSuggestion {
-      suggestion,
-      sort_key: SuggestionSortKey { primary, .. },
-      ..
-    } = scored;
-    if seen.insert(primary) {
-      out.push(suggestion);
-    }
-  }
-
-  if out.len() > limit {
-    out.truncate(limit);
-  }
-  out
+  selected.sort_by(compare_scored_suggestions);
+  selected.into_iter().map(|s| s.suggestion).collect()
 }
 
 #[derive(Debug)]
@@ -715,6 +744,17 @@ fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ord
   a.sort_key.cmp(&b.sort_key)
 }
 
+fn worst_scored_suggestion_index(scored: &[ScoredSuggestion]) -> usize {
+  debug_assert!(!scored.is_empty());
+  let mut worst_idx = 0usize;
+  for i in 1..scored.len() {
+    if compare_scored_suggestions(&scored[i], &scored[worst_idx]) == Ordering::Greater {
+      worst_idx = i;
+    }
+  }
+  worst_idx
+}
+
 fn suggestion_source_rank(source: OmniboxSuggestionSource) -> i64 {
   match source {
     OmniboxSuggestionSource::Primary => 6,
@@ -734,6 +774,14 @@ struct SuggestionSortKey {
   secondary: String,
   // Include TabId when relevant so multiple open-tab suggestions for the same URL are stable.
   tab_id: u64,
+}
+
+fn suggestion_primary_key_raw(s: &OmniboxSuggestion) -> &str {
+  match &s.action {
+    OmniboxAction::ActivateTab(_) => s.url.as_deref().unwrap_or_default(),
+    OmniboxAction::NavigateToUrl(url) => url.as_str(),
+    OmniboxAction::Search(query) => query.as_str(),
+  }
 }
 
 fn suggestion_sort_key(s: &OmniboxSuggestion) -> SuggestionSortKey {
