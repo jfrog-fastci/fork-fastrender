@@ -15531,6 +15531,12 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             &mut self.page_has_focus,
             &mut self.cursor_in_page,
           );
+          // With unknown cursor position we cannot reliably determine whether the click was inside
+          // any open overlays. Conservatively close the media controls overlay so it cannot keep
+          // intercepting input.
+          if self.open_media_controls.is_some() {
+            self.close_media_controls();
+          }
           if self.scrollbar_drag.is_some() {
             self.cancel_scrollbar_drag();
           }
