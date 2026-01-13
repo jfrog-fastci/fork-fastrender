@@ -181,6 +181,12 @@ Probe tool (macOS-only):
 
 ```bash
 bash scripts/cargo_agent.sh run --bin macos_sandbox_probe -- --mode strict
+
+# Or, directly:
+cargo run --bin macos_sandbox_probe -- --mode strict
+
+# Faster iteration builds (skip default renderer features):
+cargo run --no-default-features --bin macos_sandbox_probe -- --mode strict
 ```
 
 macOS sandbox unit tests:
