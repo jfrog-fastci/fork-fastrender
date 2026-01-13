@@ -16141,55 +16141,67 @@ pub fn string_prototype_replace_all(
   };
   let needle_len = scope.heap().get_string(search_s)?.len_code_units();
 
-  for (mi, &pos) in positions.iter().enumerate() {
-    if mi % 256 == 0 {
-      vm.tick()?;
-    }
-    // Prefix.
-    vec_try_extend_from_slice(&mut out, &hay_units[last_end..pos], || vm.tick())?;
+  if replace_is_callable {
+    for (mi, &pos) in positions.iter().enumerate() {
+      if mi % 256 == 0 {
+        vm.tick()?;
+      }
+      // Prefix.
+      vec_try_extend_from_slice(&mut out, &hay_units[last_end..pos], || vm.tick())?;
 
-    let match_end = pos.saturating_add(needle_len);
+      let match_end = pos.saturating_add(needle_len);
 
-    // Replacement.
-    if replace_is_callable {
-      let matched = if needle_len == 0 { scope.alloc_string("")? } else { search_s };
-      scope.push_root(Value::String(matched))?;
+      // Replacement (callable replacer): call with (matched, position, string).
+      //
+      // Note: for the string-search fallback implemented here, the matched substring is always
+      // equal to `search_s` (including when `search_s` is the empty string).
       let called = vm.call_with_host_and_hooks(
         host,
         &mut scope,
         hooks,
         replace_value,
         Value::Undefined,
-        &[Value::String(matched), Value::Number(pos as f64), Value::String(s)],
+        &[Value::String(search_s), Value::Number(pos as f64), Value::String(s)],
       )?;
-      scope.push_root(called)?;
       let rep_s = scope.to_string(vm, host, hooks, called)?;
-      let rep_units: Vec<u16> = {
-        let units = scope.heap().get_string(rep_s)?.as_code_units();
-        let mut buf: Vec<u16> = Vec::new();
-        buf
-          .try_reserve_exact(units.len())
-          .map_err(|_| VmError::OutOfMemory)?;
-        buf.extend_from_slice(units);
-        buf
-      };
-      vec_try_extend_from_slice(&mut out, &rep_units, || vm.tick())?;
-    } else {
-      let Some(replace_s) = replace_s else {
-        return Err(VmError::InvariantViolation("replace string should be computed"));
-      };
+      let rep_units = scope.heap().get_string(rep_s)?.as_code_units();
+      vec_try_extend_from_slice(&mut out, rep_units, || vm.tick())?;
+
+      last_end = match_end;
+
+      // Empty needle: advance by one code unit to avoid infinite loops (replacement happens between
+      // code units).
+      if needle_len == 0 && last_end < hay_units.len() {
+        vec_try_push(&mut out, hay_units[last_end])?;
+        last_end += 1;
+      }
+    }
+  } else {
+    let Some(replace_s) = replace_s else {
+      return Err(VmError::InvariantViolation("replace string should be computed"));
+    };
+    for (mi, &pos) in positions.iter().enumerate() {
+      if mi % 256 == 0 {
+        vm.tick()?;
+      }
+      // Prefix.
+      vec_try_extend_from_slice(&mut out, &hay_units[last_end..pos], || vm.tick())?;
+
+      let match_end = pos.saturating_add(needle_len);
+
+      // Replacement (string replacer) with `$`-substitution patterns.
       let captures = [pos, match_end];
       let rep_units = get_substitution(vm, &mut scope, s, replace_s, (pos, match_end), &captures, 1)?;
       vec_try_extend_from_slice(&mut out, &rep_units, || vm.tick())?;
-    }
 
-    last_end = match_end;
+      last_end = match_end;
 
-    // Empty needle: advance by one code unit to avoid infinite loops (replacement happens between
-    // code units).
-    if needle_len == 0 && last_end < hay_units.len() {
-      vec_try_push(&mut out, hay_units[last_end])?;
-      last_end += 1;
+      // Empty needle: advance by one code unit to avoid infinite loops (replacement happens between
+      // code units).
+      if needle_len == 0 && last_end < hay_units.len() {
+        vec_try_push(&mut out, hay_units[last_end])?;
+        last_end += 1;
+      }
     }
   }
 
