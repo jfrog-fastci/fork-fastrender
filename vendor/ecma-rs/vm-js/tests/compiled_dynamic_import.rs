@@ -22,6 +22,7 @@ struct TestHostHooks {
   /// Specifier → module id mapping used by `complete_load_for`.
   modules: HashMap<String, ModuleId>,
   pending: Vec<PendingLoad>,
+  supported_import_attributes: &'static [&'static str],
 }
 
 impl TestHostHooks {
@@ -30,6 +31,14 @@ impl TestHostHooks {
       microtasks: MicrotaskQueue::new(),
       modules: HashMap::new(),
       pending: Vec::new(),
+      supported_import_attributes: &[],
+    }
+  }
+
+  fn new_with_supported_import_attributes(supported: &'static [&'static str]) -> Self {
+    Self {
+      supported_import_attributes: supported,
+      ..Self::new()
     }
   }
 
@@ -105,7 +114,7 @@ impl VmHostHooks for TestHostHooks {
   }
 
   fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
-    &[]
+    self.supported_import_attributes
   }
 
   fn host_load_imported_module(
@@ -857,6 +866,86 @@ fn compiled_dynamic_import_rejects_unsupported_import_attributes() -> Result<(),
     panic!("TypeError.name should be a string");
   };
   assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "TypeError");
+
+  drop(scope);
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
+fn compiled_dynamic_import_allows_supported_import_attributes() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let m_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 1;")?;
+  let m = rt.modules_mut().add_module(m_record)?;
+
+  static SUPPORTED: [&str; 2] = ["foo", "type"];
+  let mut hooks = TestHostHooks::new_with_supported_import_attributes(&SUPPORTED);
+  hooks.register_module("./m.js", m);
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      var p = import('./m.js', { with: { type: 'json', foo: 'bar' } });
+    "#,
+  )?;
+
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  let promise_obj = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let promise_value = scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?;
+    let Value::Object(obj) = promise_value else {
+      panic!("import() should assign a Promise object to global `p`");
+    };
+    assert_eq!(scope.heap().promise_state(obj)?, PromiseState::Pending);
+    obj
+  };
+
+  assert_eq!(hooks.pending_count(), 1, "host loader should be invoked");
+  let attrs = &hooks.pending[0].request.attributes;
+  assert_eq!(attrs.len(), 2, "expected two import attributes");
+  assert_eq!(attrs[0].key, "foo");
+  assert_eq!(attrs[0].value, "bar");
+  assert_eq!(attrs[1].key, "type");
+  assert_eq!(attrs[1].value, "json");
+
+  hooks.complete_load_for(&mut rt, "./m.js");
+  assert_eq!(hooks.pending_count(), 0);
+  hooks.perform_microtask_checkpoint(&mut rt)?;
+
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let ns_value = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  let Value::Object(ns_obj) = ns_value else {
+    panic!("dynamic import promise should fulfill to an object");
+  };
+
+  // Namespace should expose `x === 1`.
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let x_value = scope.get_with_host_and_hooks(
+    &mut rt.vm,
+    &mut dummy_host,
+    &mut hooks,
+    ns_obj,
+    x_key,
+    Value::Object(ns_obj),
+  )?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
 
   drop(scope);
   hooks.teardown_jobs(&mut rt);
