@@ -26,6 +26,9 @@ At the time of writing:
 * The main RegExp parser/compiler in `src/regexp.rs` still contains a small, hand-rolled property
   escape implementation (currently only `\p{ASCII}` / `\P{ASCII}` and `\p{Script=Han}`), and does
   not yet support property escapes in all `/v` character-class contexts.
+  * That hand-rolled implementation also uses ASCII case-insensitive comparisons for its supported
+    spellings; this is **not** spec compliant (see “Strict matching rules” below) and should be
+    replaced by the table-driven resolver.
 
 This document describes the **intended ECMA-262 surface** and the **Unicode data update
 procedure** that the table-driven implementation relies on.
@@ -80,6 +83,75 @@ The only supported binary code-point properties are those listed in ECMA-262
 Rather than maintain a hand-written list in Rust, the **source of truth is the spec table**
 (which mirrors `PropertyAliases.txt` from the Unicode Character Database). Any table generator
 should take the spellings *verbatim* from the spec/UCD.
+
+Canonical property names (exact spellings used by the generator):
+
+```
+ASCII
+ASCII_Hex_Digit
+Alphabetic
+Any
+Assigned
+Bidi_Control
+Bidi_Mirrored
+Case_Ignorable
+Cased
+Changes_When_Casefolded
+Changes_When_Casemapped
+Changes_When_Lowercased
+Changes_When_NFKC_Casefolded
+Changes_When_Titlecased
+Changes_When_Uppercased
+Dash
+Default_Ignorable_Code_Point
+Deprecated
+Diacritic
+Emoji
+Emoji_Component
+Emoji_Modifier
+Emoji_Modifier_Base
+Emoji_Presentation
+Extended_Pictographic
+Extender
+Grapheme_Base
+Grapheme_Extend
+Hex_Digit
+IDS_Binary_Operator
+IDS_Trinary_Operator
+ID_Continue
+ID_Start
+Ideographic
+Join_Control
+Logical_Order_Exception
+Lowercase
+Math
+Noncharacter_Code_Point
+Pattern_Syntax
+Pattern_White_Space
+Quotation_Mark
+Radical
+Regional_Indicator
+Sentence_Terminal
+Soft_Dotted
+Terminal_Punctuation
+Unified_Ideograph
+Uppercase
+Variation_Selector
+White_Space
+XID_Continue
+XID_Start
+```
+
+Notes:
+
+* `Any`, `ASCII`, and `Assigned` are **synthesized** by the generator (they are not read from a UCD
+  data file directly):
+  * `Any` = `0x000000..=0x10FFFF`
+  * `ASCII` = `0x000000..=0x00007F`
+  * `Assigned` = complement of `General_Category=Unassigned` (which includes surrogate code points,
+    since they are `General_Category=Surrogate`).
+* Property name aliases are accepted **exactly** as spelled in ECMA-262’s “Binary Unicode
+  properties” table (no loose matching).
 
 ### Binary properties of strings (`v` flag only)
 
