@@ -1733,6 +1733,37 @@ mod tests {
       "merged-away text node should be detached"
     );
   }
+
+  #[test]
+  fn reparent_children_updates_live_ranges_for_removed_children() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let from = sink.create_element(html_name("div"), Vec::new(), ElementFlags::default());
+    let to = sink.create_element(html_name("div"), Vec::new(), ElementFlags::default());
+    sink.append(&root, NodeOrText::AppendNode(from));
+    sink.append(&root, NodeOrText::AppendNode(to));
+
+    sink.append(&from, NodeOrText::AppendText("world".into()));
+
+    let range = {
+      let mut doc = sink.document_mut();
+      let range = doc.create_range();
+      // Boundary point after the single text child.
+      doc.range_set_start(range, from, 1).unwrap();
+      doc.range_set_end(range, from, 1).unwrap();
+      range
+    };
+
+    sink.reparent_children(&from, &to);
+
+    let doc = sink.document();
+    assert!(doc.node(from).children.is_empty());
+    assert_eq!(doc.range_start_container(range).unwrap(), from);
+    assert_eq!(doc.range_end_container(range).unwrap(), from);
+    assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+    assert_eq!(doc.range_end_offset(range).unwrap(), 0);
+  }
 }
 
 #[cfg(test)]
