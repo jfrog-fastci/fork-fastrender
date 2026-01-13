@@ -3337,14 +3337,6 @@ impl BrowserRuntime {
       } => {
         self.handle_context_menu_request(tab_id, pos_css, modifiers);
       }
-      #[cfg(feature = "browser_ui")]
-      UiToWorker::AccessKitAction {
-        tab_id,
-        action,
-        target_node_id,
-      } => {
-        self.handle_accesskit_action(tab_id, action, target_node_id);
-      }
       UiToWorker::SelectDropdownChoose {
         tab_id,
         select_node_id,
@@ -3581,56 +3573,97 @@ impl BrowserRuntime {
 
   #[cfg(feature = "browser_ui")]
   fn handle_accesskit_action_request(&mut self, tab_id: TabId, request: accesskit::ActionRequest) {
-    // Currently we only support scroll-related accessibility actions. The goal is to let assistive
-    // technologies request that a node becomes visible without having to focus it.
     match request.action {
-      accesskit::Action::ScrollIntoView | accesskit::Action::ScrollToPoint => {}
-      _ => return,
+      accesskit::Action::ScrollIntoView | accesskit::Action::ScrollToPoint => {
+        // Let assistive technologies request that a node becomes visible without having to focus it.
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+        let Some(doc) = tab.document.as_mut() else {
+          return;
+        };
+
+        let target_node_id: usize = match usize::try_from(request.target.0.get()) {
+          Ok(id) => id,
+          Err(_) => return,
+        };
+
+        let next_scroll = {
+          let Some(prepared) = doc.prepared() else {
+            return;
+          };
+          crate::interaction::focus_scroll::scroll_state_for_focus(
+            prepared.box_tree(),
+            prepared.fragment_tree(),
+            &tab.scroll_state,
+            target_node_id,
+          )
+        };
+
+        let Some(next_scroll) = next_scroll else {
+          return;
+        };
+
+        tab.scroll_state = next_scroll;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        tab.sync_js_scroll_state();
+        tab.history.update_scroll_state(&tab.scroll_state);
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+        tab.last_reported_scroll_state = tab.scroll_state.clone();
+
+        tab.cancel.bump_paint();
+        tab.needs_repaint = true;
+        tab.scroll_coalesce = true;
+      }
+      accesskit::Action::ShowContextMenu => {
+        // Mirror the right-click context menu pipeline but use the accessibility target (or focused
+        // node) as an anchor.
+        let pos_css = {
+          let Some(tab) = self.tabs.get(&tab_id) else {
+            return;
+          };
+
+          let target_node_id = usize::try_from(request.target.0.get()).ok();
+          let target = target_node_id.or(tab.interaction.interaction_state().focused);
+          let anchor_rect = target.and_then(|target| {
+            tab.document.as_ref().and_then(|doc| {
+              doc.prepared().and_then(|prepared| {
+                styled_node_anchor_css(
+                  prepared.box_tree(),
+                  prepared.fragment_tree(),
+                  &tab.scroll_state,
+                  target,
+                )
+              })
+            })
+          });
+
+          let mut pos = if let Some(rect) = anchor_rect {
+            let center = rect.center();
+            (center.x, center.y)
+          } else {
+            // Fallback: viewport center in viewport-local CSS pixels.
+            (
+              tab.viewport_css.0 as f32 / 2.0,
+              tab.viewport_css.1 as f32 / 2.0,
+            )
+          };
+
+          let max_x = tab.viewport_css.0 as f32;
+          let max_y = tab.viewport_css.1 as f32;
+          let sanitize = |v: f32, max: f32| if v.is_finite() { v.clamp(0.0, max) } else { 0.0 };
+          pos.0 = sanitize(pos.0, max_x);
+          pos.1 = sanitize(pos.1, max_y);
+          pos
+        };
+
+        self.handle_context_menu_request(tab_id, pos_css, crate::ui::PointerModifiers::default());
+      }
+      _ => {}
     }
-
-    let Some(tab) = self.tabs.get_mut(&tab_id) else {
-      return;
-    };
-    let Some(doc) = tab.document.as_mut() else {
-      return;
-    };
-
-    let target_node_id: usize = match usize::try_from(request.target.0.get()) {
-      Ok(id) => id,
-      Err(_) => return,
-    };
-
-    let next_scroll = {
-      let Some(prepared) = doc.prepared() else {
-        return;
-      };
-      crate::interaction::focus_scroll::scroll_state_for_focus(
-        prepared.box_tree(),
-        prepared.fragment_tree(),
-        &tab.scroll_state,
-        target_node_id,
-      )
-    };
-
-    let Some(next_scroll) = next_scroll else {
-      return;
-    };
-
-    tab.scroll_state = next_scroll;
-    doc.set_scroll_state(tab.scroll_state.clone());
-    tab.sync_js_scroll_state();
-    tab
-      .history
-      .update_scroll_state(&tab.scroll_state);
-    let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-      tab_id,
-      scroll: tab.scroll_state.clone(),
-    });
-    tab.last_reported_scroll_state = tab.scroll_state.clone();
-
-    tab.cancel.bump_paint();
-    tab.needs_repaint = true;
-    tab.scroll_coalesce = true;
   }
 
   fn set_download_directory(&mut self, path: PathBuf) {
@@ -6884,65 +6917,6 @@ impl BrowserRuntime {
       can_paste,
       can_select_all,
     });
-  }
-
-  #[cfg(feature = "browser_ui")]
-  fn handle_accesskit_action(
-    &mut self,
-    tab_id: TabId,
-    action: accesskit::Action,
-    target_node_id: Option<usize>,
-  ) {
-    match action {
-      accesskit::Action::ShowContextMenu => {
-        let pos_css = {
-          let Some(tab) = self.tabs.get(&tab_id) else {
-            return;
-          };
-
-          let target = target_node_id.or(tab.interaction.interaction_state().focused);
-          let anchor_rect = target.and_then(|target| {
-            tab.document.as_ref().and_then(|doc| {
-              doc.prepared().and_then(|prepared| {
-                styled_node_anchor_css(
-                  prepared.box_tree(),
-                  prepared.fragment_tree(),
-                  &tab.scroll_state,
-                  target,
-                )
-              })
-            })
-          });
-
-          let mut pos = if let Some(rect) = anchor_rect {
-            let center = rect.center();
-            (center.x, center.y)
-          } else {
-            // Fallback: viewport center in viewport-local CSS pixels.
-            (
-              tab.viewport_css.0 as f32 / 2.0,
-              tab.viewport_css.1 as f32 / 2.0,
-            )
-          };
-
-          let max_x = tab.viewport_css.0 as f32;
-          let max_y = tab.viewport_css.1 as f32;
-          let sanitize = |v: f32, max: f32| {
-            if v.is_finite() {
-              v.clamp(0.0, max)
-            } else {
-              0.0
-            }
-          };
-          pos.0 = sanitize(pos.0, max_x);
-          pos.1 = sanitize(pos.1, max_y);
-          pos
-        };
-
-        self.handle_context_menu_request(tab_id, pos_css);
-      }
-      _ => {}
-    }
   }
 
   fn handle_select_dropdown_choose(

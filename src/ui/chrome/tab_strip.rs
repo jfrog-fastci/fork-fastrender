@@ -591,9 +591,10 @@ fn unpinned_tab_preview_ui(
 ) {
   let tab_id = tab_strip_tab_widget_id(tab.id);
   let title = tab.display_title();
-  let (err, warn) = tab_status_messages(tab);
-  let has_error = err.is_some();
-  let has_warning = warn.is_some();
+  let (has_error, has_warning) = {
+    let (err, warn) = tab_status_messages(tab);
+    (err.is_some(), warn.is_some())
+  };
   let visuals = ui.style().visuals.clone();
 
   // Draw the dragged tab slightly "hovered" so it reads as lifted.
@@ -728,9 +729,10 @@ fn pinned_tab_preview_ui(
 ) {
   let tab_id = tab_strip_tab_widget_id(tab.id);
   let title = tab.display_title();
-  let (err, warn) = tab_status_messages(tab);
-  let has_error = err.is_some();
-  let has_warning = warn.is_some();
+  let (has_error, has_warning) = {
+    let (err, warn) = tab_status_messages(tab);
+    (err.is_some(), warn.is_some())
+  };
   let visuals = ui.style().visuals.clone();
 
   // Pinned tabs are icon-only; keep the same visual styling, but treat as hovered so it feels

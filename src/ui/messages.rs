@@ -592,19 +592,6 @@ pub enum UiToWorker {
     /// render worker so pages can implement modifier-sensitive context menus.
     modifiers: PointerModifiers,
   },
-  /// Forward an accessibility (AccessKit) action request for page content.
-  ///
-  /// This is used by the windowed browser UI to respond to platform assistive-technology gestures
-  /// (e.g. "Show context menu" from a screen reader).
-  ///
-  /// `target_node_id` is a DOM pre-order node id when known. When `None`, workers may fall back to
-  /// the currently focused node.
-  #[cfg(feature = "browser_ui")]
-  AccessKitAction {
-    tab_id: TabId,
-    action: accesskit::Action,
-    target_node_id: Option<usize>,
-  },
   /// User chose an option in a dropdown `<select>` popup.
   ///
   /// The UI should send this after receiving [`WorkerToUi::SelectDropdownOpened`].

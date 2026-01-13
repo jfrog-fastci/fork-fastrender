@@ -1355,7 +1355,7 @@ fn subtle_import_key_native(
   set_own_data_prop(&mut scope, key_obj, "algorithm", Value::Object(alg_obj_js), false)?;
 
   // usages array
-  let usages_arr = alloc_array_with_prototype(intr, &mut scope, requested_usages.len())?;
+  let usages_arr = alloc_array_with_prototype(&intr, &mut scope, requested_usages.len())?;
   fill_string_array(&mut scope, usages_arr, &requested_usages)?;
   set_own_data_prop(&mut scope, key_obj, "usages", Value::Object(usages_arr), false)?;
 
@@ -1457,7 +1457,7 @@ fn subtle_export_key_native(
     true,
   )?;
 
-  let ops_arr = alloc_array_with_prototype(intr, &mut scope, key_state.usages.len())?;
+  let ops_arr = alloc_array_with_prototype(&intr, &mut scope, key_state.usages.len())?;
   fill_string_array(&mut scope, ops_arr, &key_state.usages)?;
   set_own_enumerable_data_prop(&mut scope, jwk_obj, "key_ops", Value::Object(ops_arr), true)?;
 

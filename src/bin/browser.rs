@@ -22251,16 +22251,24 @@ impl App {
             // we don't yet know the final hit-test position (it will be derived from the focused
             // element bounds).
             self.close_context_menu();
-            self.pending_context_menu_request = Some(PendingContextMenuRequest {
-              tab_id: active_tab,
-              pos_css: (0.0, 0.0),
-              anchor_points: None,
-              match_pos_css: false,
-            });
+             self.pending_context_menu_request = Some(PendingContextMenuRequest {
+               tab_id: active_tab,
+               pos_css: (0.0, 0.0),
+               anchor_points: None,
+               match_pos_css: false,
+             });
             self.send_worker_msg(fastrender::ui::UiToWorker::AccessKitAction {
               tab_id: active_tab,
-              action: accesskit::Action::ShowContextMenu,
-              target_node_id: None,
+              request: accesskit::ActionRequest {
+                action: accesskit::Action::ShowContextMenu,
+                // Egui only tells us that the page host widget received an action request, not which
+                // page element should anchor the menu. Use a stable non-zero sentinel; the worker
+                // will fall back to the focused node when appropriate.
+                target: accesskit::NodeId(
+                  std::num::NonZeroU128::new(1).expect("non-zero sentinel node id"),
+                ),
+                data: None,
+              },
             });
           }
         }
