@@ -782,7 +782,10 @@ impl JsBigInt {
       digits.insert(0, b'-');
     }
 
-    Ok(String::from_utf8(digits).unwrap())
+    // `digits` contains only ASCII [0-9a-z] plus an optional leading '-', so it must always be
+    // valid UTF-8. Avoid panicking on invariant violations.
+    String::from_utf8(digits)
+      .map_err(|_| VmError::InvariantViolation("BigInt toString produced non-UTF-8 digits"))
   }
 
   fn pow2_mag(bits: u64) -> Result<Vec<u32>, VmError> {
