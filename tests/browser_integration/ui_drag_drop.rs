@@ -309,6 +309,199 @@ fn drag_drop_document_selection_into_text_input_inserts_text() -> Result<()> {
 }
 
 #[test]
+fn drag_drop_selected_text_within_text_input_moves_text() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (320, 140);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          input {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 260px;
+            height: 40px;
+            padding: 0;
+            border: 0;
+            outline: none;
+            font-family: "Noto Sans Mono";
+            font-size: 24px;
+          }
+        </style>
+      </head>
+      <body>
+        <input id="src" value="hello world">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input.
+  let focus_pos = (10.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    focus_pos,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    focus_pos,
+    PointerButton::Primary,
+  ))?;
+
+  // Double-click selects "hello".
+  let dbl_click = (20.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    dbl_click,
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    dbl_click,
+    PointerButton::Primary,
+  ))?;
+
+  // Drag the selected "hello" to the end of the input.
+  let drag_start = (4.0, 20.0);
+  let drop_end = (250.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    drag_start,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_move(
+    tab_id,
+    drop_end,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    drop_end,
+    PointerButton::Primary,
+  ))?;
+
+  let src = find_element_by_id(controller.document().dom(), "src");
+  assert_eq!(src.get_attribute_ref("value"), Some(" worldhello"));
+  Ok(())
+}
+
+#[test]
+fn drag_drop_selected_text_within_textarea_moves_text() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (320, 180);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          textarea {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 260px;
+            height: 80px;
+            padding: 0;
+            border: 0;
+            outline: none;
+            font-family: "Noto Sans Mono";
+            font-size: 24px;
+            resize: none;
+          }
+        </style>
+      </head>
+      <body>
+        <textarea id="src">hello world</textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the textarea.
+  let focus_pos = (10.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    focus_pos,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    focus_pos,
+    PointerButton::Primary,
+  ))?;
+
+  // Double-click selects "hello".
+  let dbl_click = (20.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    dbl_click,
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    dbl_click,
+    PointerButton::Primary,
+  ))?;
+
+  // Drag the selected "hello" to the end of the textarea line.
+  let drag_start = (4.0, 20.0);
+  let drop_end = (250.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    drag_start,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_move(
+    tab_id,
+    drop_end,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    drop_end,
+    PointerButton::Primary,
+  ))?;
+
+  let src = find_element_by_id(controller.document().dom(), "src");
+  assert_eq!(src.get_attribute_ref("data-fastr-value"), Some(" worldhello"));
+  Ok(())
+}
+
+#[test]
 fn click_inside_document_selection_defers_collapse_until_mouseup() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
