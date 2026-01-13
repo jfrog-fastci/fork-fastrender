@@ -218,3 +218,134 @@ fn subgrid_virtual_items_map_into_correct_ancestor_tracks_with_axes_swap() {
   assert_approx_eq(grid_info.columns.sizes[1], 100.0);
 }
 
+#[cfg(feature = "detailed_layout_info")]
+#[test]
+fn subgrid_virtual_items_propagate_through_nested_subgrids_with_alternating_axes_swap() {
+  let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+  // Two leaves with different intrinsic widths. They are placed into different *columns* of the
+  // innermost grid, which is nested under two levels of subgrid, each flipping `axes_swapped`
+  // relative to its parent. The virtual-item pipeline should compose these swaps so the leaves
+  // still map into different columns of the root grid.
+  let item_a = taffy
+    .new_leaf(Style {
+      display: Display::Block,
+      size: Size {
+        width: Dimension::length(10.0),
+        height: Dimension::length(10.0),
+      },
+      grid_column: Line {
+        start: line(1),
+        end: line(2),
+      },
+      grid_row: Line {
+        start: line(1),
+        end: line(2),
+      },
+      ..Default::default()
+    })
+    .unwrap();
+  let item_b = taffy
+    .new_leaf(Style {
+      display: Display::Block,
+      size: Size {
+        width: Dimension::length(100.0),
+        height: Dimension::length(10.0),
+      },
+      grid_column: Line {
+        start: line(2),
+        end: line(3),
+      },
+      grid_row: Line {
+        start: line(1),
+        end: line(2),
+      },
+      ..Default::default()
+    })
+    .unwrap();
+
+  // Innermost subgrid (axes_swapped=false).
+  let inner_subgrid = taffy
+    .new_with_children(
+      Style {
+        display: Display::Grid,
+        axes_swapped: false,
+        subgrid_rows: true,
+        subgrid_columns: true,
+        justify_content: Some(JustifyContent::Start),
+        align_content: Some(AlignContent::Start),
+        // This node is a grid item in the axes-swapped outer subgrid.
+        //
+        // The parent (axes_swapped=true) inherits root columns as its *rows*. To inherit two
+        // columns, this node must span two of the parent's rows.
+        grid_column: Line {
+          start: line(1),
+          end: line(2),
+        },
+        grid_row: Line {
+          start: line(1),
+          end: line(3),
+        },
+        ..Default::default()
+      },
+      &[item_a, item_b],
+    )
+    .unwrap();
+
+  // Outer subgrid (axes_swapped=true).
+  let outer_subgrid = taffy
+    .new_with_children(
+      Style {
+        display: Display::Grid,
+        axes_swapped: true,
+        subgrid_rows: true,
+        subgrid_columns: true,
+        justify_content: Some(JustifyContent::Start),
+        align_content: Some(AlignContent::Start),
+        // Place the outer subgrid in the root: span both root columns.
+        grid_column: Line {
+          start: line(1),
+          end: line(3),
+        },
+        grid_row: Line {
+          start: line(1),
+          end: line(2),
+        },
+        ..Default::default()
+      },
+      &[inner_subgrid],
+    )
+    .unwrap();
+
+  // Root grid.
+  let root = taffy
+    .new_with_children(
+      Style {
+        display: Display::Grid,
+        axes_swapped: false,
+        grid_template_columns: vec![
+          GridTemplateComponent::Single(TrackSizingFunction::AUTO),
+          GridTemplateComponent::Single(TrackSizingFunction::AUTO),
+        ],
+        // Give the ancestor a definite single row so we're testing column sizing only.
+        grid_template_rows: vec![GridTemplateComponent::Single(TrackSizingFunction::from_length(
+          10.0,
+        ))],
+        justify_content: Some(JustifyContent::Start),
+        align_content: Some(AlignContent::Start),
+        ..Default::default()
+      },
+      &[outer_subgrid],
+    )
+    .unwrap();
+
+  taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+  let DetailedLayoutInfo::Grid(grid_info) = taffy.detailed_layout_info(root) else {
+    panic!("expected DetailedLayoutInfo::Grid");
+  };
+
+  assert_eq!(grid_info.columns.sizes.len(), 2);
+  assert_approx_eq(grid_info.columns.sizes[0], 10.0);
+  assert_approx_eq(grid_info.columns.sizes[1], 100.0);
+}
