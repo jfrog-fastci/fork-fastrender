@@ -794,6 +794,41 @@ fn p2_nomodule_classic_scripts_are_suppressed_when_modules_are_supported() -> Re
 }
 
 #[test]
+fn p2_dynamic_nomodule_classic_scripts_are_suppressed_when_modules_are_supported() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut h = Harness::new(
+    "https://example.invalid/p2_dynamic_nomodule_supported.html",
+    js_options,
+  )?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        const s = document.createElement("script");
+        // Use both the IDL property and the raw attribute to make this test robust across DOM
+        // implementations.
+        s.noModule = true;
+        s.setAttribute("nomodule", "");
+        const code = "console.log('nomodule')";
+        s.textContent = code;
+        if (s.textContent !== code) {
+          s.appendChild(document.createTextNode(code));
+        }
+        document.body.appendChild(s);
+        console.log("after");
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(console_logs(&h.tab), vec!["after".to_string()]);
+  Ok(())
+}
+
+#[test]
 fn p2_nomodule_classic_scripts_execute_when_modules_are_not_supported() -> Result<()> {
   let mut js_options = JsExecutionOptions::default();
   js_options.supports_module_scripts = false;
