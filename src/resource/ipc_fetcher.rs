@@ -11,8 +11,10 @@ use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::UNIX_EPOCH;
+use url::Url;
 
 const IPC_FRAME_LEN_BYTES: usize = 4;
+const MAX_COOKIE_BYTES: usize = 4096;
 
 /// Environment variable used by [`IpcResourceFetcher::new`] to read the IPC auth token.
 pub const IPC_AUTH_TOKEN_ENV: &str = "FASTR_NETWORK_AUTH_TOKEN";
@@ -898,16 +900,28 @@ impl ResourceFetcher for IpcResourceFetcher {
   }
 
   fn cookie_header_value(&self, url: &str) -> Option<String> {
+    // Match `HttpFetcher` semantics: invalid URLs yield `None` (cookie state not observable).
+    let _ = Url::parse(url).ok()?;
     let request = IpcRequest::CookieHeaderValue {
       url: url.to_string(),
     };
     match self.rpc_maybe_string(url, &request) {
-      Ok(value) => value,
+      Ok(Some(value)) => Some(value),
+      // The network process should use an empty string to represent "no cookies", but treat
+      // missing values deterministically too so callers can compute stable `document.cookie`.
+      Ok(None) => Some(String::new()),
       Err(_) => None,
     }
   }
 
   fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+    // Match the per-cookie size limit enforced by `HttpFetcher`.
+    if cookie_string.len() > MAX_COOKIE_BYTES {
+      return;
+    }
+    if Url::parse(url).is_err() {
+      return;
+    }
     self.send_best_effort(
       url,
       &IpcRequest::StoreCookieFromDocument {

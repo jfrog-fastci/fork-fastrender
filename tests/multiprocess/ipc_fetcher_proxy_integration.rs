@@ -255,16 +255,28 @@ fn ipc_fetcher_cookies_round_trip_between_fetch_and_cookie_header_value() {
   });
 
   // Fetch, cookie_header_value, fetch.
-  let ipc_handle = spawn_network_process(ipc_listener, 3);
+  // cookie_header_value (empty), fetch, cookie_header_value, fetch.
+  let ipc_handle = spawn_network_process(ipc_listener, 4);
 
   let fetcher =
     IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = format!("http://{addr}/cookie");
 
+  let initial = fetcher
+    .cookie_header_value(&url)
+    .expect("cookie_header_value should be Some for valid URL");
+  assert!(
+    initial.is_empty(),
+    "expected no cookies initially, got {initial:?}"
+  );
+  assert!(fetcher.cookie_header_value("not a url").is_none());
+
   let res1 = fetcher.fetch(&url).expect("first fetch");
   assert_eq!(res1.bytes, b"first");
 
-  let cookies = fetcher.cookie_header_value(&url).unwrap_or_default();
+  let cookies = fetcher
+    .cookie_header_value(&url)
+    .expect("cookie_header_value should be Some for valid URL");
   assert!(
     cookies.contains("a=b"),
     "expected cookie_header_value to contain a=b, got {cookies:?}"
@@ -308,12 +320,84 @@ fn ipc_fetcher_store_cookie_from_document_round_trips_into_cookie_header_value()
     IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = "http://127.0.0.1/".to_string();
   fetcher.store_cookie_from_document(&url, "c=d; Path=/");
-  let cookies = fetcher.cookie_header_value(&url).unwrap_or_default();
+  fetcher.store_cookie_from_document(&url, &format!("oversize={}; Path=/", "x".repeat(5000)));
+  let cookies = fetcher
+    .cookie_header_value(&url)
+    .expect("cookie_header_value should be Some for valid URL");
   assert!(
     cookies.contains("c=d"),
     "expected cookie_header_value to contain c=d, got {cookies:?}"
   );
+  assert!(
+    !cookies.contains("oversize="),
+    "expected oversize cookie to be ignored, got {cookies:?}"
+  );
 
+  drop(fetcher);
+  ipc_handle.join().unwrap();
+}
+
+#[test]
+fn ipc_fetcher_cookie_header_value_is_deterministic_when_remote_returns_none() {
+  let _net_guard = net_test_lock();
+  let Some(ipc_listener) = try_bind_localhost(
+    "ipc_fetcher_cookie_header_value_is_deterministic_when_remote_returns_none",
+  ) else {
+    return;
+  };
+  let ipc_addr = ipc_listener.local_addr().unwrap();
+
+  let ipc_handle = thread::spawn(move || {
+    let (mut stream, _) = ipc_listener.accept().unwrap();
+    let req_bytes = read_frame(&mut stream).expect("read ipc frame");
+    let req: IpcRequest = serde_json::from_slice(&req_bytes).expect("decode ipc request");
+    match req {
+      IpcRequest::CookieHeaderValue { .. } => {}
+      other => panic!("unexpected IPC request: {other:?}"),
+    }
+    let response = IpcResponse::MaybeString(IpcResult::Ok(None));
+    let out = serde_json::to_vec(&response).expect("encode ipc response");
+    write_frame(&mut stream, &out).expect("write ipc response");
+  });
+
+  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let cookie = fetcher
+    .cookie_header_value("http://example.com/")
+    .expect("cookie_header_value should be Some for valid URL");
+  assert!(cookie.is_empty(), "expected empty cookie string, got {cookie:?}");
+  drop(fetcher);
+  ipc_handle.join().unwrap();
+}
+
+#[test]
+fn ipc_fetcher_store_cookie_from_document_oversize_is_not_sent_over_ipc() {
+  let _net_guard = net_test_lock();
+  let Some(ipc_listener) = try_bind_localhost(
+    "ipc_fetcher_store_cookie_from_document_oversize_is_not_sent_over_ipc",
+  ) else {
+    return;
+  };
+  let ipc_addr = ipc_listener.local_addr().unwrap();
+
+  let ipc_handle = thread::spawn(move || {
+    let (mut stream, _) = ipc_listener.accept().unwrap();
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut buf = [0u8; 1];
+    match stream.read(&mut buf) {
+      Ok(0) => {}
+      Ok(n) => panic!("expected no IPC bytes, got {n}"),
+      Err(err) if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut => {
+        panic!("timed out waiting for IPC stream to close without sending bytes");
+      }
+      Err(err) => panic!("IPC read failed: {err}"),
+    }
+  });
+
+  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  fetcher.store_cookie_from_document(
+    "http://example.com/",
+    &format!("oversize={}; Path=/", "x".repeat(5000)),
+  );
   drop(fetcher);
   ipc_handle.join().unwrap();
 }
