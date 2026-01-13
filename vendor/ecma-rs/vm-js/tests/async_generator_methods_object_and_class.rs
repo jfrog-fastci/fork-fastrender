@@ -47,6 +47,13 @@ fn async_generator_methods_class_creation() -> Result<(), VmError> {
   let out = rt.exec_script("Object.prototype.toString.call(C.s)")?;
   assert_eq!(expect_string(&rt, out), "[object AsyncGeneratorFunction]");
 
+  let out = rt.exec_script(
+    "Object.getPrototypeOf(C.prototype.m) === Object.getPrototypeOf(async function*(){})",
+  )?;
+  assert_eq!(out, Value::Bool(true));
+
+  let out = rt.exec_script("Object.getPrototypeOf(C.s) === Object.getPrototypeOf(async function*(){})")?;
+  assert_eq!(out, Value::Bool(true));
+
   Ok(())
 }
-
