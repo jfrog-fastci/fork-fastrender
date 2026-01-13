@@ -4901,25 +4901,102 @@ impl BrowserRuntime {
     let pointer_in_page =
       pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0;
     tab.last_pointer_pos_css = pointer_in_page.then_some(pos_css);
-    let scroll = &tab.scroll_state;
-    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+    let scroll_snapshot = tab.scroll_state.clone();
+    let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
     let base_url = base_url_for_links(tab);
 
-    let (changed, hovered_url, cursor, tooltip, hovered_dom_node_id, hovered_dom_element_id) = {
+    // ---------------------------------------------------------------------------
+    // Viewport autoscroll while extending a document selection.
+    // ---------------------------------------------------------------------------
+    const EDGE_THRESHOLD: f32 = 32.0;
+    const SCROLL_STEP: f32 = 20.0;
+    let autoscroll_delta_y =
+      if tab.interaction.active_document_selection_drag() && pointer_in_page {
+        let h = tab.viewport_css.1 as f32;
+        if pos_css.1 <= EDGE_THRESHOLD {
+          -SCROLL_STEP
+        } else if pos_css.1 >= h - EDGE_THRESHOLD {
+          SCROLL_STEP
+        } else {
+          0.0
+        }
+      } else {
+        0.0
+      };
+
+    let (
+      changed,
+      hovered_url,
+      cursor,
+      tooltip,
+      hovered_dom_node_id,
+      hovered_dom_element_id,
+      next_scroll,
+    ) = {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
-      let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, scroll);
+
+      let next_scroll = if autoscroll_delta_y != 0.0 {
+        let prev = scroll_snapshot.clone();
+        let mut candidate = prev.clone();
+        let next_y = candidate.viewport.y + autoscroll_delta_y;
+        if next_y.is_finite() {
+          candidate.viewport.y = next_y.max(0.0);
+        }
+
+        if let Some(prepared) = doc.prepared() {
+          let viewport_size = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+          if let Some(root) =
+            crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[])
+              .last()
+          {
+            candidate.viewport = root.bounds.clamp(candidate.viewport);
+          }
+        }
+
+        if candidate.viewport != prev.viewport {
+          candidate.update_deltas_from(&prev);
+          Some(candidate)
+        } else {
+          None
+        }
+      } else {
+        None
+      };
+
+      let hit_tree_before = tab.hit_test_fragment_tree_for_scroll(doc, &scroll_snapshot);
+      let hit_tree_after = next_scroll
+        .as_ref()
+        .and_then(|scroll| tab.hit_test_fragment_tree_for_scroll(doc, scroll));
       let engine = &mut tab.interaction;
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
-        let (changed, hit, hover_is_drop_target) = engine.pointer_move_and_hit_and_drop_target(
-          dom,
-          box_tree,
-          fragment_tree,
-          scroll,
-          viewport_point,
-        );
+        let fragment_tree_before = hit_tree_before.as_deref().unwrap_or(fragment_tree);
+        let (mut changed, mut hit, mut hover_is_drop_target) =
+          engine.pointer_move_and_hit_and_drop_target(
+            dom,
+            box_tree,
+            fragment_tree_before,
+            &scroll_snapshot,
+            viewport_point,
+          );
+
+        if let Some(scroll_after) = next_scroll.as_ref() {
+          let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
+          let (changed_after, hit_after, hover_is_drop_target_after) =
+            engine.pointer_move_and_hit_and_drop_target(
+              dom,
+              box_tree,
+              fragment_tree_after,
+              scroll_after,
+              viewport_point,
+            );
+          // Important: after scrolling, re-run pointer_move with the updated scroll state so the
+          // document selection focus advances in the same event.
+          changed |= changed_after;
+          hit = hit_after;
+          hover_is_drop_target = hover_is_drop_target_after;
+        }
         let drag_drop_active = engine.drag_drop_active_kind().is_some();
         let (
           hovered_url,
@@ -4984,11 +5061,38 @@ impl BrowserRuntime {
           ),
         )
       }) {
-        Ok(changed) => changed,
+        Ok(changed) => (
+          changed.0,
+          changed.1,
+          changed.2,
+          changed.3,
+          changed.4,
+          changed.5,
+          next_scroll,
+        ),
         Err(_) => return,
       }
     };
-    if changed {
+    let mut scroll_changed = false;
+    if let Some(next_scroll) = next_scroll {
+      if next_scroll != tab.scroll_state {
+        let Some(doc) = tab.document.as_mut() else {
+          return;
+        };
+        doc.set_scroll_state(next_scroll.clone());
+        tab.scroll_state = next_scroll;
+        tab.sync_js_scroll_state();
+        tab.history.update_scroll_state(&tab.scroll_state);
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+        tab.last_reported_scroll_state = tab.scroll_state.clone();
+        scroll_changed = true;
+      }
+    }
+
+    if changed || scroll_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }

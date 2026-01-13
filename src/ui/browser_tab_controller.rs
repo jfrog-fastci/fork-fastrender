@@ -790,6 +790,28 @@ impl BrowserTabController {
 
   fn handle_pointer_move(&mut self, pos_css: (f32, f32)) -> Result<Vec<WorkerToUi>> {
     self.last_pointer_pos_css = Some(pos_css);
+
+    let pointer_in_page =
+      pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0;
+    let active_document_selection_drag = self.interaction.active_document_selection_drag();
+
+    // Mirror the UI worker: when extending a document selection, auto-scroll as the pointer nears
+    // the viewport edges so selection can extend beyond the visible region.
+    const EDGE_THRESHOLD: f32 = 32.0;
+    const SCROLL_STEP: f32 = 20.0;
+    let autoscroll_delta_y = if active_document_selection_drag && pointer_in_page {
+      let h = self.viewport_css.1 as f32;
+      if pos_css.1 <= EDGE_THRESHOLD {
+        -SCROLL_STEP
+      } else if pos_css.1 >= h - EDGE_THRESHOLD {
+        SCROLL_STEP
+      } else {
+        0.0
+      }
+    } else {
+      0.0
+    };
+
     let (box_tree_ptr, fragment_tree_ptr, hit_tree) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
@@ -804,19 +826,62 @@ impl BrowserTabController {
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
-    let fragment_tree = unsafe { &*fragment_tree_ptr };
-    let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+    let box_tree = unsafe { &*box_tree_ptr };
+    let fragment_tree_unscrolled = unsafe { &*fragment_tree_ptr };
+    let fragment_tree_before = hit_tree.as_ref().unwrap_or(fragment_tree_unscrolled);
 
-    let changed = self.document.mutate_dom(|dom| {
+    let mut changed = self.document.mutate_dom(|dom| {
       self.interaction.pointer_move(
         dom,
-        unsafe { &*box_tree_ptr },
-        fragment_tree,
+        box_tree,
+        fragment_tree_before,
         &self.scroll_state,
         viewport_point,
       )
     });
-    if changed {
+
+    let mut scroll_changed = false;
+    if autoscroll_delta_y != 0.0 {
+      let prev_scroll = self.scroll_state.clone();
+      let mut candidate = prev_scroll.clone();
+      let next_y = candidate.viewport.y + autoscroll_delta_y;
+      if next_y.is_finite() {
+        candidate.viewport.y = next_y.max(0.0);
+      }
+
+      let viewport_size = Size::new(self.viewport_css.0 as f32, self.viewport_css.1 as f32);
+      if let Some(root) =
+        crate::scroll::build_scroll_chain(&fragment_tree_unscrolled.root, viewport_size, &[]).last()
+      {
+        candidate.viewport = root.bounds.clamp(candidate.viewport);
+      }
+
+      if candidate.viewport != prev_scroll.viewport {
+        candidate.update_deltas_from(&prev_scroll);
+        self.scroll_state = candidate;
+        self.document.set_scroll_state(self.scroll_state.clone());
+        scroll_changed = true;
+
+        // Important: after scrolling, re-run pointer_move with the updated scroll state so document
+        // selection focus advances in the same event.
+        let hit_tree_after = self.document.prepared().and_then(|prepared| {
+          (self.scroll_state.viewport != Point::ZERO || !self.scroll_state.elements.is_empty())
+            .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state))
+        });
+        let fragment_tree_after = hit_tree_after.as_ref().unwrap_or(fragment_tree_unscrolled);
+        changed |= self.document.mutate_dom(|dom| {
+          self.interaction.pointer_move(
+            dom,
+            box_tree,
+            fragment_tree_after,
+            &self.scroll_state,
+            viewport_point,
+          )
+        });
+      }
+    }
+
+    if changed || scroll_changed {
       self.paint_if_needed()
     } else {
       Ok(Vec::new())

@@ -93,6 +93,7 @@ mod ui_datalist_disabled_option_choose;
 mod ui_datalist_template_inert;
 mod ui_document_drag_drop;
 mod ui_document_selection_clipboard;
+mod ui_document_selection_autoscroll;
 mod ui_document_selection_multi_range;
 mod ui_document_selection_pointer_multiclick;
 mod ui_find_in_page_max_matches;
