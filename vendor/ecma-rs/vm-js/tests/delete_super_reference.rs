@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -23,10 +23,35 @@ fn assert_value_is_number(value: Value, expected: f64) {
   assert_eq!(n, expected);
 }
 
+fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
+  let script = CompiledScript::compile_script(rt.heap_mut(), "<delete_super_reference>", source)?;
+  rt.exec_compiled_script(script)
+}
+
 #[test]
 fn delete_super_property_base_instance_method_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
+    r#"
+    class C {
+      del() {
+        try { delete super.m; return "no"; }
+        catch (e) { return e.name; }
+      }
+    }
+    new C().del()
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn delete_super_property_base_instance_method_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
     r#"
     class C {
       del() {
@@ -62,9 +87,49 @@ fn delete_super_property_base_static_method_throws_reference_error() -> Result<(
 }
 
 #[test]
+fn delete_super_property_base_static_method_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    class C {
+      static del() {
+        try { delete super.m; return "no"; }
+        catch (e) { return e.name; }
+      }
+    }
+    C.del()
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
 fn delete_super_property_computed_member_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
+    r#"
+    class C {
+      del() {
+        try { delete super["m"]; return "no"; }
+        catch (e) { return e.name; }
+      }
+    }
+    new C().del()
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn delete_super_property_computed_member_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
     r#"
     class C {
       del() {
@@ -101,9 +166,54 @@ fn delete_super_property_computed_member_evaluates_key_expression() -> Result<()
 }
 
 #[test]
+fn delete_super_property_computed_member_evaluates_key_expression_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    class C {
+      del() {
+        let side = 0;
+        try { delete super[(side = 1, "m")]; return "no"; }
+        catch (e) { return side; }
+      }
+    }
+    new C().del()
+    "#,
+  )?;
+
+  assert_value_is_number(value, 1.0);
+  Ok(())
+}
+
+#[test]
 fn delete_super_property_computed_member_propagates_to_property_key_errors() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
+    r#"
+    class C {
+      del() {
+        try {
+          delete super[{ toString() { throw "x"; } }];
+          return "no";
+        } catch (e) {
+          return e;
+        }
+      }
+    }
+    new C().del()
+    "#,
+  )?;
+
+  assert_value_is_utf8(&rt, value, "x");
+  Ok(())
+}
+
+#[test]
+fn delete_super_property_computed_member_propagates_to_property_key_errors_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
     r#"
     class C {
       del() {
@@ -149,6 +259,42 @@ fn delete_super_property_computed_member_with_await_in_key_throws_reference_erro
   // Promise not resolved yet.
   assert_value_is_utf8(&rt, value, "");
 
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_value_is_utf8(&rt, value, "1:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn delete_super_property_computed_member_with_await_in_key_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = match exec_compiled(
+    &mut rt,
+    r#"
+      var out = "";
+      class C {
+        async del() {
+          let side = 0;
+          try {
+            delete super[await (side = 1, Promise.resolve("m"))];
+            return "no";
+          } catch (e) {
+            return String(side) + ":" + e.name;
+          }
+        }
+      }
+      new C().del().then(function (v) { out = v; });
+      out
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(VmError::Unimplemented("async functions (hir-js compiled path)")) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+
+  assert_value_is_utf8(&rt, value, "");
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
