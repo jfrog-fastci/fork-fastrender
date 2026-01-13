@@ -46,6 +46,11 @@ struct TabStripScrollClampAnim {
   active: bool,
   start_offset_x: f32,
   target_offset_x: f32,
+  /// The offset we last attempted to apply while clamping.
+  ///
+  /// Used to detect user-initiated scrolling during the clamp so we can restart the animation from
+  /// the user's new position instead of "snapping back" to an outdated animation track.
+  last_applied_offset_x: f32,
   start_time: f64,
   duration: f32,
 }
@@ -56,6 +61,7 @@ impl Default for TabStripScrollClampAnim {
       active: false,
       start_offset_x: 0.0,
       target_offset_x: 0.0,
+      last_applied_offset_x: 0.0,
       start_time: 0.0,
       duration: TAB_STRIP_SCROLL_CLAMP_DURATION,
     }
@@ -119,11 +125,17 @@ fn tab_strip_scroll_clamp(
         .data(|d| d.get_temp::<TabStripScrollClampAnim>(clamp_anim_id))
         .unwrap_or_default();
 
-      if !anim.active || (anim.target_offset_x - max_scroll_x).abs() > 0.5 {
+      // If the user scrolled while we were clamping, restart the animation from the user's new
+      // offset so we don't "snap back" to an outdated animation track.
+      let user_scrolled = anim.active
+        && anim.last_applied_offset_x.is_finite()
+        && (desired_scroll_offset_x - anim.last_applied_offset_x).abs() > 0.5;
+      if !anim.active || user_scrolled || (anim.target_offset_x - max_scroll_x).abs() > 0.5 {
         anim = TabStripScrollClampAnim {
           active: true,
           start_offset_x: desired_scroll_offset_x,
           target_offset_x: max_scroll_x,
+          last_applied_offset_x: desired_scroll_offset_x,
           start_time: now,
           duration: TAB_STRIP_SCROLL_CLAMP_DURATION,
         };
@@ -136,6 +148,7 @@ fn tab_strip_scroll_clamp(
       };
       let t = ease_out_quad(t);
       desired_scroll_offset_x = lerp(anim.start_offset_x, anim.target_offset_x, t);
+      anim.last_applied_offset_x = desired_scroll_offset_x;
 
       // Keep repainting until the scroll clamp finishes.
       if t < 1.0 - 1e-4 {
@@ -3068,17 +3081,9 @@ pub(super) fn tab_strip_ui(
 
       // Keep our "desired scroll" state in sync with egui's actual scroll offset so we don't fight
       // user scrolling (we only override when clamping due to content shrink).
-      if clamping_scroll {
-        scroll_state.offset.x = desired_scroll_offset_x;
-        scroll_state.store(ui.ctx(), scroll_output.id);
-        unpinned_ui
-          .ctx()
-          .data_mut(|d| d.insert_temp(desired_scroll_id, desired_scroll_offset_x));
-      } else {
-        unpinned_ui
-          .ctx()
-          .data_mut(|d| d.insert_temp(desired_scroll_id, scroll_offset_x));
-      }
+      unpinned_ui
+        .ctx()
+        .data_mut(|d| d.insert_temp(desired_scroll_id, scroll_offset_x));
 
       // Use the scroll area's actual widget id for programmatic state updates, rather than
       // assuming how `id_source` is transformed internally by egui.
