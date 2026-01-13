@@ -22,6 +22,7 @@ pub mod protocol;
 pub mod received_frame;
 pub mod shm;
 pub mod sync;
+pub mod types;
 #[cfg(target_os = "linux")]
 pub mod unix_seqpacket;
 pub mod websocket;
@@ -40,3 +41,4 @@ pub use framing::{
 };
 pub use network::{NetworkToRenderer, RendererToNetwork};
 pub use received_frame::{FrameMeta, ReceivedFrame, ShmemSliceView};
+pub use types::{PointF32, RectF32, ScrollMetricsIpc, ScrollStateIpc};
