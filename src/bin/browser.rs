@@ -3228,6 +3228,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     worker_msgs: WorkerMsgQueue,
     worker_msg_backlog: VecDeque<fastrender::ui::WorkerToUi>,
     worker_wake_pending: Arc<AtomicBool>,
+    worker_perf_log: Option<WorkerWakePerfLogger>,
     bridge_join: Option<std::thread::JoinHandle<()>>,
   }
 
@@ -3238,6 +3239,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         worker_msgs,
         worker_msg_backlog: _,
         worker_wake_pending: _,
+        worker_perf_log: _,
         mut bridge_join,
       } = self;
 
@@ -3334,6 +3336,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let event_loop_proxy = event_loop.create_proxy();
   let window_icon = load_window_icon();
   let worker_wake_coalescer = Arc::new(WorkerWakeCoalescer::default());
+  let perf_log_enabled = perf_log_enabled_from_env();
 
   let browser_trace_out = match std::env::var(ENV_BROWSER_TRACE_OUT) {
     Ok(raw) => {
@@ -3577,10 +3580,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let window_id = app.window.id();
     window_ids_by_index[idx] = Some(window_id);
 
-    let worker_wake_counters = app
-      .hud
-      .as_ref()
-      .map(|hud| Arc::clone(&hud.worker_wake_counters));
+    let worker_wake_counters = if let Some(hud) = app.hud.as_ref() {
+      Some(Arc::clone(&hud.worker_wake_counters))
+    } else if perf_log_enabled {
+      Some(Arc::new(WorkerWakeHudCounters::default()))
+    } else {
+      None
+    };
+    let worker_perf_log = if perf_log_enabled {
+      worker_wake_counters.as_ref().map(|counters| {
+        WorkerWakePerfLogger::new(window_id, Arc::clone(counters))
+      })
+    } else {
+      None
+    };
     let (worker_msgs, worker_wake_pending, bridge_join) = spawn_worker_ui_bridge(
       window_id,
       renderer_backend.clone(),
@@ -3599,6 +3612,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         worker_msgs,
         worker_msg_backlog: VecDeque::new(),
         worker_wake_pending,
+        worker_perf_log,
         bridge_join: Some(bridge_join),
       },
     );
@@ -3895,6 +3909,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 hud.record_worker_wake(outcome.drained as u64);
               }
             }
+            if let Some(perf_log) = win.worker_perf_log.as_mut() {
+              perf_log.record_worker_wake(outcome.drained as u64);
+            }
             span.arg_u64("messages", outcome.drained as u64);
 
             if request_redraw {
@@ -3914,6 +3931,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   if let Some(hud) = win.app.hud.as_mut() {
                     hud.record_worker_followup_wake();
                   }
+                }
+                if let Some(perf_log) = win.worker_perf_log.as_mut() {
+                  perf_log.record_followup_wake();
                 }
               }
             }
@@ -4070,10 +4090,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         let window_id = app.window.id();
-        let worker_wake_counters = app
-          .hud
-          .as_ref()
-          .map(|hud| Arc::clone(&hud.worker_wake_counters));
+        let worker_wake_counters = if let Some(hud) = app.hud.as_ref() {
+          Some(Arc::clone(&hud.worker_wake_counters))
+        } else if perf_log_enabled {
+          Some(Arc::new(WorkerWakeHudCounters::default()))
+        } else {
+          None
+        };
+        let worker_perf_log = if perf_log_enabled {
+          worker_wake_counters.as_ref().map(|counters| {
+            WorkerWakePerfLogger::new(window_id, Arc::clone(counters))
+          })
+        } else {
+          None
+        };
         let (worker_msgs, worker_wake_pending, bridge_join) = match spawn_worker_ui_bridge(
           window_id,
           renderer_backend.clone(),
@@ -4096,6 +4126,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             worker_msgs,
             worker_msg_backlog: VecDeque::new(),
             worker_wake_pending,
+            worker_perf_log,
             bridge_join: Some(bridge_join),
           },
         );
@@ -4189,10 +4220,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.browser_state.chrome.address_bar_has_focus = false;
 
         let window_id = app.window.id();
-        let worker_wake_counters = app
-          .hud
-          .as_ref()
-          .map(|hud| Arc::clone(&hud.worker_wake_counters));
+        let worker_wake_counters = if let Some(hud) = app.hud.as_ref() {
+          Some(Arc::clone(&hud.worker_wake_counters))
+        } else if perf_log_enabled {
+          Some(Arc::new(WorkerWakeHudCounters::default()))
+        } else {
+          None
+        };
+        let worker_perf_log = if perf_log_enabled {
+          worker_wake_counters.as_ref().map(|counters| {
+            WorkerWakePerfLogger::new(window_id, Arc::clone(counters))
+          })
+        } else {
+          None
+        };
         let (worker_msgs, worker_wake_pending, bridge_join) = match spawn_worker_ui_bridge(
           window_id,
           renderer_backend.clone(),
@@ -4215,6 +4256,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             worker_msgs,
             worker_msg_backlog: VecDeque::new(),
             worker_wake_pending,
+            worker_perf_log,
             bridge_join: Some(bridge_join),
           },
         );
@@ -4460,6 +4502,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       win
         .app
         .drive_periodic_tasks_and_update_control_flow(control_flow);
+      if let Some(perf_log) = win.worker_perf_log.as_mut() {
+        perf_log.drive(now, control_flow);
+      }
     }
 
     // Ensure the event loop wakes up to flush pending autosaves (profile/session), if any.
@@ -5796,6 +5841,238 @@ impl BrowserHud {
     self.worker_empty_wakes_since_sample = 0;
     self.worker_followup_wakes_since_sample = 0;
     self.worker_max_drain_since_sample = 0;
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone)]
+struct WorkerWakePerfLogLine {
+  t_ms: u64,
+  window_id: String,
+  worker_msgs_forwarded_per_sec: f32,
+  worker_msgs_processed_per_sec: f32,
+  worker_wakes_handled_per_sec: f32,
+  worker_wake_events_sent_per_sec: f32,
+  worker_wake_events_coalesced_per_sec: f32,
+  worker_followup_wakes_per_sec: f32,
+  worker_empty_wakes_per_sec: f32,
+  worker_pending_msgs_estimate: u64,
+  worker_msgs_per_nonempty_wake: Option<f32>,
+  worker_last_drain: u64,
+  worker_max_drain: u64,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn format_worker_wake_perf_log_line(line: &WorkerWakePerfLogLine) -> serde_json::Value {
+  serde_json::json!({
+    "event": "worker_wake_summary",
+    "t_ms": line.t_ms,
+    "window_id": line.window_id.as_str(),
+    "worker_msgs_forwarded_per_sec": line.worker_msgs_forwarded_per_sec,
+    "worker_msgs_processed_per_sec": line.worker_msgs_processed_per_sec,
+    "worker_wakes_handled_per_sec": line.worker_wakes_handled_per_sec,
+    "worker_wake_events_sent_per_sec": line.worker_wake_events_sent_per_sec,
+    "worker_wake_events_coalesced_per_sec": line.worker_wake_events_coalesced_per_sec,
+    "worker_followup_wakes_per_sec": line.worker_followup_wakes_per_sec,
+    "worker_empty_wakes_per_sec": line.worker_empty_wakes_per_sec,
+    "worker_pending_msgs_estimate": line.worker_pending_msgs_estimate,
+    "worker_msgs_per_nonempty_wake": line.worker_msgs_per_nonempty_wake,
+    "worker_last_drain": line.worker_last_drain,
+    "worker_max_drain": line.worker_max_drain,
+  })
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+struct WorkerWakePerfLogger {
+  window_id: String,
+  counters: std::sync::Arc<WorkerWakeHudCounters>,
+  start_time: std::time::Instant,
+  last_report_at: std::time::Instant,
+  next_report_at: std::time::Instant,
+  prev_wake_events_sent: u64,
+  prev_wake_events_coalesced: u64,
+  drained_total: u64,
+  drained_since_report: u64,
+  wakes_since_report: u64,
+  empty_wakes_since_report: u64,
+  followup_wakes_since_report: u64,
+  last_drain: u64,
+  max_drain_since_report: u64,
+}
+
+#[cfg(feature = "browser_ui")]
+impl WorkerWakePerfLogger {
+  const PERF_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+  fn new(window_id: winit::window::WindowId, counters: std::sync::Arc<WorkerWakeHudCounters>) -> Self {
+    let now = std::time::Instant::now();
+    let sent = counters
+      .wake_events_sent
+      .load(std::sync::atomic::Ordering::Relaxed);
+    let coalesced = counters
+      .wake_events_coalesced
+      .load(std::sync::atomic::Ordering::Relaxed);
+    Self {
+      window_id: format!("{window_id:?}"),
+      counters,
+      start_time: now,
+      last_report_at: now,
+      next_report_at: now
+        .checked_add(Self::PERF_LOG_INTERVAL)
+        .unwrap_or(now),
+      prev_wake_events_sent: sent,
+      prev_wake_events_coalesced: coalesced,
+      drained_total: 0,
+      drained_since_report: 0,
+      wakes_since_report: 0,
+      empty_wakes_since_report: 0,
+      followup_wakes_since_report: 0,
+      last_drain: 0,
+      max_drain_since_report: 0,
+    }
+  }
+
+  fn record_worker_wake(&mut self, drained_msgs: u64) {
+    self.wakes_since_report = self.wakes_since_report.saturating_add(1);
+    self.drained_since_report = self.drained_since_report.saturating_add(drained_msgs);
+    self.drained_total = self.drained_total.saturating_add(drained_msgs);
+    self.last_drain = drained_msgs;
+    self.max_drain_since_report = self.max_drain_since_report.max(drained_msgs);
+    if drained_msgs == 0 {
+      self.empty_wakes_since_report = self.empty_wakes_since_report.saturating_add(1);
+    }
+  }
+
+  fn record_followup_wake(&mut self) {
+    self.followup_wakes_since_report = self.followup_wakes_since_report.saturating_add(1);
+  }
+
+  fn drive(&mut self, now: std::time::Instant, control_flow: &mut winit::event_loop::ControlFlow) {
+    if now >= self.next_report_at {
+      let dt = now.saturating_duration_since(self.last_report_at);
+      let secs = dt.as_secs_f32();
+      if secs.is_finite() && secs > 0.0 {
+        let sent_total = self
+          .counters
+          .wake_events_sent
+          .load(std::sync::atomic::Ordering::Relaxed);
+        let coalesced_total = self
+          .counters
+          .wake_events_coalesced
+          .load(std::sync::atomic::Ordering::Relaxed);
+        let forwarded_total = sent_total.saturating_add(coalesced_total);
+        let sent_delta = sent_total.saturating_sub(self.prev_wake_events_sent);
+        let coalesced_delta = coalesced_total.saturating_sub(self.prev_wake_events_coalesced);
+        let forwarded_delta = sent_delta.saturating_add(coalesced_delta);
+
+        let wakes = self.wakes_since_report;
+        let empty = self.empty_wakes_since_report;
+        let followup = self.followup_wakes_since_report;
+        let nonempty_wakes = wakes.saturating_sub(empty);
+        let msgs = self.drained_since_report;
+        let pending_estimate = forwarded_total.saturating_sub(self.drained_total);
+
+        let clamp_rate = |v: f32| if v.is_finite() { v.min(10_000_000.0) } else { 0.0 };
+        let forwarded_rate = clamp_rate(forwarded_delta as f32 / secs);
+        let msgs_rate = clamp_rate(msgs as f32 / secs);
+        let wakes_rate = clamp_rate(wakes as f32 / secs);
+        let sent_rate = clamp_rate(sent_delta as f32 / secs);
+        let coalesced_rate = clamp_rate(coalesced_delta as f32 / secs);
+        let followup_rate = clamp_rate(followup as f32 / secs);
+        let empty_rate = clamp_rate(empty as f32 / secs);
+        let msgs_per_nonempty_wake = if nonempty_wakes > 0 {
+          Some(clamp_rate(msgs as f32 / nonempty_wakes as f32))
+        } else {
+          None
+        };
+        let t_ms = now
+          .saturating_duration_since(self.start_time)
+          .as_millis()
+          .min(u128::from(u64::MAX)) as u64;
+
+        let line = WorkerWakePerfLogLine {
+          t_ms,
+          window_id: self.window_id.clone(),
+          worker_msgs_forwarded_per_sec: forwarded_rate,
+          worker_msgs_processed_per_sec: msgs_rate,
+          worker_wakes_handled_per_sec: wakes_rate,
+          worker_wake_events_sent_per_sec: sent_rate,
+          worker_wake_events_coalesced_per_sec: coalesced_rate,
+          worker_followup_wakes_per_sec: followup_rate,
+          worker_empty_wakes_per_sec: empty_rate,
+          worker_pending_msgs_estimate: pending_estimate,
+          worker_msgs_per_nonempty_wake: msgs_per_nonempty_wake,
+          worker_last_drain: self.last_drain,
+          worker_max_drain: self.max_drain_since_report,
+        };
+        println!("{}", format_worker_wake_perf_log_line(&line));
+
+        self.prev_wake_events_sent = sent_total;
+        self.prev_wake_events_coalesced = coalesced_total;
+        self.last_report_at = now;
+        self.drained_since_report = 0;
+        self.wakes_since_report = 0;
+        self.empty_wakes_since_report = 0;
+        self.followup_wakes_since_report = 0;
+        self.max_drain_since_report = 0;
+      } else {
+        self.last_report_at = now;
+      }
+
+      self.next_report_at = now
+        .checked_add(Self::PERF_LOG_INTERVAL)
+        .unwrap_or(now);
+    }
+
+    let deadline = self.next_report_at;
+    *control_flow = match *control_flow {
+      winit::event_loop::ControlFlow::Wait => winit::event_loop::ControlFlow::WaitUntil(deadline),
+      winit::event_loop::ControlFlow::WaitUntil(existing) => {
+        winit::event_loop::ControlFlow::WaitUntil(existing.min(deadline))
+      }
+      other => other,
+    };
+  }
+}
+
+#[cfg(test)]
+mod worker_wake_perf_log_format_tests {
+  use super::{format_worker_wake_perf_log_line, WorkerWakePerfLogLine};
+
+  #[test]
+  fn formats_worker_wake_summary_json() {
+    let line = WorkerWakePerfLogLine {
+      t_ms: 123,
+      window_id: "WindowId(42)".to_string(),
+      worker_msgs_forwarded_per_sec: 10.0,
+      worker_msgs_processed_per_sec: 9.0,
+      worker_wakes_handled_per_sec: 2.0,
+      worker_wake_events_sent_per_sec: 1.0,
+      worker_wake_events_coalesced_per_sec: 99.0,
+      worker_followup_wakes_per_sec: 0.5,
+      worker_empty_wakes_per_sec: 0.25,
+      worker_pending_msgs_estimate: 7,
+      worker_msgs_per_nonempty_wake: Some(4.0),
+      worker_last_drain: 5,
+      worker_max_drain: 9,
+    };
+
+    let json = format_worker_wake_perf_log_line(&line);
+    assert_eq!(json["event"], "worker_wake_summary");
+    assert_eq!(json["t_ms"], 123);
+    assert_eq!(json["window_id"], "WindowId(42)");
+    assert_eq!(json["worker_msgs_forwarded_per_sec"], 10.0);
+    assert_eq!(json["worker_msgs_processed_per_sec"], 9.0);
+    assert_eq!(json["worker_wakes_handled_per_sec"], 2.0);
+    assert_eq!(json["worker_wake_events_sent_per_sec"], 1.0);
+    assert_eq!(json["worker_wake_events_coalesced_per_sec"], 99.0);
+    assert_eq!(json["worker_followup_wakes_per_sec"], 0.5);
+    assert_eq!(json["worker_empty_wakes_per_sec"], 0.25);
+    assert_eq!(json["worker_pending_msgs_estimate"], 7);
+    assert_eq!(json["worker_msgs_per_nonempty_wake"], 4.0);
+    assert_eq!(json["worker_last_drain"], 5);
+    assert_eq!(json["worker_max_drain"], 9);
   }
 }
 
