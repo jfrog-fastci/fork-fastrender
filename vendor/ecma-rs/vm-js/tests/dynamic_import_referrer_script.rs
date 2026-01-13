@@ -118,3 +118,49 @@ fn dynamic_import_uses_script_referrer_for_classic_scripts_and_promise_jobs() ->
   hooks.microtasks.teardown(&mut rt);
   Ok(())
 }
+
+#[test]
+fn dynamic_import_from_function_uses_defining_script_referrer_even_when_called_from_another_script() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let mut hooks = CaptureReferrerHooks::default();
+
+  // Script #1: define a function that performs import(), and also perform an import() at top-level
+  // so we can capture the ScriptId for this script.
+  rt.exec_script_with_hooks(&mut hooks, "globalThis.f = () => import('x'); import('x');")?;
+
+  assert_eq!(hooks.referrers.len(), 1);
+  let script1_id = match hooks.referrers[0] {
+    ModuleReferrer::Script(id) => id,
+    other => panic!("expected ModuleReferrer::Script(_), got {other:?}"),
+  };
+
+  // Script #2: perform one import() directly (should use a fresh ScriptId for this script), then
+  // call `f()`. The function call should activate the function's `[[ScriptOrModule]]` (from script
+  // #1), so the import() inside `f` uses script #1's referrer ScriptId.
+  rt.exec_script_with_hooks(&mut hooks, "import('x'); f();")?;
+
+  assert_eq!(hooks.referrers.len(), 3);
+  let script2_id = match hooks.referrers[1] {
+    ModuleReferrer::Script(id) => id,
+    other => panic!("expected ModuleReferrer::Script(_), got {other:?}"),
+  };
+  let from_f_id = match hooks.referrers[2] {
+    ModuleReferrer::Script(id) => id,
+    other => panic!("expected ModuleReferrer::Script(_), got {other:?}"),
+  };
+
+  assert_ne!(
+    script2_id, script1_id,
+    "expected separate ScriptIds for distinct script executions"
+  );
+  assert_eq!(
+    from_f_id, script1_id,
+    "import() inside a function should use the function's defining ScriptId as the referrer, even when called from another script"
+  );
+
+  hooks.microtasks.teardown(&mut rt);
+  Ok(())
+}
