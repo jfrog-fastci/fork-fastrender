@@ -103,6 +103,32 @@ impl Document {
     Ok(self.range(range)?.end.offset)
   }
 
+  /// Returns the common ancestor container of a live range.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-commonancestorcontainer
+  pub fn range_common_ancestor_container(&self, range: RangeId) -> DomResult<NodeId> {
+    let start = self.range_start_container(range)?;
+    let end = self.range_end_container(range)?;
+
+    // DOM: "Let container be start node. While container is not an inclusive ancestor of end node,
+    // set container to its parent."
+    let mut container = start;
+    let mut remaining = self.nodes.len().saturating_add(1);
+    while remaining > 0 {
+      remaining -= 1;
+      if self.is_inclusive_descendant_for_range(end, container) {
+        return Ok(container);
+      }
+      match self.range_parent(container) {
+        Some(parent) => container = parent,
+        None => return Ok(container),
+      }
+    }
+
+    // Corruption/cycle guard: fall back to the best known node.
+    Ok(container)
+  }
+
   pub fn range_set_start(&mut self, range: RangeId, node: NodeId, offset: usize) -> DomResult<()> {
     self.range_set_start_or_end(range, node, offset, /* is_start */ true)
   }

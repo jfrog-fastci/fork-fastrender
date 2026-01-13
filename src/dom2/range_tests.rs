@@ -163,3 +163,29 @@ fn range_clone_extract_does_not_leak_persistent_subranges() {
     }
   }
 }
+
+#[test]
+fn range_common_ancestor_container_matches_dom_algorithm() {
+  let html = "<!doctype html><div id=host><span id=a></span><span id=b></span></div>";
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host element missing");
+  let a = doc.get_element_by_id("a").expect("#a missing");
+  let b = doc.get_element_by_id("b").expect("#b missing");
+
+  // Different branch containers should yield their closest common ancestor.
+  let range = doc.create_range();
+  doc.range_set_start(range, a, 0).unwrap();
+  doc.range_set_end(range, b, 0).unwrap();
+  assert_eq!(doc.range_common_ancestor_container(range).unwrap(), host);
+
+  // Identical containers should yield that container.
+  doc.range_set_start(range, a, 0).unwrap();
+  doc.range_set_end(range, a, 0).unwrap();
+  assert_eq!(doc.range_common_ancestor_container(range).unwrap(), a);
+
+  // When one container is an ancestor of the other, the ancestor is returned.
+  doc.range_set_start(range, host, 0).unwrap();
+  doc.range_set_end(range, a, 0).unwrap();
+  assert_eq!(doc.range_common_ancestor_container(range).unwrap(), host);
+}

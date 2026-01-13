@@ -1,6 +1,6 @@
 use crate::api::BrowserDocumentDom2;
 use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{DomError, NodeId, NodeKind};
+use crate::dom2::{DomError, NodeId, NodeKind, RangeId};
 use crate::geometry::{Point, Rect};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom2_bindings;
@@ -41,6 +41,7 @@ const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
+const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG");
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
 const EVENT_INITIALIZED_KEY: &str = "__fastrender_event_initialized";
@@ -282,6 +283,42 @@ fn require_dom_token_list_receiver(
   }
   let node_index = usize::try_from(slots.unwrap().a).map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok((NodeId::from_index(node_index), obj))
+}
+
+fn require_range_receiver(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  receiver: Option<Value>,
+) -> Result<(RangeId, crate::js::dom_platform::DocumentId), VmError> {
+  let Some(Value::Object(obj)) = receiver else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  if !matches!(slots, Some(slots) if slots.b == RANGE_HOST_TAG) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  let range_id = RangeId::from_u64(slots.unwrap().a);
+
+  // Range wrappers store a back-reference to their owning Document wrapper so we can resolve the
+  // correct `dom2::Document` arena and wrap returned Nodes.
+  let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  let document_id = require_dom_platform_mut(vm)?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))?
+    .document_id;
+
+  Ok((range_id, document_id))
 }
 
 fn mutate_dom_detached<R>(
@@ -5784,6 +5821,32 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         match result {
           Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Range", "commonAncestorContainer", 0) => {
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
+
+        let result: Result<(NodeId, DomInterface), DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let node_id = dom.range_common_ancestor_container(range_id)?;
+            let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+            Ok((node_id, primary))
+          }))
+        })?;
+
+        match result {
+          Ok((node_id, primary_interface)) => {
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              document_id,
+              node_id,
+              primary_interface,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       }
