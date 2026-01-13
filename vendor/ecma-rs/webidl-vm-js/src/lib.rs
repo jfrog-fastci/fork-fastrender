@@ -896,6 +896,66 @@ impl<'a> VmJsWebIdlCx<'a> {
     }
   }
 
+  fn with_host_and_hooks<R>(
+    &mut self,
+    f: impl FnOnce(&mut Vm, &mut Scope<'_>, &mut dyn VmHost, &mut dyn VmHostHooks) -> Result<R, VmError>,
+  ) -> Result<R, VmError> {
+    // Prefer the dynamically-active host hooks override if one is installed on the VM (e.g. via
+    // `Vm::with_host_hooks_override`). Fall back to the host hooks captured by
+    // `VmJsWebIdlCx::from_native_call(_unchecked)`.
+    let hooks_ptr = self
+      .vm
+      .active_host_hooks_ptr()
+      .or_else(|| self.host_hooks.map(|h| h.as_ptr()));
+
+    match (self.host, hooks_ptr) {
+      (Some(mut host), Some(hooks_ptr)) => {
+        // SAFETY: `host` is installed by `from_native_call(_unchecked)` and is required to remain
+        // valid for the lifetime of this conversion context.
+        let host = unsafe { host.as_mut() };
+        // SAFETY: `hooks_ptr` comes either from `Vm::active_host_hooks_ptr` (valid within the
+        // dynamic extent of a VM entry point) or from `from_native_call(_unchecked)` (caller
+        // promises validity for the lifetime of the context).
+        let hooks = unsafe { &mut *hooks_ptr };
+        f(self.vm, &mut self.scope, host, hooks)
+      }
+      (None, Some(hooks_ptr)) => {
+        // SAFETY: see above.
+        let hooks = unsafe { &mut *hooks_ptr };
+        let mut dummy_host = ();
+        f(self.vm, &mut self.scope, &mut dummy_host, hooks)
+      }
+      (Some(mut host), None) => {
+        // Fall back to the VM-owned microtask queue as the host hook implementation.
+        //
+        // `get_with_host_and_hooks`-style operations require `&mut Vm` plus an independent
+        // `&mut dyn VmHostHooks`, but the default queue is stored inside the VM. Temporarily move it
+        // out so we can borrow-split safely.
+        // SAFETY: see above.
+        let host = unsafe { host.as_mut() };
+        let mut hooks = std::mem::take(self.vm.microtask_queue_mut());
+        let result = f(self.vm, &mut self.scope, host, &mut hooks);
+        // Merge any Promise jobs that native code enqueued directly onto the VM-owned queue while
+        // it was temporarily moved out.
+        while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
+          hooks.enqueue_promise_job(job, realm);
+        }
+        *self.vm.microtask_queue_mut() = hooks;
+        result
+      }
+      (None, None) => {
+        let mut dummy_host = ();
+        let mut hooks = std::mem::take(self.vm.microtask_queue_mut());
+        let result = f(self.vm, &mut self.scope, &mut dummy_host, &mut hooks);
+        while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
+          hooks.enqueue_promise_job(job, realm);
+        }
+        *self.vm.microtask_queue_mut() = hooks;
+        result
+      }
+    }
+  }
+
   fn to_vm_property_key(key: PropertyKey<GcString, GcSymbol>) -> VmPropertyKey {
     match key {
       PropertyKey::String(s) => VmPropertyKey::from_string(s),
@@ -1179,28 +1239,14 @@ impl webidl::JsRuntime for VmJsWebIdlCx<'_> {
     };
 
     let key = Self::to_vm_property_key(key);
-    // Implement ECMAScript `[[Get]]` directly so accessor getters are invoked via `call_js`.
+    // ECMAScript `Get(O, P)` dispatch.
     //
-    // This matters because `Vm::get` → `Scope::ordinary_get` always calls accessor getters with a
-    // dummy `VmHost` context (`()`), which breaks host-context propagation when conversions run
-    // inside a `NativeCall`/`NativeConstruct` handler. `call_js` forwards the embedder host context
-    // when available and respects any active `Vm::with_host_hooks_override`.
-    let value = match self.scope.heap().get_property(object, &key)? {
-      None => Value::Undefined,
-      Some(desc) => match desc.kind {
-        vm_js::PropertyKind::Data { value, .. } => value,
-        vm_js::PropertyKind::Accessor { get, .. } => {
-          if matches!(get, Value::Undefined) {
-            Value::Undefined
-          } else {
-            if !self.scope.heap().is_callable(get)? {
-              return Err(VmError::TypeError("accessor getter is not callable"));
-            }
-            self.call_js(get, Value::Object(object), &[])?
-          }
-        }
-      },
-    };
+    // This must be Proxy-correct (`Proxy.[[Get]]` / "get" trap) and must invoke accessors/traps
+    // using the embedder host context + active host hook implementation when available.
+    let receiver = Value::Object(object);
+    let value = self.with_host_and_hooks(|vm, scope, host, hooks| {
+      scope.get_with_host_and_hooks(vm, host, hooks, object, key, receiver)
+    })?;
     self.root(value)?;
     Ok(value)
   }
@@ -1229,9 +1275,9 @@ impl webidl::JsRuntime for VmJsWebIdlCx<'_> {
     object: Self::Object,
   ) -> Result<Vec<PropertyKey<Self::String, Self::Symbol>>, Self::Error> {
     self.root(Value::Object(object))?;
-    let keys = self
-      .scope
-      .ordinary_own_property_keys_with_tick(object, || self.vm.tick())?;
+    let keys = self.with_host_and_hooks(|vm, scope, host, hooks| {
+      scope.own_property_keys_with_host_and_hooks(vm, host, hooks, object)
+    })?;
 
     let mut out = Vec::new();
     out
@@ -1444,7 +1490,10 @@ impl webidl::WebIdlJsRuntime for VmJsWebIdlCx<'_> {
     };
 
     let key = Self::to_vm_property_key(key);
-    let Some(desc) = self.scope.heap().object_get_own_property(object, &key)? else {
+    let desc = self.with_host_and_hooks(|vm, scope, host, hooks| {
+      scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, object, key)
+    })?;
+    let Some(desc) = desc else {
       return Ok(None);
     };
 
