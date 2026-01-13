@@ -7,7 +7,7 @@ use std::os::windows::io::AsRawHandle;
 use windows_sys::Win32::System::JobObjects::{
   AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
   JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
-  JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+  TerminateJobObject, JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
   JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_JOB_MEMORY,
   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
   JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
@@ -89,6 +89,19 @@ impl Job {
     let ok = unsafe { AssignProcessToJobObject(self.handle.as_raw(), process) };
     if ok == 0 {
       return Err(WinSandboxError::last("AssignProcessToJobObject"));
+    }
+    Ok(())
+  }
+
+  /// Terminates all processes currently associated with this job.
+  ///
+  /// This is typically not needed when `KILL_ON_JOB_CLOSE` is enabled (dropping the job handle will
+  /// kill the process tree), but it can be useful for early shutdown or test cleanup.
+  pub fn terminate(&self, exit_code: u32) -> Result<()> {
+    // SAFETY: The job handle is valid for the duration of the call.
+    let ok = unsafe { TerminateJobObject(self.handle.as_raw(), exit_code) };
+    if ok == 0 {
+      return Err(WinSandboxError::last("TerminateJobObject"));
     }
     Ok(())
   }
