@@ -38,6 +38,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use selectors::context::QuirksMode;
 use url::Url;
@@ -4268,6 +4269,12 @@ pub struct BrowserTab {
   diagnostics: Option<super::SharedRenderDiagnostics>,
   host: BrowserTabHost,
   event_loop: EventLoop<BrowserTabHost>,
+  /// The earliest event-loop time at which the next `requestAnimationFrame` callbacks are eligible
+  /// to run.
+  ///
+  /// This is used by step-wise APIs like [`BrowserTab::tick_frame`] so embedders can call into the
+  /// tab in a tight loop without accidentally running rAF callbacks as fast as possible.
+  next_animation_frame_due: Duration,
   pending_frame: Option<Pixmap>,
   history: TabHistory,
   renderer_dom_mapping_cache: Option<RendererDomMappingCache>,
@@ -4354,6 +4361,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    let next_animation_frame_due = event_loop.now();
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4361,6 +4369,7 @@ impl BrowserTab {
       diagnostics,
       host,
       event_loop,
+      next_animation_frame_due,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -4610,6 +4619,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    let next_animation_frame_due = event_loop.now();
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4617,6 +4627,7 @@ impl BrowserTab {
       diagnostics,
       host,
       event_loop,
+      next_animation_frame_due,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -4763,6 +4774,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    let next_animation_frame_due = event_loop.now();
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4770,6 +4782,7 @@ impl BrowserTab {
       diagnostics,
       host,
       event_loop,
+      next_animation_frame_due,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -4849,6 +4862,7 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    let next_animation_frame_due = event_loop.now();
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4856,6 +4870,7 @@ impl BrowserTab {
       diagnostics,
       host,
       event_loop,
+      next_animation_frame_due,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -4989,6 +5004,7 @@ impl BrowserTab {
     host.external_script_sources = Arc::clone(&external_script_sources);
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    let next_animation_frame_due = event_loop.now();
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4996,6 +5012,7 @@ impl BrowserTab {
       diagnostics,
       host,
       event_loop,
+      next_animation_frame_due,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -6545,65 +6562,80 @@ impl BrowserTab {
       return self.render_if_needed();
     }
 
-    // `run_event_loop_until_idle` does not run requestAnimationFrame callbacks. When embeddings drive
-    // a tab via `tick_frame()`, rAF callbacks would otherwise starve forever once the event loop is
-    // idle.
+    // `run_event_loop_until_idle` does not run requestAnimationFrame callbacks. When embeddings
+    // drive a tab via `tick_frame()`, rAF callbacks would otherwise starve forever once the event
+    // loop is idle.
+    //
+    // To avoid running rAF callbacks as fast as the embedder can call `tick_frame()`, gate rAF
+    // execution to a per-tab "next frame due" time.
     let mut ran_animation_frame = false;
     if self.event_loop.has_pending_animation_frame_callbacks() {
-      let raf_outcome = self
-        .event_loop
-        .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
-      ran_animation_frame = matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. });
+      let now = self.event_loop.now();
+      if now >= self.next_animation_frame_due {
+        // Capture the frame time *before* running callbacks so long-running rAF work does not add
+        // extra delay to the next frame (stable pacing).
+        let frame_time = now;
+        let raf_outcome =
+          self
+            .event_loop
+            .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
+        ran_animation_frame = matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. });
 
-      if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
-        // HTML: microtask checkpoint after rAF callbacks.
-        //
-        // Drain microtasks only: tasks/timers must wait for a future tick so rendering can happen
-        // first.
-        let microtask_limits = RunLimits {
-          max_tasks: 0,
-          max_microtasks: run_limits.max_microtasks,
-          max_wall_time: run_limits.max_wall_time,
-        };
+        if ran_animation_frame {
+          self.next_animation_frame_due = frame_time
+            .saturating_add(self.host.js_execution_options.animation_frame_interval);
 
-        match self.event_loop.run_until_idle_handling_errors_with_hook(
-          &mut self.host,
-          microtask_limits,
-          &mut report_error,
-          |host, event_loop| {
-            let executor_hook: fn(&mut BrowserTabHost, &mut EventLoop<BrowserTabHost>) -> Result<()> =
-              BrowserTabHost::executor_microtask_checkpoint_hook;
-            if !event_loop
-              .microtask_checkpoint_hooks()
-              .iter()
-              .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
-            {
-              BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
+          // HTML: microtask checkpoint after rAF callbacks.
+          //
+          // Drain microtasks only: tasks/timers must wait for a future tick so rendering can happen
+          // first.
+          let microtask_limits = RunLimits {
+            max_tasks: 0,
+            max_microtasks: run_limits.max_microtasks,
+            max_wall_time: run_limits.max_wall_time,
+          };
+
+          match self.event_loop.run_until_idle_handling_errors_with_hook(
+            &mut self.host,
+            microtask_limits,
+            &mut report_error,
+            |host, event_loop| {
+              let executor_hook: fn(
+                &mut BrowserTabHost,
+                &mut EventLoop<BrowserTabHost>,
+              ) -> Result<()> = BrowserTabHost::executor_microtask_checkpoint_hook;
+              if !event_loop
+                .microtask_checkpoint_hooks()
+                .iter()
+                .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
+              {
+                BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
+              }
+              host.discover_dynamic_scripts(event_loop)
+            },
+          )? {
+            RunUntilIdleOutcome::Idle
+            | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
+              // Expected: tasks may exist, but this checkpoint only drains microtasks.
             }
-            host.discover_dynamic_scripts(event_loop)
-          },
-        )? {
-          RunUntilIdleOutcome::Idle
-          | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
-            // Expected: tasks may exist, but this checkpoint only drains microtasks.
+            RunUntilIdleOutcome::Stopped(reason) => {
+              return Err(Error::Other(format!(
+                "BrowserTab::tick_frame post-rAF microtask checkpoint stopped: {reason:?}"
+              )))
+            }
           }
-          RunUntilIdleOutcome::Stopped(reason) => {
-            return Err(Error::Other(format!(
-              "BrowserTab::tick_frame post-rAF microtask checkpoint stopped: {reason:?}"
-            )))
-          }
+
+          // Ensure scripts inserted by rAF callbacks are discovered even if there were no microtasks
+          // to drain (meaning the microtask-only run can stop at `MaxTasks` without invoking hooks).
+          let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+          host.discover_dynamic_scripts(event_loop)?;
         }
 
-        // Ensure scripts inserted by rAF callbacks are discovered even if there were no microtasks
-        // to drain (meaning the microtask-only run can stop at `MaxTasks` without invoking hooks).
-        let (host, event_loop) = (&mut self.host, &mut self.event_loop);
-        host.discover_dynamic_scripts(event_loop)?;
-      }
-
-      if self.commit_pending_navigation()? {
-        // Navigation can be requested by rAF callbacks or microtasks drained after the frame.
-        // Render the new document if needed.
-        return self.render_if_needed();
+        if self.commit_pending_navigation()? {
+          // Navigation can be requested by rAF callbacks or microtasks drained after the frame.
+          // Render the new document if needed.
+          return self.render_if_needed();
+        }
       }
     }
 
@@ -6695,6 +6727,37 @@ impl BrowserTab {
 
     self.sync_document_animation_time_to_event_loop();
     self.render_if_needed()
+  }
+
+  /// Returns the next time (in the event loop's clock domain) at which calling [`BrowserTab::tick_frame`]
+  /// would make progress.
+  ///
+  /// - If tasks/microtasks are runnable now, this returns `Some(now)`.
+  /// - If only timers are pending, this returns their next due time.
+  /// - If `requestAnimationFrame` callbacks are pending and nothing else is runnable, this returns
+  ///   `Some(max(now, next_animation_frame_due))` so embedders can sleep until the next frame is
+  ///   eligible without introducing scheduling drift.
+  /// - If the tab is fully idle, this returns `None`.
+  pub fn next_wake_time(&mut self) -> Option<Duration> {
+    let now = self.event_loop.now();
+
+    // Runnable work (tasks/microtasks/idle callbacks) should be processed immediately.
+    if self.event_loop.pending_microtask_count() > 0 || !self.event_loop.is_idle() {
+      return Some(now);
+    }
+
+    // Timers are not part of `EventLoop::is_idle()` until they become due and enqueue a task.
+    let mut next = self.event_loop.next_timer_due_time().map(|due| due.max(now));
+
+    if self.event_loop.has_pending_animation_frame_callbacks() {
+      let raf_due = self.next_animation_frame_due.max(now);
+      next = Some(match next {
+        Some(existing) => existing.min(raf_due),
+        None => raf_due,
+      });
+    }
+
+    next
   }
 
   pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {
@@ -12408,12 +12471,14 @@ html, body { margin: 0; padding: 0; }
       TraceHandle::default(),
       JsExecutionOptions::default(),
     )?;
+    let event_loop = EventLoop::new();
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
       diagnostics: None,
       host,
-      event_loop: EventLoop::new(),
+      next_animation_frame_due: event_loop.now(),
+      event_loop,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -12475,12 +12540,14 @@ html, body { margin: 0; padding: 0; }
       TraceHandle::default(),
       JsExecutionOptions::default(),
     )?;
+    let event_loop = EventLoop::new();
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
       diagnostics: None,
       host,
-      event_loop: EventLoop::new(),
+      next_animation_frame_due: event_loop.now(),
+      event_loop,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -12588,12 +12655,14 @@ html, body { margin: 0; padding: 0; }
       TraceHandle::default(),
       js_execution_options,
     )?;
+    let event_loop = EventLoop::new();
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
       diagnostics: None,
       host,
-      event_loop: EventLoop::new(),
+      next_animation_frame_due: event_loop.now(),
+      event_loop,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -12653,12 +12722,14 @@ html, body { margin: 0; padding: 0; }
       TraceHandle::default(),
       JsExecutionOptions::default(),
     )?;
+    let event_loop = EventLoop::new();
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
       diagnostics: None,
       host,
-      event_loop: EventLoop::new(),
+      next_animation_frame_due: event_loop.now(),
+      event_loop,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -12894,12 +12965,14 @@ html, body { margin: 0; padding: 0; }
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
 
+    let event_loop = EventLoop::new();
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
       diagnostics: None,
       host,
-      event_loop: EventLoop::new(),
+      next_animation_frame_due: event_loop.now(),
+      event_loop,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -13607,12 +13680,14 @@ html, body { margin: 0; padding: 0; }
       JsExecutionOptions::default(),
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    let event_loop = EventLoop::new();
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
       diagnostics: None,
       host,
-      event_loop: EventLoop::new(),
+      next_animation_frame_due: event_loop.now(),
+      event_loop,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -13736,12 +13811,14 @@ html, body { margin: 0; padding: 0; }
       JsExecutionOptions::default(),
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    let event_loop = EventLoop::new();
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
       diagnostics: None,
       host,
-      event_loop: EventLoop::new(),
+      next_animation_frame_due: event_loop.now(),
+      event_loop,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,
@@ -14119,12 +14196,14 @@ html, body { margin: 0; padding: 0; }
       TraceHandle::default(),
       JsExecutionOptions::default(),
     )?;
+    let event_loop = EventLoop::new();
     let mut tab = BrowserTab {
       trace: TraceHandle::default(),
       trace_output: None,
       diagnostics: None,
       host,
-      event_loop: EventLoop::new(),
+      next_animation_frame_due: event_loop.now(),
+      event_loop,
       pending_frame: None,
       history: TabHistory::new(),
       renderer_dom_mapping_cache: None,

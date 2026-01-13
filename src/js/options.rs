@@ -71,6 +71,12 @@ pub struct JsExecutionOptions {
   /// Bounds for how much work can be *executed* in a single event loop "spin" (run).
   pub event_loop_run_limits: RunLimits,
 
+  /// Interval at which `requestAnimationFrame` callbacks are eligible to run when the host drives
+  /// the event loop via a step-wise API (for example [`crate::BrowserTab::tick_frame`]).
+  ///
+  /// This is expressed in the event loop's clock domain (see [`crate::js::Clock`]).
+  pub animation_frame_interval: Duration,
+
   /// Budget for how much HTML parsing work is performed per event-loop task turn when using a
   /// streaming HTML parsing pipeline.
   pub dom_parse_budget: ParseBudget,
@@ -291,6 +297,9 @@ impl Default for JsExecutionOptions {
         // budget; this is intentionally short to avoid hangs in a single "spin".
         max_wall_time: Some(Duration::from_millis(500)),
       },
+
+      // ~60fps, matching typical browser vsync behavior.
+      animation_frame_interval: Duration::from_nanos(16_666_667),
 
       dom_parse_budget: ParseBudget::default(),
 

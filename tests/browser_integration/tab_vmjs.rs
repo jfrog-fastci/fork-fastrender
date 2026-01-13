@@ -1,5 +1,5 @@
 use fastrender::dom2::NodeId;
-use fastrender::js::{Clock, EventLoop, RunLimits, RunUntilIdleOutcome, VirtualClock};
+use fastrender::js::{Clock, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, VirtualClock};
 use fastrender::resource::{
   origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
   ResourceFetcher,
@@ -188,6 +188,93 @@ fn browser_tab_vmjs_executes_scripts_microtasks_timers_and_rerenders() -> Result
   assert_ne!(frame_b.data(), frame_a.data(), "expected pixels to change");
   assert_eq!(rgba_at(&frame_b, 32, 32), [0, 0, 255, 255]);
   assert!(tab.render_if_needed()?.is_none());
+
+  Ok(())
+}
+
+#[test]
+fn browser_tab_tick_frame_vsync_gates_request_animation_frame() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+
+  let html = r#"<!doctype html>
+    <html>
+      <body id="b">
+        <script>
+          (function () {
+            let count = 0;
+            function cb() {
+              count++;
+              document.body.setAttribute("data-raf-count", String(count));
+              requestAnimationFrame(cb);
+            }
+            requestAnimationFrame(cb);
+          })();
+        </script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new().with_viewport(1, 1);
+
+  let clock = Arc::new(VirtualClock::new());
+  let clock_for_loop: Arc<dyn Clock> = clock.clone();
+  let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock_for_loop);
+
+  let js_options = JsExecutionOptions {
+    // Use a small deterministic interval so we can advance the virtual clock precisely.
+    animation_frame_interval: Duration::from_millis(10),
+    event_loop_run_limits: RunLimits::unbounded(),
+    ..JsExecutionOptions::default()
+  };
+
+  let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
+    html,
+    options,
+    VmJsBrowserTabExecutor::default(),
+    event_loop,
+    js_options,
+  )?;
+
+  // Drain all tasks/microtasks so the only remaining work is the self-rescheduling rAF callback.
+  assert_eq!(
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let body = tab
+    .dom()
+    .body()
+    .ok_or_else(|| Error::Other("expected document.body to exist".to_string()))?;
+
+  assert_eq!(get_attr(tab.dom(), body, "data-raf-count")?.as_deref(), None);
+
+  // First tick: run the first rAF callback.
+  let _ = tab.tick_frame()?;
+  assert_eq!(
+    get_attr(tab.dom(), body, "data-raf-count")?.as_deref(),
+    Some("1")
+  );
+
+  // Without advancing the clock, we should not run another rAF frame, even if tick_frame is called
+  // in a tight loop.
+  for _ in 0..5 {
+    let _ = tab.tick_frame()?;
+  }
+  assert_eq!(
+    get_attr(tab.dom(), body, "data-raf-count")?.as_deref(),
+    Some("1")
+  );
+  assert_eq!(tab.next_wake_time(), Some(Duration::from_millis(10)));
+
+  // Advancing past the due time enables the next rAF frame.
+  clock.advance(Duration::from_millis(10));
+  let _ = tab.tick_frame()?;
+  assert_eq!(
+    get_attr(tab.dom(), body, "data-raf-count")?.as_deref(),
+    Some("2")
+  );
+  assert_eq!(tab.next_wake_time(), Some(Duration::from_millis(20)));
 
   Ok(())
 }
