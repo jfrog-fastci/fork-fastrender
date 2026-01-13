@@ -38,6 +38,7 @@ fn sanitize_mix_buffer_in_place(buf: &mut [f32]) {
 }
 
 const DEFAULT_GAIN_RAMP_DURATION_MS: u32 = 10;
+const DEFAULT_DECLICK_FADE_DURATION: Duration = Duration::from_millis(5);
 
 fn gain_ramp_frames(sample_rate_hz: u32) -> u32 {
   // 5–20ms tends to be enough to hide abrupt gain changes without making UI feel laggy.
@@ -45,6 +46,16 @@ fn gain_ramp_frames(sample_rate_hz: u32) -> u32 {
   let frames = (u64::from(sample_rate_hz).saturating_mul(u64::from(DEFAULT_GAIN_RAMP_DURATION_MS))
     / 1000) as u32;
   frames.max(1)
+}
+
+fn declick_fade_frames(sample_rate_hz: u32, fade_duration: Duration) -> u32 {
+  // The goal is pop/click suppression on hard discontinuities; even a single frame is better than
+  // nothing for extreme configurations.
+  let frames = fade_duration
+    .as_nanos()
+    .saturating_mul(u128::from(sample_rate_hz))
+    / 1_000_000_000u128;
+  u32::try_from(frames).unwrap_or(u32::MAX).max(1)
 }
 
 fn sanitize_unit_f32(value: f32) -> f32 {
@@ -158,6 +169,7 @@ impl VolumeControl {
 pub struct AudioMixer {
   sample_rate_hz: u32,
   channels: usize,
+  declick_fade_frames: u32,
   counts: Arc<MixerCounts>,
   streams: Mutex<Vec<Weak<AudioStreamInner>>>,
   master: Mutex<VolumeControl>,
@@ -167,11 +179,21 @@ pub struct AudioMixer {
 impl AudioMixer {
   #[must_use]
   pub fn new(sample_rate_hz: u32, channels: usize) -> Self {
+    Self::with_declick_fade_duration(sample_rate_hz, channels, DEFAULT_DECLICK_FADE_DURATION)
+  }
+
+  #[must_use]
+  pub fn with_declick_fade_duration(
+    sample_rate_hz: u32,
+    channels: usize,
+    fade_duration: Duration,
+  ) -> Self {
     debug_assert!(sample_rate_hz > 0, "sample_rate_hz must be non-zero");
     debug_assert!(channels > 0, "channels must be non-zero");
     Self {
       sample_rate_hz,
       channels,
+      declick_fade_frames: declick_fade_frames(sample_rate_hz, fade_duration),
       counts: Arc::new(MixerCounts::default()),
       streams: Mutex::new(Vec::new()),
       master: Mutex::new(VolumeControl::new(1.0)),
@@ -187,6 +209,17 @@ impl AudioMixer {
   #[must_use]
   pub fn channels(&self) -> usize {
     self.channels
+  }
+
+  /// Duration of the fade envelope used to smooth discontinuities (start/stop/seek/flush).
+  #[must_use]
+  pub fn declick_fade_duration(&self) -> Duration {
+    frames_to_duration(u64::from(self.declick_fade_frames), self.sample_rate_hz)
+  }
+
+  #[must_use]
+  pub fn declick_fade_frames(&self) -> u32 {
+    self.declick_fade_frames
   }
 
   /// Sets the mixer output volume (master gain) in the range `[0.0, 1.0]`.
@@ -209,10 +242,15 @@ impl AudioMixer {
       sample_rate_hz: self.sample_rate_hz,
       channels: self.channels,
       gain_ramp_frames: self.gain_ramp_frames,
-      state: Mutex::new(AudioStreamState::new(self.gain_ramp_frames)),
+      state: Mutex::new(AudioStreamState::new(
+        self.channels,
+        self.gain_ramp_frames,
+        self.declick_fade_frames,
+      )),
       counts: Arc::clone(&self.counts),
       is_playing: AtomicBool::new(false),
       has_samples: AtomicBool::new(false),
+      has_tail: AtomicBool::new(false),
       is_active: AtomicBool::new(false),
       is_audible: AtomicBool::new(false),
     });
@@ -437,6 +475,11 @@ impl AudioStreamHandle {
     }
     let was_empty = state.queue.is_empty();
     if was_empty {
+      // If the stream is already playing, treat "queue was empty → new samples arrived" as an
+      // audible discontinuity and fade the new audio in.
+      if self.inner.is_playing.load(Ordering::Acquire) {
+        state.declick_begin_fade_in();
+      }
       // Ensure the mixer observes this stream as active before we extend the queue. This prevents
       // callback fast-paths from outputting silence while producers are in the middle of queueing
       // the first samples.
@@ -468,10 +511,11 @@ impl AudioStreamHandle {
   /// This is idempotent.
   pub fn play(&self) {
     self.inner.is_playing.store(true, Ordering::Release);
-    let state = self.inner.state.lock();
-    self
-      .inner
-      .refresh_flags(AudioStreamInner::gain_potential_nonzero(&state));
+    let mut state = self.inner.state.lock();
+    state.declick_begin_fade_in();
+    let gain_potential = AudioStreamInner::gain_potential_nonzero(&state);
+    drop(state);
+    self.inner.refresh_flags(gain_potential);
   }
 
   /// Sets the per-stream volume in the range `[0.0, 1.0]`.
@@ -526,10 +570,15 @@ impl AudioStreamHandle {
   /// This is idempotent.
   pub fn pause(&self) {
     self.inner.is_playing.store(false, Ordering::Release);
-    let state = self.inner.state.lock();
+    let mut state = self.inner.state.lock();
+    state.declick_begin_fade_out();
     self
       .inner
-      .refresh_flags(AudioStreamInner::gain_potential_nonzero(&state));
+      .has_tail
+      .store(state.declick_tail_active(), Ordering::Release);
+    let gain_potential = AudioStreamInner::gain_potential_nonzero(&state);
+    drop(state);
+    self.inner.refresh_flags(gain_potential);
   }
 
   /// Drops all queued samples immediately.
@@ -539,9 +588,15 @@ impl AudioStreamHandle {
     let mut state = self.inner.state.lock();
     state.queue.clear();
     self.inner.has_samples.store(false, Ordering::Release);
+    state.declick_begin_fade_out();
+    state.declick_begin_fade_in();
+    self
+      .inner
+      .has_tail
+      .store(state.declick_tail_active(), Ordering::Release);
+    let gain_potential = AudioStreamInner::gain_potential_nonzero(&state);
     drop(state);
-    // Gaining potential doesn't matter if there are no samples, but keeps counts consistent.
-    self.inner.refresh_flags(false);
+    self.inner.refresh_flags(gain_potential);
   }
 
   /// Flushes queued samples and resets the stream clock mapping so the media time jumps to
@@ -556,8 +611,15 @@ impl AudioStreamHandle {
     // Seeking resets stream completion state so new samples can be pushed for the new timeline.
     state.eos = false;
     self.inner.has_samples.store(false, Ordering::Release);
+    state.declick_begin_fade_out();
+    state.declick_begin_fade_in();
+    self
+      .inner
+      .has_tail
+      .store(state.declick_tail_active(), Ordering::Release);
+    let gain_potential = AudioStreamInner::gain_potential_nonzero(&state);
     drop(state);
-    self.inner.refresh_flags(false);
+    self.inner.refresh_flags(gain_potential);
   }
 
   /// Alias for [`Self::seek_to`].
@@ -609,6 +671,7 @@ struct AudioStreamInner {
   counts: Arc<MixerCounts>,
   is_playing: AtomicBool,
   has_samples: AtomicBool,
+  has_tail: AtomicBool,
   is_active: AtomicBool,
   is_audible: AtomicBool,
 }
@@ -621,9 +684,14 @@ impl AudioStreamInner {
   fn refresh_flags(&self, gain_potential_nonzero: bool) {
     let playing = self.is_playing.load(Ordering::Acquire);
     let has_samples = self.has_samples.load(Ordering::Acquire);
+    let has_tail = self.has_tail.load(Ordering::Acquire);
 
-    let should_active = playing && has_samples;
-    let should_audible = should_active && gain_potential_nonzero;
+    // A stream is considered "active" if it either needs to drain/mix queued audio (playing &&
+    // has_samples) or if it has a pending de-click tail fade that must be mixed out.
+    let should_active = (playing && has_samples) || has_tail;
+    // Audible streams are a subset of active streams: either they have non-zero gain potential while
+    // mixing queued audio, or they are currently emitting a de-click tail.
+    let should_audible = (playing && has_samples && gain_potential_nonzero) || has_tail;
 
     let prev_active = self.is_active.swap(should_active, Ordering::AcqRel);
     let prev_audible = self.is_audible.swap(should_audible, Ordering::AcqRel);
@@ -670,47 +738,119 @@ impl AudioStreamInner {
 
   fn mix_write_into(&self, out: &mut [f32]) {
     let frames_requested = out.len() / self.channels;
-    if !self.is_playing.load(Ordering::Acquire) {
-      out.fill(0.0);
-      return;
-    }
+    let playing = self.is_playing.load(Ordering::Acquire);
 
+    // Mix frame-by-frame so we can apply per-frame de-click envelopes without allocations.
+    //
+    // Semantics:
+    // - Only queued audio frames advance the playhead (`played_frames`).
+    // - When paused, we do not drain the queue, but we may emit a short fade-out tail.
     let mut state = self.state.lock();
-    let available_frames = state.queue.len() / self.channels;
-    let frames_to_mix = available_frames.min(frames_requested);
-    if frames_to_mix == 0 {
-      out.fill(0.0);
-      let has_samples = !state.queue.is_empty();
-      self.has_samples.store(has_samples, Ordering::Release);
-      let gain_potential = Self::gain_potential_nonzero(&state);
-      drop(state);
-      self.refresh_flags(gain_potential);
-      return;
-    }
 
-    let mut frames_mixed = 0usize;
-    for frame in 0..frames_to_mix {
-      let gain = state.volume.gain() * state.group_volume.gain();
-      let out_base = frame * self.channels;
-      for ch in 0..self.channels {
-        let Some(sample) = state.queue.pop_front() else {
+    let mut out_idx = 0usize;
+    for _frame in 0..frames_requested {
+      let mut tail_active = state.declick_tail_active();
+      let has_audio_frame = playing && state.queue.len() >= self.channels;
+
+      if !tail_active && !has_audio_frame {
+        // If we're still "playing" but the queue has underflowed, emit a short fade-out tail based
+        // on the last output sample to avoid a click.
+        if playing {
+          state.declick_begin_fade_out();
+          tail_active = state.declick_tail_active();
+        }
+        if !tail_active {
+          state.declick_last_frame.fill(0.0);
           break;
-        };
-        out[out_base + ch] = sample * gain;
+        }
       }
-      state.volume.advance_frame();
-      state.group_volume.advance_frame();
-      frames_mixed += 1;
+
+      let tail_gain = if tail_active { state.declick_tail_gain() } else { 0.0 };
+
+      let fade_in_gain = if has_audio_frame {
+        state.declick_fade_in_gain()
+      } else {
+        0.0
+      };
+
+      let gain_raw = if has_audio_frame {
+        state.volume.gain() * state.group_volume.gain()
+      } else {
+        0.0
+      };
+      let gain = if gain_raw.is_finite() && (gain_raw == 0.0 || gain_raw.is_normal()) {
+        gain_raw
+      } else {
+        0.0
+      };
+      let audio_gain_raw = gain * fade_in_gain;
+      let audio_gain = if audio_gain_raw.is_finite()
+        && (audio_gain_raw == 0.0 || audio_gain_raw.is_normal())
+      {
+        audio_gain_raw
+      } else {
+        0.0
+      };
+
+      for ch in 0..self.channels {
+        let mut sample_out = 0.0f32;
+        if tail_active {
+          let scaled = state.declick_tail_frame[ch] * tail_gain;
+          if scaled.is_finite() && (scaled == 0.0 || scaled.is_normal()) {
+            sample_out += scaled;
+          }
+        }
+        if has_audio_frame {
+          let sample_in = state
+            .queue
+            .pop_front()
+            .unwrap_or(0.0 /* queue len checked above */);
+          if audio_gain != 0.0 && sample_in != 0.0 {
+            let scaled = sample_in * audio_gain;
+            if scaled.is_finite() && (scaled == 0.0 || scaled.is_normal()) {
+              sample_out += scaled;
+            }
+          }
+        }
+
+        out[out_idx + ch] = sample_out;
+        state.declick_last_frame[ch] = sample_out;
+      }
+
+      if tail_active {
+        state.declick_tail_pos = state.declick_tail_pos.saturating_add(1);
+        if state.declick_tail_pos >= state.declick_fade_frames {
+          state.declick_tail_pos = state.declick_fade_frames;
+          state.declick_tail_nonzero = false;
+        }
+      }
+
+      if has_audio_frame {
+        state.declick_fade_in_pos = state.declick_fade_in_pos.saturating_add(1);
+        if state.declick_fade_in_pos >= state.declick_fade_frames {
+          state.declick_fade_in_pos = state.declick_fade_frames;
+        }
+        state.played_frames = state.played_frames.saturating_add(1);
+        state.volume.advance_frame();
+        state.group_volume.advance_frame();
+      }
+
+      out_idx += self.channels;
     }
 
-    let samples_mixed = frames_mixed.saturating_mul(self.channels);
-    if samples_mixed < out.len() {
-      out[samples_mixed..].fill(0.0);
+    if out_idx < out.len() {
+      out[out_idx..].fill(0.0);
     }
 
-    state.played_frames = state.played_frames.saturating_add(frames_mixed as u64);
+    if !state.declick_tail_active() && (!playing || state.queue.len() < self.channels) {
+      state.declick_last_frame.fill(0.0);
+    }
+
     let has_samples = !state.queue.is_empty();
     self.has_samples.store(has_samples, Ordering::Release);
+    let tail_active = state.declick_tail_active();
+    self.has_tail.store(tail_active, Ordering::Release);
+
     let gain_potential = Self::gain_potential_nonzero(&state);
     drop(state);
     self.refresh_flags(gain_potential);
@@ -718,65 +858,121 @@ impl AudioStreamInner {
 
   fn mix_add_into(&self, out: &mut [f32]) {
     let frames_requested = out.len() / self.channels;
-    if !self.is_playing.load(Ordering::Acquire) {
-      return;
-    }
+    let playing = self.is_playing.load(Ordering::Acquire);
 
     let mut state = self.state.lock();
-    let available_frames = state.queue.len() / self.channels;
-    let frames_to_mix = available_frames.min(frames_requested);
-    if frames_to_mix == 0 {
-      let has_samples = !state.queue.is_empty();
-      self.has_samples.store(has_samples, Ordering::Release);
-      let gain_potential = Self::gain_potential_nonzero(&state);
-      drop(state);
-      self.refresh_flags(gain_potential);
-      return;
-    }
 
-    let mut frames_mixed = 0usize;
-    for frame in 0..frames_to_mix {
-      let gain_raw = state.volume.gain() * state.group_volume.gain();
-      // Treat non-finite/denormal gains as silence so we never poison the mix. Still drain queued
-      // samples so muting/corruption does not behave like pausing.
+    let mut out_idx = 0usize;
+    for _frame in 0..frames_requested {
+      let mut tail_active = state.declick_tail_active();
+      let has_audio_frame = playing && state.queue.len() >= self.channels;
+
+      if !tail_active && !has_audio_frame {
+        if playing {
+          state.declick_begin_fade_out();
+          tail_active = state.declick_tail_active();
+        }
+        if !tail_active {
+          state.declick_last_frame.fill(0.0);
+          break;
+        }
+      }
+
+      let tail_gain = if tail_active { state.declick_tail_gain() } else { 0.0 };
+      let fade_in_gain = if has_audio_frame {
+        state.declick_fade_in_gain()
+      } else {
+        0.0
+      };
+
+      let gain_raw = if has_audio_frame {
+        state.volume.gain() * state.group_volume.gain()
+      } else {
+        0.0
+      };
       let gain = if gain_raw.is_finite() && (gain_raw == 0.0 || gain_raw.is_normal()) {
         gain_raw
       } else {
         0.0
       };
-      let out_base = frame * self.channels;
+      let audio_gain_raw = gain * fade_in_gain;
+      let audio_gain = if audio_gain_raw.is_finite()
+        && (audio_gain_raw == 0.0 || audio_gain_raw.is_normal())
+      {
+        audio_gain_raw
+      } else {
+        0.0
+      };
+
       for ch in 0..self.channels {
-        let Some(sample) = state.queue.pop_front() else {
-          break;
-        };
-        // Avoid NaN poisoning / denormal slow paths by dropping non-normal samples before they
-        // reach the hot multiply/add loop.
-        if !sample.is_normal() {
-          continue;
+        let mut sample_out = 0.0f32;
+
+        if tail_active {
+          let scaled = state.declick_tail_frame[ch] * tail_gain;
+          if scaled.is_finite() && (scaled == 0.0 || scaled.is_normal()) {
+            sample_out += scaled;
+          }
         }
-        if gain == 0.0 {
-          continue;
+
+        if has_audio_frame {
+          let sample_in = state
+            .queue
+            .pop_front()
+            .unwrap_or(0.0 /* queue len checked above */);
+          if audio_gain != 0.0 && sample_in.is_normal() {
+            let scaled = sample_in * audio_gain;
+            if scaled.is_finite() && (scaled == 0.0 || scaled.is_normal()) {
+              sample_out += scaled;
+            }
+          }
         }
-        let scaled = sample * gain;
-        if !scaled.is_normal() {
+
+        // Track the per-stream last frame for future fade-out tails.
+        state.declick_last_frame[ch] = sample_out;
+
+        // Avoid NaN poisoning / denormal slow paths by dropping non-normal values before they reach
+        // the hot add loop.
+        if !sample_out.is_finite() || (sample_out != 0.0 && !sample_out.is_normal()) {
           continue;
         }
 
-        let out_idx = out_base + ch;
-        let cur = out[out_idx];
-        if !cur.is_finite() || (cur != 0.0 && !cur.is_normal()) {
-          out[out_idx] = 0.0;
+        let out_cell = &mut out[out_idx + ch];
+        if !out_cell.is_finite() || (*out_cell != 0.0 && !out_cell.is_normal()) {
+          *out_cell = 0.0;
         }
-        out[out_idx] += scaled;
+        *out_cell += sample_out;
       }
-      state.volume.advance_frame();
-      state.group_volume.advance_frame();
-      frames_mixed += 1;
+
+      if tail_active {
+        state.declick_tail_pos = state.declick_tail_pos.saturating_add(1);
+        if state.declick_tail_pos >= state.declick_fade_frames {
+          state.declick_tail_pos = state.declick_fade_frames;
+          state.declick_tail_nonzero = false;
+        }
+      }
+
+      if has_audio_frame {
+        state.declick_fade_in_pos = state.declick_fade_in_pos.saturating_add(1);
+        if state.declick_fade_in_pos >= state.declick_fade_frames {
+          state.declick_fade_in_pos = state.declick_fade_frames;
+        }
+        state.played_frames = state.played_frames.saturating_add(1);
+        state.volume.advance_frame();
+        state.group_volume.advance_frame();
+      }
+
+      out_idx += self.channels;
     }
 
-    state.played_frames = state.played_frames.saturating_add(frames_mixed as u64);
+    if !state.declick_tail_active() && (!playing || state.queue.len() < self.channels) {
+      state.declick_last_frame.fill(0.0);
+    }
+
     let has_samples = !state.queue.is_empty();
     self.has_samples.store(has_samples, Ordering::Release);
+    let tail_active = state.declick_tail_active();
+    self.has_tail.store(tail_active, Ordering::Release);
+
     let gain_potential = Self::gain_potential_nonzero(&state);
     drop(state);
     self.refresh_flags(gain_potential);
@@ -799,11 +995,20 @@ impl AudioStreamInner {
       return;
     }
 
+    // Draining implies the stream contributes silence, so ensure we don't retain stale "last frame"
+    // state that would later be used for a de-click tail.
+    state.declick_last_frame.fill(0.0);
+    state.declick_tail_nonzero = false;
+    state.declick_tail_pos = state.declick_fade_frames;
     for _frame in 0..frames_to_drain {
       for _ch in 0..self.channels {
         if state.queue.pop_front().is_none() {
           break;
         }
+      }
+      state.declick_fade_in_pos = state.declick_fade_in_pos.saturating_add(1);
+      if state.declick_fade_in_pos >= state.declick_fade_frames {
+        state.declick_fade_in_pos = state.declick_fade_frames;
       }
       state.volume.advance_frame();
       state.group_volume.advance_frame();
@@ -812,6 +1017,7 @@ impl AudioStreamInner {
     state.played_frames = state.played_frames.saturating_add(frames_to_drain as u64);
     let has_samples = !state.queue.is_empty();
     self.has_samples.store(has_samples, Ordering::Release);
+    self.has_tail.store(state.declick_tail_active(), Ordering::Release);
     let gain_potential = Self::gain_potential_nonzero(&state);
     drop(state);
     self.refresh_flags(gain_potential);
@@ -843,10 +1049,17 @@ struct AudioStreamState {
   eos: bool,
   volume: VolumeControl,
   group_volume: VolumeControl,
+  declick_fade_frames: u32,
+  declick_fade_in_pos: u32,
+  declick_tail_pos: u32,
+  declick_tail_nonzero: bool,
+  declick_tail_frame: Box<[f32]>,
+  declick_last_frame: Box<[f32]>,
 }
 
 impl AudioStreamState {
-  fn new(_gain_ramp_frames: u32) -> Self {
+  fn new(channels: usize, _gain_ramp_frames: u32, declick_fade_frames: u32) -> Self {
+    let declick_fade_frames = declick_fade_frames.max(1);
     Self {
       base_pts: Duration::ZERO,
       preroll_frames: 0,
@@ -855,7 +1068,60 @@ impl AudioStreamState {
       eos: false,
       volume: VolumeControl::new(1.0),
       group_volume: VolumeControl::new(1.0),
+      declick_fade_frames,
+      // Start fully faded in (no attenuation) until the stream is explicitly started/seeked/flushed.
+      declick_fade_in_pos: declick_fade_frames,
+      // No tail active initially.
+      declick_tail_pos: declick_fade_frames,
+      declick_tail_nonzero: false,
+      declick_tail_frame: vec![0.0; channels].into_boxed_slice(),
+      declick_last_frame: vec![0.0; channels].into_boxed_slice(),
     }
+  }
+
+  fn declick_begin_fade_in(&mut self) {
+    self.declick_fade_in_pos = 0;
+  }
+
+  fn declick_begin_fade_out(&mut self) {
+    self.declick_tail_frame.copy_from_slice(&self.declick_last_frame);
+    self.declick_tail_pos = 0;
+    self.declick_tail_nonzero = self
+      .declick_tail_frame
+      .iter()
+      .any(|v| *v != 0.0 && v.is_finite());
+    if !self.declick_tail_nonzero {
+      self.declick_tail_pos = self.declick_fade_frames;
+    }
+  }
+
+  fn declick_tail_active(&self) -> bool {
+    self.declick_tail_nonzero && self.declick_tail_pos < self.declick_fade_frames
+  }
+
+  fn declick_tail_gain(&self) -> f32 {
+    if !self.declick_tail_active() {
+      return 0.0;
+    }
+    if self.declick_fade_frames <= 1 {
+      return 0.0;
+    }
+    let denom = (self.declick_fade_frames - 1) as f32;
+    let pos = self
+      .declick_tail_pos
+      .min(self.declick_fade_frames - 1) as f32;
+    (1.0 - (pos / denom)).clamp(0.0, 1.0)
+  }
+
+  fn declick_fade_in_gain(&self) -> f32 {
+    if self.declick_fade_frames <= 1 {
+      return 1.0;
+    }
+    let denom = (self.declick_fade_frames - 1) as f32;
+    let pos = self
+      .declick_fade_in_pos
+      .min(self.declick_fade_frames - 1) as f32;
+    (pos / denom).clamp(0.0, 1.0)
   }
 }
 
@@ -1193,11 +1459,34 @@ mod tests {
       .all(|sample| (*sample - expected).abs() < f32::EPSILON)
   }
 
+  fn assert_ramp(samples: &[f32], start: f32, end: f32) {
+    let first = samples.first().copied().unwrap_or(0.0);
+    let last = samples.last().copied().unwrap_or(0.0);
+    assert!(
+      (first - start).abs() < 1e-6,
+      "expected ramp to start at {start} (got {first})"
+    );
+    assert!(
+      (last - end).abs() < 1e-6,
+      "expected ramp to end at {end} (got {last})"
+    );
+    if samples.len() > 2 {
+      assert!(
+        samples[1..samples.len() - 1]
+          .iter()
+          .any(|v| (*v - start).abs() > f32::EPSILON && (*v - end).abs() > f32::EPSILON),
+        "expected a non-trivial ramp (samples={:?})",
+        samples
+      );
+    }
+  }
+
   #[test]
   fn paused_stream_clock_freezes() {
     let backend = NullAudioBackend::new(48_000, 1);
     let stream = backend.create_stream();
     stream.enqueue_samples(vec![1.0; 48_000]).unwrap();
+    let fade = backend.mixer().declick_fade_frames() as usize;
 
     stream.play();
     let _ = backend.render(24_000);
@@ -1205,7 +1494,8 @@ mod tests {
 
     stream.pause();
     let out = backend.render(24_000);
-    assert!(all_samples_eq(&out, 0.0));
+    assert_ramp(&out[..fade], 1.0, 0.0);
+    assert!(all_samples_eq(&out[fade..], 0.0));
     assert_eq!(stream.current_time(), Duration::from_millis(500));
   }
 
@@ -1214,6 +1504,7 @@ mod tests {
     let backend = NullAudioBackend::new(48_000, 1);
     let stream = backend.create_stream();
     stream.enqueue_samples(vec![1.0; 48_000]).unwrap();
+    let fade = backend.mixer().declick_fade_frames() as usize;
 
     stream.pause();
     let out0 = backend.render(24_000);
@@ -1222,7 +1513,7 @@ mod tests {
 
     stream.play();
     let out1 = backend.render(48_000);
-    assert!(all_samples_eq(&out1, 1.0));
+    assert!(all_samples_eq(&out1[fade..], 1.0));
     assert_eq!(stream.current_time(), Duration::from_secs(1));
   }
 
@@ -1230,11 +1521,12 @@ mod tests {
   fn seek_flushes_buffered_audio_and_resets_clock_mapping() {
     let backend = NullAudioBackend::new(48_000, 1);
     let stream = backend.create_stream();
+    let fade = backend.mixer().declick_fade_frames() as usize;
 
     stream.enqueue_samples(vec![1.0; 48_000]).unwrap();
     stream.play();
     let out0 = backend.render(24_000);
-    assert!(all_samples_eq(&out0, 1.0));
+    assert!(all_samples_eq(&out0[fade..], 1.0));
     assert_eq!(stream.current_time(), Duration::from_millis(500));
 
     stream.seek_to(Duration::from_secs(10));
@@ -1242,12 +1534,12 @@ mod tests {
 
     // The remaining queued `1.0` samples should have been dropped.
     let out1 = backend.render(24_000);
-    assert!(all_samples_eq(&out1, 0.0));
+    assert!(all_samples_eq(&out1[fade..], 0.0));
     assert_eq!(stream.current_time(), Duration::from_secs(10));
 
     stream.enqueue_samples(vec![2.0; 48_000]).unwrap();
     let out2 = backend.render(24_000);
-    assert!(all_samples_eq(&out2, 2.0));
+    assert!(all_samples_eq(&out2[fade..], 2.0));
     assert_eq!(stream.current_time(), Duration::from_millis(10_500));
   }
 
@@ -1310,6 +1602,7 @@ mod tests {
     let clock = VirtualClock::new();
     let backend = NullAudioBackend::new(48_000, 1);
     let stream = backend.create_stream();
+    let fade = backend.mixer().declick_fade_frames() as usize;
 
     stream.enqueue_samples(vec![1.0; 48_000]).unwrap();
     stream.finish();
@@ -1325,13 +1618,13 @@ mod tests {
     let mut last = Duration::ZERO;
     clock.advance(Duration::from_millis(500));
     let out0 = backend.render_for_clock(&clock, &mut last);
-    assert!(all_samples_eq(&out0, 1.0));
+    assert!(all_samples_eq(&out0[fade..], 1.0));
     assert_eq!(stream.current_time(), Duration::from_millis(500));
     assert_eq!(stream.ended(), None);
 
     clock.advance(Duration::from_millis(500));
     let out1 = backend.render_for_clock(&clock, &mut last);
-    assert!(all_samples_eq(&out1, 1.0));
+    assert!(all_samples_eq(&out1[fade..], 1.0));
     assert_eq!(stream.current_time(), Duration::from_secs(1));
     assert_eq!(stream.ended(), Some(Duration::from_secs(1)));
     assert!(stream.is_drained());
@@ -1347,7 +1640,7 @@ mod tests {
     assert_eq!(stream.ended(), None);
     stream.enqueue_samples(vec![2.0; 48_000]).unwrap();
     let out3 = backend.render(24_000);
-    assert!(all_samples_eq(&out3, 2.0));
+    assert!(all_samples_eq(&out3[fade..], 2.0));
   }
 
   #[test]
@@ -1355,12 +1648,14 @@ mod tests {
     // Use a small sample rate so the ramp spans a small, test-friendly number of frames.
     let backend = NullAudioBackend::new(1_000, 1);
     let ramp_frames = gain_ramp_frames(backend.mixer().sample_rate_hz()) as usize;
+    let fade = backend.mixer().declick_fade_frames() as usize;
 
     let stream = backend.create_stream();
     stream.play();
     stream.enqueue_samples(vec![1.0; 1_000]).unwrap();
 
     // Confirm baseline.
+    let _ = backend.render(fade);
     let baseline = backend.render(1);
     assert!(all_samples_eq(&baseline, 1.0));
 
@@ -1556,5 +1851,46 @@ mod tests {
         .expect("dropped events metadata"),
       (generated_events - max_events) as u64
     );
+
+  #[test]
+  fn declick_fades_in_and_out_step_signal() {
+    // Use a low sample rate so the 5ms default fade spans just a few frames, making it easy to
+    // assert the ramp shape.
+    let backend = NullAudioBackend::new(1_000, 1);
+    let stream = backend.create_stream();
+    let fade = backend.mixer().declick_fade_frames() as usize;
+    assert_eq!(fade, 5);
+
+    stream.enqueue_samples(vec![1.0; 16]).unwrap();
+    stream.play();
+    let out0 = backend.render(10);
+
+    assert_ramp(&out0[..fade], 0.0, 1.0);
+    assert!(all_samples_eq(&out0[fade..], 1.0));
+
+    stream.pause();
+    let out1 = backend.render(10);
+    assert_ramp(&out1[..fade], 1.0, 0.0);
+    assert!(all_samples_eq(&out1[fade..], 0.0));
+  }
+
+  #[test]
+  fn flush_declicks_old_audio_and_fades_in_new_audio() {
+    let backend = NullAudioBackend::new(1_000, 1);
+    let stream = backend.create_stream();
+    let fade = backend.mixer().declick_fade_frames() as usize;
+
+    stream.enqueue_samples(vec![1.0; 16]).unwrap();
+    stream.play();
+    let _ = backend.render(10);
+
+    stream.flush();
+    let out0 = backend.render(10);
+    assert_ramp(&out0[..fade], 1.0, 0.0);
+
+    stream.enqueue_samples(vec![2.0; 16]).unwrap();
+    let out1 = backend.render(10);
+    assert_ramp(&out1[..fade], 0.0, 2.0);
+    assert!(all_samples_eq(&out1[fade..], 2.0));
   }
 }

@@ -2110,6 +2110,12 @@ impl<Host: 'static> EventLoop<Host> {
     // attacker-controlled JS repeatedly schedules/cancels animation frame callbacks while keeping
     // at least one callback pending (so the queue is not cleared).
     //
+    let live = self.animation_frame_callbacks.len();
+    if live == 0 {
+      self.animation_frame_queue.clear();
+      return;
+    }
+
     // Compact opportunistically when the queue grows noticeably larger than the set of live
     // callbacks.
     let queue_len = self.animation_frame_queue.len();
