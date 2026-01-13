@@ -44,5 +44,12 @@ Other targets will emit a clear build error.
 High-level steps:
 
 1. Replace `upstream/libvpx/` with the new libvpx release source (keep `LICENSE`/`PATENTS`).
-2. Regenerate bindings (or copy updated bindings) and update `src/lib.rs`.
+2. Regenerate bindings (or update them) and update `src/lib.rs` (the `vpx_image_t` layout must
+   match the vendored libvpx version).
 3. Run `cargo test -p libvpx-sys-bundled`.
+
+## Tests
+
+In addition to a basic version-string smoke test, this crate includes an integration test that
+parses the repo's deterministic CC0 WebM fixture and decodes a VP9 frame via libvpx to validate
+the FFI surface (`tests/decode_vp9.rs`).
