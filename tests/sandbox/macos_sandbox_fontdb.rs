@@ -5,10 +5,6 @@ use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode, Macos
 #[test]
 fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
   const CHILD_ENV: &str = "FASTR_TEST_MACOS_RELAXED_SANDBOX_FONTDB_CHILD";
-  let test_name = crate::common::libtest::exact_test_name(
-    module_path!(),
-    stringify!(relaxed_sandbox_allows_fontdb_system_font_discovery),
-  );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     let status = apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
@@ -59,11 +55,19 @@ fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
     return;
   }
 
+  let test_name = crate::common::libtest::exact_test_name(
+    module_path!(),
+    stringify!(relaxed_sandbox_allows_fontdb_system_font_discovery),
+  );
+
   // `sandbox_init` is irreversible. Run the actual sandboxed probe in a subprocess so it doesn't
   // affect the rest of the test suite.
   let exe = std::env::current_exe().expect("current test exe path");
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
+    // Keep libtest single-threaded in the child process to avoid spawning extra threads before the
+    // irreversible sandbox is applied (best-effort).
+    .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
     .arg(&test_name)
     .arg("--nocapture")
