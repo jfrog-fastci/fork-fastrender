@@ -140,6 +140,13 @@ fn module_graph_growth_does_not_abort_on_oom() {
 }
 
 #[test]
+fn internal_promise_reaction_list_growth_does_not_abort_on_oom() {
+  // Engine-internal Promise reaction lists (async/await plumbing) must use fallible growth and
+  // surface `VmError::OutOfMemory` rather than aborting the process under allocator OOM.
+  run_oom_harness("internalPromiseReactions", 0);
+}
+
+#[test]
 fn label_early_error_large_label_does_not_abort_on_oom() {
   // Early-error diagnostics that embed attacker-controlled label identifiers must use bounded,
   // fallible formatting and must not abort on allocator OOM.

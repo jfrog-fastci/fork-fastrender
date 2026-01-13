@@ -55,7 +55,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
   );
   process::exit(2);
 }
@@ -178,6 +178,43 @@ fn main() {
 
     // If we somehow didn't OOM, treat that as success: the key invariant is that we didn't abort.
     process::exit(0);
+  }
+
+  if scenario == "internalPromiseReactions" {
+    // Attach many async/await-style reactions to a pending *engine-internal* Promise record until
+    // allocator OOM. This exercises fallible reaction-list growth in `promise.rs`.
+    //
+    // Keep `filler` alive for the duration of the run so we stay close to the RLIMIT_AS ceiling.
+    let _keep = &filler;
+
+    struct NoopHost;
+
+    impl vm_js::VmHostHooks for NoopHost {
+      fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
+    }
+
+    let mut host = NoopHost;
+    // Use small heap limits: the internal Promise record allocates on the Rust heap; this Heap is
+    // only needed to satisfy `await_value`'s signature.
+    let mut heap = vm_js::Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let promise = vm_js::Promise::pending(None);
+    let awaitable = vm_js::Awaitable::Promise(promise);
+
+    const MAX_ITERS: usize = 50_000_000;
+    for i in 0..MAX_ITERS {
+      match vm_js::await_value(&mut host, &mut heap, awaitable.clone(), Value::Undefined, Value::Undefined) {
+        Ok(()) => {}
+        Err(VmError::OutOfMemory) => process::exit(0),
+        Err(err) => {
+          eprintln!("oom_harness: unexpected error after {i} await_value calls: {err:?}");
+          process::exit(1);
+        }
+      }
+    }
+
+    eprintln!("oom_harness: internalPromiseReactions did not hit OOM within {MAX_ITERS} iterations");
+    process::exit(1);
   }
 
   let mut vm_options = VmOptions::default();
