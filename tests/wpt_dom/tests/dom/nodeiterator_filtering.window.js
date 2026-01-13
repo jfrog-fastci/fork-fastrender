@@ -103,6 +103,51 @@ test(() => {
 }, "NodeIterator whatToShow bitmask: SHOW_TEXT skips elements (including the root)");
 
 test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+  const c1 = document.createComment("c1");
+  const e = document.createElement("span");
+  const c2 = document.createComment("c2");
+  e.appendChild(c2);
+  root.appendChild(c1);
+  root.appendChild(e);
+  document.body.appendChild(root);
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_COMMENT, null);
+
+  // Root and element nodes are skipped by whatToShow; the iterator advances until the first comment.
+  assert_equals(it.nextNode(), c1);
+  assert_equals(it.nextNode(), c2);
+  assert_equals(it.nextNode(), null);
+}, "NodeIterator whatToShow bitmask: SHOW_COMMENT skips elements but still reaches nested comments");
+
+test(() => {
+  const frag = document.createDocumentFragment();
+  const a = document.createElement("div");
+  const b = document.createElement("div");
+  frag.appendChild(a);
+  frag.appendChild(b);
+
+  const what = NodeFilter.SHOW_DOCUMENT_FRAGMENT | NodeFilter.SHOW_ELEMENT;
+  const it = document.createNodeIterator(frag, what, null);
+  assert_equals(it.nextNode(), frag);
+  assert_equals(it.nextNode(), a);
+  assert_equals(it.nextNode(), b);
+  assert_equals(it.nextNode(), null);
+}, "NodeIterator whatToShow bitmask: SHOW_DOCUMENT_FRAGMENT can include a DocumentFragment root");
+
+test(() => {
+  const frag = document.createDocumentFragment();
+  const a = document.createElement("div");
+  frag.appendChild(a);
+
+  const it = document.createNodeIterator(frag, NodeFilter.SHOW_ELEMENT, null);
+  assert_equals(it.nextNode(), a, "DocumentFragment root is skipped by whatToShow when SHOW_DOCUMENT_FRAGMENT is not set");
+  assert_equals(it.nextNode(), null);
+}, "NodeIterator whatToShow: skipping a DocumentFragment root still traverses descendants");
+
+test(() => {
   const { root, a, a1, b } = make_tree_with_text();
 
   // NodeIterator does not treat FILTER_REJECT as a subtree prune; it keeps scanning until an

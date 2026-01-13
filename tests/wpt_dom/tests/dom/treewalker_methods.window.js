@@ -125,6 +125,63 @@ test(() => {
 }, "TreeWalker does not traverse outside its root subtree");
 
 test(() => {
+  clear_children(document.body);
+
+  // Tree:
+  // root (Element, skipped by whatToShow)
+  //   c1 (Comment)
+  //   e (Element, skipped by whatToShow)
+  //     c2 (Comment)
+  //   c3 (Comment)
+  const root = document.createElement("div");
+  const c1 = document.createComment("c1");
+  const e = document.createElement("span");
+  const c2 = document.createComment("c2");
+  const c3 = document.createComment("c3");
+  e.appendChild(c2);
+  root.appendChild(c1);
+  root.appendChild(e);
+  root.appendChild(c3);
+  document.body.appendChild(root);
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT, null);
+  assert_equals(tw.nextNode(), c1);
+  assert_equals(
+    tw.nextNode(),
+    c2,
+    "TreeWalker should descend into nodes skipped by whatToShow to find accepted descendants"
+  );
+  assert_equals(tw.nextNode(), c3);
+  assert_equals(tw.nextNode(), null);
+}, "TreeWalker whatToShow: SHOW_COMMENT skips elements but still descends into their children");
+
+test(() => {
+  const frag = document.createDocumentFragment();
+  const a = document.createElement("div");
+  const b = document.createElement("div");
+  frag.appendChild(a);
+  frag.appendChild(b);
+
+  const what = NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_DOCUMENT_FRAGMENT;
+  const tw_accept_root = document.createTreeWalker(frag, what, null);
+  tw_accept_root.currentNode = a;
+  assert_equals(
+    tw_accept_root.parentNode(),
+    frag,
+    "parentNode() should return the DocumentFragment root when it is included by whatToShow"
+  );
+
+  const tw_skip_root = document.createTreeWalker(frag, NodeFilter.SHOW_ELEMENT, null);
+  tw_skip_root.currentNode = a;
+  assert_equals(
+    tw_skip_root.parentNode(),
+    null,
+    "parentNode() should not return a DocumentFragment root excluded by whatToShow"
+  );
+  assert_equals(tw_skip_root.currentNode, a);
+}, "TreeWalker whatToShow: SHOW_DOCUMENT_FRAGMENT controls whether a DocumentFragment root is returned");
+
+test(() => {
   const { root, a, a1, a2, b, b1, c } = make_tree();
   const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
 
