@@ -11,10 +11,10 @@
 use crate::js::event_loop::{EventLoop, IdleCallbackId, TaskSource, TimerId};
 use crate::js::realm_module_loader::ModuleLoadOutcome;
 use crate::js::vm_error_format;
+use crate::js::window_realm::drain_pending_dataset_mutation_observer_microtasks;
 use crate::js::window_realm::{
   dispatch_host_exotic_delete, dispatch_host_exotic_get, dispatch_host_exotic_set,
-  drain_pending_dataset_mutation_observer_microtasks, DatasetExoticContext, ExoticDispatchHandledBy,
-  WindowRealmHost, WindowRealmUserData,
+  DatasetExoticContext, ExoticDispatchHandledBy, WindowRealmHost, WindowRealmUserData,
 };
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
