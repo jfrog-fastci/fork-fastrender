@@ -212,3 +212,161 @@ fn direct_eval_with_await_spread_argument_is_direct() -> Result<(), VmError> {
   assert_eq!(value, Value::Number(1.0));
   Ok(())
 }
+
+#[test]
+fn direct_eval_with_awaited_argument_inherits_strictness() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        "use strict";
+        try { return eval(await "with ({x:1}) { x }"); }
+        catch (e) { return e.name; }
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+  Ok(())
+}
+
+#[test]
+fn strict_direct_eval_with_awaited_argument_does_not_leak_var_declarations() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        "use strict";
+        eval(await "var x = 1");
+        return typeof x;
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  let Value::String(s) = value else {
+    panic!("expected string from typeof");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "undefined");
+  Ok(())
+}
+
+#[test]
+fn direct_eval_var_decl_conflicts_with_outer_let_across_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        let x = 1;
+        try { eval(await "var x = 2"); return "no error"; }
+        catch (e) { return e.name; }
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+  Ok(())
+}
+
+#[test]
+fn parenthesized_eval_with_awaited_argument_is_indirect() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      var x = 2;
+      async function f() {
+        let x = 1;
+        return (eval)(await "x");
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn optional_chain_eval_with_awaited_argument_is_indirect() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      var x = 2;
+      async function f() {
+        let x = 1;
+        return eval?.(await "x");
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn shadowed_eval_with_awaited_argument_is_not_direct() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        let eval = function (_) { return 123; };
+        return eval(await "x");
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(123.0));
+  Ok(())
+}
