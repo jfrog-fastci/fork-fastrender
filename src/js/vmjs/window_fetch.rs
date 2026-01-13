@@ -3418,6 +3418,20 @@ fn apply_request_init(
   *body_stream_out = None;
   let mut init_body_provided = false;
 
+  // Fetch spec: `RequestInit.window` is `any` but can only be set to null.
+  // If present (i.e. not `undefined`) and not `null`, Request construction must throw.
+  let window_key = alloc_key(scope, "window")?;
+  let window_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, window_key)?;
+  if !matches!(window_val, Value::Undefined) && !matches!(window_val, Value::Null) {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host,
+      host_hooks,
+      "RequestInit.window must be null",
+    ));
+  }
+
   // `mode` must be applied before headers so the correct guard is enforced when filling.
   let mode_key = alloc_key(scope, "mode")?;
   let mode_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, mode_key)?;
@@ -9870,7 +9884,8 @@ mod tests {
     assert_eq!(get_string(window.heap(), v), "about:client");
 
     // Empty string means explicit "no-referrer", exposed as empty string.
-    let v = window.exec_script("new Request('https://example.invalid/', { referrer: '' }).referrer")?;
+    let v =
+      window.exec_script("new Request('https://example.invalid/', { referrer: '' }).referrer")?;
     assert_eq!(get_string(window.heap(), v), "");
 
     // about:client maps to the internal "client" state.
@@ -9896,6 +9911,142 @@ mod tests {
 
     drop(fetch_bindings);
     window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn request_init_window_allows_null() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let result = window.exec_script(
+      "(() => { new Request('https://example.invalid/', { window: null }); return 'ok'; })()",
+    )?;
+    assert_eq!(get_string(window.heap(), result), "ok");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn request_init_window_non_null_throws() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let result = window.exec_script(
+      "(() => {\
+         try { new Request('https://example.invalid/', { window: {} }); return { ok: true }; }\
+         catch (e) { return { ok: false, name: e.name, message: e.message }; }\
+       })()",
+    )?;
+    let Value::Object(result_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "expected RequestInit.window error test script to return an object",
+      ));
+    };
+
+    {
+      let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(result_obj))?;
+
+      let ok_key = alloc_key(&mut scope, "ok")?;
+      assert_eq!(vm.get(&mut scope, result_obj, ok_key)?, Value::Bool(false));
+
+      let name_key = alloc_key(&mut scope, "name")?;
+      let name_val = vm.get(&mut scope, result_obj, name_key)?;
+      assert_eq!(get_string(scope.heap(), name_val), "TypeError");
+
+      let message_key = alloc_key(&mut scope, "message")?;
+      let message_val = vm.get(&mut scope, result_obj, message_key)?;
+      assert_eq!(
+        get_string(scope.heap(), message_val),
+        "RequestInit.window must be null"
+      );
+    }
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_init_window_non_null_rejects_or_throws() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+    let env = WindowFetchEnv::for_document(
+      Arc::new(StaticOkFetcher),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            globalThis.__fetch_window_error_name = "";
+            globalThis.__fetch_window_error_message = "";
+            (async () => {
+              try {
+                await fetch("https://example.invalid/", { window: {} });
+                globalThis.__fetch_window_error_name = "no error";
+              } catch (e) {
+                globalThis.__fetch_window_error_name = e && e.name ? e.name : String(e);
+                globalThis.__fetch_window_error_message = e && e.message ? e.message : "";
+              }
+            })();
+          "#,
+        )
+        .unwrap();
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let name_val = host
+      .window
+      .exec_script("globalThis.__fetch_window_error_name")
+      .unwrap();
+    assert_eq!(get_string(host.window.heap(), name_val), "TypeError");
+
+    let message_val = host
+      .window
+      .exec_script("globalThis.__fetch_window_error_message")
+      .unwrap();
+    assert_eq!(
+      get_string(host.window.heap(), message_val),
+      "RequestInit.window must be null"
+    );
+
     Ok(())
   }
 
