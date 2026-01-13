@@ -37,19 +37,14 @@ fn derived_constructor_without_super_throws_reference_error() {
 #[test]
 fn derived_constructor_without_super_throws_reference_error_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let value = exec_compiled(
     &mut rt,
     r#"
       class A {}
       class B extends A { constructor(){ } }
       try { new B(); 'no' } catch(e) { e.name }
     "#,
-  ) {
-    Ok(v) => v,
-    // Compiled HIR execution does not yet support derived classes. Skip this test until it does.
-    Err(VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }
@@ -72,19 +67,14 @@ fn derived_constructor_without_super_can_return_object() {
 #[test]
 fn derived_constructor_without_super_can_return_object_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let value = exec_compiled(
     &mut rt,
     r#"
       class A {}
       class B extends A { constructor(){ return {}; } }
       try { new B(); 'ok' } catch(e) { e.name }
     "#,
-  ) {
-    Ok(v) => v,
-    // Compiled HIR execution does not yet support derived classes. Skip this test until it does.
-    Err(VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_value_is_utf8(&rt, value, "ok");
   Ok(())
 }
@@ -107,19 +97,14 @@ fn derived_constructor_this_access_before_super_throws_reference_error() {
 #[test]
 fn derived_constructor_this_access_before_super_throws_reference_error_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = match exec_compiled(
+  let value = exec_compiled(
     &mut rt,
     r#"
       class A {}
       class B extends A { constructor(){ this.x = 1; } }
       try { new B(); 'no' } catch(e) { e.name }
     "#,
-  ) {
-    Ok(v) => v,
-    // Compiled HIR execution does not yet support derived classes. Skip this test until it does.
-    Err(VmError::Unimplemented(msg)) if msg.contains("class inheritance") => return Ok(()),
-    Err(err) => return Err(err),
-  };
+  )?;
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }

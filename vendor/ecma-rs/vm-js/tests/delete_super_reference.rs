@@ -341,19 +341,10 @@ fn delete_super_property_computed_member_with_await_in_key_throws_reference_erro
   Ok(())
 }
 
-fn exec_or_skip_class_inheritance(rt: &mut JsRuntime, script: &str) -> Result<Option<Value>, VmError> {
-  match rt.exec_script(script) {
-    Ok(v) => Ok(Some(v)),
-    Err(VmError::Unimplemented(msg)) if msg.contains("class inheritance") => Ok(None),
-    Err(err) => Err(err),
-  }
-}
-
 #[test]
 fn delete_super_property_derived_instance_method_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let Some(value) = exec_or_skip_class_inheritance(
-    &mut rt,
+  let value = rt.exec_script(
     r#"
       class B { m(){} }
       class D extends B {
@@ -364,10 +355,7 @@ fn delete_super_property_derived_instance_method_throws_reference_error() -> Res
       }
       new D().del()
     "#,
-  )?
-  else {
-    return Ok(());
-  };
+  )?;
 
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
@@ -376,8 +364,7 @@ fn delete_super_property_derived_instance_method_throws_reference_error() -> Res
 #[test]
 fn delete_super_property_derived_static_method_throws_reference_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let Some(value) = exec_or_skip_class_inheritance(
-    &mut rt,
+  let value = rt.exec_script(
     r#"
       class B { static m(){} }
       class D extends B {
@@ -388,10 +375,7 @@ fn delete_super_property_derived_static_method_throws_reference_error() -> Resul
       }
       D.del()
     "#,
-  )?
-  else {
-    return Ok(());
-  };
+  )?;
 
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
@@ -400,8 +384,7 @@ fn delete_super_property_derived_static_method_throws_reference_error() -> Resul
 #[test]
 fn delete_super_property_derived_constructor_does_not_evaluate_key_before_super() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let Some(value) = exec_or_skip_class_inheritance(
-    &mut rt,
+  let value = rt.exec_script(
     r#"
       let side = 0;
       class B {}
@@ -413,10 +396,7 @@ fn delete_super_property_derived_constructor_does_not_evaluate_key_before_super(
       try { new D(); }
       catch (e) { String(side) + ":" + e.name; }
     "#,
-  )?
-  else {
-    return Ok(());
-  };
+  )?;
 
   assert_value_is_utf8(&rt, value, "0:ReferenceError");
   Ok(())
