@@ -7331,8 +7331,16 @@ impl<'vm> HirEvaluator<'vm> {
       }
       hir_js::ClassMemberKey::Computed(expr_id) => {
         let v = self.eval_expr(scope, class_body, *expr_id)?;
-        let key = scope.heap_mut().to_property_key(v)?;
-        Ok(key)
+        // `ToPropertyKey` can invoke user code via `ToPrimitive`, so root the intermediate value
+        // across conversion.
+        let mut key_scope = scope.reborrow();
+        key_scope.push_root(v)?;
+        Ok(key_scope.to_property_key(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          v,
+        )?)
       }
       hir_js::ClassMemberKey::Private(_) => Err(VmError::Unimplemented("class private elements")),
     }
