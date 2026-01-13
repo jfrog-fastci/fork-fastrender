@@ -282,6 +282,31 @@ fn regexp_unicode_mode_rejects_incomplete_quantifiers() {
 }
 
 #[test]
+fn regexp_non_unicode_mode_allows_brackets_and_braces_as_literals() {
+  // Annex B extended pattern characters allow some syntax characters to be treated as literal
+  // atoms in non-Unicode mode when they do not form a valid construct.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function ok(pat, input) {
+          try { return new RegExp(pat).test(input); } catch (e) { return "err:" + e.name; }
+        }
+        [
+          ok("]", "]"),
+          ok("{", "{"),
+          ok("}", "}"),
+          ok("a{", "a{"),
+          ok("a{1", "a{1"),
+          ok("a{1,", "a{1,"),
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true,true,true,true");
+}
+
+#[test]
 fn regexp_literal_with_uv_flags_is_early_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#"var r = /./uv;"#).unwrap_err();
