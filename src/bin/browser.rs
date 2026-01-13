@@ -11149,13 +11149,11 @@ impl App {
               && response.hovered()
               && !self.clear_browsing_data_dialog_open
             {
-              let cursor_over_debug_overlay = self.debug_log_overlay_pointer_capture
-                || response.hover_pos().is_some_and(|pos| {
-                  self
-                    .debug_log_overlay_rect
-                    .is_some_and(|rect| rect.contains(pos))
-                });
-              if !cursor_over_debug_overlay {
+              let cursor_over_overlay = self.debug_log_overlay_pointer_capture
+                || response
+                  .hover_pos()
+                  .is_some_and(|pos| self.cursor_over_egui_overlay(pos));
+              if !cursor_over_overlay {
                 let mut delta_css = (0.0, 0.0);
                 for (unit, delta) in &wheel_events {
                   let Some((dx, dy)) = mapping
@@ -11435,11 +11433,7 @@ impl App {
             return;
           };
 
-          if !self.debug_log_overlay_pointer_capture
-            && !self
-              .debug_log_overlay_rect
-              .is_some_and(|rect| rect.contains(hover_pos))
-          {
+          if !self.cursor_over_egui_overlay(hover_pos) {
             let mut delta_css = (0.0, 0.0);
             for (unit, delta) in &wheel_events {
               let Some((dx, dy)) = mapping
