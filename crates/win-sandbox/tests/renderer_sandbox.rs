@@ -9,6 +9,10 @@ use std::process::Command;
 use tempfile::tempdir;
 
 use win_sandbox::renderer::RendererSandbox;
+use win_sandbox::AppContainerProfile;
+
+use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 
 const DISABLE_MITIGATIONS_ENV: &str = "FASTR_DISABLE_WIN_MITIGATIONS";
 
@@ -59,6 +63,29 @@ fn icacls_grant_rx(path: &std::path::Path, sid: &str, inherit: bool) {
   }
 }
 
+fn sid_to_string(sid: windows_sys::Win32::Security::PSID) -> String {
+  let mut wide: *mut u16 = std::ptr::null_mut();
+  let ok = unsafe { ConvertSidToStringSidW(sid, &mut wide) };
+  assert_ne!(
+    ok,
+    0,
+    "ConvertSidToStringSidW failed: {}",
+    std::io::Error::last_os_error()
+  );
+  assert!(!wide.is_null(), "ConvertSidToStringSidW returned null");
+
+  unsafe {
+    let mut len = 0usize;
+    while *wide.add(len) != 0 {
+      len += 1;
+    }
+    let slice = std::slice::from_raw_parts(wide, len);
+    let s = String::from_utf16_lossy(slice);
+    LocalFree(wide as _);
+    s
+  }
+}
+
 #[test]
 fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
   let _mitigation_guard = EnvVarRestore::remove(DISABLE_MITIGATIONS_ENV);
@@ -74,22 +101,26 @@ fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
   let probe_src = PathBuf::from(env!("CARGO_BIN_EXE_renderer_sandbox_probe"));
   let tmp = tempdir().expect("tempdir");
 
-  // Grant read/execute to:
-  // - ALL APPLICATION PACKAGES (S-1-15-2-1)
-  // - ALL RESTRICTED APPLICATION PACKAGES (S-1-15-2-2)
-  //
-  // This makes the directory (and the copied probe) executable from within an AppContainer.
-  icacls_grant_rx(tmp.path(), "*S-1-15-2-1", true);
-  icacls_grant_rx(tmp.path(), "*S-1-15-2-2", true);
+  // Grant read/execute to the derived AppContainer SID. This remains correct even when the sandbox
+  // hardens the token by removing `ALL APPLICATION PACKAGES` (S-1-15-2-1).
+  let profile = AppContainerProfile::ensure(
+    "FastRender.Renderer",
+    "FastRender Renderer",
+    "FastRender renderer AppContainer profile",
+  )
+  .expect("ensure AppContainer profile");
+  let sid_str = sid_to_string(profile.sid().as_ptr());
+  let sid_grant = format!("*{sid_str}");
+
+  icacls_grant_rx(tmp.path(), &sid_grant, true);
 
   let probe_dst = tmp
     .path()
     .join(probe_src.file_name().expect("probe file name"));
   std::fs::copy(&probe_src, &probe_dst).expect("copy probe");
 
-  // Ensure the file itself also has the ACEs (in case inheritance is disabled on this host).
-  icacls_grant_rx(&probe_dst, "*S-1-15-2-1", false);
-  icacls_grant_rx(&probe_dst, "*S-1-15-2-2", false);
+  // Ensure the file itself also has the ACE (in case inheritance is disabled on this host).
+  icacls_grant_rx(&probe_dst, &sid_grant, false);
 
   let sandbox = RendererSandbox::new_default().expect("create RendererSandbox");
   let mut child = sandbox
