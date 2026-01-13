@@ -165,6 +165,7 @@ pub struct AnimationTimingState {
   start_time: TimeValue,
   hold_time: TimeValue,
   playback_rate: f64,
+  pending_playback_rate: Option<f64>,
   previous_current_time: TimeValue,
 }
 
@@ -175,6 +176,7 @@ impl Default for AnimationTimingState {
       start_time: TimeValue::UNRESOLVED,
       hold_time: TimeValue::UNRESOLVED,
       playback_rate: 1.0,
+      pending_playback_rate: None,
       previous_current_time: TimeValue::UNRESOLVED,
     }
   }
@@ -187,6 +189,9 @@ impl AnimationTimingState {
 
   pub fn set_timeline_time(&mut self, timeline_time: TimeValue) {
     self.timeline_time = timeline_time;
+    // Apply a deferred playback-rate change once we have timeline time to
+    // anchor it.
+    self.apply_pending_playback_rate_preserving_current_time(timeline_time);
   }
 
   pub fn timeline_time(&self) -> TimeValue {
@@ -205,8 +210,28 @@ impl AnimationTimingState {
     self.playback_rate
   }
 
+  pub fn pending_playback_rate(&self) -> Option<f64> {
+    self.pending_playback_rate
+  }
+
   pub fn previous_current_time(&self) -> TimeValue {
     self.previous_current_time
+  }
+
+  fn apply_pending_playback_rate_preserving_current_time(&mut self, timeline_time: TimeValue) {
+    let Some(pending) = self.pending_playback_rate else {
+      return;
+    };
+
+    // Calculate the current time using the existing playback rate so we can
+    // preserve it once the pending rate is applied.
+    let current = self.current_time_at_timeline_time(timeline_time);
+    self.playback_rate = pending;
+    self.pending_playback_rate = None;
+
+    if current.is_resolved() {
+      self.set_current_time(current, timeline_time);
+    }
   }
 
   fn calculate_current_time_at_timeline_time(
@@ -255,6 +280,7 @@ impl AnimationTimingState {
 
   pub fn pause(&mut self, timeline_time: TimeValue) {
     self.timeline_time = timeline_time;
+    self.apply_pending_playback_rate_preserving_current_time(timeline_time);
     let current = self.current_time_at_timeline_time(timeline_time);
     self.hold_time = current;
     self.start_time = TimeValue::UNRESOLVED;
@@ -262,6 +288,7 @@ impl AnimationTimingState {
 
   pub fn play(&mut self, timeline_time: TimeValue) {
     self.timeline_time = timeline_time;
+    self.apply_pending_playback_rate_preserving_current_time(timeline_time);
     // Resume from a resolved hold time.
     if self.hold_time.is_resolved() && self.playback_rate != 0.0 {
       if timeline_time.is_unresolved() {
@@ -294,6 +321,7 @@ impl AnimationTimingState {
   /// the start time (playing) depending on the current state.
   pub fn set_current_time(&mut self, seek_time: TimeValue, timeline_time: TimeValue) {
     self.timeline_time = timeline_time;
+    self.apply_pending_playback_rate_preserving_current_time(timeline_time);
     // Treat invalid input as an unresolved seek.
     if seek_time.is_unresolved() {
       self.hold_time = TimeValue::UNRESOLVED;
@@ -324,11 +352,12 @@ impl AnimationTimingState {
     }
   }
 
-  /// WA1: Setting the playback rate (monotonic timeline branch).
+  /// WA1: Setting the playback rate.
   ///
   /// `timeline_is_monotonic` is `true` for document timelines. For non-monotonic
-  /// timelines (e.g. scroll-driven timelines), WA1 specifies additional
-  /// machinery involving pending playback rates which is not implemented yet.
+  /// timelines (e.g. scroll-driven timelines), we use the WA1 pending playback
+  /// rate machinery to preserve the current time at the moment of the rate
+  /// change.
   pub fn set_playback_rate(
     &mut self,
     new_rate: f64,
@@ -341,13 +370,13 @@ impl AnimationTimingState {
     }
 
     if !timeline_is_monotonic {
-      // Limitation: WA1 defines additional behavior for non-monotonic timelines
-      // and pending playback rates. For now we update the rate without trying
-      // to preserve current time.
-      self.playback_rate = new_rate;
+      self.pending_playback_rate = Some(new_rate);
+      self.apply_pending_playback_rate_preserving_current_time(timeline_time);
       return;
     }
 
+    // A direct playbackRate set clears any pending rate update.
+    self.pending_playback_rate = None;
     let current = self.current_time_at_timeline_time(timeline_time);
     self.playback_rate = new_rate;
 
@@ -672,6 +701,101 @@ mod tests {
     assert_eq!(
       state.current_time_at_timeline_time(TimeValue::resolved(60.0)),
       TimeValue::resolved(70.0)
+    );
+  }
+
+  #[test]
+  fn set_playback_rate_preserves_current_time_for_non_monotonic_timelines() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      hold_time: TimeValue::UNRESOLVED,
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    let at_50 = TimeValue::resolved(50.0);
+
+    assert_eq!(state.current_time_at_timeline_time(at_50), at_50);
+
+    state.set_playback_rate(2.0, at_50, false);
+
+    // The current time at the moment of change is preserved.
+    assert_eq!(state.current_time_at_timeline_time(at_50), at_50);
+
+    // It now advances twice as fast.
+    assert_eq!(
+      state.current_time_at_timeline_time(TimeValue::resolved(60.0)),
+      TimeValue::resolved(70.0)
+    );
+  }
+
+  #[test]
+  fn set_playback_rate_non_monotonic_timeline_time_can_go_backwards() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      hold_time: TimeValue::UNRESOLVED,
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    let at_50 = TimeValue::resolved(50.0);
+    state.set_playback_rate(2.0, at_50, false);
+
+    // If the timeline time jumps backwards after the rate change, currentTime
+    // is still computed from the preserved reference point.
+    assert_eq!(
+      state.current_time_at_timeline_time(TimeValue::resolved(40.0)),
+      TimeValue::resolved(30.0)
+    );
+  }
+
+  #[test]
+  fn set_playback_rate_non_monotonic_zero_rate_freezes_current_time() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      hold_time: TimeValue::UNRESOLVED,
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    let at_50 = TimeValue::resolved(50.0);
+    assert_eq!(state.current_time_at_timeline_time(at_50), at_50);
+
+    state.set_playback_rate(0.0, at_50, false);
+
+    assert_eq!(state.current_time_at_timeline_time(at_50), at_50);
+    assert_eq!(state.current_time_at_timeline_time(TimeValue::resolved(60.0)), at_50);
+    assert_eq!(state.current_time_at_timeline_time(TimeValue::resolved(40.0)), at_50);
+    assert_eq!(state.hold_time(), at_50);
+    assert!(state.start_time().is_unresolved());
+  }
+
+  #[test]
+  fn set_playback_rate_non_monotonic_ignores_non_finite_input() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      hold_time: TimeValue::UNRESOLVED,
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    let at_50 = TimeValue::resolved(50.0);
+    state.set_playback_rate(f64::NAN, at_50, false);
+    assert_eq!(state.playback_rate(), 1.0);
+    assert_eq!(state.current_time_at_timeline_time(at_50), at_50);
+  }
+
+  #[test]
+  fn set_playback_rate_non_monotonic_unresolved_timeline_time_keeps_hold_time() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::UNRESOLVED,
+      hold_time: TimeValue::resolved(20.0),
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    state.set_playback_rate(2.0, TimeValue::UNRESOLVED, false);
+    assert_eq!(state.playback_rate(), 2.0);
+    assert_eq!(state.hold_time(), TimeValue::resolved(20.0));
+    assert!(state.start_time().is_unresolved());
+    assert_eq!(
+      state.current_time_at_timeline_time(TimeValue::UNRESOLVED),
+      TimeValue::resolved(20.0)
     );
   }
 
