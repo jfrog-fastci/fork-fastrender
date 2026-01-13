@@ -5511,6 +5511,45 @@ mod webidl_event_target_dom2_tests {
     assert_eq!(out, "false,false,true");
     Ok(())
   }
+
+  #[test]
+  fn webidl_event_target_once_listener_runs_once() -> Result<(), VmError> {
+    let out = exec_webidl_event_target_script_to_string(
+      r#"
+(() => {
+  const t = new EventTarget();
+  let n = 0;
+  t.addEventListener('x', () => { n++; }, { once: true });
+  t.dispatchEvent(new Event('x'));
+  t.dispatchEvent(new Event('x'));
+  return String(n);
+})()
+"#,
+    )?;
+    assert_eq!(out, "1");
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_event_target_stop_propagation_prevents_reaching_target() -> Result<(), VmError> {
+    let out = exec_webidl_event_target_script_to_string(
+      r#"
+(() => {
+  const parent = new EventTarget();
+  const child = new EventTarget(parent);
+  const log = [];
+  parent.addEventListener('x', (e) => { log.push('pc'); e.stopPropagation(); }, { capture: true });
+  child.addEventListener('x', () => log.push('cc'), { capture: true });
+  child.addEventListener('x', () => log.push('cb'));
+  parent.addEventListener('x', () => log.push('pb'));
+  child.dispatchEvent(new Event('x', { bubbles: true }));
+  return log.join(',');
+})()
+"#,
+    )?;
+    assert_eq!(out, "pc");
+    Ok(())
+  }
 }
 
 #[cfg(test)]
