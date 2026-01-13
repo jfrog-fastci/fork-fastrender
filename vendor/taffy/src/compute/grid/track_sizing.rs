@@ -9,6 +9,7 @@ use crate::util::check_layout_abort;
 use crate::util::sys::{f32_max, f32_min, Map, Vec};
 use crate::util::MaybeMath;
 use crate::CompactLength;
+use arrayvec::ArrayVec;
 use core::cmp::Ordering;
 
 /// Takes an axis, and a list of grid items sorted firstly by whether they cross a flex track
@@ -1982,7 +1983,11 @@ fn find_size_of_fr(tracks: &[GridTrack], space_to_fill: f32) -> f32 {
   }
 
   let mut fixed_used_space = 0.0;
-  let mut flex_tracks: Vec<FlexTrackInfo> = Vec::new();
+  // Most grids only have a small number of `fr` tracks. Store flex tracks on the stack in the
+  // common case to avoid heap allocation churn, and fall back to a heap `Vec` if we overflow.
+  const STACK_FLEX_TRACK_CAPACITY: usize = 32;
+  let mut flex_tracks_stack: ArrayVec<FlexTrackInfo, STACK_FLEX_TRACK_CAPACITY> = ArrayVec::new();
+  let mut flex_tracks_heap: Option<Vec<FlexTrackInfo>> = None;
   let mut flex_factor_sum = 0.0;
 
   for track in tracks.iter() {
@@ -1993,11 +1998,24 @@ fn find_size_of_fr(tracks: &[GridTrack], space_to_fill: f32) -> f32 {
       // infinite loops. Treat such tracks as inflexible.
       if flex_factor > 0.0 && flex_factor.is_finite() {
         let threshold = track.base_size / flex_factor;
-        flex_tracks.push(FlexTrackInfo {
+        let track_info = FlexTrackInfo {
           threshold,
           base_size: track.base_size,
           flex_factor,
-        });
+        };
+
+        if let Some(ref mut vec) = flex_tracks_heap {
+          vec.push(track_info);
+        } else if flex_tracks_stack.len() < flex_tracks_stack.capacity() {
+          flex_tracks_stack.push(track_info);
+        } else {
+          // Promote to a heap vec once we exceed the stack capacity.
+          let mut vec = Vec::with_capacity(tracks.len());
+          vec.extend(flex_tracks_stack.drain(..));
+          vec.push(track_info);
+          flex_tracks_heap = Some(vec);
+        }
+
         flex_factor_sum += flex_factor;
       } else {
         fixed_used_space += track.base_size;
@@ -2008,13 +2026,26 @@ fn find_size_of_fr(tracks: &[GridTrack], space_to_fill: f32) -> f32 {
   }
 
   // If there are no usable flex tracks, then the fr size is just the leftover space.
-  if flex_tracks.is_empty() {
+  let flex_tracks_is_empty = match flex_tracks_heap.as_ref() {
+    Some(vec) => vec.is_empty(),
+    None => flex_tracks_stack.is_empty(),
+  };
+  if flex_tracks_is_empty {
     return space_to_fill - fixed_used_space;
   }
 
   // Sort by threshold ascending so we can efficiently move tracks from "flexible" to "inflexible"
   // by popping from the end.
-  flex_tracks.sort_unstable_by(|a, b| a.threshold.total_cmp(&b.threshold));
+  let flex_tracks: &[FlexTrackInfo] = match flex_tracks_heap.as_mut() {
+    Some(vec) => {
+      vec.sort_unstable_by(|a, b| a.threshold.total_cmp(&b.threshold));
+      vec.as_slice()
+    }
+    None => {
+      flex_tracks_stack.sort_unstable_by(|a, b| a.threshold.total_cmp(&b.threshold));
+      flex_tracks_stack.as_slice()
+    }
+  };
 
   // `flexible_len` is the number of tracks still considered flexible (prefix length).
   let mut flexible_len = flex_tracks.len();
