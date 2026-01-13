@@ -17942,12 +17942,6 @@ fn async_eval_class_after_super(
     if direct.stx.key != "constructor" {
       continue;
     }
-    let ClassOrObjKey::Direct(direct) = &member.stx.key else {
-      continue;
-    };
-    if direct.stx.key != "constructor" {
-      continue;
-    }
 
     let ClassOrObjVal::Method(method) = &member.stx.val else {
       continue;
@@ -18114,19 +18108,6 @@ fn async_eval_class_after_super(
         return Err(e);
       }
     };
-
-  // Class constructor bodies (the hidden function object invoked via `[[Construct]]`) use the
-  // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against
-  // `super.prototype`.
-  if let Some(body_func) = ctor_body_func {
-    if let Err(err) = class_scope
-      .heap_mut()
-      .set_function_home_object(body_func, Some(prototype_obj))
-    {
-      class_scope.heap_mut().remove_root(func_root);
-      return Err(err);
-    }
-  }
 
   // Class constructor bodies (the hidden function object invoked via `[[Construct]]`) use the
   // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against

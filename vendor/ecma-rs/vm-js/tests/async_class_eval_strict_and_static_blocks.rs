@@ -223,3 +223,30 @@ fn async_class_explicit_constructor_body_supports_super_call() -> Result<(), VmE
   assert_eq!(value_to_string(&rt, out), "bdSI");
   Ok(())
 }
+
+#[test]
+fn async_class_can_extend_awaited_null_and_wires_null_prototype() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class D extends (await Promise.resolve(null)) {}
+        out += (Object.getPrototypeOf(D) === Function.prototype ? "S" : "s");
+        out += (Object.getPrototypeOf(D.prototype) === null ? "N" : "n");
+        return out;
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "SN");
+  Ok(())
+}
