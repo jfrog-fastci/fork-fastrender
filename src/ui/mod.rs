@@ -33,6 +33,7 @@ pub mod high_contrast;
 pub mod cancel;
 pub mod context_menu;
 pub mod frame_upload;
+pub mod worker_wake;
 pub mod global_history;
 pub mod history;
 pub mod history_timestamp;
@@ -250,6 +251,7 @@ pub use notifications::{
 };
 
 pub use frame_upload::FrameUploadCoalescer;
+pub use worker_wake::WorkerWakeCoalescer;
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
 pub use chrome_action::ChromeAction;
 pub use chrome_action_url::ChromeActionUrl;

@@ -410,47 +410,6 @@ impl PendingScrollDrag {
   }
 }
 
-// Worker → UI wake events can be extremely high-frequency (e.g. logging/heartbeats). Coalesce these
-// using a single atomic "pending" flag so we never enqueue one wake event per worker message.
-//
-// This helper is intentionally winit-free so we can unit test the coalescing logic without pulling
-// in the full browser UI dependency stack.
-#[cfg(any(test, feature = "browser_ui"))]
-#[derive(Debug, Default)]
-struct WorkerWakeCoalescer {
-  pending: std::sync::atomic::AtomicBool,
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
-impl WorkerWakeCoalescer {
-  fn new() -> Self {
-    Self {
-      pending: std::sync::atomic::AtomicBool::new(false),
-    }
-  }
-
-  fn notify(&self, on_first: impl FnOnce()) -> bool {
-    use std::sync::atomic::Ordering;
-
-    if self
-      .pending
-      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-      .is_ok()
-    {
-      on_first();
-      true
-    } else {
-      false
-    }
-  }
-
-  fn begin_drain(&self) {
-    self
-      .pending
-      .store(false, std::sync::atomic::Ordering::Release);
-  }
-}
-
 // Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
 // unit tests (which often run without the full winit/wgpu/egui stack).
 #[cfg(any(test, feature = "browser_ui"))]
@@ -2387,13 +2346,17 @@ mod tests {
   #[test]
   fn worker_wake_notify_coalesces() {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
-    let coalescer = WorkerWakeCoalescer::new();
+    let pending = Arc::new(AtomicBool::new(false));
+    let coalescer = fastrender::ui::WorkerWakeCoalescer::new(Arc::clone(&pending));
     let callback_calls = AtomicUsize::new(0);
 
     for _ in 0..10 {
-      coalescer.notify(|| {
+      coalescer.request_wake(|| {
         callback_calls.fetch_add(1, Ordering::SeqCst);
+        Ok::<(), ()>(())
       });
     }
 
@@ -2403,16 +2366,21 @@ mod tests {
   #[test]
   fn worker_wake_begin_drain_rearms_notify() {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
-    let coalescer = WorkerWakeCoalescer::new();
+    let pending = Arc::new(AtomicBool::new(false));
+    let coalescer = fastrender::ui::WorkerWakeCoalescer::new(Arc::clone(&pending));
     let callback_calls = AtomicUsize::new(0);
 
-    coalescer.notify(|| {
+    coalescer.request_wake(|| {
       callback_calls.fetch_add(1, Ordering::SeqCst);
+      Ok::<(), ()>(())
     });
-    coalescer.begin_drain();
-    coalescer.notify(|| {
+    coalescer.clear_pending();
+    coalescer.request_wake(|| {
       callback_calls.fetch_add(1, Ordering::SeqCst);
+      Ok::<(), ()>(())
     });
 
     assert_eq!(callback_calls.load(Ordering::SeqCst), 2);
@@ -2421,19 +2389,22 @@ mod tests {
   #[test]
   fn worker_wake_coalesces_across_threads() {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Barrier};
 
-    let coalescer = Arc::new(WorkerWakeCoalescer::new());
+    let pending = Arc::new(AtomicBool::new(false));
+    let coalescer = Arc::new(fastrender::ui::WorkerWakeCoalescer::new(Arc::clone(&pending)));
     let callback_calls = Arc::new(AtomicUsize::new(0));
     let barrier = Arc::new(Barrier::new(3));
 
-    let spawn = |coalescer: Arc<WorkerWakeCoalescer>,
+    let spawn = |coalescer: Arc<fastrender::ui::WorkerWakeCoalescer>,
                  callback_calls: Arc<AtomicUsize>,
                  barrier: Arc<Barrier>| {
       std::thread::spawn(move || {
         barrier.wait();
-        coalescer.notify(|| {
+        coalescer.request_wake(|| {
           callback_calls.fetch_add(1, Ordering::SeqCst);
+          Ok::<(), ()>(())
         });
       })
     };
@@ -2447,7 +2418,7 @@ mod tests {
 
     assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
 
-    coalescer.begin_drain();
+    coalescer.clear_pending();
 
     let barrier = Arc::new(Barrier::new(3));
     let a = spawn(coalescer.clone(), callback_calls.clone(), barrier.clone());
@@ -3271,7 +3242,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     window_id: WindowId,
     renderer_backend: fastrender::ui::ThreadRendererBackend,
     event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-    worker_wake_coalescer: Arc<WorkerWakeCoalescer>,
+    worker_wake_coalescer: Arc<fastrender::ui::WorkerWakeCoalescer>,
     worker_wake_counters: Option<Arc<WorkerWakeHudCounters>>,
   ) -> std::io::Result<(WorkerMsgQueue, Arc<AtomicBool>, std::thread::JoinHandle<()>)> {
     let worker_msgs = WorkerMsgQueue::new();
@@ -3296,9 +3267,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             //   queued at a time across all windows
             let window_first = !worker_wake_pending.swap(true, Ordering::AcqRel);
             let sent_global = window_first
-              && worker_wake_coalescer.notify(|| {
+              && worker_wake_coalescer.request_wake(|| {
                 // Ignore failures during shutdown (event loop already dropped).
-                let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
+                event_loop_proxy.send_event(UserEvent::WorkerWake)
               });
             if let Some(counters) = worker_wake_counters.as_ref() {
               if sent_global {
@@ -3309,7 +3280,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   .fetch_add(1, Ordering::Relaxed);
               }
             }
-            // `notify` already enqueues the wake event (if this is the first request).
+            // `request_wake` already enqueues the wake event (if this is the first request).
           }
         }
       })?;
@@ -3335,7 +3306,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
   let window_icon = load_window_icon();
-  let worker_wake_coalescer = Arc::new(WorkerWakeCoalescer::default());
+  let worker_wake_coalescer = Arc::new(fastrender::ui::WorkerWakeCoalescer::new(Arc::new(
+    AtomicBool::new(false),
+  )));
   let perf_log_enabled = perf_log_enabled_from_env();
 
   let browser_trace_out = match std::env::var(ENV_BROWSER_TRACE_OUT) {
@@ -3965,15 +3938,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // draining messages. Any messages that arrive during the drain set the per-window
         // `worker_wake_pending` flag and will be picked up below to schedule exactly one follow-up
         // wake when needed.
-        worker_wake_coalescer.begin_drain();
+        worker_wake_coalescer.clear_pending();
         let needs_follow_up_wake = needs_follow_up_wake_any
           || windows
             .values()
             .any(|win| win.worker_wake_pending.load(Ordering::Acquire));
         if needs_follow_up_wake {
-          worker_wake_coalescer.notify(|| {
-            let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
-          });
+          let _ = worker_wake_coalescer
+            .request_wake(|| event_loop_proxy.send_event(UserEvent::WorkerWake));
         }
 
         if session_dirty {
