@@ -1,6 +1,8 @@
 // META: script=/resources/testharness.js
 //
 // Cross-document insertion should implicitly adopt nodes into the target document.
+//
+// Use a real second document so we exercise true multi-document adoption behavior.
 test(() => {
   const doc1 = document;
   const doc2 = doc1.implementation.createHTMLDocument("t");

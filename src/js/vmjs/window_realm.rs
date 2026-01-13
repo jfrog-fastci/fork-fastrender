@@ -17238,16 +17238,12 @@ fn dom_parser_parse_from_string_native(
     }
   };
 
-  // HTML DOMParser documents inherit the caller's document URL (spec behavior, and asserted by the
-  // curated WPT corpus). Detached documents still have no associated `Window`, so `defaultView` and
-  // `location` remain null.
-  let host_url_value = {
-    // Root host document while allocating the `URL` key: `alloc_key` can trigger GC.
-    scope.push_root(Value::Object(host_document_obj))?;
-    let url_key = alloc_key(scope, "URL")?;
-    vm.get(scope, host_document_obj, url_key)?
-  };
-  let host_url_s = scope.heap_mut().to_string(host_url_value)?;
+  // DOMParser-created documents are detached and have a `null` browsing context; browsers expose an
+  // `about:blank` URL for them.
+  //
+  // Root the host document while allocating the URL string and wrapper: allocation can trigger GC.
+  scope.push_root(Value::Object(host_document_obj))?;
+  let host_url_s = scope.alloc_string(ABOUT_BLANK_URL)?;
   scope.push_root(Value::String(host_url_s))?;
 
   // Construct a detached Document wrapper.
@@ -32110,9 +32106,7 @@ fn node_owner_document_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let handle = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
-    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
   // Document.ownerDocument is always null. The `dom2` document root is `NodeId(0)`, but detached
   // documents created by DOMParser (and cloned documents) have their own `NodeKind::Document` nodes
   // with non-zero ids.
@@ -32130,8 +32124,7 @@ fn node_owner_document_get_native(
     return Ok(Value::Null);
   }
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, handle.node_id)?;
-  Ok(Value::Object(document_obj))
+  Ok(Value::Object(handle.document_obj))
 }
 
 fn document_type_name_get_native(
@@ -37525,6 +37518,74 @@ fn range_collapsed_get_native(
     .range_collapsed(handle.range_id)
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok(Value::Bool(collapsed))
+}
+
+fn range_common_ancestor_container_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .range_common_ancestor_container(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
+}
+
+fn range_create_contextual_fragment_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_value = scope.heap_mut().to_string(html_value)?;
+  let html = scope
+    .heap()
+    .get_string(html_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let context_node = {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    dom
+      .range_start_container(handle.range_id)
+      .map_err(|_| VmError::TypeError("Illegal invocation"))?
+  };
+
+  let fragment_id = {
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
+    // access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    match dom.create_contextual_fragment(context_node, &html) {
+      Ok(id) => id,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+    }
+  };
+
+  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), fragment_id)
 }
 
 fn range_set_start_native(
@@ -46841,31 +46902,40 @@ fn document_document_uri_get_native(
     None => false,
   };
 
-  // `document.documentURI` is a legacy alias for `document.URL`. Return the receiver's own `URL`
-  // data property so detached documents inheriting from the host document do not leak its URL.
+  // Host document: consult the embedder-tracked URL, falling back to `about:blank` for realms that
+  // do not provide a host document URL.
+  if is_host_document {
+    let document_url = vm
+      .user_data::<WindowRealmUserData>()
+      .map(|data| data.document_url.clone())
+      .unwrap_or_else(|| ABOUT_BLANK_URL.to_string());
+    return Ok(Value::String(scope.alloc_string(&document_url)?));
+  }
+
+  // `document.documentURI` is a legacy alias for `document.URL`. For windowless documents, return
+  // the document's own `URL` data property if stored, otherwise `about:blank`.
+  //
+  // Use an *own data property* lookup so documents inheriting from the host document do not leak
+  // its URL.
   {
     // Root while allocating property keys: `alloc_key` can trigger GC.
     let mut scope = scope.reborrow();
     scope.push_root(Value::Object(document_obj))?;
     let url_key = alloc_key(&mut scope, "URL")?;
-    if let Some(Value::String(url_s)) =
-      scope.heap().object_get_own_data_property_value(document_obj, &url_key)?
+    let own_url = match scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &url_key)
     {
+      Ok(v) => v,
+      Err(VmError::PropertyNotData) => None,
+      Err(err) => return Err(err),
+    };
+    if let Some(Value::String(url_s)) = own_url {
       return Ok(Value::String(url_s));
     }
   }
 
-  if !is_host_document {
-    return Ok(Value::String(scope.alloc_string(ABOUT_BLANK_URL)?));
-  }
-
-  // Host document: consult the embedder-tracked URL, falling back to `about:blank` for realms that
-  // do not provide a host document URL.
-  let document_url = vm
-    .user_data::<WindowRealmUserData>()
-    .map(|data| data.document_url.clone())
-    .unwrap_or_else(|| ABOUT_BLANK_URL.to_string());
-  Ok(Value::String(scope.alloc_string(&document_url)?))
+  Ok(Value::String(scope.alloc_string(ABOUT_BLANK_URL)?))
 }
 
 fn document_compat_mode_get_native(
@@ -46935,7 +47005,6 @@ fn document_content_type_get_native(
   {
     return Ok(Value::String(content_type));
   }
-
   let document_key = {
     let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
     platform.require_document_handle(scope.heap(), Value::Object(document_obj))?
@@ -51738,6 +51807,72 @@ fn init_window_globals(
         ),
       )?;
     }
+
+    // CharacterData constructor + prototype.
+    //
+    // FastRender does not currently expose a full `CharacterData` implementation, but WPT expects
+    // the interface object to exist and for `Text`/`Comment`/`ProcessingInstruction` to inherit from
+    // it (`node instanceof CharacterData`).
+    let character_data_proto = {
+      let key = alloc_key(&mut scope, "CharacterData")?;
+      let existing_ctor = scope
+        .heap()
+        .object_get_own_data_property_value(global, &key)?
+        .and_then(|v| match v {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        });
+
+      if let Some(ctor) = existing_ctor {
+        scope.push_root(Value::Object(ctor))?;
+        let proto_val = scope
+          .heap()
+          .object_get_own_data_property_value(ctor, &prototype_key)?
+          .unwrap_or(Value::Undefined);
+        let Value::Object(proto) = proto_val else {
+          return Err(VmError::InvariantViolation(
+            "WindowRealm expected globalThis.CharacterData.prototype to be an object",
+          ));
+        };
+        scope.push_root(Value::Object(proto))?;
+        proto
+      } else {
+        let proto = scope.alloc_object()?;
+        scope.push_root(Value::Object(proto))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(proto, Some(node_proto))?;
+
+        let ctor = make_illegal_ctor(&mut scope, "CharacterData")?;
+        scope.push_root(Value::Object(ctor))?;
+        scope.define_property(
+          ctor,
+          prototype_key,
+          ctor_link_desc(Value::Object(proto)),
+        )?;
+        scope.define_property(
+          proto,
+          constructor_key,
+          ctor_link_desc(Value::Object(ctor)),
+        )?;
+        scope.define_property(global, key, data_desc(Value::Object(ctor)))?;
+        proto
+      }
+    };
+
+    // Ensure the wrapper prototypes for Text/Comment/ProcessingInstruction inherit from
+    // `CharacterData.prototype`.
+    scope
+      .heap_mut()
+      .object_set_prototype(text_proto, Some(character_data_proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(comment_proto, Some(character_data_proto))?;
+    scope.heap_mut().object_set_prototype(
+      processing_instruction_proto,
+      Some(character_data_proto),
+    )?;
+
     let _text_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
       let text_ctor = make_illegal_ctor(&mut scope, "Text")?;
       scope.push_root(Value::Object(text_ctor))?;
@@ -52080,6 +52215,7 @@ fn init_window_globals(
     let document_ctor = require_global_ctor(&mut scope, "Document")?;
     let document_fragment_ctor = require_global_ctor(&mut scope, "DocumentFragment")?;
     let shadow_root_ctor = require_global_ctor(&mut scope, "ShadowRoot")?;
+    let character_data_ctor = require_global_ctor(&mut scope, "CharacterData")?;
     let text_ctor = require_global_ctor(&mut scope, "Text")?;
 
     scope
@@ -53943,14 +54079,44 @@ fn init_window_globals(
 
     // Range prototype + constructor.
     if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      // AbstractRange prototype + constructor.
+      //
+      // `AbstractRange` is the base interface for `Range` (and `StaticRange`). It is not directly
+      // constructible, but the interface object must exist so `range instanceof AbstractRange`
+      // behaves like browsers/WPT.
+      let abstract_range_proto = scope.alloc_object()?;
+      scope.push_root(Value::Object(abstract_range_proto))?;
+      scope.heap_mut().object_set_prototype(
+        abstract_range_proto,
+        Some(realm.intrinsics().object_prototype()),
+      )?;
+
+      let abstract_range_ctor = make_illegal_ctor(&mut scope, "AbstractRange")?;
+      scope.push_root(Value::Object(abstract_range_ctor))?;
+      scope.define_property(
+        abstract_range_ctor,
+        prototype_key,
+        ctor_link_desc(Value::Object(abstract_range_proto)),
+      )?;
+      scope.define_property(
+        abstract_range_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(abstract_range_ctor)),
+      )?;
+      let abstract_range_key = alloc_key(&mut scope, "AbstractRange")?;
+      scope.define_property(
+        global,
+        abstract_range_key,
+        data_desc(Value::Object(abstract_range_ctor)),
+      )?;
+
       let range_proto = scope.alloc_object()?;
       scope.push_root(Value::Object(range_proto))?;
-      // Link Range.prototype into `AbstractRange.prototype` when available so `range instanceof
-      // AbstractRange` is true (WHATWG DOM / WPT).
-      let range_parent_proto = abstract_range_proto.unwrap_or(realm.intrinsics().object_prototype());
+      // Link `Range.prototype` into `AbstractRange.prototype` so `range instanceof AbstractRange`
+      // is true (WHATWG DOM / WPT).
       scope
         .heap_mut()
-        .object_set_prototype(range_proto, Some(range_parent_proto))?;
+        .object_set_prototype(range_proto, Some(abstract_range_proto))?;
 
       // Range.prototype.startContainer
       let start_container_call_id = vm.register_native_call(range_start_container_get_native)?;
@@ -54059,6 +54225,29 @@ fn init_window_globals(
         range_proto,
         collapsed_key,
         idl_attribute_desc(Value::Object(collapsed_func), Value::Undefined),
+      )?;
+
+      // Range.prototype.commonAncestorContainer
+      let common_ancestor_call_id =
+        vm.register_native_call(range_common_ancestor_container_get_native)?;
+      let common_ancestor_name = scope.alloc_string("get commonAncestorContainer")?;
+      scope.push_root(Value::String(common_ancestor_name))?;
+      let common_ancestor_func = scope.alloc_native_function(
+        common_ancestor_call_id,
+        None,
+        common_ancestor_name,
+        0,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        common_ancestor_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(common_ancestor_func))?;
+      let common_ancestor_key = alloc_key(&mut scope, "commonAncestorContainer")?;
+      scope.define_property(
+        range_proto,
+        common_ancestor_key,
+        idl_attribute_desc(Value::Object(common_ancestor_func), Value::Undefined),
       )?;
 
       // Range.prototype.setStart
@@ -54639,6 +54828,23 @@ fn init_window_globals(
       node_proto,
       child_nodes_key,
       idl_attribute_desc(Value::Object(child_nodes_get_func), Value::Undefined),
+    )?;
+
+    let first_child_get_call_id = vm.register_native_call(node_first_child_get_native)?;
+    let first_child_get_name = scope.alloc_string("get firstChild")?;
+    scope.push_root(Value::String(first_child_get_name))?;
+    let first_child_get_func =
+      scope.alloc_native_function(first_child_get_call_id, None, first_child_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      first_child_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(first_child_get_func))?;
+    let first_child_key = alloc_key(&mut scope, "firstChild")?;
+    scope.define_property(
+      node_proto,
+      first_child_key,
+      idl_attribute_desc(Value::Object(first_child_get_func), Value::Undefined),
     )?;
 
     let parent_element_get_call_id = vm.register_native_call(node_parent_element_get_native)?;

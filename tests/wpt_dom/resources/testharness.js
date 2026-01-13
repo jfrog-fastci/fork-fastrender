@@ -85,6 +85,15 @@ function add_completion_callback(fn) {
   __completion_callbacks.push(fn);
 }
 //
+// Upstream WPT provides `setup(fn)` as a convenience for shared harness scripts (e.g. `dom/common.js`)
+// to run initialization before tests are registered. Our offline runner executes scripts
+// synchronously, so we can run the callback immediately.
+function setup(arg) {
+  if (typeof arg === "function") {
+    arg();
+  }
+}
+//
 function __queue_microtask(cb) {
   if (typeof queueMicrotask === "function") {
     queueMicrotask(cb);
@@ -672,6 +681,22 @@ function assert_throws_dom(name, target, func, message) {
   }
   //
   return thrown;
+}
+//
+function assert_not_throws(func, message) {
+  if (typeof func !== "function") {
+    throw Error(message || "assert_not_throws: function is not callable");
+  }
+  try {
+    return func();
+  } catch (e) {
+    throw Error(
+      __format_assertion_message(
+        message,
+        ["assert_not_throws: unexpected exception (", __exception_name(e), ")"].join("")
+      )
+    );
+  }
 }
 //
 function assert_unreached(message) {

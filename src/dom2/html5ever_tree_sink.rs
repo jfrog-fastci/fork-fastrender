@@ -1054,8 +1054,12 @@ impl TreeSink for Dom2TreeSink {
     // Insert the doctype before the first element/slot child so `document.firstChild` and
     // `document.childNodes` reflect spec ordering.
     let reference = doc.node(root).children.iter().copied().find(|&child| {
-      child.index() < doc.nodes_len()
-        && matches!(&doc.node(child).kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+      if child.index() >= doc.nodes_len() {
+        return false;
+      }
+      let child_node = doc.node(child);
+      child_node.parent == Some(root)
+        && matches!(child_node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
     });
     let doctype = doc.push_node(
       NodeKind::Doctype {
@@ -1066,7 +1070,7 @@ impl TreeSink for Dom2TreeSink {
       None,
       /* inert_subtree */ false,
     );
-    Self::insert_node_before(&mut doc, root, reference, doctype);
+    let _ = Self::insert_node_before(&mut doc, root, reference, doctype);
   }
 
   fn get_template_contents(&self, target: &NodeId) -> NodeId {

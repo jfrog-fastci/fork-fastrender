@@ -1,6 +1,8 @@
 // META: script=/resources/testharness.js
 //
 // Cross-document insertion should implicitly adopt nodes into the target document.
+//
+// Use a real second document so we exercise true multi-document adoption behavior.
 
 function clear_children(node) {
   while (node.childNodes.length !== 0) {

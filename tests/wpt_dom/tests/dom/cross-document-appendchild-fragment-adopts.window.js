@@ -2,6 +2,8 @@
 //
 // Cross-document insertion should implicitly adopt nodes into the target document.
 //
+// Use a real second document so we exercise true multi-document adoption behavior.
+//
 // DocumentFragment insertion is special: the fragment itself stays detached and is emptied, while its
 // children are moved/adopted into the destination document.
 

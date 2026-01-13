@@ -19,6 +19,7 @@
 //! progress through lazy-load/observer gating logic during server-side execution.
 
 use crate::js::window_dom_rect;
+use crate::js::window_realm::WindowRealmUserData;
 use vm_js::{
   GcObject, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope,
   Value, Vm, VmError, VmHost, VmHostHooks,
@@ -126,6 +127,15 @@ fn is_dom_element(
   hooks: &mut dyn VmHostHooks,
   value: Value,
 ) -> Result<bool, VmError> {
+  // Prefer a strict platform-object check (WebIDL `Element` conversion). If the WindowRealm DOM
+  // platform isn't available (e.g. in a reduced embedding), fall back to a best-effort `nodeType`
+  // check so real-world scripts can still run.
+  if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    if let Some(platform) = user_data.dom_platform_mut() {
+      return Ok(platform.require_element_handle(scope.heap(), value).is_ok());
+    }
+  }
+
   let Value::Object(obj) = value else {
     return Ok(false);
   };
