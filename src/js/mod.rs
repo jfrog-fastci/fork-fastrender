@@ -33,6 +33,7 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod cookie_jar;
+pub mod chrome_api;
 pub mod chrome_navigation_url;
 pub use chrome_navigation_url as chrome_api;
 pub mod web_storage;
