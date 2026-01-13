@@ -24092,7 +24092,7 @@ mod tests {
         size_attr: None,
         kind: TextControlKind::Plain,
         caret: 0,
-        caret_affinity: crate::text::caret::CaretAffinity::Downstream,
+        caret_affinity: CaretAffinity::Downstream,
         selection: None,
       },
       appearance: Appearance::Auto,
