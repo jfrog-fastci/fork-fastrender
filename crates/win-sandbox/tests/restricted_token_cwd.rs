@@ -2,12 +2,12 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use tempfile::tempdir;
 
-use win_sandbox::{spawn_sandboxed, SandboxRequest, SpawnConfig};
+use win_sandbox::{restricted_token, RestrictedToken, SpawnConfig};
 
 use windows_sys::Win32::Foundation::{
   CloseHandle, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
@@ -20,14 +20,14 @@ use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
   NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
-use windows_sys::Win32::Security::NO_INHERITANCE;
-use windows_sys::Win32::System::Threading::{
-  GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject, INFINITE,
-};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const TEST_NAME: &str = "restricted_token_spawn_does_not_inherit_inaccessible_cwd";
-const CHILD_ENV: &str = "WIN_SANDBOX_RESTRICTED_TOKEN_CWD_CHILD";
-const CWD_PATH_ENV: &str = "WIN_SANDBOX_RESTRICTED_TOKEN_CWD_PATH";
+const ENV_TEST_DEPTH: &str = "WIN_SANDBOX_RESTRICTED_TOKEN_CWD_DEPTH";
+const ENV_TEST_CWD: &str = "WIN_SANDBOX_RESTRICTED_TOKEN_CWD_PATH";
+
+// `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not currently export it.
+const NO_INHERITANCE: u32 = 0;
 
 #[link(name = "advapi32")]
 extern "system" {
@@ -133,21 +133,6 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
   Ok(())
 }
 
-fn wait_process(handle: HANDLE) -> std::io::Result<std::process::ExitStatus> {
-  let wait_rc = unsafe { WaitForSingleObject(handle, INFINITE) };
-  if wait_rc != 0 {
-    return Err(std::io::Error::last_os_error());
-  }
-
-  let mut exit_code: u32 = 0;
-  let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
-  if ok == 0 {
-    return Err(std::io::Error::last_os_error());
-  }
-
-  Ok(std::process::ExitStatus::from_raw(exit_code))
-}
-
 fn current_integrity_rid() -> u32 {
   let mut token: HANDLE = std::ptr::null_mut();
   let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
@@ -198,17 +183,21 @@ fn current_integrity_rid() -> u32 {
 
 #[test]
 fn restricted_token_spawn_does_not_inherit_inaccessible_cwd() {
-  if std::env::var_os(CHILD_ENV).is_some() {
+  let depth: u32 = std::env::var(ENV_TEST_DEPTH)
+    .ok()
+    .and_then(|raw| raw.parse().ok())
+    .unwrap_or(0);
+  let integrity_rid = current_integrity_rid();
+  if integrity_rid <= 4096 {
     // Child path: we should be running under a restricted token, and the parent-provided CWD should
     // not be accessible.
-    let integrity_rid = current_integrity_rid();
     assert!(
       integrity_rid == 0 || integrity_rid == 4096,
       "expected integrity RID to be Untrusted(0) or Low(4096); got {integrity_rid}"
     );
 
-    let cwd = std::env::var_os(CWD_PATH_ENV).expect("missing CWD path env var");
-    let err = std::env::set_current_dir(&cwd).expect_err("expected set_current_dir to fail");
+    let cwd = std::env::var_os(ENV_TEST_CWD).expect("missing parent restricted CWD env var");
+    let err = std::env::set_current_dir(PathBuf::from(cwd)).expect_err("expected set_current_dir to fail");
     if let Some(code) = err.raw_os_error() {
       assert!(
         code == ERROR_ACCESS_DENIED as i32
@@ -219,27 +208,11 @@ fn restricted_token_spawn_does_not_inherit_inaccessible_cwd() {
     }
     return;
   }
-
-  struct EnvRestore {
-    prev_child: Option<OsString>,
-    prev_cwd: Option<OsString>,
+  if depth > 0 {
+    panic!(
+      "expected restricted-token child to have Low/Untrusted integrity, got RID={integrity_rid}"
+    );
   }
-  impl Drop for EnvRestore {
-    fn drop(&mut self) {
-      match self.prev_child.take() {
-        Some(v) => std::env::set_var(CHILD_ENV, v),
-        None => std::env::remove_var(CHILD_ENV),
-      }
-      match self.prev_cwd.take() {
-        Some(v) => std::env::set_var(CWD_PATH_ENV, v),
-        None => std::env::remove_var(CWD_PATH_ENV),
-      }
-    }
-  }
-
-  let prev_child = std::env::var_os(CHILD_ENV);
-  let prev_cwd = std::env::var_os(CWD_PATH_ENV);
-  let _env_restore = EnvRestore { prev_child, prev_cwd };
 
   let tmp = tempdir().expect("tempdir");
   set_users_only_dacl(tmp.path()).expect("set Users-only DACL on temp dir");
@@ -254,20 +227,38 @@ fn restricted_token_spawn_does_not_inherit_inaccessible_cwd() {
   std::env::set_current_dir(tmp.path()).expect("set_current_dir to restricted dir");
   let _cwd_guard = CwdGuard(prev_dir);
 
-  std::env::set_var(CHILD_ENV, "1");
-  std::env::set_var(CWD_PATH_ENV, tmp.path());
-
   let exe = std::env::current_exe().expect("current test exe path");
-  let mut cfg = SpawnConfig::new(exe);
-  cfg.args = vec![
-    OsString::from("--exact"),
-    OsString::from(TEST_NAME),
-    OsString::from("--nocapture"),
+  let env = vec![
+    (OsString::from(ENV_TEST_CWD), tmp.path().as_os_str().to_os_string()),
+    (OsString::from(ENV_TEST_DEPTH), OsString::from("1")),
   ];
-  cfg.sandbox = SandboxRequest::RestrictedToken;
 
-  let child = spawn_sandboxed(&cfg).expect("spawn restricted-token child");
-  let status = wait_process(child.process.as_raw()).expect("wait for child");
-  assert!(status.success(), "child should exit successfully");
+  let cfg = SpawnConfig {
+    exe,
+    args: vec![
+      OsString::from("--exact"),
+      OsString::from(TEST_NAME),
+      OsString::from("--nocapture"),
+    ],
+    env,
+    current_dir: None,
+    inherit_handles: Vec::new(),
+    appcontainer: None,
+    job: None,
+    mitigation_policy: None,
+  };
+
+  let token = RestrictedToken::for_current_process_low_integrity()
+    .expect("create restricted token")
+    .into_handle();
+  let child = restricted_token::spawn_with_token(&cfg, &token).expect("spawn restricted-token child");
+
+  let exit_code = child
+    .wait_timeout(Duration::from_secs(30))
+    .expect("wait for child")
+    .unwrap_or_else(|| {
+      let _ = child.kill();
+      panic!("timed out waiting for restricted-token child to exit");
+    });
+  assert_eq!(exit_code, 0, "child should exit successfully");
 }
-
