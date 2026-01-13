@@ -223,5 +223,70 @@ mod tests {
       "center of iframe should be painted"
     );
   }
-}
 
+  #[test]
+  fn composites_with_non_unit_dpr_mapping_css_to_device_pixels() {
+    let mut root = Pixmap::new(32, 32).expect("root pixmap");
+    root.fill(Color::from_rgba8(0, 255, 0, 255));
+
+    // 8×8 CSS px at DPR=2 => 16×16 device px.
+    let mut child = Pixmap::new(16, 16).expect("child pixmap");
+    child.fill(Color::from_rgba8(255, 0, 0, 255));
+
+    let frames = [EmbeddedFrame {
+      frame_id: 3,
+      pixmap: &child,
+      rect_css: Rect::from_xywh(1.0, 2.0, 8.0, 8.0),
+      dpr: 2.0,
+      clip_radii: BorderRadii::ZERO,
+    }];
+
+    let out = composite_tab_surface(root, &frames);
+    assert_eq!(
+      rgba(&out, 2, 4),
+      (255, 0, 0, 255),
+      "expected child to start at (rect_css*dpr) = (2,4)"
+    );
+    assert_eq!(
+      rgba(&out, 17, 19),
+      (255, 0, 0, 255),
+      "expected child to cover 16×16 device px region"
+    );
+    assert_eq!(
+      rgba(&out, 18, 20),
+      (0, 255, 0, 255),
+      "pixels outside the mapped child rect should remain background"
+    );
+  }
+
+  #[test]
+  fn border_radius_clip_scales_with_dpr() {
+    let mut root = Pixmap::new(32, 32).expect("root pixmap");
+    root.fill(Color::from_rgba8(0, 255, 0, 255));
+
+    // 8×8 CSS px at DPR=2 => 16×16 device px.
+    let mut child = Pixmap::new(16, 16).expect("child pixmap");
+    child.fill(Color::from_rgba8(255, 0, 0, 255));
+
+    // Radius of 2 CSS px at DPR=2 => 4 device px.
+    let frames = [EmbeddedFrame {
+      frame_id: 4,
+      pixmap: &child,
+      rect_css: Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
+      dpr: 2.0,
+      clip_radii: BorderRadii::uniform(2.0),
+    }];
+
+    let out = composite_tab_surface(root, &frames);
+    assert_eq!(
+      rgba(&out, 0, 0),
+      (0, 255, 0, 255),
+      "corner pixel should be clipped at scaled border radius"
+    );
+    assert_eq!(
+      rgba(&out, 2, 1),
+      (255, 0, 0, 255),
+      "pixel inside the scaled quarter-circle should remain visible"
+    );
+  }
+}
