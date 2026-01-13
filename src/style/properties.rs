@@ -5258,6 +5258,8 @@ fn is_inherited_property(name: &str) -> bool {
       | "letter-spacing"
       | "word-spacing"
       | "text-anchor"
+      | "dominant-baseline"
+      | "baseline-shift"
       | "white-space"
       | "line-break"
       | "break-before"
@@ -7562,6 +7564,8 @@ pub(crate) fn apply_property_from_source(
     "marker-mid" => styles.svg_marker_mid = source.svg_marker_mid.clone(),
     "marker-end" => styles.svg_marker_end = source.svg_marker_end.clone(),
     "text-anchor" => styles.svg_text_anchor = source.svg_text_anchor,
+    "dominant-baseline" => styles.svg_dominant_baseline = source.svg_dominant_baseline,
+    "baseline-shift" => styles.svg_baseline_shift = source.svg_baseline_shift,
     "shape-rendering" => styles.svg_shape_rendering = source.svg_shape_rendering,
     "vector-effect" => styles.svg_vector_effect = source.svg_vector_effect,
     "color-rendering" => styles.svg_color_rendering = source.svg_color_rendering,
@@ -8059,6 +8063,14 @@ fn apply_global_keyword(
       }
       "mask-type" => {
         styles.svg_mask_type = Some(SvgMaskType::Luminance);
+        return true;
+      }
+      "dominant-baseline" => {
+        styles.svg_dominant_baseline = Some(SvgDominantBaseline::Auto);
+        return true;
+      }
+      "baseline-shift" => {
+        styles.svg_baseline_shift = Some(SvgBaselineShift::Baseline);
         return true;
       }
       _ => {}
@@ -16475,6 +16487,36 @@ fn apply_declaration_with_base_internal_with_order(
         }
       }
     }
+    "dominant-baseline" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(value) = SvgDominantBaseline::parse(kw) {
+          styles.svg_dominant_baseline = Some(value);
+        }
+      }
+    }
+    "baseline-shift" => match resolved_value {
+      PropertyValue::Keyword(kw) => {
+        if let Some(value) = SvgBaselineShift::parse_keyword(kw) {
+          styles.svg_baseline_shift = Some(value);
+        }
+      }
+      PropertyValue::Number(v) => {
+        if v.is_finite() {
+          styles.svg_baseline_shift = Some(SvgBaselineShift::Length(Length::px(*v)));
+        }
+      }
+      PropertyValue::Percentage(p) => {
+        if p.is_finite() {
+          styles.svg_baseline_shift = Some(SvgBaselineShift::Length(Length::percent(*p)));
+        }
+      }
+      PropertyValue::Length(len) => {
+        if len.calc.is_none() && len.value.is_finite() {
+          styles.svg_baseline_shift = Some(SvgBaselineShift::Length(*len));
+        }
+      }
+      _ => {}
+    },
     "shape-rendering" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Some(value) = SvgShapeRendering::parse_keyword(kw) {

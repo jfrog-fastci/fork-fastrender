@@ -18963,6 +18963,8 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.svg_marker_mid = parent.svg_marker_mid.clone();
   styles.svg_marker_end = parent.svg_marker_end.clone();
   styles.svg_text_anchor = parent.svg_text_anchor;
+  styles.svg_dominant_baseline = parent.svg_dominant_baseline;
+  styles.svg_baseline_shift = parent.svg_baseline_shift;
   styles.svg_shape_rendering = parent.svg_shape_rendering;
   styles.svg_vector_effect = parent.svg_vector_effect;
   styles.svg_color_rendering = parent.svg_color_rendering;
@@ -39571,6 +39573,31 @@ fn svg_presentation_attribute_hints(
   }
   if let Some(value) = node.get_attribute_ref("text-anchor") {
     push_parsed(&mut declarations, "text-anchor", value);
+  }
+  if let Some(value) = node.get_attribute_ref("dominant-baseline") {
+    push_parsed(&mut declarations, "dominant-baseline", value);
+  }
+  if let Some(value) = node.get_attribute_ref("baseline-shift") {
+    // Like many SVG presentation attributes, `baseline-shift` accepts SVG lengths, which allow
+    // unitless numbers as user units. Map those to px so the CSS property parser can handle them.
+    match parse_property_value("baseline-shift", value) {
+      Some(PropertyValue::Number(v))
+        if v.is_finite()
+          && !crate::style::var_resolution::contains_arbitrary_substitution_function(value) =>
+      {
+        declarations.push(Declaration {
+          property: "baseline-shift".into(),
+          value: PropertyValue::Length(Length::px(v)),
+          contains_var: false,
+          raw_value: String::new(),
+          important: false,
+        });
+      }
+      Some(_) => {
+        push_parsed(&mut declarations, "baseline-shift", value);
+      }
+      None => {}
+    }
   }
 
   // Commonly-used properties affecting SVG element visibility and foreignObject capture.

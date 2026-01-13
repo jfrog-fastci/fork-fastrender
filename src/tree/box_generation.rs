@@ -1341,6 +1341,8 @@ fn svg_inlined_presentation_attr(name: &str) -> bool {
     || name.eq_ignore_ascii_case("letter-spacing")
     || name.eq_ignore_ascii_case("word-spacing")
     || name.eq_ignore_ascii_case("text-anchor")
+    || name.eq_ignore_ascii_case("dominant-baseline")
+    || name.eq_ignore_ascii_case("baseline-shift")
     || name.eq_ignore_ascii_case("shape-rendering")
     || name.eq_ignore_ascii_case("vector-effect")
     || name.eq_ignore_ascii_case("color-rendering")
@@ -2265,7 +2267,7 @@ fn push_css_font_family_list(out: &mut String, families: &[String]) {
 }
 
 fn svg_text_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
-  use crate::style::types::SvgTextAnchor;
+  use crate::style::types::{SvgBaselineShift, SvgTextAnchor};
   use std::fmt::Write as _;
 
   let parent = parent?;
@@ -2328,6 +2330,27 @@ fn svg_text_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Opti
         SvgTextAnchor::Start => out.push_str("start"),
         SvgTextAnchor::Middle => out.push_str("middle"),
         SvgTextAnchor::End => out.push_str("end"),
+      }
+    }
+  }
+
+  if let Some(value) = style.svg_dominant_baseline {
+    if parent.svg_dominant_baseline != Some(value) {
+      start_decl(&mut out, &mut any);
+      out.push_str("dominant-baseline: ");
+      out.push_str(value.as_css_str());
+    }
+  }
+
+  if let Some(value) = style.svg_baseline_shift {
+    if parent.svg_baseline_shift != Some(value) {
+      start_decl(&mut out, &mut any);
+      out.push_str("baseline-shift: ");
+      match value {
+        SvgBaselineShift::Baseline => out.push_str("baseline"),
+        SvgBaselineShift::Sub => out.push_str("sub"),
+        SvgBaselineShift::Super => out.push_str("super"),
+        SvgBaselineShift::Length(len) => out.push_str(&len.to_css()),
       }
     }
   }
@@ -3426,7 +3449,7 @@ fn serialize_svg_subtree(
     .then(Instant::now);
 
   fn root_style_base(style: &ComputedStyle) -> String {
-    use crate::style::types::SvgTextAnchor;
+    use crate::style::types::{SvgBaselineShift, SvgTextAnchor};
     use std::fmt::Write as _;
 
     let mut out = String::with_capacity(64);
@@ -3470,6 +3493,21 @@ fn serialize_svg_subtree(
         SvgTextAnchor::Start => out.push_str("start"),
         SvgTextAnchor::Middle => out.push_str("middle"),
         SvgTextAnchor::End => out.push_str("end"),
+      }
+    }
+
+    if let Some(value) = style.svg_dominant_baseline {
+      out.push_str("; dominant-baseline: ");
+      out.push_str(value.as_css_str());
+    }
+
+    if let Some(value) = style.svg_baseline_shift {
+      out.push_str("; baseline-shift: ");
+      match value {
+        SvgBaselineShift::Baseline => out.push_str("baseline"),
+        SvgBaselineShift::Sub => out.push_str("sub"),
+        SvgBaselineShift::Super => out.push_str("super"),
+        SvgBaselineShift::Length(len) => out.push_str(&len.to_css()),
       }
     }
 

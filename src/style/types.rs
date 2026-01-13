@@ -1286,6 +1286,94 @@ pub enum SvgTextAnchor {
   End,
 }
 
+/// SVG `dominant-baseline` property.
+///
+/// Controls which baseline table is used to align glyphs within SVG text layout.
+/// This affects both `<text>` and inline `<tspan>` positioning when serialized to
+/// resvg/usvg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvgDominantBaseline {
+  Auto,
+  TextBottom,
+  Alphabetic,
+  Ideographic,
+  Middle,
+  Central,
+  Mathematical,
+  Hanging,
+  TextTop,
+}
+
+impl SvgDominantBaseline {
+  pub fn parse(keyword: &str) -> Option<Self> {
+    Self::parse_keyword(keyword)
+  }
+
+  pub fn parse_keyword(keyword: &str) -> Option<Self> {
+    if keyword.eq_ignore_ascii_case("auto") {
+      Some(Self::Auto)
+    } else if keyword.eq_ignore_ascii_case("text-bottom") {
+      Some(Self::TextBottom)
+    } else if keyword.eq_ignore_ascii_case("alphabetic") {
+      Some(Self::Alphabetic)
+    } else if keyword.eq_ignore_ascii_case("ideographic") {
+      Some(Self::Ideographic)
+    } else if keyword.eq_ignore_ascii_case("middle") {
+      Some(Self::Middle)
+    } else if keyword.eq_ignore_ascii_case("central") {
+      Some(Self::Central)
+    } else if keyword.eq_ignore_ascii_case("mathematical") {
+      Some(Self::Mathematical)
+    } else if keyword.eq_ignore_ascii_case("hanging") {
+      Some(Self::Hanging)
+    } else if keyword.eq_ignore_ascii_case("text-top") {
+      Some(Self::TextTop)
+    } else {
+      None
+    }
+  }
+
+  pub fn as_css_str(self) -> &'static str {
+    match self {
+      Self::Auto => "auto",
+      Self::TextBottom => "text-bottom",
+      Self::Alphabetic => "alphabetic",
+      Self::Ideographic => "ideographic",
+      Self::Middle => "middle",
+      Self::Central => "central",
+      Self::Mathematical => "mathematical",
+      Self::Hanging => "hanging",
+      Self::TextTop => "text-top",
+    }
+  }
+}
+
+/// SVG `baseline-shift` property.
+///
+/// This is a legacy SVG property used to shift glyphs relative to the dominant
+/// baseline (e.g. `sub`/`super` or a length/percentage).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SvgBaselineShift {
+  Baseline,
+  Sub,
+  Super,
+  Length(Length),
+}
+
+impl SvgBaselineShift {
+  pub fn parse_keyword(keyword: &str) -> Option<Self> {
+    if keyword.eq_ignore_ascii_case("baseline") {
+      Some(Self::Baseline)
+    } else if keyword.eq_ignore_ascii_case("sub") {
+      Some(Self::Sub)
+    } else if keyword.eq_ignore_ascii_case("super") {
+      Some(Self::Super)
+    } else {
+      None
+    }
+  }
+}
+
 /// SVG `shape-rendering` property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SvgShapeRendering {

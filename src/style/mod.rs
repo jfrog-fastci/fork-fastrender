@@ -192,9 +192,11 @@ use types::ShapeOutside;
 use types::StrokeDasharray;
 use types::StrokeLinecap;
 use types::StrokeLinejoin;
+use types::SvgBaselineShift;
 use types::SvgColorInterpolation;
 use types::SvgColorInterpolationFilters;
 use types::SvgColorRendering;
+use types::SvgDominantBaseline;
 use types::SvgMaskType;
 use types::SvgShapeRendering;
 use types::SvgTextAnchor;
@@ -1314,6 +1316,8 @@ pub struct ComputedStyle {
   pub svg_marker_mid: Option<SvgUrlOrNone>,
   pub svg_marker_end: Option<SvgUrlOrNone>,
   pub svg_text_anchor: Option<SvgTextAnchor>,
+  pub svg_dominant_baseline: Option<SvgDominantBaseline>,
+  pub svg_baseline_shift: Option<SvgBaselineShift>,
   pub svg_shape_rendering: Option<SvgShapeRendering>,
   pub svg_vector_effect: Option<SvgVectorEffect>,
   pub svg_color_rendering: Option<SvgColorRendering>,
@@ -1746,6 +1750,8 @@ impl Default for ComputedStyle {
       svg_marker_mid: None,
       svg_marker_end: None,
       svg_text_anchor: None,
+      svg_dominant_baseline: None,
+      svg_baseline_shift: None,
       svg_shape_rendering: None,
       svg_vector_effect: None,
       svg_color_rendering: None,

@@ -502,6 +502,8 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-align-all",
   "text-align-last",
   "text-anchor",
+  "dominant-baseline",
+  "baseline-shift",
   "text-combine-upright",
   "text-decoration",
   "text-decoration-color",
