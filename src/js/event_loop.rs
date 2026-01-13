@@ -669,6 +669,36 @@ impl<Host: 'static> EventLoop<Host> {
     self.timers.len()
   }
 
+  /// Whether this event loop has no runnable tasks/microtasks and no future work scheduled.
+  ///
+  /// This is stronger than [`EventLoop::is_idle`]: it also requires that no timers remain scheduled
+  /// (even if due in the future) and that no `requestAnimationFrame` callbacks remain pending.
+  ///
+  /// Embeddings use this to deterministically detect when they can no longer make forward progress
+  /// (for example, to fail module top-level await that never settles).
+  pub fn is_quiescent(&mut self) -> bool {
+    // A quiescent loop must not be in the middle of a *task* turn.
+    //
+    // NOTE: `EventLoop` may run microtask checkpoint hooks while `currently_running_task` is still
+    // set to the last drained microtask (implementation detail). Treat that as "between turns" so
+    // callers can observe quiescence after the microtask queue is drained.
+    if let Some(task) = self.currently_running_task {
+      if !task.is_microtask {
+        return false;
+      }
+    }
+    if !self.is_idle() {
+      return false;
+    }
+    if self.has_pending_timers() {
+      return false;
+    }
+    if self.has_pending_animation_frame_callbacks() {
+      return false;
+    }
+    true
+  }
+
   pub fn has_pending_animation_frame_callbacks(&self) -> bool {
     !self.animation_frame_callbacks.is_empty()
   }
@@ -3623,6 +3653,45 @@ mod tests {
     // microtask queue (HTML event loop semantics).
     assert_eq!(host.log, vec!["task", "microtask"]);
     assert_eq!(event_loop.pending_microtask_count(), 0);
+    Ok(())
+  }
+
+  #[test]
+  fn is_quiescent_is_false_when_timer_scheduled_even_if_idle() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
+    assert!(event_loop.is_idle(), "fresh event loop should be idle");
+    assert!(
+      event_loop.is_quiescent(),
+      "fresh event loop should be quiescent"
+    );
+
+    let _id = event_loop.set_timeout(Duration::from_millis(10), |_host, _event_loop| Ok(()))?;
+    assert!(
+      event_loop.is_idle(),
+      "scheduling a timer should not make the event loop non-idle"
+    );
+    assert!(
+      !event_loop.is_quiescent(),
+      "scheduled timers should keep the event loop non-quiescent"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn is_quiescent_is_true_after_timer_cleared() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
+
+    let id = event_loop.set_timeout(Duration::from_millis(10), |_host, _event_loop| Ok(()))?;
+    event_loop.clear_timeout(id);
+
+    assert!(
+      event_loop.is_quiescent(),
+      "clearing the last timer should allow the event loop to become quiescent"
+    );
     Ok(())
   }
 
