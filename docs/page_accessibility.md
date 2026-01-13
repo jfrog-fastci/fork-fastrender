@@ -366,6 +366,13 @@ used by native controls / eventual AT action routing):
 cargo test --test integration browser_integration::a11y_select_action
 ```
 
+The UI worker also has an integration test that asserts it emits the `WorkerToUi::PageAccessibility`
+snapshot (semantic tree + bounds) after navigating:
+
+```bash
+cargo test --features browser_ui --test integration browser_integration::ui_worker_page_accessibility
+```
+
 There are also focused AccessKit bridge tests:
 
 - `tests/accesskit_dom2_node_ids.rs` (requires `--features a11y_accesskit`)
