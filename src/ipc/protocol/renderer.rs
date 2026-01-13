@@ -396,6 +396,8 @@ pub enum RendererToBrowser {
     frame: SharedFrameDescriptor,
     viewport_css: (u32, u32),
     dpr: f32,
+    /// True when the rendered document contains time-based effects (CSS animations/transitions,
+    /// animated images, JS timers/rAF, etc).
     wants_ticks: bool,
     scroll_state_minimal: ScrollStateMinimal,
   },
