@@ -290,23 +290,31 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
   columns: &[GridTrack],
   rows: &[GridTrack],
 ) {
+  #[derive(Clone, Copy)]
+  struct TrackPrefixCounts {
+    flexible: u16,
+    intrinsic: u16,
+    percentage: u16,
+  }
+
   #[inline(always)]
-  fn build_prefix_counts(tracks: &[GridTrack]) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+  fn build_prefix_counts(tracks: &[GridTrack]) -> Vec<TrackPrefixCounts> {
     // Building each prefix array in separate passes would require scanning the full track list
-    // 3x per axis. We compute all three in one pass to reduce CPU time for large grids.
+    // 3x per axis. We compute all three in one pass to reduce CPU time for large grids, while also
+    // storing them in a single allocation to reduce allocator churn.
     //
     // Use `u16` for the prefix values: the count of "real" tracks is bounded by `TrackCounts` (u16),
     // and gutters/lines are never flexible/intrinsic/percentage tracks.
-    let mut flexible_prefix: Vec<u16> = Vec::with_capacity(tracks.len() + 1);
-    let mut intrinsic_prefix: Vec<u16> = Vec::with_capacity(tracks.len() + 1);
-    let mut percentage_prefix: Vec<u16> = Vec::with_capacity(tracks.len() + 1);
-    flexible_prefix.push(0);
-    intrinsic_prefix.push(0);
-    percentage_prefix.push(0);
+    let mut prefix: Vec<TrackPrefixCounts> = Vec::with_capacity(tracks.len() + 1);
 
     let mut flexible_count = 0u16;
     let mut intrinsic_count = 0u16;
     let mut percentage_count = 0u16;
+    prefix.push(TrackPrefixCounts {
+      flexible: flexible_count,
+      intrinsic: intrinsic_count,
+      percentage: percentage_count,
+    });
     for track in tracks {
       if track.is_flexible() {
         flexible_count += 1;
@@ -318,45 +326,49 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
         percentage_count += 1;
       }
 
-      flexible_prefix.push(flexible_count);
-      intrinsic_prefix.push(intrinsic_count);
-      percentage_prefix.push(percentage_count);
+      prefix.push(TrackPrefixCounts {
+        flexible: flexible_count,
+        intrinsic: intrinsic_count,
+        percentage: percentage_count,
+      });
     }
 
-    (flexible_prefix, intrinsic_prefix, percentage_prefix)
+    prefix
   }
 
   #[inline(always)]
-  fn range_has_match(prefix: &[u16], start: usize, end: usize) -> bool {
+  fn range_has_match(start: usize, end: usize, start_count: u16, end_count: u16) -> bool {
     // `GridItem::track_range_excluding_lines()` can return an empty range for degenerate spans.
     // This mirrors `Range::any()` which would also return `false` for empty ranges.
-    start < end && prefix[end] != prefix[start]
+    start < end && end_count != start_count
   }
 
-  let (column_flexible_prefix, column_intrinsic_prefix, column_percentage_prefix) =
-    build_prefix_counts(columns);
-  let (row_flexible_prefix, row_intrinsic_prefix, row_percentage_prefix) =
-    build_prefix_counts(rows);
+  let column_prefix = build_prefix_counts(columns);
+  let row_prefix = build_prefix_counts(rows);
 
   for item in items {
     let col_range = item.track_range_excluding_lines(AbstractAxis::Inline);
+    let col_start = column_prefix[col_range.start];
+    let col_end = column_prefix[col_range.end];
     item.crosses_flexible_column =
-      range_has_match(&column_flexible_prefix, col_range.start, col_range.end);
+      range_has_match(col_range.start, col_range.end, col_start.flexible, col_end.flexible);
     let crosses_intrinsic_column_base =
-      range_has_match(&column_intrinsic_prefix, col_range.start, col_range.end);
+      range_has_match(col_range.start, col_range.end, col_start.intrinsic, col_end.intrinsic);
     item.crosses_intrinsic_column_base = crosses_intrinsic_column_base;
     item.crosses_percentage_column =
-      range_has_match(&column_percentage_prefix, col_range.start, col_range.end);
+      range_has_match(col_range.start, col_range.end, col_start.percentage, col_end.percentage);
     item.crosses_intrinsic_column = crosses_intrinsic_column_base;
 
     let row_range = item.track_range_excluding_lines(AbstractAxis::Block);
+    let row_start = row_prefix[row_range.start];
+    let row_end = row_prefix[row_range.end];
     item.crosses_flexible_row =
-      range_has_match(&row_flexible_prefix, row_range.start, row_range.end);
+      range_has_match(row_range.start, row_range.end, row_start.flexible, row_end.flexible);
     let crosses_intrinsic_row_base =
-      range_has_match(&row_intrinsic_prefix, row_range.start, row_range.end);
+      range_has_match(row_range.start, row_range.end, row_start.intrinsic, row_end.intrinsic);
     item.crosses_intrinsic_row_base = crosses_intrinsic_row_base;
     item.crosses_percentage_row =
-      range_has_match(&row_percentage_prefix, row_range.start, row_range.end);
+      range_has_match(row_range.start, row_range.end, row_start.percentage, row_end.percentage);
     item.crosses_intrinsic_row = crosses_intrinsic_row_base;
   }
 }
