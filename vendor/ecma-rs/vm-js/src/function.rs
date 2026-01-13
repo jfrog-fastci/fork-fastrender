@@ -133,6 +133,11 @@ pub(crate) struct JsFunction {
   pub(crate) meta_property_context: MetaPropertyContext,
 
   pub(crate) base: ObjectBase,
+  /// ECMAScript `[[HomeObject]]` internal slot.
+  ///
+  /// This is used to resolve `super` property references inside methods (including class methods,
+  /// object literal methods, and arrow functions that inherit `super` from an enclosing method).
+  pub(crate) home_object: Option<GcObject>,
   pub(crate) data: FunctionData,
 
   // Spec-shaped internal slots for function objects.
@@ -159,8 +164,6 @@ pub(crate) struct JsFunction {
   /// functions that share one captured value (e.g. a small heap object acting as the
   /// `alreadyResolved` record) and each capture the target promise.
   pub(crate) native_slots: Option<Box<[Value]>>,
-  /// ECMAScript `[[HomeObject]]` internal slot.
-  pub(crate) home_object: Option<GcObject>,
   /// The function's `[[Realm]]` internal slot.
   ///
   /// For now this is represented as the Realm's global object.
@@ -222,13 +225,13 @@ impl JsFunction {
       is_strict: false,
       meta_property_context: MetaPropertyContext::FUNCTION,
       base: ObjectBase::new(None),
+      home_object: None,
       data: FunctionData::None,
       bound_target: None,
       bound_this: None,
       bound_new_target: None,
       bound_args: None,
       native_slots: None,
-      home_object: None,
       realm: None,
       job_realm: 0,
       script_or_module_token: None,
@@ -269,13 +272,13 @@ impl JsFunction {
       is_strict: true,
       meta_property_context: MetaPropertyContext::FUNCTION,
       base: ObjectBase::new(None),
+      home_object: None,
       data: FunctionData::None,
       bound_target: None,
       bound_this: None,
       bound_new_target: None,
       bound_args: None,
       native_slots,
-      home_object: None,
       realm: None,
       job_realm: 0,
       script_or_module_token: None,
@@ -305,13 +308,13 @@ impl JsFunction {
       is_strict,
       meta_property_context: MetaPropertyContext::FUNCTION,
       base: ObjectBase::new(None),
+      home_object: None,
       data: FunctionData::None,
       bound_target: None,
       bound_this: None,
       bound_new_target: None,
       bound_args: None,
       native_slots: None,
-      home_object: None,
       realm: None,
       job_realm: 0,
       script_or_module_token: None,
@@ -345,13 +348,13 @@ impl JsFunction {
       is_strict,
       meta_property_context: MetaPropertyContext::FUNCTION,
       base: ObjectBase::new(None),
+      home_object: None,
       data: FunctionData::None,
       bound_target: None,
       bound_this: None,
       bound_new_target: None,
       bound_args: None,
       native_slots: None,
-      home_object: None,
       realm: None,
       job_realm: 0,
       script_or_module_token: None,
@@ -393,6 +396,9 @@ impl Trace for JsFunction {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     self.base.trace(tracer);
     tracer.trace_value(Value::String(self.name));
+    if let Some(home) = self.home_object {
+      tracer.trace_value(Value::Object(home));
+    }
 
     match self.data {
       FunctionData::None => {}
@@ -435,9 +441,6 @@ impl Trace for JsFunction {
       for value in native_slots.iter().copied() {
         tracer.trace_value(value);
       }
-    }
-    if let Some(home_object) = self.home_object {
-      tracer.trace_value(Value::Object(home_object));
     }
     if let Some(realm) = self.realm {
       tracer.trace_value(Value::Object(realm));

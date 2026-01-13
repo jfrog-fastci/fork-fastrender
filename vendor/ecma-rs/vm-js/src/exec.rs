@@ -4372,10 +4372,14 @@ enum Reference<'a> {
   /// A property reference.
   ///
   /// Note: per ECMA-262, the reference stores the *base value* (which may be a primitive). Property
-  /// access/assignment performs `ToObject(base)` for the actual `[[Get]]`/`[[Set]]` operation but
-  /// uses the original base value as the `receiver` / call `this` binding.
+  /// access/assignment performs `ToObject(base)` for the actual `[[Get]]`/`[[Set]]` operation, but
+  /// the `receiver` (the `this` value for `[[Get]]`/`[[Set]]`) can differ from the base:
+  /// - for ordinary property references, `receiver == base`
+  /// - for `super` property references, `base` is `GetPrototypeOf([[HomeObject]])` while `receiver`
+  ///   is the current `this` binding.
   Property {
     base: Value,
+    receiver: Value,
     key: PropertyKey,
   },
   /// A `super` property reference (`super.x` / `super[expr]`).
@@ -4500,6 +4504,24 @@ impl<'a> Evaluator<'a> {
     self
       .vm
       .call_with_host_and_hooks(&mut *self.host, scope, &mut *self.hooks, callee, this, args)
+  }
+
+  fn super_base(&mut self, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    let Some(home_object) = self.home_object else {
+      // `super` is only valid inside methods/class constructors, so reaching this at runtime
+      // indicates an early-error mismatch. Prefer a recoverable runtime error over panicking.
+      return Err(VmError::Unimplemented("super property access without home object"));
+    };
+
+    let mut proto_scope = scope.reborrow();
+    proto_scope.push_root(Value::Object(home_object))?;
+    let proto = proto_scope.get_prototype_of_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      home_object,
+    )?;
+    Ok(proto.map(Value::Object).unwrap_or(Value::Null))
   }
 
   /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
@@ -10855,38 +10877,35 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     expr: &MemberExpr,
   ) -> Result<OptionalChainEval, VmError> {
-    // `super.prop` (SuperProperty) evaluation.
-    //
-    // This is a Super Reference which uses:
-    // - the current lexical `[[HomeObject]]` to resolve the super base (`GetSuperBase`), and
-    // - the current `this` binding as the receiver for `[[Get]]`.
     if matches!(&*expr.left.stx, Expr::Super(_)) {
-      // Optional chaining on `super` is an early error.
       if expr.optional_chaining {
+        // `super?.prop` is a syntax error (early error), so reaching this at runtime indicates a
+        // parser/early-error mismatch.
         return Err(VmError::InvariantViolation(
-          "optional chaining used with super property",
+          "optional chaining used with super property access",
         ));
       }
-      // Private-name super property access is an early error (`super.#x`).
       if expr.right.starts_with('#') {
-        return Err(VmError::InvariantViolation(
-          "super private-name member access should be rejected by early errors",
-        ));
+        return Err(VmError::Unimplemented("super private member access"));
       }
 
-      // `GetThisBinding` must run before any further evaluation (including allocating the property
-      // key string) so derived constructors throw before `super()` as required by ECMA-262.
-      let receiver = self.get_this_binding(scope)?;
-      let home_object = self.home_object.ok_or(VmError::InvariantViolation(
-        "super property access missing [[HomeObject]]",
-      ))?;
-
-      // Root receiver + home object across property-key string allocation and the `[[Get]]`.
-      let mut key_scope = scope.reborrow();
-      key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
-      let key_s = key_scope.alloc_string(&expr.right)?;
+      let mut super_scope = scope.reborrow();
+      let actual_this = self.get_this_binding(&mut super_scope)?;
+      super_scope.push_root(actual_this)?;
+      if let Some(home) = self.home_object {
+        super_scope.push_root(Value::Object(home))?;
+      }
+      let key_s = super_scope.alloc_string(&expr.right)?;
+      super_scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
-      let value = self.eval_super_property_get(&mut key_scope, receiver, key)?;
+
+      let super_base = self.super_base(&mut super_scope)?;
+      let reference = Reference::SuperProperty {
+        base: super_base,
+        key,
+        receiver: actual_this,
+      };
+      let value = self.get_value_from_reference(&mut super_scope, &reference)?;
       return Ok(OptionalChainEval::Value(value));
     }
 
@@ -10917,6 +10936,7 @@ impl<'a> Evaluator<'a> {
       let key_s = key_scope.alloc_string(&expr.right)?;
       Reference::Property {
         base,
+        receiver: base,
         key: PropertyKey::from_string(key_s),
       }
     };
@@ -10929,34 +10949,46 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     expr: &ComputedMemberExpr,
   ) -> Result<OptionalChainEval, VmError> {
-    // `super[expr]` (SuperProperty) evaluation.
-    //
-    // Like `super.prop`, this uses `[[HomeObject]]` to resolve the super base and the current `this`
-    // binding as the receiver.
-    //
-    // Per ECMA-262, derived constructors must throw before evaluating the computed key expression
-    // when `this` is uninitialized.
     if matches!(&*expr.object.stx, Expr::Super(_)) {
       if expr.optional_chaining {
         return Err(VmError::InvariantViolation(
-          "optional chaining used with super computed property",
+          "optional chaining used with super property access",
         ));
       }
-      // `GetThisBinding` must run before evaluating the computed key expression.
-      let receiver = self.get_this_binding(scope)?;
+      // `super[expr]` evaluates the computed key expression (including `ToPropertyKey`) before
+      // accessing the `this` binding so key-expression side effects are preserved even when `this`
+      // is uninitialized in derived constructors.
+      let mut super_scope = scope.reborrow();
+      // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
+      // across key evaluation, which can allocate and trigger GC.
+      super_scope.push_root(self.this)?;
+      if let Some(home) = self.home_object {
+        super_scope.push_root(Value::Object(home))?;
+      }
+      let member_value = self.eval_expr(&mut super_scope, &expr.member)?;
+      super_scope.push_root(member_value)?;
+      let key = self.to_property_key_operator(&mut super_scope, member_value)?;
 
-      let home_object = self.home_object.ok_or(VmError::InvariantViolation(
-        "super property access missing [[HomeObject]]",
-      ))?;
+      // Root the property key before resolving the `this` binding (which can throw and allocate).
+      match key {
+        PropertyKey::String(s) => {
+          super_scope.push_root(Value::String(s))?;
+        }
+        PropertyKey::Symbol(s) => {
+          super_scope.push_root(Value::Symbol(s))?;
+        }
+      }
 
-      // Root receiver + home object across evaluation of the computed key expression, `ToPropertyKey`,
-      // and the final `[[Get]]`.
-      let mut key_scope = scope.reborrow();
-      key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
-      let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
-      key_scope.push_root(member_value)?;
-      let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-      let value = self.eval_super_property_get(&mut key_scope, receiver, key)?;
+      let actual_this = self.get_this_binding(&mut super_scope)?;
+      super_scope.push_root(actual_this)?;
+
+      let super_base = self.super_base(&mut super_scope)?;
+      let reference = Reference::SuperProperty {
+        base: super_base,
+        key,
+        receiver: actual_this,
+      };
+      let value = self.get_value_from_reference(&mut super_scope, &reference)?;
       return Ok(OptionalChainEval::Value(value));
     }
 
@@ -10976,7 +11008,11 @@ impl<'a> Evaluator<'a> {
     let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
     key_scope.push_root(member_value)?;
     let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-    let reference = Reference::Property { base, key };
+    let reference = Reference::Property {
+      base,
+      receiver: base,
+      key,
+    };
     let value = self.get_value_from_reference(&mut key_scope, &reference)?;
     Ok(OptionalChainEval::Value(value))
   }
@@ -11105,28 +11141,29 @@ impl<'a> Evaluator<'a> {
             "optional chaining used in reference position",
           ));
         }
-        // `super.prop` in reference position.
         if matches!(&*member.stx.left.stx, Expr::Super(_)) {
           if member.stx.right.starts_with('#') {
-            return Err(VmError::InvariantViolation(
-              "super private member access is not valid (early errors should prevent this)",
-            ));
+            return Err(VmError::Unimplemented("super private member access"));
           }
           let receiver = self.get_this_binding(scope)?;
           let home_object = self.home_object.ok_or(VmError::InvariantViolation(
             "super property access missing [[HomeObject]]",
           ))?;
-          let mut key_scope = scope.reborrow();
+          let mut super_scope = scope.reborrow();
           // Root `this` binding state (may be a DerivedConstructorState cell), the resolved receiver,
           // and `[[HomeObject]]` across property-key allocation and `GetSuperBase()` (proxy traps can
           // allocate and trigger GC).
-          key_scope.push_roots(&[self.this, receiver, Value::Object(home_object)])?;
-          let key_s = key_scope.alloc_string(&member.stx.right)?;
-          key_scope.push_root(Value::String(key_s))?;
+          super_scope.push_roots(&[self.this, receiver, Value::Object(home_object)])?;
+          let key_s = super_scope.alloc_string(&member.stx.right)?;
+          super_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
 
-          let base = self.get_super_base(&mut key_scope)?;
-          return Ok(Reference::SuperProperty { base, key, receiver });
+          let super_base = self.super_base(&mut super_scope)?;
+          return Ok(Reference::SuperProperty {
+            base: super_base,
+            key,
+            receiver,
+          });
         }
 
         let base = self.eval_expr(scope, &member.stx.left)?;
@@ -11153,6 +11190,7 @@ impl<'a> Evaluator<'a> {
           let key_s = key_scope.alloc_string(&member.stx.right)?;
           Ok(Reference::Property {
             base,
+            receiver: base,
             key: PropertyKey::from_string(key_s),
           })
         }
@@ -11163,34 +11201,36 @@ impl<'a> Evaluator<'a> {
             "optional chaining used in reference position",
           ));
         }
-        // `super[expr]` in reference position.
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-          // Spec ordering: evaluate `GetThisBinding()` (and throw in derived constructors before
-          // `super()`) before evaluating the computed key expression.
-          let receiver = self.get_this_binding(scope)?;
+          // `super[expr]` evaluates the computed key expression before accessing the `this` binding
+          // so key-expression side effects are preserved even when `this` is uninitialized.
           let home_object = self.home_object.ok_or(VmError::InvariantViolation(
             "super property access missing [[HomeObject]]",
           ))?;
+          let mut super_scope = scope.reborrow();
+          // Root `this` binding state (may be a DerivedConstructorState cell) and `[[HomeObject]]`
+          // across computed-key evaluation and `GetSuperBase()`. These steps can allocate and may
+          // invoke user code (Proxy traps).
+          super_scope.push_roots(&[self.this, Value::Object(home_object)])?;
 
-          let mut key_scope = scope.reborrow();
-          // Root `this` binding state (may be a DerivedConstructorState cell), the resolved receiver
-          // (`GetThisBinding()` result), and `[[HomeObject]]` across computed-key evaluation and
-          // `GetSuperBase()`. These steps can allocate and may invoke user code (Proxy traps).
-          key_scope.push_roots(&[self.this, receiver, Value::Object(home_object)])?;
-          let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
-          key_scope.push_root(member_value)?;
-          let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-          // Root the property key across `GetSuperBase()` which can invoke proxy traps.
+          let member_value = self.eval_expr(&mut super_scope, &member.stx.member)?;
+          super_scope.push_root(member_value)?;
+          let key = self.to_property_key_operator(&mut super_scope, member_value)?;
+
+          // Root the property key before resolving the `this` binding (which can throw/allocate).
           match key {
             PropertyKey::String(s) => {
-              key_scope.push_root(Value::String(s))?;
+              super_scope.push_root(Value::String(s))?;
             }
             PropertyKey::Symbol(s) => {
-              key_scope.push_root(Value::Symbol(s))?;
+              super_scope.push_root(Value::Symbol(s))?;
             }
           }
 
-          let base = self.get_super_base(&mut key_scope)?;
+          let receiver = self.get_this_binding(&mut super_scope)?;
+          super_scope.push_root(receiver)?;
+
+          let base = self.super_base(&mut super_scope)?;
           return Ok(Reference::SuperProperty { base, key, receiver });
         }
 
@@ -11207,7 +11247,11 @@ impl<'a> Evaluator<'a> {
             "Cannot convert undefined or null to object",
           )?);
         }
-        Ok(Reference::Property { base, key })
+        Ok(Reference::Property {
+          base,
+          receiver: base,
+          key,
+        })
       }
       _ => Err(VmError::Unimplemented("expression is not a reference")),
     }
@@ -11236,11 +11280,16 @@ impl<'a> Evaluator<'a> {
   ) -> Result<(), VmError> {
     match *reference {
       Reference::Binding(_) => {}
-      Reference::Property { base, key } => {
-        // Root both base and key together so a GC triggered by root-stack growth cannot collect the
+      Reference::Property {
+        base,
+        receiver,
+        key,
+      } => {
+        // Root all components together so a GC triggered by root-stack growth cannot collect the
         // not-yet-pushed entry.
         let roots = [
           base,
+          receiver,
           match key {
             PropertyKey::String(s) => Value::String(s),
             PropertyKey::Symbol(s) => Value::Symbol(s),
@@ -11286,13 +11335,13 @@ impl<'a> Evaluator<'a> {
           }
         }
       }
-      Reference::Property { base, key } => {
+      Reference::Property { base, receiver, key } => {
         let mut get_scope = scope.reborrow();
         self.root_reference(&mut get_scope, reference)?;
         let object = self.to_object_operator(&mut get_scope, base)?;
         // Root the boxed object so host hooks/accessors can allocate freely.
         get_scope.push_root(Value::Object(object))?;
-        get_scope.get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, base)
+        get_scope.get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, receiver)
       }
       Reference::SuperProperty {
         base,
@@ -11332,7 +11381,7 @@ impl<'a> Evaluator<'a> {
         value,
         self.strict,
       ),
-      Reference::Property { base, key } => {
+      Reference::Property { base, receiver, key } => {
         let mut set_scope = scope.reborrow();
         self.root_reference(&mut set_scope, reference)?;
         // Root `value` across `ToObject(base)` in case boxing triggers a GC.
@@ -11347,7 +11396,7 @@ impl<'a> Evaluator<'a> {
           object,
           key,
           value,
-          base,
+          receiver,
         )?;
         if ok {
           Ok(())
@@ -12094,6 +12143,7 @@ impl<'a> Evaluator<'a> {
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         let reference = Reference::Property {
           base,
+          receiver: base,
           key: PropertyKey::from_string(key_s),
         };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
@@ -12113,15 +12163,20 @@ impl<'a> Evaluator<'a> {
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-        let reference = Reference::Property { base, key };
+        let reference = Reference::Property {
+          base,
+          receiver: base,
+          key,
+        };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, base)
       }
       Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
         let reference = self.eval_reference(scope, &expr.stx.function)?;
         let this_value = match reference {
-          Reference::Property { base, .. } | Reference::Private { base, .. } => base,
+          Reference::Property { receiver, .. } => receiver,
           Reference::SuperProperty { receiver, .. } => receiver,
+          Reference::Private { base, .. } => base,
           _ => Value::Undefined,
         };
 
@@ -13749,56 +13804,77 @@ impl<'a> Evaluator<'a> {
 
     // Evaluate the callee and compute the `this` value for the call.
     let (callee_value, this_value) = match &*expr.callee.stx {
-      // `super.method()` call in methods/getters/setters.
+      // `super.m()` calls (instance/static).
       Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
         if member.stx.optional_chaining {
           return Err(VmError::InvariantViolation(
-            "optional chaining cannot be used on super",
+            "optional chaining used with super property access",
           ));
         }
         if member.stx.right.starts_with('#') {
           return Err(VmError::Unimplemented("super private member access"));
         }
-        // `super` property references use `GetThisBinding` as the receiver. This must throw before
-        // any user-observable work when `this` is uninitialized in derived constructors (including
-        // when the `this` binding is represented via a shared `DerivedConstructorState` cell for
-        // nested arrow functions / eval).
-        let receiver = self.get_this_binding(scope)?;
-        let home_object = self.home_object.ok_or(VmError::InvariantViolation(
-          "super property access missing [[HomeObject]]",
-        ))?;
-        let mut key_scope = scope.reborrow();
-        // Root receiver + home object across property-key string allocation and the `[[Get]]`.
-        key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
-        let key_s = key_scope.alloc_string(&member.stx.right)?;
+        // Evaluate the property reference (including `this` binding errors) before arguments.
+        let mut super_scope = scope.reborrow();
+        let actual_this = self.get_this_binding(&mut super_scope)?;
+        super_scope.push_root(actual_this)?;
+        if let Some(home) = self.home_object {
+          super_scope.push_root(Value::Object(home))?;
+        }
+        let key_s = super_scope.alloc_string(&member.stx.right)?;
+        super_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
 
-        let callee_value = self.eval_super_property_get(&mut key_scope, receiver, key)?;
-        (callee_value, receiver)
+        let super_base = self.super_base(&mut super_scope)?;
+        let reference = Reference::SuperProperty {
+          base: super_base,
+          key,
+          receiver: actual_this,
+        };
+        let callee_value = self.get_value_from_reference(&mut super_scope, &reference)?;
+        (callee_value, actual_this)
       }
-      // `super[expr](...)` call in methods/getters/setters.
+      // `super[expr](...args)` calls (instance/static).
       Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
         if member.stx.optional_chaining {
           return Err(VmError::InvariantViolation(
-            "optional chaining cannot be used on super",
+            "optional chaining used with super property access",
           ));
         }
-        // `GetThisBinding` must be observed before evaluating the computed key expression.
-        // `GetThisBinding` must be observed before evaluating the computed key expression.
-        let receiver = self.get_this_binding(scope)?;
-        let home_object = self.home_object.ok_or(VmError::InvariantViolation(
-          "super property access missing [[HomeObject]]",
-        ))?;
+        // Evaluate the computed key expression (including `ToPropertyKey`) before accessing the
+        // `this` binding so key-expression side effects are preserved.
+        let mut super_scope = scope.reborrow();
+        // Root the raw `this` binding (which may be a derived-constructor state cell) and home
+        // object across key evaluation, which can allocate and trigger GC.
+        super_scope.push_root(self.this)?;
+        if let Some(home) = self.home_object {
+          super_scope.push_root(Value::Object(home))?;
+        }
+        let member_value = self.eval_expr(&mut super_scope, &member.stx.member)?;
+        super_scope.push_root(member_value)?;
+        let key = self.to_property_key_operator(&mut super_scope, member_value)?;
 
-        // Root receiver + home object across evaluation of the computed key and `[[Get]]`.
-        let mut key_scope = scope.reborrow();
-        key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
-        let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
-        key_scope.push_root(member_value)?;
-        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+        // Root the property key before resolving the `this` binding (which can throw/allocate).
+        match key {
+          PropertyKey::String(s) => {
+            super_scope.push_root(Value::String(s))?;
+          }
+          PropertyKey::Symbol(s) => {
+            super_scope.push_root(Value::Symbol(s))?;
+          }
+        }
 
-        let callee_value = self.eval_super_property_get(&mut key_scope, receiver, key)?;
-        (callee_value, receiver)
+        let actual_this = self.get_this_binding(&mut super_scope)?;
+        super_scope.push_root(actual_this)?;
+
+        let super_base = self.super_base(&mut super_scope)?;
+        let reference = Reference::SuperProperty {
+          base: super_base,
+          key,
+          receiver: actual_this,
+        };
+        let callee_value = self.get_value_from_reference(&mut super_scope, &reference)?;
+        (callee_value, actual_this)
       }
       // Optional member call (e.g. `obj?.method()`): only applies when the optional-chain member
       // expression is directly in the call callee position (i.e. not parenthesized).
@@ -13829,6 +13905,7 @@ impl<'a> Evaluator<'a> {
           let key_s = key_scope.alloc_string(&member.stx.right)?;
           Reference::Property {
             base,
+            receiver: base,
             key: PropertyKey::from_string(key_s),
           }
         };
@@ -13862,7 +13939,11 @@ impl<'a> Evaluator<'a> {
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-        let reference = Reference::Property { base, key };
+        let reference = Reference::Property {
+          base,
+          receiver: base,
+          key,
+        };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, base)
       }
@@ -13915,6 +13996,7 @@ impl<'a> Evaluator<'a> {
               let key_s = key_scope.alloc_string(&member.stx.right)?;
               Reference::Property {
                 base,
+                receiver: base,
                 key: PropertyKey::from_string(key_s),
               }
             };
@@ -13936,57 +14018,65 @@ impl<'a> Evaluator<'a> {
       // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
       Expr::ComputedMember(member) if !member.stx.optional_chaining => {
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-          // Spec ordering: evaluate `GetThisBinding()` (and throw in derived constructors before
-          // `super()`) before evaluating the computed key expression.
-          let receiver = self.get_this_binding(scope)?;
-
+          // Computed super call `super[expr]()`:
+          // - evaluate the key expression before resolving the `this` binding (side effects),
+          // - then resolve `GetSuperBase()` and call with `this = receiver`.
           let mut key_scope = scope.reborrow();
-          key_scope.push_roots(&[self.this, receiver])?;
+          // Root the raw `this` binding (which may be a derived-constructor state cell) and home
+          // object across key evaluation, `GetThisBinding`, and `GetSuperBase()` (which can invoke
+          // proxy traps / GC).
+          key_scope.push_root(self.this)?;
+          if let Some(home) = self.home_object {
+            key_scope.push_root(Value::Object(home))?;
+          }
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
           match key {
-            PropertyKey::String(s) => {
-              key_scope.push_root(Value::String(s))?;
-            }
-            PropertyKey::Symbol(s) => {
-              key_scope.push_root(Value::Symbol(s))?;
-            }
-          }
+            PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+            PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+          };
+
+          let receiver = self.get_this_binding(&mut key_scope)?;
+          key_scope.push_root(receiver)?;
 
           let base = self.get_super_base(&mut key_scope)?;
           let reference = Reference::SuperProperty { base, key, receiver };
           let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
           (callee_value, receiver)
         } else {
-          match self.eval_chain_base(scope, &member.stx.object)? {
-            OptionalChainEval::Value(base) => {
-              // In non-optional computed member access, the key expression is evaluated even if the
-              // base is nullish (the TypeError is thrown only when the reference is dereferenced).
-              let mut key_scope = scope.reborrow();
-              key_scope.push_root(base)?;
-              let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
-              key_scope.push_root(member_value)?;
-              let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-              if is_nullish(base) {
-                return Err(throw_type_error(
-                  self.vm,
-                  &mut key_scope,
-                  "Cannot convert undefined or null to object",
-                )?);
-              }
-              let reference = Reference::Property { base, key };
-              let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
-              (callee_value, base)
+        match self.eval_chain_base(scope, &member.stx.object)? {
+          OptionalChainEval::Value(base) => {
+            // In non-optional computed member access, the key expression is evaluated even if the
+            // base is nullish (the TypeError is thrown only when the reference is dereferenced).
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(base)?;
+            let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
+            key_scope.push_root(member_value)?;
+            let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+            if is_nullish(base) {
+              return Err(throw_type_error(
+                self.vm,
+                &mut key_scope,
+                "Cannot convert undefined or null to object",
+              )?);
             }
-            OptionalChainEval::ShortCircuit => {
-              if callee_is_parenthesized {
-                (Value::Undefined, Value::Undefined)
-              } else {
-                return Ok(OptionalChainEval::ShortCircuit);
-              }
+            let reference = Reference::Property {
+              base,
+              receiver: base,
+              key,
+            };
+            let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+            (callee_value, base)
+          }
+          OptionalChainEval::ShortCircuit => {
+            if callee_is_parenthesized {
+              (Value::Undefined, Value::Undefined)
+            } else {
+              return Ok(OptionalChainEval::ShortCircuit);
             }
           }
+        }
         }
       }
       Expr::Id(_) | Expr::IdPat(_) => {
@@ -14155,70 +14245,6 @@ impl<'a> Evaluator<'a> {
               self.strict,
               self.this,
             )?;
-            Ok(value)
-          }
-          // `super.prop = rhs` assignment in methods/getters/setters.
-          Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
-            // Optional chaining is never a valid assignment target; this should be rejected by an
-            // early error pass.
-            if member.stx.optional_chaining {
-              return Err(VmError::InvariantViolation(
-                "optional chaining used in reference position",
-              ));
-            }
-            if member.stx.right.starts_with('#') {
-              return Err(VmError::Unimplemented("super private member access"));
-            }
-            // `GetThisBinding` must run before evaluating the RHS so derived constructors throw
-            // before `super()` returns (and use the initialized receiver after super()).
-            let receiver = self.get_this_binding(scope)?;
-
-            let home_object = self.home_object.ok_or(VmError::InvariantViolation(
-              "super property access missing [[HomeObject]]",
-            ))?;
-
-            // Evaluate RHS after the super reference checks but before allocating the property-key
-            // string; this keeps the rooting simple.
-            let mut set_scope = scope.reborrow();
-            set_scope.push_roots(&[receiver, Value::Object(home_object)])?;
-            let value = self.eval_expr(&mut set_scope, &expr.right)?;
-            set_scope.push_root(value)?;
-
-            let key_s = set_scope.alloc_string(&member.stx.right)?;
-            let key = PropertyKey::from_string(key_s);
-            self.eval_super_property_set(&mut set_scope, receiver, key, value)?;
-            Ok(value)
-          }
-          // `super[expr] = rhs` assignment in methods/getters/setters.
-          Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
-            if member.stx.optional_chaining {
-              return Err(VmError::InvariantViolation(
-                "optional chaining used in reference position",
-              ));
-            }
-            // `GetThisBinding` must run before evaluating the computed key expression.
-            let receiver = self.get_this_binding(scope)?;
-
-            let home_object = self.home_object.ok_or(VmError::InvariantViolation(
-              "super property access missing [[HomeObject]]",
-            ))?;
-
-            // Root receiver + home object across evaluation of the computed key, RHS, and the `[[Set]]`.
-            let mut set_scope = scope.reborrow();
-            set_scope.push_roots(&[receiver, Value::Object(home_object)])?;
-            let member_value = self.eval_expr(&mut set_scope, &member.stx.member)?;
-            set_scope.push_root(member_value)?;
-            let key = self.to_property_key_operator(&mut set_scope, member_value)?;
-            // Root the key across RHS evaluation (the key may be a newly allocated string).
-            match key {
-              PropertyKey::String(s) => set_scope.push_root(Value::String(s))?,
-              PropertyKey::Symbol(s) => set_scope.push_root(Value::Symbol(s))?,
-            };
-
-            let value = self.eval_expr(&mut set_scope, &expr.right)?;
-            set_scope.push_root(value)?;
-
-            self.eval_super_property_set(&mut set_scope, receiver, key, value)?;
             Ok(value)
           }
           _ => {
@@ -16077,6 +16103,12 @@ pub(crate) enum AsyncFrame {
     expr: *const ComputedMemberExpr,
     base_root: RootId,
   },
+  /// Continue a `super[expr]` computed member access after evaluating the member expression.
+  ///
+  /// Unlike ordinary computed members, `super[expr]` does not evaluate a base expression; instead
+  /// it resolves a Super Reference using `[[HomeObject]].[[Prototype]]` and the current `this`
+  /// binding as the receiver.
+  SuperComputedMemberAfterMember { expr: *const ComputedMemberExpr },
 
   /// Continue class evaluation after evaluating the class heritage (`extends`) expression.
   ///
@@ -24254,6 +24286,34 @@ fn async_eval_expr_chain(
     Expr::UnaryPostfix(unary) => {
       async_eval_update_expression(evaluator, scope, &unary.stx.argument, unary.stx.operator)
     }
+    Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+      if member.stx.optional_chaining {
+        return Err(VmError::InvariantViolation(
+          "optional chaining used with super property access",
+        ));
+      }
+      if member.stx.right.starts_with('#') {
+        return Err(VmError::Unimplemented("super private member access"));
+      }
+
+      let mut super_scope = scope.reborrow();
+      let actual_this = evaluator.get_this_binding(&mut super_scope)?;
+      super_scope.push_root(actual_this)?;
+      let key_s = super_scope.alloc_string(&member.stx.right)?;
+      super_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let super_base = evaluator.super_base(&mut super_scope)?;
+      let reference = Reference::Property {
+        base: super_base,
+        receiver: actual_this,
+        key,
+      };
+      let value = evaluator
+        .get_value_from_reference(&mut super_scope, &reference)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))?;
+      Ok(AsyncEval::Complete(value))
+    }
     Expr::Member(member) => match async_eval_chain_base(evaluator, scope, &member.stx.left)? {
       AsyncEval::Complete(base) => Ok(AsyncEval::Complete(async_member_after_base(
         evaluator,
@@ -24271,35 +24331,48 @@ fn async_eval_expr_chain(
         Ok(AsyncEval::Suspend(suspend))
       }
     },
-    // Super property access: `super[expr]` with an `await` in the computed key expression.
-    Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
-      if member.stx.optional_chaining {
-        return Err(VmError::Unimplemented("optional chaining super property"));
+    Expr::ComputedMember(member) => {
+      // `super[expr]` computed member access is not a normal property reference: it resolves
+      // against `[[HomeObject]].[[Prototype]]` and uses the current `this` binding as the receiver.
+      if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+        if member.stx.optional_chaining {
+          return Err(VmError::Unimplemented(
+            "optional chaining super computed member access",
+          ));
+        }
+
+        match async_eval_expr(evaluator, scope, &member.stx.member)? {
+          AsyncEval::Complete(member_value) => {
+            let value = async_super_computed_member_after_member(evaluator, scope, member_value)?;
+            Ok(AsyncEval::Complete(value))
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::SuperComputedMemberAfterMember {
+                expr: &*member.stx as *const ComputedMemberExpr,
+              },
+            )?;
+            Ok(AsyncEval::Suspend(suspend))
+          }
+        }
+      } else {
+        match async_eval_chain_base(evaluator, scope, &member.stx.object)? {
+          AsyncEval::Complete(base) => {
+            async_computed_member_after_base(evaluator, scope, &member.stx, base)
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::ComputedMemberAfterBase {
+                expr: &*member.stx as *const ComputedMemberExpr,
+              },
+            )?;
+            Ok(AsyncEval::Suspend(suspend))
+          }
+        }
       }
-
-      // Evaluating a super property reference requires an initialized `this` binding. In derived
-      // constructors before `super()`, this check happens before evaluating the computed key
-      // expression.
-      let _ = async_get_super_receiver(evaluator, scope)?;
-
-      // `super` is not an ordinary expression and is not evaluated as the computed-member base.
-      async_computed_member_after_base(evaluator, scope, &member.stx, Value::Undefined)
     }
-    Expr::ComputedMember(member) => match async_eval_chain_base(evaluator, scope, &member.stx.object)?
-    {
-      AsyncEval::Complete(base) => {
-        async_computed_member_after_base(evaluator, scope, &member.stx, base)
-      }
-      AsyncEval::Suspend(mut suspend) => {
-        async_frames_push(
-          &mut suspend.frames,
-          AsyncFrame::ComputedMemberAfterBase {
-            expr: &*member.stx as *const ComputedMemberExpr,
-          },
-        )?;
-        Ok(AsyncEval::Suspend(suspend))
-      }
-    },
     Expr::Call(call) => async_eval_call(evaluator, scope, &call.stx),
     Expr::Import(import) => async_eval_import_expr(evaluator, scope, &import.stx),
     Expr::Cond(cond) => match async_eval_expr(evaluator, scope, &cond.stx.test)? {
@@ -25745,6 +25818,7 @@ fn async_eval_assignment_to_member_after_base(
       let key_s = key_scope.alloc_string(&member.right)?;
       Reference::Property {
         base,
+        receiver: base,
         key: PropertyKey::from_string(key_s),
       }
     }
@@ -25768,12 +25842,13 @@ fn async_eval_assignment_to_computed_member(
   // `super[expr]` in assignment target position is a Super Reference, not a normal computed-member
   // reference.
   if matches!(&*member.object.stx, Expr::Super(_)) {
-    // Evaluating a super property reference requires an initialized `this` binding. In derived
-    // constructors before `super()`, this check happens before evaluating the computed key
-    // expression.
-    let receiver = async_get_super_receiver(evaluator, scope)?;
     let mut member_scope = scope.reborrow();
-    member_scope.push_root(receiver)?;
+    // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
+    // across key evaluation, which can allocate and trigger GC.
+    member_scope.push_root(evaluator.this)?;
+    if let Some(home) = evaluator.home_object {
+      member_scope.push_root(Value::Object(home))?;
+    }
     match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
       AsyncEval::Complete(member_value) => {
         let mut key_scope = member_scope.reborrow();
@@ -25782,11 +25857,14 @@ fn async_eval_assignment_to_computed_member(
           .to_property_key_operator(&mut key_scope, member_value)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
 
-        // Root the key across `GetSuperBase()` which can invoke proxy traps.
+        // Root the key across `GetThisBinding`/`GetSuperBase()` (which can invoke proxy traps and GC).
         match key {
           PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
           PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
         };
+
+        let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+        key_scope.push_root(receiver)?;
 
         let base = evaluator
           .get_super_base(&mut key_scope)
@@ -25882,7 +25960,11 @@ fn async_eval_assignment_to_computed_member_after_member(
     )?);
   }
 
-  let reference = Reference::Property { base, key };
+  let reference = Reference::Property {
+    base,
+    receiver: base,
+    key,
+  };
   async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
 }
 
@@ -25908,7 +25990,7 @@ fn async_eval_assignment_apply_reference(
         AsyncEval::Suspend(mut suspend) => {
           let (base_root, key_root, receiver_root) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
+            Reference::Property { base, receiver: _, key } => {
               let mut root_scope = rhs_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -26080,7 +26162,7 @@ fn async_eval_assignment_apply_reference(
         AsyncEval::Suspend(mut suspend) => {
           let (base_root, key_root, receiver_root) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
+            Reference::Property { base, receiver: _, key } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -26175,7 +26257,7 @@ fn async_eval_assignment_apply_reference(
         AsyncEval::Suspend(mut suspend) => {
           let (base_root, key_root, receiver_root) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
+            Reference::Property { base, receiver: _, key } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -26275,7 +26357,7 @@ fn async_eval_assignment_apply_reference(
         AsyncEval::Suspend(mut suspend) => {
           let (base_root, key_root, receiver_root) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
+            Reference::Property { base, receiver: _, key } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -26368,7 +26450,7 @@ fn async_eval_assignment_apply_reference(
         AsyncEval::Suspend(mut suspend) => {
           let (base_root, key_root, receiver_root) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
+            Reference::Property { base, receiver: _, key } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -26530,12 +26612,13 @@ fn async_eval_update_expression(
 
       // `super[expr]++` / `++super[expr]` update targets.
       if matches!(&*member.object.stx, Expr::Super(_)) {
-        // Evaluating a super property reference requires an initialized `this` binding. In derived
-        // constructors before `super()`, this check must happen **before** evaluating the computed
-        // key expression.
-        let receiver = async_get_super_receiver(evaluator, scope)?;
         let mut member_scope = scope.reborrow();
-        member_scope.push_root(receiver)?;
+        // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
+        // across key evaluation, which can allocate and trigger GC.
+        member_scope.push_root(evaluator.this)?;
+        if let Some(home) = evaluator.home_object {
+          member_scope.push_root(Value::Object(home))?;
+        }
         match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
           AsyncEval::Complete(member_value) => {
             let mut key_scope = member_scope.reborrow();
@@ -26544,11 +26627,14 @@ fn async_eval_update_expression(
             let key = evaluator
               .to_property_key_operator(&mut key_scope, member_value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-            // Root the computed key across `GetSuperBase()` which can invoke proxy traps.
+            // Root the computed key across `GetThisBinding`/`GetSuperBase()` (Proxy traps can allocate/GC).
             match key {
               PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
               PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
             };
+
+            let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+            key_scope.push_root(receiver)?;
 
             let base = evaluator
               .get_super_base(&mut key_scope)
@@ -26628,6 +26714,7 @@ fn async_reference_from_member<'a>(
     let key_s = key_scope.alloc_string(&member.right)?;
     Ok(Reference::Property {
       base,
+      receiver: base,
       key: PropertyKey::from_string(key_s),
     })
   }
@@ -26702,7 +26789,11 @@ fn async_reference_from_computed_member(
     )?);
   }
 
-  Ok(Reference::Property { base, key })
+  Ok(Reference::Property {
+    base,
+    receiver: base,
+    key,
+  })
 }
 
 fn async_apply_update_to_reference(
@@ -26843,6 +26934,7 @@ fn async_eval_tagged_template_member_after_base(
       let key_s = key_scope.alloc_string(&member.right)?;
       Reference::Property {
         base,
+        receiver: base,
         key: PropertyKey::from_string(key_s),
       }
     };
@@ -26915,7 +27007,11 @@ fn async_eval_tagged_template_computed_member_after_member(
     )?);
   }
 
-  let reference = Reference::Property { base, key };
+  let reference = Reference::Property {
+    base,
+    receiver: base,
+    key,
+  };
   let callee_value = evaluator
     .get_value_from_reference(&mut key_scope, &reference)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
@@ -27616,6 +27712,7 @@ fn async_member_after_base(
     let key_s = key_scope.alloc_string(&expr.right)?;
     Reference::Property {
       base,
+      receiver: base,
       key: PropertyKey::from_string(key_s),
     }
   };
@@ -27670,7 +27767,7 @@ fn async_computed_member_after_base(
 fn async_computed_member_after_member(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
-  expr: &ComputedMemberExpr,
+  _expr: &ComputedMemberExpr,
   base: Value,
   member_value: Value,
 ) -> Result<Value, VmError> {
@@ -27679,32 +27776,86 @@ fn async_computed_member_after_member(
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
-  if matches!(&*expr.object.stx, Expr::Super(_)) {
-    let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
-
-    // Root receiver + key across `GetSuperBase()` and any proxy traps.
-    key_scope.push_root(receiver)?;
-    match key {
-      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-      PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-    };
-
-    let base = evaluator
-      .get_super_base(&mut key_scope)
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-    let reference = Reference::SuperProperty { base, key, receiver };
-    evaluator
-      .get_value_from_reference(&mut key_scope, &reference)
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
-  } else {
-    let reference = Reference::Property { base, key };
-    evaluator
-      .get_value_from_reference(&mut key_scope, &reference)
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
-  }
+  let reference = Reference::Property {
+    base,
+    receiver: base,
+    key,
+  };
+  evaluator
+    .get_value_from_reference(&mut key_scope, &reference)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
 }
 
+fn async_super_get(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  key: PropertyKey,
+) -> Result<Value, VmError> {
+  let home_object = evaluator.home_object.ok_or(VmError::InvariantViolation(
+    "super property reference is missing [[HomeObject]]",
+  ))?;
+
+  let mut super_scope = scope.reborrow();
+  // Resolve the current `this` binding used as the receiver for Super References.
+  //
+  // Note: for computed super members (`super[expr]`), this must happen *after* the computed key
+  // expression is evaluated to preserve side effects in derived constructors before `super()`.
+  let this_value = async_get_super_receiver(evaluator, &mut super_scope)?;
+  let key_value = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(sym) => Value::Symbol(sym),
+  };
+  // Root everything used across `GetPrototypeOf` (Proxy traps can allocate + trigger GC).
+  super_scope.push_roots(&[Value::Object(home_object), this_value, key_value])?;
+
+  // Super property references resolve against `[[HomeObject]].[[Prototype]]` and use the current
+  // `this` value as the receiver.
+  let super_base = super_scope
+    .get_prototype_of_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      home_object,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))?;
+  let Some(super_base) = super_base else {
+    // `super` base is `null`.
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut super_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  };
+  super_scope.push_root(Value::Object(super_base))?;
+
+  super_scope
+    .get_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      super_base,
+      key,
+      this_value,
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))
+}
+
+fn async_super_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  member_value: Value,
+) -> Result<Value, VmError> {
+  let mut key_scope = scope.reborrow();
+  key_scope.push_root(member_value)?;
+  let key = evaluator
+    .to_property_key_operator(&mut key_scope, member_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
+  // Drop `key_scope` before calling `async_super_get` (which reborrows `scope`).
+  drop(key_scope);
+
+  async_super_get(evaluator, scope, key)
+}
 fn async_binary_after_left(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -28170,11 +28321,6 @@ fn async_eval_call(
         return Err(VmError::Unimplemented("optional chaining super member call"));
       }
 
-      // Evaluating a super property reference requires an initialized `this` binding. In derived
-      // constructors before `super()`, this check happens before evaluating the computed key
-      // expression.
-      let _ = async_get_super_receiver(evaluator, scope)?;
-
       async_call_computed_member_after_base(evaluator, scope, expr, &member.stx, Value::Undefined)
     }
     // Optional member call (e.g. `obj?.method()`): only applies when the optional member expression
@@ -28316,6 +28462,7 @@ fn async_call_member_after_base(
       let key_s = key_scope.alloc_string(&member.right)?;
       Reference::Property {
         base,
+        receiver: base,
         key: PropertyKey::from_string(key_s),
       }
     };
@@ -28422,7 +28569,11 @@ fn async_call_computed_member_after_member(
       )?);
     }
 
-    let reference = Reference::Property { base, key };
+    let reference = Reference::Property {
+      base,
+      receiver: base,
+      key,
+    };
     let callee_value = evaluator
       .get_value_from_reference(&mut key_scope, &reference)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
@@ -29628,6 +29779,34 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "computed member after member frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::SuperComputedMemberAfterMember { expr } => match state {
+        AsyncState::Expr(member_res) => {
+          let expr = unsafe { &*expr };
+          if expr.optional_chaining {
+            return Err(VmError::InvariantViolation(
+              "optional chaining used in super computed member access",
+            ));
+          }
+
+          match member_res {
+            Ok(member_value) => match async_super_computed_member_after_member(evaluator, scope, member_value)
+            {
+              Ok(v) => state = AsyncState::Expr(Ok(v)),
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                state = AsyncState::Expr(Err(err))
+              }
+              Err(err) => return Err(err),
+            },
+            Err(err) => state = AsyncState::Expr(Err(err)),
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "super computed member after member frame received completion state",
           ))
         }
       },
@@ -31304,9 +31483,8 @@ fn async_resume_from_frames(
                   ));
                 }
 
-                let receiver = async_get_super_receiver(evaluator, scope)?;
                 let mut key_scope = scope.reborrow();
-                key_scope.push_roots(&[receiver, member_value])?;
+                key_scope.push_root(member_value)?;
 
                 let key = evaluator
                   .to_property_key_operator(&mut key_scope, member_value)
@@ -31314,15 +31492,18 @@ fn async_resume_from_frames(
                     coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
                   })?;
 
-                // Root the computed key across `GetSuperBase()` (Proxy traps can allocate / GC).
+                // Root the computed key across `GetThisBinding`/`GetSuperBase()` (Proxy traps can allocate / GC).
                 match key {
                   PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
                   PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
                 };
 
-                let base = evaluator.get_super_base(&mut key_scope).map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
-                })?;
+                let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+                key_scope.push_root(receiver)?;
+
+                let base = evaluator
+                  .get_super_base(&mut key_scope)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
                 let reference = Reference::SuperProperty { base, key, receiver };
                 async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
               })();
@@ -31438,7 +31619,11 @@ fn async_resume_from_frames(
                           };
                           Reference::Private { base, sym, name }
                         }
-                        other => Reference::Property { base, key: other },
+                        other => Reference::Property {
+                          base,
+                          receiver: base,
+                          key: other,
+                        },
                       }
                     }
                     _ => {
@@ -31591,7 +31776,11 @@ fn async_resume_from_frames(
                           };
                           Reference::Private { base, sym, name }
                         }
-                        other => Reference::Property { base, key: other },
+                        other => Reference::Property {
+                          base,
+                          receiver: base,
+                          key: other,
+                        },
                       }
                     }
                     _ => {
@@ -31917,10 +32106,8 @@ fn async_resume_from_frames(
                     "optional chaining used in update target",
                   ));
                 }
-
-                let receiver = async_get_super_receiver(evaluator, scope)?;
                 let mut key_scope = scope.reborrow();
-                key_scope.push_roots(&[receiver, member_value])?;
+                key_scope.push_root(member_value)?;
 
                 let key = evaluator
                   .to_property_key_operator(&mut key_scope, member_value)
@@ -31928,15 +32115,18 @@ fn async_resume_from_frames(
                     coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
                   })?;
 
-                // Root the computed key across `GetSuperBase()` (Proxy traps can allocate / GC).
+                // Root the computed key across `GetThisBinding`/`GetSuperBase()` (Proxy traps can allocate / GC).
                 match key {
                   PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
                   PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
                 };
 
-                let base = evaluator.get_super_base(&mut key_scope).map_err(|err| {
-                  coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
-                })?;
+                let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+                key_scope.push_root(receiver)?;
+
+                let base = evaluator
+                  .get_super_base(&mut key_scope)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
                 let reference = Reference::SuperProperty { base, key, receiver };
                 async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)
               })();
@@ -37682,6 +37872,7 @@ fn gen_reference_from_member<'a>(
     let key_s = key_scope.alloc_string(&member.right)?;
     Ok(Reference::Property {
       base,
+      receiver: base,
       key: PropertyKey::from_string(key_s),
     })
   }
@@ -37762,7 +37953,11 @@ fn gen_reference_from_computed_member(
     )?);
   }
 
-  Ok(Reference::Property { base, key })
+  Ok(Reference::Property {
+    base,
+    receiver: base,
+    key,
+  })
 }
 
 fn gen_apply_update_to_reference(
@@ -38001,6 +38196,7 @@ fn gen_member_after_base(
     let key_s = key_scope.alloc_string(&expr.right)?;
     Reference::Property {
       base,
+      receiver: base,
       key: PropertyKey::from_string(key_s),
     }
   };
@@ -38072,7 +38268,11 @@ fn gen_computed_member_after_member(
   key_scope.push_root(base)?;
   key_scope.push_root(member_value)?;
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-  let reference = Reference::Property { base, key };
+  let reference = Reference::Property {
+    base,
+    receiver: base,
+    key,
+  };
   evaluator.get_value_from_reference(&mut key_scope, &reference)
 }
 
@@ -38628,7 +38828,11 @@ fn gen_eval_assignment_to_computed_member_after_member(
     )?);
   }
 
-  let reference = Reference::Property { base, key };
+  let reference = Reference::Property {
+    base,
+    receiver: base,
+    key,
+  };
   gen_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
 }
 
@@ -38684,7 +38888,11 @@ fn gen_eval_assignment_apply_reference(
         GenEval::Suspend(mut suspend) => {
           let (base, key, receiver) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
+            Reference::Property {
+              base,
+              receiver: _,
+              key,
+            } => {
               let key_value = match key {
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
@@ -38775,7 +38983,11 @@ fn gen_eval_assignment_apply_reference(
         GenEval::Suspend(mut suspend) => {
           let (base, key, receiver) = match reference {
             Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
+            Reference::Property {
+              base,
+              receiver: _,
+              key,
+            } => {
               let key_value = match key {
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
@@ -38994,6 +39206,7 @@ fn gen_call_member_after_base(
       let key_s = key_scope.alloc_string(&member.right)?;
       Reference::Property {
         base,
+        receiver: base,
         key: PropertyKey::from_string(key_s),
       }
     };
@@ -39088,7 +39301,11 @@ fn gen_call_computed_member_after_member(
     return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
   }
 
-  let reference = Reference::Property { base, key };
+  let reference = Reference::Property {
+    base,
+    receiver: base,
+    key,
+  };
   let callee_value = match evaluator.get_value_from_reference(&mut key_scope, &reference) {
     Ok(v) => v,
     Err(err) => {
@@ -41336,7 +41553,11 @@ fn gen_resume_from_frames(
                         ))
                       }
                     };
-                    Reference::Property { base, key }
+                    Reference::Property {
+                      base,
+                      receiver: base,
+                      key,
+                    }
                   }
                 }
               }
@@ -41423,7 +41644,11 @@ fn gen_resume_from_frames(
                         ))
                       }
                     };
-                    Reference::Property { base, key }
+                    Reference::Property {
+                      base,
+                      receiver: base,
+                      key,
+                    }
                   }
                 }
               }

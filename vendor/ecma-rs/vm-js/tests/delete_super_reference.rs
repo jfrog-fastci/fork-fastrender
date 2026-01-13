@@ -28,7 +28,10 @@ fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   rt.exec_compiled_script(script)
 }
 
-fn is_unimplemented_compiled_async_function_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
+fn is_unimplemented_compiled_async_function_error(
+  rt: &mut JsRuntime,
+  err: &VmError,
+) -> Result<bool, VmError> {
   const MSG: &str = "async functions (hir-js compiled path)";
 
   match err {
@@ -44,7 +47,7 @@ fn is_unimplemented_compiled_async_function_error(rt: &mut JsRuntime, err: &VmEr
   };
 
   // Host-facing execution boundaries coerce `VmError::Unimplemented` into a regular
-  // `Error("unimplemented: ...")` throw completion; treat both representations as "not supported"
+  // `Error("unimplemented: ...")` throw completion. Treat both representations as "not supported"
   // so this test can land before compiled async functions are implemented.
   let intr = rt.realm().intrinsics();
   let proto = rt.heap().object_prototype(err_obj)?;
@@ -56,9 +59,8 @@ fn is_unimplemented_compiled_async_function_error(rt: &mut JsRuntime, err: &VmEr
   scope.push_root(Value::Object(err_obj))?;
 
   let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-  let Some(Value::String(message_s)) = scope
-    .heap()
-    .object_get_own_data_property_value(err_obj, &message_key)?
+  let Some(Value::String(message_s)) =
+    scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
   else {
     return Ok(false);
   };

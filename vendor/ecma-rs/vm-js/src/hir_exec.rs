@@ -8165,32 +8165,30 @@ impl<'vm> HirEvaluator<'vm> {
       if let Some(home) = self.home_object {
         get_scope.push_root(Value::Object(home))?;
       }
+      // Evaluate the property key (including `ToPropertyKey`) before resolving the `this` binding
+      // so key-expression side effects are preserved even when `this` is uninitialized in derived
+      // constructors.
+      let key = self.eval_object_key(&mut get_scope, body, &member.property)?;
+      root_property_key(&mut get_scope, key)?;
 
       let receiver = self.resolve_this_binding(&mut get_scope)?;
       get_scope.push_root(receiver)?;
 
-      let home_object = self
-        .home_object
-        .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
+      let base = self.super_base_value(&mut get_scope)?;
+      get_scope.push_root(base)?;
 
-      let key = self.eval_object_key(&mut get_scope, body, &member.property)?;
-      root_property_key(&mut get_scope, key)?;
-
-      let super_base = get_scope.object_get_prototype(home_object)?;
-      let Some(super_base_obj) = super_base else {
-        return Err(throw_type_error(
-          self.vm,
-          &mut get_scope,
-          "Cannot read a super property from a null prototype",
-        )?);
+      let obj = match get_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+        Ok(obj) => obj,
+        Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut get_scope, msg)?),
+        Err(err) => return Err(err),
       };
-      get_scope.push_root(Value::Object(super_base_obj))?;
+      get_scope.push_root(Value::Object(obj))?;
 
       return Ok(OptionalChainEval::Value(get_scope.get_with_host_and_hooks(
         self.vm,
         &mut *self.host,
         &mut *self.hooks,
-        super_base_obj,
+        obj,
         key,
         receiver,
       )?));
@@ -8261,33 +8259,31 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(Value::Object(home))?;
       }
 
-      // In derived constructors before `super()`, `super[expr]` must throw before evaluating `expr`
-      // if the `this` binding is still uninitialized.
-      let receiver = self.resolve_this_binding(&mut scope)?;
-      scope.push_root(receiver)?;
-      let home_object = self
-        .home_object
-        .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
-
+      // Evaluate the property key (including `ToPropertyKey`) before resolving the `this` binding
+      // so key-expression side effects are preserved even when `this` is uninitialized in derived
+      // constructors.
       let key = self.eval_object_key(&mut scope, body, &member.property)?;
       root_property_key(&mut scope, key)?;
 
-      let super_base = scope.object_get_prototype(home_object)?;
-      let Some(super_base_obj) = super_base else {
-        return Err(throw_type_error(
-          self.vm,
-          &mut scope,
-          "Cannot assign to a super property on a null prototype",
-        )?);
+      let receiver = self.resolve_this_binding(&mut scope)?;
+      scope.push_root(receiver)?;
+
+      let base = self.super_base_value(&mut scope)?;
+      scope.push_root(base)?;
+
+      let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+        Ok(obj) => obj,
+        Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+        Err(err) => return Err(err),
       };
-      scope.push_root(Value::Object(super_base_obj))?;
+      scope.push_root(Value::Object(obj))?;
 
       let ok = crate::spec_ops::internal_set_with_host_and_hooks(
         self.vm,
         &mut scope,
         &mut *self.host,
         &mut *self.hooks,
-        super_base_obj,
+        obj,
         key,
         value,
         receiver,
@@ -8994,33 +8990,30 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(Value::Object(home))?;
           }
 
-          let receiver = self.resolve_this_binding(&mut scope)?;
-          scope.push_root(receiver)?;
-          let home_object = self
-            .home_object
-            .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
-
-          // Root receiver/home_object across key evaluation + prototype lookup + `[[Get]]`.
-          scope.push_roots(&[receiver, Value::Object(home_object)])?;
-
+          // Evaluate the property key (including `ToPropertyKey`) before resolving the `this`
+          // binding so key-expression side effects are preserved even when `this` is uninitialized
+          // in derived constructors.
           let key = self.eval_object_key(&mut scope, body, &member.property)?;
           root_property_key(&mut scope, key)?;
 
-          let super_base = scope.object_get_prototype(home_object)?;
-          let Some(super_base_obj) = super_base else {
-            return Err(throw_type_error(
-              self.vm,
-              &mut scope,
-              "Cannot read a super property from a null prototype",
-            )?);
+          let receiver = self.resolve_this_binding(&mut scope)?;
+          scope.push_root(receiver)?;
+
+          let base = self.super_base_value(&mut scope)?;
+          scope.push_root(base)?;
+
+          let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+            Ok(obj) => obj,
+            Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+            Err(err) => return Err(err),
           };
-          scope.push_root(Value::Object(super_base_obj))?;
+          scope.push_root(Value::Object(obj))?;
 
           let func = scope.get_with_host_and_hooks(
             self.vm,
             &mut *self.host,
             &mut *self.hooks,
-            super_base_obj,
+            obj,
             key,
             receiver,
           )?;
