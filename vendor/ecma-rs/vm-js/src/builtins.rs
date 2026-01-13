@@ -15786,8 +15786,16 @@ pub fn string_prototype_replace(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
+  // ECMA-262: https://tc39.es/ecma262/#sec-string.prototype.replace
+  //
+  // Ordering is observable:
+  // 1. `RequireObjectCoercible(this value)` (throws on null/undefined).
+  // 2. If `searchValue` is an Object, check `@@replace` and delegate *before* `ToString(O)`.
+  // 3. `ToString(O)` only after delegation is ruled out.
+  // 4. For string-search fallback, `ToString(replaceValue)` (when non-callable) must happen
+  //    *before* searching for the match, even when there is no match.
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  scope.push_root(o)?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -15805,21 +15813,31 @@ pub fn string_prototype_replace(
         PropertyKey::from_symbol(intr.well_known_symbols().replace),
       )?;
       if let Some(method) = method {
-        return vm.call_with_host_and_hooks(
-          host,
-          &mut scope,
-          hooks,
-          method,
-          search_value,
-          &[Value::String(s), replace_value],
-        );
+        return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, search_value, &[o, replace_value]);
       }
     }
   }
 
-  // String searchValue fallback.
+  // Step 3: string = ? ToString(O).
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
+
+  // String searchValue fallback (spec `ToString(searchValue)` path).
   let search_s = scope.to_string(vm, host, hooks, search_value)?;
   scope.push_root(Value::String(search_s))?;
+
+  // Spec: `functionalReplace = IsCallable(replaceValue)`.
+  let replace_is_callable = scope.heap().is_callable(replace_value)?;
+
+  // For non-callable `replaceValue`, `ToString(replaceValue)` must happen before searching for the
+  // match, even when no match is found.
+  let replace_s = if replace_is_callable {
+    None
+  } else {
+    let s = scope.to_string(vm, host, hooks, replace_value)?;
+    scope.push_root(Value::String(s))?;
+    Some(s)
+  };
 
   let (pos, search_len) = {
     let hay = scope.heap().get_string(s)?.as_code_units();
@@ -15847,10 +15865,9 @@ pub fn string_prototype_replace(
     }
   };
 
-  let replacement_units: Vec<u16> = if scope.heap().is_callable(replace_value)? {
+  let replacement_units: Vec<u16> = if replace_is_callable {
     // Call replacer function with (matched, position, string).
-    let matched = if search_len == 0 { scope.alloc_string("")? } else { search_s };
-    scope.push_root(Value::String(matched))?;
+    let matched = search_s;
     let called = vm.call_with_host_and_hooks(
       host,
       &mut scope,
@@ -15869,8 +15886,7 @@ pub fn string_prototype_replace(
     buf.extend_from_slice(units);
     buf
   } else {
-    let replace_s = scope.to_string(vm, host, hooks, replace_value)?;
-    scope.push_root(Value::String(replace_s))?;
+    let replace_s = replace_s.expect("replace_s computed for non-callable replaceValue");
     let captures = [pos, pos.saturating_add(search_len)];
     get_substitution(
       vm,

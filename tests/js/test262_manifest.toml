@@ -1215,18 +1215,15 @@ reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/replaceValue-evaluation-order-regexp-object.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replace evaluation order for RegExp searchValue/replaceValue is still incorrect."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/replaceValue-evaluation-order.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replace evaluation order is still incorrect."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/this-value-not-obj-coercible.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replace does not yet implement RequireObjectCoercible(this value)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-bigint-primitive.js"
