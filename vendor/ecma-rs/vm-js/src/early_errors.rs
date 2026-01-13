@@ -2303,6 +2303,17 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         }
       }
       OperatorName::Delete => {
+        // `delete PrivateReference` is an early error (ECMA-262 14.5.1 / 13.5.1.1).
+        //
+        // Example:
+        // - `delete obj.#x`
+        // - `delete obj?.#x`
+        //
+        // Note: this is independent of strict mode.
+        if matches!(&*expr.argument.stx, Expr::Member(member) if member.stx.right.starts_with('#')) {
+          self.push_error(expr.argument.loc, "Private fields can not be deleted")?;
+        }
+
         // `delete IdentifierReference` is a strict mode early error (ECMA-262 14.5.1 / 13.5.1.1).
         //
         // The evaluator also checks this at runtime as a safety net, but spec-compliant behavior

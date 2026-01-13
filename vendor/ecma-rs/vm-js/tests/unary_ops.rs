@@ -51,3 +51,57 @@ fn delete_identifier_strict_mode_is_syntax_error() {
   let err = rt.exec_script(r#""use strict"; var x = 1; delete x;"#).unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
+
+#[test]
+fn delete_private_reference_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      class C {
+        #x() {}
+        m() { delete this.#x; }
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn delete_private_reference_on_variable_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      class C {
+        #x() {}
+        m() {
+          const obj = this;
+          delete obj.#x;
+        }
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn delete_optional_chain_private_reference_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      class C {
+        #x() {}
+        m() {
+          const obj = this;
+          delete obj?.#x;
+        }
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
