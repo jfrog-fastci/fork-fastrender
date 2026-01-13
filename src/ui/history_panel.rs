@@ -193,7 +193,11 @@ pub fn history_panel_ui(
 
           if !history.entries.is_empty() && !query.is_empty() {
             ui.add_space(10.0);
-            if ui.button("Clear search").clicked() {
+            let clear_search = ui.button("Clear search");
+            clear_search.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear history search")
+            });
+            if clear_search.clicked() {
               search_text.clear();
               *request_focus_search = true;
               out.unfocus_page = true;

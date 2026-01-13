@@ -98,7 +98,11 @@ pub fn downloads_panel_ui(
             out.close_requested = true;
           }
 
-          if ui.small_button("Show downloads folder").clicked() {
+          let show_folder = ui.small_button("Show downloads folder");
+          show_folder.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show downloads folder")
+          });
+          if show_folder.clicked() {
             out.open_requests.push(downloads::default_download_dir());
           }
         });
