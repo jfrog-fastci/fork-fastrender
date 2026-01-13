@@ -1555,6 +1555,38 @@ id = "built-ins/RegExp/named-groups/duplicate-names-split.js"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/RegExp/named-groups/duplicate-names-exec.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/duplicate-names-group-property-enumeration-order.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/duplicate-names-match.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/duplicate-names-test.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/groups-properties.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/non-unicode-match.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/non-unicode-property-names-invalid.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/non-unicode-references.js"
+status = "pass"
+
+[[expectations]]
 id = "built-ins/RegExp/named-groups/string-replace-escaped.js"
 status = "pass"
 
@@ -1568,6 +1600,18 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/RegExp/named-groups/string-replace-unclosed.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/unicode-match.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/unicode-property-names-invalid.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/unicode-references.js"
 status = "pass"
 
 [[expectations]]
