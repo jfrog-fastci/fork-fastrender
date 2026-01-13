@@ -6444,6 +6444,150 @@ rs.pipeTo(ws)
 }
 
 #[test]
+fn readable_stream_pipe_to_rejects_invalid_options_signal_primitive() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__unhandled = false;
+globalThis.__threw = false;
+globalThis.__rejected = false;
+globalThis.__fulfilled = false;
+globalThis.__err_name = "";
+globalThis.__err_msg = "";
+
+window.addEventListener("unhandledrejection", () => { globalThis.__unhandled = true; });
+
+const rs = new ReadableStream({
+  start(controller) {
+    controller.enqueue("x");
+    controller.close();
+  }
+});
+
+const ws = new WritableStream({
+  write() {},
+  close() {},
+});
+
+try {
+  const p = rs.pipeTo(ws, { signal: 1 });
+  p.then(() => { globalThis.__fulfilled = true; })
+    .catch((e) => {
+      globalThis.__rejected = true;
+      globalThis.__err_name = e && e.name;
+      globalThis.__err_msg = String(e && e.message || e);
+    });
+} catch (e) {
+  globalThis.__threw = true;
+  globalThis.__err_name = e && e.name;
+  globalThis.__err_msg = String(e && e.message || e);
+}
+"#,
+  )?;
+
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 25,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let ok = host.exec_script_in_event_loop(
+    &mut event_loop,
+    "globalThis.__unhandled === false &&\n\
+     globalThis.__fulfilled === false &&\n\
+     (globalThis.__threw === true || globalThis.__rejected === true) &&\n\
+     globalThis.__err_name === 'TypeError' &&\n\
+     String(globalThis.__err_msg || '').includes('AbortSignal')",
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn readable_stream_pipe_to_rejects_invalid_options_signal_object() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__unhandled = false;
+globalThis.__threw = false;
+globalThis.__rejected = false;
+globalThis.__fulfilled = false;
+globalThis.__err_name = "";
+globalThis.__err_msg = "";
+
+window.addEventListener("unhandledrejection", () => { globalThis.__unhandled = true; });
+
+const rs = new ReadableStream({
+  start(controller) {
+    controller.enqueue("x");
+    controller.close();
+  }
+});
+
+const ws = new WritableStream({
+  write() {},
+  close() {},
+});
+
+try {
+  const p = rs.pipeTo(ws, { signal: {} });
+  p.then(() => { globalThis.__fulfilled = true; })
+    .catch((e) => {
+      globalThis.__rejected = true;
+      globalThis.__err_name = e && e.name;
+      globalThis.__err_msg = String(e && e.message || e);
+    });
+} catch (e) {
+  globalThis.__threw = true;
+  globalThis.__err_name = e && e.name;
+  globalThis.__err_msg = String(e && e.message || e);
+}
+"#,
+  )?;
+
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 25,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let ok = host.exec_script_in_event_loop(
+    &mut event_loop,
+    "globalThis.__unhandled === false &&\n\
+     globalThis.__fulfilled === false &&\n\
+     (globalThis.__threw === true || globalThis.__rejected === true) &&\n\
+     globalThis.__err_name === 'TypeError' &&\n\
+     String(globalThis.__err_msg || '').includes('AbortSignal')",
+  )?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn element_get_bounding_client_rect_returns_zero_dom_rect_in_window_host_state() -> Result<()> {
   let renderer_dom = fastrender::dom::parse_html(
     "<!doctype html><html><body><div id=x></div></body></html>",
