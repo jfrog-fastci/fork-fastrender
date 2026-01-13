@@ -560,6 +560,15 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   pub(crate) fn reset_for_navigation(&mut self, trace: TraceHandle, queue_limits: QueueLimits) {
+    // Close the current external task queue before we overwrite `self`.
+    //
+    // Embeddings can hold cloned `ExternalTaskQueueHandle`s across navigations (e.g. WebSocket
+    // network threads). If we reset the event loop without explicitly closing the old queue, those
+    // stale handles can continue enqueueing tasks into an orphaned queue that is never drained.
+    // This leaks memory and silently drops events. Closing here ensures all existing clones observe
+    // `closed=true` immediately.
+    self.external_task_queue.close();
+
     let clock = Arc::clone(&self.clock);
     let hooks = self.microtask_checkpoint_hooks.clone();
     let default_deadline_stage = self.default_deadline_stage;
@@ -2536,6 +2545,27 @@ mod tests {
 
     assert_eq!(host.log, vec!["microtask", "hook_a", "hook_b"]);
     Ok(())
+  }
+
+  #[test]
+  fn reset_for_navigation_closes_old_external_task_queue_handles() {
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let old_handle = event_loop.external_task_queue_handle();
+
+    event_loop.reset_for_navigation(TraceHandle::default(), QueueLimits::default());
+
+    let err = old_handle
+      .queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))
+      .expect_err("expected old external task queue handle to be closed after reset");
+    assert!(
+      err.to_string().contains("closed"),
+      "expected error message to mention \"closed\", got: {err}"
+    );
+
+    event_loop
+      .external_task_queue_handle()
+      .queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))
+      .expect("expected new external task queue handle to be live after reset");
   }
 
   #[test]
