@@ -56,6 +56,9 @@ schemes (no navigation, no fetch, no side effects).
 **Do not** “fix” `chrome://` support by adding `chrome` to the global allowlists above. If/when
 `chrome://` is implemented, it must be enabled only inside the trusted chrome renderer context.
 
+Likewise, **do not** add `chrome-action` to navigation allowlists. `chrome-action:` is not a
+fetchable scheme and must be intercepted/handled only inside the trusted chrome renderer context.
+
 ---
 
 ## `chrome://` — trusted chrome assets

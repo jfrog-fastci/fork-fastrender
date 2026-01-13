@@ -23,6 +23,8 @@ Note: this workstream currently targets the **egui**-rendered chrome used by the
 binary. The longer-term *renderer chrome* workstream aims to render the chrome UI using FastRender
 itself; trusted chrome pages in that world would use the privileged JS bridge documented in
 [`docs/chrome_js_bridge.md`](../docs/chrome_js_bridge.md).
+That renderer-chrome workstream also reserves privileged internal URL schemes (`chrome://` assets and
+`chrome-action:` actions); see [`docs/renderer_chrome_schemes.md`](../docs/renderer_chrome_schemes.md).
 
 ## The job
 
