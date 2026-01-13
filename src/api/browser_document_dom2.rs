@@ -5476,6 +5476,57 @@ mod tests {
   }
 
   #[test]
+  fn incremental_relayout_form_control_text_preserves_keyframes_metadata() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        #box {
+          width: 10px;
+          height: 10px;
+          background: black;
+          animation: fade 1000ms linear infinite;
+        }
+        @keyframes fade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+      </style>
+      <div id="box"></div>
+      <textarea id="ta">Hello</textarea>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+    doc.render_frame()?;
+
+    let prepared = doc.prepared().expect("prepared");
+    assert!(
+      prepared.fragment_tree.keyframes.contains_key("fade"),
+      "expected @keyframes fade to be stored on the fragment tree"
+    );
+
+    let before = doc.invalidation_counters();
+    let textarea = doc
+      .dom()
+      .get_element_by_id("ta")
+      .expect("textarea#ta element");
+    let text_node = first_text_child(doc.dom(), textarea).expect("text child node");
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_node, "Updated").expect("set text"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+
+    let prepared = doc.prepared().expect("prepared");
+    assert!(
+      prepared.fragment_tree.keyframes.contains_key("fade"),
+      "incremental relayout should preserve fragment-tree keyframes metadata for form controls"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn incremental_relayout_preserves_svg_filter_defs_metadata() -> Result<()> {
     let renderer = renderer_for_tests();
     let html = r#"
