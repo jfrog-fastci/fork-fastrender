@@ -16,7 +16,7 @@ use crate::ui::html_escape::escape_html;
 pub fn tab_strip_html(app: &BrowserAppState) -> String {
   let active = app.active_tab_id();
   let mut html = String::new();
-  html.push_str("<div class=\"tab-strip\">");
+  html.push_str("<div class=\"tab-strip\" id=\"tab-strip\">");
   for tab in &app.tabs {
     let mut class = "tab";
     if active == Some(tab.id) {
@@ -25,7 +25,8 @@ pub fn tab_strip_html(app: &BrowserAppState) -> String {
     let title = escape_html(&tab.display_title());
     let favicon_url = ChromeDynamicAssetFetcher::favicon_url(tab.id);
     html.push_str(&format!(
-      "<div class=\"{class}\" data-tab-id=\"{}\"><img class=\"tab-favicon\" src=\"{favicon_url}\" alt=\"\" /><span class=\"tab-title\">{title}</span></div>",
+      "<div class=\"{class}\" id=\"tab-{}\" data-tab-id=\"{}\"><img class=\"tab-favicon\" src=\"{favicon_url}\" alt=\"\" /><span class=\"tab-title\">{title}</span></div>",
+      tab.id.0,
       tab.id.0
     ));
   }

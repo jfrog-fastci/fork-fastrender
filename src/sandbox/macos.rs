@@ -410,7 +410,6 @@ pub fn sandbox_check_mach_lookup(service: &str) -> io::Result<bool> {
 pub fn sandbox_check_network_outbound_diagnostic() -> String {
   format_sandbox_check(sandbox_check_network_outbound())
 }
-
 /// A "relaxed" Seatbelt profile that still denies access to most of the filesystem, but allows
 /// read access to a conservative set of system paths needed by typical dynamically-linked Rust
 /// binaries.

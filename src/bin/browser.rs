@@ -7465,6 +7465,7 @@ struct App {
   event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
   chrome_a11y: ChromeA11yBackend,
   trace: fastrender::debug::trace::TraceHandle,
+  renderer_chrome_enabled: bool,
 
   surface: wgpu::Surface,
   device: std::sync::Arc<wgpu::Device>,
@@ -7526,6 +7527,8 @@ struct App {
   /// Dynamic chrome resources (e.g. per-tab favicons) used by the experimental renderer-chrome
   /// integration.
   chrome_dynamic_fetcher: fastrender::ui::ChromeDynamicAssetFetcher,
+  chrome_frame_doc: Option<fastrender::ui::chrome_frame::ChromeFrameDocument>,
+  chrome_frame_texture: Option<fastrender::ui::WgpuPixmapTexture>,
   /// Recently closed tab favicons that are kept alive briefly so tab-close animations can render a
   /// "ghost" closing tab with its original favicon.
   closing_tab_favicons: std::collections::VecDeque<ClosingTabFavicon>,
@@ -8192,7 +8195,8 @@ impl App {
     // Accessibility backend selection:
     // - Default: egui-winit drives AccessKit for the egui-based chrome UI.
     // - Renderer-chrome: FastRender drives its own AccessKit adapter (separate tree, separate action routing).
-    let chrome_a11y = if renderer_chrome_enabled_from_env() {
+    let renderer_chrome_enabled = renderer_chrome_enabled_from_env();
+    let chrome_a11y = if renderer_chrome_enabled {
       // The compositor (renderer-chrome) backend does not use egui-winit's built-in AccessKit
       // integration. Install our own `accesskit_winit::Adapter` with a minimal tree so screen
       // readers can at least discover the chrome + page regions.
@@ -8364,6 +8368,7 @@ impl App {
       event_loop_proxy,
       chrome_a11y,
       trace,
+      renderer_chrome_enabled,
       surface,
       device,
       queue,
@@ -8415,6 +8420,8 @@ impl App {
       chrome_dynamic_fetcher: fastrender::ui::ChromeDynamicAssetFetcher::new(std::sync::Arc::new(
         fastrender::ui::chrome_assets::ChromeAssetsFetcher::new(),
       )),
+      chrome_frame_doc: None,
+      chrome_frame_texture: None,
       closing_tab_favicons: std::collections::VecDeque::new(),
       tab_cancel: std::collections::HashMap::new(),
       pending_scroll_restores: std::collections::HashMap::new(),
@@ -9638,6 +9645,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       tex.destroy(&mut self.egui_renderer);
     }
     for (_, tex) in std::mem::take(&mut self.tab_favicons) {
+      tex.destroy(&mut self.egui_renderer);
+    }
+    if let Some(tex) = self.chrome_frame_texture.take() {
       tex.destroy(&mut self.egui_renderer);
     }
     for entry in std::mem::take(&mut self.closing_tab_favicons) {
@@ -13974,6 +13984,148 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       ctx.wants_keyboard_input() || self.browser_state.chrome.address_bar_has_focus;
   }
 
+  fn renderer_chrome_tab_strip_ui(&mut self, ctx: &egui::Context) -> bool {
+    if !self.renderer_chrome_enabled {
+      return false;
+    }
+
+    // Lazily create the FastRender-backed chrome document.
+    if self.chrome_frame_doc.is_none() {
+      match fastrender::ui::chrome_frame::ChromeFrameDocument::new((1, 1), self.pixels_per_point) {
+        Ok(doc) => self.chrome_frame_doc = Some(doc),
+        Err(err) => {
+          eprintln!("failed to create renderer-chrome document: {err}");
+          self.chrome_frame_doc = None;
+        }
+      }
+    }
+
+    let Some(doc) = self.chrome_frame_doc.as_mut() else {
+      // Document creation failed; keep the panel height stable so the page layout is still usable.
+      egui::TopBottomPanel::top("renderer_chrome_tab_strip_fallback")
+        .exact_height(40.0)
+        .show(ctx, |ui| {
+          ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_gray(30));
+          ui.label("renderer-chrome unavailable (failed to create document)");
+        });
+      return false;
+    };
+
+    let (events, primary_down) = ctx.input(|i| (i.events.clone(), i.pointer.primary_down()));
+
+    let mut session_dirty = false;
+    egui::TopBottomPanel::top("renderer_chrome_tab_strip")
+      .exact_height(40.0)
+      .show(ctx, |ui| {
+        let available = ui.available_size().max(egui::Vec2::ZERO);
+        let size_points = egui::vec2(available.x.max(1.0), available.y.max(1.0));
+        let (rect, response) = ui.allocate_exact_size(size_points, egui::Sense::click_and_drag());
+        response.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Label, "Browser chrome (renderer-chrome)")
+        });
+
+        let viewport_css = (
+          rect.width().max(1.0).round() as u32,
+          rect.height().max(1.0).round() as u32,
+        );
+        doc.set_viewport(viewport_css, self.pixels_per_point);
+
+        if let Err(err) = doc.sync_state(&self.browser_state) {
+          eprintln!("renderer-chrome sync_state failed: {err}");
+        }
+
+        let mapping = fastrender::ui::InputMapping::new(rect, viewport_css);
+
+        let mut outputs: Vec<fastrender::ui::chrome_frame::ChromeFrameOutput> = Vec::new();
+        for event in &events {
+          match event {
+            egui::Event::PointerButton {
+              pos,
+              button: egui::PointerButton::Primary,
+              pressed: true,
+              ..
+            } => {
+              if rect.contains(*pos) {
+                if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(*pos) {
+                  outputs.extend(doc.pointer_down(fastrender::ui::PointerButton::Primary, pos_css));
+                }
+              }
+            }
+            egui::Event::PointerButton {
+              button: egui::PointerButton::Primary,
+              pressed: false,
+              ..
+            } => {
+              outputs.extend(doc.pointer_up(fastrender::ui::PointerButton::Primary));
+            }
+            egui::Event::PointerMoved(pos) => {
+              if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(*pos) {
+                outputs.extend(doc.pointer_move(pos_css));
+              }
+            }
+            egui::Event::PointerGone => {
+              doc.cancel_drag();
+            }
+            _ => {}
+          }
+        }
+
+        // Ensure we don't keep drag state alive if egui loses track of the pointer/button state.
+        if !primary_down {
+          doc.cancel_drag();
+        }
+
+        let mut reordered = false;
+        for output in outputs {
+          match output {
+            fastrender::ui::chrome_frame::ChromeFrameOutput::ReorderTab { tab_id, target_index } => {
+              if self.browser_state.drag_reorder_tab(tab_id, target_index) {
+                session_dirty = true;
+                reordered = true;
+              }
+            }
+          }
+        }
+
+        // Ensure the chrome HTML reflects the updated tab order for subsequent drag hit-testing.
+        if reordered {
+          if let Err(err) = doc.sync_state(&self.browser_state) {
+            eprintln!("renderer-chrome sync_state after reorder failed: {err}");
+          }
+        }
+
+        // While a drag is active, keep repainting so pointer motion can reorder continuously even
+        // when egui doesn't consider the chrome image "animated".
+        if doc.has_active_drag() {
+          ctx.request_repaint();
+        }
+
+        match doc.render_if_needed() {
+          Ok(Some(pixmap)) => {
+            if let Some(tex) = self.chrome_frame_texture.as_mut() {
+              tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+            } else {
+              self.chrome_frame_texture =
+                Some(fastrender::ui::WgpuPixmapTexture::new(&self.device, &mut self.egui_renderer, &pixmap));
+            }
+          }
+          Ok(None) => {}
+          Err(err) => {
+            eprintln!("renderer-chrome render failed: {err}");
+          }
+        }
+
+        if let Some(tex) = self.chrome_frame_texture.as_ref() {
+          ui.painter()
+            .image(tex.id(), rect, tex.uv_rect(), egui::Color32::WHITE);
+        } else {
+          ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(30));
+        }
+      });
+
+    session_dirty
+  }
+
   fn handle_profile_shortcuts(&mut self, key: winit::event::VirtualKeyCode) -> bool {
     use fastrender::ui::ChromeAction;
 
@@ -14198,6 +14350,17 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         }
         if self.browser_state.chrome.dragging_tab_id.is_some() {
           self.browser_state.chrome.clear_tab_drag();
+          self.window.request_redraw();
+        }
+        if self.renderer_chrome_enabled
+          && self
+            .chrome_frame_doc
+            .as_ref()
+            .is_some_and(|doc| doc.has_active_drag())
+        {
+          if let Some(doc) = self.chrome_frame_doc.as_mut() {
+            doc.cancel_drag();
+          }
           self.window.request_redraw();
         }
       }
@@ -17508,23 +17671,30 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
 
     let appearance_before = self.browser_state.appearance.clone();
-    let chrome_actions = fastrender::ui::chrome_ui_with_bookmarks(
-      &ctx,
-      &mut self.browser_state,
-      Some(&self.bookmarks),
-      !self.clear_browsing_data_dialog_open,
-      |tab_id| {
-        if let Some(tex) = self.tab_favicons.get(&tab_id) {
-          Some(tex.id())
-        } else {
-          self
-            .closing_tab_favicons
-            .iter()
-            .find(|entry| entry.tab_id == tab_id)
-            .map(|entry| entry.texture.id())
-        }
-      },
-    );
+    let chrome_actions = if self.renderer_chrome_enabled {
+      // Renderer-chrome (FastRender HTML/CSS chrome). This is intentionally incremental: only the
+      // tab strip is rendered today, and interactions are hosted in Rust (no JS).
+      session_dirty |= self.renderer_chrome_tab_strip_ui(&ctx);
+      Vec::new()
+    } else {
+      fastrender::ui::chrome_ui_with_bookmarks(
+        &ctx,
+        &mut self.browser_state,
+        Some(&self.bookmarks),
+        !self.clear_browsing_data_dialog_open,
+        |tab_id| {
+          if let Some(tex) = self.tab_favicons.get(&tab_id) {
+            Some(tex.id())
+          } else {
+            self
+              .closing_tab_favicons
+              .iter()
+              .find(|entry| entry.tab_id == tab_id)
+              .map(|entry| entry.texture.id())
+          }
+        },
+      )
+    };
     let zoom_after = self.browser_state.active_tab().map(|t| t.zoom);
     let appearance_after = self.browser_state.appearance.clone();
 
@@ -17544,7 +17714,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
     session_dirty |= zoom_before != zoom_after;
     session_dirty |= appearance_before != appearance_after;
-    session_dirty |= self.handle_chrome_actions(chrome_actions);
+    if !self.renderer_chrome_enabled {
+      session_dirty |= self.handle_chrome_actions(chrome_actions);
+    }
     self.sync_window_title();
 
     // Cache egui text focus state into our backend-agnostic focus model before routing any keyboard

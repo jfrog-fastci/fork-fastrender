@@ -299,8 +299,3 @@ pub use profile_persistence::{
   parse_history_json, save_bookmarks_atomic, save_history_atomic, LoadOutcome, LoadSource,
   PersistedGlobalHistoryStore,
 };
-
-pub use chrome_frame_document::{
-  apply_chrome_frame_event, dom_input_value_by_element_id, sync_browser_state_to_chrome_frame,
-  ChromeFrameDocument, ChromeFrameEvent, CHROME_ADDRESS_BAR_ID, CHROME_ADDRESS_FORM_ID,
-};

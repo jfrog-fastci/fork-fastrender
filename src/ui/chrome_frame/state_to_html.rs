@@ -165,6 +165,8 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     if is_active {
       out.push_str(" active");
     }
+    out.push_str("\" id=\"tab-");
+    out.push_str(&tab_id);
     out.push_str("\" data-tab-id=\"");
     out.push_str(&tab_id);
     out.push_str("\">\n");
@@ -295,7 +297,12 @@ mod tests {
     assert_eq!(tab_count, 3);
 
     // Active tab marker is present.
-    assert!(html.contains("class=\"tab active\" data-tab-id=\"2\""));
+    assert!(html.contains("class=\"tab active\" id=\"tab-2\" data-tab-id=\"2\""));
+
+    // Stable element ids exist for hit-testing/geometry queries.
+    assert!(html.contains("id=\"tab-1\" data-tab-id=\"1\""));
+    assert!(html.contains("id=\"tab-2\" data-tab-id=\"2\""));
+    assert!(html.contains("id=\"tab-3\" data-tab-id=\"3\""));
 
     // Action URLs contain expected tab ids.
     assert!(html.contains("chrome-action:activate-tab?tab=1"));
