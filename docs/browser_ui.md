@@ -673,7 +673,8 @@ Manual testing checklist (smoke):
       each egui frame.
 - About pages (`about:blank`, `about:newtab`, `about:settings`, `about:error`, `about:help`,
   `about:version`, `about:gpu`, `about:processes`, `about:history`, `about:bookmarks`,
-  `about:test-scroll`, `about:test-heavy`, `about:test-form`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
+  `about:test-scroll`, `about:test-heavy`, `about:test-layout-stress`, `about:test-form`):
+  [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
      - Used by the canonical UI render worker runtime ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
@@ -948,6 +949,7 @@ For deterministic, offline repros (no network), the worker supports a few `about
 
 - `about:test-scroll` — a simple tall page for scroll/viewport behavior.
 - `about:test-heavy` — a large DOM intended to make cancellation/timeout behavior observable.
+- `about:test-layout-stress` — a layout stress test page (intentionally heavy/degenerate layout).
 - `about:test-form` — a minimal form for interaction/input testing.
 
 These are used by the browser UI integration tests, but are also handy for manual debugging in the

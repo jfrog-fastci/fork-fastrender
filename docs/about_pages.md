@@ -51,5 +51,5 @@ These pages exist to make offline/manual repros and integration tests determinis
 
 - `about:test-scroll` — a simple tall page for scroll/viewport behavior.
 - `about:test-heavy` — a large DOM intended to make cancellation/timeout behavior observable.
+- `about:test-layout-stress` — a layout stress test page (intentionally heavy/degenerate layout).
 - `about:test-form` — a minimal form for interaction/input testing.
-
