@@ -456,4 +456,125 @@ mod tests {
       "expected invalid subframe reference violation (events={events:?})"
     );
   }
+
+  #[test]
+  fn frame_ready_with_valid_subframes_updates_presentation_state() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+
+    let parent = FrameId(1);
+    let child = FrameId(2);
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: FrameBuffer {
+          width: 1,
+          height: 1,
+          rgba8: vec![9, 8, 7, 6],
+        },
+        subframes: vec![crate::SubframeInfo {
+          child,
+          transform: crate::AffineTransform::IDENTITY,
+          clip_stack: Vec::new(),
+          z_index: 0,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags::NONE,
+          opaque_origin: false,
+        }],
+      },
+    );
+
+    assert!(!browser.is_process_terminated(renderer));
+    assert!(
+      browser.latest_frame(parent).is_some(),
+      "expected valid FrameReady to update presentation state"
+    );
+    assert!(
+      browser.take_events().is_empty(),
+      "expected no protocol events for valid FrameReady"
+    );
+  }
+
+  #[test]
+  fn subframes_discovered_rejects_invalid_child_parent() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+
+    let parent = FrameId(10);
+    let child = FrameId(11);
+    browser.assign_frame(parent, renderer);
+    // Browser frame tree says `child` belongs elsewhere.
+    browser.set_frame_parent(child, FrameId(999));
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![crate::SubframeInfo {
+          child,
+          transform: crate::AffineTransform::IDENTITY,
+          clip_stack: Vec::new(),
+          z_index: 0,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags::NONE,
+          opaque_origin: false,
+        }],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::SubframesDiscovered,
+          violation: FrameOwnershipViolation::InvalidSubframe { child_frame_id, .. },
+        } if *process_id == renderer && *frame_id == parent && *child_frame_id == child
+      )),
+      "expected invalid subframe reference violation (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn subframes_discovered_accepts_valid_children() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+
+    let parent = FrameId(10);
+    let child = FrameId(11);
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![crate::SubframeInfo {
+          child,
+          transform: crate::AffineTransform::IDENTITY,
+          clip_stack: Vec::new(),
+          z_index: 0,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags::NONE,
+          opaque_origin: false,
+        }],
+      },
+    );
+
+    assert!(
+      !browser.is_process_terminated(renderer),
+      "valid SubframesDiscovered should not terminate the renderer"
+    );
+    assert!(
+      browser.take_events().is_empty(),
+      "expected no protocol events for valid SubframesDiscovered"
+    );
+  }
 }
