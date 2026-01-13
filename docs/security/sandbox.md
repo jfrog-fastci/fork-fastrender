@@ -219,6 +219,34 @@ Additionally, `socket(2)` / `socketpair(2)` are special-cased via `NetworkPolicy
 For allowlist maintenance workflow (when the renderer legitimately needs more syscalls), see:
 [seccomp_allowlist.md](../seccomp_allowlist.md) and `scripts/trace_renderer_syscalls.sh`.
 
+## Applying the sandbox to a renderer process (Linux)
+
+There are two common integration patterns:
+
+### 1) Apply in-process (inside the renderer binary)
+
+Call `sandbox::apply_renderer_sandbox(...)` early in renderer startup:
+
+- before starting any thread pools (or you may miss threads when TSYNC is unavailable),
+- after setting up any required IPC fds / shared memory mappings.
+
+This is the simplest pattern when the renderer is launched directly and can hard-fail if sandbox
+setup fails.
+
+### 2) Apply at spawn time (preferred on Linux)
+
+When the browser spawns a dedicated renderer **subprocess**, prefer applying the sandbox in the
+child process *after* `fork(2)` and *before* `execve(2)`. This minimizes the unsandboxed window.
+
+Repo helper: `sandbox::spawn::configure_renderer_command(...)` (`src/sandbox/spawn.rs`).
+
+On Linux this uses `std::os::unix::process::CommandExt::pre_exec` and therefore has strict safety
+requirements (no allocations, no locks) — the helper is written to be `pre_exec`-safe.
+
+Note: `configure_renderer_command` also respects the Linux sandbox env toggles
+(`FASTR_DISABLE_RENDERER_SANDBOX`, `FASTR_RENDERER_SECCOMP`, `FASTR_RENDERER_LANDLOCK`) so developers
+can disable layers during bring-up.
+
 ---
 
 ## Kernel / CI requirements and feature detection (Linux)
