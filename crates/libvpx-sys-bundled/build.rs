@@ -310,7 +310,10 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         let mut configure_cmd = if host.contains("windows") {
             let shell = find_windows_posix_shell(&target, &host);
             let mut cmd = Command::new(shell);
-            cmd.arg(&configure_src_path);
+            // `configure` is a POSIX shell script. When running on Windows we invoke it via
+            // MSYS2/Cygwin `sh`/`bash`; that environment expects POSIX-style paths. Convert the
+            // Windows path to a POSIX path (via `cygpath` when available) for robustness.
+            cmd.arg(windows_shell_path(&configure_src_path));
             cmd
         } else {
             let mut cmd = Command::new("sh");
@@ -537,6 +540,27 @@ fn find_windows_posix_shell(target: &str, host: &str) -> String {
         "Windows builds of bundled libvpx require a POSIX shell (`sh`/`bash`) in PATH. \
 Install MSYS2 or Cygwin and ensure the shell is available.",
     );
+}
+
+fn windows_shell_path(path: &Path) -> String {
+    // Prefer `cygpath` when available (Cygwin/MSYS2) to convert Windows paths to the shell's POSIX
+    // representation. This avoids issues when the source/build directory contains spaces and/or
+    // backslashes.
+    if tool_in_path("cygpath") {
+        if let Ok(out) = Command::new("cygpath").arg("-u").arg(path).output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    // Best-effort fallback: replace backslashes with forward slashes. MSYS2/Cygwin generally accept
+    // `C:/path/to/file` style paths even if `cygpath` isn't available.
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn get_scoped_env(var: &str, target_key: &str) -> String {
