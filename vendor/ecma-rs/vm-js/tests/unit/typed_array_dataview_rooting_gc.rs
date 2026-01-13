@@ -154,7 +154,7 @@ fn array_buffer_ctor_roots_options_across_gc_in_toindex() -> Result<(), VmError>
 }
 
 #[test]
-fn array_buffer_slice_roots_this_across_gc_in_tonumber() -> Result<(), VmError> {
+fn array_buffer_slice_roots_this_and_end_across_gc_in_tonumber() -> Result<(), VmError> {
   let mut rt = new_runtime_with_tiny_gc()?;
 
   let args_array = rt.exec_script(
@@ -163,7 +163,8 @@ fn array_buffer_slice_roots_this_across_gc_in_tonumber() -> Result<(), VmError> 
       const begin = { valueOf() { ({});
         return 0;
       }};
-      return [buf, begin, undefined];
+      const end = { valueOf() { return 8; } };
+      return [buf, begin, end];
     })()"#,
   )?;
 
@@ -565,6 +566,68 @@ fn data_view_ctor_roots_byte_length_across_gc_in_toindex() -> Result<(), VmError
     &[],
   )?;
   assert_eq!(buffer_byte_length, Value::Number(8.0));
+
+  Ok(())
+}
+
+#[test]
+fn typed_array_subarray_roots_end_across_gc_in_tonumber() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const ta = new Uint8Array([1, 2, 3, 4]);
+      const begin = { valueOf() { ({});
+        return 1;
+      }};
+      const end = { valueOf() { return 3; } };
+      return [ta, begin, end];
+    })()"#,
+  )?;
+
+  let [ta_val, begin_val, end_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.uint8_array();
+  let args = [begin_val, end_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::typed_array_prototype_subarray(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    ta_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected subarray() to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(view_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "TypedArray.prototype.subarray returned non-object",
+    ));
+  };
+
+  assert_eq!(scope.heap().typed_array_length(view_obj)?, 2);
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(view_obj, 0)?,
+    Some(Value::Number(2.0))
+  );
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(view_obj, 1)?,
+    Some(Value::Number(3.0))
+  );
 
   Ok(())
 }
