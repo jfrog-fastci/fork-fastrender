@@ -110,6 +110,18 @@ impl SharedMemory {
       });
     }
 
+    // Security: make the invariant explicit that newly created shared-memory regions start
+    // zero-initialized. Even if the kernel typically provides zeroed pages, explicitly clearing the
+    // mapping avoids leaking stale bytes (e.g. previous-process memory) if an fd is ever reused
+    // accidentally.
+    let mut view = map_fd(
+      fd.as_raw_fd(),
+      size,
+      libc::PROT_READ | libc::PROT_WRITE,
+    )
+    .map(MmapViewMut)?;
+    view.as_mut_slice().fill(0);
+
     Ok(Self { fd, size })
   }
 
@@ -378,6 +390,17 @@ mod tests {
     let err = io::Error::last_os_error();
     assert_eq!(err.raw_os_error(), Some(libc::EPERM));
 
+    Ok(())
+  }
+
+  #[test]
+  fn shared_memory_create_zero_initializes() -> Result<(), SharedMemoryError> {
+    let shm = SharedMemory::create(256)?;
+    let view = shm.map_read_only()?;
+    assert!(
+      view.as_slice().iter().all(|b| *b == 0),
+      "newly created shared memory should be zero-initialized"
+    );
     Ok(())
   }
 
