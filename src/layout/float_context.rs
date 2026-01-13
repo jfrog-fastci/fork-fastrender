@@ -669,16 +669,14 @@ impl FloatRangeCache {
       return false;
     }
 
-    // Fast path: if a segment already starts at y, nothing to do.
-    if self
+    let idx = match self
       .segments
       .binary_search_by(|seg| seg.start_y.total_cmp(&y))
-      .is_ok()
     {
-      return false;
-    }
-
-    let idx = self.segment_index(y);
+      // Fast path: if a segment already starts at y, nothing to do.
+      Ok(_) => return false,
+      Err(idx) => idx.saturating_sub(1),
+    };
     let Some(seg) = self.segments.get(idx).copied() else {
       return false;
     };
