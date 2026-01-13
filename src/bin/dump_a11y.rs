@@ -4,6 +4,7 @@ use clap::Parser;
 use common::args::parse_viewport;
 use common::render_pipeline::read_cached_document;
 use fastrender::api::{FastRender, RenderOptions};
+use fastrender::accessibility_audit::audit_accessibility_tree;
 use fastrender::resource::{
   FetchRequest, FetchedResource, HttpFetcher, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
   DEFAULT_USER_AGENT,
@@ -33,6 +34,11 @@ struct Args {
   /// Output compact JSON instead of pretty-printing.
   #[arg(long)]
   compact: bool,
+
+  /// Audit the accessibility tree for missing labels; prints issues to stderr and exits non-zero if
+  /// any are found.
+  #[arg(long)]
+  audit: bool,
 
   /// Override the User-Agent header
   #[arg(long, default_value = DEFAULT_USER_AGENT)]
@@ -93,12 +99,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     .with_device_pixel_ratio(args.dpr)
     .with_media_type(MediaType::Screen);
   let tree = renderer.accessibility_tree_fetched_html(&resource, None, options)?;
+
+  let audit_issues = args.audit.then(|| audit_accessibility_tree(&tree));
+
   let json = serde_json::to_value(tree)?;
 
   if args.compact {
     println!("{}", serde_json::to_string(&json)?);
   } else {
     println!("{}", serde_json::to_string_pretty(&json)?);
+  }
+
+  if let Some(issues) = audit_issues {
+    if !issues.is_empty() {
+      for issue in &issues {
+        eprintln!(
+          "a11y-audit: node {} role={} {}",
+          issue.node_id, issue.role, issue.message
+        );
+      }
+      return Err(Box::new(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("accessibility audit found {} issue(s)", issues.len()),
+      )));
+    }
   }
 
   Ok(())

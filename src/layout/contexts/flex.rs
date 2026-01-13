@@ -10853,7 +10853,8 @@ impl FlexFormattingContext {
     // Pre-pass to compute sizing/position inputs and decide which children require real layout.
     for (dom_idx, child_box) in box_node.children.iter().enumerate() {
       check_layout_deadline(&mut deadline_counter)?;
-      let Some(&child_taffy) = node_map.get(&(child_box as *const BoxNode)) else {
+      let child_ptr = child_box as *const BoxNode;
+      let Some(&child_taffy) = node_map.get(&child_ptr) else {
         continue;
       };
 
@@ -11015,7 +11016,7 @@ impl FlexFormattingContext {
         crate::style::types::ContentVisibility::Auto => {
           self.content_visibility_auto_has_definite_placeholder(child_box)
             && auto_unskipped
-              .map(|set| !set.contains(&(child_box as *const BoxNode)))
+              .map(|set| !set.contains(&child_ptr))
               .unwrap_or(false)
         }
         crate::style::types::ContentVisibility::Visible => false,
@@ -11076,6 +11077,40 @@ impl FlexFormattingContext {
           .map(|l| l.unit.is_absolute() && l.value.abs() <= eps && !l.unit.is_percentage())
           .unwrap_or(false)
       };
+
+      let is_scroll_sensitive = scroll_sensitive.contains(&child_ptr);
+      let is_positioned_sensitive = positioned_sensitive.contains(&child_ptr);
+
+      // When a flex item has out-of-flow positioned descendants that resolve against this flex
+      // container's containing block, a 0px cross size can be problematic:
+      //
+      // - Taffy reports the aligned edge as the item's location (e.g. `align-items:flex-end` places
+      //   a 0px-tall item at y=container_height).
+      // - Later code may inflate the item's resolved cross size to the container's cross size so
+      //   nested formatting contexts have a non-zero percentage base.
+      //
+      // In that case, we must ensure `layout_width/height` reflect the inflated size up-front so
+      // translation-origin adjustment logic can keep abs/fixed positioned descendants aligned with
+      // the fragment placement origin (see
+      // `abspos_descendant_uses_adjusted_flex_item_translation_origin`).
+      if is_positioned_sensitive
+        && (establishes_abs_cb || establishes_fixed_cb)
+        && !skip_contents
+        && !explicit_zero_cross_size
+      {
+        let container_cross_size = if cross_axis_is_horizontal { rect_w } else { rect_h };
+        if container_cross_size.is_finite() && container_cross_size > eps {
+          if cross_axis_is_horizontal {
+            if raw_layout_width <= eps && layout_width <= eps {
+              layout_width = container_cross_size.max(0.0);
+              target_width = layout_width;
+            }
+          } else if raw_layout_height <= eps && layout_height <= eps {
+            layout_height = container_cross_size.max(0.0);
+            target_height = layout_height;
+          }
+        }
+      }
       let zero_cross_size_is_legitimate = if cross_size_is_zero {
         if explicit_zero_cross_size || skip_contents {
           true
@@ -11127,9 +11162,6 @@ impl FlexFormattingContext {
         continue;
       }
 
-      let child_ptr = child_box as *const BoxNode;
-      let is_scroll_sensitive = scroll_sensitive.contains(&child_ptr);
-      let is_positioned_sensitive = positioned_sensitive.contains(&child_ptr);
       let child_cross_align = child_box
         .style
         .align_self

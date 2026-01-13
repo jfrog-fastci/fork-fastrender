@@ -198,6 +198,7 @@ pub mod media;
 // ============================================================================
 
 pub mod accessibility;
+pub mod accessibility_audit;
 pub mod interaction;
 pub mod layout;
 pub mod math;

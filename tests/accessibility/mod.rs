@@ -1,6 +1,7 @@
 //! Accessibility tests consolidated from tests/accessibility_*.rs
 
 mod accname_references;
+mod audit;
 mod aria_owns;
 mod aria_token_parsing;
 mod document_title;
