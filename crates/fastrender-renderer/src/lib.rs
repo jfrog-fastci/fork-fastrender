@@ -89,9 +89,13 @@ impl FrameState {
 }
 
 fn should_fetch_url(url: &Url) -> bool {
-  if url.scheme() != "http" {
+  if !matches!(url.scheme(), "http" | "https") {
     // Keep the renderer loop deterministic/offline for now; unit tests use non-http URLs as
-    // sentinel values. Multiprocess navigation/fetch integration tests use localhost HTTP.
+    // sentinel values. Multiprocess navigation/fetch integration tests use localhost HTTP(S).
+    //
+    // Note: this placeholder renderer does **not** implement TLS; `https://localhost` is treated
+    // as a plain TCP/HTTP connection. This is acceptable for localhost-only tests that need to
+    // exercise scheme-based policy logic (e.g. mixed-content checks).
     return false;
   }
   matches!(
