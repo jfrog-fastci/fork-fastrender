@@ -335,6 +335,10 @@ fn sid_to_string(sid: *mut std::ffi::c_void) -> Result<String, String> {
 type HRESULT = i32;
 type HMODULE = isize;
 
+// Value is stable ABI: https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+const ERROR_PROC_NOT_FOUND: u32 = 127;
+
 type CreateAppContainerProfileFn = unsafe extern "system" fn(
   app_container_name: *const u16,
   display_name: *const u16,
@@ -350,7 +354,7 @@ type DeriveAppContainerSidFromAppContainerNameFn =
 
 #[link(name = "kernel32")]
 extern "system" {
-  fn LoadLibraryW(name: *const u16) -> HMODULE;
+  fn LoadLibraryExW(name: *const u16, hfile: *mut c_void, flags: u32) -> HMODULE;
   fn GetProcAddress(module: HMODULE, proc_name: *const i8) -> *mut c_void;
   fn FreeLibrary(module: HMODULE) -> i32;
 }
@@ -376,9 +380,15 @@ struct UserenvApis {
 }
 
 unsafe fn get_userenv_proc<T>(module: HMODULE, symbol: &'static [u8], name: &'static str) -> Result<T, String> {
+  // Avoid returning a stale `GetLastError()` value if `GetProcAddress` doesn't
+  // set it in some edge case.
+  windows_sys::Win32::Foundation::SetLastError(0);
   let proc = GetProcAddress(module, symbol.as_ptr() as *const i8);
   if proc.is_null() {
-    let err = GetLastError();
+    let mut err = GetLastError();
+    if err == 0 {
+      err = ERROR_PROC_NOT_FOUND;
+    }
     return Err(format!(
       "userenv.dll missing required AppContainer symbol {name} (GetProcAddress err={err})"
     ));
@@ -388,10 +398,11 @@ unsafe fn get_userenv_proc<T>(module: HMODULE, symbol: &'static [u8], name: &'st
 
 unsafe fn load_userenv_apis() -> Result<UserenvApis, String> {
   let dll_w = wide_null_str("userenv.dll");
-  let module = LoadLibraryW(dll_w.as_ptr());
+  // Load from System32 explicitly to avoid DLL search order hijacking.
+  let module = LoadLibraryExW(dll_w.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
   if module == 0 {
     let err = GetLastError();
-    return Err(format!("LoadLibraryW(userenv.dll) failed (err={err})"));
+    return Err(format!("LoadLibraryExW(userenv.dll) failed (err={err})"));
   }
   let module_guard = UserenvModule(module);
 
