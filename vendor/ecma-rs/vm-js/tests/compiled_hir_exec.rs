@@ -1141,6 +1141,44 @@ fn compiled_hir_exec_unary_plus_bigint_throws_type_error() -> Result<(), VmError
 }
 
 #[test]
+fn compiled_hir_exec_unary_minus_object_preserves_bigint() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        return -({ valueOf() { return 1n; } });
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  // `ToNumeric` on objects requires intrinsics for @@toPrimitive lookup.
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    let expected = scope.alloc_bigint_from_i128(-1)?;
+    assert!(result.same_value(Value::BigInt(expected), scope.heap()));
+  }
+
+  // Avoid leaking persistent roots (and tripping the Realm drop assertion).
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn compiled_relational_comparison_string_uses_lexicographic_order() -> Result<(), VmError> {
   let result = compile_and_call0(
     r#"
