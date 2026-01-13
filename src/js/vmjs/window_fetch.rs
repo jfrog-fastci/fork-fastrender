@@ -614,17 +614,21 @@ fn request_body_stream_locked(
   vm: &Vm,
   env_id: u64,
   request_id: u64,
-  heap: &Heap,
+  heap: &mut Heap,
 ) -> Result<bool, VmError> {
-  with_env_state(env_id, heap, |state| {
-    let Some(weak) = state.request_body_stream_wrappers.get(&request_id) else {
-      return Ok(false);
-    };
-    let Some(stream_obj) = weak.upgrade(heap) else {
-      return Ok(false);
-    };
-    Ok(window_streams::readable_stream_is_locked(vm, heap, stream_obj))
-  })
+  let stream_obj = {
+    let heap_ref: &Heap = &*heap;
+    with_env_state(env_id, heap_ref, |state| {
+      let Some(weak) = state.request_body_stream_wrappers.get(&request_id) else {
+        return Ok(None);
+      };
+      Ok(weak.upgrade(heap_ref))
+    })?
+  };
+  let Some(stream_obj) = stream_obj else {
+    return Ok(false);
+  };
+  Ok(window_streams::readable_stream_is_locked(vm, heap, stream_obj))
 }
 
 fn response_wrapper_cached_body_stream_is_locked(
@@ -664,7 +668,7 @@ fn is_readable_stream_like_object(
   host_hooks: &mut dyn VmHostHooks,
   obj: GcObject,
 ) -> Result<bool, VmError> {
-  if window_streams::is_readable_stream_object(vm, scope.heap(), obj) {
+  if window_streams::is_readable_stream_object(vm, scope.heap_mut(), obj) {
     return Ok(true);
   }
 
@@ -696,8 +700,8 @@ fn readable_stream_is_locked(
   // `window_streams::readable_stream_is_locked` only works for streams created by
   // `crate::js::window_streams`. For user-created streams, fall back to reading the `.locked`
   // getter.
-  if window_streams::is_readable_stream_object(vm, scope.heap(), stream) {
-    return Ok(window_streams::readable_stream_is_locked(vm, scope.heap(), stream));
+  if window_streams::is_readable_stream_object(vm, scope.heap_mut(), stream) {
+    return Ok(window_streams::readable_stream_is_locked(vm, scope.heap_mut(), stream));
   }
 
   let mut scope = scope.reborrow();
@@ -4153,7 +4157,7 @@ fn request_clone_native(
     ));
   }
 
-  if request_body_stream_locked(vm, env_id, request_id, scope.heap())? {
+  if request_body_stream_locked(vm, env_id, request_id, scope.heap_mut())? {
     return Err(throw_type_error(
       vm,
       scope,
