@@ -155,3 +155,93 @@ fn hover_changed_cursor_respects_css_cursor_overrides_on_links() {
   worker.join().unwrap();
 }
 
+#[test]
+fn hover_changed_reports_expanded_css_cursor_kinds() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let page_url = site.write(
+    "index.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #abbr { position: absolute; top: 10px; left: 10px; display: block; width: 140px; height: 24px; background: rgb(220, 220, 0); }
+            #zoom { position: absolute; top: 50px; left: 10px; width: 140px; height: 24px; background: rgb(0, 220, 220); cursor: zoom-in; }
+            #ew { position: absolute; top: 90px; left: 10px; width: 140px; height: 24px; background: rgb(220, 0, 220); cursor: ew-resize; }
+          </style>
+        </head>
+        <body>
+          <abbr id="abbr" title="Abbreviation title">Abbr</abbr>
+          <div id="zoom"></div>
+          <div id="ew"></div>
+        </body>
+      </html>
+    "##,
+  );
+
+  let worker = spawn_ui_worker("fastr-ui-worker-hover-cursor-css-expanded").expect("spawn ui worker");
+  let tab_id = TabId(1);
+  worker
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (256, 140), 1.0))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      page_url,
+      NavigationReason::TypedUrl,
+    ))
+    .unwrap();
+
+  next_frame_ready(&worker.ui_rx, tab_id);
+
+  // UA stylesheet cursor: `abbr[title] { cursor: help; }`.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 15.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Help);
+  assert_eq!(hovered_url, None);
+
+  // Author CSS cursor: zoom-in.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 60.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::ZoomIn);
+  assert_eq!(hovered_url, None);
+
+  // Author CSS cursor: ew-resize.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 100.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::EwResize);
+  assert_eq!(hovered_url, None);
+
+  worker.join().unwrap();
+}

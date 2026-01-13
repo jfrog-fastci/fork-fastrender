@@ -99,7 +99,7 @@ mod tests {
     // Even though this is a link, a concrete `cursor` value (e.g. `wait`) should override link
     // heuristics.
     let mut hit = hit(HitTestKind::Link);
-    hit.css_cursor = CursorKeyword::Wait;
+    hit.css_cursor = CursorKeyword::Cell;
     assert_eq!(cursor_kind_for_hit(Some(&hit)), CursorKind::Default);
   }
 }

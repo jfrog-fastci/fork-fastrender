@@ -12888,6 +12888,15 @@ impl App {
       CursorKind::NotAllowed => CursorIcon::NotAllowed,
       CursorKind::Grab => CursorIcon::Grab,
       CursorKind::Grabbing => CursorIcon::Grabbing,
+      CursorKind::Help => CursorIcon::Help,
+      CursorKind::Wait => CursorIcon::Wait,
+      CursorKind::Progress => CursorIcon::Progress,
+      CursorKind::Move => CursorIcon::Move,
+      CursorKind::Copy => CursorIcon::Copy,
+      CursorKind::ZoomIn => CursorIcon::ZoomIn,
+      CursorKind::ZoomOut => CursorIcon::ZoomOut,
+      CursorKind::EwResize => CursorIcon::EwResize,
+      CursorKind::NsResize => CursorIcon::NsResize,
       CursorKind::Hidden => unreachable!("handled above"), // fastrender-allow-panic
     };
     self.window.set_cursor_icon(icon);

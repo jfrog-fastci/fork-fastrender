@@ -257,6 +257,15 @@ pub enum CursorKind {
   NotAllowed,
   Grab,
   Grabbing,
+  Help,
+  Wait,
+  Progress,
+  Move,
+  Copy,
+  ZoomIn,
+  ZoomOut,
+  EwResize,
+  NsResize,
 }
 
 impl Default for CursorKind {
@@ -275,12 +284,21 @@ impl CursorKind {
       CursorKeyword::Auto => None,
       CursorKeyword::Default => Some(CursorKind::Default),
       CursorKeyword::None => Some(CursorKind::Hidden),
+      CursorKeyword::Help => Some(CursorKind::Help),
       CursorKeyword::Pointer => Some(CursorKind::Pointer),
       CursorKeyword::Text | CursorKeyword::VerticalText => Some(CursorKind::Text),
       CursorKeyword::Crosshair => Some(CursorKind::Crosshair),
       CursorKeyword::NotAllowed | CursorKeyword::NoDrop => Some(CursorKind::NotAllowed),
       CursorKeyword::Grab => Some(CursorKind::Grab),
       CursorKeyword::Grabbing => Some(CursorKind::Grabbing),
+      CursorKeyword::Wait => Some(CursorKind::Wait),
+      CursorKeyword::Progress => Some(CursorKind::Progress),
+      CursorKeyword::Move | CursorKeyword::AllScroll => Some(CursorKind::Move),
+      CursorKeyword::Copy | CursorKeyword::Alias => Some(CursorKind::Copy),
+      CursorKeyword::ZoomIn => Some(CursorKind::ZoomIn),
+      CursorKeyword::ZoomOut => Some(CursorKind::ZoomOut),
+      CursorKeyword::EwResize | CursorKeyword::ColResize => Some(CursorKind::EwResize),
+      CursorKeyword::NsResize | CursorKeyword::RowResize => Some(CursorKind::NsResize),
       // Degrade gracefully for cursor keywords that do not have a dedicated `CursorKind` variant.
       _ => Some(CursorKind::Default),
     }
