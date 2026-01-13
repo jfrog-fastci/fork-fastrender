@@ -212,8 +212,20 @@ fn linux_pre_exec(cfg: LinuxPreExecConfig) -> std::io::Result<()> {
     let _ = apply_rlimit_hard_ceiling(libc::RLIMIT_NPROC, limit);
   }
 
-  // 2) no_new_privs is required before installing seccomp/landlock without caps.
-  set_no_new_privs()?;
+  // 2) no_new_privs is required before installing seccomp/landlock without caps. When neither is
+  // requested, treat it as best-effort defense-in-depth.
+  let needs_no_new_privs = matches!(
+    cfg.seccomp,
+    crate::sandbox::RendererSeccompPolicy::RendererDefault
+  ) || matches!(
+    cfg.landlock,
+    crate::sandbox::RendererLandlockPolicy::RestrictWrites
+  );
+  if needs_no_new_privs {
+    set_no_new_privs()?;
+  } else {
+    let _ = set_no_new_privs();
+  }
 
   // 3) Optional Landlock.
   match cfg.landlock {
