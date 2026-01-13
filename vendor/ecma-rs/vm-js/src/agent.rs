@@ -317,19 +317,19 @@ impl Agent {
 
     // Bound attacker-controlled strings; host-visible error formatting should never allocate
     // unbounded Rust `String`s.
+    let marker = "…";
+    let max_bytes = fallible_format::MAX_ERROR_MESSAGE_BYTES;
+    let max_before_marker = max_bytes.saturating_sub(marker.len());
     match crate::string::utf16_to_utf8_lossy_bounded(
       js.as_code_units(),
-      fallible_format::MAX_ERROR_MESSAGE_BYTES,
+      max_before_marker,
     ) {
       Ok((mut out, truncated)) => {
         if truncated {
           // Best-effort truncation marker. If we can't allocate even a few bytes, return the
           // truncated prefix without the marker.
-          let marker = "...";
-          if out.len().saturating_add(marker.len()) <= fallible_format::MAX_ERROR_MESSAGE_BYTES {
-            if out.try_reserve(marker.len()).is_ok() {
-              out.push_str(marker);
-            }
+          if out.try_reserve(marker.len()).is_ok() {
+            out.push_str(marker);
           }
         }
         out

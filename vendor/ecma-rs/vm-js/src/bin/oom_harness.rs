@@ -690,8 +690,9 @@ fn main() {
         "parseFloat" => "parseFloat(S)",
         "regexp_compile" | "regexp" => "new RegExp(S)",
         // Exercise host-visible error formatting (`Agent::format_vm_error`) on a thrown string value
-        // that is too large to stringify under RLIMIT_AS pressure.
-        "throw_string_format" => "throw S",
+        // that is too large to stringify under RLIMIT_AS pressure. Use a computed property name so
+        // the stack frame attempts to capture a huge function name.
+        "throw_string_format" => "const o = { [S]: function() { throw S; } }; o[S]();",
         // Trigger per-iteration array index key formatting (`ToString(k)` for each `k < length`) under
         // memory pressure. Previously this used intermediate Rust heap `String` allocations, which can
         // abort the process on allocator OOM.

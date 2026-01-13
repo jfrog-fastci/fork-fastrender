@@ -76,6 +76,44 @@ pub(crate) fn utf16_to_utf8_lossy(units: &[u16]) -> Result<String, VmError> {
   utf16_to_utf8_lossy_with_tick(units, || Ok(()))
 }
 
+/// Fallible UTF-16→UTF-8 conversion with a hard cap on the number of UTF-16 code units converted.
+///
+/// This is intended for *host-facing* formatting paths (error messages, stack traces, etc), where a
+/// script can surface attacker-controlled strings that are extremely large.
+///
+/// If `units` exceeds `max_code_units`, the output is truncated and an ellipsis (`…`) is appended.
+pub(crate) fn utf16_to_utf8_lossy_truncated(
+  units: &[u16],
+  max_code_units: usize,
+) -> Result<String, VmError> {
+  utf16_to_utf8_lossy_truncated_with_tick(units, max_code_units, || Ok(()))
+}
+
+/// [`utf16_to_utf8_lossy_truncated`] with an optional `tick` hook.
+pub(crate) fn utf16_to_utf8_lossy_truncated_with_tick(
+  units: &[u16],
+  max_code_units: usize,
+  tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<String, VmError> {
+  let truncated = units.len() > max_code_units;
+  let units = if truncated {
+    &units[..max_code_units]
+  } else {
+    units
+  };
+
+  let mut out = utf16_to_utf8_lossy_with_tick(units, tick)?;
+
+  if truncated {
+    let mut buf = [0u8; 4];
+    let needed = '…'.encode_utf8(&mut buf).len();
+    out.try_reserve(needed).map_err(|_| VmError::OutOfMemory)?;
+    out.push('…');
+  }
+
+  Ok(out)
+}
+
 /// [`utf16_to_utf8_lossy`] with an optional `tick` hook.
 ///
 /// The `tick` hook allows long conversions to observe VM budgets and host interrupts. Callers
