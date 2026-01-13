@@ -101,7 +101,12 @@ impl BookmarksManagerState {
 
 #[derive(Debug, Clone)]
 struct BookmarksListCache {
-  store_revision: u64,
+  /// Revision key used to determine when the flattened list needs rebuilding.
+  ///
+  /// - For normal tree mode (empty search), this is `BookmarkStore::structure_revision()` so
+  ///   bookmark content-only edits don't force a full rebuild.
+  /// - For search mode, this is `BookmarkStore::revision()` since title/URL updates affect matches.
+  cache_revision: u64,
   search_query: String,
   folder_open_revision: u64,
   rows: Vec<BookmarkRow>,
@@ -851,8 +856,12 @@ fn bookmarks_list(
     .inner_margin(egui::Margin::same(0.0));
 
   frame.show(ui, |ui| {
-    let store_revision = store.revision();
     let query = state.search.trim();
+    let cache_revision = if query.is_empty() {
+      store.structure_revision()
+    } else {
+      store.revision()
+    };
     let open_rev = state.folder_open_revision;
 
     if store.roots.is_empty() {
@@ -870,7 +879,7 @@ fn bookmarks_list(
 
     let needs_rebuild = match state.list_cache.as_ref() {
       Some(cache) => {
-        cache.store_revision != store_revision
+        cache.cache_revision != cache_revision
           || cache.search_query != query
           || cache.folder_open_revision != open_rev
       }
@@ -882,7 +891,7 @@ fn bookmarks_list(
     let prev_cache = state.list_cache.take();
     let mut cache = if needs_rebuild {
       BookmarksListCache {
-        store_revision,
+        cache_revision,
         search_query: query.to_string(),
         folder_open_revision: open_rev,
         rows: build_visible_rows(ui.ctx(), store, query, prev_cache.as_ref()),
@@ -1060,7 +1069,7 @@ fn build_visible_rows(
 ) -> Vec<BookmarkRow> {
   if !query.is_empty() {
     if let Some(prev) = prev_cache {
-      if prev.store_revision == store.revision()
+      if prev.cache_revision == store.revision()
         && !prev.search_query.is_empty()
         && query.starts_with(prev.search_query.as_str())
       {

@@ -92,6 +92,15 @@ pub struct BookmarkStore {
   /// cheaply detect when a store mutation has occurred).
   #[serde(skip)]
   revision: u64,
+  /// Monotonically increasing revision counter for bookmark tree structure changes.
+  ///
+  /// This only changes when the *shape* or ordering of the bookmark tree changes (add/remove/move
+  /// nodes, reorder roots/siblings, replace the whole store). It does **not** change for bookmark
+  /// content-only updates (e.g. editing a bookmark title/URL without moving it).
+  ///
+  /// This is *not* part of the persisted bookmark schema.
+  #[serde(skip)]
+  structure_revision: u64,
   /// Monotonically increasing revision counter for folder structure changes.
   ///
   /// Used for caching folder dropdown options: many bookmark mutations (editing a bookmark title,
@@ -127,6 +136,7 @@ impl Default for BookmarkStore {
       version: BOOKMARK_STORE_VERSION,
       next_id: default_next_id(),
       revision: 0,
+      structure_revision: 0,
       folder_revision: 0,
       url_index: FxHashMap::default(),
       roots: Vec::new(),
@@ -137,8 +147,8 @@ impl Default for BookmarkStore {
 
 impl PartialEq for BookmarkStore {
   fn eq(&self, other: &Self) -> bool {
-    // `revision`/`folder_revision`/`url_index` are intentionally excluded: they are derived
-    // in-memory metadata, not persisted data.
+    // `revision`/`structure_revision`/`folder_revision`/`url_index` are intentionally excluded: they
+    // are derived in-memory metadata, not persisted data.
     self.version == other.version
       && self.next_id == other.next_id
       && self.roots == other.roots
@@ -171,6 +181,7 @@ impl<'de> Deserialize<'de> for BookmarkStore {
       roots: persisted.roots,
       nodes: persisted.nodes,
       revision: 0,
+      structure_revision: 0,
       folder_revision: 0,
       url_index: FxHashMap::default(),
     };
@@ -250,6 +261,12 @@ impl BookmarkStore {
     self.revision
   }
 
+  /// Returns the current structure revision (incremented when the bookmark tree shape/order
+  /// changes).
+  pub fn structure_revision(&self) -> u64 {
+    self.structure_revision
+  }
+
   /// Returns the current folder revision (incremented when folder structure changes).
   pub fn folder_revision(&self) -> u64 {
     self.folder_revision
@@ -266,12 +283,21 @@ impl BookmarkStore {
     self.revision = self.revision.saturating_add(1);
   }
 
-  /// Manually bump the folder revision *and* the global revision.
+  /// Manually bump the structure revision *and* the global revision.
+  ///
+  /// This should be used when nodes are added/removed/moved/reordered.
+  pub fn touch_structure(&mut self) {
+    self.revision = self.revision.saturating_add(1);
+    self.structure_revision = self.structure_revision.saturating_add(1);
+  }
+
+  /// Manually bump the folder revision (and also structure/global revisions).
   ///
   /// This should be used when folder paths/orderings may have changed (creating/removing/moving a
   /// folder, or replacing the entire store).
   pub fn touch_folders(&mut self) {
     self.revision = self.revision.saturating_add(1);
+    self.structure_revision = self.structure_revision.saturating_add(1);
     self.folder_revision = self.folder_revision.saturating_add(1);
   }
 
@@ -335,9 +361,11 @@ impl BookmarkStore {
       }
       BookmarkDelta::ReplaceAll(store) => {
         let next_revision = self.revision.saturating_add(1);
+        let next_structure_revision = self.structure_revision.saturating_add(1);
         let next_folder_revision = self.folder_revision.saturating_add(1);
         *self = store.clone();
         self.revision = next_revision;
+        self.structure_revision = next_structure_revision;
         self.folder_revision = next_folder_revision;
         Ok(())
       }
@@ -590,25 +618,14 @@ impl BookmarkStore {
     }
 
     // Fallback: record a full root ordering vector.
-    let old_folder_roots: Vec<BookmarkId> = self
-      .roots
-      .iter()
-      .copied()
-      .filter(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))))
-      .collect();
-    let new_folder_roots: Vec<BookmarkId> = ids_in_new_order
-      .iter()
-      .copied()
-      .filter(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))))
-      .collect();
-    let folder_order_changed = old_folder_roots != new_folder_roots;
+    let folder_order_changed = self.folder_subsequence(&self.roots) != self.folder_subsequence(ids_in_new_order);
 
     let new_vec = ids_in_new_order.to_vec();
     self.roots = new_vec.clone();
     if folder_order_changed {
       self.touch_folders();
     } else {
-      self.touch();
+      self.touch_structure();
     }
     deltas.push(BookmarkDelta::ReorderRoot(new_vec));
     Ok(())
@@ -778,7 +795,7 @@ impl BookmarkStore {
     if removed_is_folder {
       self.touch_folders();
     } else {
-      self.touch();
+      self.touch_structure();
     }
     true
   }
@@ -906,7 +923,7 @@ impl BookmarkStore {
     if moving_folder {
       self.touch_folders();
     } else {
-      self.touch();
+      self.touch_structure();
     }
     Ok(())
   }
@@ -918,6 +935,14 @@ impl BookmarkStore {
     new_parent: Option<BookmarkId>,
   ) -> Result<(), BookmarkError> {
     self.move_node(id, new_parent)
+  }
+
+  fn folder_subsequence(&self, ids: &[BookmarkId]) -> Vec<BookmarkId> {
+    ids
+      .iter()
+      .copied()
+      .filter(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))))
+      .collect()
   }
 
   pub fn reorder_root(&mut self, ids_in_new_order: &[BookmarkId]) -> Result<(), BookmarkError> {
@@ -933,24 +958,13 @@ impl BookmarkStore {
       return Ok(());
     }
 
-    let old_folder_roots: Vec<BookmarkId> = self
-      .roots
-      .iter()
-      .copied()
-      .filter(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))))
-      .collect();
-    let new_folder_roots: Vec<BookmarkId> = ids_in_new_order
-      .iter()
-      .copied()
-      .filter(|id| matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))))
-      .collect();
-    let folder_order_changed = old_folder_roots != new_folder_roots;
+    let folder_order_changed = self.folder_subsequence(&self.roots) != self.folder_subsequence(ids_in_new_order);
 
     self.roots = ids_in_new_order.to_vec();
     if folder_order_changed {
       self.touch_folders();
     } else {
-      self.touch();
+      self.touch_structure();
     }
     Ok(())
   }
@@ -1299,7 +1313,7 @@ impl BookmarkStore {
         if is_folder {
           self.touch_folders();
         } else {
-          self.touch();
+          self.touch_structure();
         }
         Ok(())
       }
@@ -1386,33 +1400,69 @@ impl BookmarkStore {
       return Err(BookmarkError::InvalidReorder);
     }
 
-    let moving_folder = matches!(self.nodes.get(&id), Some(BookmarkNode::Folder(_)));
+    let moved_is_folder = matches!(self.nodes.get(&id), Some(BookmarkNode::Folder(_)));
 
-    let list = self.parent_list_mut(parent)?;
-    let old_idx = list
-      .iter()
-      .position(|x| *x == id)
-      .ok_or(BookmarkError::InvalidReorder)?;
-    let before_idx = list
-      .iter()
-      .position(|x| *x == before_id)
-      .ok_or(BookmarkError::InvalidReorder)?;
+    let folder_order_changed = if moved_is_folder {
+      // Only bump `folder_revision` if the relative ordering of folder siblings changed.
+      let (old_order, new_order) = {
+        let list = self.parent_list_mut(parent)?;
+        let old_idx = list
+          .iter()
+          .position(|x| *x == id)
+          .ok_or(BookmarkError::InvalidReorder)?;
+        let before_idx = list
+          .iter()
+          .position(|x| *x == before_id)
+          .ok_or(BookmarkError::InvalidReorder)?;
 
-    // Already immediately before the target.
-    if old_idx + 1 == before_idx {
-      return Ok(());
-    }
+        // Already immediately before the target.
+        if old_idx + 1 == before_idx {
+          return Ok(());
+        }
 
-    list.remove(old_idx);
-    let mut insert_idx = before_idx;
-    if old_idx < before_idx {
-      insert_idx = insert_idx.saturating_sub(1);
-    }
-    list.insert(insert_idx, id);
-    if moving_folder {
+        let old_order = list.clone();
+        list.remove(old_idx);
+        let mut insert_idx = before_idx;
+        if old_idx < before_idx {
+          insert_idx = insert_idx.saturating_sub(1);
+        }
+        list.insert(insert_idx, id);
+        let new_order = list.clone();
+        (old_order, new_order)
+      };
+
+      self.folder_subsequence(&old_order) != self.folder_subsequence(&new_order)
+    } else {
+      {
+        let list = self.parent_list_mut(parent)?;
+        let old_idx = list
+          .iter()
+          .position(|x| *x == id)
+          .ok_or(BookmarkError::InvalidReorder)?;
+        let before_idx = list
+          .iter()
+          .position(|x| *x == before_id)
+          .ok_or(BookmarkError::InvalidReorder)?;
+
+        // Already immediately before the target.
+        if old_idx + 1 == before_idx {
+          return Ok(());
+        }
+
+        list.remove(old_idx);
+        let mut insert_idx = before_idx;
+        if old_idx < before_idx {
+          insert_idx = insert_idx.saturating_sub(1);
+        }
+        list.insert(insert_idx, id);
+      }
+      false
+    };
+
+    if folder_order_changed {
       self.touch_folders();
     } else {
-      self.touch();
+      self.touch_structure();
     }
     Ok(())
   }
@@ -1444,33 +1494,68 @@ impl BookmarkStore {
       return Err(BookmarkError::InvalidReorder);
     }
 
-    let moving_folder = matches!(self.nodes.get(&id), Some(BookmarkNode::Folder(_)));
+    let moved_is_folder = matches!(self.nodes.get(&id), Some(BookmarkNode::Folder(_)));
 
-    let list = self.parent_list_mut(parent)?;
-    let old_idx = list
-      .iter()
-      .position(|x| *x == id)
-      .ok_or(BookmarkError::InvalidReorder)?;
-    let after_idx = list
-      .iter()
-      .position(|x| *x == after_id)
-      .ok_or(BookmarkError::InvalidReorder)?;
+    let folder_order_changed = if moved_is_folder {
+      let (old_order, new_order) = {
+        let list = self.parent_list_mut(parent)?;
+        let old_idx = list
+          .iter()
+          .position(|x| *x == id)
+          .ok_or(BookmarkError::InvalidReorder)?;
+        let after_idx = list
+          .iter()
+          .position(|x| *x == after_id)
+          .ok_or(BookmarkError::InvalidReorder)?;
 
-    // Already immediately after the target.
-    if after_idx + 1 == old_idx {
-      return Ok(());
-    }
+        // Already immediately after the target.
+        if after_idx + 1 == old_idx {
+          return Ok(());
+        }
 
-    list.remove(old_idx);
-    let mut insert_idx = after_idx;
-    if old_idx < after_idx {
-      insert_idx = insert_idx.saturating_sub(1);
-    }
-    list.insert(insert_idx + 1, id);
-    if moving_folder {
+        let old_order = list.clone();
+        list.remove(old_idx);
+        let mut insert_idx = after_idx;
+        if old_idx < after_idx {
+          insert_idx = insert_idx.saturating_sub(1);
+        }
+        list.insert(insert_idx + 1, id);
+        let new_order = list.clone();
+        (old_order, new_order)
+      };
+
+      self.folder_subsequence(&old_order) != self.folder_subsequence(&new_order)
+    } else {
+      {
+        let list = self.parent_list_mut(parent)?;
+        let old_idx = list
+          .iter()
+          .position(|x| *x == id)
+          .ok_or(BookmarkError::InvalidReorder)?;
+        let after_idx = list
+          .iter()
+          .position(|x| *x == after_id)
+          .ok_or(BookmarkError::InvalidReorder)?;
+
+        // Already immediately after the target.
+        if after_idx + 1 == old_idx {
+          return Ok(());
+        }
+
+        list.remove(old_idx);
+        let mut insert_idx = after_idx;
+        if old_idx < after_idx {
+          insert_idx = insert_idx.saturating_sub(1);
+        }
+        list.insert(insert_idx + 1, id);
+      }
+      false
+    };
+
+    if folder_order_changed {
       self.touch_folders();
     } else {
-      self.touch();
+      self.touch_structure();
     }
     Ok(())
   }
@@ -2183,6 +2268,79 @@ mod tests {
     assert!(
       store.folder_revision() > folder_rev_before_remove_folder,
       "expected removing a folder to bump folder_revision"
+    );
+  }
+
+  #[test]
+  fn structure_revision_tracks_tree_shape_changes() {
+    let mut store = BookmarkStore::default();
+    assert_eq!(store.structure_revision(), 0);
+
+    let a = store
+      .add(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+      )
+      .unwrap();
+    let b = store
+      .add(
+        "https://b.example/".to_string(),
+        Some("B".to_string()),
+        None,
+      )
+      .unwrap();
+
+    let structure_after_add = store.structure_revision();
+    assert!(
+      structure_after_add > 0,
+      "expected structure_revision to bump after adding bookmarks"
+    );
+
+    // Content-only updates should not bump structure revision.
+    store
+      .update(
+        a,
+        Some("A (edited)".to_string()),
+        "https://a.example/".to_string(),
+        None,
+      )
+      .unwrap();
+    assert_eq!(
+      store.structure_revision(),
+      structure_after_add,
+      "expected updating bookmark fields to not bump structure_revision"
+    );
+
+    // Creating a folder bumps structure revision.
+    let folder = store.create_folder("Folder".to_string(), None).unwrap();
+    assert!(
+      store.structure_revision() > structure_after_add,
+      "expected creating a folder to bump structure_revision"
+    );
+
+    // Moving a bookmark bumps structure revision.
+    let structure_before_move = store.structure_revision();
+    store.move_node(a, Some(folder)).unwrap();
+    assert!(
+      store.structure_revision() > structure_before_move,
+      "expected moving a bookmark to bump structure_revision"
+    );
+
+    // Reordering roots (even just bookmarks vs folders) bumps structure revision.
+    let structure_before_reorder = store.structure_revision();
+    store.reorder_root(&[folder, b]).unwrap();
+    assert!(
+      store.structure_revision() > structure_before_reorder,
+      "expected reorder_root to bump structure_revision when the order changes"
+    );
+
+    // Removing a bookmark bumps structure revision.
+    let structure_before_remove = store.structure_revision();
+    assert!(store.remove_by_id(b));
+    assert!(
+      store.structure_revision() > structure_before_remove,
+      "expected removing a bookmark to bump structure_revision"
     );
   }
 
