@@ -7863,15 +7863,21 @@ impl<'vm> HirEvaluator<'vm> {
                 body: func_body,
                 is_arrow,
                 ..
-              } => Value::Object(self.alloc_user_function_object(
-                &mut member_scope,
-                *func_body,
-                "",
-                *is_arrow,
-                /* is_constructable */ false,
-                /* name_binding */ None,
-                EcmaFunctionKind::ObjectMember,
-              )?),
+              } => {
+                let func_obj = self.alloc_user_function_object(
+                  &mut member_scope,
+                  *func_body,
+                  "",
+                  *is_arrow,
+                  /* is_constructable */ false,
+                  /* name_binding */ None,
+                  EcmaFunctionKind::ObjectMember,
+                )?;
+                member_scope
+                  .heap_mut()
+                  .set_function_home_object(func_obj, Some(obj_val))?;
+                Value::Object(func_obj)
+              }
               _ => self.eval_expr(&mut member_scope, body, *value)?,
             }
           } else {

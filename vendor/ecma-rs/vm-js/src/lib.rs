@@ -267,6 +267,10 @@ mod generators_short_circuit_and_comma_tests;
 #[path = "../tests/class_inheritance_and_super.rs"]
 mod class_inheritance_and_super_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/object_literal_super.rs"]
+mod object_literal_super_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;

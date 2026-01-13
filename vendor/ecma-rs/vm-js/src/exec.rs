@@ -2552,7 +2552,7 @@ impl JsRuntime {
               &top.stx.body,
               crate::early_errors::EarlyErrorOptions {
                 strict,
-                allow_top_level_await: has_await,
+                allow_top_level_await: false,
                 is_module: false,
                 allow_super_call: false,
               },
@@ -3096,7 +3096,7 @@ impl JsRuntime {
             &top.stx.body,
             crate::early_errors::EarlyErrorOptions {
               strict,
-              allow_top_level_await: has_await,
+              allow_top_level_await: false,
               is_module: false,
               allow_super_call: false,
             },
@@ -10194,6 +10194,68 @@ impl<'a> Evaluator<'a> {
     )
   }
 
+  fn eval_super_property_set(
+    &mut self,
+    scope: &mut Scope<'_>,
+    key: PropertyKey,
+    value: Value,
+  ) -> Result<(), VmError> {
+    let this_value = self.this;
+    let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+      "super property access missing [[HomeObject]]",
+    ))?;
+
+    // Root `this`, `home_object`, `key`, and `value` across:
+    // - `GetPrototypeOf(home_object)` (Proxy-aware), and
+    // - the final `[[Set]]` (which can invoke accessors/Proxy traps).
+    let mut super_scope = scope.reborrow();
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    super_scope.push_roots(&[this_value, Value::Object(home_object), key_root, value])?;
+
+    let super_base = super_scope.get_prototype_of_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      home_object,
+    )?;
+    let Some(super_base) = super_base else {
+      // `super` base is `null`: dereferencing throws a TypeError.
+      return Err(throw_type_error(
+        self.vm,
+        &mut super_scope,
+        "Cannot convert undefined or null to object",
+      )?);
+    };
+
+    super_scope.push_root(Value::Object(super_base))?;
+    let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+      self.vm,
+      &mut super_scope,
+      &mut *self.host,
+      &mut *self.hooks,
+      super_base,
+      key,
+      value,
+      this_value,
+    )?;
+
+    if ok {
+      Ok(())
+    } else if self.strict {
+      Err(throw_type_error(
+        self.vm,
+        &mut super_scope,
+        "Cannot assign to read-only property",
+      )?)
+    } else {
+      // Sloppy-mode assignment to a non-writable/non-extensible target fails silently.
+      Ok(())
+    }
+  }
+
   fn eval_reference<'b>(
     &mut self,
     scope: &mut Scope<'_>,
@@ -12836,6 +12898,69 @@ impl<'a> Evaluator<'a> {
 
     // Evaluate the callee and compute the `this` value for the call.
     let (callee_value, this_value) = match &*expr.callee.stx {
+      // `super.method()` call in methods/getters/setters.
+      Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+        if member.stx.optional_chaining {
+          return Err(VmError::InvariantViolation(
+            "optional chaining cannot be used on super",
+          ));
+        }
+        if member.stx.right.starts_with('#') {
+          return Err(VmError::Unimplemented("super private member access"));
+        }
+        // Evaluating a super property reference requires an initialized `this` binding. In derived
+        // constructors, `this` is uninitialized until `super()` returns.
+        if self.derived_constructor && !self.this_initialized {
+          return Err(throw_reference_error(
+            self.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
+        }
+
+        let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+          "super property access missing [[HomeObject]]",
+        ))?;
+        let mut key_scope = scope.reborrow();
+        // Root `this` + home object across property-key string allocation and the `[[Get]]`.
+        key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+        let key_s = key_scope.alloc_string(&member.stx.right)?;
+        let key = PropertyKey::from_string(key_s);
+
+        let callee_value = self.eval_super_property_get(&mut key_scope, key)?;
+        (callee_value, self.this)
+      }
+      // `super[expr](...)` call in methods/getters/setters.
+      Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+        if member.stx.optional_chaining {
+          return Err(VmError::InvariantViolation(
+            "optional chaining cannot be used on super",
+          ));
+        }
+        // Evaluating a super property reference requires an initialized `this` binding. In derived
+        // constructors, `this` is uninitialized until `super()` returns.
+        if self.derived_constructor && !self.this_initialized {
+          return Err(throw_reference_error(
+            self.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
+        }
+
+        let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+          "super property access missing [[HomeObject]]",
+        ))?;
+
+        // Root `this` + home object across evaluation of the computed key and `[[Get]]`.
+        let mut key_scope = scope.reborrow();
+        key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+        let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
+        key_scope.push_root(member_value)?;
+        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+
+        let callee_value = self.eval_super_property_get(&mut key_scope, key)?;
+        (callee_value, self.this)
+      }
       // Optional member call (e.g. `obj?.method()`): only applies when the optional-chain member
       // expression is directly in the call callee position (i.e. not parenthesized).
       Expr::Member(member) if member.stx.optional_chaining && !callee_is_parenthesized => {
@@ -13208,6 +13333,83 @@ impl<'a> Evaluator<'a> {
               self.strict,
               self.this,
             )?;
+            Ok(value)
+          }
+          // `super.prop = rhs` assignment in methods/getters/setters.
+          Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+            // Optional chaining is never a valid assignment target; this should be rejected by an
+            // early error pass.
+            if member.stx.optional_chaining {
+              return Err(VmError::InvariantViolation(
+                "optional chaining used in reference position",
+              ));
+            }
+            if member.stx.right.starts_with('#') {
+              return Err(VmError::Unimplemented("super private member access"));
+            }
+            // Evaluating a super property reference requires an initialized `this` binding. In
+            // derived constructors, `this` is uninitialized until `super()` returns.
+            if self.derived_constructor && !self.this_initialized {
+              return Err(throw_reference_error(
+                self.vm,
+                scope,
+                "Must call super constructor in derived class before accessing 'this'",
+              )?);
+            }
+
+            let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+              "super property access missing [[HomeObject]]",
+            ))?;
+
+            // Evaluate RHS after the super reference checks but before allocating the property-key
+            // string; this keeps the rooting simple.
+            let mut set_scope = scope.reborrow();
+            set_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+            let value = self.eval_expr(&mut set_scope, &expr.right)?;
+            set_scope.push_root(value)?;
+
+            let key_s = set_scope.alloc_string(&member.stx.right)?;
+            let key = PropertyKey::from_string(key_s);
+            self.eval_super_property_set(&mut set_scope, key, value)?;
+            Ok(value)
+          }
+          // `super[expr] = rhs` assignment in methods/getters/setters.
+          Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+            if member.stx.optional_chaining {
+              return Err(VmError::InvariantViolation(
+                "optional chaining used in reference position",
+              ));
+            }
+            // Evaluating a super property reference requires an initialized `this` binding. In
+            // derived constructors, this check happens before evaluating the computed key expression.
+            if self.derived_constructor && !self.this_initialized {
+              return Err(throw_reference_error(
+                self.vm,
+                scope,
+                "Must call super constructor in derived class before accessing 'this'",
+              )?);
+            }
+
+            let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+              "super property access missing [[HomeObject]]",
+            ))?;
+
+            // Root `this` + home object across evaluation of the computed key, RHS, and the `[[Set]]`.
+            let mut set_scope = scope.reborrow();
+            set_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+            let member_value = self.eval_expr(&mut set_scope, &member.stx.member)?;
+            set_scope.push_root(member_value)?;
+            let key = self.to_property_key_operator(&mut set_scope, member_value)?;
+            // Root the key across RHS evaluation (the key may be a newly allocated string).
+            match key {
+              PropertyKey::String(s) => set_scope.push_root(Value::String(s))?,
+              PropertyKey::Symbol(s) => set_scope.push_root(Value::Symbol(s))?,
+            };
+
+            let value = self.eval_expr(&mut set_scope, &expr.right)?;
+            set_scope.push_root(value)?;
+
+            self.eval_super_property_set(&mut set_scope, key, value)?;
             Ok(value)
           }
           _ => {
