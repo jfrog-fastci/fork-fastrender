@@ -449,11 +449,13 @@ mod vmjs {
   pub mod module_loader {
     use crate::dom2;
     use crate::error::{Error, Result};
+    use crate::js::import_maps::{create_import_map_parse_result, register_import_map, ImportMapState};
     use crate::js::{EventLoop, VmJsModuleLoader, WindowHostState};
     use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
     use selectors::context::QuirksMode;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use url::Url;
     use vm_js::{Budget, PropertyKey, Value};
 
     struct MapFetcher {
@@ -516,23 +518,18 @@ mod vmjs {
       let entry_url = "https://example.com/dir/entry.js";
       let dep_url = "https://example.com/dir/dep.js";
       let document_url = "https://example.com/index.html";
+      let mapped_url = "https://example.com/mapped.js";
 
       let mut map = HashMap::<String, FetchedResource>::new();
       map.insert(
         entry_url.to_string(),
         FetchedResource::new(
-          "globalThis.resolved = import.meta.resolve(\"./dep.js\");\n"
-            .as_bytes()
-            .to_vec(),
-          Some("application/javascript".to_string()),
-        ),
-      );
-      // Not strictly needed (`import.meta.resolve` should not fetch), but include the dep URL for
-      // completeness and to guard against accidental eager fetching.
-      map.insert(
-        dep_url.to_string(),
-        FetchedResource::new(
-          "export const value = 1;".as_bytes().to_vec(),
+          r#"
+            globalThis.resolved = import.meta.resolve("./dep.js");
+            globalThis.mapped = import.meta.resolve("foo");
+          "#
+          .as_bytes()
+          .to_vec(),
           Some("application/javascript".to_string()),
         ),
       );
@@ -547,12 +544,28 @@ mod vmjs {
         .vm_mut()
         .set_budget(Budget::unlimited(100));
 
+      let mut import_map_state = ImportMapState::default();
+      let base_url = Url::parse(document_url)
+        .map_err(|err| Error::Other(format!("invalid test base URL: {err}")))?;
+      let parse_result = create_import_map_parse_result(r#"{"imports":{"foo":"./mapped.js"}}"#, &base_url);
+      register_import_map(&mut import_map_state, parse_result)
+        .map_err(|err| Error::Other(err.to_string()))?;
+
       let mut loader = VmJsModuleLoader::new(fetcher, document_url);
-      loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+      loader.evaluate_module_url_with_import_maps(
+        &mut host,
+        &mut event_loop,
+        &mut import_map_state,
+        entry_url,
+      )?;
 
       assert_eq!(
         get_global_prop_utf8(&mut host, "resolved").as_deref(),
         Some(dep_url)
+      );
+      assert_eq!(
+        get_global_prop_utf8(&mut host, "mapped").as_deref(),
+        Some(mapped_url)
       );
       loader.teardown(&mut host)?;
       Ok(())
