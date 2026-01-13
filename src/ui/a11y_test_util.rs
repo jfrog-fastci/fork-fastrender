@@ -42,6 +42,22 @@ pub struct AccessKitReachableNodeSnapshot {
   pub name: String,
 }
 
+/// Snapshot-friendly representation of reachability for an AccessKit update.
+///
+/// This is intended for debugging and snapshot tests that need to ensure injected subtrees are
+/// actually connected to the root (not just present in `update.nodes`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AccessKitConnectivitySnapshot {
+  pub root_id: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub focus_id: Option<String>,
+  /// Nodes reachable from `root_id` in pre-order.
+  pub reachable: Vec<AccessKitReachableNodeSnapshot>,
+  /// Nodes present in `update.nodes` that are not reachable from `root_id`.
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  pub orphans: Vec<AccessKitNodeSnapshot>,
+}
+
 /// Convenience helper for tests that need to reason about multiple incremental AccessKit updates.
 ///
 /// `accesskit::TreeUpdate` objects can omit `tree` (and thus the root id) and may only contain the
@@ -158,6 +174,28 @@ impl AccessKitTestTree {
     output: &egui::FullOutput,
   ) -> Vec<AccessKitReachableNodeSnapshot> {
     self.reachable_nodes_snapshot_from_platform_output(&output.platform_output)
+  }
+
+  pub fn connectivity_snapshot(
+    &self,
+    update: &accesskit::TreeUpdate,
+  ) -> AccessKitConnectivitySnapshot {
+    accesskit_connectivity_snapshot_from_update(update, self.root_id, self.nodes_iter())
+  }
+
+  pub fn connectivity_snapshot_from_platform_output(
+    &self,
+    output: &egui::PlatformOutput,
+  ) -> AccessKitConnectivitySnapshot {
+    let update = accesskit_update_from_platform_output(output);
+    self.connectivity_snapshot(update)
+  }
+
+  pub fn connectivity_snapshot_from_full_output(
+    &self,
+    output: &egui::FullOutput,
+  ) -> AccessKitConnectivitySnapshot {
+    self.connectivity_snapshot_from_platform_output(&output.platform_output)
   }
 }
 
@@ -420,6 +458,33 @@ where
   out
 }
 
+pub fn accesskit_connectivity_snapshot_from_update<'a, I>(
+  update: &'a accesskit::TreeUpdate,
+  root_id_fallback: Option<accesskit::NodeId>,
+  additional_nodes: I,
+) -> AccessKitConnectivitySnapshot
+where
+  I: IntoIterator<Item = (accesskit::NodeId, &'a accesskit::Node)>,
+{
+  let additional: Vec<(accesskit::NodeId, &'a accesskit::Node)> =
+    additional_nodes.into_iter().collect();
+  let root_id = accesskit_root_id_from_update(update, root_id_fallback);
+  AccessKitConnectivitySnapshot {
+    root_id: root_id.0.get().to_string(),
+    focus_id: update.focus.map(|id| id.0.get().to_string()),
+    reachable: accesskit_reachable_nodes_snapshot_from_update(
+      update,
+      Some(root_id),
+      additional.iter().copied(),
+    ),
+    orphans: accesskit_orphan_nodes_snapshot_from_update(
+      update,
+      Some(root_id),
+      additional.iter().copied(),
+    ),
+  }
+}
+
 /// Snapshot-friendly pre-order list of all nodes reachable from the update's root.
 pub fn accesskit_reachable_nodes_snapshot_from_update<'a, I>(
   update: &'a accesskit::TreeUpdate,
@@ -507,6 +572,31 @@ pub fn accesskit_orphan_nodes_pretty_json_from_platform_output(
 
 pub fn accesskit_orphan_nodes_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
   accesskit_orphan_nodes_pretty_json_from_platform_output(&output.platform_output)
+}
+
+pub fn accesskit_connectivity_snapshot_from_platform_output(
+  output: &egui::PlatformOutput,
+) -> AccessKitConnectivitySnapshot {
+  let update = accesskit_update_from_platform_output(output);
+  accesskit_connectivity_snapshot_from_update(update, None, std::iter::empty())
+}
+
+pub fn accesskit_connectivity_snapshot_from_full_output(
+  output: &egui::FullOutput,
+) -> AccessKitConnectivitySnapshot {
+  accesskit_connectivity_snapshot_from_platform_output(&output.platform_output)
+}
+
+pub fn accesskit_connectivity_pretty_json_from_platform_output(
+  output: &egui::PlatformOutput,
+) -> String {
+  let snapshot = accesskit_connectivity_snapshot_from_platform_output(output);
+  serde_json::to_string_pretty(&snapshot)
+    .expect("accesskit connectivity snapshot must serialize to JSON")
+}
+
+pub fn accesskit_connectivity_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
+  accesskit_connectivity_pretty_json_from_platform_output(&output.platform_output)
 }
 
 #[cfg(test)]
@@ -666,5 +756,29 @@ mod tests {
 
     assert_eq!(store.reachable_node_ids(&incremental), vec![root_id, child_id]);
     assert_eq!(store.orphan_node_ids(&incremental), vec![orphan_id]);
+
+    let snapshot = store.connectivity_snapshot(&incremental);
+    assert_eq!(snapshot.root_id, root_id.0.get().to_string());
+    assert_eq!(
+      snapshot.reachable,
+      vec![
+        AccessKitReachableNodeSnapshot {
+          role: "Window".to_string(),
+          name: "root".to_string(),
+        },
+        AccessKitReachableNodeSnapshot {
+          role: "Button".to_string(),
+          name: "child".to_string(),
+        },
+      ]
+    );
+    assert_eq!(
+      snapshot.orphans,
+      vec![AccessKitNodeSnapshot {
+        id: orphan_id.0.get().to_string(),
+        role: "Button".to_string(),
+        name: "orphan".to_string(),
+      }]
+    );
   }
 }
