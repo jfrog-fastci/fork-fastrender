@@ -5868,7 +5868,7 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
 
   let mut exts: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-  let mut push_all = |values: &[&str]| {
+  let mut push_all = |exts: &mut std::collections::BTreeSet<String>, values: &[&str]| {
     for ext in values {
       let ext = ext.trim().trim_start_matches('.');
       if ext.is_empty() {
@@ -5901,26 +5901,30 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
 
     match token.as_str() {
       // Wildcard MIME groups.
-      "image/*" => push_all(&[
-        "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg",
-      ]),
-      "text/*" => push_all(&["txt", "md", "markdown", "csv", "json", "xml", "html", "htm"]),
-      "audio/*" => push_all(&["mp3", "wav", "ogg", "flac", "m4a", "aac"]),
-      "video/*" => push_all(&["mp4", "mov", "webm", "mkv", "avi", "mpeg", "mpg"]),
+      "image/*" => push_all(
+        &mut exts,
+        &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg"],
+      ),
+      "text/*" => push_all(
+        &mut exts,
+        &["txt", "md", "markdown", "csv", "json", "xml", "html", "htm"],
+      ),
+      "audio/*" => push_all(&mut exts, &["mp3", "wav", "ogg", "flac", "m4a", "aac"]),
+      "video/*" => push_all(&mut exts, &["mp4", "mov", "webm", "mkv", "avi", "mpeg", "mpg"]),
 
       // Common specific MIME types.
-      "image/png" => push_all(&["png"]),
-      "image/jpeg" | "image/jpg" => push_all(&["jpg", "jpeg"]),
-      "image/gif" => push_all(&["gif"]),
-      "image/webp" => push_all(&["webp"]),
-      "image/bmp" => push_all(&["bmp"]),
-      "image/svg+xml" => push_all(&["svg"]),
-      "text/plain" => push_all(&["txt"]),
-      "text/markdown" => push_all(&["md", "markdown"]),
-      "text/csv" => push_all(&["csv"]),
-      "text/html" => push_all(&["html", "htm"]),
-      "application/json" => push_all(&["json"]),
-      "application/pdf" => push_all(&["pdf"]),
+      "image/png" => push_all(&mut exts, &["png"]),
+      "image/jpeg" | "image/jpg" => push_all(&mut exts, &["jpg", "jpeg"]),
+      "image/gif" => push_all(&mut exts, &["gif"]),
+      "image/webp" => push_all(&mut exts, &["webp"]),
+      "image/bmp" => push_all(&mut exts, &["bmp"]),
+      "image/svg+xml" => push_all(&mut exts, &["svg"]),
+      "text/plain" => push_all(&mut exts, &["txt"]),
+      "text/markdown" => push_all(&mut exts, &["md", "markdown"]),
+      "text/csv" => push_all(&mut exts, &["csv"]),
+      "text/html" => push_all(&mut exts, &["html", "htm"]),
+      "application/json" => push_all(&mut exts, &["json"]),
+      "application/pdf" => push_all(&mut exts, &["pdf"]),
       _ => {}
     }
   }
@@ -14720,8 +14724,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             // Mirror the mouse-input behaviour: touching outside the page should clear page focus
             // immediately.
             if fastrender::ui::input_routing::should_clear_page_focus_on_pointer_press(
-              self.page_rect_points,
-              pos_points,
+              self.page_rect_points.map(|rect| {
+                fastrender::Rect::from_points(
+                  fastrender::Point::new(rect.min.x, rect.min.y),
+                  fastrender::Point::new(rect.max.x, rect.max.y),
+                )
+              }),
+              fastrender::Point::new(pos_points.x, pos_points.y),
             ) {
               self.page_has_focus = false;
             }
