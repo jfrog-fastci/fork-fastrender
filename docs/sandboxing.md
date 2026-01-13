@@ -164,14 +164,19 @@ Linux sandbox code lives in:
 Repo reality (today): the Linux seccomp sandbox is designed to:
 
 - deny path-based filesystem opens (`open`, `openat`, `openat2`, `creat`)
-- deny network socket operations (and restrict `socket()` to `AF_UNIX`)
+- deny network socket creation by default (including `AF_UNIX`), and deny socket operations
+  (`connect`/`sendmsg`/`recvmsg`/etc).
+  - When an embedding explicitly opts in (see `NetworkPolicy::AllowUnixSocketsOnly` in
+    `src/sandbox/mod.rs`), `socket(AF_UNIX, ...)` / `socketpair(AF_UNIX, ...)` are allowed for local
+    IPC while non-Unix socket creation remains denied.
 - deny process execution (`execve`, `execveat`)
 
 Maintaining the syscall allowlist is a moving target; use the workflow in
 [seccomp_allowlist.md](seccomp_allowlist.md).
 
-IPC implication: prefer **inherited IPC endpoints** (e.g. `socketpair()`) and browser-allocated
-shared memory (`memfd_create`) passed to the renderer before the sandbox is installed; see
+IPC implication: prefer **inherited IPC endpoints** (e.g. pipes, or a pre-created `socketpair()`)
+and browser-allocated shared memory (`memfd_create`) passed to the renderer before the sandbox is
+installed; see
 [ipc.md](ipc.md) and [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
 
 ### Debug / developer overrides (Linux)
