@@ -3,7 +3,7 @@ mod common;
 use common::{net_test_lock, RendererProc, TestServer};
 use fastrender_ipc::{
   BrowserToRenderer, CursorKind, FrameHitTester, FrameId, HoverRouter, NavigationContext,
-  ReferrerPolicy, SiteKeyFactory,
+  ReferrerPolicy, SiteKeyFactory, IframeNavigation,
 };
 use std::time::{Duration, Instant};
 
@@ -85,7 +85,7 @@ fn oopif_cursor_uses_deepest_frame_hover_state() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -131,7 +131,7 @@ fn oopif_cursor_uses_deepest_frame_hover_state() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: child_url.clone(),
+    navigation: IframeNavigation::Url(child_url.clone()),
     context: child_context,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
@@ -289,7 +289,7 @@ fn oopif_hovered_url_uses_deepest_frame() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -335,7 +335,7 @@ fn oopif_hovered_url_uses_deepest_frame() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: child_url.clone(),
+    navigation: IframeNavigation::Url(child_url.clone()),
     context: child_context,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
@@ -389,4 +389,3 @@ fn oopif_hovered_url_uses_deepest_frame() {
   let _ = parent_server.shutdown_and_join();
   let _ = child_server.shutdown_and_join();
 }
-
