@@ -48,6 +48,7 @@ use std::sync::Arc;
 use crate::function::FunctionData;
 use crate::function::ThisMode;
 use crate::vm::EcmaFunctionKind;
+use crate::meta_properties::MetaPropertyContext;
 
 #[inline]
 fn is_hard_stop_error(err: &VmError) -> bool {
@@ -489,19 +490,6 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     ])?;
   }
 
-  let allow_super_call = match this {
-    Value::Object(obj) if scope.heap().is_derived_constructor_state(obj) => true,
-    _ => false,
-  };
-  // `super` property access is only syntactically valid in eval code when the caller is contained
-  // within a method environment (i.e. it has a `[[HomeObject]]`).
-  //
-  // In derived class constructors, `this` is a `DerivedConstructorState` placeholder that allows
-  // nested eval code to observe `super()` initializing the outer constructor's `this` binding.
-  // Those eval contexts should also allow `super` property references, even if `home_object` is not
-  // available for some reason.
-  let allow_super_property = home_object.is_some() || allow_super_call;
-
   let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
   let source = arc_try_new_vm(SourceText::new_charged(
     scope.heap_mut(),
@@ -512,12 +500,13 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     dialect: Dialect::Ecma,
     source_type: SourceType::Script,
   };
+  let meta_property_context = env.meta_property_context();
   // Like the Function constructor, `eval("...")` parse/early errors are JS-catchable.
-  let top = match if allow_super_property {
-    vm.parse_top_level_with_budget_allowing_enclosing_meta_properties(&source.text, opts)
-  } else {
-    vm.parse_top_level_with_budget(&source.text, opts)
-  } {
+  let top = match vm.parse_top_level_with_budget_with_meta_property_context(
+    &source.text,
+    opts,
+    meta_property_context,
+  ) {
     Ok(top) => top,
     Err(VmError::Syntax(diags)) => {
       let intr = vm
@@ -572,7 +561,10 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     let mut tick = || vm.tick();
     match crate::early_errors::validate_top_level_with_enclosing_private_names(
       &top.stx.body,
-      crate::early_errors::EarlyErrorOptions::script_with_super_call(strict, allow_super_call),
+      crate::early_errors::EarlyErrorOptions::script_with_super_call(
+        strict,
+        meta_property_context.allow_super_call(),
+      ),
       Some(source.text.as_ref()),
       enclosing_private_names,
       &mut tick,
@@ -987,6 +979,7 @@ pub(crate) struct RuntimeEnv {
   source: Arc<SourceText>,
   base_offset: u32,
   prefix_len: u32,
+  meta_property_context: MetaPropertyContext,
 }
 
 impl Trace for RuntimeEnv {
@@ -1056,6 +1049,7 @@ impl RuntimeEnv {
       source,
       base_offset: 0,
       prefix_len: 0,
+      meta_property_context: MetaPropertyContext::SCRIPT,
     })
   }
 
@@ -1087,6 +1081,7 @@ impl RuntimeEnv {
       source,
       base_offset: 0,
       prefix_len: 0,
+      meta_property_context: MetaPropertyContext::SCRIPT,
     })
   }
 
@@ -1114,6 +1109,7 @@ impl RuntimeEnv {
       source,
       base_offset: 0,
       prefix_len: 0,
+      meta_property_context: MetaPropertyContext::SCRIPT,
     })
   }
 
@@ -1151,6 +1147,14 @@ impl RuntimeEnv {
 
   pub(crate) fn prefix_len(&self) -> u32 {
     self.prefix_len
+  }
+
+  pub(crate) fn meta_property_context(&self) -> MetaPropertyContext {
+    self.meta_property_context
+  }
+
+  pub(crate) fn set_meta_property_context(&mut self, ctx: MetaPropertyContext) {
+    self.meta_property_context = ctx;
   }
 
   pub(crate) fn global_object(&self) -> GcObject {
@@ -2916,7 +2920,8 @@ impl JsRuntime {
           // Create persistent roots for the async continuation.
           //
           // Async classic scripts normally have no `[[HomeObject]]` context, but nested constructs
-          // (e.g. class static blocks) can temporarily override it and may suspend.
+          // (e.g. class static blocks) can temporarily override it and may suspend. Preserve it so
+          // `super` property references resume correctly across `await`.
           let values = [
             this_at_suspend,
             new_target_at_suspend,
@@ -8047,6 +8052,14 @@ impl<'a> Evaluator<'a> {
         class_scope
           .heap_mut()
           .set_function_home_object(body_func, Some(prototype_obj))?;
+        let meta_property_context = if matches!(super_value, Value::Undefined) {
+          MetaPropertyContext::METHOD
+        } else {
+          MetaPropertyContext::DERIVED_CONSTRUCTOR
+        };
+        class_scope
+          .heap_mut()
+          .set_function_meta_property_context(body_func, meta_property_context)?;
       }
 
       // `extends null` is special-cased by ECMA-262 `ClassDefinitionEvaluation`:
@@ -8291,6 +8304,9 @@ impl<'a> Evaluator<'a> {
               is_strict,
               closure_env,
             )?;
+            member_scope
+              .heap_mut()
+              .set_function_meta_property_context(method_func_obj, MetaPropertyContext::METHOD)?;
 
             let intr = self
               .vm
@@ -8435,6 +8451,9 @@ impl<'a> Evaluator<'a> {
               is_strict,
               closure_env,
             )?;
+            member_scope
+              .heap_mut()
+              .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
 
             let intr = self
               .vm
@@ -8527,6 +8546,9 @@ impl<'a> Evaluator<'a> {
               is_strict,
               closure_env,
             )?;
+            member_scope
+              .heap_mut()
+              .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
 
             let intr = self
               .vm
@@ -8838,6 +8860,9 @@ impl<'a> Evaluator<'a> {
                   is_strict,
                   closure_env,
                 )?;
+                member_scope
+                  .heap_mut()
+                  .set_function_meta_property_context(init_func_obj, MetaPropertyContext::METHOD)?;
 
                 let intr = self
                   .vm
@@ -8989,6 +9014,7 @@ impl<'a> Evaluator<'a> {
     let saved_this_root = self
       .this_root_idx
       .map(|idx| block_scope.heap().root_stack[idx]);
+    let saved_meta_property_context = self.env.meta_property_context();
 
     self.this = Value::Object(receiver);
     // Static blocks have their own `this` binding which is always initialized, even if the
@@ -8999,6 +9025,9 @@ impl<'a> Evaluator<'a> {
     // resolves against `Object.getPrototypeOf(classConstructor)` and uses `classConstructor` as the
     // receiver.
     self.home_object = Some(receiver);
+    self
+      .env
+      .set_meta_property_context(MetaPropertyContext::METHOD);
     if let Some(idx) = self.this_root_idx {
       block_scope.heap_mut().root_stack[idx] = self.this;
     }
@@ -9016,6 +9045,9 @@ impl<'a> Evaluator<'a> {
     // Restore the surrounding class evaluation context regardless of how the block completes.
     self.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
     self.env.set_var_env(saved_var_env);
+    self
+      .env
+      .set_meta_property_context(saved_meta_property_context);
     self.this = saved_this;
     self.this_initialized = saved_this_initialized;
     self.new_target = saved_new_target;
@@ -9057,9 +9089,13 @@ impl<'a> Evaluator<'a> {
     let saved_this = self.this;
     let saved_new_target = self.new_target;
     let saved_home_object = self.home_object;
+    let saved_meta_property_context = self.env.meta_property_context();
     self.this = Value::Object(receiver);
     self.new_target = Value::Undefined;
     self.home_object = Some(receiver);
+    self
+      .env
+      .set_meta_property_context(MetaPropertyContext::METHOD);
 
     let res: Result<(), VmError> = (|| {
       let value = match init {
@@ -9087,6 +9123,9 @@ impl<'a> Evaluator<'a> {
     self.this = saved_this;
     self.new_target = saved_new_target;
     self.home_object = saved_home_object;
+    self
+      .env
+      .set_meta_property_context(saved_meta_property_context);
     res
   }
 
@@ -11371,6 +11410,15 @@ impl<'a> Evaluator<'a> {
       closure_env,
     )?;
 
+    let meta_property_context = if func.arrow {
+      MetaPropertyContext::for_arrow(self.env.meta_property_context())
+    } else {
+      MetaPropertyContext::FUNCTION
+    };
+    scope
+      .heap_mut()
+      .set_function_meta_property_context(func_obj, meta_property_context)?;
+
     // If this was a named function expression, initialize its name binding now that the function
     // object exists.
     if let Some((env, name)) = name_binding_env {
@@ -11509,6 +11557,10 @@ impl<'a> Evaluator<'a> {
       is_strict,
       Some(self.env.lexical_env),
     )?;
+    let meta_property_context = MetaPropertyContext::for_arrow(self.env.meta_property_context());
+    alloc_scope
+      .heap_mut()
+      .set_function_meta_property_context(func_obj, meta_property_context)?;
     let intr = self
       .vm
       .intrinsics()
@@ -12112,6 +12164,9 @@ impl<'a> Evaluator<'a> {
                 is_strict,
                 closure_env,
               )?;
+              member_scope
+                .heap_mut()
+                .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
               let intr = self
                 .vm
                 .intrinsics()
@@ -12247,6 +12302,9 @@ impl<'a> Evaluator<'a> {
                 is_strict,
                 closure_env,
               )?;
+              member_scope
+                .heap_mut()
+                .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
               let intr = self
                 .vm
                 .intrinsics()
@@ -12362,6 +12420,9 @@ impl<'a> Evaluator<'a> {
                 is_strict,
                 closure_env,
               )?;
+              member_scope
+                .heap_mut()
+                .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
               let intr = self
                 .vm
                 .intrinsics()
@@ -15770,6 +15831,7 @@ pub(crate) enum AsyncFrame {
     saved_home_object_root: RootId,
     saved_lex: GcEnv,
     saved_var_env: VarEnv,
+    saved_meta_property_context: MetaPropertyContext,
   },
 
   /// Continue a conditional expression after evaluating the test.
@@ -20497,6 +20559,7 @@ fn async_eval_class_static_blocks_from(
       .unwrap_or(Value::Undefined);
     let saved_lex = evaluator.env.lexical_env;
     let saved_var_env = evaluator.env.var_env();
+    let saved_meta_property_context = evaluator.env.meta_property_context();
 
     // Root the saved values so they remain GC-safe even if we suspend (the async continuation's
     // `this_root` / `new_target_root` / `home_object_root` will be updated to the block's
@@ -20511,6 +20574,9 @@ fn async_eval_class_static_blocks_from(
     evaluator.this = Value::Object(func_obj);
     evaluator.new_target = Value::Undefined;
     evaluator.home_object = Some(func_obj);
+    evaluator
+      .env
+      .set_meta_property_context(MetaPropertyContext::METHOD);
 
     let var_env = block_scope.env_create(Some(saved_lex))?;
     let body_lex = block_scope.env_create(Some(var_env))?;
@@ -20530,6 +20596,9 @@ fn async_eval_class_static_blocks_from(
           .env
           .set_lexical_env(block_scope.heap_mut(), saved_lex);
         evaluator.env.set_var_env(saved_var_env);
+        evaluator
+          .env
+          .set_meta_property_context(saved_meta_property_context);
         evaluator.this = saved_this;
         evaluator.new_target = saved_new_target;
         evaluator.home_object = match saved_home_object_value {
@@ -20579,6 +20648,7 @@ fn async_eval_class_static_blocks_from(
             saved_home_object_root,
             saved_lex,
             saved_var_env,
+            saved_meta_property_context,
           },
         );
         if let Err(err) = push_res {
@@ -20591,6 +20661,9 @@ fn async_eval_class_static_blocks_from(
             .env
             .set_lexical_env(block_scope.heap_mut(), saved_lex);
           evaluator.env.set_var_env(saved_var_env);
+          evaluator
+            .env
+            .set_meta_property_context(saved_meta_property_context);
           evaluator.this = saved_this;
           evaluator.new_target = saved_new_target;
           evaluator.home_object = match saved_home_object_value {
@@ -20610,6 +20683,9 @@ fn async_eval_class_static_blocks_from(
           .env
           .set_lexical_env(block_scope.heap_mut(), saved_lex);
         evaluator.env.set_var_env(saved_var_env);
+        evaluator
+          .env
+          .set_meta_property_context(saved_meta_property_context);
         evaluator.this = saved_this;
         evaluator.new_target = saved_new_target;
         evaluator.home_object = match saved_home_object_value {
@@ -20700,6 +20776,9 @@ fn async_define_class_member(
         is_strict,
         closure_env,
       )?;
+      member_scope
+        .heap_mut()
+        .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
 
       let intr = evaluator
         .vm
@@ -20790,6 +20869,9 @@ fn async_define_class_member(
         is_strict,
         closure_env,
       )?;
+      member_scope
+        .heap_mut()
+        .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
 
       let intr = evaluator
         .vm
@@ -20876,6 +20958,9 @@ fn async_define_class_member(
         is_strict,
         closure_env,
       )?;
+      member_scope
+        .heap_mut()
+        .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
 
       let intr = evaluator
         .vm
@@ -24411,6 +24496,14 @@ fn async_eval_lit_obj_apply_valued_member(
         is_strict,
         closure_env,
       )?;
+      let meta_property_context = if func_node.stx.arrow {
+        MetaPropertyContext::for_arrow(evaluator.env.meta_property_context())
+      } else {
+        MetaPropertyContext::METHOD
+      };
+      member_scope
+        .heap_mut()
+        .set_function_meta_property_context(func_obj, meta_property_context)?;
       let intr = evaluator
         .vm
         .intrinsics()
@@ -24522,6 +24615,14 @@ fn async_eval_lit_obj_apply_valued_member(
         is_strict,
         closure_env,
       )?;
+      let meta_property_context = if func_node.stx.arrow {
+        MetaPropertyContext::for_arrow(evaluator.env.meta_property_context())
+      } else {
+        MetaPropertyContext::METHOD
+      };
+      member_scope
+        .heap_mut()
+        .set_function_meta_property_context(func_obj, meta_property_context)?;
       let intr = evaluator
         .vm
         .intrinsics()
@@ -24643,6 +24744,14 @@ fn async_eval_lit_obj_apply_valued_member(
         is_strict,
         closure_env,
       )?;
+      let meta_property_context = if func_node.stx.arrow {
+        MetaPropertyContext::for_arrow(evaluator.env.meta_property_context())
+      } else {
+        MetaPropertyContext::METHOD
+      };
+      member_scope
+        .heap_mut()
+        .set_function_meta_property_context(func_obj, meta_property_context)?;
       let intr = evaluator
         .vm
         .intrinsics()
@@ -29237,6 +29346,7 @@ fn async_resume_from_frames(
         saved_home_object_root,
         saved_lex,
         saved_var_env,
+        saved_meta_property_context,
       } => match state {
         AsyncState::Completion(completion) => {
           let members = unsafe { &*members };
@@ -29279,6 +29389,9 @@ fn async_resume_from_frames(
 
           evaluator.env.set_lexical_env(scope.heap_mut(), saved_lex);
           evaluator.env.set_var_env(saved_var_env);
+          evaluator
+            .env
+            .set_meta_property_context(saved_meta_property_context);
           evaluator.this = saved_this;
           evaluator.new_target = saved_new_target;
           evaluator.home_object = match saved_home_object_value {

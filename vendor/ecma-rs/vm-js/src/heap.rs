@@ -4,6 +4,7 @@ use crate::function::{
   CallHandler, ConstructHandler, EcmaFunctionId, FunctionData, JsFunction, NativeConstructId,
   NativeFunctionId, ThisMode,
 };
+use crate::meta_properties::MetaPropertyContext;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::promise::{PromiseCapability, PromiseReaction, PromiseReactionType, PromiseState};
 use crate::regexp::{RegExpFlags, RegExpProgram};
@@ -8816,6 +8817,30 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
   pub(crate) fn get_function_closure_env(&self, func: GcObject) -> Result<Option<GcEnv>, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.closure_env),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub(crate) fn get_function_meta_property_context(
+    &self,
+    func: GcObject,
+  ) -> Result<MetaPropertyContext, VmError> {
+    match self.get_heap_object(func.0)? {
+      HeapObject::Function(f) => Ok(f.meta_property_context),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub(crate) fn set_function_meta_property_context(
+    &mut self,
+    func: GcObject,
+    ctx: MetaPropertyContext,
+  ) -> Result<(), VmError> {
+    match self.get_heap_object_mut(func.0)? {
+      HeapObject::Function(f) => {
+        f.meta_property_context = ctx;
+        Ok(())
+      }
       _ => Err(VmError::invalid_handle()),
     }
   }

@@ -163,6 +163,7 @@ pub mod iterator;
 pub mod job_queue;
 mod jobs;
 mod microtasks;
+mod meta_properties;
 mod module_graph;
 mod module_loading;
 mod module_record;
@@ -322,6 +323,10 @@ mod compiled_derived_constructor_tests;
 #[cfg(test)]
 #[path = "../tests/unit/symbol_constructor.rs"]
 mod symbol_constructor_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/direct_eval_meta_properties.rs"]
+mod direct_eval_meta_properties_tests;
 
 pub use crate::handle::EnvRootId;
 

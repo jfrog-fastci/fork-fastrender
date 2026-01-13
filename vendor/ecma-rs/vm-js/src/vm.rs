@@ -11,6 +11,7 @@ use crate::fallible_alloc::arc_try_new_vm;
 use crate::function::{
   CallHandler, ConstructHandler, EcmaFunctionId, FunctionData, NativeConstructId, NativeFunctionId, ThisMode,
 };
+use crate::meta_properties::MetaPropertyContext;
 use crate::interrupt::InterruptHandle;
 use crate::interrupt::InterruptToken;
 use crate::jobs::VmHost;
@@ -2944,7 +2945,7 @@ impl Vm {
     &mut self,
     source: &str,
     opts: ParseOptions,
-    allow_enclosing_meta_properties: bool,
+    meta_property_context: MetaPropertyContext,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
     let mut parse_once = |allow_top_level_await_in_script: bool| -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
       // Ensure fuel/deadline/interrupt budgets apply *during parsing* as well as during evaluation.
@@ -2969,13 +2970,11 @@ impl Vm {
             false
           },
           |p| {
-            if allow_enclosing_meta_properties {
-              p.set_initial_meta_property_context(
-                /* allow_new_target */ true,
-                /* allow_super_property */ true,
-                /* allow_super_call */ true,
-              );
-            }
+            p.set_initial_meta_property_context(
+              meta_property_context.allow_new_target(),
+              meta_property_context.allow_super_property(),
+              meta_property_context.allow_super_call(),
+            );
             if allow_top_level_await_in_script {
               p.set_allow_top_level_await_in_script(true);
             }
@@ -3021,7 +3020,7 @@ impl Vm {
     source: &str,
     opts: ParseOptions,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
-    self.parse_top_level_with_budget_impl(source, opts, false)
+    self.parse_top_level_with_budget_impl(source, opts, MetaPropertyContext::SCRIPT)
   }
 
   pub(crate) fn parse_top_level_with_budget_allowing_enclosing_meta_properties(
@@ -3029,7 +3028,16 @@ impl Vm {
     source: &str,
     opts: ParseOptions,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
-    self.parse_top_level_with_budget_impl(source, opts, true)
+    self.parse_top_level_with_budget_impl(source, opts, MetaPropertyContext::ALL)
+  }
+
+  pub(crate) fn parse_top_level_with_budget_with_meta_property_context(
+    &mut self,
+    source: &str,
+    opts: ParseOptions,
+    meta_property_context: MetaPropertyContext,
+  ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
+    self.parse_top_level_with_budget_impl(source, opts, meta_property_context)
   }
 
   /// Calls `callee` with the provided `this` value and arguments.
@@ -4237,7 +4245,7 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let (this_mode, is_strict, realm, outer, bound_this, bound_new_target) = {
+    let (this_mode, is_strict, realm, outer, bound_this, bound_new_target, meta_property_context) = {
       let f = scope.heap().get_function(callee)?;
       (
         f.this_mode,
@@ -4246,6 +4254,7 @@ impl Vm {
         f.closure_env,
         f.bound_this,
         f.bound_new_target,
+        f.meta_property_context,
       )
     };
 
@@ -4294,6 +4303,7 @@ impl Vm {
     let func_env = scope.env_create(outer)?;
     let mut env =
       RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+    env.set_meta_property_context(meta_property_context);
 
     let is_async = func_ast.stx.async_ && !func_ast.stx.generator;
     let result = crate::exec::run_ecma_function(
@@ -4332,7 +4342,16 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let (this_mode, is_strict, realm, outer, bound_this, bound_new_target, func_data) = {
+    let (
+      this_mode,
+      is_strict,
+      realm,
+      outer,
+      bound_this,
+      bound_new_target,
+      func_data,
+      meta_property_context,
+    ) = {
       let f = scope.heap().get_function(callee)?;
       (
         f.this_mode,
@@ -4342,6 +4361,7 @@ impl Vm {
         f.bound_this,
         f.bound_new_target,
         f.data,
+        f.meta_property_context,
       )
     };
 
@@ -4437,6 +4457,7 @@ impl Vm {
 
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+    env.set_meta_property_context(meta_property_context);
 
     let is_async = func
       .script
@@ -4489,9 +4510,9 @@ impl Vm {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
-    let (is_strict, realm, outer, func_data) = {
+    let (is_strict, realm, outer, func_data, meta_property_context) = {
       let f = scope.heap().get_function(callee)?;
-      (f.is_strict, f.realm, f.closure_env, f.data)
+      (f.is_strict, f.realm, f.closure_env, f.data, f.meta_property_context)
     };
 
     // See `call_user_function`: user functions can exist without a realm in low-level embeddings /
@@ -4572,6 +4593,7 @@ impl Vm {
     let func_env = this_scope.env_create(outer)?;
     let mut env =
       RuntimeEnv::new_with_var_env(this_scope.heap_mut(), global_object, func_env, func_env)?;
+    env.set_meta_property_context(meta_property_context);
 
     let home_object = this_scope.heap().get_function_home_object(callee)?;
     let is_async = func
@@ -4677,7 +4699,7 @@ impl Vm {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
-    let (is_strict, global_object, outer, func_data) = {
+    let (is_strict, global_object, outer, func_data, meta_property_context) = {
       let f = scope.heap().get_function(callee)?;
       (
         f.is_strict,
@@ -4686,6 +4708,7 @@ impl Vm {
         ))?,
         f.closure_env,
         f.data,
+        f.meta_property_context,
       )
     };
 
@@ -4726,6 +4749,7 @@ impl Vm {
     let func_env = this_scope.env_create(outer)?;
     let mut env =
       RuntimeEnv::new_with_var_env(this_scope.heap_mut(), global_object, func_env, func_env)?;
+    env.set_meta_property_context(meta_property_context);
 
     let func_ast = self.ecma_function_ast(this_scope.heap_mut(), code_id)?;
     let code_meta = self

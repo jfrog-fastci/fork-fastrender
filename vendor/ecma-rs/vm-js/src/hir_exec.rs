@@ -6,6 +6,7 @@ use crate::exec::{
 use crate::fallible_format;
 use crate::function::FunctionData;
 use crate::function::ThisMode;
+use crate::meta_properties::MetaPropertyContext;
 use crate::for_in::ForInEnumerator;
 use crate::iterator;
 use crate::module_loading;
@@ -61,7 +62,7 @@ fn compiled_constructor_body_construct(
     ));
   };
 
-  let (func_ref, is_strict, realm, outer, home_object) = {
+  let (func_ref, is_strict, realm, outer, home_object, meta_property_context) = {
     let call_handler = scope.heap().get_function_call_handler(body_func)?;
     let crate::function::CallHandler::User(func_ref) = call_handler else {
       return Err(VmError::InvariantViolation(
@@ -69,7 +70,14 @@ fn compiled_constructor_body_construct(
       ));
     };
     let f = scope.heap().get_function(body_func)?;
-    (func_ref, f.is_strict, f.realm, f.closure_env, f.home_object)
+    (
+      func_ref,
+      f.is_strict,
+      f.realm,
+      f.closure_env,
+      f.home_object,
+      f.meta_property_context,
+    )
   };
 
   // Determine the global object for the constructor body.
@@ -118,6 +126,7 @@ fn compiled_constructor_body_construct(
 
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+    env.set_meta_property_context(meta_property_context);
 
     let result = run_compiled_function(
       vm,
@@ -164,6 +173,7 @@ fn compiled_constructor_body_construct(
 
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+    env.set_meta_property_context(meta_property_context);
 
     let result = run_compiled_function(
       vm,
@@ -1009,6 +1019,20 @@ impl<'vm> HirEvaluator<'vm> {
         closure_env,
       )?
     };
+
+    let meta_property_context = if is_arrow {
+      MetaPropertyContext::for_arrow(self.env.meta_property_context())
+    } else {
+      match kind {
+        EcmaFunctionKind::Decl | EcmaFunctionKind::Expr => MetaPropertyContext::FUNCTION,
+        EcmaFunctionKind::ClassFieldInitializer
+        | EcmaFunctionKind::ObjectMember
+        | EcmaFunctionKind::ClassMember => MetaPropertyContext::METHOD,
+      }
+    };
+    scope
+      .heap_mut()
+      .set_function_meta_property_context(func_obj, meta_property_context)?;
 
     // Root the function object while performing any additional allocations (e.g. `.prototype`
     // creation) and while assigning metadata that can invoke GC (directly or indirectly).
@@ -9211,6 +9235,19 @@ impl<'vm> HirEvaluator<'vm> {
             /* name_binding */ None,
             EcmaFunctionKind::ClassMember,
           )?;
+          // Class constructor bodies are a special case: they are parsed as class members (so they
+          // always allow `super.prop`), but only *derived* class constructors permit `super()` calls.
+          //
+          // Direct eval within a derived constructor must therefore be parsed with
+          // `AllowSuperCall=true`, matching the caller context.
+          let meta_property_context = if matches!(super_value, Value::Undefined) {
+            MetaPropertyContext::METHOD
+          } else {
+            MetaPropertyContext::DERIVED_CONSTRUCTOR
+          };
+          scope
+            .heap_mut()
+            .set_function_meta_property_context(body_func, meta_property_context)?;
           ctor_body_inner_func = Some(body_func);
           ctor_length = scope.heap().get_function(body_func)?.length;
 
@@ -9673,6 +9710,7 @@ impl<'vm> HirEvaluator<'vm> {
     let saved_home_object = self.home_object;
     let saved_lex = self.env.lexical_env();
     let saved_var_env = self.env.var_env();
+    let saved_meta_property_context = self.env.meta_property_context();
 
     let res: Result<Flow, VmError> = (|| {
       self.this = Value::Object(receiver);
@@ -9681,6 +9719,9 @@ impl<'vm> HirEvaluator<'vm> {
       // Static blocks use the class constructor object as their `[[HomeObject]]` so `super.prop`
       // resolves against `Object.getPrototypeOf(classConstructor)` with receiver = `classConstructor`.
       self.home_object = Some(receiver);
+      self
+        .env
+        .set_meta_property_context(MetaPropertyContext::METHOD);
 
       let var_env = block_scope.env_create(Some(saved_lex))?;
       let body_lex = block_scope.env_create(Some(var_env))?;
@@ -9715,6 +9756,9 @@ impl<'vm> HirEvaluator<'vm> {
     // Restore the surrounding class evaluation context regardless of how the block completes.
     self.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
     self.env.set_var_env(saved_var_env);
+    self
+      .env
+      .set_meta_property_context(saved_meta_property_context);
     self.this = saved_this;
     self.this_initialized = saved_this_initialized;
     self.new_target = saved_new_target;

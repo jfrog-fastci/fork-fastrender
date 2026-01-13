@@ -1,4 +1,5 @@
 use crate::heap::{ObjectBase, Trace, Tracer};
+use crate::meta_properties::MetaPropertyContext;
 use crate::CompiledFunctionRef;
 use crate::{GcEnv, GcObject, GcString, Value};
 use core::mem;
@@ -128,6 +129,8 @@ pub(crate) struct JsFunction {
   /// Note: `[[ThisMode]]` depends on strictness for ordinary functions, but strictness also affects
   /// other semantics (early errors, `arguments`, etc), so we store it separately.
   pub(crate) is_strict: bool,
+  /// Grammar parameters for parsing direct `eval` source within this function's execution context.
+  pub(crate) meta_property_context: MetaPropertyContext,
 
   pub(crate) base: ObjectBase,
   pub(crate) data: FunctionData,
@@ -217,6 +220,7 @@ impl JsFunction {
       length,
       this_mode: ThisMode::Global,
       is_strict: false,
+      meta_property_context: MetaPropertyContext::FUNCTION,
       base: ObjectBase::new(None),
       data: FunctionData::None,
       bound_target: None,
@@ -263,6 +267,7 @@ impl JsFunction {
       // "illegal invocation" behaviour relied upon by host shims.
       this_mode: ThisMode::Strict,
       is_strict: true,
+      meta_property_context: MetaPropertyContext::FUNCTION,
       base: ObjectBase::new(None),
       data: FunctionData::None,
       bound_target: None,
@@ -298,6 +303,7 @@ impl JsFunction {
       length,
       this_mode,
       is_strict,
+      meta_property_context: MetaPropertyContext::FUNCTION,
       base: ObjectBase::new(None),
       data: FunctionData::None,
       bound_target: None,
@@ -337,6 +343,7 @@ impl JsFunction {
       length,
       this_mode,
       is_strict,
+      meta_property_context: MetaPropertyContext::FUNCTION,
       base: ObjectBase::new(None),
       data: FunctionData::None,
       bound_target: None,
