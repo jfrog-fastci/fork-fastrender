@@ -3351,6 +3351,12 @@ mod regex_validation_tests {
   }
 
   #[test]
+  fn duplicate_named_capture_groups_are_allowed() {
+    assert_valid(r"/(?:(?<x>a)|(?<x>b)|c)\k<x>/");
+    assert_valid(r"/(?:(?<x>a)|(?<y>a)(?<x>b))(?:(?<z>c)|(?<z>d))/");
+  }
+
+  #[test]
   fn unicode_sets_mode_accepts_class_string_disjunction() {
     assert_valid(r"/^[\q{0|2|4|9\uFE0F\u20E3}_]+$/v");
     assert_valid(r"/^[[0-9]\q{0|2|4|9\uFE0F\u20E3}]+$/v");

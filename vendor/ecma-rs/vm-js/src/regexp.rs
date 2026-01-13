@@ -298,13 +298,22 @@ impl CharSet {
   }
 }
 
-/// A RegExp UnicodeSets-mode set containing UTF-16 code units and string elements.
+/// A RegExp UnicodeSets-mode set containing Unicode code points and string elements.
 ///
-/// Invariant: `strings` contains **no** length-1 strings (they are canonicalized into `chars`).
+/// The RegExp engine executes over UTF-16, but in UnicodeMode (`u`/`v`) character-class semantics
+/// are defined in terms of Unicode code points:
+/// - BMP code points (including unpaired surrogates) are stored in `chars` as a bitset over
+///   `u16` (0..=0xFFFF).
+/// - Supplementary code points (>= 0x10000) are stored in `supplementary`.
+///
+/// Invariant: `strings` contains **no** strings that encode a single Unicode code point (either a
+/// single code unit or a UTF-16 surrogate pair). Those are canonicalized into `chars` /
+/// `supplementary`.
 /// Invariant: `strings` are stored in **descending length** order, stable for equal lengths.
 #[derive(Clone, Default, PartialEq, Eq)]
 struct UnicodeSet {
   chars: CharSet,
+  supplementary: Vec<u32>,
   strings: Vec<Vec<u16>>,
 }
 
@@ -316,12 +325,46 @@ impl UnicodeSet {
 
   #[inline]
   fn is_empty(&self) -> bool {
-    self.chars.is_empty() && self.strings.is_empty()
+    self.chars.is_empty() && self.supplementary.is_empty() && self.strings.is_empty()
   }
 
   #[inline]
   fn insert_char(&mut self, u: u16) {
     self.chars.insert(u);
+  }
+
+  fn insert_code_point(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    cp: u32,
+  ) -> Result<(), RegExpCompileError> {
+    if cp <= 0xFFFF {
+      self.insert_char(cp as u16);
+      return Ok(());
+    }
+    self.insert_supplementary(ctx, cp)
+  }
+
+  fn insert_supplementary(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    cp: u32,
+  ) -> Result<(), RegExpCompileError> {
+    debug_assert!(cp > 0xFFFF);
+    // Keep `supplementary` sorted ascending and deduplicated for cheap set operations.
+    match self.supplementary.binary_search(&cp) {
+      Ok(_) => Ok(()),
+      Err(insert_at) => {
+        let required_len = self
+          .supplementary
+          .len()
+          .checked_add(1)
+          .ok_or(RegExpCompileError::OutOfMemory)?;
+        ctx.reserve_vec_to_len(&mut self.supplementary, required_len)?;
+        self.supplementary.insert(insert_at, cp);
+        Ok(())
+      }
+    }
   }
 
   /// Adds a string element to this set, canonicalizing length-1 strings into `chars`.
@@ -336,6 +379,10 @@ impl UnicodeSet {
         self.insert_char(units[0]);
         Ok(())
       }
+      2 if is_utf16_high_surrogate(units[0]) && is_utf16_low_surrogate(units[1]) => {
+        let cp = utf16_decode_surrogate_pair(units[0], units[1]);
+        self.insert_supplementary(ctx, cp)
+      }
       _ => self.insert_string_non1(ctx, units),
     }
   }
@@ -345,7 +392,11 @@ impl UnicodeSet {
     ctx: &mut CompileCtx<'_>,
     units: &[u16],
   ) -> Result<(), RegExpCompileError> {
-    debug_assert_ne!(units.len(), 1, "length-1 strings must be canonicalized");
+    debug_assert!(
+      !(units.len() == 1
+        || (units.len() == 2 && is_utf16_high_surrogate(units[0]) && is_utf16_low_surrogate(units[1]))),
+      "single-code-point strings must be canonicalized"
+    );
 
     let len = units.len();
 
@@ -409,10 +460,21 @@ impl UnicodeSet {
     self.chars.contains(u)
   }
 
+  #[inline]
+  fn contains_code_point(&self, cp: u32) -> bool {
+    if cp <= 0xFFFF {
+      return self.contains_char(cp as u16);
+    }
+    self.supplementary.binary_search(&cp).is_ok()
+  }
+
   fn contains_string(&self, units: &[u16]) -> bool {
     match units.len() {
       0 => self.strings.iter().any(|s| s.is_empty()),
       1 => self.contains_char(units[0]),
+      2 if is_utf16_high_surrogate(units[0]) && is_utf16_low_surrogate(units[1]) => {
+        self.contains_code_point(utf16_decode_surrogate_pair(units[0], units[1]))
+      }
       _ => self.strings.iter().any(|s| s.as_slice() == units),
     }
   }
@@ -423,8 +485,43 @@ impl UnicodeSet {
     other: &Self,
   ) -> Result<Self, RegExpCompileError> {
     let chars = self.chars.union(&other.chars);
+
+    let mut supplementary: Vec<u32> = Vec::new();
+    let supp_reserve = self
+      .supplementary
+      .len()
+      .checked_add(other.supplementary.len())
+      .ok_or(RegExpCompileError::OutOfMemory)?;
+    ctx.reserve_vec_to_len(&mut supplementary, supp_reserve)?;
+    let mut si = 0usize;
+    let mut sj = 0usize;
+    while si < self.supplementary.len() && sj < other.supplementary.len() {
+      let a = self.supplementary[si];
+      let b = other.supplementary[sj];
+      if a < b {
+        supplementary.push(a);
+        si += 1;
+      } else if a > b {
+        supplementary.push(b);
+        sj += 1;
+      } else {
+        supplementary.push(a);
+        si += 1;
+        sj += 1;
+      }
+    }
+    while si < self.supplementary.len() {
+      supplementary.push(self.supplementary[si]);
+      si += 1;
+    }
+    while sj < other.supplementary.len() {
+      supplementary.push(other.supplementary[sj]);
+      sj += 1;
+    }
+
     let mut out = Self {
       chars,
+      supplementary,
       strings: Vec::new(),
     };
 
@@ -496,8 +593,28 @@ impl UnicodeSet {
     other: &Self,
   ) -> Result<Self, RegExpCompileError> {
     let chars = self.chars.intersection(&other.chars);
+
+    let mut supplementary: Vec<u32> = Vec::new();
+    let supp_reserve = self.supplementary.len().min(other.supplementary.len());
+    ctx.reserve_vec_to_len(&mut supplementary, supp_reserve)?;
+    let mut si = 0usize;
+    let mut sj = 0usize;
+    while si < self.supplementary.len() && sj < other.supplementary.len() {
+      let a = self.supplementary[si];
+      let b = other.supplementary[sj];
+      if a < b {
+        si += 1;
+      } else if a > b {
+        sj += 1;
+      } else {
+        supplementary.push(a);
+        si += 1;
+        sj += 1;
+      }
+    }
     let mut out = Self {
       chars,
+      supplementary,
       strings: Vec::new(),
     };
 
@@ -545,8 +662,32 @@ impl UnicodeSet {
     other: &Self,
   ) -> Result<Self, RegExpCompileError> {
     let chars = self.chars.difference(&other.chars);
+
+    let mut supplementary: Vec<u32> = Vec::new();
+    ctx.reserve_vec_to_len(&mut supplementary, self.supplementary.len())?;
+    let mut si = 0usize;
+    let mut sj = 0usize;
+    while si < self.supplementary.len() {
+      let a = self.supplementary[si];
+      if sj >= other.supplementary.len() {
+        supplementary.extend_from_slice(&self.supplementary[si..]);
+        break;
+      }
+      let b = other.supplementary[sj];
+      if a < b {
+        supplementary.push(a);
+        si += 1;
+      } else if a > b {
+        sj += 1;
+      } else {
+        // Equal: remove.
+        si += 1;
+        sj += 1;
+      }
+    }
     let mut out = Self {
       chars,
+      supplementary,
       strings: Vec::new(),
     };
     ctx.reserve_vec_to_len(&mut out.strings, self.strings.len())?;
@@ -612,7 +753,11 @@ impl UnicodeSet {
     ctx: &mut CompileCtx<'_>,
     units: &[u16],
   ) -> Result<(), RegExpCompileError> {
-    debug_assert_ne!(units.len(), 1, "length-1 strings must be canonicalized");
+    debug_assert!(
+      !(units.len() == 1
+        || (units.len() == 2 && is_utf16_high_surrogate(units[0]) && is_utf16_low_surrogate(units[1]))),
+      "single-code-point strings must be canonicalized"
+    );
     let mut owned: Vec<u16> = Vec::new();
     ctx.reserve_vec_to_len(&mut owned, units.len())?;
     owned.extend_from_slice(units);
@@ -624,6 +769,7 @@ impl UnicodeSet {
 fn char_set_to_char_class(
   ctx: &mut CompileCtx<'_>,
   chars: &CharSet,
+  supplementary: &[u32],
   negated: bool,
 ) -> Result<CharClass, RegExpCompileError> {
   let mut items: Vec<CharClassItem> = Vec::new();
@@ -660,6 +806,12 @@ fn char_set_to_char_class(
     } else {
       ctx.vec_try_push(&mut items, CharClassItem::Range(start as u32, end as u32))?;
     }
+  }
+
+  for &cp in supplementary {
+    // Supplementary code points cannot be represented in the BMP bitset.
+    debug_assert!(cp > 0xFFFF);
+    ctx.vec_try_push(&mut items, CharClassItem::Char(cp))?;
   }
 
   Ok(CharClass { negated, items })
@@ -3780,11 +3932,44 @@ impl<'a> Parser<'a> {
         .into());
       };
       if u == (b']' as u16) {
+        if item_i == 0 && !negated {
+          // Special case: in ECMAScript, `]` can appear unescaped as the first class atom (to match
+          // a literal `]`). This must not be confused with the *empty* class `[]` / `[^]`.
+          //
+          // We disambiguate by scanning for another (unescaped) `]` later in the class. When none
+          // exists, this `]` terminates an empty class.
+          let mut j = self.idx.saturating_add(1);
+          let mut escaped = false;
+          let mut has_terminator = false;
+          while j < self.units.len() {
+            let u2 = self.units[j];
+            if escaped {
+              escaped = false;
+              j = j.saturating_add(1);
+              continue;
+            }
+            if u2 == (b'\\' as u16) {
+              escaped = true;
+              j = j.saturating_add(1);
+              continue;
+            }
+            if u2 == (b']' as u16) {
+              has_terminator = true;
+              break;
+            }
+            j = j.saturating_add(1);
+          }
+          if has_terminator {
+            self.next();
+            ctx.vec_try_push(&mut items, CharClassItem::Char(b']' as u32))?;
+            item_i = item_i.wrapping_add(1);
+            continue;
+          }
+        }
+
         // Empty character classes like `[]` and `[^]` are valid in ECMAScript:
         // - `[]` matches nothing.
         // - `[^]` matches any UTF-16 code unit (commonly used as a dotAll workaround).
-        //
-        // Unescaped `]` always terminates the class; to match a literal `]`, escape it as `\]`.
         self.next();
         break;
       }
@@ -3876,7 +4061,12 @@ impl<'a> Parser<'a> {
     negated: bool,
   ) -> Result<Atom, RegExpCompileError> {
     if set.strings.is_empty() {
-      return Ok(Atom::Class(char_set_to_char_class(ctx, &set.chars, negated)?));
+      return Ok(Atom::Class(char_set_to_char_class(
+        ctx,
+        &set.chars,
+        &set.supplementary,
+        negated,
+      )?));
     }
 
     // Negated classes with strings are an early error and should have been rejected above.
@@ -3888,7 +4078,7 @@ impl<'a> Parser<'a> {
       set.iter_strings_desc_len().filter(|s| s.len() > 1),
       self.flags.ignore_case,
     )?;
-    let single = char_set_to_char_class(ctx, &set.chars, false)?;
+    let single = char_set_to_char_class(ctx, &set.chars, &set.supplementary, false)?;
     Ok(Atom::UnicodeSet(UnicodeSetClass {
       strings,
       single,
