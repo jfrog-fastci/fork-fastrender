@@ -341,7 +341,8 @@ fn browser_tab_vmjs_request_animation_frame_runs_and_triggers_rerender() -> Resu
 }
 
 #[test]
-fn browser_tab_vmjs_tick_frame_runs_request_animation_frame_and_rerenders() -> Result<()> {
+fn browser_tab_vmjs_tick_frame_runs_request_animation_frame_and_microtasks_before_rendering(
+) -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
@@ -354,6 +355,7 @@ fn browser_tab_vmjs_tick_frame_runs_request_animation_frame_and_rerenders() -> R
           #box { width: 64px; height: 64px; }
           .a { background: rgb(255, 0, 0); }
           .b { background: rgb(0, 0, 255); }
+          .c { background: rgb(0, 255, 0); }
         </style>
       </head>
       <body>
@@ -367,13 +369,14 @@ fn browser_tab_vmjs_tick_frame_runs_request_animation_frame_and_rerenders() -> R
                 "data-order",
                 box.getAttribute("data-order") + ",raf"
               );
-              box.setAttribute("class", "b");
               box.setAttribute("data-ts", String(ts));
+              box.setAttribute("class", "b");
               queueMicrotask(function () {
                 box.setAttribute(
                   "data-order",
                   box.getAttribute("data-order") + ",microtask"
                 );
+                box.setAttribute("class", "c");
               });
             });
           })();
@@ -403,13 +406,18 @@ fn browser_tab_vmjs_tick_frame_runs_request_animation_frame_and_rerenders() -> R
     .get_element_by_id("box")
     .ok_or_else(|| Error::Other("expected #box element".to_string()))?;
   assert!(get_attr(tab.dom(), box_id, "data-ts")?.is_none());
+  assert!(get_attr(tab.dom(), box_id, "data-order")?.is_none());
 
-  // 2. `run_event_loop_until_idle` does not run requestAnimationFrame callbacks.
+  // Run all normal event-loop work (including parsing + script execution) without running rAF.
   assert_eq!(
     tab.run_event_loop_until_idle(RunLimits::unbounded())?,
     RunUntilIdleOutcome::Idle
   );
   assert!(get_attr(tab.dom(), box_id, "data-ts")?.is_none());
+  assert_eq!(
+    get_attr(tab.dom(), box_id, "data-order")?.as_deref(),
+    Some("script")
+  );
 
   // Parsing completion queues DOMContentLoaded/load lifecycle tasks. They can change
   // `document.readyState`, which FastRender currently treats as a full DOM invalidation. Drain any
@@ -420,27 +428,26 @@ fn browser_tab_vmjs_tick_frame_runs_request_animation_frame_and_rerenders() -> R
   }
   assert!(tab.render_if_needed()?.is_none());
 
-  // 3. The timestamp passed to requestAnimationFrame is computed when the callback runs.
+  // The timestamp passed to requestAnimationFrame is computed when the callback runs.
   clock.set_now(Duration::from_millis(123));
 
-  // 4. Tick the frame: this should run rAF callbacks and re-render.
+  // `tick_frame()` should run one animation frame turn even when the event loop is otherwise idle,
+  // and it must drain microtasks queued by rAF before rendering.
   let frame_b = tab
     .tick_frame()?
     .expect("expected tick_frame to render after requestAnimationFrame mutation");
   assert_ne!(frame_b.data(), frame_a.data(), "expected pixels to change");
-  assert_eq!(rgba_at(&frame_b, 32, 32), [0, 0, 255, 255]);
-
-  // 5. requestAnimationFrame callback runs before its queued microtasks.
+  // The microtask queued inside rAF changes the class to `.c` (green); if the microtask checkpoint
+  // does not run until the next tick, this would still be blue (`.b`).
+  assert_eq!(rgba_at(&frame_b, 32, 32), [0, 255, 0, 255]);
   assert_eq!(
     get_attr(tab.dom(), box_id, "data-order")?.as_deref(),
     Some("script,raf,microtask")
   );
-  assert_eq!(
-    get_attr(tab.dom(), box_id, "data-ts")?.as_deref(),
-    Some("123")
-  );
+  assert_eq!(get_attr(tab.dom(), box_id, "data-ts")?.as_deref(), Some("123"));
+  assert_eq!(get_attr(tab.dom(), box_id, "class")?.as_deref(), Some("c"));
 
-  // 6. No further work remains.
+  // No further work remains.
   assert!(tab.tick_frame()?.is_none());
   assert!(tab.render_if_needed()?.is_none());
 

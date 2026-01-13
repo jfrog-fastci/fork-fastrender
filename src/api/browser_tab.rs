@@ -5714,6 +5714,18 @@ impl BrowserTab {
       host.discover_dynamic_scripts(event_loop)?;
     }
     let run_limits = self.host.js_execution_options.event_loop_run_limits;
+    let trace = self.trace.clone();
+    let diagnostics = self.diagnostics.clone();
+    let mut report_error = move |err: Error| {
+      let message = err.to_string();
+      if let Some(diag) = &diagnostics {
+        diag.record_js_exception(message.clone(), None);
+      }
+      if trace.is_enabled() {
+        let mut span = trace.span("js.uncaught_exception", "js");
+        span.arg_str("message", &message);
+      }
+    };
     if self.event_loop.pending_microtask_count() > 0 {
       // Drain microtasks only (HTML microtask checkpoint), but do not run any tasks.
       let microtask_limits = RunLimits {
@@ -5721,21 +5733,10 @@ impl BrowserTab {
         max_microtasks: run_limits.max_microtasks,
         max_wall_time: run_limits.max_wall_time,
       };
-      let trace = self.trace.clone();
-      let diagnostics = self.diagnostics.clone();
       match self.event_loop.run_until_idle_handling_errors_with_hook(
         &mut self.host,
         microtask_limits,
-        move |err| {
-          let message = err.to_string();
-          if let Some(diag) = &diagnostics {
-            diag.record_js_exception(message.clone(), None);
-          }
-          if trace.is_enabled() {
-            let mut span = trace.span("js.uncaught_exception", "js");
-            span.arg_str("message", &message);
-          }
-        },
+        &mut report_error,
         |host, event_loop| {
           {
             let (executor, document) = (&mut host.executor, &mut host.document);
@@ -5759,21 +5760,10 @@ impl BrowserTab {
         max_microtasks: run_limits.max_microtasks,
         max_wall_time: run_limits.max_wall_time,
       };
-      let trace = self.trace.clone();
-      let diagnostics = self.diagnostics.clone();
       match self.event_loop.run_until_idle_handling_errors_with_hook(
         &mut self.host,
         one_task_limits,
-        move |err| {
-          let message = err.to_string();
-          if let Some(diag) = &diagnostics {
-            diag.record_js_exception(message.clone(), None);
-          }
-          if trace.is_enabled() {
-            let mut span = trace.span("js.uncaught_exception", "js");
-            span.arg_str("message", &message);
-          }
-        },
+        &mut report_error,
         |host, event_loop| {
           {
             let (executor, document) = (&mut host.executor, &mut host.document);
@@ -5795,6 +5785,61 @@ impl BrowserTab {
     if self.commit_pending_navigation()? {
       // Navigation resets the document/event loop; render the new document if needed.
       return self.render_if_needed();
+    }
+
+    // `run_event_loop_until_idle` does not run requestAnimationFrame callbacks. When embeddings drive
+    // a tab via `tick_frame()`, rAF callbacks would otherwise starve forever once the event loop is
+    // idle.
+    if self.event_loop.has_pending_animation_frame_callbacks() {
+      let raf_outcome = self
+        .event_loop
+        .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
+
+      if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
+        // HTML: microtask checkpoint after rAF callbacks.
+        //
+        // Drain microtasks only: tasks/timers must wait for a future tick so rendering can happen
+        // first.
+        let microtask_limits = RunLimits {
+          max_tasks: 0,
+          max_microtasks: run_limits.max_microtasks,
+          max_wall_time: run_limits.max_wall_time,
+        };
+
+        match self.event_loop.run_until_idle_handling_errors_with_hook(
+          &mut self.host,
+          microtask_limits,
+          &mut report_error,
+          |host, event_loop| {
+            {
+              let (executor, document) = (&mut host.executor, &mut host.document);
+              executor.after_microtask_checkpoint(document.as_mut(), event_loop)?;
+            }
+            host.discover_dynamic_scripts(event_loop)
+          },
+        )? {
+          RunUntilIdleOutcome::Idle
+          | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
+            // Expected: tasks may exist, but this checkpoint only drains microtasks.
+          }
+          RunUntilIdleOutcome::Stopped(reason) => {
+            return Err(Error::Other(format!(
+              "BrowserTab::tick_frame post-rAF microtask checkpoint stopped: {reason:?}"
+            )))
+          }
+        }
+
+        // Ensure scripts inserted by rAF callbacks are discovered even if there were no microtasks
+        // to drain (meaning the microtask-only run can stop at `MaxTasks` without invoking hooks).
+        let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+        host.discover_dynamic_scripts(event_loop)?;
+      }
+
+      if self.commit_pending_navigation()? {
+        // Navigation can be requested by rAF callbacks or microtasks drained after the frame.
+        // Render the new document if needed.
+        return self.render_if_needed();
+      }
     }
 
     self.render_if_needed()
