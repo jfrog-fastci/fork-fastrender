@@ -13,6 +13,7 @@ fn parse_xml_returns_xml_document_with_scripting_disabled() {
       quirks_mode,
       scripting_enabled,
       is_html_document,
+      ..
     } => {
       assert_eq!(*quirks_mode, QuirksMode::NoQuirks);
       assert!(!*scripting_enabled);
