@@ -10,6 +10,7 @@
 //! conversion once per query token, rather than once per `(haystack, needle)` comparison.
 
 use memchr::{memchr, memchr2};
+use std::hash::{Hash, Hasher};
 
 /// Find the first occurrence of `needle_lower_ascii` in `haystack` using ASCII-only
 /// case-insensitive matching.
@@ -101,6 +102,35 @@ fn matches_at(hay: &[u8], start: usize, needle_lower: &[u8]) -> bool {
 #[inline]
 pub(crate) fn contains_ascii_case_insensitive(haystack: &str, needle_lower_ascii: &str) -> bool {
   find_ascii_case_insensitive(haystack, needle_lower_ascii).is_some()
+}
+
+/// A `&str` wrapper with ASCII case-insensitive `Hash` + `Eq`.
+///
+/// Useful for allocation-free de-duplication of strings in `HashSet`/`HashMap` where the desired
+/// semantics are:
+/// - ASCII bytes compare case-insensitively.
+/// - Non-ASCII bytes compare exactly.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AsciiCaseInsensitiveStr<'a>(pub &'a str);
+
+impl PartialEq for AsciiCaseInsensitiveStr<'_> {
+  #[inline]
+  fn eq(&self, other: &Self) -> bool {
+    self.0.eq_ignore_ascii_case(other.0)
+  }
+}
+
+impl Eq for AsciiCaseInsensitiveStr<'_> {}
+
+impl Hash for AsciiCaseInsensitiveStr<'_> {
+  #[inline]
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    // Ensure hashing is consistent with the `Eq` implementation above: fold ASCII to lowercase and
+    // hash bytes directly.
+    for &b in self.0.as_bytes() {
+      state.write_u8(b.to_ascii_lowercase());
+    }
+  }
 }
 
 #[cfg(test)]

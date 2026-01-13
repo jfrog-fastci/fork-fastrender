@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::string_match::contains_ascii_case_insensitive;
@@ -585,8 +586,14 @@ impl BookmarkStore {
       return Vec::new();
     }
 
-    // Lowercase once so we can use the fast ASCII-only matcher (non-ASCII bytes compare exactly).
-    let query_lower = query.to_ascii_lowercase();
+    // The shared ASCII-only matcher expects the needle to already be ASCII-lowercased so it can be
+    // reused across repeated `(haystack, needle)` comparisons. Avoid allocating unless the user
+    // actually typed uppercase ASCII.
+    let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+      Cow::Owned(query.to_ascii_lowercase())
+    } else {
+      Cow::Borrowed(query)
+    };
     let tokens: Vec<&str> = query_lower
       .split_whitespace()
       .filter(|t| !t.is_empty())
@@ -2366,6 +2373,24 @@ mod tests {
 
     // Scan limit: only the first bookmark in store order is examined (the folder's child `b`).
     assert_eq!(store.search("rust", 1), Vec::<BookmarkId>::new());
+  }
+
+  #[test]
+  fn search_is_ascii_case_insensitive_only() {
+    let mut store = BookmarkStore::default();
+    let id = store
+      .add(
+        "https://example.com/über".to_string(),
+        Some("über".to_string()),
+        None,
+      )
+      .unwrap();
+
+    // ASCII letters match case-insensitively.
+    assert_eq!(store.search("üBER", usize::MAX), vec![id]);
+
+    // Non-ASCII bytes compare exactly: Ü != ü.
+    assert_eq!(store.search("ÜBER", usize::MAX), Vec::<BookmarkId>::new());
   }
 
   #[test]

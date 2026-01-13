@@ -4,7 +4,9 @@ use crate::ui::messages::TabId;
 use crate::ui::url::{resolve_omnibox_input, resolve_omnibox_search_query, OmniboxInputResolution};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use crate::ui::{BookmarkNode, BookmarkStore};
-use super::string_match::{contains_ascii_case_insensitive, find_ascii_case_insensitive};
+use super::string_match::{
+  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
+};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -334,7 +336,7 @@ impl OmniboxProvider for BookmarksProvider {
     }
 
     let mut out = Vec::new();
-    let mut seen_urls: HashSet<String> = HashSet::new();
+    let mut seen_urls = HashSet::new();
 
     for id in matches {
       let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {
@@ -348,7 +350,7 @@ impl OmniboxProvider for BookmarksProvider {
 
       // Avoid suggesting the same URL multiple times when the bookmark store contains duplicates
       // (possible via import).
-      if !seen_urls.insert(url.to_ascii_lowercase()) {
+      if !seen_urls.insert(AsciiCaseInsensitiveStr(url)) {
         continue;
       }
 
@@ -1892,6 +1894,44 @@ mod tests {
           && s.url.as_deref() == Some("https://example.com/only-one-token")
       }),
       "expected tokenized match to filter out non-matching bookmarks, got {suggestions:?}"
+    );
+  }
+
+  #[test]
+  fn bookmarks_provider_dedupes_duplicate_urls_case_insensitively() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let mut bookmarks = BookmarkStore::default();
+    bookmarks
+      .add(
+        "https://example.com/".to_string(),
+        Some("Lower".to_string()),
+        None,
+      )
+      .unwrap();
+    bookmarks
+      .add(
+        "https://EXAMPLE.com/".to_string(),
+        Some("Upper".to_string()),
+        None,
+      )
+      .unwrap();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: Some(&bookmarks),
+      remote_search_suggest: None,
+    };
+
+    let provider = BookmarksProvider;
+    let suggestions = provider.suggestions(&ctx, "example");
+    assert_eq!(
+      suggestions.len(),
+      1,
+      "expected provider-level dedupe of duplicate bookmark URLs, got {suggestions:?}"
     );
   }
 
