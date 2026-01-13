@@ -6854,6 +6854,22 @@ impl App {
   ) -> Result<(), std::sync::mpsc::SendError<fastrender::ui::UiToWorker>> {
     use fastrender::ui::UiToWorker;
 
+    fn fallback_tab_id_from_debug(msg: &UiToWorker) -> Option<fastrender::ui::TabId> {
+      // `UiToWorker` is an evolving UI↔worker protocol. When new tab-scoped message variants are
+      // added (e.g. media playback controls), this windowed UI layer still needs to route them to
+      // the correct per-tab cancellation generations.
+      //
+      // As a forward-compatible fallback, attempt to extract `tab_id` from the derived `Debug`
+      // representation: `Variant { tab_id: TabId(<u64>), ... }`.
+      const NEEDLE: &str = "tab_id: TabId(";
+      let debug = format!("{msg:?}");
+      let start = debug.find(NEEDLE)? + NEEDLE.len();
+      let rest = &debug[start..];
+      let end_rel = rest.find(')')?;
+      let id: u64 = rest[..end_rel].parse().ok()?;
+      Some(fastrender::ui::TabId(id))
+    }
+
     // If the active tab changes while a scrollbar thumb drag is in progress, drop any unflushed
     // delta and cancel the drag. This avoids "leaking" drag scroll into the wrong tab.
     if let UiToWorker::SetActiveTab { tab_id } = &msg {
@@ -6954,6 +6970,7 @@ impl App {
       | UiToWorker::RequestRepaint { tab_id, .. }
       | UiToWorker::StartDownload { tab_id, .. }
       | UiToWorker::CancelDownload { tab_id, .. } => Some(*tab_id),
+      other => fallback_tab_id_from_debug(other),
     };
 
     if let Some(tab_id) = tab_id {
@@ -7009,6 +7026,8 @@ impl App {
           | UiToWorker::SelectAll { .. }
           | UiToWorker::StartDownload { .. }
           | UiToWorker::CancelDownload { .. } => {}
+          // Default any future tab-scoped messages to paint cancellation (e.g. media commands).
+          _ => cancel.bump_paint(),
         }
       }
     }
