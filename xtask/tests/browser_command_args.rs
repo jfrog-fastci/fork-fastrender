@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use xtask::browser::{
   build_browser_command, BrowserCommandArgs, FASTR_BROWSER_HUD_ENV, FASTR_BROWSER_MEM_LIMIT_MB_ENV,
-  FASTR_PERF_LOG_ENV, FASTR_PERF_LOG_OUT_ENV, FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV,
-  FASTR_TRACE_OUT_ENV,
+  FASTR_BROWSER_TRACE_OUT_ENV, FASTR_PERF_LOG_ENV, FASTR_PERF_LOG_OUT_ENV,
+  FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV,
 };
 
 fn repo_root() -> PathBuf {
@@ -129,7 +129,7 @@ fn browser_command_supports_release_url_and_env_flags() {
     "expected perf log out env to be set"
   );
   assert_eq!(
-    cmd_env(&cmd, FASTR_TRACE_OUT_ENV).as_deref(),
+    cmd_env(&cmd, FASTR_BROWSER_TRACE_OUT_ENV).as_deref(),
     Some(trace_out_value.as_str()),
     "expected trace out env to be set"
   );

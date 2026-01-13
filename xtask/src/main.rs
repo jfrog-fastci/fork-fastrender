@@ -711,7 +711,8 @@ struct BrowserArgs {
   #[arg(long, value_name = "PATH")]
   perf_log_out: Option<PathBuf>,
 
-  /// Write Chrome trace events to this path (sets `FASTR_TRACE_OUT=<path>`).
+  /// Write a Chrome trace of the browser UI event loop to this path (sets
+  /// `FASTR_BROWSER_TRACE_OUT=<path>`).
   #[arg(long, value_name = "PATH")]
   trace_out: Option<PathBuf>,
 

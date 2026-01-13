@@ -21,8 +21,8 @@ pub const FASTR_PERF_LOG_ENV: &str = "FASTR_PERF_LOG";
 /// `bash scripts/cargo_agent.sh xtask browser --perf-log ... 2>&1 | tee target/perf.log`
 pub const FASTR_PERF_LOG_OUT_ENV: &str = "FASTR_PERF_LOG_OUT";
 
-/// Environment variable used by the render pipeline to write Chrome trace events.
-pub const FASTR_TRACE_OUT_ENV: &str = "FASTR_TRACE_OUT";
+/// Environment variable used to write a Chrome trace of the windowed browser event loop.
+pub const FASTR_BROWSER_TRACE_OUT_ENV: &str = "FASTR_BROWSER_TRACE_OUT";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BrowserCommandArgs {
@@ -57,7 +57,7 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
     cmd.env(FASTR_PERF_LOG_OUT_ENV, out.as_os_str());
   }
   if let Some(out) = args.trace_out.as_ref() {
-    cmd.env(FASTR_TRACE_OUT_ENV, out.as_os_str());
+    cmd.env(FASTR_BROWSER_TRACE_OUT_ENV, out.as_os_str());
   }
   if let Some(limit_mb) = args.mem_limit_mb {
     cmd.env(FASTR_BROWSER_MEM_LIMIT_MB_ENV, limit_mb.to_string());
