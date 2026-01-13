@@ -83,8 +83,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 15701 (90.66%) |
-| Mismatched upstream expected | 1617 (9.34%) |
+| Matched upstream expected | 15695 (90.63%) |
+| Mismatched upstream expected | 1623 (9.37%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 672 |
@@ -93,8 +93,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15661 |
-| failed | 1617 |
+| passed | 15655 |
+| failed | 1623 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -113,8 +113,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | --- | ---: |
 | PASS | 8028 |
 | FAIL (unexpected) | 672 |
-| XFAIL | 945 |
-| XPASS | 7633 |
+| XFAIL | 951 |
+| XPASS | 7627 |
 | SKIP | 40 |
 
 ## Breakdown by major area
@@ -122,17 +122,17 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | built-ins | 7185 | 6753 | 432 | 6.01% | 6237 | 6 | 426 | 476 | 40 |
-| language | 10128 | 8943 | 1185 | 11.70% | 1786 | 666 | 519 | 7157 | 0 |
+| language | 10128 | 8937 | 1191 | 11.76% | 1786 | 666 | 525 | 7151 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 1078 | 15.05% | 754 | 666 | 412 | 5329 | 0 |
+| `language/statements` | 7161 | 1080 | 15.08% | 754 | 666 | 414 | 5327 | 0 |
 | `built-ins/Set` | 764 | 306 | 40.05% | 388 | 2 | 304 | 70 | 0 |
 | `built-ins/Object` | 1692 | 110 | 6.50% | 1330 | 2 | 108 | 252 | 0 |
-| `language/expressions` | 2337 | 99 | 4.24% | 1032 | 0 | 99 | 1206 | 0 |
+| `language/expressions` | 2337 | 103 | 4.41% | 1032 | 0 | 103 | 1202 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
 | `language/directive-prologue` | 62 | 6 | 9.68% | 0 | 0 | 6 | 56 | 0 |
 | `built-ins/Map` | 405 | 4 | 0.99% | 401 | 2 | 2 | 0 | 0 |
@@ -145,8 +145,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 1026 (63.45%)
-- VmError::Unimplemented: 568 (35.13%)
+- exception/other: 1023 (63.03%)
+- VmError::Unimplemented: 577 (35.55%)
 - termination: 23 (1.42%)
 
 ### Top 20
@@ -186,7 +186,7 @@ _None._
 
 At least 50 mismatched cases, grouped by the largest mismatch buckets.
 
-### `language/statements` (10 shown / 1078 mismatches)
+### `language/statements` (10 shown / 1080 mismatches)
 
 - `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
 - `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
@@ -225,7 +225,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 - `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-123.js#non_strict`: `Cannot convert undefined or null to object`
 - `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-123.js#strict`: `Cannot convert undefined or null to object`
 
-### `language/expressions` (10 shown / 99 mismatches)
+### `language/expressions` (10 shown / 103 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `execution terminated: stack overflow`
 - `language/expressions/in/private-field-presence-accessor.js#non_strict`: `Expected SameValue(«false», «true») to be true`
