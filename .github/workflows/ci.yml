@@ -118,6 +118,12 @@ jobs:
           set -euo pipefail
           bash scripts/cargo_agent.sh check -p fastrender --lib --locked
 
+      - name: Compile renderer build without direct network (scoped)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/cargo_agent.sh check -p fastrender --lib --locked --no-default-features --features renderer_minimal
+
   # ===========================================================================
   # ecma-rs WebIDL - Run the vendored WebIDL crate test suites (scoped)
   # ===========================================================================

@@ -1910,6 +1910,7 @@ impl BrowserRuntime {
               };
               (Box::new(file), total)
             }
+            #[cfg(feature = "direct_network")]
             "http" | "https" => {
               let client = match reqwest::blocking::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(10))
@@ -1946,6 +1947,16 @@ impl BrowserRuntime {
 
               let total = resp.content_length();
               (Box::new(resp), total)
+            }
+            #[cfg(not(feature = "direct_network"))]
+            "http" | "https" => {
+              cleanup_part();
+              finish(DownloadOutcome::Failed {
+                error:
+                  "HTTP(S) downloads are disabled in this build (missing `direct_network` feature)"
+                    .to_string(),
+              });
+              return;
             }
             other => {
               cleanup_part();

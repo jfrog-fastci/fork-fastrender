@@ -237,6 +237,14 @@ fn worker_loop(
   }
 }
 
+#[cfg(not(feature = "direct_network"))]
+fn fetch_duckduckgo_suggestions(_endpoint_base: &str, _query: &str, _timeout_ms: u64) -> Vec<String> {
+  // Direct network access is disabled in this build. The omnibox can still function without remote
+  // suggestions (local history/bookmark providers remain available).
+  Vec::new()
+}
+
+#[cfg(feature = "direct_network")]
 fn fetch_duckduckgo_suggestions(endpoint_base: &str, query: &str, timeout_ms: u64) -> Vec<String> {
   let timeout = Duration::from_millis(timeout_ms.max(1));
 
@@ -304,7 +312,7 @@ fn parse_duckduckgo_ac_json(bytes: &[u8]) -> Vec<String> {
   out
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "direct_network"))]
 mod tests {
   use super::*;
   use std::io::{Read, Write};

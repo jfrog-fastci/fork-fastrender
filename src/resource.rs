@@ -32,7 +32,9 @@ use http::HeaderMap;
 use httpdate::parse_http_date;
 use lru::LruCache;
 use publicsuffix::{List, Psl};
+#[cfg(feature = "direct_network")]
 use reqwest::blocking as reqwest_blocking;
+#[cfg(feature = "direct_network")]
 use reqwest::cookie::{CookieStore, Jar as ReqwestCookieJar};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -53,11 +55,13 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+#[cfg(feature = "direct_network")]
 use ureq::ResponseExt;
 use url::Url;
 
 pub mod bundle;
 mod cors;
+#[cfg(feature = "direct_network")]
 mod curl_backend;
 pub(crate) mod data_url;
 pub mod ipc_fetcher;
@@ -2029,6 +2033,7 @@ fn is_retryable_io_error(err: &io::Error) -> bool {
   )
 }
 
+#[cfg(feature = "direct_network")]
 fn is_retryable_ureq_error(err: &ureq::Error) -> bool {
   let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
   while let Some(current) = source {
@@ -2051,6 +2056,7 @@ fn is_retryable_ureq_error(err: &ureq::Error) -> bool {
     || msg.contains("dns")
 }
 
+#[cfg(feature = "direct_network")]
 fn is_retryable_reqwest_error(err: &reqwest::Error) -> bool {
   if err.is_timeout() || err.is_connect() {
     return true;
@@ -3882,6 +3888,249 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
 // HttpFetcher - Default implementation
 // ============================================================================
 
+// NOTE: `HttpFetcher` is intentionally available even when the `direct_network` Cargo feature is
+// disabled so downstream renderer builds can compile without linking any network stacks.
+//
+// When `direct_network` is disabled, this is a stub implementation that rejects HTTP(S) URLs. This
+// keeps the API surface stable while forcing embedders to inject their own `ResourceFetcher`
+// (typically one that forwards requests over IPC to a dedicated network process).
+#[cfg(not(feature = "direct_network"))]
+#[derive(Clone, Debug)]
+pub struct HttpFetcher {
+  user_agent: String,
+  accept_language: String,
+  policy: ResourcePolicy,
+  retry_policy: HttpRetryPolicy,
+}
+
+#[cfg(not(feature = "direct_network"))]
+impl HttpFetcher {
+  /// Create a new HttpFetcher with default settings.
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Set the request timeout.
+  pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    self.policy.request_timeout = timeout;
+    self.policy.request_timeout_is_total_budget = false;
+    self
+  }
+
+  /// Set a total timeout budget for a single fetch call.
+  pub fn with_timeout_budget(mut self, timeout: Duration) -> Self {
+    self.policy.request_timeout = timeout;
+    self.policy.request_timeout_is_total_budget = true;
+    self
+  }
+
+  /// Set the User-Agent header.
+  pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+    self.user_agent = user_agent.into();
+    self
+  }
+
+  /// Set the Accept-Language header.
+  pub fn with_accept_language(mut self, accept_language: impl Into<String>) -> Self {
+    self.accept_language = accept_language.into();
+    self
+  }
+
+  /// Set the maximum response size in bytes.
+  pub fn with_max_size(mut self, max_size: usize) -> Self {
+    self.policy.max_response_bytes = max_size;
+    self
+  }
+
+  /// Apply a complete resource policy.
+  pub fn with_policy(mut self, policy: ResourcePolicy) -> Self {
+    self.policy = policy;
+    self
+  }
+
+  /// Override the retry/backoff policy used for HTTP(S) fetches.
+  pub fn with_retry_policy(mut self, policy: HttpRetryPolicy) -> Self {
+    self.retry_policy = policy;
+    self
+  }
+
+  /// Override the maximum redirect attempts.
+  pub fn with_max_redirects(mut self, max_redirects: usize) -> Self {
+    self.policy.max_redirects = max_redirects.max(1);
+    self
+  }
+}
+
+#[cfg(not(feature = "direct_network"))]
+impl Default for HttpFetcher {
+  fn default() -> Self {
+    let policy = ResourcePolicy::default();
+    Self {
+      user_agent: DEFAULT_USER_AGENT.to_string(),
+      accept_language: DEFAULT_ACCEPT_LANGUAGE.to_string(),
+      policy,
+      retry_policy: HttpRetryPolicy::default(),
+    }
+  }
+}
+
+#[cfg(not(feature = "direct_network"))]
+impl ResourceFetcher for HttpFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    self.fetch_with_context(FetchContextKind::Other, url)
+  }
+
+  fn fetch_with_context(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+    let normalized = normalize_http_url_for_fetch(url);
+    let url = normalized.as_deref().unwrap_or(url);
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
+    match self.policy.ensure_url_allowed(url)? {
+      ResourceScheme::Data => self.fetch_data(kind, url),
+      ResourceScheme::File => self.fetch_file(kind, url),
+      ResourceScheme::Http | ResourceScheme::Https => Err(Error::Resource(ResourceError::new(
+        url,
+        "direct network is disabled (built without `direct_network`); inject a ResourceFetcher that proxies over IPC",
+      ))),
+      ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", url)),
+      ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
+    }
+  }
+
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+    let kind: FetchContextKind = req.destination.into();
+    self.fetch_with_context(kind, req.url)
+  }
+}
+
+#[cfg(not(feature = "direct_network"))]
+impl HttpFetcher {
+  fn fetch_file(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+    let path_candidates = file_url_path_candidates(url);
+    let limit = self.policy.allowed_response_limit()?;
+    let mut chosen_path: Option<std::path::PathBuf> = None;
+    let mut bytes: Option<Vec<u8>> = None;
+    let mut file_too_large = false;
+    let mut last_err = None;
+
+    'candidates: for candidate in &path_candidates {
+      if let Ok(meta) = std::fs::metadata(candidate) {
+        if let Ok(len) = usize::try_from(meta.len()) {
+          if len > limit {
+            if let Some(remaining) = self.policy.remaining_budget() {
+              if len > remaining {
+                return Err(policy_error(format!(
+                  "total bytes budget exceeded ({} > {} bytes remaining)",
+                  len, remaining
+                )));
+              }
+            }
+            return Err(policy_error(format!(
+              "response too large ({} > {} bytes)",
+              len, limit
+            )));
+          }
+        } else {
+          return Err(policy_error("file is larger than supported limit"));
+        }
+      }
+
+      match std::fs::File::open(candidate) {
+        Ok(mut file) => match read_response_prefix(&mut file, limit) {
+          Ok(read) => {
+            let mut candidate_too_large = false;
+            if read.len() == limit {
+              let mut extra = [0u8; 1];
+              loop {
+                match file.read(&mut extra) {
+                  Ok(0) => break,
+                  Ok(_) => {
+                    candidate_too_large = true;
+                    break;
+                  }
+                  Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                  Err(err) => {
+                    last_err = Some(err);
+                    continue 'candidates;
+                  }
+                }
+              }
+            }
+            chosen_path = Some(candidate.clone());
+            bytes = Some(read);
+            file_too_large = candidate_too_large;
+            break;
+          }
+          Err(err) => last_err = Some(err),
+        },
+        Err(err) => last_err = Some(err),
+      }
+    }
+
+    let chosen_path = chosen_path.ok_or_else(|| {
+      let err = last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"));
+      Error::Resource(
+        ResourceError::new(url.to_string(), err.to_string())
+          .with_final_url(url.to_string())
+          .with_source(err),
+      )
+    })?;
+    let mut bytes = bytes.unwrap_or_default();
+    let observed_len = if file_too_large {
+      limit.saturating_add(1)
+    } else {
+      bytes.len()
+    };
+
+    if observed_len > limit {
+      if let Some(remaining) = self.policy.remaining_budget() {
+        if observed_len > remaining {
+          return Err(policy_error(format!(
+            "total bytes budget exceeded ({} > {} bytes remaining)",
+            observed_len, remaining
+          )));
+        }
+      }
+      return Err(policy_error(format!(
+        "response too large ({} > {} bytes)",
+        observed_len, limit
+      )));
+    }
+
+    let path_str = chosen_path.to_string_lossy();
+    let mut content_type = guess_content_type_from_path(path_str.as_ref());
+    substitute_offline_fixture_placeholder_full(kind, &mut bytes, &mut content_type);
+
+    self.policy.reserve_budget(bytes.len())?;
+
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
+    Ok(FetchedResource::with_final_url(bytes, content_type, Some(url.to_string())))
+  }
+
+  fn fetch_data(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+    let limit = self.policy.allowed_response_limit()?;
+    // Decode at most `limit + 1` bytes so oversized data: URLs fail without allocating the entire
+    // payload (which could otherwise abort the process on OOM).
+    let decode_limit = limit.saturating_add(1);
+    let mut resource = data_url::decode_data_url_prefix(url, decode_limit)?;
+    substitute_offline_fixture_placeholder_full(kind, &mut resource.bytes, &mut resource.content_type);
+    let len = resource.bytes.len();
+    if len > limit {
+      if let Some(remaining) = self.policy.remaining_budget() {
+        if len > remaining {
+          return Err(policy_error(format!(
+            "total bytes budget exceeded ({} > {} bytes remaining)",
+            len, remaining
+          )));
+        }
+      }
+      return Err(policy_error(format!("response too large ({} > {} bytes)", len, limit)));
+    }
+    self.policy.reserve_budget(len)?;
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
+    Ok(resource)
+  }
+}
+
 /// Default HTTP resource fetcher
 ///
 /// Fetches resources over HTTP/HTTPS with configurable timeouts and user agent.
@@ -3902,6 +4151,7 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
 ///     .with_timeout(Duration::from_secs(60))
 ///     .with_user_agent("MyApp/1.0");
 /// ```
+#[cfg(feature = "direct_network")]
 #[derive(Clone)]
 pub struct HttpFetcher {
   user_agent: String,
@@ -4694,6 +4944,7 @@ fn apply_fetch_redirect_mutations(
   }
 }
 
+#[cfg(feature = "direct_network")]
 impl std::fmt::Debug for HttpFetcher {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("HttpFetcher")
@@ -4706,6 +4957,7 @@ impl std::fmt::Debug for HttpFetcher {
   }
 }
 
+#[cfg(feature = "direct_network")]
 impl HttpFetcher {
   fn build_agent(policy: &ResourcePolicy) -> Arc<ureq::Agent> {
     let config = ureq::Agent::config_builder()
@@ -8649,6 +8901,7 @@ impl HttpFetcher {
   }
 }
 
+#[cfg(feature = "direct_network")]
 impl Default for HttpFetcher {
   fn default() -> Self {
     let policy = ResourcePolicy::default();
@@ -8667,6 +8920,7 @@ impl Default for HttpFetcher {
   }
 }
 
+#[cfg(feature = "direct_network")]
 impl ResourceFetcher for HttpFetcher {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
     self.fetch_with_context(FetchContextKind::Other, url)

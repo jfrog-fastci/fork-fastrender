@@ -16035,6 +16035,7 @@ impl css::types::CssImportLoader for EmbeddedImportFetcher {
         let bytes = read_css_import_bytes(&mut file, "css @import file")?;
         Ok(css::encoding::decode_css_bytes(&bytes, None))
       }
+      #[cfg(feature = "direct_network")]
       "http" | "https" => {
         let agent = ureq::Agent::config_builder()
           .timeout_global(Some(std::time::Duration::from_secs(30)))
@@ -16074,6 +16075,16 @@ impl css::types::CssImportLoader for EmbeddedImportFetcher {
           content_type.as_deref(),
         ))
       }
+      #[cfg(not(feature = "direct_network"))]
+      "http" | "https" => Err(
+        RenderError::InvalidParameters {
+          message: format!(
+            "@import over HTTP(S) is disabled in this build (missing `direct_network` feature): {}",
+            resolved
+          ),
+        }
+        .into(),
+      ),
       _ => Err(
         RenderError::InvalidParameters {
           message: format!("Unsupported URL scheme for @import: {}", resolved),

@@ -128,7 +128,11 @@ pub mod window_url;
 pub mod window_xml_serializer;
 #[path = "vmjs/window_broadcast_channel.rs"]
 pub mod window_broadcast_channel;
+#[cfg(feature = "direct_websocket")]
 #[path = "vmjs/window_websocket.rs"]
+pub mod window_websocket;
+#[cfg(not(feature = "direct_websocket"))]
+#[path = "vmjs/window_websocket_stub.rs"]
 pub mod window_websocket;
 #[path = "vmjs/window_worker.rs"]
 pub mod window_worker;

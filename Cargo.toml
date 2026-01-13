@@ -28,7 +28,7 @@ exclude = ["vendor/ecma-rs"]
 resolver = "2"
 
 [features]
-default = ["preserve3d_warp", "avif"]
+default = ["preserve3d_warp", "avif", "direct_network", "direct_websocket"]
 a11y_debug = []
 avif = ["dep:avif-decode", "dep:avif-parse"]
 audio_cpal = ["dep:cpal"]
@@ -36,6 +36,15 @@ box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
 quickjs = ["dep:rquickjs"]
+# Direct (in-process) networking. Renderer builds should disable this feature so all network
+# requests are mediated by a separate network/IPC process.
+direct_network = ["dep:reqwest", "dep:ureq"]
+# Direct (in-process) WebSocket implementation for the vm-js Window realm.
+direct_websocket = ["dep:tungstenite"]
+# Feature set for a renderer build that intentionally excludes any in-process network stacks.
+# Used by CI (`--no-default-features --features renderer_minimal`) to ensure the renderer can be
+# built without linking reqwest/ureq/tungstenite.
+renderer_minimal = ["preserve3d_warp", "avif"]
 browser_ui = [
   "audio_cpal",
   "dep:winit",
@@ -131,9 +140,9 @@ url = "2.5"
 urlencoding = "2.1"
 publicsuffix = "2.3"
 # Use Rustls to avoid requiring system OpenSSL headers/libs in CI/agent environments.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "cookies", "http2", "rustls-tls-webpki-roots"] }
-ureq = { version = "3.1", default-features = false, features = ["rustls"] }
-tungstenite = { version = "0.21", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, optional = true, features = ["blocking", "cookies", "http2", "rustls-tls-webpki-roots"] }
+ureq = { version = "3.1", default-features = false, optional = true, features = ["rustls"] }
+tungstenite = { version = "0.21", default-features = false, optional = true, features = ["handshake", "rustls-tls-webpki-roots"] }
 wuff = "0.2"
 tar = "0.4"
 sha2 = "0.10"
