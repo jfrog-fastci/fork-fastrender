@@ -2662,6 +2662,37 @@ mod hover_router_tests {
     assert_eq!(emitted.cursor, CursorKind::Default);
     assert_eq!(emitted.hovered_url, None);
   }
+
+  #[test]
+  fn out_of_order_hover_changed_seq_is_ignored() {
+    let root = FrameId(1);
+    let mut tester = FrameHitTester::new(root);
+    tester.set_frame_size(root, 100, 100);
+
+    let mut router = HoverRouter::new(root);
+
+    // Ensure root is the hit frame so hover updates will be forwarded.
+    let _ = router.on_pointer_move(&tester, 1.0, 1.0);
+
+    let first = router
+      .on_hover_changed(root, 10, None, CursorKind::Pointer)
+      .expect("expected first hover update to be forwarded");
+    assert_eq!(first.cursor, CursorKind::Pointer);
+
+    // Older sequence number should be ignored even if it would change the cursor.
+    assert!(
+      router
+        .on_hover_changed(root, 9, None, CursorKind::Text)
+        .is_none(),
+      "expected out-of-order hover update to be ignored"
+    );
+
+    // Newer sequence number should be accepted.
+    let second = router
+      .on_hover_changed(root, 11, None, CursorKind::Text)
+      .expect("expected newer hover update to be forwarded");
+    assert_eq!(second.cursor, CursorKind::Text);
+  }
 }
 
 /// Abstract transport for browser↔renderer IPC.
