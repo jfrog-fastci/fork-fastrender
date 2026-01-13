@@ -788,8 +788,9 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
     [`docs/media_clocking.md`](media_clocking.md)).
   - Implementation note: CSS animation sampling in the current UI worker advances by a fixed time
     step per tick (`TICK_ANIMATION_STEP` in [`src/ui/render_worker.rs`](../src/ui/render_worker.rs))
-    for determinism. This is independent of actual wall-clock tick cadence; do not treat UI ticks as
-    a master clock for media playback (see [`docs/media_clocking.md`](media_clocking.md)).
+    for determinism. It does **not** measure real elapsed time between ticks, so animations may
+    slow/freeze if ticks are delayed/suppressed. Do not treat UI ticks as a master clock for media
+    playback (see [`docs/media_clocking.md`](media_clocking.md)).
 - `ViewportChanged { tab_id, viewport_css, dpr }`
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
@@ -880,7 +881,8 @@ Front-ends drive time-based behavior by sending periodic
 - `Tick` is a wake-up signal (no timestamp). Time-aware subsystems (timers, animations, media) must
   query their own clocks; see [`docs/media_clocking.md`](media_clocking.md).
   - CSS animations/transitions in the current UI worker are advanced by a fixed per-tick step for
-    determinism (see `TICK_ANIMATION_STEP` in [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
+    determinism (see `TICK_ANIMATION_STEP` in [`src/ui/render_worker.rs`](../src/ui/render_worker.rs));
+    the worker does not attempt to “catch up” based on wall time if ticks are delayed.
 
 ### Worker-owned history semantics
 
