@@ -3462,6 +3462,7 @@ pub(super) fn tab_strip_ui(
     // Animate the lift/scale-in so the dragged tab feels like it's being "picked up". When reduced
     // motion is enabled this snaps to the final state.
     let lift_id = egui::Id::new("tab_strip_drag_lift").with(drag_anim_key);
+    let lift_id = egui::Id::new("tab_strip_drag_lift").with(drag_anim_key);
     let lift_t = motion.animate_bool(ui.ctx(), lift_id, true, motion.durations.tab_drag_lift);
     let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y * lift_t);
     preview_rect = preview_rect.translate(lift);
