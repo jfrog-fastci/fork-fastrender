@@ -5163,6 +5163,150 @@ impl BrowserTab {
     Ok(tab)
   }
 
+  /// Like [`BrowserTab::from_html_with_document_url_and_fetcher`], but uses the provided
+  /// [`EventLoop`] for tasks/timers/`requestAnimationFrame` callbacks.
+  pub fn from_html_with_document_url_and_fetcher_and_event_loop<E>(
+    html: &str,
+    document_url: &str,
+    options: RenderOptions,
+    executor: E,
+    fetcher: Arc<dyn ResourceFetcher>,
+    event_loop: EventLoop<BrowserTabHost>,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    Self::from_html_with_document_url_and_fetcher_and_event_loop_and_js_execution_options(
+      html,
+      document_url,
+      options,
+      executor,
+      fetcher,
+      event_loop,
+      JsExecutionOptions::default(),
+    )
+  }
+
+  /// Like [`BrowserTab::from_html_with_document_url_and_fetcher_and_event_loop`], but allows
+  /// overriding JavaScript execution budgets.
+  pub fn from_html_with_document_url_and_fetcher_and_event_loop_and_js_execution_options<E>(
+    html: &str,
+    document_url: &str,
+    options: RenderOptions,
+    executor: E,
+    fetcher: Arc<dyn ResourceFetcher>,
+    mut event_loop: EventLoop<BrowserTabHost>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    let trace_session = super::TraceSession::from_options(Some(&options));
+    let trace_handle = trace_session.handle.clone();
+    let trace_output = trace_session.output.clone();
+
+    // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
+    // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
+    let diagnostics = (!matches!(options.diagnostics_level, super::DiagnosticsLevel::None))
+      .then(super::SharedRenderDiagnostics::new);
+    let external_script_sources: Arc<Mutex<HashMap<String, String>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
+      overrides: Arc::clone(&external_script_sources),
+      inner: fetcher,
+    });
+    let renderer = super::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let mut document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    if let Some(diag) = diagnostics.as_ref() {
+      document
+        .renderer_mut()
+        .set_diagnostics_sink(Some(Arc::clone(&diag.inner)));
+    }
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(executor),
+      trace_handle.clone(),
+      js_execution_options,
+    )?;
+    host.external_script_sources = Arc::clone(&external_script_sources);
+    event_loop.set_trace_handle(trace_handle.clone());
+    event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    let next_animation_frame_due = event_loop.now();
+
+    let mut tab = Self {
+      trace: trace_handle,
+      trace_output,
+      diagnostics,
+      host,
+      event_loop,
+      next_animation_frame_due,
+      pending_frame: None,
+      history: TabHistory::new(),
+      renderer_dom_mapping_cache: None,
+    };
+    tab
+      .host
+      .document
+      .set_animation_clock(tab.event_loop.clock());
+    tab
+      .event_loop
+      .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
+
+    // Configure the renderer's document URL hint up-front so any non-script fetches (stylesheets,
+    // images, etc) see consistent referrer/origin context during parsing.
+    tab
+      .host
+      .document
+      .renderer_mut()
+      .set_document_url(document_url);
+
+    let options_for_parse = options.clone();
+    // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
+    // - HTML parsing,
+    // - and any synchronous navigation requests triggered by scripts during parsing.
+    let deadline_enabled =
+      options_for_parse.timeout.is_some() || options_for_parse.cancel_callback.is_some();
+    let root_deadline_is_enabled =
+      crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
+    let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
+      RenderDeadline::new(
+        options_for_parse.timeout,
+        options_for_parse.cancel_callback.clone(),
+      )
+    });
+    let _deadline_guard = deadline
+      .as_ref()
+      .map(|deadline| DeadlineGuard::install(Some(deadline)));
+
+    let document_referrer_policy =
+      crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
+    tab
+      .host
+      .reset_scripting_state(Some(document_url.to_string()), document_referrer_policy)?;
+    let mut parse_options = options_for_parse.clone();
+    if root_deadline_is_enabled {
+      // Avoid installing a nested deadline: the outer root deadline already enforces the render
+      // budget across parsing + any follow-up navigation committed from scripts.
+      parse_options.timeout = None;
+      parse_options.cancel_callback = None;
+    }
+    let base_url =
+      tab.parse_html_streaming_and_schedule_scripts(html, Some(document_url), &parse_options)?;
+    if let Some(req) = tab.host.pending_navigation.take() {
+      tab.navigate_to_url_with_replace_after_beforeunload(&req.url, options_for_parse.clone(), req.replace)?;
+    } else {
+      let renderer = tab.host.document.renderer_mut();
+      match base_url {
+        Some(url) => renderer.set_base_url(url),
+        None => renderer.clear_base_url(),
+      }
+    }
+    Ok(tab)
+  }
+
   /// Like [`BrowserTab::from_html_with_event_loop`], but uses the provided [`ResourceFetcher`] for
   /// subresource/script/fetch() loads.
   pub fn from_html_with_event_loop_and_fetcher<E>(

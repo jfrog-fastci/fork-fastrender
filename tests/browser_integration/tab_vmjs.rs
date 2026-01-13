@@ -84,6 +84,8 @@ fn browser_tab_vmjs_executes_scripts_microtasks_timers_and_rerenders() -> Result
   #[cfg(feature = "browser_ui")]
   let _lock = super::stage_listener_test_lock();
 
+  let document_url = "https://example.com/doc.html";
+
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -111,27 +113,31 @@ fn browser_tab_vmjs_executes_scripts_microtasks_timers_and_rerenders() -> Result
               );
             });
             setTimeout(function () {
-              box.setAttribute(
-                "data-order",
-                box.getAttribute("data-order") + ",timer"
-              );
-              box.setAttribute("class", "b");
-            }, 10);
-          })();
+                box.setAttribute(
+                  "data-order",
+                  box.getAttribute("data-order") + ",timer"
+                );
+                box.setAttribute("class", "b");
+              }, 5);
+            })();
         </script>
       </body>
     </html>"#;
 
   let options = RenderOptions::new().with_viewport(64, 64);
 
+  let fetcher = Arc::new(StubFetcher::default());
+
   let clock = Arc::new(VirtualClock::new());
   let clock_for_loop: Arc<dyn Clock> = clock.clone();
   let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock_for_loop);
 
-  let mut tab = BrowserTab::from_html_with_event_loop(
+  let mut tab = BrowserTab::from_html_with_document_url_and_fetcher_and_event_loop(
     html,
+    document_url,
     options,
     VmJsBrowserTabExecutor::default(),
+    fetcher,
     event_loop,
   )?;
 
@@ -172,7 +178,7 @@ fn browser_tab_vmjs_executes_scripts_microtasks_timers_and_rerenders() -> Result
   assert!(tab.render_if_needed()?.is_none());
 
   // Advance time so the timeout fires.
-  clock.advance(Duration::from_millis(10));
+  clock.advance(Duration::from_millis(5));
   assert_eq!(
     tab.run_event_loop_until_idle(RunLimits::unbounded())?,
     RunUntilIdleOutcome::Idle
