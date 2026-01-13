@@ -28,7 +28,15 @@ fn main() {
     // We intentionally build libvpx without yasm/nasm assembly by default to keep builds
     // portable/CI-friendly.
     let libvpx_toolchain = match (target_os.as_str(), target_arch.as_str(), target_env.as_str()) {
-        ("linux", "x86_64", _) => "generic-gnu".to_string(),
+        ("linux", "x86_64", "gnu") => "generic-gnu".to_string(),
+        ("linux", "x86_64", other) => unsupported(
+            &target,
+            &host,
+            &format!(
+                "Linux x86_64 target is supported only for the GNU environment (x86_64-unknown-linux-gnu). \
+Got env={other:?}. musl targets are not supported by the bundled libvpx build yet; link against a system libvpx or use a GNU target."
+            ),
+        ),
         ("macos", "x86_64", _) => {
             // libvpx's configure expects a Darwin kernel version suffix (darwinXX). Use the host's
             // Darwin version when available, clamped to the versions known by this vendored
@@ -98,6 +106,9 @@ Alternatively, link against a system-provided libvpx.",
         configure_args.push(arg.to_string());
     }
     for arg in [
+        // Avoid building extra debug variants of the libraries (e.g. libvpx_g.a) to keep build
+        // times down.
+        "--disable-debug-libs",
         "--disable-examples",
         "--disable-tools",
         "--disable-unit-tests",
@@ -109,6 +120,9 @@ Alternatively, link against a system-provided libvpx.",
         "--disable-vp8-encoder",
         "--disable-vp9-encoder",
         "--disable-webm-io",
+        // Avoid pulling in / building libyuv (and its C++ compilation) for the minimal VP9 decode
+        // use-case.
+        "--disable-libyuv",
         "--enable-static",
         "--disable-shared",
         "--enable-pic",
@@ -118,12 +132,29 @@ Alternatively, link against a system-provided libvpx.",
 
     // libvpx uses various toolchain env vars; compute the effective values that will be seen by
     // its configure script.
-    let cc = get_scoped_env("CC", &target_key);
-    let cxx = get_scoped_env("CXX", &target_key);
+    let mut cc = get_scoped_env("CC", &target_key);
+    let mut cxx = get_scoped_env("CXX", &target_key);
     let cflags = get_scoped_env("CFLAGS", &target_key);
-    let ar = get_scoped_env("AR", &target_key);
+    let mut ar = get_scoped_env("AR", &target_key);
     let as_env = get_scoped_env("AS", &target_key);
     let cross_env = get_scoped_env("CROSS", &target_key);
+
+    // Default to the clang toolchain when building for native Unix targets. The repository already
+    // requires clang for linking (via `.cargo/config.toml`), but minimal CI containers may not
+    // ship GCC.
+    if cc.is_empty() && target_os != "windows" {
+        cc = "clang".to_string();
+    }
+    if cxx.is_empty() && target_os != "windows" {
+        cxx = "clang++".to_string();
+    }
+    if ar.is_empty() && target_os != "windows" {
+        ar = if tool_in_path("llvm-ar") {
+            "llvm-ar".to_string()
+        } else {
+            "ar".to_string()
+        };
+    }
 
     // When cross-compiling for MinGW targets from a non-Windows host, libvpx typically needs
     // `CROSS=<prefix>-` to find the binutils toolchain. Use a sensible default if the user hasn't
@@ -328,4 +359,12 @@ fn detect_darwin_major() -> Option<u32> {
         );
     }
     Some(clamped)
+}
+
+fn tool_in_path(tool: &str) -> bool {
+    let path = match env::var_os("PATH") {
+        Some(p) => p,
+        None => return false,
+    };
+    env::split_paths(&path).any(|dir| dir.join(tool).exists())
 }
