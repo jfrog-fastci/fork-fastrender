@@ -148,7 +148,7 @@ fn macos_renderer_sandbox_mode_override_via_env() -> Option<MacosSandboxMode> {
 /// `io::ErrorKind::Unsupported`.
 pub fn apply_pure_computation_sandbox() -> io::Result<()> {
   #[cfg(target_os = "macos")]
-  return macos::apply_pure_computation_sandbox();
+  return macos::apply_pure_computation_sandbox().map(|_status| ());
 
   #[cfg(not(target_os = "macos"))]
   return Err(io::Error::new(

@@ -11,8 +11,8 @@ pub enum IpcError {
   /// Caller-provided parameters were invalid (e.g. impossible viewport or buffer sizes).
   ///
   /// This is used by IPC helpers that are shared between the trusted browser and untrusted
-  /// renderer, where some errors are not strictly "protocol validation" failures but still need to
-  /// surface a descriptive message.
+  /// renderer, where some errors are not strictly "protocol validation" failures but still need
+  /// to surface a descriptive message.
   #[error("invalid IPC parameters: {message}")]
   InvalidParameters { message: String },
 

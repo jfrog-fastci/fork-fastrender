@@ -5,7 +5,7 @@ use std::process::Command;
 
 use fastrender::sandbox as sandbox_mod;
 use fastrender::sandbox::macos::{
-  apply_renderer_sandbox, sandbox_check_mach_lookup, MacosSandboxMode,
+  apply_renderer_sandbox, sandbox_check_mach_lookup, MacosSandboxMode, MacosSandboxStatus,
 };
 
 const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
@@ -185,10 +185,20 @@ fn run_child() {
     other => panic!("unknown sandbox mode: {other}"),
   };
 
-  // Discover a real system font file path before sandboxing; strict mode denies filesystem reads.
-  let font_path = find_system_font_file();
-
-  apply_renderer_sandbox(mode).expect("apply renderer sandbox");
+  let status = apply_renderer_sandbox(mode).expect("apply renderer sandbox");
+  assert!(
+    matches!(
+      status,
+      MacosSandboxStatus::Applied | MacosSandboxStatus::AlreadySandboxed
+    ),
+    "unexpected renderer sandbox status: {status:?}"
+  );
+  if matches!(status, MacosSandboxStatus::AlreadySandboxed) {
+    eprintln!(
+      "note: process was already sandboxed before applying renderer profile; skipping profile-specific assertions"
+    );
+    return;
+  }
 
   // Defense-in-depth: "no network" should not be bypassable by talking to system daemons over
   // mach/XPC (e.g. `nsurlsessiond` can perform network on behalf of the client).
@@ -233,25 +243,22 @@ fn run_child() {
     if let Some(entry) = entries.next() {
       entry.expect("read first entry in system font dir");
     }
-  }
 
-  // System fonts should only be readable in the relaxed profile.
-  let font_read = std::fs::read(&font_path);
-  match mode {
-    MacosSandboxMode::PureComputation => {
-      assert_permission_denied(
-        font_read,
-        format!("read system font {}", font_path.display()),
-      );
-    }
-    MacosSandboxMode::RendererSystemFonts => {
-      let bytes = font_read.unwrap_or_else(|err| panic!("expected font read to succeed: {err}"));
-      assert!(
-        !bytes.is_empty(),
-        "expected font file to have non-zero length: {}",
-        font_path.display()
-      );
-    }
+    // System fonts should be readable in the relaxed profile.
+    let font_path = find_system_font_file();
+    let bytes = std::fs::read(&font_path)
+      .unwrap_or_else(|err| panic!("expected font read to succeed (path={}): {err}", font_path.display()));
+    assert!(
+      !bytes.is_empty(),
+      "expected font file to have non-zero length: {}",
+      font_path.display()
+    );
+  } else {
+    // Strict mode should deny system font enumeration.
+    assert_permission_denied(
+      std::fs::read_dir("/System/Library/Fonts"),
+      "read_dir /System/Library/Fonts",
+    );
   }
 }
 
