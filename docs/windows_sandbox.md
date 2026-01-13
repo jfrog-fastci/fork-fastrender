@@ -38,7 +38,13 @@ Code map (repo reality):
     - Restricted-token `CreateProcessAsUserW` spawner (`restricted_token::spawn_with_token`)
       - Uses a low-integrity restricted primary token (from `RestrictedToken`).
       - Also supports job/handle allowlisting and mitigation policies via `STARTUPINFOEX`.
-    - AppContainer-only convenience spawner (`RendererSandbox`)
+    - High-level renderer sandbox wrapper (`win_sandbox::renderer::RendererSandbox`)
+      - Sets up a Job object (kill-on-close + active-process limit; optional memory cap) and (when
+        supported) an AppContainer profile with zero capabilities, then spawns the child suspended,
+        assigns it to the job, and resumes it.
+      - Used primarily by `crates/win-sandbox` tests/tooling; it does **not** include `fastrender`’s
+        environment sanitization or executable relocation workarounds.
+    - AppContainer-only convenience spawner (`win_sandbox::RendererSandbox`)
       - Spawns in a no-capabilities AppContainer and allowlists stdio handles.
       - Includes dev/CI executable relocation + ACL fixing for `ERROR_ACCESS_DENIED`.
       - Applies the default renderer mitigation policy via `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`
@@ -58,6 +64,9 @@ Rule of thumb:
   AppContainer executable relocation/current-dir workarounds).
 - Use `win_sandbox::restricted_token::spawn_with_token(...)` if you specifically want to spawn via
   the restricted-token fallback path (`CreateProcessAsUserW`).
+- Use `win_sandbox::renderer::RendererSandbox` when you want a small, reusable “renderer-like” spawn
+  wrapper (Job + AppContainer when available + mitigations), and you are okay with its simpler
+  behavior (no env sanitization; no AppContainer executable relocation).
 - Use `win_sandbox::RendererSandbox` when you specifically want “AppContainer-only spawn + stdio
   allowlist + exe relocation + default mitigations (best-effort)” and will handle job assignment separately.
 
@@ -566,6 +575,7 @@ Windows-only tests that encode the intended boundary:
 - AppContainer blocks user profile file reads (end-to-end spawn helper): `crates/win-sandbox/tests/filesystem_denied.rs`
 - AppContainer blocks outbound network (no capabilities): `crates/win-sandbox/tests/network_denied.rs`
 - Job object invariants (kill-on-close, process count): `crates/win-sandbox/tests/job_limits.rs`
+- `win_sandbox::renderer::RendererSandbox` smoke (AppContainer + Job + no grandchildren): `crates/win-sandbox/tests/renderer_sandbox.rs`
 - Restricted-token fallback invariants (low integrity, reduced filesystem access): `crates/win-sandbox/tests/restricted_token_mode.rs`
 - Restricted-token spawn does not inherit an inaccessible parent CWD: `crates/win-sandbox/tests/restricted_token_cwd.rs`
 - Mitigation policy verification: `crates/win-sandbox/src/lib.rs` tests +
