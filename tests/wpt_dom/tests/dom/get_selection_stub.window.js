@@ -11,7 +11,7 @@ test(() => {
   const sel = window.getSelection();
   assert_equals(sel.rangeCount, 0);
   assert_equals(sel.toString(), "");
-  assert_not_throws(() => sel.removeAllRanges());
-  assert_not_throws(() => sel.addRange(null));
+  // Calling these should be stable/no-throw, even though Selection is currently a lightweight stub.
+  sel.removeAllRanges();
+  sel.addRange(null);
 }, "window.getSelection()/document.getSelection() minimal stub exists and is stable");
-

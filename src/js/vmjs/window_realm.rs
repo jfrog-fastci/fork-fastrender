@@ -2665,6 +2665,7 @@ const DOM_IMPLEMENTATION_DOCUMENT_ID_KEY: &str = "__fastrender_dom_implementatio
 const DOM_IMPLEMENTATION_DOCUMENT_OBJ_KEY: &str = "__fastrender_dom_implementation_document_obj";
 const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const DOCUMENT_SELECTION_KEY: &str = "__fastrender_document_selection";
+const SELECTION_RANGE_KEY: &str = "__fastrender_selection_range";
 const DOM_IMPLEMENTATION_BRAND_KEY: &str = "__fastrender_dom_implementation";
 const EVENT_BRAND_KEY: &str = "__fastrender_event";
 const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
@@ -11093,50 +11094,221 @@ fn document_scrolling_element_get_native(
 
 fn selection_range_count_get_native(
   _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Ok(Value::Number(0.0))
+  let Value::Object(selection_obj) = this else {
+    return Ok(Value::Number(0.0));
+  };
+
+  // Root `selection_obj` while allocating property keys.
+  scope.push_root(Value::Object(selection_obj))?;
+  let range_key = alloc_key(scope, SELECTION_RANGE_KEY)?;
+  let stored = match scope
+    .heap()
+    .object_get_own_data_property_value(selection_obj, &range_key)
+  {
+    Ok(Some(value)) => value,
+    Ok(None) | Err(VmError::PropertyNotData) => Value::Undefined,
+    Err(err) => return Err(err),
+  };
+
+  Ok(Value::Number(if matches!(stored, Value::Object(_)) {
+    1.0
+  } else {
+    0.0
+  }))
 }
 
 fn selection_to_string_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(selection_obj) = this else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+
+  // Root `selection_obj` while allocating property keys.
+  scope.push_root(Value::Object(selection_obj))?;
+  let range_key = alloc_key(scope, SELECTION_RANGE_KEY)?;
+  let stored = match scope
+    .heap()
+    .object_get_own_data_property_value(selection_obj, &range_key)
+  {
+    Ok(Some(value)) => value,
+    Ok(None) | Err(VmError::PropertyNotData) => Value::Undefined,
+    Err(err) => return Err(err),
+  };
+  let Value::Object(range_obj) = stored else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+
+  // Root `range_obj` while allocating the method name.
+  scope.push_root(Value::Object(range_obj))?;
+  let to_string_key = alloc_key(scope, "toString")?;
+  let to_string_func = vm.get_with_host_and_hooks(host, scope, hooks, range_obj, to_string_key)?;
+  let result = vm.call_with_host_and_hooks(host, scope, hooks, to_string_func, stored, &[])?;
+  match result {
+    Value::String(_) => Ok(result),
+    other => Ok(Value::String(scope.heap_mut().to_string(other)?)),
+  }
+}
+
+fn selection_remove_all_ranges_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Ok(Value::String(scope.alloc_string("")?))
-}
+  let Value::Object(selection_obj) = this else {
+    return Ok(Value::Undefined);
+  };
 
-fn selection_remove_all_ranges_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
+  // Root `selection_obj` while allocating property keys.
+  scope.push_root(Value::Object(selection_obj))?;
+  let range_key = alloc_key(scope, SELECTION_RANGE_KEY)?;
+  scope.define_property(selection_obj, range_key, data_desc(Value::Undefined))?;
   Ok(Value::Undefined)
 }
 
 fn selection_add_range_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
+  this: Value,
+  args: &[Value],
 ) -> Result<Value, VmError> {
+  let Value::Object(selection_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let range_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(range_obj) = range_value else {
+    // WPT `dom/get_selection_stub.window.js` expects `addRange(null)` to be a no-op that does not
+    // throw.
+    return Ok(Value::Undefined);
+  };
+
+  // Root objects while allocating property keys / walking prototype chains.
+  scope.push_root(Value::Object(selection_obj))?;
+  scope.push_root(Value::Object(range_obj))?;
+
+  // Treat non-Range values as no-ops to preserve curated stub stability.
+  if !is_range_object(vm, scope, range_obj)? {
+    return Ok(Value::Undefined);
+  }
+
+  let range_key = alloc_key(scope, SELECTION_RANGE_KEY)?;
+  scope.define_property(selection_obj, range_key, data_desc(range_value))?;
   Ok(Value::Undefined)
+}
+
+fn selection_get_range_at_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(selection_obj) = this else {
+    return Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "IndexSizeError",
+      "",
+    )?));
+  };
+
+  // Root `selection_obj` while allocating property keys / coercing arguments.
+  scope.push_root(Value::Object(selection_obj))?;
+
+  let index_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut idx = scope.heap_mut().to_number(index_value)?;
+  if !idx.is_finite() || idx.is_nan() {
+    idx = 0.0;
+  }
+  idx = idx.trunc();
+  if idx != 0.0 {
+    return Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "IndexSizeError",
+      "",
+    )?));
+  }
+
+  let range_key = alloc_key(scope, SELECTION_RANGE_KEY)?;
+  let stored = match scope
+    .heap()
+    .object_get_own_data_property_value(selection_obj, &range_key)
+  {
+    Ok(Some(value)) => value,
+    Ok(None) | Err(VmError::PropertyNotData) => Value::Undefined,
+    Err(err) => return Err(err),
+  };
+
+  match stored {
+    Value::Object(_) => Ok(stored),
+    _ => Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "IndexSizeError",
+      "",
+    )?)),
+  }
+}
+
+fn is_range_object(vm: &Vm, scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  let Some(user_data) = vm.user_data::<WindowRealmUserData>() else {
+    return Ok(false);
+  };
+  let Some(window_obj) = user_data.window_obj else {
+    return Ok(false);
+  };
+
+  // Root objects while allocating property keys.
+  scope.push_root(Value::Object(window_obj))?;
+  scope.push_root(Value::Object(obj))?;
+
+  let range_key = alloc_key(scope, "Range")?;
+  let range_ctor = match object_get_data_property_value(scope.heap(), window_obj, &range_key) {
+    Ok(Some(Value::Object(ctor))) => ctor,
+    Ok(_) | Err(VmError::PropertyNotData) => return Ok(false),
+    Err(err) => return Err(err),
+  };
+  scope.push_root(Value::Object(range_ctor))?;
+
+  let proto_key = alloc_key(scope, "prototype")?;
+  let range_proto = match object_get_data_property_value(scope.heap(), range_ctor, &proto_key) {
+    Ok(Some(Value::Object(proto))) => proto,
+    Ok(_) | Err(VmError::PropertyNotData) => return Ok(false),
+    Err(err) => return Err(err),
+  };
+
+  let mut cursor = scope.object_get_prototype(obj)?;
+  while let Some(proto) = cursor {
+    if proto == range_proto {
+      return Ok(true);
+    }
+    cursor = scope.object_get_prototype(proto)?;
+  }
+  Ok(false)
 }
 
 fn get_or_create_selection_stub(
@@ -11247,6 +11419,26 @@ fn get_or_create_selection_stub(
     selection_obj,
     add_range_key,
     data_desc(Value::Object(add_range_func)),
+  )?;
+
+  // selection.getRangeAt(index)
+  let get_range_at_call_id = vm.register_native_call(selection_get_range_at_native)?;
+  let get_range_at_name = scope.alloc_string("getRangeAt")?;
+  scope.push_root(Value::String(get_range_at_name))?;
+  let get_range_at_func =
+    scope.alloc_native_function(get_range_at_call_id, None, get_range_at_name, 1)?;
+  if let Some(intrinsics) = intrinsics {
+    scope.heap_mut().object_set_prototype(
+      get_range_at_func,
+      Some(intrinsics.function_prototype()),
+    )?;
+  }
+  scope.push_root(Value::Object(get_range_at_func))?;
+  let get_range_at_key = alloc_key(scope, "getRangeAt")?;
+  scope.define_property(
+    selection_obj,
+    get_range_at_key,
+    data_desc(Value::Object(get_range_at_func)),
   )?;
 
   scope.define_property(
