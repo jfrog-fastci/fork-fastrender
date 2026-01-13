@@ -2932,6 +2932,21 @@ impl<'vm> HirEvaluator<'vm> {
           // - and initialize the module's `*default*` binding with the resulting value.
           //
           // Module linking pre-creates the immutable `*default*` binding (see `ModuleGraph::link`).
+          let is_anonymous_function_or_class = decl_body
+            .root_stmts
+            .last()
+            .and_then(|stmt_id| decl_body.stmts.get(stmt_id.0 as usize))
+            .and_then(|stmt| match &stmt.kind {
+              hir_js::StmtKind::Expr(expr_id) => Some(*expr_id),
+              _ => None,
+            })
+            .and_then(|expr_id| decl_body.exprs.get(expr_id.0 as usize))
+            .is_some_and(|expr| match &expr.kind {
+              hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
+              hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
+              _ => false,
+            });
+
           let result = self.eval_stmt_list(scope, decl_body, decl_body.root_stmts.as_slice())?;
           let value = match result {
             Flow::Normal(v) => v.unwrap_or(Value::Undefined),
@@ -2952,10 +2967,41 @@ impl<'vm> HirEvaluator<'vm> {
             }
           };
 
-          // Root the value across environment initialization: env records are heap allocations and
-          // may allocate/trigger GC when updating bindings.
+          // Root the value across `SetFunctionName` and environment initialization: both may allocate
+          // and trigger GC.
           let mut init_scope = scope.reborrow();
           init_scope.push_root(value)?;
+
+          // ECMA-262 `ExportDefaultDeclaration` performs `SetFunctionName` when exporting an anonymous
+          // function/class expression (including arrow functions).
+          if is_anonymous_function_or_class {
+            if let Value::Object(func_obj) = value {
+              let name_key = PropertyKey::String(init_scope.common_key_name()?);
+              let should_set_name = match init_scope.heap().object_get_own_property(func_obj, &name_key)? {
+                None => true,
+                Some(desc) => match desc.kind {
+                  PropertyKind::Data {
+                    value: Value::String(s),
+                    ..
+                  } => init_scope.heap().get_string(s)?.as_code_units().is_empty(),
+                  _ => false,
+                },
+              };
+
+              if should_set_name {
+                let mut name_scope = init_scope.reborrow();
+                let default_s = name_scope.alloc_string("default")?;
+                name_scope.push_root(Value::String(default_s))?;
+                crate::function_properties::set_function_name(
+                  &mut name_scope,
+                  func_obj,
+                  PropertyKey::String(default_s),
+                  None,
+                )?;
+              }
+            }
+          }
+
           let binding_env = self.env.lexical_env();
           if !init_scope.heap().env_has_binding(binding_env, "*default*")? {
             return Err(VmError::InvariantViolation(
@@ -10674,6 +10720,7 @@ pub(crate) fn run_compiled_module(
         .ok_or(VmError::InvariantViolation("compiled module root body not found"))?;
 
       let eval_res = evaluator.eval_stmt_list(scope, body, body.root_stmts.as_slice());
+
       match eval_res {
         Ok(Flow::Normal(_)) => Ok(()),
         Ok(Flow::Return(_)) => Err(VmError::InvariantViolation(
