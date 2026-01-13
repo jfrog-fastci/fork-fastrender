@@ -2738,7 +2738,8 @@ pub(crate) fn compile_regexp_with_budget(
   // execution.
   ctx.tick()?;
 
-  let mut parser = Parser::new(pattern, flags);
+  let total_capture_count = count_total_capturing_groups(&mut ctx, pattern, flags)?;
+  let mut parser = Parser::new(pattern, flags, total_capture_count);
   let disj = parser.parse_disjunction(&mut ctx, None)?;
   if parser.peek().is_some() {
     return Err(RegExpSyntaxError {
@@ -2770,6 +2771,73 @@ pub(crate) fn compile_regexp_with_budget(
   Ok(builder.finish())
 }
 
+fn count_total_capturing_groups(
+  ctx: &mut CompileCtx<'_>,
+  units: &[u16],
+  flags: RegExpFlags,
+) -> Result<u32, RegExpCompileError> {
+  let mut i: usize = 0;
+  let mut scan_i: usize = 0;
+  let mut charset_depth: usize = 0;
+  let mut count: u32 = 0;
+  while i < units.len() {
+    // Budget large patterns explicitly: this is an `O(N)` scan over attacker-controlled input.
+    if scan_i != 0 {
+      ctx.tick_every(scan_i)?;
+    }
+    scan_i = scan_i.wrapping_add(1);
+
+    let u = units[i];
+    if u == (b'\\' as u16) {
+      // Skip the escaped code unit.
+      i = i.saturating_add(2);
+      continue;
+    }
+
+    if charset_depth > 0 {
+      if flags.unicode_sets && u == (b'[' as u16) {
+        charset_depth = charset_depth.saturating_add(1);
+      } else if u == (b']' as u16) {
+        charset_depth = charset_depth.saturating_sub(1);
+      }
+      i = i.saturating_add(1);
+      continue;
+    }
+
+    if u == (b'[' as u16) {
+      charset_depth = 1;
+      i = i.saturating_add(1);
+      continue;
+    }
+
+    if u == (b'(' as u16) {
+      let is_capture = if units.get(i + 1) == Some(&(b'?' as u16)) {
+        match units.get(i + 2).copied() {
+          // Non-capturing group and lookahead assertions.
+          Some(x) if x == (b':' as u16) || x == (b'=' as u16) || x == (b'!' as u16) => false,
+          // Lookbehind `(?<=` / `(?<!` and named captures `(?<name>...)`.
+          Some(x) if x == (b'<' as u16) => match units.get(i + 3).copied() {
+            Some(y) if y == (b'=' as u16) || y == (b'!' as u16) => false,
+            // Treat any other `(?<...` as a capture group (best-effort; invalid names will be
+            // rejected by the real parser).
+            Some(_) => true,
+            None => false,
+          },
+          _ => false,
+        }
+      } else {
+        true
+      };
+      if is_capture {
+        count = count.saturating_add(1);
+      }
+    }
+
+    i = i.saturating_add(1);
+  }
+  Ok(count)
+}
+
 pub(crate) fn compile_regexp(
   pattern: &[u16],
   flags: RegExpFlags,
@@ -2784,6 +2852,7 @@ struct Parser<'a> {
   idx: usize,
   flags: RegExpFlags,
   capture_count: u32,
+  total_capture_count: u32,
   named_capture_groups: Vec<NamedCaptureGroup>,
   backrefs: Vec<u32>,
 }
@@ -2799,12 +2868,13 @@ fn is_octal_digit(u: u16) -> bool {
 }
 
 impl<'a> Parser<'a> {
-  fn new(units: &'a [u16], flags: RegExpFlags) -> Self {
+  fn new(units: &'a [u16], flags: RegExpFlags, total_capture_count: u32) -> Self {
     Self {
       units,
       idx: 0,
       flags,
       capture_count: 0,
+      total_capture_count,
       named_capture_groups: Vec::new(),
       backrefs: Vec::new(),
     }
@@ -3586,7 +3656,7 @@ impl<'a> Parser<'a> {
           return Ok(Atom::BackRef(n));
         }
 
-        if n <= self.capture_count {
+        if n <= self.total_capture_count {
           return Ok(Atom::BackRef(n));
         }
 
