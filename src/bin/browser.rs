@@ -25134,6 +25134,43 @@ mod pending_scroll_drag_tests {
       other => panic!("expected UiToWorker::Scroll, got {other:?}"),
     }
   }
+
+  #[test]
+  fn tab_change_resets_pending_delta() {
+    let tab_a = fastrender::ui::TabId(1);
+    let tab_b = fastrender::ui::TabId(2);
+    let mut pending: Option<PendingScrollDrag> = None;
+
+    PendingScrollDrag::push(&mut pending, tab_a, (0.0, 1.0));
+    PendingScrollDrag::push(&mut pending, tab_b, (0.0, 2.0));
+
+    let msg = pending
+      .take()
+      .expect("pending scroll drag should exist")
+      .into_worker_msg();
+
+    match msg {
+      fastrender::ui::UiToWorker::Scroll {
+        tab_id: msg_tab,
+        delta_css,
+        pointer_css,
+      } => {
+        assert_eq!(msg_tab, tab_b);
+        assert_eq!(pointer_css, None);
+        assert_eq!(delta_css, (0.0, 2.0));
+      }
+      other => panic!("expected UiToWorker::Scroll, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn ignores_zero_delta_updates() {
+    let tab_id = fastrender::ui::TabId(1);
+    let mut pending: Option<PendingScrollDrag> = None;
+
+    PendingScrollDrag::push(&mut pending, tab_id, (0.0, 0.0));
+    assert!(pending.is_none());
+  }
 }
 
 #[cfg(test)]
