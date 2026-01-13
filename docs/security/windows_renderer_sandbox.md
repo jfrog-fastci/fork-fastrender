@@ -126,6 +126,15 @@ environment for sandboxed children:
 - `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` (debug only; disables environment sanitization and the
   default `TEMP`/`TMP` override).
 
+### Probe tool (win-sandbox)
+
+For quick local regression triage, `crates/win-sandbox` includes a small Windows-only probe example
+that spawns a sandboxed copy of itself and prints observed sandbox state from inside the child:
+
+```bash
+bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- --connect-localhost
+```
+
 ### Allow running without the full Windows sandbox (opt-in)
 
 On unsupported Windows versions (or when sandbox setup fails due to host job restrictions), you can
