@@ -328,15 +328,16 @@ impl IpcResourceFetcher {
     let mut stream =
       TcpStream::connect_timeout(&self.addr, self.connect_timeout).map_err(Error::Io)?;
     stream.set_nodelay(true).map_err(Error::Io)?;
+    let mut conn = ipc::NetworkClient::new(stream);
 
-    ipc::write_request_frame(
-      &mut stream,
+    conn
+      .send_request(
       &ipc::NetworkRequest::Hello {
         token: self.auth_token.as_str().to_string(),
       },
     )
     .map_err(Error::Io)?;
-    let hello_ack: ipc::NetworkResponse = ipc::read_response_frame(&mut stream).map_err(Error::Io)?;
+    let hello_ack: ipc::NetworkResponse = conn.recv_response().map_err(Error::Io)?;
     match hello_ack {
       ipc::NetworkResponse::HelloAck => {}
       other => {
@@ -346,8 +347,8 @@ impl IpcResourceFetcher {
       }
     }
 
-    ipc::write_request_frame(&mut stream, &req).map_err(Error::Io)?;
-    let res: ipc::NetworkResponse = ipc::read_response_frame(&mut stream).map_err(Error::Io)?;
+    conn.send_request(&req).map_err(Error::Io)?;
+    let res: ipc::NetworkResponse = conn.recv_response().map_err(Error::Io)?;
     Ok(res)
   }
 }

@@ -169,7 +169,7 @@ mod tests {
           namespace,
           attributes,
           ..
-        },
+        }
       ) = &node.kind
       else {
         return None;

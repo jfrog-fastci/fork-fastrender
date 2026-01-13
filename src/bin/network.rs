@@ -3,10 +3,11 @@ use fastrender::resource::{HttpFetcher, ResourceFetcher};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 
-fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> io::Result<()> {
+fn handle_client(stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) -> io::Result<()> {
   stream.set_nodelay(true)?;
+  let mut conn = ipc::NetworkService::new(stream);
 
-  let hello: ipc::NetworkRequest = match ipc::read_request_frame(&mut stream) {
+  let hello: ipc::NetworkRequest = match conn.recv_request() {
     Ok(req) => req,
     Err(err) => {
       // If we cannot deserialize the request, just close the connection. This keeps the wire
@@ -21,7 +22,7 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) 
         // Wrong token: close the connection without sending a response.
         return Ok(());
       }
-      ipc::write_response_frame(&mut stream, &ipc::NetworkResponse::HelloAck)?;
+      conn.send_response(&ipc::NetworkResponse::HelloAck)?;
     }
     _ => {
       // Protocol violation: first frame must be Hello.
@@ -29,7 +30,7 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) 
     }
   }
 
-  let req: ipc::NetworkRequest = match ipc::read_request_frame(&mut stream) {
+  let req: ipc::NetworkRequest = match conn.recv_request() {
     Ok(req) => req,
     Err(err) => return Err(err),
   };
@@ -38,8 +39,7 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) 
     ipc::NetworkRequest::Hello { .. } => Ok(()),
     ipc::NetworkRequest::Fetch { url } => {
       if url.len() > ipc::MAX_URL_BYTES {
-        let _ = ipc::write_response_frame(
-          &mut stream,
+        let _ = conn.send_response(
           &ipc::NetworkResponse::Error {
             message: format!("url too long: {} bytes (max {})", url.len(), ipc::MAX_URL_BYTES),
           },
@@ -47,14 +47,12 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) 
         return Ok(());
       }
       match fetcher.fetch(&url) {
-        Ok(resource) => ipc::write_response_frame(
-          &mut stream,
+        Ok(resource) => conn.send_response(
           &ipc::NetworkResponse::FetchOk {
             resource: ipc::IpcFetchedResource::from_fetched(resource),
           },
         )?,
-        Err(err) => ipc::write_response_frame(
-          &mut stream,
+        Err(err) => conn.send_response(
           &ipc::NetworkResponse::Error {
             message: err.to_string(),
           },
@@ -62,7 +60,7 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) 
       }
     }
     ipc::NetworkRequest::Shutdown => {
-      let _ = ipc::write_response_frame(&mut stream, &ipc::NetworkResponse::Ok);
+      let _ = conn.send_response(&ipc::NetworkResponse::Ok);
       // Exit immediately; the parent process may also SIGKILL as a fallback.
       std::process::exit(0);
     }

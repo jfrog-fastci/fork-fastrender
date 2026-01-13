@@ -94,7 +94,14 @@ pub fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
   let bytes_len = u32::from_le_bytes(len_prefix);
   let len = validate_frame_len(bytes_len)?;
 
-  let mut payload = vec![0u8; len];
+  let mut payload = Vec::new();
+  payload.try_reserve_exact(len).map_err(|err| {
+    IpcError::Io(std::io::Error::new(
+      std::io::ErrorKind::Other,
+      format!("IPC frame allocation failed (len={len}): {err:?}"),
+    ))
+  })?;
+  payload.resize(len, 0);
   reader.read_exact(&mut payload)?;
   Ok(payload)
 }

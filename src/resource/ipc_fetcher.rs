@@ -157,7 +157,14 @@ fn read_ipc_frame<R: Read>(reader: &mut R, max_frame_bytes: usize) -> io::Result
       format!("IPC frame too large: {len} bytes (max {max_frame_bytes})"),
     ));
   }
-  let mut buf = vec![0u8; len];
+  let mut buf = Vec::new();
+  buf.try_reserve_exact(len).map_err(|err| {
+    io::Error::new(
+      io::ErrorKind::Other,
+      format!("IPC frame allocation failed (len={len}): {err:?}"),
+    )
+  })?;
+  buf.resize(len, 0);
   reader.read_exact(&mut buf)?;
   Ok(buf)
 }
