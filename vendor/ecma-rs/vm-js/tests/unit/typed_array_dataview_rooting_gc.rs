@@ -393,6 +393,82 @@ fn typed_array_ctor_roots_array_buffer_across_gc_in_toindex() -> Result<(), VmEr
 }
 
 #[test]
+fn typed_array_ctor_iterable_roots_iterator_across_gc_in_push_roots() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const iterable = {
+        get [Symbol.iterator]() {
+          // Force GC during GetMethod([Symbol.iterator]).
+          ({});
+          return function () {
+            // Also allocate during iterator creation to keep GC pressure high.
+            ({});
+            let i = 0;
+            return {
+              next() {
+                i++;
+                if (i <= 2) return { value: i, done: false };
+                return { value: undefined, done: true };
+              }
+            };
+          };
+        }
+      };
+      return [iterable, undefined, undefined];
+    })()"#,
+  )?;
+
+  let [iterable_val, arg1, arg2] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.uint8_array();
+  let new_target = Value::Object(callee);
+  let args = [iterable_val, arg1, arg2];
+
+  let mut scope = heap.scope();
+  let out = builtins::uint8_array_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    new_target,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected constructor to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(view_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "Uint8Array constructor returned non-object",
+    ));
+  };
+
+  assert_eq!(scope.heap().typed_array_length(view_obj)?, 2);
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(view_obj, 0)?,
+    Some(Value::Number(1.0))
+  );
+  assert_eq!(
+    scope.heap().typed_array_get_element_value(view_obj, 1)?,
+    Some(Value::Number(2.0))
+  );
+
+  Ok(())
+}
+
+#[test]
 fn data_view_ctor_roots_byte_length_across_gc_in_toindex() -> Result<(), VmError> {
   let mut rt = new_runtime_with_tiny_gc()?;
 

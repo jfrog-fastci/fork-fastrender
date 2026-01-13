@@ -2735,7 +2735,10 @@ mod tests {
       // host-driven loading path and passes a `ModuleLoadPayload` to `host_load_imported_module`.
       let root = modules
         .add_module(crate::module_record::SourceTextModuleRecord {
-          requested_modules: vec![ModuleRequest::new(crate::JsString::from_str("dep").unwrap(), Vec::new())],
+          requested_modules: vec![ModuleRequest::new(
+            crate::JsString::from_str("dep").unwrap(),
+            Vec::new(),
+          )],
           status: ModuleStatus::New,
           ..Default::default()
         })
