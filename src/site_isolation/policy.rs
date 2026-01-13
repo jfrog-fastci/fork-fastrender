@@ -73,7 +73,8 @@ impl SiteIsolationMode {
 
 fn parent_scheme(parent: &SiteKey) -> Option<&str> {
   match parent {
-    SiteKey::Origin(origin) => Some(origin.scheme()),
+    SiteKey::HttpSchemefulSite { scheme, .. } => Some(scheme.as_str()),
+    SiteKey::OriginLike { scheme, .. } => Some(scheme.as_str()),
     SiteKey::Opaque(_) => None,
   }
 }

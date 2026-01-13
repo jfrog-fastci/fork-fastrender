@@ -2,6 +2,7 @@ use crate::resource::{origin_from_url, DocumentOrigin};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -37,30 +38,107 @@ impl Default for FileUrlSiteIsolation {
 
 /// Canonical key used to decide which renderer process hosts a document/frame.
 ///
-/// This is intentionally a "site-ish" key rather than a full URL: for HTTP(S) documents we group
-/// all paths on the same origin together.
+/// For HTTP(S) documents this follows "schemeful site" semantics: scheme + registrable domain
+/// (eTLD+1). This matches Chromium's schemeful same-site definition and allows sibling subdomains
+/// to share a renderer process.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SiteKey {
-  /// Regular origin-based site key (HTTP/HTTPS/File).
-  Origin(DocumentOrigin),
+  /// Schemeful site key for HTTP(S): scheme + registrable domain (eTLD+1).
+  HttpSchemefulSite {
+    scheme: String,
+    site: String,
+  },
+  /// Conservative origin-like key: scheme + host + optional port.
+  ///
+  /// For HTTP(S) this is used only when the host has no registrable domain (IP literals, localhost,
+  /// etc). The port is only present when it is non-default (80/443).
+  ///
+  /// For non-HTTP(S) schemes this is used as a best-effort origin-like key (scheme + host + port),
+  /// and collapses to a scheme-only key when `host` is `None`.
+  OriginLike {
+    scheme: String,
+    host: Option<String>,
+    port: Option<u16>,
+  },
   /// Unique (opaque) site key for documents with a unique origin (e.g. `data:`), as well as
   /// unparseable/unsupported navigations.
   Opaque(u64),
 }
 
 impl SiteKey {
-  /// Convenience helper for deriving a site key from a parsed URL for a top-level navigation.
+  /// Compute a deterministic site key from a URL string.
   ///
-  /// This is equivalent to `site_key_for_navigation(url.as_str(), None)`.
-  pub fn from_url(url: &Url) -> Self {
-    site_key_for_navigation(url.as_str(), None)
+  /// This is intended for pure classification (e.g. site grouping). It returns `None` only when the
+  /// URL fails to parse.
+  pub fn from_url(url: &str) -> Option<Self> {
+    let origin = origin_from_url(url.trim())?;
+    Some(Self::from_origin(&origin))
+  }
+
+  /// Compute a deterministic site key from a [`DocumentOrigin`].
+  pub fn from_origin(origin: &DocumentOrigin) -> Self {
+    let scheme = origin.scheme().to_ascii_lowercase();
+    let host = origin.host().and_then(normalize_host);
+
+    match scheme.as_str() {
+      "http" | "https" => {
+        let Some(host) = host else {
+          return Self::OriginLike {
+            scheme,
+            host: None,
+            port: None,
+          };
+        };
+
+        // IP literals do not have registrable domains.
+        if host.parse::<IpAddr>().is_err() {
+          if let Some(site) = crate::resource::http_browser_registrable_domain(&host) {
+            return Self::HttpSchemefulSite { scheme, site };
+          }
+        }
+
+        let port = normalize_http_port(&scheme, origin.port());
+        Self::OriginLike {
+          scheme,
+          host: Some(host),
+          port,
+        }
+      }
+      _ => Self::OriginLike {
+        scheme,
+        host,
+        port: origin.port(),
+      },
+    }
+  }
+
+  pub fn same_site(&self, other: &SiteKey) -> bool {
+    self == other
   }
 }
 
 impl fmt::Display for SiteKey {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      SiteKey::Origin(origin) => origin.fmt(f),
+      SiteKey::HttpSchemefulSite { scheme, site } => write!(f, "{scheme}://{site}"),
+      SiteKey::OriginLike { scheme, host, port } => {
+        let Some(host) = host.as_deref() else {
+          if scheme == "file" {
+            return write!(f, "file://");
+          }
+          return write!(f, "{scheme}:");
+        };
+        let needs_brackets = host.contains(':') && !host.starts_with('[');
+        if needs_brackets {
+          write!(f, "{scheme}://[{host}]")?;
+        } else {
+          write!(f, "{scheme}://{host}")?;
+        }
+        if let Some(port) = port {
+          write!(f, ":{port}")?;
+        }
+        Ok(())
+      }
       SiteKey::Opaque(id) => write!(f, "opaque:{id}"),
     }
   }
@@ -68,10 +146,46 @@ impl fmt::Display for SiteKey {
 
 /// Canonical origin key for origin-partitioned state.
 ///
-/// For now this is identical to [`SiteKey`]; the two names are kept separate so future work can
-/// evolve `SiteKey` toward "site" grouping (e.g. eTLD+1) while leaving origin partitioning logic
-/// explicit.
-pub type OriginKey = SiteKey;
+/// This is intentionally distinct from [`SiteKey`]: `OriginKey` remains an origin-like key
+/// (scheme + host + port), while `SiteKey` can group multiple origins into the same site bucket.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OriginKey {
+  Origin(DocumentOrigin),
+  Opaque(u64),
+}
+
+impl fmt::Display for OriginKey {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      OriginKey::Origin(origin) => origin.fmt(f),
+      OriginKey::Opaque(id) => write!(f, "opaque:{id}"),
+    }
+  }
+}
+
+fn normalize_host(host: &str) -> Option<String> {
+  let trimmed = host.trim_end_matches('.').to_ascii_lowercase();
+  if trimmed.is_empty() {
+    None
+  } else {
+    Some(trimmed)
+  }
+}
+
+fn normalize_http_port(scheme: &str, port: Option<u16>) -> Option<u16> {
+  let default = match scheme {
+    "http" => 80,
+    "https" => 443,
+    _ => return port,
+  };
+  let effective = port.unwrap_or(default);
+  if effective == default {
+    None
+  } else {
+    Some(effective)
+  }
+}
+
 /// Generator for [`SiteKey::Opaque`] values.
 ///
 /// A factory can be injected for deterministic tests (each test can start from a fixed seed
@@ -112,7 +226,7 @@ impl SiteKeyFactory {
 
   fn file_origin() -> Option<&'static DocumentOrigin> {
     static FILE_ORIGIN: OnceLock<Option<DocumentOrigin>> = OnceLock::new();
-    FILE_ORIGIN.get_or_init(|| origin_from_url("file:///")).as_ref()
+    FILE_ORIGIN.get_or_init(|| origin_from_url("file:///"))?.as_ref()
   }
 
   fn stable_file_hash_u64(&self, bytes: &[u8]) -> u64 {
@@ -155,8 +269,8 @@ impl SiteKeyFactory {
   fn site_key_for_file_url(&self, parsed: &Url) -> SiteKey {
     match self.file_url_isolation {
       FileUrlSiteIsolation::SingleSite => Self::file_origin()
-        .cloned()
-        .map_or_else(|| self.new_opaque(), SiteKey::Origin),
+        .map(SiteKey::from_origin)
+        .unwrap_or_else(|| self.new_opaque()),
       FileUrlSiteIsolation::OpaquePerUrl => {
         if let Ok(path) = parsed.to_file_path() {
           let id = self.stable_file_hash_u64(path.as_os_str().to_string_lossy().as_bytes());
@@ -189,7 +303,8 @@ impl SiteKeyFactory {
   /// Derive the site key for a navigation, optionally inheriting from a parent.
   ///
   /// Rules:
-  /// - HTTP(S): key by [`DocumentOrigin`] (case-insensitive host, default port normalization).
+  /// - HTTP(S): schemeful-site key (scheme + registrable domain / eTLD+1), with a conservative
+  ///   origin-like fallback for IP literals / non-registrable hosts.
   /// - `about:blank` / `about:srcdoc`: inherit `parent` when provided; otherwise create a new
   ///   opaque key.
   /// - `data:`: always opaque.
@@ -231,7 +346,8 @@ impl SiteKeyFactory {
             self.new_opaque()
           } else {
             origin_from_url(parsed_embedded.as_str())
-              .map_or_else(|| self.new_opaque(), SiteKey::Origin)
+              .map(|origin| SiteKey::from_origin(&origin))
+              .unwrap_or_else(|| self.new_opaque())
           }
         }
         "file" => self.site_key_for_file_url(&parsed_embedded),
@@ -251,7 +367,9 @@ impl SiteKeyFactory {
         if parsed.host_str().is_none() {
           return self.new_opaque();
         }
-        origin_from_url(url).map_or_else(|| self.new_opaque(), SiteKey::Origin)
+        origin_from_url(url)
+          .map(|origin| SiteKey::from_origin(&origin))
+          .unwrap_or_else(|| self.new_opaque())
       }
       "file" => self.site_key_for_file_url(&parsed),
       "about" => {
@@ -273,7 +391,11 @@ impl SiteKeyFactory {
 }
 
 /// Derive the site key for a navigation using a shared global factory.
-pub fn site_key_for_navigation(url: &str, parent: Option<&SiteKey>, force_opaque_origin: bool) -> SiteKey {
+pub fn site_key_for_navigation(
+  url: &str,
+  parent: Option<&SiteKey>,
+  force_opaque_origin: bool,
+) -> SiteKey {
   static FACTORY: OnceLock<SiteKeyFactory> = OnceLock::new();
   FACTORY
     .get_or_init(SiteKeyFactory::default)
@@ -286,33 +408,63 @@ mod tests {
   use tempfile::tempdir;
 
   #[test]
-  fn http_https_normalizes_host_case_and_default_ports() {
-    let factory = SiteKeyFactory::new_with_seed(1);
+  fn schemeful_site_groups_registrable_domains() {
+    let a = SiteKey::from_url("https://a.example.com").unwrap();
+    let b = SiteKey::from_url("https://b.example.com").unwrap();
+    assert_eq!(a, b);
+  }
 
-    let a = factory.site_key_for_navigation("https://EXAMPLE.com", None, false);
-    let b = factory.site_key_for_navigation("https://example.com:443/path?q=1", None, false);
+  #[test]
+  fn schemeful_site_is_schemeful() {
+    let https = SiteKey::from_url("https://example.com").unwrap();
+    let http = SiteKey::from_url("http://example.com").unwrap();
+    assert_ne!(https, http);
+  }
+
+  #[test]
+  fn http_https_normalizes_host_case_and_default_ports() {
+    let a = SiteKey::from_url("https://EXAMPLE.com").unwrap();
+    let b = SiteKey::from_url("https://example.com:443/path?q=1").unwrap();
     assert_eq!(a, b);
 
-    let c = factory.site_key_for_navigation("http://Example.COM", None, false);
-    let d = factory.site_key_for_navigation("http://example.com:80/other", None, false);
+    let c = SiteKey::from_url("http://Example.COM").unwrap();
+    let d = SiteKey::from_url("http://example.com:80/other").unwrap();
     assert_eq!(c, d);
   }
 
   #[test]
-  fn cross_origin_urls_produce_different_site_keys() {
-    let factory = SiteKeyFactory::new_with_seed(1);
-
-    let a = factory.site_key_for_navigation("https://example.com", None, false);
-    let b = factory.site_key_for_navigation("https://example.org", None, false);
+  fn cross_site_urls_produce_different_site_keys() {
+    let a = SiteKey::from_url("https://example.com").unwrap();
+    let b = SiteKey::from_url("https://example.org").unwrap();
     assert_ne!(a, b);
 
-    let c = factory.site_key_for_navigation("https://example.com", None, false);
-    let d = factory.site_key_for_navigation("http://example.com", None, false);
+    let c = SiteKey::from_url("https://example.com").unwrap();
+    let d = SiteKey::from_url("http://example.com").unwrap();
     assert_ne!(c, d);
+  }
 
-    let e = factory.site_key_for_navigation("http://example.com:8080", None, false);
-    let f = factory.site_key_for_navigation("http://example.com", None, false);
-    assert_ne!(e, f);
+  #[test]
+  fn default_ports_do_not_affect_fallback_keys() {
+    let a = SiteKey::from_url("https://127.0.0.1").unwrap();
+    let b = SiteKey::from_url("https://127.0.0.1:443").unwrap();
+    assert_eq!(a, b);
+  }
+
+  #[test]
+  fn non_default_ports_affect_fallback_keys() {
+    let a = SiteKey::from_url("https://127.0.0.1").unwrap();
+    let b = SiteKey::from_url("https://127.0.0.1:444").unwrap();
+    assert_ne!(a, b);
+  }
+
+  #[test]
+  fn ip_literal_hosts_are_cross_site_unless_identical() {
+    let a = SiteKey::from_url("http://127.0.0.1").unwrap();
+    let b = SiteKey::from_url("http://127.0.0.2").unwrap();
+    assert_ne!(a, b);
+
+    let c = SiteKey::from_url("http://127.0.0.1:80").unwrap();
+    assert_eq!(a, c);
   }
 
   #[test]
@@ -456,7 +608,8 @@ mod tests {
     let base = factory.site_key_for_navigation("file://example.com/tmp/a.html", None, false);
     let frag = factory.site_key_for_navigation("file://example.com/tmp/a.html#x", None, false);
     let query = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1", None, false);
-    let both = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1#y", None, false);
+    let both =
+      factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1#y", None, false);
 
     assert_eq!(base, frag);
     assert_eq!(base, query);
@@ -483,7 +636,11 @@ mod tests {
     assert!(matches!(child, SiteKey::Opaque(_)));
 
     // Even same-origin URLs must not share when the sandbox forces an opaque origin.
-    let same_origin = factory.site_key_for_navigation("https://example.com/path", Some(&parent), true);
+    let same_origin = factory.site_key_for_navigation(
+      "https://example.com/path",
+      Some(&parent),
+      true,
+    );
     assert_ne!(same_origin, parent);
     assert!(matches!(same_origin, SiteKey::Opaque(_)));
   }
