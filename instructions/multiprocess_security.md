@@ -93,6 +93,10 @@ A change counts if it lands at least one of:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+If/when renderer-chrome lands (chrome UI rendered by FastRender inside the browser process), the
+trusted chrome document may use a privileged JS bridge (`globalThis.chrome`). The canonical API
+surface + trust boundary is documented in [`docs/chrome_js_bridge.md`](../docs/chrome_js_bridge.md).
+
 ### Site isolation
 
 Beyond process-per-tab, consider site isolation:
