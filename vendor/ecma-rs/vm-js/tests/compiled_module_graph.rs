@@ -198,6 +198,297 @@ fn supports_compiled_modules(vm: &mut Vm, heap: &mut Heap, realm: &Realm) -> boo
 }
 
 #[test]
+fn compiled_module_supports_anonymous_default_export_function_decls() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    // Create a cyclic graph so the importer module executes before the exporting module. This
+    // requires the default-exported function binding to be initialized during module instantiation
+    // (hoisted), not during module evaluation.
+    let script_a = CompiledScript::compile_module(
+      &mut heap,
+      "a.js",
+      r#"
+        import { fromB } from "b";
+        export default function() { return 1; }
+        export const seenFromB = fromB;
+      "#,
+    )?;
+    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    record_a.compiled = Some(script_a);
+    record_a.ast = None;
+    let a = graph.add_module_with_specifier("a", record_a)?;
+
+    let b = graph.add_module_with_specifier(
+      "b",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import f from "a";
+          export const fromB = f();
+          export const n = f.name;
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    let promise = match graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      a,
+      &mut host,
+      &mut hooks,
+    ) {
+      Ok(p) => p,
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    if promise_rejection_message_contains(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      promise_obj,
+      "module AST missing",
+    )? {
+      return Ok(());
+    }
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "fromB")?,
+      Value::Number(1.0)
+    );
+    let Value::String(n) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
+      panic!("expected b.n to be a string");
+    };
+    assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
+
+    drop(scope);
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
+
+#[test]
+fn compiled_module_supports_anonymous_default_export_class_decls() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let script_a = CompiledScript::compile_module(
+      &mut heap,
+      "a.js",
+      r#"
+        export default class {
+          constructor() { this.x = 1; }
+        }
+      "#,
+    )?;
+    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    record_a.compiled = Some(script_a);
+    record_a.ast = None;
+    graph.add_module_with_specifier("a", record_a)?;
+
+    let b = graph.add_module_with_specifier(
+      "b",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import C from "a";
+          export const r = new C().x;
+          export const n = C.name;
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    let promise = match graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    ) {
+      Ok(p) => p,
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    if promise_rejection_message_contains(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      promise_obj,
+      "module AST missing",
+    )? {
+      return Ok(());
+    }
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "r")?,
+      Value::Number(1.0)
+    );
+    let Value::String(n) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
+      panic!("expected b.n to be a string");
+    };
+    assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
+
+    drop(scope);
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
+
+#[test]
+fn compiled_module_export_default_expr_respects_statement_order() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let script_a = CompiledScript::compile_module(
+      &mut heap,
+      "a.js",
+      r#"
+        export const log = [];
+        log.push("before");
+        export default (log.push("default"), 123);
+        log.push("after");
+      "#,
+    )?;
+    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    record_a.compiled = Some(script_a);
+    record_a.ast = None;
+    graph.add_module_with_specifier("a", record_a)?;
+
+    let b = graph.add_module_with_specifier(
+      "b",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import d, { log } from "a";
+          export const out = log.join(",") + ":" + d;
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    let promise = match graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    ) {
+      Ok(p) => p,
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    if promise_rejection_message_contains(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      promise_obj,
+      "module AST missing",
+    )? {
+      return Ok(());
+    }
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    let Value::String(out) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "out")? else {
+      panic!("expected b.out to be a string");
+    };
+    assert_eq!(
+      scope.heap().get_string(out)?.to_utf8_lossy(),
+      "before,default,after:123"
+    );
+
+    drop(scope);
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
+
+#[test]
 fn compiled_module_supports_anonymous_default_export_async_function_decls() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
