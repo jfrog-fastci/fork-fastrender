@@ -252,7 +252,7 @@ jobs:
         shell: bash
         run: bash scripts/ci_check_test_architecture.sh
 
-      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+      - name: "CI guardrails: no merge conflict markers"
         shell: bash
         run: bash scripts/ci_check_no_merge_conflicts.sh
 
