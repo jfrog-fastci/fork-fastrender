@@ -109,7 +109,7 @@ call [`fastrender::sandbox::apply_macos_sandbox_from_env`](../src/sandbox/mod.rs
   - `strict` (default on macOS renderer processes): apply the built-in `pure-computation` profile (no filesystem access; no network access). Intended for production.
   - `relaxed`: still blocks network access, but allows read-only access to system font/framework locations needed for system font discovery. Useful for local development / debugging while still preventing accidental network access.
   - `off`: do not apply a sandbox (local debugging only; **not** safe for production).
-  - Legacy aliases: `1` = `strict`, `0` = `off`.
+  - Backwards-compatible spellings: `0` = `off`, `1` = `strict`.
 - `FASTR_RENDERER_MACOS_SEATBELT_PROFILE=pure-computation|no-internet|renderer-default|<path>` – **macOS-only**: advanced override for the underlying Seatbelt profile used when `FASTR_RENDERER_SANDBOX` enables sandboxing.
   - When set, this overrides the `strict`/`relaxed` profile mapping.
   - `<path>` is treated as a path to an SBPL profile file to load.

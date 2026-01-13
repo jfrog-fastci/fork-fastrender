@@ -83,6 +83,7 @@ bring-up; do not rely on them in production.
 Set:
 
 - `FASTR_RENDERER_SANDBOX=strict|relaxed|off`
+  - Backwards-compatible spellings: `0` = `off`, `1` = `strict`.
 
 Notes:
 
