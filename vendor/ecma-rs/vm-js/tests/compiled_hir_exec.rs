@@ -10880,6 +10880,29 @@ fn compiled_new_with_spread_args() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_new_parenthesized_call_evaluates_expression_first() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `new (make())` must first evaluate the parenthesized call expression `make()` (producing a
+  // constructor), then `[[Construct]]` the *result* with no arguments. This differs from `new make()`.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function make() { return function C(){ this.x = 7; }; }
+      function f() { return (new (make())).x; }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(7.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_call_with_spread_args() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

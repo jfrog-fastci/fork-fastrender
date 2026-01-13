@@ -2160,8 +2160,26 @@ fn lower_expr(
         prefix: true,
       },
       OperatorName::New => {
+        // `parse-js` represents `new f()` as a `UnaryExpr` whose argument is a `CallExpr`.
+        //
+        // Important: `new (f())` must *not* use `f` as the constructor. It must first evaluate the
+        // parenthesized call expression and then construct the *result* with no arguments.
+        //
+        // `parse-js` stores parentheses via the `ParenthesizedExpr` assoc marker, so treat
+        // parenthesized call expressions as the `new (expr)` form (no argument list for `new`).
         if let AstExpr::Call(call) = unary.stx.argument.stx.as_ref() {
-          lower_call_expr(call, builder, ctx, true)
+          let is_parenthesized = unary.stx.argument.assoc.get::<ParenthesizedExpr>().is_some();
+          if !is_parenthesized {
+            lower_call_expr(call, builder, ctx, true)
+          } else {
+            let callee = lower_expr(&unary.stx.argument, builder, ctx);
+            ExprKind::Call(CallExpr {
+              callee,
+              args: Vec::new(),
+              optional: false,
+              is_new: true,
+            })
+          }
         } else {
           let callee = lower_expr(&unary.stx.argument, builder, ctx);
           ExprKind::Call(CallExpr {
