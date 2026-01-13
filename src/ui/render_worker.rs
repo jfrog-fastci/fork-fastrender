@@ -4805,7 +4805,7 @@ impl BrowserRuntime {
             client_x: mouse_client_coord(pos_css.0),
             client_y: mouse_client_coord(pos_css.1),
             button: mouse_event_button(PointerButton::Secondary),
-            buttons: tab.pointer_buttons,
+            buttons: tab.pointer_buttons | mouse_buttons_mask_for_button(PointerButton::Secondary),
             detail: 0,
             ctrl_key: modifiers.ctrl(),
             shift_key: modifiers.shift(),

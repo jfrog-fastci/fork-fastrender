@@ -80,6 +80,7 @@ mod ui_document_selection_multi_range;
 mod ui_document_selection_pointer_multiclick;
 mod ui_drag_drop;
 mod ui_context_menu;
+mod ui_context_menu_buttons;
 mod ui_context_menu_can_select_all_without_selection;
 mod ui_context_menu_modifiers;
 mod ui_context_menu_entries;
