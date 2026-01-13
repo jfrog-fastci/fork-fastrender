@@ -76,11 +76,15 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
     "version": 2,
     "windows": [{
       "tabs": [
-        {"url": "about:newtab", "zoom": 1.5},
+        {"url": "about:newtab", "zoom": 1.5, "pinned": true},
         {"url": "about:blank", "zoom": 0.75},
-        {"url": "about:test-scroll", "zoom": 2.0}
+        {"url": "about:test-scroll", "zoom": 2.0, "group": 0},
+        {"url": "about:error", "group": 0}
       ],
-      "active_tab_index": 2
+      "tab_groups": [
+        {"title": "My Group", "color": "purple", "collapsed": true}
+      ],
+      "active_tab_index": 1
     }],
     "active_window_index": 0,
     "appearance": {
@@ -119,6 +123,45 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
     Some(2)
   );
   assert!(persisted_value.get("windows").is_some());
+  let windows = persisted_value
+    .get("windows")
+    .and_then(|v| v.as_array())
+    .expect("expected windows array");
+  let win0 = windows.first().expect("expected one window");
+  let tabs = win0
+    .get("tabs")
+    .and_then(|v| v.as_array())
+    .expect("expected tabs array");
+  assert!(
+    tabs.first().and_then(|v| v.get("pinned")).and_then(|v| v.as_bool()) == Some(true),
+    "expected first tab to be pinned, got: {tabs:?}"
+  );
+  // `pinned=false` and `group=null` should be omitted for cleanliness/backwards compatibility.
+  assert!(
+    tabs.get(1).is_some_and(|v| v.get("pinned").is_none()),
+    "expected pinned=false to be omitted for second tab, got: {tabs:?}"
+  );
+  assert!(
+    tabs.get(1).is_some_and(|v| v.get("group").is_none()),
+    "expected missing group for ungrouped tab, got: {tabs:?}"
+  );
+  let groups = win0
+    .get("tab_groups")
+    .and_then(|v| v.as_array())
+    .expect("expected tab_groups array");
+  assert_eq!(groups.len(), 1);
+  assert_eq!(
+    groups[0].get("title").and_then(|v| v.as_str()),
+    Some("My Group")
+  );
+  assert_eq!(
+    groups[0].get("color").and_then(|v| v.as_str()),
+    Some("purple")
+  );
+  assert_eq!(
+    groups[0].get("collapsed").and_then(|v| v.as_bool()),
+    Some(true)
+  );
   let appearance_value = persisted_value
     .get("appearance")
     .expect("expected persisted appearance settings");

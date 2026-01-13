@@ -755,9 +755,15 @@ fn group_chip_ui(
 
   response = response.context_menu(|ui| {
     ui.label("Rename group");
-    if let Some(group) = app.tab_groups.get_mut(&group_id) {
-      let resp = ui.text_edit_singleline(&mut group.title);
-      resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Group name"));
+    let mut new_title = app
+      .tab_groups
+      .get(&group_id)
+      .map(|g| g.title.clone())
+      .unwrap_or_default();
+    let resp = ui.text_edit_singleline(&mut new_title);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Group name"));
+    if resp.changed() {
+      app.set_group_title(group_id, new_title);
     }
 
     ui.separator();

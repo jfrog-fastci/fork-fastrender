@@ -4977,6 +4977,8 @@ mod tests {
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let _ = ctx.end_frame();
 
+    let rev_before = app.session_revision();
+
     let press_pos = tab_rects.first().expect("expected first tab rect").center();
     let second = tab_rects.get(1).expect("expected second tab rect");
     let drag_pos = egui::pos2(second.center().x + 1.0, second.center().y);
@@ -5027,6 +5029,10 @@ mod tests {
     assert_eq!(
       app.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
       vec![tab_b, tab_a]
+    );
+    assert!(
+      app.session_revision() > rev_before,
+      "expected drag reorder to bump session revision"
     );
     assert_eq!(app.active_tab_id(), Some(tab_a));
     assert!(app.chrome.dragging_tab_id.is_none());

@@ -5,11 +5,12 @@
 use crate::ui::about_pages;
 use crate::ui::appearance;
 use crate::ui::appearance::AppearanceSettings;
-use crate::ui::browser_app::BrowserAppState;
+use crate::ui::browser_app::{BrowserAppState, TabGroupColor, TabGroupId};
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,10 @@ fn is_false(value: &bool) -> bool {
   !*value
 }
 
+fn is_default_tab_group_color(value: &TabGroupColor) -> bool {
+  *value == TabGroupColor::default()
+}
+
 fn default_home_url() -> String {
   about_pages::ABOUT_NEWTAB.to_string()
 }
@@ -55,6 +60,22 @@ pub struct BrowserSessionTab {
   /// compatibility and cleanliness.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub scroll_css: Option<(f32, f32)>,
+  /// Whether this tab is pinned in the tab strip.
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub pinned: bool,
+  /// Optional tab group index (into [`BrowserSessionWindow::tab_groups`]).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub group: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrowserSessionTabGroup {
+  #[serde(default, skip_serializing_if = "String::is_empty")]
+  pub title: String,
+  #[serde(default, skip_serializing_if = "is_default_tab_group_color")]
+  pub color: TabGroupColor,
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,6 +120,8 @@ impl BrowserWindowState {
 pub struct BrowserSessionWindow {
   #[serde(default)]
   pub tabs: Vec<BrowserSessionTab>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub tab_groups: Vec<BrowserSessionTabGroup>,
   #[serde(default)]
   pub active_tab_index: usize,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,6 +134,8 @@ impl BrowserSessionWindow {
   /// This intentionally stores only lightweight serializable data (URLs, zoom, viewport scroll).
   pub fn from_app_state(app: &BrowserAppState) -> Self {
     let mut tabs = Vec::new();
+    let mut tab_groups: Vec<BrowserSessionTabGroup> = Vec::new();
+    let mut group_indices: HashMap<TabGroupId, usize> = HashMap::new();
     for tab in &app.tabs {
       let mut url = tab
         .current_url
@@ -132,10 +157,30 @@ impl BrowserSessionWindow {
           ((x, y) != (0.0, 0.0)).then_some((x, y))
         }
       };
+      let pinned = tab.pinned;
+      let group = tab
+        .group
+        .filter(|_| !pinned)
+        .and_then(|group_id| {
+          if let Some(existing) = group_indices.get(&group_id) {
+            return Some(*existing);
+          }
+          let group_state = app.tab_groups.get(&group_id)?;
+          let idx = tab_groups.len();
+          tab_groups.push(BrowserSessionTabGroup {
+            title: group_state.title.clone(),
+            color: group_state.color,
+            collapsed: group_state.collapsed,
+          });
+          group_indices.insert(group_id, idx);
+          Some(idx)
+        });
       tabs.push(BrowserSessionTab {
         url,
         zoom: Some(tab.zoom),
         scroll_css,
+        pinned,
+        group,
       });
     }
 
@@ -146,6 +191,7 @@ impl BrowserSessionWindow {
 
     Self {
       tabs,
+      tab_groups,
       active_tab_index,
       window_state: None,
     }
@@ -159,7 +205,10 @@ impl BrowserSessionWindow {
         url: about_pages::ABOUT_NEWTAB.to_string(),
         zoom: None,
         scroll_css: None,
+        pinned: false,
+        group: None,
       });
+      self.tab_groups.clear();
       self.active_tab_index = 0;
     }
 
@@ -170,6 +219,65 @@ impl BrowserSessionWindow {
     self.active_tab_index = self
       .active_tab_index
       .min(self.tabs.len().saturating_sub(1));
+
+    // Sanitize tab group state/membership:
+    // - pinned tabs cannot be grouped
+    // - out-of-range group indices are dropped
+    // - empty groups are pruned and indices remapped
+    for tab in &mut self.tabs {
+      if tab.pinned {
+        tab.group = None;
+      }
+    }
+    let group_len = self.tab_groups.len();
+    for tab in &mut self.tabs {
+      if tab.group.is_some_and(|idx| idx >= group_len) {
+        tab.group = None;
+      }
+    }
+    if !self.tab_groups.is_empty() {
+      let mut used = vec![false; self.tab_groups.len()];
+      for tab in &self.tabs {
+        if let Some(idx) = tab.group {
+          if let Some(slot) = used.get_mut(idx) {
+            *slot = true;
+          }
+        }
+      }
+
+      if used.iter().all(|u| !*u) {
+        self.tab_groups.clear();
+        for tab in &mut self.tabs {
+          tab.group = None;
+        }
+      } else {
+        let old_groups = std::mem::take(&mut self.tab_groups);
+        let mut remap: Vec<Option<usize>> = vec![None; old_groups.len()];
+        for (old_idx, group) in old_groups.into_iter().enumerate() {
+          if used.get(old_idx).copied().unwrap_or(false) {
+            let new_idx = self.tab_groups.len();
+            self.tab_groups.push(group);
+            remap[old_idx] = Some(new_idx);
+          }
+        }
+
+        for tab in &mut self.tabs {
+          if let Some(old_idx) = tab.group {
+            tab.group = remap.get(old_idx).and_then(|v| *v);
+          }
+        }
+      }
+    }
+
+    // Ensure the active tab is always visible: when the active tab belongs to a collapsed group,
+    // force that group to expand.
+    if let Some(active) = self.tabs.get(self.active_tab_index) {
+      if let Some(group_idx) = active.group {
+        if let Some(group) = self.tab_groups.get_mut(group_idx) {
+          group.collapsed = false;
+        }
+      }
+    }
 
     self.window_state = self
       .window_state
@@ -220,7 +328,10 @@ impl BrowserSession {
           url,
           zoom: None,
           scroll_css: None,
+          pinned: false,
+          group: None,
         }],
+        tab_groups: Vec::new(),
         active_tab_index: 0,
         window_state: None,
       }],
@@ -284,7 +395,10 @@ impl BrowserSession {
           url: about_pages::ABOUT_NEWTAB.to_string(),
           zoom: None,
           scroll_css: None,
+          pinned: false,
+          group: None,
         }],
+        tab_groups: Vec::new(),
         active_tab_index: 0,
         window_state: None,
       });
@@ -380,44 +494,61 @@ mod tests {
             url: "about:newtab".to_string(),
             zoom: Some(f32::NAN),
             scroll_css: None,
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(f32::INFINITY),
             scroll_css: None,
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(0.0),
             scroll_css: None,
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(-1.0),
             scroll_css: None,
+            pinned: false,
+            group: None,
           },
           // Finite but outside the supported UI range should clamp.
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(0.1),
             scroll_css: None,
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(999.0),
             scroll_css: None,
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(2.0),
             scroll_css: None,
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: Some(zoom::DEFAULT_ZOOM),
             scroll_css: None,
+            pinned: false,
+            group: None,
           },
         ],
+        tab_groups: Vec::new(),
         active_tab_index: 0,
         window_state: None,
       }],
@@ -453,6 +584,23 @@ mod tests {
   }
 
   #[test]
+  fn session_pinned_field_is_omitted_when_false_and_serialized_when_true() {
+    let mut session = BrowserSession::single("about:newtab".to_string());
+    let json = serde_json::to_string(&session).expect("serialize session");
+    assert!(
+      !json.contains("\"pinned\""),
+      "expected pinned=false to be omitted from JSON, got: {json}"
+    );
+
+    session.windows[0].tabs[0].pinned = true;
+    let json = serde_json::to_string(&session).expect("serialize session");
+    assert!(
+      json.contains("\"pinned\":true"),
+      "expected pinned=true to be serialized, got: {json}"
+    );
+  }
+
+  #[test]
   fn session_sanitizes_invalid_scroll_values() {
     let session = BrowserSession {
       version: 123,
@@ -463,33 +611,46 @@ mod tests {
             url: "about:newtab".to_string(),
             zoom: None,
             scroll_css: Some((f32::NAN, 1.0)),
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: None,
             scroll_css: Some((1.0, f32::INFINITY)),
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: None,
             scroll_css: Some((-5.0, -3.0)),
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: None,
             scroll_css: Some((-5.0, 25.0)),
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: None,
             scroll_css: Some((1e12, 5.0)),
+            pinned: false,
+            group: None,
           },
           BrowserSessionTab {
             url: "about:newtab".to_string(),
             zoom: None,
             scroll_css: Some((0.0, 0.0)),
+            pinned: false,
+            group: None,
           },
         ],
+        tab_groups: Vec::new(),
         active_tab_index: 0,
         window_state: None,
       }],
@@ -518,6 +679,105 @@ mod tests {
   }
 
   #[test]
+  fn session_sanitizes_invalid_and_empty_tab_group_references() {
+    let window = BrowserSessionWindow {
+      tabs: vec![
+        // Group 1 (valid).
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: Some(1),
+        },
+        // Out-of-range group index should be dropped.
+        BrowserSessionTab {
+          url: "about:blank".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: Some(99),
+        },
+        // Pinned tabs cannot be grouped.
+        BrowserSessionTab {
+          url: "about:error".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: true,
+          group: Some(0),
+        },
+      ],
+      tab_groups: vec![
+        BrowserSessionTabGroup {
+          title: "unused".to_string(),
+          color: TabGroupColor::Red,
+          collapsed: false,
+        },
+        BrowserSessionTabGroup {
+          title: "kept".to_string(),
+          color: TabGroupColor::Green,
+          collapsed: false,
+        },
+        BrowserSessionTabGroup {
+          title: "also_unused".to_string(),
+          color: TabGroupColor::Yellow,
+          collapsed: false,
+        },
+      ],
+      active_tab_index: 0,
+      window_state: None,
+    }
+    .sanitized();
+
+    // After sanitization:
+    // - group 0 is dropped (only referenced by the pinned tab, which becomes ungrouped)
+    // - group 2 is dropped (no tabs)
+    // - group 1 is retained and remapped to index 0
+    assert_eq!(window.tab_groups.len(), 1);
+    assert_eq!(window.tab_groups[0].title, "kept");
+    assert_eq!(window.tabs[0].group, Some(0));
+    assert_eq!(window.tabs[1].group, None);
+    assert_eq!(window.tabs[2].group, None);
+    assert!(window.tabs[2].pinned);
+  }
+
+  #[test]
+  fn session_expands_collapsed_group_containing_active_tab() {
+    let window = BrowserSessionWindow {
+      tabs: vec![
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: Some(0),
+        },
+        BrowserSessionTab {
+          url: "about:blank".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: Some(0),
+        },
+      ],
+      tab_groups: vec![BrowserSessionTabGroup {
+        title: "g".to_string(),
+        color: TabGroupColor::Blue,
+        collapsed: true,
+      }],
+      active_tab_index: 1,
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.tab_groups.len(), 1);
+    assert!(
+      !window.tab_groups[0].collapsed,
+      "expected collapsed group containing active tab to be expanded"
+    );
+  }
+
+  #[test]
   fn from_app_state_includes_non_default_zoom() {
     use crate::ui::{BrowserAppState, BrowserTabState, TabId};
     use crate::Point;
@@ -538,6 +798,10 @@ mod tests {
     assert_eq!(session.active_window_index, 0);
     assert_eq!(session.home_url, about_pages::ABOUT_NEWTAB);
     assert_eq!(session.windows[0].active_tab_index, 0);
+    assert!(
+      session.windows[0].tab_groups.is_empty(),
+      "expected no tab groups in session snapshot"
+    );
     assert_eq!(
       session.windows[0].tabs,
       vec![
@@ -545,15 +809,54 @@ mod tests {
           url: "about:newtab".to_string(),
           zoom: Some(1.5),
           scroll_css: Some((12.0, 34.0)),
+          pinned: false,
+          group: None,
         },
         BrowserSessionTab {
           url: "about:blank".to_string(),
           zoom: None,
           scroll_css: None,
+          pinned: false,
+          group: None,
         },
       ]
     );
     assert_eq!(session.ui_scale, None);
+  }
+
+  #[test]
+  fn from_app_state_serializes_pinned_and_tab_groups() {
+    use crate::ui::{BrowserAppState, BrowserTabState, TabId};
+
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let tab_c = TabId(3);
+
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:blank".to_string()), false);
+    app.push_tab(BrowserTabState::new(tab_c, "about:error".to_string()), false);
+
+    assert!(app.pin_tab(tab_a));
+
+    let group = app.create_group_with_tabs(&[tab_b, tab_c]);
+    app.set_group_title(group, "My Group".to_string());
+    app.set_group_color(group, TabGroupColor::Red);
+    // Active tab is the pinned tab (outside the group), so collapsing should stick.
+    app.toggle_group_collapsed(group);
+    assert!(app.tab_groups.get(&group).is_some_and(|g| g.collapsed));
+
+    let window = BrowserSessionWindow::from_app_state(&app);
+    assert_eq!(window.tab_groups.len(), 1);
+    assert_eq!(window.tab_groups[0].title, "My Group");
+    assert_eq!(window.tab_groups[0].color, TabGroupColor::Red);
+    assert!(window.tab_groups[0].collapsed);
+
+    assert_eq!(window.tabs.len(), 3);
+    assert!(window.tabs[0].pinned);
+    assert_eq!(window.tabs[0].group, None);
+    assert_eq!(window.tabs[1].group, Some(0));
+    assert_eq!(window.tabs[2].group, Some(0));
   }
 
   #[test]
@@ -578,6 +881,7 @@ mod tests {
     assert_eq!(session.windows.len(), 1);
     assert_eq!(session.active_window_index, 0);
     assert_eq!(session.windows[0].active_tab_index, 1);
+    assert!(session.windows[0].tab_groups.is_empty());
     assert_eq!(
       session.windows[0].tabs,
       vec![
@@ -585,11 +889,15 @@ mod tests {
           url: "about:newtab".to_string(),
           zoom: None,
           scroll_css: None,
+          pinned: false,
+          group: None,
         },
         BrowserSessionTab {
           url: "about:blank".to_string(),
           zoom: Some(1.5),
           scroll_css: None,
+          pinned: false,
+          group: None,
         }
       ]
     );
@@ -603,6 +911,7 @@ mod tests {
       windows: vec![
         BrowserSessionWindow {
           tabs: vec![],
+          tab_groups: Vec::new(),
           active_tab_index: 123,
           window_state: None,
         },
@@ -611,7 +920,10 @@ mod tests {
             url: "about:blank".to_string(),
             zoom: None,
             scroll_css: None,
+            pinned: false,
+            group: None,
           }],
+          tab_groups: Vec::new(),
           active_tab_index: 999,
           window_state: None,
         },
@@ -645,7 +957,10 @@ mod tests {
           url: "about:newtab".to_string(),
           zoom: None,
           scroll_css: None,
+          pinned: false,
+          group: None,
         }],
+        tab_groups: Vec::new(),
         active_tab_index: 0,
         window_state: Some(BrowserWindowState {
           x: Some(MAX_WINDOW_POS_ABS_PX + 1),
@@ -712,12 +1027,16 @@ mod tests {
 
     let session = BrowserSession {
       version: SESSION_VERSION,
+      home_url: default_home_url(),
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
           zoom: None,
           scroll_css: None,
+          pinned: false,
+          group: None,
         }],
+        tab_groups: Vec::new(),
         active_tab_index: 0,
         window_state: None,
       }],
@@ -737,12 +1056,16 @@ mod tests {
 
     let session = BrowserSession {
       version: SESSION_VERSION,
+      home_url: default_home_url(),
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
           zoom: None,
           scroll_css: None,
+          pinned: false,
+          group: None,
         }],
+        tab_groups: Vec::new(),
         active_tab_index: 0,
         window_state: None,
       }],
@@ -762,12 +1085,16 @@ mod tests {
 
     let session = BrowserSession {
       version: SESSION_VERSION,
+      home_url: default_home_url(),
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
           zoom: None,
           scroll_css: None,
+          pinned: false,
+          group: None,
         }],
+        tab_groups: Vec::new(),
         active_tab_index: 0,
         window_state: None,
       }],
@@ -940,6 +1267,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
     home_url: default_home_url(),
     windows: vec![BrowserSessionWindow {
       tabs: v1.tabs,
+      tab_groups: Vec::new(),
       active_tab_index: v1.active_tab_index,
       window_state: None,
     }],

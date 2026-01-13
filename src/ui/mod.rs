@@ -172,7 +172,9 @@ pub use chrome::{chrome_ui, chrome_ui_with_bookmarks, ChromeAction};
 #[cfg(feature = "browser_ui")]
 pub use menu_bar::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand};
 #[cfg(feature = "browser_ui")]
-pub use session::{BrowserSession, BrowserSessionTab, BrowserSessionWindow, BrowserWindowState};
+pub use session::{
+  BrowserSession, BrowserSessionTab, BrowserSessionTabGroup, BrowserSessionWindow, BrowserWindowState,
+};
 #[cfg(feature = "browser_ui")]
 pub use session_autosave::SessionAutosave;
 #[cfg(feature = "browser_ui")]

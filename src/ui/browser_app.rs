@@ -77,6 +77,37 @@ impl TabGroupColor {
     }
   }
 
+  fn as_session_str(self) -> &'static str {
+    match self {
+      Self::Blue => "blue",
+      Self::Gray => "gray",
+      Self::Red => "red",
+      Self::Orange => "orange",
+      Self::Yellow => "yellow",
+      Self::Green => "green",
+      Self::Purple => "purple",
+      Self::Pink => "pink",
+    }
+  }
+
+  fn parse_session_str(raw: &str) -> Option<Self> {
+    let v = raw.trim().to_ascii_lowercase();
+    if v.is_empty() {
+      return None;
+    }
+    match v.as_str() {
+      "blue" => Some(Self::Blue),
+      "gray" | "grey" => Some(Self::Gray),
+      "red" => Some(Self::Red),
+      "orange" => Some(Self::Orange),
+      "yellow" => Some(Self::Yellow),
+      "green" => Some(Self::Green),
+      "purple" => Some(Self::Purple),
+      "pink" => Some(Self::Pink),
+      _ => None,
+    }
+  }
+
   pub fn rgb(self) -> (u8, u8, u8) {
     match self {
       // Roughly matches Chrome's tab group palette.
@@ -89,6 +120,27 @@ impl TabGroupColor {
       Self::Purple => (138, 74, 218),
       Self::Pink => (233, 30, 99),
     }
+  }
+}
+
+impl serde::Serialize for TabGroupColor {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: serde::Serializer,
+  {
+    serializer.serialize_str(self.as_session_str())
+  }
+}
+
+impl<'de> serde::Deserialize<'de> for TabGroupColor {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    let raw = <String as serde::Deserialize<'de>>::deserialize(deserializer)?;
+    // Be permissive so hand-edited session files don't hard-fail on unknown values. Unknown/empty
+    // strings fall back to the default color.
+    Ok(Self::parse_session_str(&raw).unwrap_or_default())
   }
 }
 
@@ -737,6 +789,7 @@ pub struct BrowserAppState {
   pub chrome: ChromeState,
   pub downloads: DownloadsState,
   pub appearance: AppearanceSettings,
+  session_revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -759,6 +812,7 @@ impl BrowserAppState {
       chrome: ChromeState::default(),
       downloads: DownloadsState::default(),
       appearance: AppearanceSettings::default(),
+      session_revision: 0,
     }
   }
 
@@ -776,6 +830,17 @@ impl BrowserAppState {
 
   pub fn active_tab_id(&self) -> Option<TabId> {
     self.active_tab
+  }
+
+  /// Monotonic revision counter for state that affects the persisted session snapshot.
+  ///
+  /// Front-ends can compare this value before/after a frame to detect whether autosave should run.
+  pub fn session_revision(&self) -> u64 {
+    self.session_revision
+  }
+
+  fn bump_session_revision(&mut self) {
+    self.session_revision = self.session_revision.wrapping_add(1);
   }
 
   pub fn tab(&self, tab_id: TabId) -> Option<&BrowserTabState> {
@@ -817,6 +882,7 @@ impl BrowserAppState {
       tab.hovered_url = None;
       tab.cursor = CursorKind::Default;
     }
+    self.bump_session_revision();
     true
   }
 
@@ -847,6 +913,7 @@ impl BrowserAppState {
     let insert_at = pinned_end.min(self.tabs.len());
     self.tabs.insert(insert_at, tab);
     self.prune_empty_tab_groups();
+    self.bump_session_revision();
     true
   }
 
@@ -864,6 +931,7 @@ impl BrowserAppState {
     let insert_at = pinned_end.saturating_sub(1).min(self.tabs.len());
     self.tabs.insert(insert_at, tab);
     self.prune_empty_tab_groups();
+    self.bump_session_revision();
     true
   }
 
@@ -891,6 +959,7 @@ impl BrowserAppState {
       self.chrome.omnibox.reset();
       self.sync_address_bar_to_active();
     }
+    self.bump_session_revision();
   }
 
   pub fn create_tab(&mut self, initial_url: Option<String>) -> TabId {
@@ -931,6 +1000,7 @@ impl BrowserAppState {
 
     let tab = self.tabs.remove(from_idx);
     self.tabs.insert(target_index, tab);
+    self.bump_session_revision();
     true
   }
 
@@ -1051,6 +1121,7 @@ impl BrowserAppState {
 
     self.tabs.splice(insert_idx..insert_idx, extracted);
     self.prune_empty_tab_groups();
+    self.bump_session_revision();
     group_id
   }
 
@@ -1104,6 +1175,7 @@ impl BrowserAppState {
     }
 
     self.prune_empty_tab_groups();
+    self.bump_session_revision();
   }
 
   pub fn remove_tab_from_group(&mut self, tab_id: TabId) {
@@ -1118,6 +1190,7 @@ impl BrowserAppState {
       // The tab claims to be grouped, but the group isn't contiguous; treat as ungrouped.
       self.tabs[idx].group = None;
       self.prune_empty_tab_groups();
+      self.bump_session_revision();
       return;
     };
 
@@ -1134,17 +1207,32 @@ impl BrowserAppState {
     }
 
     self.prune_empty_tab_groups();
+    self.bump_session_revision();
   }
 
   pub fn set_group_title(&mut self, group_id: TabGroupId, title: String) {
+    let mut changed = false;
     if let Some(group) = self.tab_groups.get_mut(&group_id) {
-      group.title = title;
+      if group.title != title {
+        group.title = title;
+        changed = true;
+      }
+    }
+    if changed {
+      self.bump_session_revision();
     }
   }
 
   pub fn set_group_color(&mut self, group_id: TabGroupId, color: TabGroupColor) {
+    let mut changed = false;
     if let Some(group) = self.tab_groups.get_mut(&group_id) {
-      group.color = color;
+      if group.color != color {
+        group.color = color;
+        changed = true;
+      }
+    }
+    if changed {
+      self.bump_session_revision();
     }
   }
 
@@ -1153,23 +1241,35 @@ impl BrowserAppState {
       .active_tab
       .and_then(|id| self.tab(id))
       .is_some_and(|t| t.group == Some(group_id));
-    let Some(group) = self.tab_groups.get_mut(&group_id) else {
-      return;
-    };
-    if active_in_group {
-      group.collapsed = false;
-      return;
+    let mut changed = false;
+    if let Some(group) = self.tab_groups.get_mut(&group_id) {
+      let before = group.collapsed;
+      if active_in_group {
+        group.collapsed = false;
+      } else {
+        group.collapsed = !group.collapsed;
+      }
+      changed = group.collapsed != before;
     }
-    group.collapsed = !group.collapsed;
+    if changed {
+      self.bump_session_revision();
+    }
   }
 
   pub fn ungroup(&mut self, group_id: TabGroupId) {
+    let mut changed = false;
     for tab in &mut self.tabs {
       if tab.group == Some(group_id) {
         tab.group = None;
+        changed = true;
       }
     }
-    self.tab_groups.remove(&group_id);
+    if self.tab_groups.remove(&group_id).is_some() {
+      changed = true;
+    }
+    if changed {
+      self.bump_session_revision();
+    }
   }
 
   /// Drag-style reordering helper that preserves tab group invariants.
@@ -1180,9 +1280,9 @@ impl BrowserAppState {
   /// - Dragging a grouped tab outside its group removes it from the group.
   /// - Dragging an ungrouped tab into a group region adds it to that group.
   /// - Dragging within a group preserves membership and reorders within the group.
-  pub fn drag_reorder_tab(&mut self, tab_id: TabId, dst_index: usize) {
+  pub fn drag_reorder_tab(&mut self, tab_id: TabId, dst_index: usize) -> bool {
     let Some(src_idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
-      return;
+      return false;
     };
 
     let mut tab = self.tabs.remove(src_idx);
@@ -1195,9 +1295,13 @@ impl BrowserAppState {
       // Pinned tabs are kept in a fixed leading segment and cannot be grouped.
       tab.group = None;
       insert_idx = insert_idx.min(pinned_end);
+      let changed = insert_idx != src_idx || tab.group != old_group;
       self.tabs.insert(insert_idx, tab);
       self.prune_empty_tab_groups();
-      return;
+      if changed {
+        self.bump_session_revision();
+      }
+      return changed;
     }
     // Ungrouped tabs cannot be inserted into the pinned segment.
     insert_idx = insert_idx.max(pinned_end);
@@ -1252,8 +1356,13 @@ impl BrowserAppState {
       insert_idx = self.adjust_insertion_index_to_avoid_splitting_groups(insert_idx);
     }
 
+    let changed = insert_idx != src_idx || tab.group != old_group;
     self.tabs.insert(insert_idx, tab);
     self.prune_empty_tab_groups();
+    if changed {
+      self.bump_session_revision();
+    }
+    changed
   }
 
   /// Removes a tab, returning the new active tab if the active tab changed.
@@ -1276,6 +1385,7 @@ impl BrowserAppState {
 
     let closed = self.tabs.remove(idx);
     self.prune_empty_tab_groups();
+    self.bump_session_revision();
     self.push_closed_tab_state(ClosedTabState {
       url: closed
         .committed_url
@@ -1350,6 +1460,8 @@ impl BrowserAppState {
 
     self.tabs = vec![kept];
     let _ = self.set_active_tab(tab_id);
+    self.prune_empty_tab_groups();
+    self.bump_session_revision();
     closed_ids
   }
 
@@ -1401,6 +1513,8 @@ impl BrowserAppState {
       }
     }
 
+    self.prune_empty_tab_groups();
+    self.bump_session_revision();
     closed_ids
   }
 
@@ -2978,5 +3092,55 @@ mod tab_group_tests {
     app.drag_reorder_tab(d, 2);
     assert_eq!(app.tab(d).and_then(|t| t.group), Some(group));
     assert_group_contiguous(&app, group);
+  }
+
+  #[test]
+  fn session_revision_bumps_for_pin_and_unpin() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    let rev0 = app.session_revision();
+    assert!(app.pin_tab(b));
+    let rev1 = app.session_revision();
+    assert!(rev1 > rev0, "expected pin to bump session revision");
+
+    assert!(app.unpin_tab(b));
+    let rev2 = app.session_revision();
+    assert!(rev2 > rev1, "expected unpin to bump session revision");
+  }
+
+  #[test]
+  fn session_revision_bumps_for_group_title_color_and_collapse_changes() {
+    let mut app = BrowserAppState::new();
+    let a = TabId(1);
+    let b = TabId(2);
+    let c = TabId(3);
+    app.push_tab(BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()), true);
+    app.push_tab(BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()), false);
+    app.push_tab(BrowserTabState::new(c, about_pages::ABOUT_NEWTAB.to_string()), false);
+
+    let group = app.create_group_with_tabs(&[a, b]);
+
+    // Ensure the active tab is outside the group so we can collapse it.
+    assert!(app.set_active_tab(c));
+    let rev0 = app.session_revision();
+
+    app.set_group_title(group, "Renamed".to_string());
+    let rev1 = app.session_revision();
+    assert!(rev1 > rev0, "expected set_group_title to bump session revision");
+
+    app.set_group_color(group, TabGroupColor::Orange);
+    let rev2 = app.session_revision();
+    assert!(rev2 > rev1, "expected set_group_color to bump session revision");
+
+    app.toggle_group_collapsed(group);
+    let rev3 = app.session_revision();
+    assert!(
+      rev3 > rev2,
+      "expected toggle_group_collapsed to bump session revision"
+    );
   }
 }

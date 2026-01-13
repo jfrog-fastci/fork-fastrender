@@ -1397,7 +1397,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
             zoom: None,
             scroll_css: None,
+            pinned: false,
+            group: None,
           }],
+          tab_groups: Vec::new(),
           active_tab_index: 0,
           window_state: None,
         });
@@ -2919,9 +2922,26 @@ impl App {
 
     let fastrender::ui::BrowserSessionWindow {
       tabs,
+      tab_groups,
       active_tab_index,
       ..
     } = window.sanitized();
+
+    // Restore tab groups (create fresh runtime IDs for each persisted group).
+    let mut group_ids: Vec<fastrender::ui::TabGroupId> = Vec::with_capacity(tab_groups.len());
+    for group in tab_groups {
+      let id = fastrender::ui::TabGroupId::new();
+      group_ids.push(id);
+      self.browser_state.tab_groups.insert(
+        id,
+        fastrender::ui::TabGroupState {
+          id,
+          title: group.title,
+          color: group.color,
+          collapsed: group.collapsed,
+        },
+      );
+    }
 
     let mut tab_ids = Vec::with_capacity(tabs.len());
 
@@ -2934,6 +2954,8 @@ impl App {
       }
 
       let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, tab.url.clone());
+      tab_state.pinned = tab.pinned;
+      tab_state.group = tab.group.and_then(|idx| group_ids.get(idx).copied());
       if let Some(zoom) = tab.zoom {
         tab_state.zoom = zoom;
       }
@@ -7983,6 +8005,7 @@ impl App {
     // multiple `FrameReady` messages received between redraws result in a single GPU upload.
     self.flush_pending_frame_uploads();
 
+    let session_revision_before = self.browser_state.session_revision();
     let mut session_dirty = false;
     while let Some(update) = self.search_suggest.try_recv() {
       self.browser_state.chrome.remote_search_cache.query = update.query;
@@ -9058,6 +9081,7 @@ impl App {
         hud.last_frame_cpu_ms = Some(elapsed_ms);
       }
     }
+    session_dirty |= self.browser_state.session_revision() != session_revision_before;
     session_dirty
   }
 }
