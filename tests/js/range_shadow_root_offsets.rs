@@ -75,6 +75,7 @@ fn range_offsets_ignore_shadow_root_pseudo_child_in_js() -> Result<()> {
   h.register_html_source(
     r#"<!doctype html><body>
       <div id="host"><span id="light"></span></div>
+      <div id="host2">hello<span id="after"></span></div>
       <script>
         const host = document.getElementById("host");
         const light = document.getElementById("light");
@@ -111,6 +112,16 @@ fn range_offsets_ignore_shadow_root_pseudo_child_in_js() -> Result<()> {
         console.log("afterInsert:" + rLive.startOffset + "," + rLive.endOffset);
         host.removeChild(ins);
         console.log("afterRemove:" + rLive.startOffset + "," + rLive.endOffset);
+
+        // splitText must treat host child offsets as light DOM indices (ShadowRoot excluded).
+        const host2 = document.getElementById("host2");
+        host2.attachShadow({ mode: "open" });
+        const t = host2.firstChild;
+        const rSplit = document.createRange();
+        rSplit.setStart(host2, 1);
+        rSplit.setEnd(host2, 1);
+        t.splitText(2);
+        console.log("afterSplit:" + rSplit.startOffset + "," + rSplit.endOffset);
       </script>
     </body>"#,
   );
@@ -125,6 +136,7 @@ fn range_offsets_ignore_shadow_root_pseudo_child_in_js() -> Result<()> {
       "idxerr:IndexSizeError".to_string(),
       "afterInsert:2,2".to_string(),
       "afterRemove:1,1".to_string(),
+      "afterSplit:2,2".to_string(),
     ]
   );
 
