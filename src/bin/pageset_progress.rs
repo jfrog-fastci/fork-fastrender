@@ -16,8 +16,8 @@ mod stage_buckets;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use common::args::{
   cpu_budget, default_jobs, parse_shard, AnimationTimeArgs, CompatArgs, CompatProfileArg,
-  DiskCacheArgs, DomCompatArg, LayoutParallelArgs, LayoutParallelModeArg, MemoryGuardArgs,
-  RenderParseArgs, ResourceAccessArgs, DEFAULT_DISK_CACHE_MAX_AGE_SECS,
+  DiskCacheArgs, DomCompatArg, JsExecutionArgs, LayoutParallelArgs, LayoutParallelModeArg,
+  MemoryGuardArgs, RenderParseArgs, ResourceAccessArgs, DEFAULT_DISK_CACHE_MAX_AGE_SECS,
   DEFAULT_DISK_CACHE_MAX_BYTES,
 };
 use common::render_pipeline::{
@@ -27,9 +27,10 @@ use common::render_pipeline::{
   CachedDocument, RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{
-  CascadeDiagnostics, DiagnosticsLevel, LayoutDiagnostics, PaintDiagnostics, RenderArtifactRequest,
-  RenderArtifacts, RenderCounts, RenderDiagnostics, RenderStageTimings, RenderStats,
-  ResourceDiagnostics, ResourceFetchError, ResourceKind,
+  BrowserTab, CascadeDiagnostics, DiagnosticsLevel, LayoutDiagnostics, PaintDiagnostics,
+  RenderArtifactRequest, RenderArtifacts, RenderCounts, RenderDiagnostics, RenderResult,
+  RenderStageTimings, RenderStats, ResourceDiagnostics, ResourceFetchError, ResourceKind,
+  VmJsBrowserTabExecutor,
 };
 use fastrender::debug::snapshot;
 use fastrender::error::{RenderError, RenderStage, ResourceError};
@@ -481,6 +482,18 @@ struct RunArgs {
   #[command(flatten)]
   render_parse: RenderParseArgs,
 
+  /// Execute JavaScript while rendering pages (vm-js BrowserTab harness).
+  #[arg(long)]
+  js: bool,
+
+  /// Maximum number of JS/event-loop frames to execute before stopping (`BrowserTab::run_until_stable`).
+  #[arg(long, value_name = "N", default_value_t = 10)]
+  js_max_frames: usize,
+
+  /// JS execution budget overrides (queue sizes, per-spin run limits, VM budgets).
+  #[command(flatten)]
+  js_execution: JsExecutionArgs,
+
   /// Render only listed pages (comma-separated cache stems)
   #[arg(long, value_delimiter = ',')]
   pages: Option<Vec<String>>,
@@ -800,6 +813,18 @@ struct WorkerArgs {
 
   #[command(flatten)]
   animation_time: AnimationTimeArgs,
+
+  /// Execute JavaScript while rendering pages (vm-js BrowserTab harness).
+  #[arg(long)]
+  js: bool,
+
+  /// Maximum number of JS/event-loop frames to execute before stopping (`BrowserTab::run_until_stable`).
+  #[arg(long, value_name = "N", default_value_t = 10)]
+  js_max_frames: usize,
+
+  /// JS execution budget overrides (queue sizes, per-spin run limits, VM budgets).
+  #[command(flatten)]
+  js_execution: JsExecutionArgs,
 
   /// Override the User-Agent header
   #[arg(long)]
@@ -3389,8 +3414,10 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     options.trace_output = Some(path.clone());
   }
 
-  let mut renderer =
-    match common::render_pipeline::build_renderer_with_fetcher(config, renderer_fetcher) {
+  let mut renderer = if args.js {
+    None
+  } else {
+    Some(match common::render_pipeline::build_renderer_with_fetcher(config, renderer_fetcher) {
       Ok(r) => r,
       Err(e) => {
         let log_msg = format_error_with_chain(&e, true);
@@ -3418,7 +3445,8 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
         }
         return Ok(());
       }
-    };
+    })
+  };
 
   let mut doc = cached.document;
   log.push_str(&format!("Resource base: {}\n", doc.base_url));
@@ -3448,7 +3476,36 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   log.push_str("Stage: render\n");
   flush_log(&log, &args.log_path);
   let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    render_fetched_document(&mut renderer, &resource, Some(&base_hint), &options)
+    if args.js {
+      let js_execution_options = args.js_execution.to_options();
+      let mut tab = BrowserTab::from_html_with_document_url_and_fetcher_and_js_execution_options(
+        &doc.html,
+        &base_hint,
+        options.clone(),
+        VmJsBrowserTabExecutor::default(),
+        std::sync::Arc::clone(&fetcher),
+        js_execution_options,
+      )?;
+      let _ = tab.run_until_stable(args.js_max_frames)?;
+      let pixmap = match tab.render_if_needed()? {
+        Some(pixmap) => pixmap,
+        None => tab.render_frame()?,
+      };
+      let mut diagnostics = tab.diagnostics_snapshot().unwrap_or_default();
+      diagnostics.embed_js_failure_into_stats();
+      Ok(RenderResult {
+        pixmap,
+        accessibility: None,
+        diagnostics,
+      })
+    } else {
+      let Some(renderer) = renderer.as_mut() else {
+        return Err(fastrender::Error::Other(
+          "internal error: renderer missing for non-JS render".to_string(),
+        ));
+      };
+      render_fetched_document(renderer, &resource, Some(&base_hint), &options)
+    }
   }));
 
   let timeline_elapsed_ms = heartbeat.elapsed_ms();
@@ -4392,6 +4449,7 @@ fn stage_buckets_from_timeline(stage_path: &Path, total_ms: u64) -> Option<Stage
     }
     let dur_ms = at_ms - prev_ms;
     match prev_stage.hotspot() {
+      "script" => buckets.fetch += dur_ms as f64,
       "fetch" => buckets.fetch += dur_ms as f64,
       "css" => buckets.css += dur_ms as f64,
       "cascade" => buckets.cascade += dur_ms as f64,
@@ -4410,6 +4468,7 @@ fn stage_buckets_from_timeline(stage_path: &Path, total_ms: u64) -> Option<Stage
   if prev_ms < total_ms {
     let dur_ms = total_ms - prev_ms;
     match prev_stage.hotspot() {
+      "script" => buckets.fetch += dur_ms as f64,
       "fetch" => buckets.fetch += dur_ms as f64,
       "css" => buckets.css += dur_ms as f64,
       "cascade" => buckets.cascade += dur_ms as f64,
@@ -8413,6 +8472,53 @@ fn push_disk_cache_args(cmd: &mut Command, args: &DiskCacheArgs) {
     .arg(args.writeback_under_deadline.to_string());
 }
 
+fn push_js_execution_args(cmd: &mut Command, args: &JsExecutionArgs) {
+  if let Some(value) = args.max_script_bytes {
+    cmd
+      .arg("--js-max-script-bytes")
+      .arg(value.to_string());
+  }
+  if let Some(value) = args.max_pending_tasks {
+    cmd.arg("--js-max-pending-tasks").arg(value.to_string());
+  }
+  if let Some(value) = args.max_pending_microtasks {
+    cmd
+      .arg("--js-max-pending-microtasks")
+      .arg(value.to_string());
+  }
+  if let Some(value) = args.max_pending_timers {
+    cmd
+      .arg("--js-max-pending-timers")
+      .arg(value.to_string());
+  }
+  if let Some(value) = args.max_tasks_per_spin {
+    cmd.arg("--js-max-tasks").arg(value.to_string());
+  }
+  if let Some(value) = args.max_microtasks_per_spin {
+    cmd
+      .arg("--js-max-microtasks")
+      .arg(value.to_string());
+  }
+  if let Some(value) = args.max_wall_time_per_spin_ms {
+    cmd.arg("--js-max-wall-ms").arg(value.to_string());
+  }
+  if let Some(value) = args.max_instruction_count {
+    cmd
+      .arg("--js-max-instructions")
+      .arg(value.to_string());
+  }
+  if let Some(value) = args.max_vm_heap_bytes {
+    cmd
+      .arg("--js-max-vm-heap-bytes")
+      .arg(value.to_string());
+  }
+  if let Some(value) = args.max_stack_depth {
+    cmd
+      .arg("--js-max-stack-depth")
+      .arg(value.to_string());
+  }
+}
+
 fn push_worker_args(
   cmd: &mut Command,
   args: &RunArgs,
@@ -8441,7 +8547,15 @@ fn push_worker_args(
     .arg("--dpr")
     .arg(args.dpr.to_string())
     .arg("--render-parse-scripting-enabled")
-    .arg(args.render_parse.render_parse_scripting_enabled.to_string())
+    .arg(args.render_parse.render_parse_scripting_enabled.to_string());
+  if args.js {
+    cmd
+      .arg("--js")
+      .arg("--js-max-frames")
+      .arg(args.js_max_frames.to_string());
+  }
+  push_js_execution_args(cmd, &args.js_execution);
+  cmd
     .arg("--user-agent")
     .arg(&args.user_agent)
     .arg("--accept-language")
@@ -9122,6 +9236,10 @@ fn run(mut args: RunArgs) -> io::Result<()> {
     eprintln!("timeout must be > 0 (hard timeout)");
     std::process::exit(2);
   }
+  if args.js && args.js_max_frames == 0 {
+    eprintln!("--js-max-frames must be > 0 when --js is enabled");
+    std::process::exit(2);
+  }
   if args.trace_jobs == 0 {
     eprintln!("trace-jobs must be > 0");
     std::process::exit(2);
@@ -9785,6 +9903,12 @@ fn worker(args: WorkerArgs) -> io::Result<()> {
   }
   if args.cache_path.as_os_str().is_empty() {
     return Ok(());
+  }
+  if args.js && args.js_max_frames == 0 {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "--js-max-frames must be > 0 when --js is enabled",
+    ));
   }
 
   // The render pipeline can be deeply recursive (DOM/style/box tree). Run it on a large-stack

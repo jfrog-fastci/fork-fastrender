@@ -1654,6 +1654,99 @@ impl RenderDiagnostics {
     });
   }
 
+  /// Ensure JavaScript failure telemetry is surfaced via `stats.js`.
+  ///
+  /// The JS engine records bounded failure counters into an internal field (`js_failure`) so that
+  /// embeddings that do not run the full render-stats recorder (for example, `api::BrowserTab`)
+  /// can still serialize the telemetry via the existing `diagnostics.stats.js` schema used by the
+  /// pageset progress harness.
+  pub fn embed_js_failure_into_stats(&mut self) {
+    if self.js_failure.is_empty() {
+      return;
+    }
+
+    let js = std::mem::take(&mut self.js_failure);
+    if js.is_empty() {
+      return;
+    }
+
+    fn merge_js_failure(dst: &mut JsFailureDiagnostics, src: JsFailureDiagnostics) {
+      dst.scripts_executed = dst.scripts_executed.saturating_add(src.scripts_executed);
+      dst.exceptions_thrown = dst.exceptions_thrown.saturating_add(src.exceptions_thrown);
+      dst.terminations_observed = dst
+        .terminations_observed
+        .saturating_add(src.terminations_observed);
+      dst.termination.out_of_fuel = dst
+        .termination
+        .out_of_fuel
+        .saturating_add(src.termination.out_of_fuel);
+      dst.termination.deadline_exceeded = dst
+        .termination
+        .deadline_exceeded
+        .saturating_add(src.termination.deadline_exceeded);
+      dst.termination.interrupted = dst
+        .termination
+        .interrupted
+        .saturating_add(src.termination.interrupted);
+      dst.termination.stack_overflow = dst
+        .termination
+        .stack_overflow
+        .saturating_add(src.termination.stack_overflow);
+      dst.termination.out_of_memory = dst
+        .termination
+        .out_of_memory
+        .saturating_add(src.termination.out_of_memory);
+      dst.collection_disabled |= src.collection_disabled;
+
+      let mut unimplemented: BTreeMap<String, u64> = BTreeMap::new();
+      for entry in dst.top_unimplemented.iter().chain(src.top_unimplemented.iter()) {
+        unimplemented
+          .entry(entry.message.clone())
+          .and_modify(|count| *count = count.saturating_add(entry.count))
+          .or_insert(entry.count);
+      }
+      let mut merged_unimplemented: Vec<JsUnimplementedDiagnostic> = unimplemented
+        .into_iter()
+        .map(|(message, count)| JsUnimplementedDiagnostic { message, count })
+        .collect();
+      merged_unimplemented.sort_by(|a, b| {
+        b.count
+          .cmp(&a.count)
+          .then_with(|| a.message.cmp(&b.message))
+      });
+      merged_unimplemented.truncate(JsFailureDiagnostics::MAX_TOP_UNIMPLEMENTED);
+      dst.top_unimplemented = merged_unimplemented;
+
+      let mut exceptions: BTreeMap<(String, String), u64> = BTreeMap::new();
+      for entry in dst.top_exceptions.iter().chain(src.top_exceptions.iter()) {
+        exceptions
+          .entry((entry.type_.clone(), entry.message.clone()))
+          .and_modify(|count| *count = count.saturating_add(entry.count))
+          .or_insert(entry.count);
+      }
+      let mut merged_exceptions: Vec<JsExceptionDiagnostic> = exceptions
+        .into_iter()
+        .map(|((type_, message), count)| JsExceptionDiagnostic { type_, message, count })
+        .collect();
+      merged_exceptions.sort_by(|a, b| {
+        b.count
+          .cmp(&a.count)
+          .then_with(|| a.type_.cmp(&b.type_))
+          .then_with(|| a.message.cmp(&b.message))
+      });
+      merged_exceptions.truncate(JsFailureDiagnostics::MAX_TOP_EXCEPTIONS);
+      dst.top_exceptions = merged_exceptions;
+    }
+
+    let stats = self.stats.get_or_insert_with(RenderStats::default);
+    match stats.js.as_mut() {
+      Some(existing) => merge_js_failure(existing, js),
+      None => {
+        stats.js = Some(js);
+      }
+    }
+  }
+
   fn js_failure_diagnostics_mut(&mut self) -> &mut JsFailureDiagnostics {
     &mut self.js_failure
   }
