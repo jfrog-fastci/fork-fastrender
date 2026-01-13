@@ -40,7 +40,11 @@
 //! let mut cmd = Command::new("fastrender-renderer");
 //! cmd.env("FASTR_RENDER_SHMEM_FD", fd.to_string());
 //! cmd.env("FASTR_RENDER_SHMEM_LEN", len.to_string());
-//! cmd.pre_exec(move || handle.clear_cloexec())?;
+//! // Safety: the `pre_exec` hook runs in the child after `fork` and before `exec`, so the closure
+//! // must only perform async-signal-safe operations (here: `fcntl` via `clear_cloexec`).
+//! unsafe {
+//!   cmd.pre_exec(move || handle.clear_cloexec());
+//! }
 //! let _child = cmd.spawn()?;
 //! # Ok(())
 //! # }
