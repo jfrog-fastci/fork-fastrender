@@ -33,11 +33,11 @@ impl GridLine {
   pub(crate) fn into_origin_zero_line(self, explicit_track_count: u16) -> OriginZeroLine {
     let explicit_line_count = explicit_track_count + 1;
     let oz_line = match self.0.cmp(&0) {
-      Ordering::Greater => self.0 - 1,
-      Ordering::Less => self.0 + explicit_line_count as i16,
+      Ordering::Greater => (self.0 as i32) - 1,
+      Ordering::Less => (self.0 as i32) + (explicit_line_count as i32),
       Ordering::Equal => panic!("Grid line of zero is invalid"),
     };
-    OriginZeroLine(oz_line)
+    OriginZeroLine(oz_line.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
   }
 }
 
@@ -88,7 +88,15 @@ impl AddAssign<u16> for OriginZeroLine {
 impl Sub<u16> for OriginZeroLine {
   type Output = Self;
   fn sub(self, rhs: u16) -> Self::Output {
-    OriginZeroLine(self.0 - rhs as i16)
+    let diff = self.0 as i32 - rhs as i32;
+    let clamped = diff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    debug_assert!(
+      clamped as i32 == diff,
+      "OriginZeroLine overflow: {} - {}",
+      self.0,
+      rhs
+    );
+    OriginZeroLine(clamped)
   }
 }
 
