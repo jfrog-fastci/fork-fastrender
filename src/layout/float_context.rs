@@ -1221,12 +1221,155 @@ impl FloatContext {
     }
   }
 
+  /// Dump internal float context state to stderr when `FASTR_LOG_FLOAT_CONTEXT` is enabled.
+  ///
+  /// This is intended for debugging performance regressions involving float boundary stepping and
+  /// `FloatRangeCache` segment scans. When disabled, this method is a no-op.
+  pub fn debug_dump(&self, label: &str) {
+    let toggles = runtime::runtime_toggles();
+    if !toggles.truthy("FASTR_LOG_FLOAT_CONTEXT") {
+      return;
+    }
+
+    let max_segs = toggles.usize_with_default("FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS", 16);
+
+    eprintln!("FloatContext dump: {label}");
+    eprintln!(
+      "  floats={} (left={}, right={}) events={} containing_width={:.2} float_ceiling_y={:.2}",
+      self.float_map.len(),
+      self.left_floats.len(),
+      self.right_floats.len(),
+      self.events.len(),
+      self.containing_block_width,
+      self.current_y
+    );
+    eprintln!(
+      "  clearance_max_bottom: left={:.2} right={:.2}",
+      self.clearance_left_max_bottom,
+      self.clearance_right_max_bottom
+    );
+
+    match self.sweep_state.try_borrow() {
+      Ok(state) => {
+        let active_count = state.active.iter().filter(|v| **v).count();
+        eprintln!(
+          "  sweep_state: current_y={:.2} pending_events={} pending_start_events={} active={} active_shapes=(left={}, right={})",
+          state.current_y,
+          state.pending_events.len(),
+          state.pending_start_events.len(),
+          active_count,
+          state.active_shape_left.len(),
+          state.active_shape_right.len()
+        );
+
+        if let Some((edge, bottom, id)) = state.active_left.peek() {
+          let float = self.float_info(*id);
+          eprintln!(
+            "    constraining_left: edge={:.2} bottom={:.2} id={} rect=[x={:.2} y={:.2} w={:.2} h={:.2}]",
+            edge.0,
+            bottom.0,
+            id,
+            float.rect.x(),
+            float.rect.y(),
+            float.rect.width(),
+            float.rect.height()
+          );
+        } else {
+          eprintln!("    constraining_left: none");
+        }
+
+        if let Some((Reverse(edge), bottom, id)) = state.active_right.peek() {
+          let float = self.float_info(*id);
+          eprintln!(
+            "    constraining_right: edge={:.2} bottom={:.2} id={} rect=[x={:.2} y={:.2} w={:.2} h={:.2}]",
+            edge.0,
+            bottom.0,
+            id,
+            float.rect.x(),
+            float.rect.y(),
+            float.rect.width(),
+            float.rect.height()
+          );
+        } else {
+          eprintln!("    constraining_right: none");
+        }
+      }
+      Err(_) => {
+        eprintln!("  sweep_state: <borrowed>");
+      }
+    }
+
+    match self.range_cache.try_borrow() {
+      Ok(cache) => {
+        let seg_count = cache.segments.len();
+        let coverage = cache.segments.first().zip(cache.segments.last()).map(|(first, last)| {
+          (first.start_y, last.end_y)
+        });
+        match coverage {
+          Some((start, end)) => {
+            eprintln!(
+              "  range_cache: float_count={} events_len={} segments={} coverage=[{:.2}, {:.2}]",
+              cache.float_count, cache.events_len, seg_count, start, end
+            );
+          }
+          None => {
+            eprintln!(
+              "  range_cache: float_count={} events_len={} segments=0",
+              cache.float_count, cache.events_len
+            );
+          }
+        }
+
+        if seg_count > 0 && max_segs > 0 {
+          let focus_y = self
+            .sweep_state
+            .try_borrow()
+            .ok()
+            .map(|state| state.current_y)
+            .unwrap_or(self.current_y);
+          let focus_idx = if focus_y.is_finite() {
+            cache.segment_index(focus_y)
+          } else {
+            0
+          };
+          let max_segs = max_segs.min(seg_count);
+          let half = max_segs / 2;
+          let start_idx = focus_idx
+            .saturating_sub(half)
+            .min(seg_count.saturating_sub(max_segs));
+          let end_idx = (start_idx + max_segs).min(seg_count);
+          if start_idx > 0 || end_idx < seg_count {
+            eprintln!(
+              "    segments sample: idx=[{start_idx}..{end_idx}) of {seg_count} (focus_y={focus_y:.2} focus_idx={focus_idx})"
+            );
+          } else {
+            eprintln!("    segments:");
+          }
+          for (idx, seg) in cache.segments.iter().enumerate().skip(start_idx).take(max_segs) {
+            eprintln!(
+              "      seg[{idx}]: y=[{:.2}, {:.2}] left={:.2} right={:.2}",
+              seg.start_y, seg.end_y, seg.left_edge, seg.right_edge
+            );
+          }
+        } else if seg_count > 0 {
+          eprintln!("    segments: <suppressed via FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS=0>");
+        }
+      }
+      Err(_) => {
+        eprintln!("  range_cache: <borrowed>");
+      }
+    }
+  }
+
   /// Returns and clears the recorded timeout, if any.
   pub fn take_timeout_error(&self) -> Option<LayoutError> {
     self
       .timeout_elapsed
       .take()
-      .map(|elapsed| LayoutError::Timeout { elapsed })
+      .map(|elapsed| {
+        self.debug_dump("take_timeout_error");
+        LayoutError::Timeout { elapsed }
+      })
   }
 
   fn float_info(&self, id: usize) -> &FloatInfo {
@@ -2793,7 +2936,9 @@ impl Default for FloatContext {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::RuntimeToggles;
   use crate::render_control::{DeadlineGuard, RenderDeadline};
+  use std::collections::HashMap;
   use std::sync::Arc;
   use std::sync::Mutex;
 
@@ -2897,6 +3042,28 @@ mod tests {
     assert_eq!(ctx.current_y(), 0.0);
     assert!(ctx.is_empty());
     assert_eq!(ctx.float_count(), 0);
+  }
+
+  #[test]
+  fn float_context_debug_dump_toggle_does_not_panic() {
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_LOG_FLOAT_CONTEXT".to_string(), "1".to_string()),
+      ("FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS".to_string(), "3".to_string()),
+    ])));
+
+    runtime::with_runtime_toggles(toggles, || {
+      let mut ctx = FloatContext::new(800.0);
+      ctx.add_float_at(FloatSide::Left, 0.0, 0.0, 200.0, 100.0);
+      ctx.add_float_at(FloatSide::Right, 600.0, 20.0, 200.0, 80.0);
+
+      // Exercise both the sweep state and the range cache before dumping.
+      let _ = ctx.available_width_at_y(50.0);
+      let _ = ctx.available_width_in_range(0.0, 120.0);
+      let _ = ctx.next_float_boundary_after(0.0);
+
+      ctx.debug_dump("unit_test");
+      let _ = ctx.take_timeout_error();
+    });
   }
 
   #[test]
