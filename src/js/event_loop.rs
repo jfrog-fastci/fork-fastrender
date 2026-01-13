@@ -422,6 +422,14 @@ pub struct EventLoop<Host: 'static> {
   animation_frame_queue: VecDeque<AnimationFrameId>,
   next_animation_frame_id: AnimationFrameId,
   performing_microtask_checkpoint: bool,
+  /// Whether we are currently executing an idle callback task turn (including its microtask
+  /// checkpoint).
+  ///
+  /// This is used to ensure microtasks queued during an idle callback do not reset the shared idle
+  /// period deadline. In HTML, idle callbacks are tasks and always end with a microtask checkpoint,
+  /// but the idle period deadline is shared across successive idle callbacks within the same idle
+  /// period.
+  in_idle_callback_turn: bool,
   currently_running_task: Option<RunningTask>,
 }
 
@@ -454,6 +462,7 @@ impl<Host: 'static> Default for EventLoop<Host> {
       animation_frame_queue: VecDeque::new(),
       next_animation_frame_id: 1,
       performing_microtask_checkpoint: false,
+      in_idle_callback_turn: false,
       currently_running_task: None,
     }
   }
@@ -859,15 +868,9 @@ impl<Host: 'static> EventLoop<Host> {
   {
     // Microtasks indicate that the event loop is not idle, so reset any active idle period budget.
     //
-    // However, microtasks queued *during* an idle callback are part of that idle callback's task
-    // turn and should not reset the shared idle period deadline.
-    if !matches!(
-      self.currently_running_task,
-      Some(RunningTask {
-        source: TaskSource::IdleCallback,
-        is_microtask: false,
-      })
-    ) {
+    // However, microtasks queued during an idle callback's task turn (including the subsequent
+    // microtask checkpoint) should not reset the shared idle period deadline.
+    if !self.in_idle_callback_turn {
       self.idle_period_deadline = None;
     }
     if self.microtask_queue.len() >= self.queue_limits.max_pending_microtasks {
@@ -1207,6 +1210,10 @@ impl<Host: 'static> EventLoop<Host> {
       self.timer_nesting_level = 0;
     }
 
+    let previous_idle_callback_turn = self.in_idle_callback_turn;
+    self.in_idle_callback_turn =
+      self.in_idle_callback_turn || task.source == TaskSource::IdleCallback;
+
     let previous_running_task = self.currently_running_task;
     self.currently_running_task = Some(RunningTask {
       source: task.source,
@@ -1218,6 +1225,7 @@ impl<Host: 'static> EventLoop<Host> {
     // HTML performs a microtask checkpoint at the end of every task. Even if the task threw an
     // exception, queued microtasks must still be drained.
     let microtask_result = self.perform_microtask_checkpoint(host);
+    self.in_idle_callback_turn = previous_idle_callback_turn;
     self.timer_nesting_level = previous_timer_nesting_level;
     self.currently_running_task = previous_running_task;
     // Prefer surfacing the task error if both the task and the microtask checkpoint failed: the
@@ -1592,6 +1600,10 @@ impl<Host: 'static> EventLoop<Host> {
       self.timer_nesting_level = 0;
     }
 
+    let previous_idle_callback_turn = self.in_idle_callback_turn;
+    self.in_idle_callback_turn =
+      self.in_idle_callback_turn || task.source == TaskSource::IdleCallback;
+
     let previous_running_task = self.currently_running_task;
     self.currently_running_task = Some(RunningTask {
       source: task.source,
@@ -1602,6 +1614,7 @@ impl<Host: 'static> EventLoop<Host> {
     // HTML performs a microtask checkpoint at the end of every task. Even if the task threw an
     // exception, queued microtasks must still be drained.
     let microtask_result = self.perform_microtask_checkpoint_limited_inner(host, run_state);
+    self.in_idle_callback_turn = previous_idle_callback_turn;
     self.timer_nesting_level = previous_timer_nesting_level;
     self.currently_running_task = previous_running_task;
     // Prefer surfacing the task error if the task failed, even if the microtask checkpoint also hit
@@ -1653,6 +1666,10 @@ impl<Host: 'static> EventLoop<Host> {
       self.timer_nesting_level = 0;
     }
 
+    let previous_idle_callback_turn = self.in_idle_callback_turn;
+    self.in_idle_callback_turn =
+      self.in_idle_callback_turn || task.source == TaskSource::IdleCallback;
+
     let previous_running_task = self.currently_running_task;
     self.currently_running_task = Some(RunningTask {
       source: task.source,
@@ -1666,6 +1683,7 @@ impl<Host: 'static> EventLoop<Host> {
 
     let microtask_result =
       self.perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error);
+    self.in_idle_callback_turn = previous_idle_callback_turn;
     self.timer_nesting_level = previous_timer_nesting_level;
     self.currently_running_task = previous_running_task;
     microtask_result?;
@@ -4357,6 +4375,57 @@ mod tests {
     assert!(
       host.remaining[1] <= host.remaining[0],
       "expected idle callback budget to be non-increasing within an idle period; first={}ms second={}ms",
+      host.remaining[0],
+      host.remaining[1]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn idle_period_deadline_persists_across_microtasks_queued_by_idle_callbacks() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      remaining: Vec<f64>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    let clock_for_microtasks = clock.clone();
+    event_loop.request_idle_callback(None, move |host, event_loop, did_timeout, remaining_ms| {
+      assert!(!did_timeout);
+      host.remaining.push(remaining_ms);
+
+      // Queue a microtask which itself queues another microtask. This exercises that microtasks
+      // running as part of an idle callback's microtask checkpoint do not reset the shared idle
+      // period deadline.
+      let clock_for_microtasks = clock_for_microtasks.clone();
+      event_loop.queue_microtask(move |_host, event_loop| {
+        clock_for_microtasks.advance(Duration::from_millis(10));
+        event_loop.queue_microtask(|_host, _event_loop| Ok(()))?;
+        Ok(())
+      })?;
+
+      Ok(())
+    })?;
+
+    event_loop.request_idle_callback(None, |host, _event_loop, did_timeout, remaining_ms| {
+      assert!(!did_timeout);
+      host.remaining.push(remaining_ms);
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(host.remaining.len(), 2);
+    assert!(
+      host.remaining[1] < host.remaining[0],
+      "expected timeRemaining() to shrink across an idle period even when microtasks run between callbacks; first={}ms second={}ms",
       host.remaining[0],
       host.remaining[1]
     );
