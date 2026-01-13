@@ -108,7 +108,8 @@ fn describe_done_argument(
   if let Value::Object(obj) = value {
     let mut inner = scope.reborrow();
     inner.push_root(value)?;
-    let name = get_object_string_data_property(&mut inner, obj, "name");
+    let name = get_object_string_data_property(&mut inner, obj, "name")
+      .or_else(|| get_object_constructor_name(&mut inner, obj));
     let message = get_object_string_data_property(&mut inner, obj, "message");
 
     if let Some(name) = name {
@@ -1283,6 +1284,27 @@ fn execute_module(
   runtime.heap.remove_root(load_promise_root);
   load_outcome?;
 
+  // 3.5) Link the module graph (instantiation). This ensures link-time failures are reported as
+  // `negative.phase: resolution` in test262.
+  {
+    let global_object = runtime.realm().global_object();
+    let realm_id = runtime.realm().id();
+    let link_result: Result<(), VmError> = {
+      let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
+      modules.link(vm, heap, global_object, realm_id, module_id)
+    };
+    if let Err(err) = link_result {
+      return Err(map_vm_error_with_phase(
+        case,
+        module_src,
+        cancel,
+        runtime,
+        ExecPhase::Resolution,
+        err,
+      ));
+    }
+  }
+
   // 4) Evaluate the root module (promise-returning API).
   let eval_promise = {
     let global_object = runtime.realm().global_object();
@@ -1582,7 +1604,8 @@ fn describe_thrown_value_with_stack(
       let mut scope = runtime.heap.scope();
       let _ = scope.push_root(value);
 
-      let typ = get_object_string_data_property(&mut scope, obj, "name");
+      let typ = get_object_string_data_property(&mut scope, obj, "name")
+        .or_else(|| get_object_constructor_name(&mut scope, obj));
       let message = get_object_string_data_property(&mut scope, obj, "message")
         .or_else(|| typ.clone())
         .unwrap_or_else(|| "<object>".to_string());
@@ -1779,7 +1802,8 @@ fn describe_thrown_value(runtime: &mut vm_js::JsRuntime, value: Value) -> (Optio
 
   match value {
     Value::Object(obj) => {
-      let typ = get_object_string_data_property(&mut scope, obj, "name");
+      let typ = get_object_string_data_property(&mut scope, obj, "name")
+        .or_else(|| get_object_constructor_name(&mut scope, obj));
       let message = get_object_string_data_property(&mut scope, obj, "message")
         .or_else(|| typ.clone())
         .unwrap_or_else(|| "<object>".to_string());
@@ -1833,6 +1857,27 @@ fn get_object_string_data_property(
     },
     PropertyKind::Accessor { .. } => None,
   }
+}
+
+fn get_object_data_property(
+  scope: &mut vm_js::Scope<'_>,
+  obj: vm_js::GcObject,
+  prop: &str,
+) -> Option<Value> {
+  let key = PropertyKey::from_string(scope.alloc_string(prop).ok()?);
+  let desc = scope.heap().get_property(obj, &key).ok().flatten()?;
+  match desc.kind {
+    PropertyKind::Data { value, .. } => Some(value),
+    PropertyKind::Accessor { .. } => None,
+  }
+}
+
+fn get_object_constructor_name(scope: &mut vm_js::Scope<'_>, obj: vm_js::GcObject) -> Option<String> {
+  let ctor = get_object_data_property(scope, obj, "constructor")?;
+  let Value::Object(ctor_obj) = ctor else {
+    return None;
+  };
+  get_object_string_data_property(scope, ctor_obj, "name")
 }
  
 fn format_js_number(n: f64) -> String {

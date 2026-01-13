@@ -1230,25 +1230,37 @@ impl<'a> Parser<'a> {
               }
             };
 
-            let operand = if has_operand {
-              if operator.name == OperatorName::New {
+              let operand = if has_operand {
+                if operator.name == OperatorName::New {
                 // `new` has tricky precedence rules in ECMAScript: `new Foo().bar` should parse as
                 // `(new Foo()).bar`, not `new (Foo().bar)`.
                 //
-                // `parse-js` represents `new Foo()` as a `UnaryExpr(New)` whose `argument` is a
-                // `CallExpr` node (holding the constructor target and arguments). To preserve
-                // correct chaining semantics, we must parse **only** the constructor target
-                // (including member access within the callee, e.g. `Foo.bar`) and the optional
-                // argument list, but we must *not* eagerly consume further member/call operators
-                // after that argument list.
+                  // `parse-js` represents `new Foo()` as a `UnaryExpr(New)` whose `argument` is a
+                  // `CallExpr` node (holding the constructor target and arguments). To preserve
+                  // correct chaining semantics, we must parse **only** the constructor target
+                  // (including member access within the callee, e.g. `Foo.bar`) and the optional
+                  // argument list, but we must *not* eagerly consume further member/call operators
+                  // after that argument list.
                 //
-                // Without this special-case, `new Foo().bar` would incorrectly build
-                // `Unary(New, Member(Call(Foo()), "bar"))`, which evaluates `Foo()` as a *call*
-                // before applying `new`, breaking real-world patterns like
-                // `new URL("...").href` / `new URL("...").searchParams.get("q")`.
+                  // Without this special-case, `new Foo().bar` would incorrectly build
+                  // `Unary(New, Member(Call(Foo()), "bar"))`, which evaluates `Foo()` as a *call*
+                  // before applying `new`, breaking real-world patterns like
+                  // `new URL("...").href` / `new URL("...").searchParams.get("q")`.
 
-                // Parse the constructor target expression without consuming call syntax.
-                let mut callee = p.expr_operand(ctx, terminators, asi)?;
+                  // `new import(...)` is not valid ECMAScript syntax, but `new (import(...))` is.
+                  // Reject the direct form by detecting `new` followed immediately by the literal
+                  // `import` keyword and its call parentheses.
+                  if p.peek().typ == TT::KeywordImport {
+                    let [import_tok, next] = p.peek_n::<2>();
+                    if next.typ == TT::ParenthesisOpen {
+                      return Err(import_tok.error(SyntaxErrorType::ExpectedSyntax(
+                        "parenthesized import()",
+                      )));
+                    }
+                  }
+
+                  // Parse the constructor target expression without consuming call syntax.
+                  let mut callee = p.expr_operand(ctx, terminators, asi)?;
 
                 // Consume member access chains (`new Foo.bar()`).
                 loop {

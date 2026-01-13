@@ -6567,7 +6567,45 @@ impl<'a> Evaluator<'a> {
       Stmt::Import(_) => Ok(Completion::empty()),
       Stmt::ExportList(_) => Ok(Completion::empty()),
       Stmt::ExportDefaultExpr(stmt) => {
+        let is_anonymous_function_or_class = match stmt.stx.expression.stx.as_ref() {
+          Expr::Func(func) => func.stx.name.is_none(),
+          Expr::Class(class) => class.stx.name.is_none(),
+          Expr::ArrowFunc(_) => true,
+          _ => false,
+        };
+
         let value = self.eval_expr(scope, &stmt.stx.expression)?;
+
+        // ECMA-262 `ExportDefaultDeclaration` performs `SetFunctionName` when exporting an anonymous
+        // function/class expression. Do this before initializing the module binding.
+        if is_anonymous_function_or_class {
+          if let Value::Object(func_obj) = value {
+            let name_key = PropertyKey::String(scope.common_key_name()?);
+            let should_set_name = match scope.heap().object_get_own_property(func_obj, &name_key)? {
+              None => true,
+              Some(desc) => match desc.kind {
+                PropertyKind::Data {
+                  value: Value::String(s),
+                  ..
+                } => scope.heap().get_string(s)?.is_empty(),
+                _ => false,
+              },
+            };
+
+            if should_set_name {
+              let mut name_scope = scope.reborrow();
+              let default_s = name_scope.alloc_string("default")?;
+              name_scope.push_root(Value::String(default_s))?;
+              crate::function_properties::set_function_name(
+                &mut name_scope,
+                func_obj,
+                PropertyKey::String(default_s),
+                None,
+              )?;
+            }
+          }
+        }
+
         let binding_name = "*default*";
         if !scope
           .heap()
@@ -17773,6 +17811,19 @@ fn async_eval_class_after_super(
         return Err(e);
       }
     };
+
+  // Class constructor bodies (the hidden function object invoked via `[[Construct]]`) use the
+  // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against
+  // `super.prototype`.
+  if let Some(body_func) = ctor_body_func {
+    if let Err(err) = class_scope
+      .heap_mut()
+      .set_function_home_object(body_func, Some(prototype_obj))
+    {
+      class_scope.heap_mut().remove_root(func_root);
+      return Err(err);
+    }
+  }
 
   // Class constructor bodies (the hidden function object invoked via `[[Construct]]`) use the
   // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against

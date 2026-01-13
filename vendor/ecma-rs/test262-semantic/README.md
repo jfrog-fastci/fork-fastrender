@@ -101,6 +101,12 @@ The runner ships with a built-in suite at `suites/smoke.toml`, usable via:
 bash scripts/cargo_agent.sh run -p test262-semantic -- --suite smoke
 ```
 
+There is also an initial module-focused suite at `suites/modules_smoke.toml`:
+
+```bash
+bash scripts/cargo_agent.sh run -p test262-semantic -- --suite modules_smoke
+```
+
 If a suite lists an explicit test ID that does not exist in the checkout, the
 runner errors with a clear message.
 
