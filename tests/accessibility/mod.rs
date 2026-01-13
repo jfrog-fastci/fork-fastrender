@@ -7,6 +7,7 @@ mod document_title;
 mod list_context;
 mod live_state;
 mod name_computation;
+mod node_id;
 mod relations_extra;
 mod relations_labels_controls;
 mod states_roles;

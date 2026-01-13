@@ -165,6 +165,12 @@ pub struct AccessibilityTextSelection {
 /// A node in the exported accessibility tree.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AccessibilityNode {
+  /// 1-indexed pre-order identifier for the originating styled/DOM node.
+  ///
+  /// This is used for mapping exported accessibility nodes back to rendered elements (e.g. for
+  /// AccessKit integration), but must not affect the stable JSON schema used by snapshot tests.
+  #[serde(skip)]
+  pub node_id: usize,
   pub role: String,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub role_description: Option<String>,
@@ -320,6 +326,7 @@ pub fn build_accessibility_tree(
   }
 
   Ok(AccessibilityNode {
+    node_id: root.node_id,
     role: "document".to_string(),
     role_description: None,
     name: document_title,
@@ -1888,6 +1895,7 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
             let relations = compute_relations(node, ctx, invalid);
 
             vec![AccessibilityNode {
+              node_id: node.node_id,
               role,
               role_description,
               name,
