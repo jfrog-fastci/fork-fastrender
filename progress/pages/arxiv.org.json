@@ -16,7 +16,7 @@
     "layout": 68.2543543207547,
     "paint": 25.093512617924524
   },
-  "notes": "",
+  "notes": "Visually close overall: the Cornell identity bar + red arXiv masthead render correctly and the main content structure matches. Remaining diffs vs Chrome are dominated by (1) text rasterization/hinting differences and (2) different line breaks in the long semicolon-separated inline link lists (e.g. the many subcategory links under Physics/Math/etc), plus minor UA form-control styling differences for the header/search `<input>`/`<select>` widgets.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 173886,
