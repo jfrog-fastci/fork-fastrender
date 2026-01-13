@@ -2619,8 +2619,34 @@ impl PreparedDocument {
     self.paint_with_options_frame_internal(options, Some(animation_state_store))
   }
 
+  pub(crate) fn paint_with_options_frame_with_animation_state_store_and_fragment_tree(
+    &self,
+    fragment_tree: FragmentTree,
+    options: PreparedPaintOptions,
+    animation_state_store: &mut animation::AnimationStateStore,
+  ) -> Result<PaintedFrame> {
+    self.paint_with_options_frame_internal_with_fragment_tree(
+      fragment_tree,
+      options,
+      Some(animation_state_store),
+    )
+  }
+
   fn paint_with_options_frame_internal(
     &self,
+    options: PreparedPaintOptions,
+    animation_state_store: Option<&mut animation::AnimationStateStore>,
+  ) -> Result<PaintedFrame> {
+    self.paint_with_options_frame_internal_with_fragment_tree(
+      self.fragment_tree.clone(),
+      options,
+      animation_state_store,
+    )
+  }
+
+  fn paint_with_options_frame_internal_with_fragment_tree(
+    &self,
+    fragment_tree: FragmentTree,
     options: PreparedPaintOptions,
     animation_state_store: Option<&mut animation::AnimationStateStore>,
   ) -> Result<PaintedFrame> {
@@ -2649,7 +2675,7 @@ impl PreparedDocument {
       );
       let mut animation_state_store = animation_state_store;
       paint_fragment_tree_with_state(
-        self.fragment_tree.clone(),
+        fragment_tree,
         scroll_state,
         scrollport_viewport,
         paint_viewport,

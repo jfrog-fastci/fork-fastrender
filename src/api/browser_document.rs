@@ -306,29 +306,30 @@ fn apply_paint_interaction_state_to_fragment(
   }
 }
 
-fn apply_paint_interaction_state_to_prepared(
-  prepared: &mut PreparedDocument,
+fn apply_paint_interaction_state_to_fragment_tree(
+  box_tree: &BoxTree,
+  fragment_tree: &mut FragmentTree,
   interaction_state: Option<&InteractionState>,
 ) {
   // Apply document selection onto the fragment tree for paint-time highlighting.
   crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
-    prepared.box_tree(),
-    &mut prepared.fragment_tree,
+    box_tree,
+    fragment_tree,
     interaction_state.and_then(|state| state.document_selection.as_ref()),
   );
 
-  let box_id_to_styled_node_id = collect_box_id_to_styled_node_id(prepared.box_tree());
+  let box_id_to_styled_node_id = collect_box_id_to_styled_node_id(box_tree);
 
   apply_paint_interaction_state_to_fragment(
-    &mut prepared.fragment_tree.root,
+    &mut fragment_tree.root,
     &box_id_to_styled_node_id,
     interaction_state,
   );
-  for root in prepared.fragment_tree.additional_fragments.iter_mut() {
+  for root in fragment_tree.additional_fragments.iter_mut() {
     apply_paint_interaction_state_to_fragment(root, &box_id_to_styled_node_id, interaction_state);
   }
 
-  if let Some(existing) = prepared.fragment_tree.appearance_none_form_controls.as_ref() {
+  if let Some(existing) = fragment_tree.appearance_none_form_controls.as_ref() {
     if !existing.is_empty() {
       let mut updated: HashMap<usize, Arc<crate::tree::box_tree::FormControl>> =
         HashMap::with_capacity(existing.len());
@@ -339,7 +340,7 @@ fn apply_paint_interaction_state_to_prepared(
         }
         updated.insert(*box_id, Arc::new(control));
       }
-      prepared.fragment_tree.appearance_none_form_controls = Some(Arc::new(updated));
+      fragment_tree.appearance_none_form_controls = Some(Arc::new(updated));
     }
   }
 }
@@ -1315,10 +1316,6 @@ impl BrowserDocument {
       // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
       // can be retried.
       self.paint_dirty = true;
-    } else if paint_changed {
-      if let Some(prepared) = self.prepared.as_mut() {
-        apply_paint_interaction_state_to_prepared(prepared, interaction_state);
-      }
     }
 
     if log_enabled {
@@ -1358,7 +1355,10 @@ impl BrowserDocument {
       );
     }
 
-    let frame = self.paint_from_cache_frame_with_deadline(paint_deadline)?;
+    let frame = self.paint_from_cache_frame_with_deadline_and_interaction_state(
+      paint_deadline,
+      interaction_state,
+    )?;
 
     // Clear flags only when a render was requested due to invalidation.
     if self.is_dirty() {
@@ -1391,6 +1391,16 @@ impl BrowserDocument {
     &mut self,
     deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
+    self.paint_from_cache_frame_with_deadline_and_interaction_state(deadline, None)
+  }
+
+  /// Paints the most recently laid-out document without re-running style/layout, applying paint-time
+  /// interaction-state overlays (document selection + form-control caret/IME).
+  pub fn paint_from_cache_frame_with_deadline_and_interaction_state(
+    &mut self,
+    deadline: Option<&crate::render_control::RenderDeadline>,
+    interaction_state: Option<&InteractionState>,
+  ) -> Result<super::PaintedFrame> {
     let animation_time = self.animation_time_for_paint();
     let Some(prepared) = self.prepared.as_ref() else {
       return Err(Error::Render(RenderError::InvalidParameters {
@@ -1401,12 +1411,9 @@ impl BrowserDocument {
     // Prefer an explicitly provided deadline; otherwise fall back to this document's configured
     // `RenderOptions::{timeout,cancel_callback}`.
     let _deadline_guard = if let Some(deadline) = deadline {
-      Some(crate::render_control::DeadlineGuard::install(Some(
-        deadline,
-      )))
+      Some(crate::render_control::DeadlineGuard::install(Some(deadline)))
     } else {
-      let deadline_enabled =
-        self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+      let deadline_enabled = self.options.timeout.is_some() || self.options.cancel_callback.is_some();
       deadline_enabled.then(|| {
         let options_deadline = crate::render_control::RenderDeadline::new(
           self.options.timeout,
@@ -1420,7 +1427,18 @@ impl BrowserDocument {
     crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
 
     let scroll_state = self.scroll_state();
-    let frame = prepared.paint_with_options_frame_with_animation_state_store(
+
+    // Clone and patch the fragment tree so interaction-state paint overlays do not mutate the
+    // cached `PreparedDocument` layout artifacts.
+    let mut fragment_tree = prepared.fragment_tree.clone();
+    apply_paint_interaction_state_to_fragment_tree(
+      prepared.box_tree(),
+      &mut fragment_tree,
+      interaction_state,
+    );
+
+    let frame = prepared.paint_with_options_frame_with_animation_state_store_and_fragment_tree(
+      fragment_tree,
       PreparedPaintOptions {
         scroll: Some(scroll_state),
         viewport: None,
@@ -1808,6 +1826,186 @@ mod tests {
     let _ = f()?;
     let captured = stages.lock().unwrap().clone();
     Ok(captured)
+  }
+
+  fn capture_stages_with_output<T>(f: impl FnOnce() -> Result<T>) -> Result<(T, Vec<StageHeartbeat>)> {
+    let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+    let stages_for_listener = Arc::clone(&stages);
+    let _guard = push_stage_listener(Some(Arc::new(move |stage| {
+      stages_for_listener.lock().unwrap().push(stage);
+    })));
+    let output = f()?;
+    let captured = stages.lock().unwrap().clone();
+    Ok((output, captured))
+  }
+
+  fn find_first_element_preorder_id(dom: &DomNode, tag: &str) -> Option<usize> {
+    let ids = crate::dom::enumerate_dom_ids(dom);
+    let mut stack: Vec<&DomNode> = vec![dom];
+    while let Some(node) = stack.pop() {
+      if let DomNodeType::Element { tag_name, .. } = &node.node_type {
+        if tag_name.eq_ignore_ascii_case(tag) {
+          return ids.get(&(node as *const DomNode)).copied();
+        }
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn count_document_selection_pixels(pixmap: &tiny_skia::Pixmap) -> usize {
+    let mut count = 0usize;
+    for y in 0..pixmap.height() {
+      for x in 0..pixmap.width() {
+        let p = pixmap.pixel(x, y).expect("pixel in bounds");
+        // Selection highlight is drawn as a light blue tint (e.g. rgba(0,120,215,0.35) over white
+        // -> ~rgb(166,208,241)). Use a loose heuristic to avoid coupling tightly to exact color
+        // constants.
+        if p.blue() > 220 && p.green() > 180 && p.red() < 220 {
+          count += 1;
+        }
+      }
+    }
+    count
+  }
+
+  fn caret_red_x_range(pixmap: &tiny_skia::Pixmap) -> Option<(u32, u32)> {
+    let mut min_x: Option<u32> = None;
+    let mut max_x: Option<u32> = None;
+    for y in 0..pixmap.height() {
+      for x in 0..pixmap.width() {
+        let p = pixmap.pixel(x, y).expect("pixel in bounds");
+        // Caret pixels are rendered with `caret-color` (we set it to red). Allow some tolerance for
+        // antialiasing.
+        if p.red() > 200 && p.green() < 80 && p.blue() < 80 {
+          min_x = Some(min_x.map_or(x, |m| m.min(x)));
+          max_x = Some(max_x.map_or(x, |m| m.max(x)));
+        }
+      }
+    }
+    min_x.zip(max_x)
+  }
+
+  #[test]
+  fn document_selection_repaints_from_cache_without_layout() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        p { margin: 0; font: 20px sans-serif; color: black; }
+      </style>
+      <p>Hello world</p>
+    "#;
+
+    let mut document =
+      BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(200, 40))?;
+
+    let base_state = InteractionState::default();
+    let frame0 =
+      document.render_frame_with_scroll_state_and_interaction_state(Some(&base_state))?;
+    assert_eq!(
+      count_document_selection_pixels(&frame0.pixmap),
+      0,
+      "expected no selection pixels before selection is applied"
+    );
+
+    let mut selected_state = base_state.clone();
+    selected_state.document_selection = Some(crate::interaction::state::DocumentSelectionState::All);
+
+    let (frame1, stages) = capture_stages_with_output(|| {
+      document
+        .render_if_needed_with_scroll_state_and_interaction_state(Some(&selected_state))?
+        .ok_or_else(|| Error::Other("expected render_if_needed to repaint for selection".to_string()))
+    })?;
+
+    assert!(
+      !stages.contains(&StageHeartbeat::Cascade)
+        && !stages.contains(&StageHeartbeat::BoxTree)
+        && !stages.contains(&StageHeartbeat::Layout),
+      "expected no cascade/box-tree/layout stages; got {stages:?}"
+    );
+    assert!(
+      stages.contains(&StageHeartbeat::PaintBuild)
+        || stages.contains(&StageHeartbeat::PaintRasterize),
+      "expected paint stage heartbeats; got {stages:?}"
+    );
+    assert!(
+      count_document_selection_pixels(&frame1.pixmap) > 0,
+      "expected selection highlight pixels after selection is applied"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn form_control_caret_repaints_from_cache_without_layout() -> Result<()> {
+    use crate::text::caret::CaretAffinity;
+
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        input {
+          font: 24px monospace;
+          caret-color: rgb(255, 0, 0);
+          border: 0;
+          padding: 0;
+          margin: 0;
+          background: white;
+          color: black;
+        }
+      </style>
+      <input value="aaaaaaaaaa">
+    "#;
+
+    let mut document =
+      BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(320, 40))?;
+    let input_id = find_first_element_preorder_id(document.dom(), "input")
+      .expect("expected to find <input> preorder id");
+
+    let mut state_end = InteractionState::default();
+    state_end.focused = Some(input_id);
+    state_end.set_focus_chain(vec![input_id]);
+    state_end.text_edit = Some(crate::interaction::state::TextEditPaintState {
+      node_id: input_id,
+      caret: 10,
+      caret_affinity: CaretAffinity::Downstream,
+      selection: None,
+    });
+
+    let frame_end = document.render_frame_with_scroll_state_and_interaction_state(Some(&state_end))?;
+    let caret_end = caret_red_x_range(&frame_end.pixmap).expect("expected caret pixels");
+
+    let mut state_start = state_end.clone();
+    if let Some(edit) = state_start.text_edit.as_mut() {
+      edit.caret = 0;
+    }
+
+    let (frame_start, stages) = capture_stages_with_output(|| {
+      document
+        .render_if_needed_with_scroll_state_and_interaction_state(Some(&state_start))?
+        .ok_or_else(|| Error::Other("expected caret change to invalidate and repaint".to_string()))
+    })?;
+
+    assert!(
+      !stages.contains(&StageHeartbeat::Cascade)
+        && !stages.contains(&StageHeartbeat::BoxTree)
+        && !stages.contains(&StageHeartbeat::Layout),
+      "expected no cascade/box-tree/layout stages; got {stages:?}"
+    );
+    assert!(
+      stages.contains(&StageHeartbeat::PaintBuild)
+        || stages.contains(&StageHeartbeat::PaintRasterize),
+      "expected paint stage heartbeats; got {stages:?}"
+    );
+
+    let caret_start = caret_red_x_range(&frame_start.pixmap).expect("expected caret pixels");
+    assert!(
+      caret_start.0 + 5 < caret_end.0,
+      "expected caret x to move left; start={caret_start:?}, end={caret_end:?}"
+    );
+    Ok(())
   }
 
   #[test]
