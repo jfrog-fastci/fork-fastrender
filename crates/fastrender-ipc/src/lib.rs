@@ -1288,6 +1288,15 @@ pub fn composite_paint_plan<'a>(
   let mut out = layers
     .next()
     .ok_or(CompositeError::BufferSizeMismatch)?;
+  // Validate the first layer buffer size. `composite_layer_in_place` checks subsequent layers, but a
+  // plan with no iframe slots would otherwise skip length validation entirely.
+  let expected_len = (out.width as usize)
+    .checked_mul(out.height as usize)
+    .and_then(|px| px.checked_mul(4))
+    .ok_or(CompositeError::BufferSizeMismatch)?;
+  if out.rgba8.len() != expected_len {
+    return Err(CompositeError::BufferSizeMismatch);
+  }
 
   for (slot, layer) in plan.slots.into_iter().zip(layers) {
     if let Some(child) = by_child.get(&slot.child) {
@@ -1714,6 +1723,23 @@ mod compositor_tests {
     assert_eq!(pixel(&out, 2, 2), [0, 0, 255, 255], "overlay should be above iframe");
     assert_eq!(pixel(&out, 1, 1), [255, 0, 0, 255], "iframe pixels should appear above background");
     assert_eq!(pixel(&out, 0, 0), [0, 0, 0, 255], "background should remain visible");
+  }
+
+  #[test]
+  fn composite_paint_plan_rejects_invalid_first_layer_buffer_size() {
+    let plan = FramePaintPlan {
+      frame_id: FrameId(1),
+      layers: vec![FrameBuffer {
+        width: 1,
+        height: 1,
+        rgba8: vec![0, 0, 0], // should be 4 bytes
+      }],
+      slots: Vec::new(),
+    };
+
+    let err = composite_paint_plan(plan, std::iter::empty::<(&SubframeInfo, &FrameBuffer)>())
+      .expect_err("expected invalid first layer size to be rejected");
+    assert_eq!(err, CompositeError::BufferSizeMismatch);
   }
 
   #[test]

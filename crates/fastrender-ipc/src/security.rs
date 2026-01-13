@@ -25,6 +25,17 @@ pub enum FrameOwnershipViolation {
     child_frame_id: FrameId,
     expected_parent_frame_id: Option<FrameId>,
   },
+  InvalidFrameBuffer {
+    frame_id: FrameId,
+    width: u32,
+    height: u32,
+    rgba8_len: usize,
+    expected_len: Option<usize>,
+  },
+  InvalidPaintPlan {
+    frame_id: FrameId,
+    error: crate::CompositeError,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +131,9 @@ impl BrowserIpcSecurityState {
         if !self.check_subframes(sender, frame_id, &subframes, RendererToBrowserKind::FrameReady) {
           return;
         }
+        if !self.check_frame_buffer(sender, frame_id, &buffer, RendererToBrowserKind::FrameReady) {
+          return;
+        }
         self.latest_frame.insert(frame_id, buffer);
       }
       RendererToBrowser::FramePaintPlan(plan) => {
@@ -137,11 +151,21 @@ impl BrowserIpcSecurityState {
         }
         // Simulated presentation state: flatten the embedder layers, treating any missing child
         // surfaces as transparent.
-        if let Ok(buffer) = crate::composite_paint_plan(
+        match crate::composite_paint_plan(
           plan,
           std::iter::empty::<(&crate::SubframeInfo, &crate::FrameBuffer)>(),
         ) {
-          self.latest_frame.insert(frame_id, buffer);
+          Ok(buffer) => {
+            self.latest_frame.insert(frame_id, buffer);
+          }
+          Err(err) => {
+            self.protocol_violation(
+              sender,
+              frame_id,
+              RendererToBrowserKind::FramePaintPlan,
+              FrameOwnershipViolation::InvalidPaintPlan { frame_id, error: err },
+            );
+          }
         }
       }
       RendererToBrowser::SubframesDiscovered {
@@ -231,6 +255,35 @@ impl BrowserIpcSecurityState {
       }
     }
     true
+  }
+
+  fn check_frame_buffer(
+    &mut self,
+    sender: RendererId,
+    frame_id: FrameId,
+    buffer: &FrameBuffer,
+    message: RendererToBrowserKind,
+  ) -> bool {
+    let expected_len = (buffer.width as usize)
+      .checked_mul(buffer.height as usize)
+      .and_then(|px| px.checked_mul(4));
+    if expected_len == Some(buffer.rgba8.len()) {
+      return true;
+    }
+
+    self.protocol_violation(
+      sender,
+      frame_id,
+      message,
+      FrameOwnershipViolation::InvalidFrameBuffer {
+        frame_id,
+        width: buffer.width,
+        height: buffer.height,
+        rgba8_len: buffer.rgba8.len(),
+        expected_len,
+      },
+    );
+    false
   }
 
   fn protocol_violation(
@@ -660,5 +713,79 @@ mod tests {
     assert_eq!(buffer.width, 1);
     assert_eq!(buffer.height, 1);
     assert_eq!(buffer.rgba8, vec![9, 8, 7, 255]);
+  }
+
+  #[test]
+  fn frame_ready_with_invalid_buffer_len_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let frame = FrameId(1);
+    browser.assign_frame(frame, renderer);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: frame,
+        buffer: FrameBuffer {
+          width: 1,
+          height: 1,
+          rgba8: vec![0, 0, 0], // should be 4 bytes
+        },
+        subframes: vec![],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    assert!(
+      browser.latest_frame(frame).is_none(),
+      "invalid FrameReady must not update presentation state"
+    );
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::InvalidFrameBuffer { .. },
+        } if *process_id == renderer && *frame_id == frame
+      )),
+      "expected InvalidFrameBuffer protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_paint_plan_with_invalid_layer_buffer_len_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let frame = FrameId(1);
+    browser.assign_frame(frame, renderer);
+
+    let plan = crate::FramePaintPlan {
+      frame_id: frame,
+      layers: vec![FrameBuffer {
+        width: 1,
+        height: 1,
+        rgba8: vec![0, 0, 0], // should be 4 bytes
+      }],
+      slots: vec![],
+    };
+    browser.handle_renderer_message(renderer, RendererToBrowser::FramePaintPlan(plan));
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FramePaintPlan,
+          violation: FrameOwnershipViolation::InvalidPaintPlan { .. },
+        } if *process_id == renderer && *frame_id == frame
+      )),
+      "expected InvalidPaintPlan protocol event (events={events:?})"
+    );
   }
 }
