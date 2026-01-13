@@ -71,33 +71,15 @@ fn async_generator_prototype_methods_validate_this_and_basic_next() -> Result<()
   let mut rt = JsRuntime::new(vm, heap)?;
   let intr = *rt.realm().intrinsics();
 
-  // Feature-detect async generator support: `vm-js` historically parsed `async function*` but threw
-  // a SyntaxError at runtime. When unsupported, skip this test so it becomes active automatically
-  // once semantics are implemented.
-  match rt.exec_script("async function* g() { yield 1; }\ng().next();") {
-    Ok(_) => {
-      // Drain any jobs scheduled by the `.next()` probe so it does not affect later assertions.
-      rt.teardown_microtasks();
-    }
-    Err(err) => {
-      if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? {
-        return Ok(());
-      }
-      return Err(err);
-    }
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
+    return Ok(());
   }
+
+  rt.exec_script("async function* g() { yield 1; }")?;
 
   // Materialize one async generator object so we can walk its prototype chain to find
   // `%AsyncGeneratorPrototype%` without relying on a dedicated intrinsics accessor.
-  match rt.exec_script("var it = g();") {
-    Ok(_) => {}
-    Err(err) => {
-      if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? {
-        return Ok(());
-      }
-      return Err(err);
-    }
-  }
+  rt.exec_script("var it = g();")?;
   let it = match rt.exec_script("it")? {
     Value::Object(o) => o,
     other => panic!("expected async generator object, got {other:?}"),
