@@ -94,7 +94,7 @@ If the windowed UI fails to start due to `wgpu` adapter/device creation issues (
 desktop, VMs, or systems without a working GPU stack), you can force a software adapter and/or
 backend:
 
-- `browser --wgpu-fallback` / `FASTR_BROWSER_WGPU_FALLBACK=1`
+- `browser --force-fallback-adapter` (alias: `--wgpu-fallback`) / `FASTR_BROWSER_WGPU_FALLBACK=1`
 - `browser --wgpu-backends gl` / `FASTR_BROWSER_WGPU_BACKENDS=gl`
 
 For CI environments without a display/GPU, the `browser` entrypoint provides **test-only** headless
@@ -115,8 +115,8 @@ help with debugging and forcing a specific selection strategy:
   - `high` prefers a high-performance/discrete GPU (default).
   - `low` prefers an integrated/low-power GPU.
   - `none` leaves the decision up to wgpu/the platform.
-- `--force-fallback-adapter` — maps to `RequestAdapterOptions.force_fallback_adapter` (useful for
-  software adapters).
+- `--force-fallback-adapter` (alias: `--wgpu-fallback`) — maps to
+  `RequestAdapterOptions.force_fallback_adapter` (useful for software adapters).
 - `--wgpu-backends <list>` — restrict the backend set used to create the wgpu instance (comma
   separated), e.g. `--wgpu-backends vulkan,gl`.
 
