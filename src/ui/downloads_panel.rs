@@ -12,6 +12,7 @@ use super::{
   a11y_labels, motion::UiMotion, panel_empty_state, panel_header_with_actions, panel_search_field,
   theme::BrowserTheme, BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
 };
+use super::string_match::contains_ascii_case_insensitive;
 
 fn format_bytes(bytes: u64) -> String {
   const KB: f64 = 1024.0;
@@ -58,48 +59,62 @@ fn download_progress_a11y_label(
   }
 }
 
-fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
-  if needle.is_empty() {
-    return true;
+fn download_status_search_haystack(status: &DownloadStatus) -> &'static str {
+  match status {
+    DownloadStatus::InProgress { .. } => "downloading inprogress in-progress",
+    DownloadStatus::Completed => "completed complete done",
+    DownloadStatus::Cancelled => "cancelled canceled",
+    DownloadStatus::Failed { .. } => "failed error",
   }
-  if haystack.is_empty() {
-    return false;
-  }
-
-  let haystack = haystack.as_bytes();
-  let needle = needle.as_bytes();
-  if needle.len() > haystack.len() {
-    return false;
-  }
-
-  // Naive ASCII case-insensitive substring search. This avoids allocating `to_ascii_lowercase()`
-  // strings every frame while still remaining linear in the total length of download strings.
-  for start in 0..=haystack.len().saturating_sub(needle.len()) {
-    if haystack[start].to_ascii_lowercase() != needle[0].to_ascii_lowercase() {
-      continue;
-    }
-    let mut matched = true;
-    for offset in 1..needle.len() {
-      if haystack[start + offset].to_ascii_lowercase() != needle[offset].to_ascii_lowercase() {
-        matched = false;
-        break;
-      }
-    }
-    if matched {
-      return true;
-    }
-  }
-
-  false
 }
 
+fn download_matches_tokens(entry: &DownloadEntry, tokens_lower: &[&str]) -> bool {
+  if tokens_lower.is_empty() {
+    return true;
+  }
+
+  let file_name = entry.file_name.trim();
+  let url = entry.url.trim();
+  let path = entry.path.to_string_lossy();
+  let status = download_status_search_haystack(&entry.status);
+  let error = match &entry.status {
+    DownloadStatus::Failed { error } => Some(error.trim()).filter(|e| !e.is_empty()),
+    _ => None,
+  };
+
+  for token_lower in tokens_lower {
+    if contains_ascii_case_insensitive(file_name, token_lower)
+      || contains_ascii_case_insensitive(url, token_lower)
+      || contains_ascii_case_insensitive(path.as_ref(), token_lower)
+      || contains_ascii_case_insensitive(status, token_lower)
+      || error.is_some_and(|err| contains_ascii_case_insensitive(err, token_lower))
+    {
+      continue;
+    }
+    return false;
+  }
+
+  true
+}
+
+/// Returns `true` when `entry` should be included for `query`.
+///
+/// Search semantics:
+/// - Query is split by whitespace into tokens; every token must match at least one download field.
+/// - Matching is ASCII case-insensitive (non-ASCII bytes must match exactly).
+/// - Tokens match against file name, URL, local path display, and status words ("failed", etc).
 pub fn download_matches_query(entry: &DownloadEntry, query: &str) -> bool {
   let query = query.trim();
   if query.is_empty() {
     return true;
   }
 
-  contains_ignore_ascii_case(&entry.file_name, query) || contains_ignore_ascii_case(&entry.url, query)
+  let query_lower = query.to_ascii_lowercase();
+  let tokens: Vec<&str> = query_lower
+    .split_whitespace()
+    .filter(|t| !t.is_empty())
+    .collect();
+  download_matches_tokens(entry, &tokens)
 }
 
 #[derive(Debug, Default)]
@@ -219,6 +234,8 @@ pub fn downloads_panel_ui(
         &mut request_focus_search,
         "Search downloads",
       );
+      #[cfg(test)]
+      store_test_id(ui.ctx(), "downloads_panel_search_input_id", search_out.response.id);
       // Allow Escape to close the downloads panel when the search field is focused *and* there is
       // nothing left to clear.
       if search_out.response.has_focus()
@@ -267,13 +284,20 @@ pub fn downloads_panel_ui(
       let row_total_h = row_content_h + row_gap;
 
       let query = search_query.trim();
-      let filtered_count = if query.is_empty() {
+      let query_lower = query.to_ascii_lowercase();
+      let tokens: Vec<&str> = query_lower
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect();
+      let has_query = !tokens.is_empty();
+
+      let filtered_count = if !has_query {
         None
       } else {
         let matches = downloads
           .iter()
           .rev()
-          .filter(|entry| download_matches_query(entry, query))
+          .filter(|entry| download_matches_tokens(entry, &tokens))
           .count();
         if matches == 0 {
           panel_empty_state(ui, BrowserIcon::Search, "No matching downloads", None, None);
@@ -643,7 +667,7 @@ pub fn downloads_panel_ui(
             });
           };
 
-          if query.is_empty() {
+          if !has_query {
             let total = downloads.len();
             for row_idx in row_range {
               let Some(entry) = total
@@ -658,7 +682,7 @@ pub fn downloads_panel_ui(
           } else {
             let mut match_idx = 0usize;
             for entry in downloads.iter().rev() {
-              if !download_matches_query(entry, query) {
+              if !download_matches_tokens(entry, &tokens) {
                 continue;
               }
               if match_idx < row_range.start {
@@ -899,6 +923,75 @@ mod tests {
   }
 
   #[test]
+  fn download_matches_query_tokenized_matches_filename_url_and_path() {
+    let entry = DownloadEntry {
+      download_id: DownloadId(1),
+      tab_id: TabId(1),
+      url: "https://example.com/files/Report.pdf".to_string(),
+      file_name: "Report.pdf".to_string(),
+      path: PathBuf::from("/home/user/Downloads/Report.pdf"),
+      status: DownloadStatus::Completed,
+    };
+
+    assert!(
+      download_matches_query(&entry, "report example downloads"),
+      "expected tokens to match across file name/url/path"
+    );
+    assert!(
+      !download_matches_query(&entry, "report example missingtoken"),
+      "expected non-matching token to reject the entry"
+    );
+  }
+
+  #[test]
+  fn download_matches_query_matches_status_words() {
+    let failed = DownloadEntry {
+      download_id: DownloadId(1),
+      tab_id: TabId(1),
+      url: "https://example.com/file.zip".to_string(),
+      file_name: "file.zip".to_string(),
+      path: PathBuf::from("/tmp/file.zip"),
+      status: DownloadStatus::Failed {
+        error: "disk full".to_string(),
+      },
+    };
+    assert!(download_matches_query(&failed, "failed"));
+
+    let completed = DownloadEntry {
+      download_id: DownloadId(2),
+      tab_id: TabId(1),
+      url: "https://example.com/file.zip".to_string(),
+      file_name: "file.zip".to_string(),
+      path: PathBuf::from("/tmp/file.zip"),
+      status: DownloadStatus::Completed,
+    };
+    assert!(download_matches_query(&completed, "completed"));
+
+    let active = DownloadEntry {
+      download_id: DownloadId(3),
+      tab_id: TabId(1),
+      url: "https://example.com/file.zip".to_string(),
+      file_name: "file.zip".to_string(),
+      path: PathBuf::from("/tmp/file.zip"),
+      status: DownloadStatus::InProgress {
+        received_bytes: 10,
+        total_bytes: Some(20),
+      },
+    };
+    assert!(download_matches_query(&active, "downloading"));
+
+    let cancelled = DownloadEntry {
+      download_id: DownloadId(4),
+      tab_id: TabId(1),
+      url: "https://example.com/file.zip".to_string(),
+      file_name: "file.zip".to_string(),
+      path: PathBuf::from("/tmp/file.zip"),
+      status: DownloadStatus::Cancelled,
+    };
+    assert!(download_matches_query(&cancelled, "cancelled"));
+  }
+
+  #[test]
   fn copy_link_action_emits_download_url() {
     let ctx = egui::Context::default();
     let theme = BrowserTheme::dark(None);
@@ -1096,5 +1189,68 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(output.clear_completed_requested);
+  }
+
+  #[test]
+  fn downloads_panel_search_escape_clears_then_closes() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::dark(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let downloads: Vec<DownloadEntry> = Vec::new();
+    let mut search_query = "report".to_string();
+
+    // Frame 0: render once to capture the search input id and request initial focus.
+    begin_frame(&ctx, Vec::new());
+    let output = downloads_panel_ui(
+      &ctx,
+      &downloads,
+      &mut search_query,
+      &theme,
+      true,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    assert!(!output.close_requested, "panel should not request close on open");
+    let search_id = expect_temp_id(&ctx, "downloads_panel_search_input_id");
+
+    // Frame 1: Escape should clear the query (and not close).
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let output = downloads_panel_ui(
+      &ctx,
+      &downloads,
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(search_id)),
+      "expected search field to retain focus after clearing"
+    );
+    assert!(
+      search_query.trim().is_empty(),
+      "expected Escape to clear search query"
+    );
+    assert!(
+      !output.close_requested,
+      "expected first Escape to clear search, not close panel"
+    );
+
+    // Frame 2: Escape again should close (query already empty, nothing left to clear).
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let output = downloads_panel_ui(
+      &ctx,
+      &downloads,
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    assert!(
+      output.close_requested,
+      "expected second Escape (with empty query) to request panel close"
+    );
   }
 }

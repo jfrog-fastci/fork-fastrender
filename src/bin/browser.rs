@@ -19990,7 +19990,6 @@ impl App {
 
     let request_initial_focus = self.downloads_panel_request_focus && !self.chrome_has_text_focus;
     self.downloads_panel_request_focus = false;
-
     let output = fastrender::ui::panels::downloads_panel_ui(
       ctx,
       fastrender::ui::panels::DownloadsPanelInput {

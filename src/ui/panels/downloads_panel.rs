@@ -14,7 +14,10 @@ pub struct DownloadsPanelInput<'a> {
 
 pub type DownloadsPanelOutput = downloads_panel::DownloadsPanelOutput;
 
-pub fn downloads_panel_ui(ctx: &egui::Context, input: DownloadsPanelInput<'_>) -> DownloadsPanelOutput {
+pub fn downloads_panel_ui(
+  ctx: &egui::Context,
+  input: DownloadsPanelInput<'_>,
+) -> DownloadsPanelOutput {
   downloads_panel::downloads_panel_ui(
     ctx,
     input.downloads,
