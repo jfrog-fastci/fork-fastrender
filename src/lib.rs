@@ -255,7 +255,6 @@ pub(crate) mod testing;
 pub mod js;
 pub mod memory;
 pub mod perf_log_schema;
-pub mod media;
 pub mod multiprocess;
 pub mod net;
 #[cfg(feature = "direct_websocket")]
