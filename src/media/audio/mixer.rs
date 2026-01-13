@@ -410,7 +410,7 @@ mod tests {
     let sample_rate = 1_000;
     let channels = 1;
     let duration = Duration::from_millis(5);
-    let impulse = test_signal::impulse(duration, sample_rate, channels);
+    let impulse = test_signal::impulse_duration(duration, sample_rate, channels);
     let frames = impulse.len() / channels as usize;
 
     let mut mixer = AudioMixer::new(channels, sample_rate, Duration::from_secs(1));

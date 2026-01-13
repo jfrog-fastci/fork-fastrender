@@ -396,7 +396,7 @@ mod tests {
     let sample_rate = 8_000;
     let channels = 2;
     let duration = Duration::from_millis(10);
-    let samples = test_signal::impulse(duration, sample_rate, channels);
+    let samples = test_signal::impulse_duration(duration, sample_rate, channels);
 
     {
       let backend = WavAudioBackend::new_with_config(

@@ -100,7 +100,11 @@ mod tests {
     let channels = 1;
 
     let mut q = PrerollQueue::new(channels, 4);
-    q.push(&test_signal::impulse(Duration::from_millis(3), sample_rate, channels));
+    q.push(&test_signal::impulse_duration(
+      Duration::from_millis(3),
+      sample_rate,
+      channels,
+    ));
 
     let out = q.pop_frames(10);
     assert!(out.is_empty(), "should not output before preroll is satisfied");
@@ -118,7 +122,11 @@ mod tests {
     let channels = 1;
 
     let mut q = PrerollQueue::new(channels, 10);
-    q.push(&test_signal::impulse(Duration::from_millis(3), sample_rate, channels));
+    q.push(&test_signal::impulse_duration(
+      Duration::from_millis(3),
+      sample_rate,
+      channels,
+    ));
     q.set_eos();
 
     let out = q.pop_frames(10);
@@ -129,4 +137,3 @@ mod tests {
     assert!(q.pop_frames(10).is_empty());
   }
 }
-

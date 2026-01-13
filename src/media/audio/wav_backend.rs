@@ -284,7 +284,8 @@ mod tests {
       let sink = backend.create_sink();
 
       // 4 stereo frames -> 8 samples -> 16 bytes of 16-bit PCM.
-      let samples = test_signal::impulse(Duration::from_millis(4), /* sample_rate */ 1000, 2);
+      let samples =
+        test_signal::impulse_duration(Duration::from_millis(4), /* sample_rate */ 1000, 2);
       assert_eq!(samples.len(), 8);
       assert_eq!(sink.push_interleaved_f32(&samples), samples.len());
 

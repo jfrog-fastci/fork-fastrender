@@ -667,7 +667,6 @@ impl dyn AudioBackend {
     Box::new(NullAudioBackend::new_with_defaults(cfg.default_sample_rate_hz, cfg.default_channels))
   }
 }
-
 impl PcmF32QueueProducer {
   /// Push decoder-provided PCM samples in a variety of common formats/layouts.
   ///
