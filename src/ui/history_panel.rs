@@ -272,12 +272,12 @@ pub fn history_panel_ui(
             ui.allocate_ui_at_rect(row_rect.shrink2(row_padding), |ui| {
               ui.spacing_mut().item_spacing.x = 6.0;
 
-              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let delete_resp = icon_button(ui, BrowserIcon::Close, "Delete", true);
-                delete_resp.widget_info({
-                  let label = format!("Delete history entry: {entry_label}");
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                  let delete_resp = icon_button(ui, BrowserIcon::Trash, "Delete", true);
+                  delete_resp.widget_info({
+                    let label = format!("Delete history entry: {entry_label}");
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                  });
                 if delete_resp.clicked() {
                   out.delete_index = Some(idx);
                   action_clicked = true;
