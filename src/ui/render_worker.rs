@@ -5728,7 +5728,7 @@ impl BrowserRuntime {
             web_events::EventInit {
               bubbles: true,
               cancelable: true,
-              composed: false,
+              composed: true,
             },
             mouse,
           ) {
@@ -5851,7 +5851,7 @@ impl BrowserRuntime {
               web_events::EventInit {
                 bubbles: true,
                 cancelable: true,
-                composed: false,
+                composed: true,
               },
               mouse,
             ) {
@@ -6163,7 +6163,7 @@ impl BrowserRuntime {
                 web_events::EventInit {
                   bubbles: true,
                   cancelable: true,
-                  composed: false,
+                  composed: true,
                 },
                 mouse,
               ) {
@@ -6215,17 +6215,17 @@ impl BrowserRuntime {
                   meta_key: modifiers.meta(),
                   related_target: None,
                 };
-                match js_tab.dispatch_mouse_event(
-                  node_id,
-                  click_type,
-                  web_events::EventInit {
-                    bubbles: true,
-                    cancelable: true,
-                    composed: false,
-                  },
-                  mouse,
-                ) {
-                  Ok(allowed) => default_allowed = allowed,
+                  match js_tab.dispatch_mouse_event(
+                    node_id,
+                    click_type,
+                    web_events::EventInit {
+                      bubbles: true,
+                      cancelable: true,
+                      composed: true,
+                    },
+                    mouse,
+                  ) {
+                    Ok(allowed) => default_allowed = allowed,
                   Err(err) => {
                     if js_cancel_callback() {
                       default_allowed = false;
@@ -6284,7 +6284,7 @@ impl BrowserRuntime {
                   web_events::EventInit {
                     bubbles: true,
                     cancelable: true,
-                    composed: false,
+                    composed: true,
                   },
                   mouse,
                 ) {
@@ -7092,7 +7092,7 @@ impl BrowserRuntime {
               web_events::EventInit {
                 bubbles: true,
                 cancelable: true,
-                composed: false,
+                composed: true,
               },
               mouse,
             ) {

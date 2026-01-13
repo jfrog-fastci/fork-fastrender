@@ -6158,7 +6158,7 @@ impl BrowserTab {
       EventInit {
         bubbles: true,
         cancelable: true,
-        composed: false,
+        composed: true,
       },
     );
     event.is_trusted = true;
@@ -6213,7 +6213,7 @@ impl BrowserTab {
       EventInit {
         bubbles: true,
         cancelable: true,
-        composed: false,
+        composed: true,
       },
       mouse,
     )
@@ -6576,7 +6576,7 @@ impl BrowserTab {
       EventInit {
         bubbles: true,
         cancelable: true,
-        composed: false,
+        composed: true,
       },
     );
     event.is_trusted = true;
