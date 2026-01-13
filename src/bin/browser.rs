@@ -214,6 +214,7 @@ struct DrainOutcome {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+#[allow(dead_code)]
 fn drain_mpsc_receiver_with_budget<T>(
   rx: &std::sync::mpsc::Receiver<T>,
   budget: DrainBudget,
@@ -598,6 +599,103 @@ fn sanitize_worker_to_ui_for_windowed_browser(
       })
     }
     other => Some(other),
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+struct WorkerMsgQueue {
+  inner: std::sync::Arc<parking_lot::Mutex<std::collections::VecDeque<fastrender::ui::WorkerToUi>>>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Clone)]
+struct WorkerMsgQueuePusher {
+  inner:
+    std::sync::Weak<parking_lot::Mutex<std::collections::VecDeque<fastrender::ui::WorkerToUi>>>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl WorkerMsgQueue {
+  fn new() -> Self {
+    Self {
+      inner: std::sync::Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new())),
+    }
+  }
+
+  fn pusher(&self) -> WorkerMsgQueuePusher {
+    WorkerMsgQueuePusher {
+      inner: std::sync::Arc::downgrade(&self.inner),
+    }
+  }
+
+  fn drain(&self) -> std::collections::VecDeque<fastrender::ui::WorkerToUi> {
+    let mut guard = self.inner.lock();
+    std::mem::take(&mut *guard)
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl WorkerMsgQueuePusher {
+  fn push(&self, msg: fastrender::ui::WorkerToUi) -> Result<(), fastrender::ui::WorkerToUi> {
+    let Some(inner) = self.inner.upgrade() else {
+      return Err(msg);
+    };
+    inner.lock().push_back(msg);
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod worker_msg_queue_tests {
+  use super::*;
+
+  #[test]
+  fn push_then_drain_clears_queue() {
+    let queue = WorkerMsgQueue::new();
+    let pusher = queue.pusher();
+
+    pusher
+      .push(fastrender::ui::WorkerToUi::DebugLog {
+        tab_id: fastrender::ui::TabId(1),
+        line: "one".to_string(),
+      })
+      .expect("queue should accept message");
+
+    let drained = queue.drain();
+    assert_eq!(drained.len(), 1);
+
+    let drained_again = queue.drain();
+    assert!(
+      drained_again.is_empty(),
+      "expected queue to be empty after drain"
+    );
+  }
+
+  #[test]
+  fn drain_preserves_message_order() {
+    let queue = WorkerMsgQueue::new();
+    let pusher = queue.pusher();
+
+    for idx in 0..10 {
+      pusher
+        .push(fastrender::ui::WorkerToUi::DebugLog {
+          tab_id: fastrender::ui::TabId(1),
+          line: format!("msg-{idx}"),
+        })
+        .expect("queue should accept message");
+    }
+
+    let drained = queue.drain();
+    let mut lines: Vec<String> = Vec::new();
+    for msg in drained {
+      match msg {
+        fastrender::ui::WorkerToUi::DebugLog { line, .. } => lines.push(line),
+        other => panic!("unexpected message variant: {other:?}"),
+      }
+    }
+
+    let expected: Vec<String> = (0..10).map(|idx| format!("msg-{idx}")).collect();
+    assert_eq!(lines, expected);
   }
 }
 
@@ -2494,7 +2592,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // immediately (including persisted state) before any new navigation commits happen.
   fastrender::ui::about_pages::set_about_snapshot_from_stores(&bookmarks, &history);
 
-  use std::collections::HashMap;
+  use std::collections::{HashMap, VecDeque};
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::Arc;
   use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -2511,16 +2609,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   struct BrowserWindow {
     app: App,
-    ui_rx: std::sync::mpsc::Receiver<fastrender::ui::WorkerToUi>,
+    worker_msgs: WorkerMsgQueue,
+    worker_msg_backlog: VecDeque<fastrender::ui::WorkerToUi>,
     worker_wake_pending: Arc<AtomicBool>,
     bridge_join: Option<std::thread::JoinHandle<()>>,
   }
 
   impl BrowserWindow {
-    fn shutdown(mut self) {
-      self.app.shutdown();
+    fn shutdown(self) {
+      let BrowserWindow {
+        mut app,
+        worker_msgs,
+        worker_msg_backlog: _,
+        worker_wake_pending: _,
+        mut bridge_join,
+      } = self;
 
-      if let Some(join) = self.bridge_join.take() {
+      app.shutdown();
+
+      // Drop the queue receiver before waiting on the bridge thread so it can stop forwarding
+      // messages even if the worker is still producing output.
+      drop(worker_msgs);
+
+      if let Some(join) = bridge_join.take() {
         let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
         let _ = std::thread::spawn(move || {
           let _ = done_tx.send(join.join());
@@ -2785,7 +2896,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let window_id = app.window.id();
     window_ids_by_index[idx] = Some(window_id);
 
-    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+    let worker_msgs = WorkerMsgQueue::new();
+    let worker_msgs_pusher = worker_msgs.pusher();
     let worker_wake_pending = Arc::new(AtomicBool::new(false));
     let worker_wake_counters = app
       .hud
@@ -2803,7 +2915,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let worker_wake_counters = worker_wake_counters.clone();
         move || {
           while let Ok(msg) = worker_to_ui_rx.recv() {
-            if ui_tx.send(msg).is_err() {
+            if worker_msgs_pusher.push(msg).is_err() {
               break;
             }
             // Coalesce wakes: the UI thread drains messages in batches so we only need one pending
@@ -2833,7 +2945,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       window_id,
       BrowserWindow {
         app,
-        ui_rx,
+        worker_msgs,
+        worker_msg_backlog: VecDeque::new(),
         worker_wake_pending,
         bridge_join: Some(bridge_join),
       },
@@ -3059,29 +3172,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           // can schedule another wake (avoids getting stuck with messages in the queue but no wake
           // event queued).
           win.worker_wake_pending.store(false, Ordering::Release);
+          // Clear the pending wake flag up-front so any messages that arrive while we're draining
+          // can schedule another wake (avoids getting stuck with messages in the queue but no wake
+          // event queued).
+          win.worker_wake_pending.store(false, Ordering::Release);
 
-          let outcome = {
-            let ui_rx = &win.ui_rx;
-            let app = &mut win.app;
-            drain_mpsc_receiver_with_budget(
-              ui_rx,
-              DrainBudget {
-                max_messages: 512,
-                max_duration: std::time::Duration::from_millis(2),
-              },
-              |msg| {
-                session_dirty |= matches!(
-                  &msg,
-                  fastrender::ui::WorkerToUi::NavigationCommitted { .. }
-                    | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
-                    | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
-                );
+          // Pull any newly-arrived worker messages into the local backlog with a single lock so we
+          // can process them without holding the mutex.
+          if win.worker_msg_backlog.is_empty() {
+            win.worker_msg_backlog = win.worker_msgs.drain();
+          } else {
+            let mut drained = win.worker_msgs.drain();
+            win.worker_msg_backlog.append(&mut drained);
+          }
 
-                let result = app.handle_worker_message(msg);
-                request_redraw |= result.request_redraw;
-                history_changed |= result.history_changed;
-              },
-            )
+          let budget = DrainBudget {
+            max_messages: 512,
+            max_duration: std::time::Duration::from_millis(2),
+          };
+          let start = std::time::Instant::now();
+          let mut drained_count = 0usize;
+          while drained_count < budget.max_messages && start.elapsed() < budget.max_duration {
+            let Some(msg) = win.worker_msg_backlog.pop_front() else {
+              break;
+            };
+            drained_count = drained_count.saturating_add(1);
+            session_dirty |= matches!(
+              &msg,
+              fastrender::ui::WorkerToUi::NavigationCommitted { .. }
+                | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
+                | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
+            );
+
+            let result = win.app.handle_worker_message(msg);
+            request_redraw |= result.request_redraw;
+            history_changed |= result.history_changed;
+          }
+          let outcome = DrainOutcome {
+            drained: drained_count,
+            stop_reason: if win.worker_msg_backlog.is_empty() {
+              DrainStopReason::Empty
+            } else {
+              DrainStopReason::Budget
+            },
           };
           needs_follow_up_wake = outcome.stop_reason == DrainStopReason::Budget;
 
@@ -3231,7 +3364,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         let window_id = app.window.id();
-        let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+        let worker_msgs = WorkerMsgQueue::new();
+        let worker_msgs_pusher = worker_msgs.pusher();
         let worker_wake_pending = Arc::new(AtomicBool::new(false));
         let worker_wake_counters = app
           .hud
@@ -3245,7 +3379,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let worker_wake_counters = worker_wake_counters.clone();
             move || {
               while let Ok(msg) = worker_to_ui_rx.recv() {
-                if ui_tx.send(msg).is_err() {
+                if worker_msgs_pusher.push(msg).is_err() {
                   break;
                 }
                 let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
@@ -3276,7 +3410,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           window_id,
           BrowserWindow {
             app,
-            ui_rx,
+            worker_msgs,
+            worker_msg_backlog: VecDeque::new(),
             worker_wake_pending,
             bridge_join: Some(bridge_join),
           },
@@ -3363,7 +3498,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.browser_state.chrome.address_bar_has_focus = false;
 
         let window_id = app.window.id();
-        let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+        let worker_msgs = WorkerMsgQueue::new();
+        let worker_msgs_pusher = worker_msgs.pusher();
         let worker_wake_pending = Arc::new(AtomicBool::new(false));
         let worker_wake_counters = app
           .hud
@@ -3377,7 +3513,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let worker_wake_counters = worker_wake_counters.clone();
             move || {
               while let Ok(msg) = worker_to_ui_rx.recv() {
-                if ui_tx.send(msg).is_err() {
+                if worker_msgs_pusher.push(msg).is_err() {
                   break;
                 }
                 let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
@@ -3408,7 +3544,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           window_id,
           BrowserWindow {
             app,
-            ui_rx,
+            worker_msgs,
+            worker_msg_backlog: VecDeque::new(),
             worker_wake_pending,
             bridge_join: Some(bridge_join),
           },
