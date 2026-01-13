@@ -20429,10 +20429,10 @@ fn node_list_iterator_native(
   };
 
   let iter_obj = scope.alloc_object()?;
+  // Iterator objects should be iterable themselves (i.e. `iter[Symbol.iterator]()` returns `iter`)
+  // so they can be consumed by APIs like `Array.from(nodeList.values())`.
   scope
     .heap_mut()
-    // Ensure the iterator itself is iterable (`iterator[Symbol.iterator]()` returns itself) so it
-    // can be consumed by APIs like `Array.from(nodeList.values())`.
     .object_set_prototype(iter_obj, Some(intr.iterator_prototype()))?;
   scope.push_root(Value::Object(iter_obj))?;
 
@@ -48230,8 +48230,12 @@ fn init_window_globals(
     let node_list_iter_next_call_id = vm.register_native_call(node_list_iterator_next_native)?;
     let node_list_iter_next_name = scope.alloc_string("next")?;
     scope.push_root(Value::String(node_list_iter_next_name))?;
-    let node_list_iter_next_func =
-      scope.alloc_native_function(node_list_iter_next_call_id, None, node_list_iter_next_name, 0)?;
+    let node_list_iter_next_func = scope.alloc_native_function(
+      node_list_iter_next_call_id,
+      None,
+      node_list_iter_next_name,
+      0,
+    )?;
     scope.heap_mut().object_set_prototype(
       node_list_iter_next_func,
       Some(realm.intrinsics().function_prototype()),
@@ -48256,6 +48260,7 @@ fn init_window_globals(
       Some(realm.intrinsics().function_prototype()),
     )?;
     scope.push_root(Value::Object(node_list_iter_func))?;
+
     let iterator_sym = realm.intrinsics().well_known_symbols().iterator;
     let node_list_values_key = alloc_key(&mut scope, "values")?;
     scope.define_property(
@@ -48306,6 +48311,32 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(node_list_entries_func))?;
 
+    let keys_key = alloc_key(&mut scope, "keys")?;
+    scope.define_property(
+      node_list_proto,
+      keys_key,
+      data_desc(Value::Object(node_list_keys_func)),
+    )?;
+    let keys_key = alloc_key(&mut scope, "keys")?;
+    scope.define_property(
+      html_collection_proto,
+      keys_key,
+      data_desc(Value::Object(node_list_keys_func)),
+    )?;
+
+    let entries_key = alloc_key(&mut scope, "entries")?;
+    scope.define_property(
+      node_list_proto,
+      entries_key,
+      data_desc(Value::Object(node_list_entries_func)),
+    )?;
+    let entries_key = alloc_key(&mut scope, "entries")?;
+    scope.define_property(
+      html_collection_proto,
+      entries_key,
+      data_desc(Value::Object(node_list_entries_func)),
+    )?;
+
     // HTMLCollection iterator (`for..of`, spread, etc).
     //
     // Keep this in sync with `NodeList` by reusing the same iterator implementation, which reads
@@ -48320,32 +48351,6 @@ fn init_window_globals(
       html_collection_proto,
       PropertyKey::from_symbol(iterator_sym),
       data_desc(Value::Object(node_list_iter_func)),
-    )?;
-
-    let keys_key = alloc_key(&mut scope, "keys")?;
-    scope.define_property(
-      node_list_proto,
-      keys_key,
-      data_desc(Value::Object(node_list_keys_func)),
-    )?;
-    let keys_key = alloc_key(&mut scope, "keys")?;
-    scope.define_property(
-      html_collection_proto,
-      keys_key,
-      data_desc(Value::Object(node_list_keys_func)),
-    )?;
-
-    let entries_key = alloc_key(&mut scope, "entries")?;
-    scope.define_property(
-      node_list_proto,
-      entries_key,
-      data_desc(Value::Object(node_list_entries_func)),
-    )?;
-    let entries_key = alloc_key(&mut scope, "entries")?;
-    scope.define_property(
-      html_collection_proto,
-      entries_key,
-      data_desc(Value::Object(node_list_entries_func)),
     )?;
     let html_collection_for_each_key = alloc_key(&mut scope, "forEach")?;
     scope.define_property(
