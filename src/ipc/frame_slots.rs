@@ -84,6 +84,12 @@ impl UnixSeqpacket {
   }
 
   pub fn send_with_fds(&self, data: &[u8], fds: &[RawFd]) -> Result<(), Error> {
+    if data.is_empty() && !fds.is_empty() {
+      return Err(Error::Other(
+        "fd passing requires at least one byte of payload data".to_string(),
+      ));
+    }
+
     let mut iov = libc::iovec {
       iov_base: data.as_ptr() as *mut libc::c_void,
       iov_len: data.len(),
