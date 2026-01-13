@@ -1430,6 +1430,7 @@ mod frame_hit_testing_tests {
       root,
       vec![SubframeInfo {
         child,
+        src: None,
         transform: AffineTransform {
           a: 1.0,
           b: 0.0,
@@ -1466,6 +1467,7 @@ mod frame_hit_testing_tests {
       root,
       vec![SubframeInfo {
         child,
+        src: None,
         transform: AffineTransform {
           a: 1.0,
           b: 0.0,
