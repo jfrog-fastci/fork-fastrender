@@ -143,6 +143,7 @@ impl EnvState {
 struct WebSocketState {
   weak_obj: WeakGcObject,
   url: String,
+  requested_protocols: Vec<String>,
   protocol: String,
   ready_state: u16,
   buffered_amount: usize,
@@ -901,6 +902,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
         WebSocketState {
           weak_obj: WeakGcObject::from(obj),
           url: resolved_url.to_string(),
+          requested_protocols: protocols.clone(),
           protocol: String::new(),
           ready_state: WS_CONNECTING,
           buffered_amount: 0,
@@ -923,6 +925,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
         WebSocketState {
           weak_obj: WeakGcObject::from(obj),
           url: resolved_url.to_string(),
+          requested_protocols: protocols.clone(),
           protocol: String::new(),
           ready_state: WS_CONNECTING,
           buffered_amount: 0,
@@ -1776,25 +1779,110 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
 
   match event {
     WebSocketEvent::Open { selected_protocol } => {
-      let _ = with_env_state_mut(env_id, |state| {
-        if let Some(ws) = state.sockets.get_mut(&ws_id) {
+      #[derive(Clone, Copy, Debug)]
+      enum OpenAction {
+        Ignore,
+        DispatchOpen,
+        DispatchErrorClose,
+      }
+
+      let action = with_env_state_mut(env_id, move |state| {
+        let Some(ws) = state.sockets.get_mut(&ws_id) else {
+          return Ok(OpenAction::Ignore);
+        };
+
+        // Open is only valid as a CONNECTING -> OPEN transition.
+        if ws.ready_state != WS_CONNECTING {
+          return Ok(OpenAction::Ignore);
+        }
+
+        let protocol_str = selected_protocol.as_str();
+        let valid = if protocol_str.is_empty() {
+          true
+        } else if ws.requested_protocols.is_empty() {
+          false
+        } else {
+          ws.requested_protocols.iter().any(|p| p == protocol_str)
+        };
+
+        if valid {
           ws.ready_state = WS_OPEN;
           ws.protocol = selected_protocol;
+          return Ok(OpenAction::DispatchOpen);
         }
-        Ok(())
-      });
-      queue_ws_task::<Host>(
-        task_queue,
-        env_id,
-        ws_id,
-        WsTaskKind::Normal,
-        |vm_host, heap, vm, hooks, ws_obj| {
-        let mut scope = heap.scope();
-        let ev = make_simple_event(&mut scope, "open")?;
-        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onopen")?;
-        Ok(())
-      },
-      );
+
+        // Treat the network process as untrusted input. If it reports a selected subprotocol that
+        // was not requested, fail the connection and close.
+        ws.ready_state = WS_CLOSED;
+        ws.buffered_amount = 0;
+        ws.protocol.clear();
+
+        // Best-effort shutdown request: notify the network process to tear down any underlying
+        // connection associated with this `conn_id`.
+        if let Some(ipc) = state.ipc.as_ref() {
+          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::WebSocket {
+            conn_id: ws_id,
+            cmd: WebSocketCommand::Shutdown,
+          });
+        }
+
+        Ok(OpenAction::DispatchErrorClose)
+      })
+      .unwrap_or(OpenAction::Ignore);
+
+      match action {
+        OpenAction::Ignore => {}
+        OpenAction::DispatchOpen => {
+          queue_ws_task::<Host>(
+            task_queue,
+            env_id,
+            ws_id,
+            WsTaskKind::Normal,
+            |vm_host, heap, vm, hooks, ws_obj| {
+              let mut scope = heap.scope();
+              let ev = make_simple_event(&mut scope, "open")?;
+              dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onopen")?;
+              Ok(())
+            },
+          );
+        }
+        OpenAction::DispatchErrorClose => {
+          queue_ws_task::<Host>(
+            task_queue,
+            env_id,
+            ws_id,
+            WsTaskKind::Close,
+            move |vm_host, heap, vm, hooks, ws_obj| {
+              let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+                Ok(
+                  state
+                    .sockets
+                    .get(&ws_id)
+                    .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+                    .unwrap_or_default(),
+                )
+              })
+              .unwrap_or_default();
+              let mut scope = heap.scope();
+              let ev = make_simple_event(&mut scope, "error")?;
+              dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
+              let close_ev = make_simple_event(&mut scope, "close")?;
+              dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+              let _ = set_ws_tombstone_props(
+                &mut scope,
+                ws_obj,
+                &url_snapshot,
+                &protocol_snapshot,
+                WS_CLOSED,
+                0,
+              );
+              let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
+              Ok(())
+            },
+          );
+        }
+      }
     }
     WebSocketEvent::MessageText { text } => {
       if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES as usize {
@@ -4262,6 +4350,7 @@ mod tests {
         WebSocketState {
           weak_obj: weak,
           url: String::new(),
+          requested_protocols: Vec::new(),
           protocol: String::new(),
           ready_state: WS_CONNECTING,
           buffered_amount: 0,
@@ -4332,6 +4421,7 @@ mod tests {
         WebSocketState {
           weak_obj: weak,
           url: String::new(),
+          requested_protocols: Vec::new(),
           protocol: String::new(),
           ready_state: WS_CONNECTING,
           buffered_amount: 0,
@@ -4412,6 +4502,7 @@ mod tests {
          WebSocketState {
             weak_obj: WeakGcObject::from(global_obj),
             url: "ws://example.invalid/".to_string(),
+            requested_protocols: Vec::new(),
             protocol: String::new(),
             ready_state: WS_CONNECTING,
             buffered_amount: 0,

@@ -1145,6 +1145,233 @@ fn websocket_ipc_rejects_protocol_when_none_were_requested() -> Result<()> {
 }
 
 #[test]
+fn websocket_ipc_renderer_rejects_open_event_with_unrequested_protocol() -> Result<()> {
+  // Fake renderer<->network IPC channels (no real server connection needed).
+  let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WebSocketIpcCommand>(16);
+  let (event_tx, event_rx) = mpsc::channel::<WebSocketIpcEvent>();
+
+  // Fake network process: send an Open event with a protocol not in the requested list.
+  let network = std::thread::spawn(move || {
+    let connect_deadline = Instant::now() + Duration::from_secs(5);
+    let ws_id = loop {
+      match cmd_rx.recv_timeout(Duration::from_millis(50)) {
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => match cmd {
+          WebSocketCommand::Connect { params } => {
+            assert_eq!(params.protocols, vec!["chat"]);
+            break conn_id;
+          }
+          other => panic!("unexpected command before connect: {other:?}"),
+        },
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+          if Instant::now() >= connect_deadline {
+            panic!("network process timed out waiting for connect command");
+          }
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+      }
+    };
+
+    // Protocol not in requested list => renderer must fail the connection.
+    event_tx
+      .send(WebSocketIpcEvent::WebSocket {
+        conn_id: ws_id,
+        event: WebSocketEvent::Open {
+          selected_protocol: "superchat".to_string(),
+        },
+      })
+      .expect("send open event");
+  });
+
+  let dom = dom2::Document::new(QuirksMode::NoQuirks);
+  let mut host = make_host(dom, "http://example.invalid/")?;
+
+  let _ipc_bindings = {
+    let window = host.host_mut().window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    install_window_websocket_ipc_bindings_with_guard::<WindowHostState>(
+      vm,
+      realm,
+      heap,
+      WindowWebSocketIpcEnv {
+        fetcher: Arc::new(NoFetchResourceFetcher),
+        document_url: Some("http://example.invalid/".to_string()),
+        cmd_tx,
+        event_rx,
+      },
+    )
+    .map_err(|err| Error::Other(err.to_string()))?
+  };
+
+  host.exec_script(
+    r#"
+    globalThis.__done = false;
+    globalThis.__opened = false;
+    globalThis.__errored = false;
+    globalThis.__closed = false;
+    globalThis.__protocol = "";
+    globalThis.__ready = -1;
+
+    const ws = new WebSocket("ws://example.invalid/", ["chat"]);
+    ws.onopen = function () {
+      globalThis.__opened = true;
+      globalThis.__protocol = ws.protocol;
+      globalThis.__done = true;
+    };
+    ws.onerror = function () {
+      globalThis.__errored = true;
+      globalThis.__protocol = ws.protocol;
+    };
+    ws.onclose = function () {
+      globalThis.__closed = true;
+      globalThis.__protocol = ws.protocol;
+      globalThis.__ready = ws.readyState;
+      globalThis.__done = true;
+    };
+    "#,
+  )?;
+
+  pump_until_done(&mut host, Instant::now() + Duration::from_secs(5))?;
+
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__opened").as_deref(),
+    Some("false")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__errored").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__closed").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__protocol").as_deref(),
+    Some("")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__ready").as_deref(),
+    Some("3")
+  );
+
+  network.join().expect("network thread panicked");
+  Ok(())
+}
+
+#[test]
+fn websocket_ipc_renderer_rejects_open_event_protocol_when_none_requested() -> Result<()> {
+  let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WebSocketIpcCommand>(16);
+  let (event_tx, event_rx) = mpsc::channel::<WebSocketIpcEvent>();
+
+  // Fake network process: claim a protocol was selected even though none were requested.
+  let network = std::thread::spawn(move || {
+    let connect_deadline = Instant::now() + Duration::from_secs(5);
+    let ws_id = loop {
+      match cmd_rx.recv_timeout(Duration::from_millis(50)) {
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => match cmd {
+          WebSocketCommand::Connect { params } => {
+            assert!(
+              params.protocols.is_empty(),
+              "expected no protocols for this test"
+            );
+            break conn_id;
+          }
+          other => panic!("unexpected command before connect: {other:?}"),
+        },
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+          if Instant::now() >= connect_deadline {
+            panic!("network process timed out waiting for connect command");
+          }
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+      }
+    };
+
+    event_tx
+      .send(WebSocketIpcEvent::WebSocket {
+        conn_id: ws_id,
+        event: WebSocketEvent::Open {
+          selected_protocol: "chat".to_string(),
+        },
+      })
+      .expect("send open event");
+  });
+
+  let dom = dom2::Document::new(QuirksMode::NoQuirks);
+  let mut host = make_host(dom, "http://example.invalid/")?;
+
+  let _ipc_bindings = {
+    let window = host.host_mut().window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+    install_window_websocket_ipc_bindings_with_guard::<WindowHostState>(
+      vm,
+      realm,
+      heap,
+      WindowWebSocketIpcEnv {
+        fetcher: Arc::new(NoFetchResourceFetcher),
+        document_url: Some("http://example.invalid/".to_string()),
+        cmd_tx,
+        event_rx,
+      },
+    )
+    .map_err(|err| Error::Other(err.to_string()))?
+  };
+
+  host.exec_script(
+    r#"
+    globalThis.__done = false;
+    globalThis.__opened = false;
+    globalThis.__errored = false;
+    globalThis.__closed = false;
+    globalThis.__protocol = "";
+    globalThis.__ready = -1;
+
+    const ws = new WebSocket("ws://example.invalid/");
+    ws.onopen = function () {
+      globalThis.__opened = true;
+      globalThis.__protocol = ws.protocol;
+      globalThis.__done = true;
+    };
+    ws.onerror = function () {
+      globalThis.__errored = true;
+      globalThis.__protocol = ws.protocol;
+    };
+    ws.onclose = function () {
+      globalThis.__closed = true;
+      globalThis.__protocol = ws.protocol;
+      globalThis.__ready = ws.readyState;
+      globalThis.__done = true;
+    };
+    "#,
+  )?;
+
+  pump_until_done(&mut host, Instant::now() + Duration::from_secs(5))?;
+
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__opened").as_deref(),
+    Some("false")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__errored").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__closed").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__protocol").as_deref(),
+    Some("")
+  );
+  assert_eq!(
+    get_global_prop_utf8(&mut host, "__ready").as_deref(),
+    Some("3")
+  );
+
+  network.join().expect("network thread panicked");
+  Ok(())
+}
+
+#[test]
 fn websocket_ipc_send_queue_full_does_not_increase_buffered_amount() -> Result<()> {
   // Small bounded command queue so we can deterministically hit backpressure.
   let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WebSocketIpcCommand>(4);
