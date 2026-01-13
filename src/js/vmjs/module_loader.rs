@@ -828,8 +828,8 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
 
     let source = Arc::new(vm_js::SourceText::new_charged(
       scope.heap_mut(),
-      url.to_string(),
-      source_text.to_string(),
+      url,
+      source_text,
     )?);
     let record = match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source) {
       Ok(record) => record,

@@ -59,7 +59,8 @@ use url::Url;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
   NativeFunctionId, PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId,
-  RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions, WeakGcObject,
+  RootId, Scope, SourceText, SourceTextInput, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  WeakGcObject,
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
@@ -1146,12 +1147,12 @@ impl WindowRealm {
   /// This is the named counterpart to [`WindowRealm::exec_script_with_host_and_hooks`]. Embeddings
   /// should prefer this when they have a URL-like source name so dynamic `import()` expressions can
   /// resolve relative to the active script rather than the document base URL.
-  pub fn exec_script_with_name_and_host_and_hooks(
+  pub fn exec_script_with_name_and_host_and_hooks<'a>(
     &mut self,
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
-    source_name: impl Into<Arc<str>>,
-    source_text: impl Into<Arc<str>>,
+    source_name: impl Into<SourceTextInput<'a>>,
+    source_text: impl Into<SourceTextInput<'a>>,
   ) -> Result<Value, VmError> {
     let source = {
       let (_vm, _realm, heap) = self.runtime.vm_realm_and_heap_mut();
@@ -1379,10 +1380,10 @@ impl WindowRealm {
   }
 
   /// Execute a classic script with an explicit source name for stack traces.
-  pub fn exec_script_with_name(
+  pub fn exec_script_with_name<'a>(
     &mut self,
-    source_name: impl Into<Arc<str>>,
-    source_text: impl Into<Arc<str>>,
+    source_name: impl Into<SourceTextInput<'a>>,
+    source_text: impl Into<SourceTextInput<'a>>,
   ) -> Result<Value, VmError> {
     let webidl_bindings_host = self.webidl_bindings_host;
     let webidl_limits = self.js_execution_options.webidl_limits;

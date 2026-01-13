@@ -1,10 +1,69 @@
-use crate::heap::ExternalMemoryToken;
-use crate::fallible_alloc::arc_try_new_vm;
+use crate::fallible_alloc::{arc_str_try_from_vm, arc_try_new_vm};
 use crate::fallible_format::MAX_ERROR_MESSAGE_BYTES;
+use crate::heap::ExternalMemoryToken;
 use crate::{Heap, VmError};
 use core::mem;
 use std::fmt::Display;
 use std::sync::Arc;
+
+/// Input type for [`SourceText::new_charged`] that allows fallible `Arc<str>` allocation.
+///
+/// `SourceText::new_charged` must not abort the process on allocator OOM when converting
+/// attacker-controlled source strings into owned storage. Accepting `impl Into<Arc<str>>` would
+/// force infallible `Arc::from` allocations for `&str`/`String` inputs, so we instead accept
+/// `impl Into<SourceTextInput<'_>>` and perform fallible allocation internally.
+#[derive(Debug)]
+pub enum SourceTextInput<'a> {
+  Borrowed(&'a str),
+  Owned(String),
+  Shared(Arc<str>),
+}
+
+impl<'a> From<&'a str> for SourceTextInput<'a> {
+  #[inline]
+  fn from(value: &'a str) -> Self {
+    Self::Borrowed(value)
+  }
+}
+
+impl<'a> From<&'a String> for SourceTextInput<'a> {
+  #[inline]
+  fn from(value: &'a String) -> Self {
+    Self::Borrowed(value.as_str())
+  }
+}
+
+impl<'a> From<String> for SourceTextInput<'a> {
+  #[inline]
+  fn from(value: String) -> Self {
+    Self::Owned(value)
+  }
+}
+
+impl<'a> From<Arc<str>> for SourceTextInput<'a> {
+  #[inline]
+  fn from(value: Arc<str>) -> Self {
+    Self::Shared(value)
+  }
+}
+
+impl<'a> From<&'a Arc<str>> for SourceTextInput<'a> {
+  #[inline]
+  fn from(value: &'a Arc<str>) -> Self {
+    Self::Shared(value.clone())
+  }
+}
+
+impl<'a> SourceTextInput<'a> {
+  #[inline]
+  fn try_into_arc_str(self) -> Result<Arc<str>, VmError> {
+    match self {
+      SourceTextInput::Borrowed(s) => arc_str_try_from_vm(s),
+      SourceTextInput::Owned(s) => arc_str_try_from_vm(s.as_str()),
+      SourceTextInput::Shared(s) => Ok(s),
+    }
+  }
+}
 
 /// Source text for scripts/modules with precomputed line starts.
 #[derive(Debug, Clone)]
@@ -123,12 +182,77 @@ impl SourceText {
     }
   }
 
-  pub fn new_charged(
+  pub fn new_charged<'a>(
     heap: &mut Heap,
-    name: impl Into<Arc<str>>,
-    text: impl Into<Arc<str>>,
+    name: impl Into<SourceTextInput<'a>>,
+    text: impl Into<SourceTextInput<'a>>,
   ) -> Result<Self, VmError> {
-    let mut source = Self::new(name, text);
+    let name = name.into().try_into_arc_str()?;
+    let text = text.into().try_into_arc_str()?;
+
+    let bytes = text.as_bytes();
+    let newline_count = bytes.iter().filter(|&&b| b == b'\n').count();
+    let line_count = newline_count.saturating_add(1);
+
+    // See `SourceText::new` for the motivation behind the `MAX_LINE_STARTS` cap.
+    let (line_starts, line_start_stride) = if line_count <= Self::MAX_LINE_STARTS {
+      let mut line_starts: Vec<u32> = Vec::new();
+      if line_starts.try_reserve_exact(line_count).is_ok() {
+        line_starts.push(0u32);
+        for (idx, b) in bytes.iter().enumerate() {
+          if *b != b'\n' {
+            continue;
+          }
+          let next = (idx + 1).min(text.len());
+          if let Ok(next_u32) = u32::try_from(next) {
+            line_starts.push(next_u32);
+          }
+        }
+        (line_starts, 1)
+      } else {
+        // Fall back to a minimal (allocation-free) table. Correctness comes from scanning in
+        // `line_col`; keep `stride != 1` for multi-line sources so scanning is enabled.
+        let stride = if newline_count == 0 { 1 } else { 2 };
+        (Vec::new(), stride)
+      }
+    } else {
+      let stride = newline_count.div_ceil(Self::MAX_LINE_STARTS - 1).max(1);
+      let stride_u32 = u32::try_from(stride).unwrap_or(u32::MAX);
+
+      let mut line_starts: Vec<u32> = Vec::new();
+      if line_starts.try_reserve_exact(Self::MAX_LINE_STARTS).is_ok() {
+        line_starts.push(0u32);
+        let mut newlines_seen: usize = 0;
+        for (idx, b) in bytes.iter().enumerate() {
+          if *b != b'\n' {
+            continue;
+          }
+          newlines_seen += 1;
+          if newlines_seen % stride != 0 {
+            continue;
+          }
+          if line_starts.len() >= Self::MAX_LINE_STARTS {
+            break;
+          }
+          let next = (idx + 1).min(text.len());
+          if let Ok(next_u32) = u32::try_from(next) {
+            line_starts.push(next_u32);
+          }
+        }
+        (line_starts, stride_u32)
+      } else {
+        // Fall back to a minimal table; correctness comes from scanning in `line_col`.
+        (Vec::new(), 2)
+      }
+    };
+
+    let mut source = Self {
+      name,
+      text,
+      line_starts,
+      line_start_stride,
+      external_memory: None,
+    };
     let line_starts_bytes = source
       .line_starts
       .capacity()
@@ -139,6 +263,7 @@ impl SourceText {
       .saturating_add(source.text.len())
       .saturating_add(line_starts_bytes);
     let token = heap.charge_external(bytes)?;
+    // `Arc::new` aborts the process on allocator OOM; use a fallible allocation helper.
     source.external_memory = Some(arc_try_new_vm(token)?);
     Ok(source)
   }
@@ -179,10 +304,9 @@ impl SourceText {
       Err(idx) => idx - 1,
     };
 
-    let scan_start = *self
-      .line_starts
-      .get(checkpoint_idx)
-      .unwrap_or(&u32::try_from(self.text.len()).unwrap_or(u32::MAX)) as usize;
+    // `line_starts` can be empty if we failed to allocate even a small bounded line-start table
+    // during `SourceText::new_charged`. Treat that as an implicit single checkpoint at offset 0.
+    let scan_start = *self.line_starts.get(checkpoint_idx).unwrap_or(&0) as usize;
     let scan_start = scan_start.min(offset);
 
     let mut line = (checkpoint_idx as u32)
@@ -371,4 +495,47 @@ pub fn format_stack_trace(frames: &[StackFrame]) -> String {
   }
 
   out
+}
+
+#[cfg(test)]
+mod oom_tests {
+  use super::*;
+
+  use crate::test_alloc::FailAllocsGuard;
+  use crate::HeapLimits;
+
+  #[test]
+  fn source_text_new_charged_returns_out_of_memory_on_name_alloc_failure() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let _guard = FailAllocsGuard::new();
+
+    let err = SourceText::new_charged(&mut heap, "<inline>", "x").expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+  }
+
+  #[test]
+  fn source_text_new_charged_returns_out_of_memory_on_text_alloc_failure() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    // Pre-allocate the name so the first fallible allocation happens while converting `text`.
+    let name: Arc<str> = Arc::from("<inline>");
+
+    let _guard = FailAllocsGuard::new();
+    let err = SourceText::new_charged(&mut heap, name, "x").expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+  }
+
+  #[test]
+  fn source_text_new_charged_returns_out_of_memory_on_external_token_arc_alloc_failure() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    // Pre-allocate the name/text so allocation failure is exercised when storing the external
+    // memory token.
+    let name: Arc<str> = Arc::from("<inline>");
+    let text: Arc<str> = Arc::from("x");
+
+    let _guard = FailAllocsGuard::new();
+    let err = SourceText::new_charged(&mut heap, name, text).expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+  }
 }

@@ -375,6 +375,7 @@ pub use crate::regexp::RegExpProgram;
 pub use crate::regexp_case_folding::regexp_case_fold;
 pub use crate::source::format_stack_trace;
 pub use crate::source::SourceText;
+pub use crate::source::SourceTextInput;
 pub use crate::source::StackFrame;
 pub use crate::spec_ops::create_data_property;
 pub use crate::spec_ops::create_data_property_or_throw;

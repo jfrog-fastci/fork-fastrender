@@ -672,7 +672,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     realm.set_base_url(spec.base_url.clone());
     realm.reset_interrupt();
 
-    let source = match SourceText::new_charged(realm.heap_mut(), name, Arc::from(script_text)) {
+    let source = match SourceText::new_charged(realm.heap_mut(), name, script_text) {
       Ok(source) => Arc::new(source),
       Err(err) => {
         if let Some(diag) = diagnostics.as_ref() {
@@ -1272,7 +1272,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
            let source_text = match SourceText::new_charged(
              realm.heap_mut(),
              "<importmap error>",
-             Arc::from(source),
+             source,
            ) {
              Ok(source_text) => Arc::new(source_text),
              Err(err) => {
@@ -1511,7 +1511,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       webidl_bindings_host,
     );
     hooks.set_event_loop(event_loop);
-    let source_text = match SourceText::new_charged(realm.heap_mut(), "<beforeunload>", Arc::from(source))
+    let source_text = match SourceText::new_charged(realm.heap_mut(), "<beforeunload>", source)
     {
       Ok(source_text) => Arc::new(source_text),
       Err(err) => return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
@@ -1633,7 +1633,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       webidl_bindings_host,
     );
     hooks.set_event_loop(event_loop);
-    let source_text = match SourceText::new_charged(realm.heap_mut(), "<lifecycle>", Arc::from(source))
+    let source_text = match SourceText::new_charged(realm.heap_mut(), "<lifecycle>", source)
     {
       Ok(source_text) => Arc::new(source_text),
       Err(err) => return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),

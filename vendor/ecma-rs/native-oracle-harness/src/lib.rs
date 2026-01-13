@@ -37,7 +37,8 @@ use vm_js::{
   finish_loading_imported_module, format_stack_trace, format_termination, load_requested_modules,
   GcObject, Heap, HeapLimits, HostDefined, Job, JsRuntime, MicrotaskQueue, ModuleGraph, ModuleId,
   ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, Scope, SourceText,
-  SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  SourceTextInput, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  VmOptions,
 };
 
 const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
@@ -660,7 +661,7 @@ pub fn run_fixture_with_options(
   } else {
     // JS fixtures bypass the TS→JS pipeline; this keeps the promise/microtask
     // corpus independent of `emit-js` feature coverage.
-    run_js_source_with_options(source_name, Arc::<str>::from(source_text), options)
+    run_js_source_with_options(source_name, source_text, options)
   }
 }
 
@@ -694,13 +695,13 @@ pub fn run_fixture_outcome_with_options(path: impl AsRef<Path>, options: &Oracle
   if matches!(ext, Some("ts") | Some("tsx")) {
     run_typescript_source_outcome_with_options(source_name, &source_text, options)
   } else {
-    run_js_source_outcome_with_options(source_name, Arc::<str>::from(source_text), options)
+    run_js_source_outcome_with_options(source_name, source_text, options)
   }
 }
 
 /// Execute a TypeScript snippet in the oracle VM, returning a structured [`RunOutcome`].
-pub fn run_typescript_source_outcome_with_options(
-  source_name: impl Into<Arc<str>>,
+pub fn run_typescript_source_outcome_with_options<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
   source_text: &str,
   options: &OracleHarnessOptions,
 ) -> RunOutcome {
@@ -708,7 +709,7 @@ pub fn run_typescript_source_outcome_with_options(
     Ok(js) => js,
     Err(diag) => return RunOutcome::CompileError { diagnostic: diag },
   };
-  run_js_source_outcome_with_options(source_name, Arc::<str>::from(js), options)
+  run_js_source_outcome_with_options(source_name, js, options)
 }
 
 /// Execute already-erased JavaScript source, returning a structured [`RunOutcome`].
@@ -716,9 +717,9 @@ pub fn run_typescript_source_outcome_with_options(
 /// This captures output written via `print(...)`, `console.log(...)`, and `console.error(...)` into
 /// [`RunOutcome::stdout`] / [`RunOutcome::stderr`] using the same native builtins prelude as
 /// [`run_js_source_capture_stdout_with_options`].
-pub fn run_js_source_outcome_with_options(
-  source_name: impl Into<Arc<str>>,
-  source_text: impl Into<Arc<str>>,
+pub fn run_js_source_outcome_with_options<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
+  source_text: impl Into<SourceTextInput<'a>>,
   options: &OracleHarnessOptions,
 ) -> RunOutcome {
   let mut rt = match new_runtime_with_options(options) {
@@ -763,19 +764,19 @@ pub fn run_js_source_outcome_with_options(
 }
 
 /// Execute a TypeScript snippet in the oracle VM, returning its output string.
-pub fn run_typescript_source_with_options(
-  source_name: impl Into<Arc<str>>,
+pub fn run_typescript_source_with_options<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
   source_text: &str,
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let js = erase_typescript_to_js(source_text)?;
-  run_js_source_with_options(source_name, Arc::<str>::from(js), options)
+  run_js_source_with_options(source_name, js, options)
 }
 
 /// Execute already-erased JavaScript source, returning its output string.
-pub fn run_js_source_with_options(
-  source_name: impl Into<Arc<str>>,
-  source_text: impl Into<Arc<str>>,
+pub fn run_js_source_with_options<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
+  source_text: impl Into<SourceTextInput<'a>>,
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
@@ -819,9 +820,9 @@ pub fn run_js_source_with_options(
 ///
 /// The returned string is the concatenated buffer with a single trailing `\n` removed (if present),
 /// matching the common “captured stdout” convention used by this repository's fixture runners.
-pub fn run_js_source_capture_stdout_with_options(
-  source_name: impl Into<Arc<str>>,
-  source_text: impl Into<Arc<str>>,
+pub fn run_js_source_capture_stdout_with_options<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
+  source_text: impl Into<SourceTextInput<'a>>,
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
@@ -864,13 +865,13 @@ pub fn run_js_source_capture_stdout_with_options(
 }
 
 /// Execute a TypeScript snippet in the oracle VM, capturing `console.log` output.
-pub fn run_typescript_source_capture_stdout_with_options(
-  source_name: impl Into<Arc<str>>,
+pub fn run_typescript_source_capture_stdout_with_options<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
   source_text: &str,
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let js = erase_typescript_to_js(source_text)?;
-  run_js_source_capture_stdout_with_options(source_name, Arc::<str>::from(js), options)
+  run_js_source_capture_stdout_with_options(source_name, js, options)
 }
 
 /// Execute a fixture file (TypeScript or JavaScript) and return captured `console.log` output.
@@ -893,7 +894,7 @@ pub fn run_fixture_capture_stdout_with_options(
   if matches!(ext, Some("ts") | Some("tsx")) {
     run_typescript_source_capture_stdout_with_options(source_name, &source_text, options)
   } else {
-    run_js_source_capture_stdout_with_options(source_name, Arc::<str>::from(source_text), options)
+    run_js_source_capture_stdout_with_options(source_name, source_text, options)
   }
 }
 
@@ -905,9 +906,9 @@ pub fn run_fixture_capture_stdout_with_options(
 /// - executes `source_text`,
 /// - performs a microtask checkpoint (so `Promise.then(...)` prints are observable),
 /// - and returns the captured stdout buffer.
-pub fn run_js_source_with_native_builtins_capture_stdout(
-  source_name: impl Into<Arc<str>>,
-  source_text: impl Into<Arc<str>>,
+pub fn run_js_source_with_native_builtins_capture_stdout<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
+  source_text: impl Into<SourceTextInput<'a>>,
 ) -> Result<String, OracleHarnessError> {
   run_js_source_with_native_builtins_capture_stdout_with_options(
     source_name,
@@ -916,9 +917,9 @@ pub fn run_js_source_with_native_builtins_capture_stdout(
   )
 }
 
-pub fn run_js_source_with_native_builtins_capture_stdout_with_options(
-  source_name: impl Into<Arc<str>>,
-  source_text: impl Into<Arc<str>>,
+pub fn run_js_source_with_native_builtins_capture_stdout_with_options<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
+  source_text: impl Into<SourceTextInput<'a>>,
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
@@ -970,8 +971,8 @@ pub fn run_js_source_with_native_builtins_capture_stdout_with_options(
 
 /// Execute a TypeScript snippet in the oracle VM with native builtins enabled, returning captured
 /// stdout.
-pub fn run_typescript_source_with_native_builtins_capture_stdout(
-  source_name: impl Into<Arc<str>>,
+pub fn run_typescript_source_with_native_builtins_capture_stdout<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
   source_text: &str,
 ) -> Result<String, OracleHarnessError> {
   run_typescript_source_with_native_builtins_capture_stdout_with_options(
@@ -981,15 +982,15 @@ pub fn run_typescript_source_with_native_builtins_capture_stdout(
   )
 }
 
-pub fn run_typescript_source_with_native_builtins_capture_stdout_with_options(
-  source_name: impl Into<Arc<str>>,
+pub fn run_typescript_source_with_native_builtins_capture_stdout_with_options<'a>(
+  source_name: impl Into<SourceTextInput<'a>>,
   source_text: &str,
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let js = erase_typescript_to_js(source_text)?;
   run_js_source_with_native_builtins_capture_stdout_with_options(
     source_name,
-    Arc::<str>::from(js),
+    js,
     options,
   )
 }

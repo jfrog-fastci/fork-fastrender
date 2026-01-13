@@ -1088,11 +1088,11 @@ impl WindowHostState {
 
   /// Execute a classic script (with an explicit source name) while integrating Promise jobs into the
   /// provided [`EventLoop`]'s microtask queue.
-  pub fn exec_script_with_name_in_event_loop(
+  pub fn exec_script_with_name_in_event_loop<'a>(
     &mut self,
     event_loop: &mut EventLoop<WindowHostState>,
-    source_name: impl Into<Arc<str>>,
-    source_text: impl Into<Arc<str>>,
+    source_name: impl Into<vm_js::SourceTextInput<'a>>,
+    source_text: impl Into<vm_js::SourceTextInput<'a>>,
   ) -> Result<vm_js::Value> {
     use crate::js::window_timers::VmJsEventLoopHooks;
 

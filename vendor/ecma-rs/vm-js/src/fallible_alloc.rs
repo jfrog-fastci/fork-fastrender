@@ -3,8 +3,8 @@ use core::alloc::Layout;
 use core::mem;
 use core::ptr;
 use std::alloc::{alloc, dealloc};
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 /// Fallible `Box<T>` allocation that reports `VmError::OutOfMemory` instead of aborting.
 ///
@@ -86,6 +86,7 @@ pub(crate) fn arc_try_new_vm<T>(value: T) -> Result<Arc<T>, VmError> {
       layout,
       data_init: false,
     };
+
     // `Arc::new` initialises both counts to 1 (the implicit weak count).
     ptr::addr_of_mut!((*raw).strong).write(AtomicUsize::new(1));
     ptr::addr_of_mut!((*raw).weak).write(AtomicUsize::new(1));
@@ -94,7 +95,46 @@ pub(crate) fn arc_try_new_vm<T>(value: T) -> Result<Arc<T>, VmError> {
 
     // Ownership transferred to the returned `Arc<T>`.
     guard.ptr = ptr::null_mut();
+
     Ok(Arc::from_raw(ptr::addr_of!((*raw).data)))
+  }
+}
+
+pub(crate) fn arc_str_try_from_vm(value: &str) -> Result<Arc<str>, VmError> {
+  // Allocate an `ArcInner<str>` by hand so allocator OOM becomes recoverable.
+  //
+  // Layout is `ArcInnerHeader { strong, weak }` followed by the UTF-8 bytes.
+  #[repr(C)]
+  struct ArcInnerHeader {
+    strong: AtomicUsize,
+    weak: AtomicUsize,
+  }
+
+  let header_layout = Layout::new::<ArcInnerHeader>();
+  let data_layout = Layout::array::<u8>(value.len()).map_err(|_| VmError::OutOfMemory)?;
+  let (layout, offset) = header_layout
+    .extend(data_layout)
+    .map_err(|_| VmError::OutOfMemory)?;
+  let layout = layout.pad_to_align();
+
+  // SAFETY: We allocate enough space for the header + bytes, initialise both refcounts and the
+  // byte slice, then build an `Arc<str>` from the raw pointer to the str payload.
+  unsafe {
+    let raw = alloc(layout);
+    if raw.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+
+    let header = raw as *mut ArcInnerHeader;
+    ptr::addr_of_mut!((*header).strong).write(AtomicUsize::new(1));
+    ptr::addr_of_mut!((*header).weak).write(AtomicUsize::new(1));
+
+    let data_ptr = raw.add(offset) as *mut u8;
+    ptr::copy_nonoverlapping(value.as_ptr(), data_ptr, value.len());
+
+    let bytes = core::slice::from_raw_parts(data_ptr as *const u8, value.len());
+    let s = core::str::from_utf8_unchecked(bytes);
+    Ok(Arc::from_raw(s as *const str))
   }
 }
 
@@ -113,3 +153,4 @@ mod tests {
     assert!(matches!(err, VmError::OutOfMemory));
   }
 }
+

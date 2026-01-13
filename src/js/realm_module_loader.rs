@@ -470,7 +470,7 @@ impl ModuleLoader {
     let source = Arc::new(SourceText::new_charged(
       heap,
       key.url.clone(),
-      Arc::<str>::from(source_text),
+      source_text,
     )?);
     let record = SourceTextModuleRecord::parse_source(source)?;
     let module_id = modules.add_module(record)?;

@@ -11,6 +11,7 @@
 use crate::heap::ExternalMemoryToken;
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::source::SourceText;
+use crate::SourceTextInput;
 use crate::Heap;
 use crate::VmError;
 use crate::Vm;
@@ -46,10 +47,10 @@ pub struct CompiledScript {
 
 impl CompiledScript {
   /// Parse and lower a classic script (ECMAScript dialect, `SourceType::Script`).
-  pub fn compile_script(
+  pub fn compile_script<'a>(
     heap: &mut Heap,
-    name: impl Into<Arc<str>>,
-    text: impl Into<Arc<str>>,
+    name: impl Into<SourceTextInput<'a>>,
+    text: impl Into<SourceTextInput<'a>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
     let source = arc_try_new_vm(SourceText::new_charged(heap, name, text)?)?;
     let opts = ParseOptions {
@@ -99,10 +100,10 @@ impl CompiledScript {
   }
 
   /// Parse and lower a source text module (ECMAScript dialect, `SourceType::Module`).
-  pub fn compile_module(
+  pub fn compile_module<'a>(
     heap: &mut Heap,
-    name: impl Into<Arc<str>>,
-    text: impl Into<Arc<str>>,
+    name: impl Into<SourceTextInput<'a>>,
+    text: impl Into<SourceTextInput<'a>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
     let source = arc_try_new_vm(SourceText::new_charged(heap, name, text)?)?;
     let opts = ParseOptions {
@@ -147,11 +148,11 @@ impl CompiledScript {
   ///
   /// This is identical to [`CompiledScript::compile_script`], but parsing is performed through the
   /// VM so fuel/deadline/interrupt budgets can be observed *during compilation*.
-  pub fn compile_script_with_budget(
+  pub fn compile_script_with_budget<'a>(
     heap: &mut Heap,
     vm: &mut Vm,
-    name: impl Into<Arc<str>>,
-    text: impl Into<Arc<str>>,
+    name: impl Into<SourceTextInput<'a>>,
+    text: impl Into<SourceTextInput<'a>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
     let source = arc_try_new_vm(SourceText::new_charged(heap, name, text)?)?;
     let opts = ParseOptions {
@@ -194,11 +195,11 @@ impl CompiledScript {
   }
 
   /// Parse and lower a source text module using a VM's budget/interrupt checks.
-  pub fn compile_module_with_budget(
+  pub fn compile_module_with_budget<'a>(
     heap: &mut Heap,
     vm: &mut Vm,
-    name: impl Into<Arc<str>>,
-    text: impl Into<Arc<str>>,
+    name: impl Into<SourceTextInput<'a>>,
+    text: impl Into<SourceTextInput<'a>>,
   ) -> Result<Arc<CompiledScript>, VmError> {
     let source = arc_try_new_vm(SourceText::new_charged(heap, name, text)?)?;
     let opts = ParseOptions {

@@ -3,8 +3,8 @@ use crate::fallible_format;
 use crate::property::{PropertyKey, PropertyKind};
 use crate::source::{format_stack_trace, StackFrame};
 use crate::{
-  Budget, CompiledScript, Heap, HeapLimits, JsRuntime, Realm, SourceText, Termination,
-  TerminationReason, Value, Vm, VmError, VmOptions,
+  Budget, CompiledScript, Heap, HeapLimits, JsRuntime, Realm, SourceText, SourceTextInput,
+  Termination, TerminationReason, Value, Vm, VmError, VmOptions,
 };
 use std::sync::Arc;
 
@@ -291,10 +291,10 @@ impl Agent {
   /// - applies `budget` for the duration of the run (restoring the previous VM budget afterwards),
   /// - executes `source_text` as a classic script, and
   /// - invokes [`HostHooks::microtask_checkpoint`] afterwards (if provided).
-  pub fn run_script(
+  pub fn run_script<'a>(
     &mut self,
-    source_name: impl Into<Arc<str>>,
-    source_text: impl Into<Arc<str>>,
+    source_name: impl Into<SourceTextInput<'a>>,
+    source_text: impl Into<SourceTextInput<'a>>,
     budget: Budget,
     mut host_hooks: Option<&mut dyn HostHooks>,
   ) -> Result<Value, VmError> {
