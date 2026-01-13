@@ -6263,6 +6263,43 @@ mod tests {
   }
 
   #[test]
+  fn detached_node_creation_does_not_invalidate_renderer() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+    doc.render_frame().expect("render");
+
+    let mut realm = crate::js::window_realm::WindowRealm::new(
+      crate::js::window_realm::WindowRealmConfig::new("https://example.invalid/"),
+    )
+    .expect("WindowRealm");
+    let mut hooks = vm_js::MicrotaskQueue::new();
+
+    realm
+      .exec_script_with_host_and_hooks(
+        &mut doc,
+        &mut hooks,
+        "document.createElement('div');\n\
+         document.createElementNS('http://www.w3.org/1999/xhtml', 'div');\n\
+         document.createAttribute('data-x');\n\
+         document.createAttributeNS(null, 'data-y');\n\
+         document.createTextNode('x');\n\
+         document.createComment('x');\n\
+         document.createDocumentFragment();",
+      )
+      .expect("execute detached node creation script");
+
+    assert!(
+      doc.render_if_needed().unwrap().is_none(),
+      "Detached node/attribute creation should not invalidate style/layout/paint"
+    );
+  }
+
+  #[test]
   fn dom2_document_address_is_stable_across_moves_and_changes_on_reset() -> Result<()> {
     let renderer = renderer_for_tests();
     let doc = BrowserDocumentDom2::new(

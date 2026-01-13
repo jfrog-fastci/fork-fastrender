@@ -11584,7 +11584,7 @@ pub(crate) fn drain_pending_dataset_mutation_observer_microtasks(
     let document_id = gc_object_id(document_obj);
 
     let needs_microtask = if is_host_document_id(vm, document_id) {
-      dom_from_vm_host_mut(host).map(|dom| dom.take_mutation_observer_microtask_needed())
+      mutate_dom_for_vm_host(host, |dom| (dom.take_mutation_observer_microtask_needed(), false))
     } else {
       // Avoid holding the `owned_dom2_documents` `RefCell` borrow while queueing microtasks (which can
       // re-enter JS and cause nested `dataset` accesses).
@@ -14170,17 +14170,30 @@ fn document_create_element_native(
     return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
-  let mut dom_ptr =
-    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+  let node_id = if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, document_id) {
+    // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+    // this native call.
+    let dom_mut = unsafe { dom_ptr.as_mut() };
+    // DOM: createElement() uses the HTML namespace only for HTML documents; XML documents default to
+    // the null namespace.
+    let namespace = if dom_mut.is_html_document() { "" } else { dom2::NULL_NAMESPACE };
+    dom_mut.create_element(&tag_name, namespace)
+  } else {
+    // Creating a detached node must not invalidate rendering for host-backed documents.
+    mutate_dom_for_vm_host(host, |dom| {
+      let namespace = if dom.is_html_document() { "" } else { dom2::NULL_NAMESPACE };
+      (dom.create_element(&tag_name, namespace), false)
+    })
+    .ok_or(VmError::TypeError(
+      "document.createElement requires a DOM-backed document",
+    ))?
+  };
+
+  let dom = dom_ptr_for_document_id_read(vm, host, document_id)
+    .map(|ptr| unsafe { ptr.as_ref() })
+    .ok_or(VmError::TypeError(
       "document.createElement requires a DOM-backed document",
     ))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom_mut = unsafe { dom_ptr.as_mut() };
-  // DOM: createElement() uses the HTML namespace only for HTML documents; XML documents default to
-  // the null namespace.
-  let namespace = if dom_mut.is_html_document() { "" } else { dom2::NULL_NAMESPACE };
-  let node_id = dom_mut.create_element(&tag_name, namespace);
-  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -14218,6 +14231,14 @@ fn document_create_element_ns_native(
     ));
   };
 
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(
+      "document.createElementNS must be called on a document object",
+    ))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError("document.createElementNS must be called on a document object"))?
+    .document_id;
+
   let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let namespace: Option<String> = match namespace_value {
     Value::Null | Value::Undefined => None,
@@ -14230,33 +14251,45 @@ fn document_create_element_ns_native(
   let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let qualified_name = value_to_rust_utf16_string(vm, scope, qualified_name_value)?;
 
-  let document_id = gc_object_id(document_obj);
-  let mut dom_ptr =
-    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
-      "document.createElementNS requires a DOM-backed document",
-    ))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_mut() };
-
   let dom2::ParsedQualifiedName { prefix, mut local_name } =
     match dom2::validate_and_extract_element(namespace.as_deref(), &qualified_name) {
       Ok(v) => v,
       Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
 
-  // DOM: HTML namespace elements have an ASCII-lowercased localName in HTML documents.
-  if dom.is_html_document() && namespace.as_deref() == Some(crate::dom::HTML_NAMESPACE) {
-    local_name = local_name.to_ascii_lowercase();
-  }
-
-  let ns_for_dom2 = match namespace.as_deref() {
-    Some(ns) => ns,
-    None => dom2::NULL_NAMESPACE,
+  let node_id = if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, document_id) {
+    // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+    // this native call.
+    let dom_mut = unsafe { dom_ptr.as_mut() };
+    // DOM: HTML namespace elements have an ASCII-lowercased localName in HTML documents.
+    if dom_mut.is_html_document() && namespace.as_deref() == Some(crate::dom::HTML_NAMESPACE) {
+      local_name = local_name.to_ascii_lowercase();
+    }
+    let ns_for_dom2 = namespace.as_deref().unwrap_or(dom2::NULL_NAMESPACE);
+    dom_mut.create_element_ns(&local_name, ns_for_dom2, prefix.as_deref())
+  } else {
+    // Creating a detached node must not invalidate rendering for host-backed documents.
+    mutate_dom_for_vm_host(host, move |dom| {
+      // DOM: HTML namespace elements have an ASCII-lowercased localName in HTML documents.
+      if dom.is_html_document() && namespace.as_deref() == Some(crate::dom::HTML_NAMESPACE) {
+        local_name = local_name.to_ascii_lowercase();
+      }
+      let ns_for_dom2 = namespace.as_deref().unwrap_or(dom2::NULL_NAMESPACE);
+      (
+        dom.create_element_ns(&local_name, ns_for_dom2, prefix.as_deref()),
+        false,
+      )
+    })
+    .ok_or(VmError::TypeError(
+      "document.createElementNS requires a DOM-backed document",
+    ))?
   };
 
-  let node_id = dom.create_element_ns(&local_name, ns_for_dom2, prefix.as_deref());
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
+  let dom = dom_ptr_for_document_id_read(vm, host, document_id)
+    .map(|ptr| unsafe { ptr.as_ref() })
+    .ok_or(VmError::TypeError(
+      "document.createElementNS requires a DOM-backed document",
+    ))?;
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -14281,7 +14314,7 @@ fn document_create_attribute_native(
     return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
-  let is_html_document = dom_from_vm_host_mut(host)
+  let is_html_document = dom_from_vm_host(host)
     .map(|dom| dom.is_html_document())
     .unwrap_or(true);
 
@@ -14389,7 +14422,7 @@ fn document_create_attribute_ns_native(
     };
 
   // HTML documents lowercase attribute local names when the namespace is null.
-  let is_html_document = dom_from_vm_host_mut(host)
+  let is_html_document = dom_from_vm_host(host)
     .map(|dom| dom.is_html_document())
     .unwrap_or(true);
   if is_html_document && namespace.is_none() {
@@ -14519,13 +14552,22 @@ fn document_create_text_node_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let mut dom_ptr =
-    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+  let node_id = if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, document_id) {
+    // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+    // this native call.
+    unsafe { dom_ptr.as_mut() }.create_text(&data)
+  } else {
+    // Creating a detached node must not invalidate rendering for host-backed documents.
+    mutate_dom_for_vm_host(host, |dom| (dom.create_text(&data), false)).ok_or(VmError::TypeError(
+      "document.createTextNode requires a DOM-backed document",
+    ))?
+  };
+
+  let dom = dom_ptr_for_document_id_read(vm, host, document_id)
+    .map(|ptr| unsafe { ptr.as_ref() })
+    .ok_or(VmError::TypeError(
       "document.createTextNode requires a DOM-backed document",
     ))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let node_id = unsafe { dom_ptr.as_mut() }.create_text(&data);
-  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -14617,12 +14659,22 @@ fn document_create_comment_native(
     .unwrap_or_default();
 
   let document_id = gc_object_id(document_obj);
-  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
-    "document.createComment requires a DOM-backed document",
-  ))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let node_id = unsafe { dom_ptr.as_mut() }.create_comment(&data);
-  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, document_id) {
+    // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+    // this native call.
+    unsafe { dom_ptr.as_mut() }.create_comment(&data)
+  } else {
+    // Creating a detached node must not invalidate rendering for host-backed documents.
+    mutate_dom_for_vm_host(host, |dom| (dom.create_comment(&data), false)).ok_or(VmError::TypeError(
+      "document.createComment requires a DOM-backed document",
+    ))?
+  };
+
+  let dom = dom_ptr_for_document_id_read(vm, host, document_id)
+    .map(|ptr| unsafe { ptr.as_ref() })
+    .ok_or(VmError::TypeError(
+      "document.createComment requires a DOM-backed document",
+    ))?;
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -14669,13 +14721,23 @@ fn document_create_processing_instruction_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let mut dom_ptr =
-    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+  let node_id = if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, document_id) {
+    // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+    // this native call.
+    unsafe { dom_ptr.as_mut() }.create_processing_instruction(&target, &data)
+  } else {
+    // Creating a detached node must not invalidate rendering for host-backed documents.
+    mutate_dom_for_vm_host(host, |dom| (dom.create_processing_instruction(&target, &data), false))
+      .ok_or(VmError::TypeError(
+        "document.createProcessingInstruction requires a DOM-backed document",
+      ))?
+  };
+
+  let dom = dom_ptr_for_document_id_read(vm, host, document_id)
+    .map(|ptr| unsafe { ptr.as_ref() })
+    .ok_or(VmError::TypeError(
       "document.createProcessingInstruction requires a DOM-backed document",
     ))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let node_id = unsafe { dom_ptr.as_mut() }.create_processing_instruction(&target, &data);
-  let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -14700,12 +14762,22 @@ fn document_create_document_fragment_native(
     document_obj,
     "document.createDocumentFragment must be called on a document object",
   )?;
-  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
-    "document.createDocumentFragment requires a DOM-backed document",
-  ))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let node_id = unsafe { dom_ptr.as_mut() }.create_document_fragment();
-  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, document_id) {
+    // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+    // this native call.
+    unsafe { dom_ptr.as_mut() }.create_document_fragment()
+  } else {
+    // Creating a detached node must not invalidate rendering for host-backed documents.
+    mutate_dom_for_vm_host(host, |dom| (dom.create_document_fragment(), false)).ok_or(
+      VmError::TypeError("document.createDocumentFragment requires a DOM-backed document"),
+    )?
+  };
+
+  let dom = dom_ptr_for_document_id_read(vm, host, document_id)
+    .map(|ptr| unsafe { ptr.as_ref() })
+    .ok_or(VmError::TypeError(
+      "document.createDocumentFragment requires a DOM-backed document",
+    ))?;
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
@@ -34850,6 +34922,17 @@ pub(crate) fn dom_ptr_for_document_id_read(
     }
   }
   dom_from_vm_host(host).map(NonNull::from)
+}
+
+fn owned_dom_ptr_for_document_id_mut(
+  vm: &mut Vm,
+  document_id: DocumentId,
+) -> Option<NonNull<dom2::Document>> {
+  let data = vm.user_data_mut::<WindowRealmUserData>()?;
+  let mut owned_dom2_documents = data.owned_dom2_documents.borrow_mut();
+  owned_dom2_documents
+    .get_mut(&document_id)
+    .map(|dom| NonNull::from(dom.as_mut()))
 }
 
 fn dom_ptr_for_document_id_mut(
