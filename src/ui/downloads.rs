@@ -195,6 +195,22 @@ pub fn default_download_dir() -> PathBuf {
   default_download_dir_from_sources(browser_env, legacy_env, user_downloads.as_deref(), &cwd)
 }
 
+/// Returns an error toast message when `path` does not exist.
+///
+/// The returned string is intended to be shown verbatim in the windowed browser UI toast overlay.
+pub fn missing_path_toast_message(path: &Path) -> Option<String> {
+  if path.exists() {
+    return None;
+  }
+
+  let filename = path
+    .file_name()
+    .map(|name| name.to_string_lossy().to_string())
+    .unwrap_or_else(|| path.display().to_string());
+
+  Some(format!("File not found: {filename}"))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -276,6 +292,21 @@ mod tests {
     assert_eq!(
       default_download_dir_from_sources(Some(""), Some(""), Some(user), cwd),
       user.to_path_buf()
+    );
+  }
+
+  #[test]
+  fn missing_path_toast_message_formats_filename_for_missing_path() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let missing = dir.path().join("missing.txt");
+    assert!(
+      !missing.exists(),
+      "expected test fixture path to not exist: {}",
+      missing.display()
+    );
+    assert_eq!(
+      missing_path_toast_message(&missing),
+      Some("File not found: missing.txt".to_string())
     );
   }
 }

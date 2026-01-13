@@ -14104,7 +14104,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
     for path in output.open_requests {
       if is_path_within_dir(&self.download_dir, &path) {
-        open_file_with_os_default(&path);
+        if let Err(err) = open_file_with_os_default(&path) {
+          self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &err);
+        }
       } else {
         eprintln!(
           "warning: ignoring download open request for path outside download dir: {} (download dir: {})",
@@ -14115,7 +14117,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
     for path in output.reveal_requests {
       if is_path_within_dir(&self.download_dir, &path) {
-        reveal_file_in_os_file_manager(&path);
+        if let Err(err) = reveal_file_in_os_file_manager(&path) {
+          self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &err);
+        }
       } else {
         eprintln!(
           "warning: ignoring download reveal request for path outside download dir: {} (download dir: {})",
@@ -20478,8 +20482,12 @@ fn map_modifiers(modifiers: winit::event::ModifiersState) -> fastrender::ui::Poi
 }
 
 #[cfg(feature = "browser_ui")]
-fn open_file_with_os_default(path: &std::path::Path) {
+fn open_file_with_os_default(path: &std::path::Path) -> Result<(), String> {
   use std::process::Command;
+
+  if let Some(msg) = fastrender::ui::downloads::missing_path_toast_message(path) {
+    return Err(msg);
+  }
 
   let result = if cfg!(target_os = "macos") {
     Command::new("open").arg(path).spawn()
@@ -20493,14 +20501,22 @@ fn open_file_with_os_default(path: &std::path::Path) {
     Command::new("xdg-open").arg(path).spawn()
   };
 
-  if let Err(err) = result {
-    eprintln!("failed to open file {}: {err}", path.display());
-  }
+  result.map(|_| ()).map_err(|err| {
+    let label = path
+      .file_name()
+      .unwrap_or_else(|| path.as_os_str())
+      .to_string_lossy();
+    format!("Failed to open {label}: {err}")
+  })
 }
 
 #[cfg(feature = "browser_ui")]
-fn reveal_file_in_os_file_manager(path: &std::path::Path) {
+fn reveal_file_in_os_file_manager(path: &std::path::Path) -> Result<(), String> {
   use std::process::Command;
+
+  if let Some(msg) = fastrender::ui::downloads::missing_path_toast_message(path) {
+    return Err(msg);
+  }
 
   let result = if cfg!(target_os = "macos") {
     Command::new("open").arg("-R").arg(path).spawn()
@@ -20514,12 +20530,13 @@ fn reveal_file_in_os_file_manager(path: &std::path::Path) {
     Command::new("xdg-open").arg(parent).spawn()
   };
 
-  if let Err(err) = result {
-    eprintln!(
-      "failed to reveal file {} in file manager: {err}",
-      path.display()
-    );
-  }
+  result.map(|_| ()).map_err(|err| {
+    let label = path
+      .file_name()
+      .unwrap_or_else(|| path.as_os_str())
+      .to_string_lossy();
+    format!("Failed to show in folder {label}: {err}")
+  })
 }
 
 #[cfg(feature = "browser_ui")]
