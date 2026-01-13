@@ -13804,17 +13804,30 @@ pub fn regexp_prototype_symbol_search(
 fn get_substitution(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   input: GcString,
   replace: GcString,
   match_range: (usize, usize),
   captures: &[usize],
   capture_count: usize,
+  named_captures: Option<GcObject>,
 ) -> Result<Vec<u16>, VmError> {
-  let replace_units = scope.heap().get_string(replace)?.as_code_units();
-  let input_units = scope.heap().get_string(input)?.as_code_units();
   let (match_start, match_end) = match_range;
   // `captureLen` in the spec: number of capturing groups (excludes capture 0 / full match).
   let capture_len = capture_count.saturating_sub(1);
+
+  // Copy replacement template code units into a local `Vec<u16>` so we can call `ToString` / `Get`
+  // (for `$<name>`) without holding an immutable heap borrow across `&mut Scope` operations.
+  let replace_units: Vec<u16> = {
+    let units = scope.heap().get_string(replace)?.as_code_units();
+    let mut buf: Vec<u16> = Vec::new();
+    buf
+      .try_reserve_exact(units.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    buf.extend_from_slice(units);
+    buf
+  };
 
   let mut out: Vec<u16> = Vec::new();
   // Best-effort pre-reserve: replacement length + match length.
@@ -13845,62 +13858,126 @@ fn get_substitution(
         i += 2;
       }
       x if x == (b'&' as u16) => {
+        let input_units = scope.heap().get_string(input)?.as_code_units();
         vec_try_extend_from_slice(&mut out, &input_units[match_start..match_end], || vm.tick())?;
         i += 2;
       }
       x if x == (b'`' as u16) => {
+        let input_units = scope.heap().get_string(input)?.as_code_units();
         vec_try_extend_from_slice(&mut out, &input_units[..match_start], || vm.tick())?;
         i += 2;
       }
       x if x == (b'\'' as u16) => {
+        let input_units = scope.heap().get_string(input)?.as_code_units();
         vec_try_extend_from_slice(&mut out, &input_units[match_end..], || vm.tick())?;
         i += 2;
       }
+      x if x == (b'<' as u16) => {
+        let Some(named_captures) = named_captures else {
+          // `namedCaptures` is `undefined` => treat `$` as a literal and do not consume `<`.
+          vec_try_push(&mut out, b'$' as u16)?;
+          i += 1;
+          continue;
+        };
+
+        // Scan for the closing `>`. If missing, treat `$` literally and do not consume `<`.
+        let mut j = i.saturating_add(2);
+        let mut found = None;
+        let mut scanned = 0usize;
+        while j < replace_units.len() {
+          if scanned % 128 == 0 {
+            vm.tick()?;
+          }
+          if replace_units[j] == (b'>' as u16) {
+            found = Some(j);
+            break;
+          }
+          j += 1;
+          scanned = scanned.wrapping_add(1);
+        }
+        let Some(end) = found else {
+          vec_try_push(&mut out, b'$' as u16)?;
+          i += 1;
+          continue;
+        };
+
+        // Get(namedCaptures, name)
+        let name_units = &replace_units[i + 2..end];
+        let mut name_scope = scope.reborrow();
+        name_scope.push_root(Value::Object(named_captures))?;
+
+        let name_s = name_scope.alloc_string_from_code_units(name_units)?;
+        name_scope.push_root(Value::String(name_s))?;
+
+        let key = PropertyKey::from_string(name_s);
+        let group_value = name_scope.get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          named_captures,
+          key,
+          Value::Object(named_captures),
+        )?;
+
+        if !matches!(group_value, Value::Undefined) {
+          name_scope.push_root(group_value)?;
+          let group_s = name_scope.to_string(vm, host, hooks, group_value)?;
+          name_scope.push_root(Value::String(group_s))?;
+
+          let group_units = name_scope.heap().get_string(group_s)?.as_code_units();
+          vec_try_extend_from_slice(&mut out, group_units, || vm.tick())?;
+        }
+
+        // Consume `$<name>`.
+        i = end.saturating_add(1);
+      }
       x if (b'0' as u16..=b'9' as u16).contains(&x) => {
-        // GetSubstitution step 5.f (ECMA-262):
-        // - Prefer 2-digit `$nn` only if it is within the capture count.
-        // - Otherwise, treat as `$n` followed by a literal digit.
+        // `$n` / `$nn` capture replacement (n is 1..99). Note: `$0` is not a capture reference.
         let d1 = (x - (b'0' as u16)) as usize;
-
-        // Default to a 1-digit capture reference.
         let mut digit_count = 1usize;
-        let mut index = d1;
+        let mut n = d1;
 
-        // If there are >=2 digits, prefer the 2-digit form (unless it exceeds `capture_len`).
+        // Try two-digit parse first (ECMA-262 GetSubstitution note).
         if i + 2 < replace_units.len() {
           let x2 = replace_units[i + 2];
           if (b'0' as u16..=b'9' as u16).contains(&x2) {
-            digit_count = 2;
             let d2 = (x2 - (b'0' as u16)) as usize;
-            index = d1.saturating_mul(10).saturating_add(d2);
-
-            if index > capture_len {
-              // Fall back to the 1-digit form (`$n` + literal digit).
-              digit_count = 1;
-              index = d1;
-            }
+            digit_count = 2;
+            n = d1.saturating_mul(10).saturating_add(d2);
           }
         }
 
-        let ref_len = 1usize.saturating_add(digit_count);
-        debug_assert!(ref_len == 2 || ref_len == 3);
+        // `$0` / `$00` are not capture references; emit literally.
+        if n == 0 {
+          vec_try_extend_from_slice(&mut out, &replace_units[i..i + 1 + digit_count], || vm.tick())?;
+          i += 1 + digit_count;
+          continue;
+        }
 
-        if index >= 1 && index <= capture_len {
-          let start_slot = index.saturating_mul(2);
+        // Two-digit fallback: if `nn` is out of range, fall back to `$n` and leave the second digit
+        // as a literal.
+        if digit_count == 2 && n > capture_len {
+          digit_count = 1;
+          n = d1;
+        }
+
+        if n >= 1 && n <= capture_len {
+          let start_slot = n.saturating_mul(2);
           let end_slot = start_slot.saturating_add(1);
           let (cap_start, cap_end) = (
             captures.get(start_slot).copied().unwrap_or(usize::MAX),
             captures.get(end_slot).copied().unwrap_or(usize::MAX),
           );
           if cap_start != usize::MAX && cap_end != usize::MAX && cap_end >= cap_start {
+            let input_units = scope.heap().get_string(input)?.as_code_units();
             vec_try_extend_from_slice(&mut out, &input_units[cap_start..cap_end], || vm.tick())?;
           }
         } else {
-          // Not a valid capture reference: append the replacement pattern literally.
-          vec_try_extend_from_slice(&mut out, &replace_units[i..i + ref_len], || vm.tick())?;
+          // Not a valid capture reference (including `$0` handled above): emit `ref` literally.
+          vec_try_extend_from_slice(&mut out, &replace_units[i..i + 1 + digit_count], || vm.tick())?;
         }
 
-        i += ref_len;
+        i += 1 + digit_count;
       }
       _ => {
         // Treat `$` as a literal.
@@ -14026,11 +14103,14 @@ pub fn regexp_prototype_symbol_replace(
       get_substitution(
         vm,
         &mut scope,
+        host,
+        hooks,
         input,
         replace_s,
         (start, end),
         &raw.m.captures,
         capture_count,
+        None,
       )?
     };
 
@@ -16130,11 +16210,14 @@ pub fn string_prototype_replace(
     get_substitution(
       vm,
       &mut scope,
+      host,
+      hooks,
       s,
       replace_s,
       (pos, pos.saturating_add(search_len)),
       &captures,
       1,
+      None,
     )?
   };
 
@@ -16387,7 +16470,7 @@ pub fn string_prototype_replace_all(
 
       // Replacement (string replacer) with `$`-substitution patterns.
       let captures = [pos, match_end];
-      let rep_units = get_substitution(vm, &mut scope, s, replace_s, (pos, match_end), &captures, 1)?;
+      let rep_units = get_substitution(vm, &mut scope, host, hooks, s, replace_s, (pos, match_end), &captures, 1, None)?;
       vec_try_extend_from_slice(&mut out, &rep_units, || vm.tick())?;
 
       last_end = match_end;
