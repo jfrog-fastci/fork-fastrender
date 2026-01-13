@@ -4,6 +4,7 @@ use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 
+use crate::debug::trace::TraceHandle;
 use super::{audio_engine_config, AudioBackend, AudioEngineConfig, AudioSink, AudioStreamConfig};
 
 /// Identifier for a logical group of sinks (e.g. a browser tab).
@@ -150,6 +151,13 @@ impl AudioEngine {
     Self::new_with_backend(config, Arc::from(backend))
   }
 
+  /// Like [`Self::new_best_effort`], but wires up audio tracing spans into the provided handle.
+  #[must_use]
+  pub fn new_best_effort_with_trace(config: Arc<AudioEngineConfig>, trace: TraceHandle) -> Self {
+    let backend = <dyn AudioBackend>::new_best_effort_with_config_and_trace(&config, trace);
+    Self::new_with_backend(config, Arc::from(backend))
+  }
+
   /// Construct an engine with an explicitly provided backend.
   ///
   /// This is primarily intended for deterministic unit tests.
@@ -169,6 +177,12 @@ impl AudioEngine {
   #[must_use]
   pub fn init_from_env() -> Self {
     Self::new_best_effort(audio_engine_config())
+  }
+
+  /// Like [`Self::init_from_env`], but uses the provided trace handle for backend tracing spans.
+  #[must_use]
+  pub fn init_from_env_with_trace(trace: TraceHandle) -> Self {
+    Self::new_best_effort_with_trace(audio_engine_config(), trace)
   }
 
   #[must_use]
