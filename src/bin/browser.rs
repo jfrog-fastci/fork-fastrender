@@ -699,6 +699,65 @@ mod worker_msg_queue_tests {
   }
 }
 
+/// UI-side scroll coalescing for high-frequency wheel/scrollbar events.
+///
+/// The render worker already coalesces scroll *frames*, but the UI→worker channel is unbounded.
+/// When the worker is slow, sending every wheel/drag delta can build up a backlog and increase
+/// latency. This helper accumulates scroll deltas for a single tab and produces at most one
+/// `UiToWorker::Scroll` message per flush (typically once per rendered UI frame).
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, Default)]
+struct ScrollCoalescer {
+  tab_id: Option<fastrender::ui::TabId>,
+  delta_css: (f32, f32),
+  pointer_css: Option<(f32, f32)>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl ScrollCoalescer {
+  fn clear(&mut self) {
+    self.tab_id = None;
+    self.delta_css = (0.0, 0.0);
+    self.pointer_css = None;
+  }
+
+  fn push_scroll(
+    &mut self,
+    tab_id: fastrender::ui::TabId,
+    delta_css: (f32, f32),
+    pointer_css: Option<(f32, f32)>,
+  ) {
+    // Reset on tab switches so scroll deltas never leak across tabs.
+    if self.tab_id != Some(tab_id) {
+      self.clear();
+      self.tab_id = Some(tab_id);
+    }
+
+    let dx = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
+    let dy = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
+    self.delta_css.0 += dx;
+    self.delta_css.1 += dy;
+    // Preserve pointer-targeted semantics by remembering the most recent pointer location.
+    self.pointer_css = pointer_css;
+  }
+
+  fn take_scroll_msg(&mut self) -> Option<fastrender::ui::UiToWorker> {
+    let tab_id = self.tab_id?;
+    let delta_css = self.delta_css;
+    if delta_css.0 == 0.0 && delta_css.1 == 0.0 {
+      self.clear();
+      return None;
+    }
+    let pointer_css = self.pointer_css;
+    self.clear();
+    Some(fastrender::ui::UiToWorker::Scroll {
+      tab_id,
+      delta_css,
+      pointer_css,
+    })
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 fn main() {
   if let Err(err) = run() {
@@ -1470,6 +1529,69 @@ mod protocol_payload_sanitization_tests {
   }
 }
 
+#[cfg(test)]
+mod scroll_coalescer_tests {
+  use super::ScrollCoalescer;
+  use fastrender::ui::{TabId, UiToWorker};
+
+  #[test]
+  fn sums_deltas_correctly() {
+    let mut coalescer = ScrollCoalescer::default();
+    let tab_id = TabId(1);
+    coalescer.push_scroll(tab_id, (1.0, 2.0), Some((10.0, 20.0)));
+    coalescer.push_scroll(tab_id, (3.5, -1.0), Some((11.0, 21.0)));
+
+    match coalescer.take_scroll_msg() {
+      Some(UiToWorker::Scroll {
+        tab_id: got_tab,
+        delta_css,
+        pointer_css,
+      }) => {
+        assert_eq!(got_tab, tab_id);
+        assert_eq!(delta_css, (4.5, 1.0));
+        assert_eq!(pointer_css, Some((11.0, 21.0)));
+      }
+      other => panic!("expected Scroll message, got {other:?}"),
+    }
+
+    assert!(coalescer.take_scroll_msg().is_none());
+  }
+
+  #[test]
+  fn resets_on_tab_change() {
+    let mut coalescer = ScrollCoalescer::default();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    coalescer.push_scroll(tab_a, (1.0, 1.0), Some((0.0, 0.0)));
+    coalescer.push_scroll(tab_b, (2.0, 0.0), Some((5.0, 5.0)));
+
+    match coalescer.take_scroll_msg() {
+      Some(UiToWorker::Scroll { tab_id, delta_css, .. }) => {
+        assert_eq!(tab_id, tab_b);
+        assert_eq!(delta_css, (2.0, 0.0));
+      }
+      other => panic!("expected Scroll message, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn uses_latest_pointer_position() {
+    let mut coalescer = ScrollCoalescer::default();
+    let tab_id = TabId(7);
+    coalescer.push_scroll(tab_id, (0.0, 1.0), Some((1.0, 1.0)));
+    coalescer.push_scroll(tab_id, (0.0, 1.0), Some((9.0, 9.0)));
+
+    match coalescer.take_scroll_msg() {
+      Some(UiToWorker::Scroll { pointer_css, .. }) => {
+        assert_eq!(pointer_css, Some((9.0, 9.0)));
+      }
+      other => panic!("expected Scroll message, got {other:?}"),
+    }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+use arboard::Clipboard;
 #[cfg(feature = "browser_ui")]
 use clap::Parser;
 #[cfg(feature = "browser_ui")]
@@ -5412,6 +5534,12 @@ struct App {
   /// at most one `UiToWorker::PointerMove` per rendered frame (and before pointer up/down when
   /// needed).
   pending_pointer_move: Option<fastrender::ui::UiToWorker>,
+  /// Coalesced scroll input awaiting the next frame flush.
+  ///
+  /// Wheel + scrollbar events can arrive at very high frequency (especially on trackpads/high-res
+  /// wheels). Coalescing here prevents the UI→worker channel from accumulating an unbounded number
+  /// of scroll messages when the worker is slow.
+  pending_scroll: ScrollCoalescer,
   /// Whether the next `render_frame` should send a synthetic `PointerMove` to the active tab based
   /// on the current cursor position.
   ///
@@ -6069,6 +6197,7 @@ impl App {
       cursor_in_page: false,
       page_cursor_override: None,
       pending_pointer_move: None,
+      pending_scroll: ScrollCoalescer::default(),
       hover_sync_pending: false,
       pending_dropped_files: Vec::new(),
       pending_dropped_files_tab: None,
@@ -6719,10 +6848,7 @@ impl App {
     // If the active tab changes while a scrollbar thumb drag is in progress, drop any unflushed
     // delta and cancel the drag. This avoids "leaking" drag scroll into the wrong tab.
     if let UiToWorker::SetActiveTab { tab_id } = &msg {
-      if self
-        .scrollbar_drag
-        .is_some_and(|drag| drag.tab_id != *tab_id)
-      {
+      if self.scrollbar_drag.is_some_and(|drag| drag.tab_id != *tab_id) {
         self.pending_scroll_drag = None;
         self.cancel_scrollbar_drag();
       }
@@ -6744,6 +6870,22 @@ impl App {
       }
       other => other,
     };
+    // If we're about to change which tab/document is active, discard any coalesced scroll delta so
+    // it can't be flushed against the wrong target later in the frame.
+    if matches!(
+      &msg,
+      UiToWorker::SetActiveTab { .. }
+        | UiToWorker::CloseTab { .. }
+        | UiToWorker::Navigate { .. }
+        | UiToWorker::NavigateRequest { .. }
+        | UiToWorker::GoBack { .. }
+        | UiToWorker::GoForward { .. }
+        | UiToWorker::Reload { .. }
+        | UiToWorker::StopLoading { .. }
+        | UiToWorker::ScrollTo { .. }
+    ) {
+      self.clear_pending_scroll();
+    }
 
     // Keep overlay scrollbars visible when a scroll is initiated via any input path (wheel, track
     // click, thumb drag, keyboard shortcuts that synthesize `ScrollTo`, etc).
@@ -7124,7 +7266,35 @@ impl App {
     let Some(pending) = self.pending_scroll_drag.take() else {
       return;
     };
-    self.send_worker_msg(pending.into_worker_msg());
+    let _ = self.send_worker_msg(pending.into_worker_msg());
+  }
+
+  fn enqueue_scroll(
+    &mut self,
+    tab_id: fastrender::ui::TabId,
+    delta_css: (f32, f32),
+    pointer_css: Option<(f32, f32)>,
+  ) {
+    // Mirror `send_worker_msg` behaviour so overlay scrollbars become visible on the *next* frame
+    // even though we defer sending the actual scroll message until the end of the current frame.
+    self
+      .overlay_scrollbar_visibility
+      .register_interaction(std::time::Instant::now());
+    self
+      .pending_scroll
+      .push_scroll(tab_id, delta_css, pointer_css);
+  }
+
+  fn flush_pending_scroll(&mut self) {
+    let Some(msg) = self.pending_scroll.take_scroll_msg() else {
+      return;
+    };
+    let _ = self.send_worker_msg(msg);
+  }
+
+  fn clear_pending_scroll(&mut self) {
+    self.pending_scroll.clear();
+    self.pending_scroll_drag = None;
   }
 
   fn flush_pending_pointer_move(&mut self) {
@@ -11182,13 +11352,13 @@ impl App {
 
         if let Some((tab_id, axis, scrollbar, axis_delta_points)) = drag_update {
           let axis_delta_css = scrollbar.scroll_delta_css_for_thumb_drag_points(axis_delta_points);
-          if axis_delta_css != 0.0 {
-            let delta_css = match axis {
-              fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
-              fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
-            };
-            PendingScrollDrag::push(&mut self.pending_scroll_drag, tab_id, delta_css);
-          }
+            if axis_delta_css != 0.0 {
+              let delta_css = match axis {
+                fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
+                fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
+              };
+              PendingScrollDrag::push(&mut self.pending_scroll_drag, tab_id, delta_css);
+            }
           self.window.request_redraw();
           return;
         }
@@ -11417,11 +11587,7 @@ impl App {
           mapping.pos_points_to_pos_css_clamped(pos_points)
         };
 
-        self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-          tab_id,
-          delta_css,
-          pointer_css,
-        });
+        self.enqueue_scroll(tab_id, delta_css, pointer_css);
         self.window.request_redraw();
       }
       WindowEvent::Touch(touch) => {
@@ -12058,11 +12224,7 @@ impl App {
                 .vertical
                 .and_then(|sb| sb.page_delta_css_for_track_click(pos))
               {
-                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                  tab_id,
-                  delta_css: (0.0, delta_y),
-                  pointer_css: None,
-                });
+                self.enqueue_scroll(tab_id, (0.0, delta_y), None);
                 self.window.request_redraw();
                 return;
               }
@@ -12071,11 +12233,7 @@ impl App {
                 .horizontal
                 .and_then(|sb| sb.page_delta_css_for_track_click(pos))
               {
-                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                  tab_id,
-                  delta_css: (delta_x, 0.0),
-                  pointer_css: None,
-                });
+                self.enqueue_scroll(tab_id, (delta_x, 0.0), None);
                 self.window.request_redraw();
                 return;
               }
@@ -14834,7 +14992,6 @@ impl App {
               });
           }
         }
-
         // "Page unresponsive" watchdog overlay.
         if tab_unresponsive {
           let overlay_id = egui::Id::new(("fastr_page_unresponsive_overlay", active_tab.0));
@@ -15042,6 +15199,7 @@ impl App {
     self.sync_hover_after_tab_change(&ctx);
     // Coalesce scrollbar thumb drag CursorMoved bursts to at most one scroll message per frame.
     self.flush_pending_scroll_drag();
+    self.flush_pending_scroll();
     // Coalesce pointer-move bursts to at most one message per rendered frame.
     self.flush_pending_pointer_move();
 
