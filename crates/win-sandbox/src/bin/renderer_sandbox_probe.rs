@@ -20,6 +20,7 @@ fn run_probe() -> Result<(), i32> {
   use windows_sys::Win32::Security::{GetTokenInformation, TokenIsAppContainer, TOKEN_QUERY};
   use windows_sys::Win32::System::JobObjects::IsProcessInJob;
   use windows_sys::Win32::System::Threading::GetCurrentProcess;
+  use win_sandbox::mitigations;
 
   #[link(name = "advapi32")]
   extern "system" {
@@ -77,7 +78,13 @@ fn run_probe() -> Result<(), i32> {
     return Err(21);
   }
 
-  // 3) Grandchild spawn should fail (active process limit 1, no breakaway).
+  // 3) Mitigations check (best-effort; expected mask is computed based on OS support).
+  if let Err(err) = mitigations::verify_renderer_mitigations_current_process() {
+    eprintln!("renderer mitigations not active: {err}");
+    return Err(22);
+  }
+
+  // 4) Grandchild spawn should fail (active process limit 1, no breakaway).
   let exe = std::env::current_exe().map_err(|_| 30)?;
   let mut cmd = std::process::Command::new(exe);
   cmd.arg("--grandchild");

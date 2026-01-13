@@ -7,6 +7,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::windows::process::ExitStatusExt;
 use std::time::Duration;
 
+use win_sandbox::mitigations;
 use win_sandbox::RendererSandbox;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
 use windows_sys::Win32::Security::{
@@ -130,6 +131,8 @@ fn appcontainer_denies_network() {
     // -------------------------------------------------------------------------
     // Child path: validate the token contains no network capabilities + connect fails.
     // -------------------------------------------------------------------------
+    mitigations::verify_renderer_mitigations_current_process()
+      .expect("expected renderer mitigations to be active in sandboxed child");
     unsafe {
       let mut token: HANDLE = std::ptr::null_mut();
       let ok = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token);

@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::os::windows::process::ExitStatusExt;
 
+use win_sandbox::mitigations;
 use win_sandbox::RendererSandbox;
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
 use windows_sys::Win32::Foundation::HANDLE;
@@ -142,6 +143,9 @@ fn run_child() -> ! {
     eprintln!("sandbox regression: child is not running inside an AppContainer token");
     std::process::exit(1);
   }
+
+  mitigations::verify_renderer_mitigations_current_process()
+    .expect("expected renderer mitigations to be active in sandboxed child");
 
   let path = std::env::var_os(PATH_ENV).expect("child must receive file path in env");
   let path = Path::new(&path);
