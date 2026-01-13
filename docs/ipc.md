@@ -121,10 +121,13 @@ the explicit framing rules in the next section and must continue to enforce the 
 
 Repo reality:
 
-- `src/ipc/frame_slots.rs` contains a Linux-only, test-oriented `UnixSeqpacket` wrapper plus a
-  reference “browser allocates SHM slots once; subsequent messages are control-only” design.
-  It’s a good place to look for hardening patterns (exact message lengths, FD count checks,
-  `MSG_TRUNC`/`MSG_CTRUNC` handling, `MSG_CMSG_CLOEXEC`).
+- [`src/ipc/unix_seqpacket.rs`](../src/ipc/unix_seqpacket.rs) contains a Linux-only `UnixSeqpacket`
+  wrapper that sends/receives one **atomic** seqpacket message at a time with optional `SCM_RIGHTS`
+  FD attachments. It demonstrates robust hardening patterns (`MSG_TRUNC`/`MSG_CTRUNC` handling,
+  `MSG_CMSG_CLOEXEC`, `MSG_NOSIGNAL`, strict FD count enforcement).
+- [`src/ipc/frame_slots.rs`](../src/ipc/frame_slots.rs) demonstrates a “browser allocates SHM slots
+  once; subsequent messages are control-only” design and is another good source of hardening
+  patterns (exact message lengths, FD count checks, truncation handling).
 
 ---
 
