@@ -27,6 +27,7 @@ scripts are **not** executed unless you opt in with `--js`.
 - Render CLIs:
   - `fetch_and_render --js …` (single URL/file render)
   - `render_pages --js …` (render cached pageset HTML under `fetches/html/`)
+  - `render_fixtures --js …` (render offline fixtures under `tests/pages/fixtures/`)
   - `pageset_progress run --js …` (pageset scoreboard renders)
 - Browser smoke test:
   - `browser --headless-smoke --js …` (vm-js smoke test; does not expose the shared JS budget flags)
@@ -72,6 +73,10 @@ These flags are available on the JS-enabled render CLIs (`fetch_and_render`, `re
   budgeting knobs (instruction/heap/stack limits).
 
 Background and rationale: [`docs/js_execution_budgets.md`](js_execution_budgets.md).
+
+Note: `render_fixtures --js` currently exposes `--js` and `--js-max-frames` only (it uses
+`JsExecutionOptions::default()` and does not yet accept the shared `JsExecutionArgs` budget override
+flags like `--js-max-script-bytes` / `--js-max-wall-ms` / `--js-max-tasks`, etc).
 
 Note: the Chrome baseline scripts (`scripts/chrome_baseline.sh`, `xtask chrome-baseline-fixtures`,
 etc.) use a separate JavaScript toggle of the form `--js {on|off}`.
@@ -417,6 +422,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Defaults: fixed, deterministic viewport/DPR (1040x1240 @ 1.0) unless overridden.
 - Offline policy: fixtures are rendered **without network access**; only `file://` and `data:` subresources are allowed.
 - Fixture completeness: any blocked `http(s)://` subresource (network access) is treated as a fixture failure so captures stay self-contained/offline. Other fetch errors are reported in `<fixture>.log` (and in `diagnostics.json` when `--write-snapshot` is enabled).
+- JavaScript (optional): pass `--js` to execute fixture scripts via the `vm-js` `BrowserTab` harness before capturing the final pixels (bounded by `--js-max-frames`). See [JavaScript execution (`--js`)](#javascript-execution---js) for the time model.
 - Fonts: uses bundled fonts (`FontConfig::bundled_only`) so outputs are stable across machines (pass `--system-fonts` to opt into system font discovery).
 - Output: by default writes `<fixture>.png` into `target/fixture_renders/` (override with `--out-dir`), plus `<fixture>.log` and `_summary.log`.
 - Optional snapshot: `--write-snapshot` writes `<out-dir>/<fixture>/snapshot.json` and `<out-dir>/<fixture>/diagnostics.json` (for later `diff_snapshots`).
@@ -428,9 +434,18 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Core flags:
   - Selection: `--fixtures <csv>` (comma-separated stems).
   - Paths: `--fixtures-dir <dir>`, `--out-dir <dir>`.
-  - Render params: `--viewport <WxH>`, `--dpr <float>`, `--media {screen|print}`, `--timeout <secs>`.
+  - Render params: `--viewport <WxH>`, `--dpr <float>`, `--media {screen|print}`, `--timeout <secs>`, `--js`, `--js-max-frames <N>`.
   - Parallelism: `--jobs/-j <n>`, `--shard <index>/<total>`.
   - Fonts: `--system-fonts`, `--font-dir <dir>` (repeatable).
+
+Example (render one fixture with JavaScript enabled):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_fixtures -- \
+  --fixtures grid_news \
+  --out-dir target/fixture_renders_js \
+  --js --js-max-frames 20
+```
 
 ## `bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures`
 
