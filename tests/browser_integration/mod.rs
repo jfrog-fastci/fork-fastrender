@@ -48,6 +48,7 @@ mod js_rendering;
 mod js_time;
 mod location_navigation;
 mod navigation_streaming;
+mod range_input_rtl_pointer_drag;
 mod select_dropdown;
 mod select_dropdown_hidden_option_arrow_key;
 mod select_dropdown_pick;

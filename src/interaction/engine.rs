@@ -3387,11 +3387,13 @@ fn fragment_rect_for_box_id(fragment_tree: &FragmentTree, target_box_id: usize) 
 
 fn update_range_value_from_pointer(
   index: &mut DomIndexMut,
+  box_tree: &BoxTree,
   fragment_tree: &FragmentTree,
   node_id: usize,
   box_id: usize,
   page_point: Point,
 ) -> bool {
+  use crate::style::types::Direction;
   if node_or_ancestor_is_inert(index, node_id)
     || node_is_disabled(index, node_id)
     || node_is_readonly(index, node_id)
@@ -3417,6 +3419,52 @@ fn update_range_value_from_pointer(
     return false;
   }
   fraction = fraction.clamp(0.0, 1.0);
+
+  let dir = box_node_by_id(box_tree, box_id)
+    .map(|node| node.style.direction)
+    .or_else(|| {
+      // Fallback when box-tree metadata is unavailable: infer direction from `dir`/`xml:dir`
+      // attributes, walking ancestors (HTML directionality inheritance).
+      let mut current = node_id;
+      while current != 0 {
+        let Some(node) = index.node(current) else {
+          break;
+        };
+        let attr = node
+          .get_attribute_ref("dir")
+          .or_else(|| node.get_attribute_ref("xml:dir"));
+        let Some(value) = attr.map(trim_ascii_whitespace).filter(|v| !v.is_empty()) else {
+          current = index.parent.get(current).copied().unwrap_or(0);
+          continue;
+        };
+        if value.eq_ignore_ascii_case("rtl") {
+          return Some(Direction::Rtl);
+        }
+        if value.eq_ignore_ascii_case("ltr") {
+          return Some(Direction::Ltr);
+        }
+        if value.eq_ignore_ascii_case("auto") {
+          if let Some(resolved) = crate::dom::resolve_first_strong_direction(node) {
+            return Some(match resolved {
+              crate::css::selectors::TextDirection::Ltr => Direction::Ltr,
+              crate::css::selectors::TextDirection::Rtl => Direction::Rtl,
+            });
+          }
+          // If the subtree has no strong characters, HTML falls back to the parent's direction.
+          current = index.parent.get(current).copied().unwrap_or(0);
+          continue;
+        }
+        current = index.parent.get(current).copied().unwrap_or(0);
+      }
+      None
+    })
+    .unwrap_or(Direction::Ltr);
+
+  if dir == Direction::Rtl {
+    // Painting mirrors the thumb in RTL; invert pointer mapping so the minimum value corresponds
+    // to the right edge and the maximum to the left edge.
+    fraction = 1.0 - fraction;
+  }
 
   let Some(node_mut) = index.node_mut(node_id) else {
     return false;
@@ -5277,6 +5325,7 @@ impl InteractionEngine {
         self.ensure_form_default_snapshot_for_control(&index, state.node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
+          box_tree,
           fragment_tree,
           state.node_id,
           state.box_id,
@@ -5531,6 +5580,7 @@ impl InteractionEngine {
         self.ensure_form_default_snapshot_for_control(&index, hit.dom_node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
+          box_tree,
           fragment_tree,
           hit.dom_node_id,
           hit.box_id,
@@ -6273,6 +6323,7 @@ impl InteractionEngine {
         self.ensure_form_default_snapshot_for_control(&index, state.node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
+          box_tree,
           fragment_tree,
           state.node_id,
           state.box_id,
