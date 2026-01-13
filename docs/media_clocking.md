@@ -12,9 +12,15 @@ The goal is to prevent “slow drift” and “mysterious desync” bugs by bein
 
 Implementation map (keep these modules aligned with this doc):
 
-* `src/media/clock.rs` — clock selection + timeline mapping
+* `src/media/timebase.rs` — container timebase/tick ↔ `Duration` conversions (PTS normalization)
+* `src/media/clock.rs` — clock selection + timeline mapping (**intended module**, may be introduced
+  as video support lands)
 * `src/media/audio/*` — audio backend(s), audio device clock exposure, output latency model
-* `src/media/av_sync.rs` — video scheduling + correction policy (drop/hold/delay)
+  (**intended module path**)
+* `src/media/av_sync.rs` — video scheduling + correction policy (drop/hold/delay) (**intended module
+  path**)
+* `src/js/clock.rs` — existing `Clock` + `VirtualClock` pattern used for deterministic time in tests
+  (media clocking should mirror this pattern)
 
 > Note: at any point in time, code may be mid-migration. If the implementation diverges from this
 > model, fix the code or update this doc; don’t let the mismatch persist.
@@ -69,7 +75,8 @@ frame should be presented* on the media timeline.
 
 Important properties:
 
-* PTS is usually expressed in a stream timebase (e.g. ticks), which must be converted to seconds.
+* PTS is usually expressed in a stream timebase (e.g. ticks), which must be converted to seconds
+  (see `src/media/timebase.rs`).
 * PTS is defined in *presentation order*; decode order may differ (e.g. with B-frames).
 * PTS can be missing/invalid in malformed content; the demuxer/decoder layer must normalize it into
   a monotonic (or at least usable) timeline for the renderer.
@@ -290,4 +297,3 @@ If you observe A/V drift or “currentTime slowly diverges from what you hear”
 2. Verify the UI tick is not accumulating `dt` to advance timeline time.
 3. Confirm `src/media/av_sync.rs` compares **video PTS to timeline now**, not to UI tick timestamps.
 4. If the error is constant, check the output-latency constant rather than changing tolerances.
-

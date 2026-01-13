@@ -161,6 +161,7 @@ video.addEventListener('error', ...);
 - Need audio output backend
 - Options: cpal (cross-platform Rust), system APIs
 - Must sync with video frames
+- Media clocking model (audio master clock, UI tick is wake-up only): [`docs/media_clocking.md`](../docs/media_clocking.md)
 
 ## Testing
 
