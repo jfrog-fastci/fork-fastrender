@@ -441,6 +441,7 @@ Implementation note:
 Repo reality note:
 - The in-tree browser has a concrete set of built-in about pages defined in
   [`src/ui/about_pages.rs`](../src/ui/about_pages.rs) (`ABOUT_*` constants + `ABOUT_PAGE_URLS`).
+  - See [`docs/about_pages.md`](about_pages.md) for the user-facing list and per-page expectations.
 
 Navigation policy note:
 
