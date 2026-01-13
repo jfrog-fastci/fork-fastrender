@@ -195,6 +195,8 @@ pub struct LatestFrameMeta {
   pub pixmap_px: (u32, u32),
   pub viewport_css: (u32, u32),
   pub dpr: f32,
+  /// True when the rendered document contains time-based effects (CSS animations/transitions,
+  /// animated images, JS timers/rAF, etc).
   pub wants_ticks: bool,
 }
 
