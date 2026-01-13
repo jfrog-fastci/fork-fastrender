@@ -38,6 +38,7 @@ The `browser` UI is intentionally minimal, but the core chrome/navigation loop i
 end-to-end:
 
 - **Tabs**: create/close/switch tabs.
+- **Windows**: open multiple windows (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd>).
 - **Menu bar**: browser-style menu bar (File/Edit/View/History/Bookmarks/Window/Help) for discoverability.
 - **Navigation**:
   - address bar URL entry (press Enter to navigate; user input is normalized, e.g. `example.com`
@@ -45,7 +46,8 @@ end-to-end:
   - per-tab history with back/forward/reload
   - loading + error status in the chrome
 - **Bookmarks**: bookmark the current page (star button / Ctrl/Cmd+D), bookmarks bar, bookmarks manager.
-- **History**: global history panel with search + clear.
+- **History**: global history panel with search + “Clear browsing data” (time range).
+- **Downloads**: “Download link” from the page context menu; view progress/cancel/retry/open from the downloads side panel.
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
 - **Pointer/keyboard routing**:
   - link clicking (`<a href=...>`) navigates
