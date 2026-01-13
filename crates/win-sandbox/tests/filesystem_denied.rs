@@ -2,16 +2,16 @@
 
 use std::ffi::{c_void, OsString};
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::os::windows::process::ExitStatusExt;
+use std::path::{Path, PathBuf};
 
 use win_sandbox::mitigations;
-use win_sandbox::RendererSandbox;
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
+use win_sandbox::{is_appcontainer_supported, RendererSandbox};
 use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
 use windows_sys::Win32::Security::{GetTokenInformation, TokenIsAppContainer, TOKEN_QUERY};
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
 const CHILD_ENV: &str = "FASTR_WIN_SANDBOX_TEST_CHILD";
 const PATH_ENV: &str = "FASTR_WIN_SANDBOX_TEST_PATH";
@@ -68,9 +68,15 @@ fn appcontainer_blocks_userprofile_filesystem_access() {
   static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
   let _env_guard = ENV_LOCK.lock().unwrap();
 
-  let user_profile = PathBuf::from(
-    std::env::var_os("USERPROFILE").expect("USERPROFILE must be set on Windows"),
-  );
+  if !is_appcontainer_supported() {
+    eprintln!(
+      "skipping win-sandbox AppContainer filesystem denial test: AppContainer APIs are unavailable on this OS"
+    );
+    return;
+  }
+
+  let user_profile =
+    PathBuf::from(std::env::var_os("USERPROFILE").expect("USERPROFILE must be set on Windows"));
   let file_path = user_profile.join(format!(
     "fastrender_sandbox_test_{}_{}.txt",
     std::process::id(),
@@ -108,7 +114,9 @@ fn appcontainer_blocks_userprofile_filesystem_access() {
   ];
 
   let sandbox = RendererSandbox::appcontainer_no_capabilities();
-  let child = sandbox.spawn(&exe, &args).expect("spawn sandboxed child process");
+  let child = sandbox
+    .spawn(&exe, &args)
+    .expect("spawn sandboxed child process");
   let handle = child.process.as_raw();
   let status = wait_process(handle, 20_000).expect("wait for sandboxed child");
 

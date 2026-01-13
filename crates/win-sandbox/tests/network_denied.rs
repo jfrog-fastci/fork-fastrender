@@ -8,7 +8,7 @@ use std::os::windows::process::ExitStatusExt;
 use std::time::Duration;
 
 use win_sandbox::mitigations;
-use win_sandbox::RendererSandbox;
+use win_sandbox::{is_appcontainer_supported, RendererSandbox};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
 use windows_sys::Win32::Security::{
   GetTokenInformation, TokenCapabilities, TokenIsAppContainer, TOKEN_QUERY,
@@ -194,6 +194,13 @@ fn appcontainer_denies_network() {
   // ---------------------------------------------------------------------------
   // Parent path: spawn this test under the win-sandbox renderer AppContainer sandbox.
   // ---------------------------------------------------------------------------
+  if !is_appcontainer_supported() {
+    eprintln!(
+      "skipping win-sandbox AppContainer network denial test: AppContainer APIs are unavailable on this OS"
+    );
+    return;
+  }
+
   static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
   let _guard = ENV_LOCK.lock().unwrap();
 

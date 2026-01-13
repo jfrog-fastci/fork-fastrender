@@ -7,6 +7,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 use win_sandbox::renderer::RendererSandbox;
+use win_sandbox::SandboxSupport;
 
 fn icacls_grant_rx(path: &std::path::Path, sid: &str, inherit: bool) {
   let mut grant = OsString::from(sid);
@@ -35,6 +36,14 @@ fn icacls_grant_rx(path: &std::path::Path, sid: &str, inherit: bool) {
 
 #[test]
 fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
+  let support = SandboxSupport::detect();
+  if support != SandboxSupport::Full {
+    eprintln!(
+      "skipping win-sandbox renderer sandbox integration test: full sandbox support unavailable ({support})"
+    );
+    return;
+  }
+
   // Cargo places the probe in a directory that is typically not readable/executable by arbitrary
   // AppContainer processes. Copy it into a temp directory we can ACL for AppContainer access.
   let probe_src = PathBuf::from(env!("CARGO_BIN_EXE_renderer_sandbox_probe"));
