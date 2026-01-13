@@ -5,6 +5,9 @@
 /// The windowed browser UI (`src/bin/browser.rs`) uses `egui-winit` with AccessKit enabled. This
 /// allows egui to expose its widget tree to screen readers (VoiceOver/Narrator/Orca).
 ///
+/// For a detailed architecture + debugging guide (coordinate conventions, NodeId stability rules,
+/// action routing, and `dump_accesskit`), see `docs/chrome_accessibility.md`.
+///
 /// Most icon-only chrome controls should use `crate::ui::BrowserIcon` + `crate::ui::icon_button`
 /// so they automatically get stable hover text + AccessKit labels via `BrowserIcon::a11y_label`.
 ///
@@ -27,4 +30,3 @@ mod tests {
     assert!(!super::ADDRESS_BAR_LABEL.trim().is_empty());
   }
 }
-
