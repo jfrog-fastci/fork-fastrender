@@ -11,7 +11,7 @@ use super::{
 };
 use super::convert::sanitize_sample;
 use crate::media::audio_clock::InterpolatedAudioClock;
-use crate::media::audio::ring_buffer::AudioRingBuffer;
+use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
 use cpal::traits::{HostTrait, StreamTrait};
 
 /// CPAL-based audio output backend (cross-platform).
@@ -24,6 +24,14 @@ use cpal::traits::{HostTrait, StreamTrait};
 ///
 /// See `docs/media_clocking.md` for the intended A/V sync model (audio as master clock, tick as
 /// wake-up only).
+
+const DEFAULT_GAIN_RAMP_DURATION_MS: u32 = 10;
+
+fn gain_ramp_frames(sample_rate_hz: u32) -> u32 {
+  let frames = (u64::from(sample_rate_hz).saturating_mul(u64::from(DEFAULT_GAIN_RAMP_DURATION_MS))
+    / 1000) as u32;
+  frames.max(1)
+}
 pub struct CpalAudioBackend {
   config: AudioStreamConfig,
   max_buffered_duration: Duration,
@@ -237,9 +245,7 @@ impl MixerState {
       let Some(sink) = weak.upgrade() else {
         continue;
       };
-      let gain_bits = sink.volume_bits.load(Ordering::Relaxed);
-      let gain = f32::from_bits(gain_bits);
-      sink.buffer.pop_add_into(dst, gain);
+      sink.mix_into(dst);
     }
   }
 
@@ -251,7 +257,12 @@ impl MixerState {
 struct SinkState {
   config: AudioStreamConfig,
   buffer: AudioRingBuffer,
-  volume_bits: AtomicU32,
+  volume_target_bits: AtomicU32,
+  ramp_target_bits: AtomicU32,
+  ramp_current_bits: AtomicU32,
+  ramp_step_bits: AtomicU32,
+  ramp_remaining_frames: AtomicU32,
+  ramp_frames: u32,
 }
 
 impl SinkState {
@@ -260,10 +271,16 @@ impl SinkState {
     let frames = super::duration_to_frames_ceil(config.sample_rate_hz, max_buffered);
     let frames = usize::try_from(frames).unwrap_or(usize::MAX);
     let capacity = frames.saturating_mul(channels).max(1);
+    let ramp_frames = gain_ramp_frames(config.sample_rate_hz);
     Self {
       config,
       buffer: AudioRingBuffer::new(capacity),
-      volume_bits: AtomicU32::new(1.0f32.to_bits()),
+      volume_target_bits: AtomicU32::new(1.0f32.to_bits()),
+      ramp_target_bits: AtomicU32::new(1.0f32.to_bits()),
+      ramp_current_bits: AtomicU32::new(1.0f32.to_bits()),
+      ramp_step_bits: AtomicU32::new(0.0f32.to_bits()),
+      ramp_remaining_frames: AtomicU32::new(0),
+      ramp_frames,
     }
   }
 
@@ -273,7 +290,60 @@ impl SinkState {
     } else {
       0.0
     };
-    self.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+    self
+      .volume_target_bits
+      .store(volume.to_bits(), Ordering::Relaxed);
+  }
+
+  fn mix_into(&self, dst: &mut [f32]) {
+    let channels = usize::from(self.config.channels.max(1));
+    if channels == 0 || dst.is_empty() {
+      return;
+    }
+
+    let desired_target_bits = self.volume_target_bits.load(Ordering::Relaxed);
+    let mut ramp_target_bits = self.ramp_target_bits.load(Ordering::Relaxed);
+
+    let mut current = f32::from_bits(self.ramp_current_bits.load(Ordering::Relaxed));
+    let mut target = f32::from_bits(ramp_target_bits);
+    let mut step = f32::from_bits(self.ramp_step_bits.load(Ordering::Relaxed));
+    let mut remaining = self.ramp_remaining_frames.load(Ordering::Relaxed);
+
+    if desired_target_bits != ramp_target_bits {
+      ramp_target_bits = desired_target_bits;
+      target = f32::from_bits(desired_target_bits);
+
+      if (current - target).abs() <= f32::EPSILON {
+        current = target;
+        step = 0.0;
+        remaining = 0;
+      } else {
+        remaining = self.ramp_frames;
+        step = (target - current) / remaining as f32;
+      }
+    }
+
+    let mut ramp = GainRamp {
+      current_gain: current,
+      target_gain: target,
+      step,
+      frames_remaining: remaining,
+    };
+
+    self.buffer.pop_add_into_ramped(dst, channels, &mut ramp);
+
+    self
+      .ramp_target_bits
+      .store(ramp_target_bits, Ordering::Relaxed);
+    self
+      .ramp_current_bits
+      .store(ramp.current_gain.to_bits(), Ordering::Relaxed);
+    self
+      .ramp_step_bits
+      .store(ramp.step.to_bits(), Ordering::Relaxed);
+    self
+      .ramp_remaining_frames
+      .store(ramp.frames_remaining, Ordering::Relaxed);
   }
 }
 
@@ -507,7 +577,7 @@ fn f32_to_u16(value: f32) -> u16 {
   (shifted * u16::MAX as f32) as u16
 }
 
-trait OutputSample: cpal::Sample {
+trait OutputSample: cpal::Sample + cpal::SizedSample {
   fn from_mixed_f32(value: f32) -> Self;
 }
 

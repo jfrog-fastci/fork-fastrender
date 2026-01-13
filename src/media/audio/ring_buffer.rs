@@ -3,6 +3,27 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GainRamp {
+  pub(crate) current_gain: f32,
+  pub(crate) target_gain: f32,
+  pub(crate) step: f32,
+  pub(crate) frames_remaining: u32,
+}
+
+impl GainRamp {
+  pub(crate) fn advance_frame(&mut self) {
+    if self.frames_remaining == 0 {
+      return;
+    }
+    self.current_gain += self.step;
+    self.frames_remaining -= 1;
+    if self.frames_remaining == 0 {
+      self.current_gain = self.target_gain;
+      self.step = 0.0;
+    }
+  }
+}
 /// A minimal-lock ring buffer for interleaved f32 PCM samples.
 ///
 /// - The audio callback thread is the sole consumer.
@@ -61,13 +82,20 @@ impl AudioRingBuffer {
       }
     }
     pos = 0;
-    for (i, sample) in samples.iter().skip(first).take(to_write - first).enumerate() {
+    for (i, sample) in samples
+      .iter()
+      .skip(first)
+      .take(to_write - first)
+      .enumerate()
+    {
       unsafe {
         *self.buf[pos + i].get() = *sample;
       }
     }
 
-    self.write.store(write.wrapping_add(to_write), Ordering::Release);
+    self
+      .write
+      .store(write.wrapping_add(to_write), Ordering::Release);
     to_write
   }
 
@@ -133,7 +161,86 @@ impl AudioRingBuffer {
       }
     }
 
-    self.read.store(read.wrapping_add(to_read), Ordering::Release);
+    self
+      .read
+      .store(read.wrapping_add(to_read), Ordering::Release);
+  }
+
+  /// Pop as many frames as available (up to `dst.len()`) and add them into `dst`, applying a
+  /// per-frame gain ramp.
+  ///
+  /// `channels` must match the interleaving used by producers. Gain is applied uniformly across all
+  /// channels of a frame, avoiding L/R mismatches.
+  pub fn pop_add_into_ramped(&self, dst: &mut [f32], channels: usize, ramp: &mut GainRamp) {
+    if dst.is_empty() || channels == 0 {
+      return;
+    }
+
+    let read = self.read.load(Ordering::Relaxed);
+    let write = self.write.load(Ordering::Acquire);
+    let available = write.wrapping_sub(read);
+
+    if available == 0 {
+      return;
+    }
+
+    if available > self.capacity {
+      self.read.store(write, Ordering::Release);
+      return;
+    }
+
+    let mut to_read = dst.len().min(available);
+    // Keep frame alignment so ramping applies equally across channels.
+    to_read -= to_read % channels;
+    if to_read == 0 {
+      return;
+    }
+
+    let frames = to_read / channels;
+    let mut pos = read % self.capacity;
+    let mut dst_idx = 0usize;
+
+    for _ in 0..frames {
+      let gain = if ramp.current_gain.is_finite() && ramp.current_gain.is_normal() {
+        ramp.current_gain
+      } else {
+        0.0
+      };
+      if gain == 0.0 {
+        // Fast-path for silence: advance indices without touching memory.
+        for _ in 0..channels {
+          dst_idx += 1;
+          pos += 1;
+          if pos == self.capacity {
+            pos = 0;
+          }
+        }
+      } else {
+        for _ in 0..channels {
+          let sample = unsafe { *self.buf[pos].get() };
+          // Avoid NaN poisoning and denormal slow paths:
+          // - treat non-normal samples (NaN/Inf/0/subnormals) as silence
+          // - flush any non-normal scaled output to silence too
+          if sample.is_normal() {
+            let scaled = sample * gain;
+            if scaled.is_normal() {
+              dst[dst_idx] += scaled;
+            }
+          }
+          dst_idx += 1;
+          pos += 1;
+          if pos == self.capacity {
+            pos = 0;
+          }
+        }
+      }
+
+      ramp.advance_frame();
+    }
+
+    self
+      .read
+      .store(read.wrapping_add(to_read), Ordering::Release);
   }
 }
 

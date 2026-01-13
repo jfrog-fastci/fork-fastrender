@@ -27,11 +27,126 @@ fn sanitize_mix_buffer_in_place(buf: &mut [f32]) {
   }
 }
 
+const DEFAULT_GAIN_RAMP_DURATION_MS: u32 = 10;
+
+fn gain_ramp_frames(sample_rate_hz: u32) -> u32 {
+  // 5–20ms tends to be enough to hide abrupt gain changes without making UI feel laggy.
+  // Use 10ms as a conservative default.
+  let frames = (u64::from(sample_rate_hz).saturating_mul(u64::from(DEFAULT_GAIN_RAMP_DURATION_MS))
+    / 1000) as u32;
+  frames.max(1)
+}
+
+fn sanitize_unit_f32(value: f32) -> f32 {
+  if value.is_finite() {
+    value.clamp(0.0, 1.0)
+  } else {
+    0.0
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GainRamp {
+  current_gain: f32,
+  target_gain: f32,
+  step: f32,
+  frames_remaining: u32,
+}
+
+impl GainRamp {
+  fn new(initial_gain: f32) -> Self {
+    Self {
+      current_gain: initial_gain,
+      target_gain: initial_gain,
+      step: 0.0,
+      frames_remaining: 0,
+    }
+  }
+
+  fn set_target(&mut self, target_gain: f32, ramp_frames: u32) {
+    let target_gain = sanitize_unit_f32(target_gain);
+    self.target_gain = target_gain;
+
+    // If we're already effectively at the target, snap.
+    if (self.current_gain - target_gain).abs() <= f32::EPSILON {
+      self.current_gain = target_gain;
+      self.step = 0.0;
+      self.frames_remaining = 0;
+      return;
+    }
+
+    let ramp_frames = ramp_frames.max(1);
+    self.frames_remaining = ramp_frames;
+    self.step = (target_gain - self.current_gain) / ramp_frames as f32;
+  }
+
+  fn gain(&self) -> f32 {
+    self.current_gain
+  }
+
+  fn advance_frame(&mut self) {
+    if self.frames_remaining == 0 {
+      return;
+    }
+    self.current_gain += self.step;
+    self.frames_remaining -= 1;
+    if self.frames_remaining == 0 {
+      // Clamp away any accumulated floating-point error.
+      self.current_gain = self.target_gain;
+      self.step = 0.0;
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VolumeControl {
+  unmuted_volume: f32,
+  muted: bool,
+  ramp: GainRamp,
+}
+
+impl VolumeControl {
+  fn new(initial_volume: f32) -> Self {
+    let initial_volume = sanitize_unit_f32(initial_volume);
+    Self {
+      unmuted_volume: initial_volume,
+      muted: false,
+      ramp: GainRamp::new(initial_volume),
+    }
+  }
+
+  fn gain(&self) -> f32 {
+    self.ramp.gain()
+  }
+
+  fn set_volume(&mut self, volume: f32, ramp_frames: u32) {
+    let volume = sanitize_unit_f32(volume);
+    self.unmuted_volume = volume;
+    let target = if self.muted { 0.0 } else { volume };
+    self.ramp.set_target(target, ramp_frames);
+  }
+
+  fn set_muted(&mut self, muted: bool, ramp_frames: u32) {
+    if self.muted == muted {
+      return;
+    }
+    self.muted = muted;
+    let target = if muted { 0.0 } else { self.unmuted_volume };
+    self.ramp.set_target(target, ramp_frames);
+  }
+
+  fn advance_frame(&mut self) {
+    self.ramp.advance_frame();
+  }
+}
+
 #[derive(Debug)]
 pub struct AudioMixer {
   sample_rate_hz: u32,
   channels: usize,
   streams: Mutex<Vec<Weak<AudioStreamInner>>>,
+  master: Mutex<VolumeControl>,
+  gain_ramp_frames: u32,
 }
 
 impl AudioMixer {
@@ -43,6 +158,8 @@ impl AudioMixer {
       sample_rate_hz,
       channels,
       streams: Mutex::new(Vec::new()),
+      master: Mutex::new(VolumeControl::new(1.0)),
+      gain_ramp_frames: gain_ramp_frames(sample_rate_hz),
     }
   }
 
@@ -56,12 +173,27 @@ impl AudioMixer {
     self.channels
   }
 
+  /// Sets the mixer output volume (master gain) in the range `[0.0, 1.0]`.
+  pub fn set_volume(&self, volume: f32) {
+    let mut master = self.master.lock();
+    master.set_volume(volume, self.gain_ramp_frames);
+  }
+
+  /// Mutes/unmutes the mixer output.
+  ///
+  /// Unmuting restores the previously set volume (as a smooth ramp).
+  pub fn set_muted(&self, muted: bool) {
+    let mut master = self.master.lock();
+    master.set_muted(muted, self.gain_ramp_frames);
+  }
+
   #[must_use]
   pub fn create_stream(&self) -> AudioStreamHandle {
     let inner = Arc::new(AudioStreamInner {
       sample_rate_hz: self.sample_rate_hz,
       channels: self.channels,
-      state: Mutex::new(AudioStreamState::new()),
+      gain_ramp_frames: self.gain_ramp_frames,
+      state: Mutex::new(AudioStreamState::new(self.gain_ramp_frames)),
     });
 
     self.streams.lock().push(Arc::downgrade(&inner));
@@ -92,22 +224,31 @@ impl AudioMixer {
       "output buffer must be a multiple of channel count"
     );
 
-    let streams: Vec<Arc<AudioStreamInner>> = {
+    {
+      // Important: keep this allocation-free for audio callbacks. We retain dead streams in-place
+      // without collecting into a temporary Vec.
       let mut guard = self.streams.lock();
-      let mut strong = Vec::with_capacity(guard.len());
       guard.retain(|weak| {
         if let Some(stream) = weak.upgrade() {
-          strong.push(stream);
+          stream.mix_into(out);
           true
         } else {
           false
         }
       });
-      strong
-    };
+    }
 
-    for stream in streams {
-      stream.mix_into(out);
+    // Apply master gain after mixing so gain changes affect amplitude but never affect stream drain
+    // or time progression.
+    let mut master = self.master.lock();
+    let frames = out.len() / self.channels;
+    for frame in 0..frames {
+      let gain = master.gain();
+      let base = frame * self.channels;
+      for ch in 0..self.channels {
+        out[base + ch] *= gain;
+      }
+      master.advance_frame();
     }
 
     // Ensure the mixed output cannot contain NaN/Inf/denormals, even if an upstream decoder
@@ -168,6 +309,39 @@ impl AudioStreamHandle {
   pub fn play(&self) {
     let mut state = self.inner.state.lock();
     state.is_playing = true;
+  }
+
+  /// Sets the per-stream volume in the range `[0.0, 1.0]`.
+  pub fn set_volume(&self, volume: f32) {
+    let mut state = self.inner.state.lock();
+    state.volume.set_volume(volume, self.inner.gain_ramp_frames);
+  }
+
+  /// Mutes/unmutes the stream output.
+  ///
+  /// Unmuting restores the previously set volume (as a smooth ramp).
+  pub fn set_muted(&self, muted: bool) {
+    let mut state = self.inner.state.lock();
+    state.volume.set_muted(muted, self.inner.gain_ramp_frames);
+  }
+
+  /// Sets the stream's "group" volume in the range `[0.0, 1.0]`.
+  ///
+  /// This is intended for higher-level mixers (e.g. per-tab volume) to apply an additional gain
+  /// multiplier without needing to fold it into the per-stream volume.
+  pub fn set_group_volume(&self, volume: f32) {
+    let mut state = self.inner.state.lock();
+    state
+      .group_volume
+      .set_volume(volume, self.inner.gain_ramp_frames);
+  }
+
+  /// Mutes/unmutes the stream's "group" gain.
+  pub fn set_group_muted(&self, muted: bool) {
+    let mut state = self.inner.state.lock();
+    state
+      .group_volume
+      .set_muted(muted, self.inner.gain_ramp_frames);
   }
 
   /// Pauses the stream if it is not already paused.
@@ -242,6 +416,7 @@ pub enum AudioStreamEnqueueError {
 struct AudioStreamInner {
   sample_rate_hz: u32,
   channels: usize,
+  gain_ramp_frames: u32,
   state: Mutex<AudioStreamState>,
 }
 
@@ -266,13 +441,18 @@ impl AudioStreamInner {
     // - We only advance the playhead by the number of frames actually consumed (so underflow
     //   behaves like a stalled clock, not a drifting one).
     // - When paused, we return early above so we neither drain the queue nor advance the clock.
-    let samples_to_mix = frames_to_mix.saturating_mul(self.channels);
-    for out_sample in out.iter_mut().take(samples_to_mix) {
-      if let Some(sample) = state.queue.pop_front() {
-        *out_sample += sample;
-      } else {
-        break;
+    for frame in 0..frames_to_mix {
+      let gain = state.volume.gain() * state.group_volume.gain();
+      let out_base = frame * self.channels;
+      for ch in 0..self.channels {
+        // The queue length check above guarantees availability, but keep this robust.
+        let Some(sample) = state.queue.pop_front() else {
+          break;
+        };
+        out[out_base + ch] += sample * gain;
       }
+      state.volume.advance_frame();
+      state.group_volume.advance_frame();
     }
 
     state.played_frames = state.played_frames.saturating_add(frames_to_mix as u64);
@@ -286,16 +466,20 @@ struct AudioStreamState {
   played_frames: u64,
   queue: VecDeque<f32>,
   eos: bool,
+  volume: VolumeControl,
+  group_volume: VolumeControl,
 }
 
 impl AudioStreamState {
-  fn new() -> Self {
+  fn new(_gain_ramp_frames: u32) -> Self {
     Self {
       is_playing: false,
       base_pts: Duration::ZERO,
       played_frames: 0,
       queue: VecDeque::new(),
       eos: false,
+      volume: VolumeControl::new(1.0),
+      group_volume: VolumeControl::new(1.0),
     }
   }
 }
@@ -590,7 +774,9 @@ mod tests {
   use std::thread;
 
   fn all_samples_eq(samples: &[f32], expected: f32) -> bool {
-    samples.iter().all(|sample| (*sample - expected).abs() < f32::EPSILON)
+    samples
+      .iter()
+      .all(|sample| (*sample - expected).abs() < f32::EPSILON)
   }
 
   #[test]
@@ -688,7 +874,10 @@ mod tests {
     stream.enqueue_samples(vec![1.0; 48_000]).unwrap();
     stream.finish();
     // Enqueue after EOS should be rejected.
-    assert_eq!(stream.enqueue_samples(vec![1.0; 1]), Err(AudioStreamEnqueueError::StreamFinished));
+    assert_eq!(
+      stream.enqueue_samples(vec![1.0; 1]),
+      Err(AudioStreamEnqueueError::StreamFinished)
+    );
 
     stream.play();
     assert_eq!(stream.ended(), None);
@@ -719,5 +908,49 @@ mod tests {
     stream.enqueue_samples(vec![2.0; 48_000]).unwrap();
     let out3 = backend.render(24_000);
     assert!(all_samples_eq(&out3, 2.0));
+  }
+
+  #[test]
+  fn volume_changes_are_ramped() {
+    // Use a small sample rate so the ramp spans a small, test-friendly number of frames.
+    let backend = NullAudioBackend::new(1_000, 1);
+    let ramp_frames = gain_ramp_frames(backend.mixer().sample_rate_hz()) as usize;
+
+    let stream = backend.create_stream();
+    stream.play();
+    stream.enqueue_samples(vec![1.0; 1_000]).unwrap();
+
+    // Confirm baseline.
+    let baseline = backend.render(1);
+    assert!(all_samples_eq(&baseline, 1.0));
+
+    // Drop volume to zero and verify we ramp over multiple frames instead of stepping immediately.
+    stream.set_volume(0.0);
+    let out = backend.render(ramp_frames + 1);
+
+    assert_eq!(out.len(), ramp_frames + 1);
+    assert!(
+      out[0] > 0.9,
+      "expected first frame to still be near previous gain (got {})",
+      out[0]
+    );
+    assert!(
+      out[1] < out[0] && out[1] > 0.0,
+      "expected a gradual ramp, not a single-step drop (got first two samples: {}, {})",
+      out[0],
+      out[1]
+    );
+
+    for w in out.windows(2) {
+      assert!(w[1] <= w[0] + 1e-6, "gain must be monotonic decreasing");
+    }
+
+    let last = *out.last().unwrap();
+    assert!(
+      last.abs() <= 1e-6,
+      "expected ramp to reach (near) zero after {} frames (got {})",
+      ramp_frames,
+      last
+    );
   }
 }
