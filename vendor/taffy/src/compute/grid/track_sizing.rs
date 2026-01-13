@@ -932,6 +932,30 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
     .map(|track| track.flex_factor())
     .sum::<f32>();
 
+  // Prefix sums of per-track definite max-size limits (used for `GridItem::spanned_track_limit`).
+  // This avoids O(span) scans for every item that needs a limited contribution clamp.
+  let mut max_limit_prefix_sum: Vec<f32> = Vec::with_capacity(axis_tracks.len() + 1);
+  let mut max_limit_prefix_none: Vec<u32> = Vec::with_capacity(axis_tracks.len() + 1);
+  max_limit_prefix_sum.push(0.0);
+  max_limit_prefix_none.push(0);
+  let mut running_max_limit_sum = 0.0;
+  let mut running_max_limit_none = 0u32;
+  for track in axis_tracks.iter() {
+    match track
+      .max_track_sizing_function
+      .definite_limit(axis_inner_node_size, |val, basis| tree.calc(val, basis))
+    {
+      Some(v) => {
+        running_max_limit_sum += v;
+      }
+      None => {
+        running_max_limit_none += 1;
+      }
+    }
+    max_limit_prefix_sum.push(running_max_limit_sum);
+    max_limit_prefix_none.push(running_max_limit_none);
+  }
+
   // Pre-compute the other-axis track-size estimates used for intrinsic measurement.
   //
   // `GridItem::available_space()` historically summed these estimates per item by iterating the
@@ -1303,23 +1327,24 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         //
         // However, in practice browsers only seem to apply this rule if the item is not a scroll container (note that overflow:hidden counts as
         // a scroll container), giving the automatic minimum size of scroll containers (zero) precedence over the min-content contributions.
-        let space = match axis_available_grid_space {
-          AvailableSpace::MinContent | AvailableSpace::MaxContent
-            if !item.overflow.get(axis).is_scroll_container() =>
-          {
-            let axis_minimum_size = item_sizer.minimum_contribution(item, axis_tracks);
-            let axis_min_content_size = item_sizer.min_content_contribution(item);
-            let limit =
-              item.spanned_track_limit(axis, axis_tracks, axis_inner_node_size, &|val, basis| {
-                item_sizer.calc(val, basis)
-              });
-            axis_min_content_size
-              .maybe_min(limit)
-              .max(axis_minimum_size)
-          }
-          _ => item_sizer.minimum_contribution(item, axis_tracks),
-        };
-        let tracks = &mut axis_tracks[start..end];
+      let space = match axis_available_grid_space {
+        AvailableSpace::MinContent | AvailableSpace::MaxContent
+          if !item.overflow.get(axis).is_scroll_container() =>
+        {
+          let axis_minimum_size = item_sizer.minimum_contribution(item, axis_tracks);
+          let axis_min_content_size = item_sizer.min_content_contribution(item);
+          let limit = sum_range(
+            &max_limit_prefix_sum,
+            &max_limit_prefix_none,
+            item_track_range.clone(),
+          );
+          axis_min_content_size
+            .maybe_min(limit)
+            .max(axis_minimum_size)
+        }
+        _ => item_sizer.minimum_contribution(item, axis_tracks),
+      };
+        let tracks = &mut axis_tracks[item_track_range];
         if space > 0.0 {
           if item.overflow.get(axis).is_scroll_container() {
             let fit_content_limit =
@@ -1463,10 +1488,11 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
           }
 
           let axis_max_content_size = item_sizer.max_content_contribution(item);
-          let limit =
-            item.spanned_track_limit(axis, axis_tracks, axis_inner_node_size, &|val, basis| {
-              item_sizer.calc(val, basis)
-            });
+          let limit = sum_range(
+            &max_limit_prefix_sum,
+            &max_limit_prefix_none,
+            item_track_range.clone(),
+          );
           let space = axis_max_content_size.maybe_min(limit);
           let tracks = &mut axis_tracks[start..end];
           if space > 0.0 {

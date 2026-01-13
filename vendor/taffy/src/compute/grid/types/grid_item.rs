@@ -239,38 +239,6 @@ impl GridItem {
     }
   }
 
-  /// For an item spanning multiple tracks, the upper limit used to calculate its limited min-/max-content contribution is the
-  /// sum of the fixed max track sizing functions of any tracks it spans, and is applied if it only spans such tracks.
-  pub fn spanned_track_limit(
-    &mut self,
-    axis: AbstractAxis,
-    axis_tracks: &[GridTrack],
-    axis_parent_size: Option<f32>,
-    resolve_calc_value: &dyn Fn(*const (), f32) -> f32,
-  ) -> Option<f32> {
-    let spanned_tracks = &axis_tracks[self.track_range_excluding_lines(axis)];
-    let tracks_all_fixed = spanned_tracks.iter().all(|track| {
-      track
-        .max_track_sizing_function
-        .definite_limit(axis_parent_size, resolve_calc_value)
-        .is_some()
-    });
-    if tracks_all_fixed {
-      let limit: f32 = spanned_tracks
-        .iter()
-        .map(|track| {
-          track
-            .max_track_sizing_function
-            .definite_limit(axis_parent_size, resolve_calc_value)
-            .unwrap()
-        })
-        .sum();
-      Some(limit)
-    } else {
-      None
-    }
-  }
-
   /// Similar to the spanned_track_limit, but excludes FitContent arguments from the limit.
   /// Used to clamp the automatic minimum contributions of an item
   pub fn spanned_fixed_track_limit(
