@@ -34,6 +34,7 @@ mod browser_thread_worker;
 mod browser_worker_cancel_gens;
 mod browser_worker_cancellation;
 mod browser_worker_fragment_navigation;
+mod browser_worker_scroll_paint_deadline;
 mod browser_worker_percent_encoded_fragment;
 mod browser_worker_target_pseudoclass;
 mod browser_worker_thread;

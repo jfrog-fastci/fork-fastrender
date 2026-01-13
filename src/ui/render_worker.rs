@@ -419,6 +419,12 @@ struct TabState {
   /// True when the next paint was triggered by a scroll message and we should coalesce any
   /// immediately-following scroll events before rendering.
   scroll_coalesce: bool,
+  /// True when the next paint job was triggered by a scroll message (`UiToWorker::Scroll` /
+  /// `UiToWorker::ScrollTo`).
+  ///
+  /// This is used to optionally apply a small paint-time deadline for scroll-triggered repaints so
+  /// the worker can bail out quickly under heavy pages.
+  next_paint_is_scroll: bool,
   document: Option<BrowserDocument>,
   js_tab: Option<BrowserTab>,
   /// Cached mapping from renderer pre-order ids (used by hit-testing/layout) back into the `dom2`
@@ -473,6 +479,7 @@ impl TabState {
       scroll_state: ScrollState::default(),
       last_reported_scroll_state: ScrollState::default(),
       scroll_coalesce: false,
+      next_paint_is_scroll: false,
       document: None,
       js_tab: None,
       js_dom_mapping_generation: 0,
@@ -1726,6 +1733,7 @@ enum Job {
   Paint {
     tab_id: TabId,
     force: bool,
+    is_scroll: bool,
   },
 }
 
@@ -1756,6 +1764,17 @@ fn combine_cancel_callbacks(
   }
 }
 
+fn scroll_paint_budget_from_env() -> Option<std::time::Duration> {
+  let raw = std::env::var("FASTR_SCROLL_PAINT_BUDGET_MS").ok()?;
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  let raw = raw.replace('_', "");
+  let ms = raw.parse::<u64>().ok()?;
+  (ms > 0).then_some(std::time::Duration::from_millis(ms))
+}
+
 struct ActiveDownload {
   cancel: Arc<AtomicBool>,
   done: Arc<AtomicBool>,
@@ -1770,6 +1789,12 @@ struct BrowserRuntime {
   debug_log_enabled: bool,
   media_prefs: BrowserMediaPreferences,
   limits: BrowserLimits,
+  /// Optional paint-time deadline budget for scroll-triggered repaints.
+  ///
+  /// When configured, `run_paint` applies this as a `RenderDeadline` timeout for paints that were
+  /// triggered by `UiToWorker::Scroll` / `ScrollTo`. This helps keep scrolling responsive by
+  /// allowing slow rasterization work to be abandoned and retried later.
+  scroll_paint_budget: Option<std::time::Duration>,
   download_dir: PathBuf,
   /// In-flight downloads keyed by ID.
   ///
@@ -1873,6 +1898,7 @@ impl BrowserRuntime {
       debug_log_enabled: false,
       media_prefs: BrowserMediaPreferences::default(),
       limits: BrowserLimits::from_env(),
+      scroll_paint_budget: scroll_paint_budget_from_env(),
       download_dir: crate::ui::downloads::default_download_dir(),
       downloads,
       tabs: HashMap::new(),
@@ -2639,8 +2665,8 @@ impl BrowserRuntime {
 
           let current_scroll = doc.scroll_state();
           let mut changed = false;
-          let mut wheel_handled = false;
           let mut scroll_changed = false;
+          let mut wheel_handled = false;
           let mut emit_scroll_state_updated = false;
 
           if let Some(pointer_css) = pointer_pos_css {
@@ -2775,6 +2801,7 @@ impl BrowserRuntime {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
+            tab.next_paint_is_scroll = scroll_changed;
             if scroll_changed {
               tab.pending_hover_sync_pos_css = pointer_pos_css.or(tab.last_pointer_pos_css);
             }
@@ -2814,6 +2841,7 @@ impl BrowserRuntime {
               tab.cancel.bump_paint();
               tab.needs_repaint = true;
               tab.scroll_coalesce = true;
+              tab.next_paint_is_scroll = true;
             }
           } else if next != current {
             // No cached layout yet; record the scroll position for the first frame.
@@ -2824,6 +2852,7 @@ impl BrowserRuntime {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
+            tab.next_paint_is_scroll = true;
           }
         } else {
           // No document yet; still record the scroll position for the first frame.
@@ -7550,11 +7579,13 @@ impl BrowserRuntime {
       if self.tabs.get(&active).is_some_and(|t| t.needs_repaint) {
         if let Some(tab) = self.tabs.get_mut(&active) {
           let force = std::mem::take(&mut tab.force_repaint);
+          let is_scroll = std::mem::take(&mut tab.next_paint_is_scroll);
           tab.needs_repaint = false;
           tab.scroll_coalesce = false;
           return Some(Job::Paint {
             tab_id: active,
             force,
+            is_scroll,
           });
         }
       }
@@ -7580,9 +7611,14 @@ impl BrowserRuntime {
     {
       if let Some(tab) = self.tabs.get_mut(&tab_id) {
         let force = std::mem::take(&mut tab.force_repaint);
+        let is_scroll = std::mem::take(&mut tab.next_paint_is_scroll);
         tab.needs_repaint = false;
         tab.scroll_coalesce = false;
-        return Some(Job::Paint { tab_id, force });
+        return Some(Job::Paint {
+          tab_id,
+          force,
+          is_scroll,
+        });
       }
     }
 
@@ -7602,7 +7638,11 @@ impl BrowserRuntime {
   fn run_job(&mut self, job: Job) -> Option<JobOutput> {
     match job {
       Job::Navigate { tab_id, request } => self.run_navigation(tab_id, request),
-      Job::Paint { tab_id, force } => self.run_paint(tab_id, force),
+      Job::Paint {
+        tab_id,
+        force,
+        is_scroll,
+      } => self.run_paint(tab_id, force, is_scroll),
     }
   }
 
@@ -8795,7 +8835,7 @@ impl BrowserRuntime {
     })
   }
 
-  fn run_paint(&mut self, tab_id: TabId, force: bool) -> Option<JobOutput> {
+  fn run_paint(&mut self, tab_id: TabId, force: bool, is_scroll: bool) -> Option<JobOutput> {
     let preempt_cancel_callback = self.preempt_cancel_callback_for_job(tab_id);
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return None;
@@ -8824,6 +8864,13 @@ impl BrowserRuntime {
     // Forward render pipeline stage heartbeats during paint jobs (including scroll/hover repaints)
     // so UI callers and integration tests can observe progress and deterministically cancel
     // in-flight work.
+    let scroll_deadline = if is_scroll {
+      self
+        .scroll_paint_budget
+        .map(|budget| deadline_for(cancel_callback.clone(), Some(budget)))
+    } else {
+      None
+    };
     let painted = {
       let Some(doc) = tab.document.as_mut() else {
         return None;
@@ -8832,11 +8879,24 @@ impl BrowserRuntime {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
       let interaction_state = Some(tab.interaction.interaction_state());
       if force {
-        doc
-          .render_frame_with_scroll_state_and_interaction_state(interaction_state)
-          .map(Some)
+        if let Some(deadline) = scroll_deadline.as_ref() {
+          doc
+            .render_frame_with_deadlines_and_interaction_state(Some(deadline), interaction_state)
+            .map(Some)
+        } else {
+          doc
+            .render_frame_with_scroll_state_and_interaction_state(interaction_state)
+            .map(Some)
+        }
       } else {
-        doc.render_if_needed_with_scroll_state_and_interaction_state(interaction_state)
+        if let Some(deadline) = scroll_deadline.as_ref() {
+          doc.render_if_needed_with_deadlines_and_interaction_state(
+            Some(deadline),
+            interaction_state,
+          )
+        } else {
+          doc.render_if_needed_with_scroll_state_and_interaction_state(interaction_state)
+        }
       }
     };
 
@@ -8847,7 +8907,16 @@ impl BrowserRuntime {
       Ok(Some(frame)) => Some(frame),
       Ok(None) => None,
       Err(err) => {
-        if cancel_callback() {
+        let scroll_timeout = scroll_deadline.is_some()
+          && matches!(
+            &err,
+            crate::Error::Render(crate::error::RenderError::Timeout {
+              stage: crate::error::RenderStage::Paint,
+              ..
+            })
+          );
+
+        if cancel_callback() || scroll_timeout {
           should_retry = true;
         } else {
           if self.debug_log_enabled {
