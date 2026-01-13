@@ -821,6 +821,90 @@ impl<'vm> HirEvaluator<'vm> {
           }
         }
       }
+      hir_js::StmtKind::Switch { discriminant, cases } => {
+        // Evaluate the discriminant once (before creating the switch case lexical environment).
+        let discriminant_value = self.eval_expr(scope, body, *discriminant)?;
+
+        // Root the discriminant across selector evaluation and case-body execution, which may
+        // allocate and trigger GC.
+        let mut switch_scope = scope.reborrow();
+        switch_scope.push_root(discriminant_value)?;
+
+        // `switch` creates a new lexical environment for the entire case block.
+        let outer = self.env.lexical_env();
+        let switch_env = switch_scope.env_create(Some(outer))?;
+        self
+          .env
+          .set_lexical_env(switch_scope.heap_mut(), switch_env);
+
+        let result = (|| -> Result<Flow, VmError> {
+          const CASE_TICK_EVERY: usize = 32;
+
+          // Find the first matching case (or the `default` case).
+          let mut default_idx: Option<usize> = None;
+          let mut start_idx: Option<usize> = None;
+          for (i, case) in cases.iter().enumerate() {
+            // Budget case traversal even when case tests/bodies are empty.
+            if i % CASE_TICK_EVERY == 0 {
+              self.vm.tick()?;
+            }
+            match case.test {
+              None => {
+                if default_idx.is_none() {
+                  default_idx = Some(i);
+                }
+              }
+              Some(test_expr) => {
+                let case_value = self.eval_expr(&mut switch_scope, body, test_expr)?;
+                if self.strict_equality_comparison(&mut switch_scope, discriminant_value, case_value)? {
+                  start_idx = Some(i);
+                  break;
+                }
+              }
+            }
+          }
+          if start_idx.is_none() {
+            start_idx = default_idx;
+          }
+
+          // ECMA-262 `CaseBlockEvaluation`: `V` starts as `undefined` and is never ~empty~ for normal
+          // completion.
+          let v_root_idx = switch_scope.heap().root_stack.len();
+          switch_scope.push_root(Value::Undefined)?;
+          let mut v = Value::Undefined;
+
+          if let Some(start) = start_idx {
+            // Execute clause bodies sequentially (with fallthrough) starting at the selected case.
+            for (case_idx, case) in cases.iter().enumerate().skip(start) {
+              if case_idx % CASE_TICK_EVERY == 0 {
+                self.vm.tick()?;
+              }
+              for stmt_id in &case.consequent {
+                match self.eval_stmt(&mut switch_scope, body, *stmt_id)? {
+                  Flow::Normal(value) => {
+                    if let Some(value) = value {
+                      v = value;
+                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
+                    }
+                  }
+                  // Unlabeled `break` exits the switch.
+                  Flow::Break(None) => return Ok(Flow::Normal(Some(v))),
+                  // Labeled control flow propagates.
+                  Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
+                  Flow::Continue(label) => return Ok(Flow::Continue(label)),
+                  Flow::Return(value) => return Ok(Flow::Return(value)),
+                }
+              }
+            }
+          }
+
+          Ok(Flow::Normal(Some(v)))
+        })();
+
+        // Restore the outer lexical environment no matter how control leaves the switch.
+        self.env.set_lexical_env(switch_scope.heap_mut(), outer);
+        result
+      }
       hir_js::StmtKind::Break(label) => Ok(Flow::Break(*label)),
       hir_js::StmtKind::Continue(label) => Ok(Flow::Continue(*label)),
       hir_js::StmtKind::Var(decl) => {
@@ -884,7 +968,6 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
       other => Err(match other {
         hir_js::StmtKind::ForIn { .. } => VmError::Unimplemented("for-in/of (hir-js compiled path)"),
-        hir_js::StmtKind::Switch { .. } => VmError::Unimplemented("switch (hir-js compiled path)"),
         hir_js::StmtKind::Try { .. } => VmError::Unimplemented("try/catch/finally (hir-js compiled path)"),
         _ => VmError::Unimplemented("statement (hir-js compiled path)"),
       }),

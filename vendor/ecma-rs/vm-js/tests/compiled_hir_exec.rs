@@ -769,3 +769,47 @@ fn compiled_template_literal_executes() -> Result<(), VmError> {
   assert!(result.same_value(Value::String(expected), scope.heap()));
   Ok(())
 }
+
+#[test]
+fn compiled_switch_basic_match_break() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let x = 'b';
+      switch (x) {
+        case 'a': 1; break;
+        case 'b': 2; break;
+        default: 3;
+      }
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_switch_default_path() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let x = 'c';
+      switch (x) { case 'a': 1; break; default: 3; }
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
