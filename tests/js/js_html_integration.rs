@@ -1284,6 +1284,32 @@ fn p2_import_map_parse_errors_surface_in_diagnostics() -> Result<()> {
   Ok(())
 }
 
+#[test]
+fn p2_import_map_parse_warnings_surface_as_console_warnings() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut h = Harness::new("https://example.invalid/p2_importmap_warning.html", js_options)?;
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script type="importmap">{"unknown": {}}</script>
+      <script>console.log("ok");</script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(console_logs(&h.tab), vec!["ok".to_string()]);
+
+  let warns = console_messages(&h.tab, ConsoleMessageLevel::Warn);
+  let expected = r#"importmap: unknown top-level key "unknown""#;
+  assert!(
+    warns.contains(&expected.to_string()),
+    "expected import map warning {expected:?} to be recorded as a console warning, got: {warns:?}"
+  );
+  Ok(())
+}
+
 // --- P3: Advanced lifecycle ---
 
 #[test]
