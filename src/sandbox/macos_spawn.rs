@@ -500,7 +500,9 @@ mod tests {
     cmd.arg("--hello");
 
     // Even though the SBPL is invalid, the escape hatch should bypass rewriting entirely.
-    wrap_command_with_sandbox_exec(&mut cmd, "").expect("wrap should be a no-op when disabled");
+    let wrapped =
+      wrap_command_with_sandbox_exec(&cmd, "").expect("wrap should not error when disabled");
+    assert!(wrapped.is_none(), "expected wrap to be a no-op when disabled");
 
     assert_eq!(cmd.get_program(), OsStr::new("/usr/bin/true"));
     let args: Vec<_> = cmd.get_args().collect();
