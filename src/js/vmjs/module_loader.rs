@@ -93,6 +93,22 @@ impl VmJsModuleLoader {
     &mut self.module_graph
   }
 
+  /// Tear down the underlying module graph, removing any persistent roots it installed in the VM
+  /// heap.
+  ///
+  /// `vm-js` caches module environments, namespaces, `import.meta`, etc. using persistent GC roots.
+  /// When a [`ModuleGraph`] is dropped without unregistering those roots, `vm-js` will trip a
+  /// debug-only assertion.
+  ///
+  /// Call this when you're done with a loader but intend to reuse the same VM/heap (e.g. in unit
+  /// tests).
+  pub fn teardown<Host: WindowRealmHost + 'static>(&mut self, host: &mut Host) -> Result<()> {
+    let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
+    let (vm, _realm, heap) = window_realm.vm_realm_and_heap_mut();
+    self.module_graph.teardown(vm, heap);
+    Ok(())
+  }
+
   /// Evaluate an external (URL-backed) module script, fetching it if needed.
   ///
   /// The caller is responsible for resetting interrupt state if desired (VM budgets are applied
@@ -1531,6 +1547,54 @@ mod tests {
       get_global_prop_utf8(&mut host, "depUrl").as_deref(),
       Some(dep_url)
     );
+    loader.teardown(&mut host)?;
+    Ok(())
+  }
+
+  #[test]
+  fn module_import_meta_resolve_resolves_relative_specifier() -> Result<()> {
+    let entry_url = "https://example.com/dir/entry.js";
+    let dep_url = "https://example.com/dir/dep.js";
+    let document_url = "https://example.com/index.html";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "globalThis.resolved = import.meta.resolve(\"./dep.js\");\n"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    // Not strictly needed (`import.meta.resolve` should not fetch), but include the dep URL for
+    // completeness and to guard against accidental eager fetching.
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        "export const value = 1;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+
+    host
+      .window_mut()
+      .vm_mut()
+      .set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
+    loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "resolved").as_deref(),
+      Some(dep_url)
+    );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1577,6 +1641,7 @@ mod tests {
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     assert_eq!(get_global_prop(&mut host, "ok"), Value::Bool(true));
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1622,6 +1687,7 @@ mod tests {
       msg.contains(entry_url),
       "expected stack trace to include module URL {entry_url:?}; got {msg:?}"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1677,6 +1743,7 @@ mod tests {
       msg.contains("dep.js"),
       "expected message to mention dep.js, got {msg:?}"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1710,6 +1777,7 @@ mod tests {
     loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
 
     assert_eq!(get_global_prop(&mut host, "result"), Value::Number(1.0));
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1758,6 +1826,7 @@ mod tests {
       ),
       "expected microtask to store an import() Promise on globalThis"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1818,6 +1887,7 @@ mod tests {
       dep_fetches, 1,
       "expected dep module to be fetched once, got calls: {calls:?}"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1867,6 +1937,7 @@ mod tests {
       err.to_string().contains("max_module_graph_modules"),
       "unexpected error: {err}"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1924,6 +1995,7 @@ mod tests {
       err.to_string().contains("max_module_graph_total_bytes"),
       "unexpected error: {err}"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -1981,6 +2053,7 @@ mod tests {
       err.to_string().contains("max_module_graph_depth"),
       "unexpected error: {err}"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -2024,6 +2097,7 @@ mod tests {
       err.to_string().contains("max_module_specifier_length"),
       "unexpected error: {err}"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -2079,6 +2153,7 @@ mod tests {
       .expect("dep module fetched");
     assert_eq!(dep_call.destination, FetchDestination::ScriptCors);
     assert_eq!(dep_call.referrer_url.as_deref(), Some(entry_url));
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -2169,6 +2244,7 @@ mod tests {
         .map(String::as_str),
       Some(final_url)
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -2226,6 +2302,7 @@ mod tests {
     )?;
 
     assert_eq!(get_global_prop(&mut host, "result"), Value::Number(7.0));
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -2328,6 +2405,7 @@ mod tests {
     )?;
 
     assert_eq!(get_global_prop(&mut host, "result"), Value::Number(123.0));
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -2605,6 +2683,7 @@ mod tests {
       Value::Undefined,
       "entry module should not have executed after SRI failure"
     );
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -2659,6 +2738,7 @@ mod tests {
         Value::Undefined,
         "entry module should not execute when an import is blocked by CORS"
       );
+      loader.teardown(&mut host)?;
       Ok(())
     })
   }
@@ -2707,6 +2787,7 @@ mod tests {
         Value::Number(1.0),
         "expected cross-origin module with ACAO=* to load"
       );
+      loader.teardown(&mut host)?;
       Ok(())
     })
   }
@@ -2732,6 +2813,7 @@ mod tests {
     )?;
 
     assert_eq!(host.bindings_host.calls, 1);
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
@@ -2756,6 +2838,7 @@ mod tests {
     )?;
 
     assert_eq!(host.vm_host.assert_vm_host_calls, 1);
+    loader.teardown(&mut host)?;
     Ok(())
   }
 
