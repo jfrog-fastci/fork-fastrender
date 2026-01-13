@@ -47,7 +47,7 @@ use parse_js::ast::expr::FuncExpr;
 use parse_js::ast::func::Func;
 use parse_js::ast::func::FuncBody;
 use parse_js::ast::import_export::*;
-use parse_js::ast::node::Node;
+use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::decl::ClassDecl;
 use parse_js::ast::stmt::decl::FuncDecl;
 use parse_js::ast::stmt::decl::VarDeclarator as AstVarDeclarator;
@@ -2523,6 +2523,39 @@ fn lower_call_expr(
       }
     }
   }
+  // HIR does not preserve parenthesization metadata. Optional chaining call semantics depend on
+  // whether an optional member expression is *directly* in call position:
+  //
+  //   - `obj?.prop(args)` is an optional member *call* and short-circuits the call (skipping args)
+  //     when the base is nullish.
+  //   - `(obj?.prop)(args)` is a non-optional call of the *value* produced by the optional member
+  //     expression. In that case the arguments must still be evaluated, and calling `undefined`
+  //     throws.
+  //
+  // The compiled evaluator detects method calls by matching the callee expression kind against
+  // `ExprKind::Member`. Encode parenthesization by wrapping parenthesized optional member callees in
+  // a comma expression so they are treated as ordinary value calls.
+  let callee_is_parenthesized = call.stx.callee.assoc.get::<ParenthesizedExpr>().is_some();
+  let callee_is_optional_member = match call.stx.callee.stx.as_ref() {
+    parse_js::ast::expr::Expr::Member(member) => member.stx.optional_chaining,
+    parse_js::ast::expr::Expr::ComputedMember(member) => member.stx.optional_chaining,
+    _ => false,
+  };
+  let callee = if callee_is_parenthesized && callee_is_optional_member {
+    let span = ctx.to_range(call.stx.callee.loc);
+    let dummy = builder.alloc_expr(span, ExprKind::Literal(Literal::Undefined));
+    builder.alloc_expr(
+      span,
+      ExprKind::Binary {
+        op: BinaryOp::Comma,
+        left: dummy,
+        right: callee,
+      },
+    )
+  } else {
+    callee
+  };
+
   ExprKind::Call(CallExpr {
     callee,
     args,

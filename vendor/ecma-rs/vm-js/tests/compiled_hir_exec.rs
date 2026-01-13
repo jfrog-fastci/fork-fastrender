@@ -7080,3 +7080,60 @@ fn compiled_for_of_head_let_destructuring_default_observes_tdz() -> Result<(), V
   assert_eq!(result, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn compiled_optional_member_callee_parentheses_do_not_short_circuit_call() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = '';
+      function key(){ log = log + 'k'; return 'm'; }
+      function arg(){ log = log + 'a'; }
+      let o = null;
+      (o?.[key()])(arg());
+    "#,
+  )?;
+
+  // The script should throw because the outer call is not part of the optional chain.
+  let _ = rt.exec_compiled_script(script).unwrap_err();
+
+  // The optional member access should skip `key()`, but the outer call should still evaluate
+  // `arg()` before throwing.
+  let log = rt.exec_script("log")?;
+  let Value::String(s) = log else {
+    panic!("expected string result, got {log:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "a");
+  Ok(())
+}
+
+#[test]
+fn compiled_optional_chaining_call_short_circuits_args() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = '';
+      function arg(){ log = log + 'a'; }
+      let o = null;
+      o?.m(arg());
+      log
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string result, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "");
+  Ok(())
+}
