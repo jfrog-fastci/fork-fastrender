@@ -7747,6 +7747,24 @@ impl BrowserTab {
     self.host.dom()
   }
 
+  /// Translate a renderer 1-based pre-order id (as produced by [`crate::dom::enumerate_dom_ids`])
+  /// back into a stable `dom2` [`NodeId`].
+  ///
+  /// This is intended for UI event dispatch: hit testing operates over the renderer DOM snapshot and
+  /// returns renderer preorder ids. Those ids are **not** stable across DOM mutations and they do
+  /// not correspond to `dom2` node indices (e.g. comment nodes are not rendered and `<wbr>` can
+  /// synthesize extra nodes in the renderer snapshot).
+  ///
+  /// The returned `NodeId` is stable across `dom2` insertions/removals (unlike raw preorder/index
+  /// ids), so it can be used to target DOM events in the JS worker.
+  ///
+  /// Returns `None` if the tab has not produced a renderer snapshot yet (call
+  /// [`BrowserTab::render_frame`] / [`BrowserTab::render_if_needed`]) or if `preorder_id` is out of
+  /// range.
+  pub fn dom_node_for_renderer_preorder(&self, preorder_id: usize) -> Option<NodeId> {
+    self.host.document.dom2_node_for_renderer_preorder(preorder_id)
+  }
+
   pub fn dom_mut(&mut self) -> &mut Document {
     self.host.dom_mut()
   }
@@ -9317,6 +9335,134 @@ mod tests {
       tab.wants_ticks(),
       "expected scheduled future timer to make BrowserTab want ticks"
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_translates_renderer_preorder_ids_to_dom2_node_ids_with_comments_and_wbr() -> Result<()> {
+    fn find_renderer_element_by_id<'a>(
+      root: &'a crate::dom::DomNode,
+      id_value: &str,
+    ) -> Option<&'a crate::dom::DomNode> {
+      let mut stack = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.is_element() && node.get_attribute_ref("id") == Some(id_value) {
+          return Some(node);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    fn find_renderer_text_node<'a>(
+      root: &'a crate::dom::DomNode,
+      content: &str,
+    ) -> Option<&'a crate::dom::DomNode> {
+      let mut stack = vec![root];
+      while let Some(node) = stack.pop() {
+        if matches!(
+          &node.node_type,
+          crate::dom::DomNodeType::Text { content: text } if text == content
+        ) {
+          return Some(node);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    let html = concat!(
+      "<!doctype html><html><body>",
+      "<span id=before>Before</span>",
+      "<wbr id=wbr>",
+      "<div id=target>Target</div>",
+      "</body></html>",
+    );
+    let mut tab = BrowserTab::from_html(
+      html,
+      RenderOptions::new().with_viewport(32, 32),
+      NoopExecutor::default(),
+    )?;
+
+    // Ensure the DOM contains at least one comment node and that it appears before the target in
+    // tree order (comment nodes are not rendered and must not shift renderer preorder ids).
+    {
+      let dom = tab.dom_mut();
+      let body = dom.body().expect("expected HTML <body>");
+      let comment = dom.create_comment("hi");
+      let reference = dom.node(body).children.first().copied();
+      dom
+        .insert_before(body, comment, reference)
+        .expect("insert comment");
+    }
+
+    tab.render_frame()?;
+
+    let dom = tab.dom();
+    let mut has_comment = false;
+    let mut stack = vec![dom.root()];
+    while let Some(id) = stack.pop() {
+      if matches!(dom.node(id).kind, crate::dom2::NodeKind::Comment { .. }) {
+        has_comment = true;
+        break;
+      }
+      for &child in dom.node(id).children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    assert!(has_comment, "expected dom2 document to contain a comment node");
+
+    let renderer_dom = dom.to_renderer_dom();
+    let preorder_ids = crate::dom::enumerate_dom_ids(&renderer_dom);
+
+    // Verify that the renderer preorder id for #target maps back to the correct dom2 `NodeId` even
+    // with comment nodes (skipped) and `<wbr>` ZWSP injection (extra renderer node).
+    let target_renderer =
+      find_renderer_element_by_id(&renderer_dom, "target").expect("target element in renderer DOM");
+    let target_preorder_id = *preorder_ids
+      .get(&(target_renderer as *const crate::dom::DomNode))
+      .expect("renderer preorder id for #target");
+    let target_dom2 = dom.get_element_by_id("target").expect("#target in dom2");
+    assert_eq!(
+      tab.dom_node_for_renderer_preorder(target_preorder_id),
+      Some(target_dom2)
+    );
+
+    // The synthetic `<wbr>` ZWSP text node in the renderer DOM should map back to a stable dom2 id.
+    let wbr_dom2 = dom.get_element_by_id("wbr").expect("#wbr in dom2");
+    let wbr_renderer =
+      find_renderer_element_by_id(&renderer_dom, "wbr").expect("wbr element in renderer DOM");
+    let zwsp_renderer =
+      find_renderer_text_node(wbr_renderer, "\u{200B}").expect("ZWSP node under <wbr>");
+    let zwsp_preorder_id = *preorder_ids
+      .get(&(zwsp_renderer as *const crate::dom::DomNode))
+      .expect("renderer preorder id for wbr ZWSP");
+
+    let expected_dom2_for_zwsp = dom
+      .node(wbr_dom2)
+      .children
+      .iter()
+      .copied()
+      .find(|&child| {
+        matches!(
+          &dom.node(child).kind,
+          crate::dom2::NodeKind::Text { content } if content == "\u{200B}"
+        )
+      })
+      .unwrap_or(wbr_dom2);
+
+    assert_eq!(
+      tab.dom_node_for_renderer_preorder(zwsp_preorder_id),
+      Some(expected_dom2_for_zwsp)
+    );
+
+    // Renderer preorder ids are 1-based.
+    assert_eq!(tab.dom_node_for_renderer_preorder(0), None);
 
     Ok(())
   }

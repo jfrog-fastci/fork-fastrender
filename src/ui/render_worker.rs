@@ -874,10 +874,10 @@ fn js_dom_node_for_preorder_id(
     .as_ref()
     .and_then(|mapping| mapping.node_id_for_preorder(preorder_id))
     .or_else(|| element_id.and_then(|id| js_tab.dom().get_element_by_id(id)))
-    // As a last resort (e.g. no mapping + no element id), fall back to indexing into the live dom2
-    // node list. This is not stable under DOM mutations (insertions/removals shift indices), so it
-    // must remain a best-effort fallback.
-    .or_else(|| js_tab.dom().node_id_from_index(preorder_id.saturating_sub(1)).ok())
+    // Fallback to the JS tab's cached renderer-preorder mapping (rebuilt when the dom2 document's
+    // mutation generation changes). This is stable across dom2 insertions/removals via `NodeId` and
+    // accounts for non-rendered/synthetic nodes (comments, `<wbr>` ZWSP injection, etc).
+    .or_else(|| js_tab.dom2_node_for_renderer_preorder(preorder_id))
 }
 
 fn js_dom_node_for_preorder_id_with_log(
