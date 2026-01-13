@@ -103,6 +103,25 @@ One renderer process may host:
 - **MVP**: one tab (process-per-tab).
 - **Future**: multiple tabs/frames for the same `SiteKey` (process-per-`SiteKey`).
 
+### Defense-in-depth: renderer process `SiteLock`
+
+Site isolation relies on the browser making correct process assignment decisions, but we also want a
+**fail-closed guardrail inside the renderer** so a compromised renderer (or a browser bug) cannot
+silently co-host cross-site documents inside one OS process.
+
+When the browser spawns/initializes a renderer process, it should provide a **process-level lock**
+derived from the `SiteKey` assigned to that process. The renderer stores this lock and rejects any
+navigation that would commit a different site.
+
+In code, this is represented by:
+
+- `fastrender_ipc::SiteLock` + `fastrender_ipc::SiteIsolationMode`
+- `fastrender_ipc::BrowserToRenderer::SetSiteLock { lock }`
+
+The multiprocess renderer (`crates/fastrender-renderer`) enforces this by sending a deterministic
+`RendererToBrowser::NavigationFailed { error: "site lock violation" }` response when a `Navigate`
+violates the lock (optionally aborting under a feature flag).
+
 ### `OriginKey` (origin key)
 
 An **OriginKey** identifies a document’s security origin (same-origin policy / storage partitioning boundary).
