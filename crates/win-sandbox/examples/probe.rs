@@ -114,10 +114,6 @@ mod windows {
   const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
   const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
 
-  // `NO_INHERITANCE` from `accctrl.h` (0). `windows-sys` does not consistently export it across
-  // targets, so define it here.
-  const NO_INHERITANCE: u32 = 0;
-
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
   enum SandboxMode {
     AppContainer,
