@@ -1,11 +1,18 @@
 use std::rc::Rc;
 
 use vm_js::{HeapLimits, Value, VmError};
-use webidl::ir::{IdlType, NumericType, StringType};
+use webidl::ir::{IdlType, StringType};
 use webidl_runtime::overload_resolution::{
   resolve_overload, ConvertedArgument, Optionality, OverloadArg, OverloadSig, WebIdlValue,
 };
 use webidl_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
+
+fn as_utf8_lossy(rt: &VmJsRuntime, v: Value) -> String {
+  let Value::String(handle) = v else {
+    panic!("expected JS string value");
+  };
+  rt.heap().get_string(handle).unwrap().to_utf8_lossy()
+}
 
 #[test]
 fn overload_resolution_sequence_conversion_is_gc_safe_under_extreme_gc_pressure() -> Result<(), VmError>
@@ -18,54 +25,60 @@ fn overload_resolution_sequence_conversion_is_gc_safe_under_extreme_gc_pressure(
   // Root the iterable object for the duration of setup + resolution.
   rt.with_stack_roots(&[iterable], |rt| {
     let items: Rc<Vec<Value>> = Rc::new(vec![
-      Value::Number(1.0),
-      Value::Number(2.0),
-      Value::Number(3.0),
+      Value::Number(1.5),
+      Value::Number(2.5),
+      Value::Number(3.5),
     ]);
 
-    let items_for_next = items.clone();
-    let next = rt.alloc_function_value(move |rt, this, _args| {
-      // Allocate an intermediate value (on every step) to stress rooting correctness.
-      let _ = rt.alloc_object_value()?;
+    // iterable[Symbol.iterator] allocates and returns a fresh iterator object, so the overload
+    // resolution implementation must correctly root the iterator record across GC-triggering
+    // conversions between `IteratorStepValue` calls.
+    let items_for_iter = items.clone();
+    let iter_method = rt.alloc_function_value(move |rt, _this, _args| {
+      let iterator = rt.alloc_object_value()?;
+      rt.with_stack_roots(&[iterator], |rt| {
+        let idx_key = rt.property_key_from_str("index")?;
+        rt.define_data_property(iterator, idx_key, Value::Number(0.0), true)?;
 
-      let idx_key = rt.property_key_from_str("index")?;
-      let idx_value = rt.get(this, idx_key)?;
-      let idx = match idx_value {
-        Value::Number(n) => n as usize,
-        _ => 0,
-      };
-      let done = idx >= items_for_next.len();
-      let value = if done {
-        Value::Undefined
-      } else {
-        items_for_next[idx]
-      };
+        let items_for_next = items_for_iter.clone();
+        let next = rt.alloc_function_value(move |rt, this, _args| {
+          // Allocate an intermediate value (on every step) to stress rooting correctness.
+          let _ = rt.alloc_object_value()?;
 
-      rt.define_data_property(this, idx_key, Value::Number((idx + 1) as f64), true)?;
+          let idx_key = rt.property_key_from_str("index")?;
+          let idx_value = rt.get(this, idx_key)?;
+          let idx = match idx_value {
+            Value::Number(n) => n as usize,
+            _ => 0,
+          };
+          let done = idx >= items_for_next.len();
+          let value = if done {
+            Value::Undefined
+          } else {
+            items_for_next[idx]
+          };
 
-      let result = rt.alloc_object_value()?;
-      rt.with_stack_roots(&[result], |rt| {
-        let done_key = rt.property_key_from_str("done")?;
-        rt.define_data_property(result, done_key, Value::Bool(done), true)?;
+          rt.define_data_property(this, idx_key, Value::Number((idx + 1) as f64), true)?;
 
-        let value_key = rt.property_key_from_str("value")?;
-        rt.define_data_property(result, value_key, value, true)?;
-        Ok(result)
+          let result = rt.alloc_object_value()?;
+          rt.with_stack_roots(&[result], |rt| {
+            let done_key = rt.property_key_from_str("done")?;
+            rt.define_data_property(result, done_key, Value::Bool(done), true)?;
+
+            let value_key = rt.property_key_from_str("value")?;
+            rt.define_data_property(result, value_key, value, true)?;
+            Ok(result)
+          })
+        })?;
+
+        rt.with_stack_roots(&[next], |rt| {
+          let next_key = rt.property_key_from_str("next")?;
+          rt.define_data_property(iterator, next_key, next, true)?;
+          Ok(())
+        })?;
+
+        Ok(iterator)
       })
-    })?;
-
-    // iterable.next = next
-    rt.with_stack_roots(&[next], |rt| {
-      let next_key = rt.property_key_from_str("next")?;
-      rt.define_data_property(iterable, next_key, next, true)?;
-      Ok(())
-    })?;
-
-    // iterable[Symbol.iterator] = () => { this.index = 0; return this; }
-    let iter_method = rt.alloc_function_value(move |rt, this, _args| {
-      let idx_key = rt.property_key_from_str("index")?;
-      rt.define_data_property(this, idx_key, Value::Number(0.0), true)?;
-      Ok(this)
     })?;
 
     rt.with_stack_roots(&[iter_method], |rt| {
@@ -74,11 +87,11 @@ fn overload_resolution_sequence_conversion_is_gc_safe_under_extreme_gc_pressure(
       Ok(())
     })?;
 
-    // Overloads: f(sequence<long>) vs f(DOMString)
+    // Overloads: f(sequence<DOMString>) vs f(DOMString)
     let overloads = vec![
       OverloadSig {
         args: vec![OverloadArg {
-          ty: IdlType::Sequence(Box::new(IdlType::Numeric(NumericType::Long))),
+          ty: IdlType::Sequence(Box::new(IdlType::String(StringType::DomString))),
           optionality: Optionality::Required,
           default: None,
         }],
@@ -104,14 +117,17 @@ fn overload_resolution_sequence_conversion_is_gc_safe_under_extreme_gc_pressure(
       panic!("expected one sequence argument, got {:?}", out.values);
     };
 
-    assert_eq!(elem_ty.as_ref(), &IdlType::Numeric(NumericType::Long));
+    assert_eq!(elem_ty.as_ref(), &IdlType::String(StringType::DomString));
+    let strs = values
+      .iter()
+      .map(|v| match v {
+        WebIdlValue::String(s) => as_utf8_lossy(rt, *s),
+        other => panic!("expected DOMString element, got {other:?}"),
+      })
+      .collect::<Vec<_>>();
     assert_eq!(
-      values,
-      &[
-        WebIdlValue::Long(1),
-        WebIdlValue::Long(2),
-        WebIdlValue::Long(3),
-      ]
+      strs,
+      &["1.5".to_string(), "2.5".to_string(), "3.5".to_string()]
     );
 
     Ok(())
