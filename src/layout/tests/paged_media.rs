@@ -5486,6 +5486,139 @@ fn page_marks_none_draws_no_marks() {
 }
 
 #[test]
+fn page_bleed_expands_total_page_size_and_insets_content_origin() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 0;
+            bleed: 10px;
+            background: rgb(10, 20, 30);
+          }
+          html, body { margin: 0; background: transparent; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 1px"></div>
+      </body>
+    </html>
+  "#;
+
+  // Layout assertions: bleed expands the page root bounds and insets the document wrapper.
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  assert!((page.bounds.width() - 220.0).abs() < 0.1);
+  assert!((page.bounds.height() - 220.0).abs() < 0.1);
+  let wrapper = page_document_wrapper(page);
+  assert!(
+    (wrapper.bounds.x() - 10.0).abs() < 0.1,
+    "expected wrapper x=bleed (10px), got {}",
+    wrapper.bounds.x()
+  );
+  assert!(
+    (wrapper.bounds.y() - 10.0).abs() < 0.1,
+    "expected wrapper y=bleed (10px), got {}",
+    wrapper.bounds.y()
+  );
+
+  // Rendering assertion: bleed area should paint the page background.
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(220, 220)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render paged media with bleed");
+  assert_eq!(
+    pixel(&pixmap, 0, 0),
+    [10, 20, 30, 255],
+    "expected page background to paint into the bleed area"
+  );
+}
+
+#[test]
+fn page_trim_reduces_page_box_and_insets_wrapper() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 0;
+            bleed: 10px;
+            trim: 5px;
+            background: rgb(180, 190, 200);
+            border: 2px solid rgb(20, 40, 60);
+          }
+          html, body { margin: 0; background: transparent; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 1px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  assert!((page.bounds.width() - 220.0).abs() < 0.1);
+  assert!((page.bounds.height() - 220.0).abs() < 0.1);
+
+  let wrapper = page_document_wrapper(page);
+  assert!(
+    (wrapper.bounds.x() - 15.0).abs() < 0.1,
+    "expected wrapper x=bleed+trim (15px), got {}",
+    wrapper.bounds.x()
+  );
+  assert!(
+    (wrapper.bounds.y() - 15.0).abs() < 0.1,
+    "expected wrapper y=bleed+trim (15px), got {}",
+    wrapper.bounds.y()
+  );
+  assert!(
+    (wrapper.bounds.width() - 190.0).abs() < 0.1,
+    "expected wrapper width=size-2*trim (190px), got {}",
+    wrapper.bounds.width()
+  );
+  assert!(
+    (wrapper.bounds.height() - 190.0).abs() < 0.1,
+    "expected wrapper height=size-2*trim (190px), got {}",
+    wrapper.bounds.height()
+  );
+
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(220, 220)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render paged media with bleed+trim");
+
+  // (5,5) is in the bleed area. It should show only the page background, not the page border.
+  assert_eq!(
+    pixel(&pixmap, 5, 5),
+    [180, 190, 200, 255],
+    "expected border to be inset from bleed edge"
+  );
+  // (16,16) is inside the page border (bleed+trim=15, border=2).
+  assert_eq!(pixel(&pixmap, 16, 16), [20, 40, 60, 255]);
+}
+
+#[test]
 fn document_canvas_background_paints_above_page_background() {
   let html = r#"
     <html>
