@@ -1,5 +1,7 @@
 use crate::dom::DomNode;
+use crate::dom2;
 use crate::interaction::InteractionState;
+use crate::interaction::InteractionStateDom2;
 use std::ptr;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -206,6 +208,327 @@ pub fn autofocus_target_node_id(dom: &DomNode) -> Option<usize> {
   autofocus_target_in_index(&index)
 }
 
+// -----------------------------------------------------------------------------
+// dom2 variants (stable NodeId)
+// -----------------------------------------------------------------------------
+
+fn dom2_get_attribute_ref<'a>(
+  dom: &'a dom2::Document,
+  node: dom2::NodeId,
+  name: &str,
+) -> Option<&'a str> {
+  let node_ref = dom.node(node);
+  let attrs: &[(String, String)] = match &node_ref.kind {
+    dom2::NodeKind::Element { attributes, .. } | dom2::NodeKind::Slot { attributes, .. } => {
+      attributes
+    }
+    _ => return None,
+  };
+  attrs
+    .iter()
+    .find(|(k, _)| k.eq_ignore_ascii_case(name))
+    .map(|(_, v)| v.as_str())
+}
+
+fn dom2_has_attribute(dom: &dom2::Document, node: dom2::NodeId, name: &str) -> bool {
+  dom2_get_attribute_ref(dom, node, name).is_some()
+}
+
+fn dom2_tag_name<'a>(dom: &'a dom2::Document, node: dom2::NodeId) -> Option<&'a str> {
+  match &dom.node(node).kind {
+    dom2::NodeKind::Element { tag_name, .. } => Some(tag_name.as_str()),
+    dom2::NodeKind::Slot { .. } => Some("slot"),
+    _ => None,
+  }
+}
+
+fn dom2_parse_tabindex(dom: &dom2::Document, node: dom2::NodeId) -> Option<i32> {
+  let raw = dom2_get_attribute_ref(dom, node, "tabindex")?;
+  let raw = trim_ascii_whitespace(raw);
+  if raw.is_empty() {
+    return None;
+  }
+  raw.parse::<i32>().ok()
+}
+
+fn dom2_is_anchor_with_href(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  dom2_tag_name(dom, node).is_some_and(|tag| {
+    (tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area"))
+      && dom2_get_attribute_ref(dom, node, "href").is_some_and(|href| {
+        let href = trim_ascii_whitespace(href);
+        !href.is_empty()
+          && !href
+            .as_bytes()
+            .get(.."javascript:".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+      })
+  })
+}
+
+fn dom2_input_type<'a>(dom: &'a dom2::Document, node: dom2::NodeId) -> &'a str {
+  dom2_get_attribute_ref(dom, node, "type")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+    .unwrap_or("text")
+}
+
+fn dom2_is_potentially_focusable_element_for_autofocus(
+  dom: &dom2::Document,
+  node: dom2::NodeId,
+) -> bool {
+  let node_ref = dom.node(node);
+  let is_element = matches!(
+    node_ref.kind,
+    dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. }
+  );
+  if !is_element {
+    return false;
+  }
+
+  // `input type=hidden` is never focusable, even when tabindex is set.
+  if dom2_tag_name(dom, node)
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+    && dom2_input_type(dom, node).eq_ignore_ascii_case("hidden")
+  {
+    return false;
+  }
+
+  // `tabindex` makes any element focusable, even if it is not reachable via Tab (negative values).
+  if dom2_parse_tabindex(dom, node).is_some() {
+    return true;
+  }
+
+  if dom2_is_anchor_with_href(dom, node) {
+    return true;
+  }
+
+  dom2_tag_name(dom, node).is_some_and(|tag| {
+    tag.eq_ignore_ascii_case("input")
+      || tag.eq_ignore_ascii_case("textarea")
+      || tag.eq_ignore_ascii_case("select")
+      || tag.eq_ignore_ascii_case("button")
+  })
+}
+
+fn dom2_node_self_is_inert(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  let node_ref = dom.node(node);
+  // `<template>` contents are always inert. For interaction/autofocus we treat the `<template>`
+  // element itself as inert as well, mirroring `effective_disabled::node_self_is_inert` for the
+  // renderer DOM.
+  if node_ref.inert_subtree {
+    return true;
+  }
+  if dom2_has_attribute(dom, node, "inert") {
+    return true;
+  }
+  dom2_get_attribute_ref(dom, node, "data-fastr-inert")
+    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+fn dom2_node_self_is_hidden(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  if dom2_has_attribute(dom, node, "hidden") {
+    return true;
+  }
+  dom2_get_attribute_ref(dom, node, "data-fastr-hidden")
+    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+fn dom2_is_html_namespace(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  match &dom.node(node).kind {
+    dom2::NodeKind::Element { namespace, .. } | dom2::NodeKind::Slot { namespace, .. } => {
+      namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE
+    }
+    _ => false,
+  }
+}
+
+fn dom2_is_html_fieldset(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  dom2_is_html_namespace(dom, node)
+    && matches!(&dom.node(node).kind, dom2::NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("fieldset"))
+}
+
+fn dom2_is_html_legend(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  dom2_is_html_namespace(dom, node)
+    && matches!(&dom.node(node).kind, dom2::NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("legend"))
+}
+
+fn dom2_is_fieldset_disabled_candidate(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  dom2_is_html_namespace(dom, node)
+    && matches!(&dom.node(node).kind, dom2::NodeKind::Element { tag_name, .. } if {
+      tag_name.eq_ignore_ascii_case("input")
+        || tag_name.eq_ignore_ascii_case("select")
+        || tag_name.eq_ignore_ascii_case("textarea")
+        || tag_name.eq_ignore_ascii_case("button")
+    })
+}
+
+fn dom2_fieldset_first_legend_child(dom: &dom2::Document, fieldset: dom2::NodeId) -> Option<dom2::NodeId> {
+  debug_assert!(dom2_is_html_fieldset(dom, fieldset));
+  let node = dom.node(fieldset);
+  node.children.iter().copied().find(|&child| {
+    if child.index() >= dom.nodes_len() {
+      return false;
+    }
+    if dom.node(child).parent != Some(fieldset) {
+      return false;
+    }
+    dom2_is_html_legend(dom, child)
+  })
+}
+
+fn dom2_is_effectively_disabled(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  let node_ref = dom.node(node);
+  let is_element = matches!(
+    node_ref.kind,
+    dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. }
+  );
+  if !is_element {
+    return false;
+  }
+
+  // Treat `disabled` as authoritative on the element itself (mirrors legacy interaction behavior).
+  if dom2_has_attribute(dom, node, "disabled") {
+    return true;
+  }
+
+  if !dom2_is_fieldset_disabled_candidate(dom, node) {
+    return false;
+  }
+
+  let mut ancestors: Vec<dom2::NodeId> = Vec::new();
+  let mut current = Some(node);
+  let mut remaining = dom.nodes_len() + 1;
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+
+    ancestors.push(id);
+
+    if dom2_is_html_fieldset(dom, id) && dom2_has_attribute(dom, id, "disabled") {
+      match dom2_fieldset_first_legend_child(dom, id) {
+        Some(first_legend) => {
+          let in_first_legend = ancestors.iter().any(|&ancestor| ancestor == first_legend);
+          if !in_first_legend {
+            return true;
+          }
+        }
+        None => return true,
+      }
+    }
+
+    current = dom.parent_node(id);
+  }
+
+  false
+}
+
+fn autofocus_target_node_id_dom2_in_tree(dom: &dom2::Document) -> Option<dom2::NodeId> {
+  // Pre-order traversal over the document tree. We intentionally do not rely on renderer preorder ids;
+  // `dom2::NodeId` is stable across DOM mutations (until removal).
+  let root = dom.root();
+
+  // (node_id, inherited_inert_or_hidden)
+  let mut stack: Vec<(dom2::NodeId, bool)> = Vec::new();
+  stack.push((root, false));
+
+  while let Some((node_id, inherited_inert_or_hidden)) = stack.pop() {
+    if node_id.index() >= dom.nodes_len() {
+      continue;
+    }
+
+    let node = dom.node(node_id);
+
+    let is_element = matches!(
+      node.kind,
+      dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. }
+    );
+
+    let self_inert_or_hidden = if inherited_inert_or_hidden {
+      true
+    } else if is_element {
+      dom2_node_self_is_inert(dom, node_id) || dom2_node_self_is_hidden(dom, node_id)
+    } else {
+      false
+    };
+
+    if is_element && !self_inert_or_hidden {
+      if dom2_has_attribute(dom, node_id, "autofocus")
+        && dom2_is_potentially_focusable_element_for_autofocus(dom, node_id)
+        && !dom2_is_effectively_disabled(dom, node_id)
+      {
+        return Some(node_id);
+      }
+    }
+
+    // All descendants are inert/hidden once we've crossed an inert/hidden boundary. Prune traversal.
+    if self_inert_or_hidden {
+      continue;
+    }
+    // `<template>` contents are inert; do not descend into the inert subtree.
+    if node.inert_subtree {
+      continue;
+    }
+
+    for &child in node.children.iter().rev() {
+      if child.index() >= dom.nodes_len() {
+        continue;
+      }
+      if dom.node(child).parent != Some(node_id) {
+        continue;
+      }
+      stack.push((child, self_inert_or_hidden));
+    }
+  }
+
+  None
+}
+
+/// Returns the [`dom2::NodeId`] of the first eligible `[autofocus]` element in a live `dom2`
+/// document.
+///
+/// This matches the best-effort eligibility rules of [`autofocus_target_node_id`] but returns a
+/// stable `dom2` id that remains meaningful across incremental DOM updates.
+pub fn autofocus_target_node_id_dom2(dom: &dom2::Document) -> Option<dom2::NodeId> {
+  autofocus_target_node_id_dom2_in_tree(dom)
+}
+
+/// Build an [`InteractionStateDom2`] reflecting initial autofocus selection, if any.
+///
+/// This is the `dom2` equivalent of [`interaction_state_for_autofocus`].
+pub fn interaction_state_for_autofocus_dom2(
+  dom: &dom2::Document,
+) -> Option<InteractionStateDom2> {
+  let focused = autofocus_target_node_id_dom2_in_tree(dom)?;
+
+  let mut focus_chain: Vec<dom2::NodeId> = Vec::new();
+  let mut current = Some(focused);
+  let mut remaining = dom.nodes_len() + 1;
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+
+    if matches!(
+      dom.node(id).kind,
+      dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. }
+    ) {
+      focus_chain.push(id);
+    }
+    current = dom.parent_node(id);
+  }
+
+  let mut state = InteractionStateDom2::default();
+  state.focused = Some(focused);
+  // Autofocus is not pointer-driven. Err on the side of matching `:focus-visible` as well,
+  // which aligns with typical browser behavior for initially focused text controls.
+  state.focus_visible = true;
+  state.focus_chain = focus_chain;
+  Some(state)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -270,5 +593,66 @@ mod tests {
 
     assert_eq!(autofocus_target_node_id(&dom), None);
     assert!(interaction_state_for_autofocus(&dom).is_none());
+  }
+
+  fn find_dom2_node_by_id(dom: &dom2::Document, html_id: &str) -> dom2::NodeId {
+    for (idx, node) in dom.nodes().iter().enumerate() {
+      let attrs: &[(String, String)] = match &node.kind {
+        dom2::NodeKind::Element { attributes, .. } | dom2::NodeKind::Slot { attributes, .. } => {
+          attributes
+        }
+        _ => continue,
+      };
+      if attrs
+        .iter()
+        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == html_id)
+      {
+        return dom2::NodeId::from_index(idx);
+      }
+    }
+    panic!("missing id={html_id}");
+  }
+
+  #[test]
+  fn autofocus_dom2_respects_disabled_fieldset_first_legend_exception() {
+    let dom = crate::dom2::parse_html(
+      "<html><body><fieldset disabled>\
+         <input id=\"a\" autofocus>\
+         <legend><input id=\"b\" autofocus></legend>\
+       </fieldset></body></html>",
+    )
+    .expect("parse");
+
+    let input_a = find_dom2_node_by_id(&dom, "a");
+    let input_b = find_dom2_node_by_id(&dom, "b");
+    assert_ne!(input_a.index(), input_b.index());
+
+    assert_eq!(autofocus_target_node_id_dom2(&dom), Some(input_b));
+    let state = interaction_state_for_autofocus_dom2(&dom).expect("state");
+    assert_eq!(state.focused, Some(input_b));
+  }
+
+  #[test]
+  fn autofocus_dom2_does_not_treat_disabled_fieldset_as_inert_for_tabindex_elements() {
+    let dom = crate::dom2::parse_html(
+      "<html><body><fieldset disabled><div id=\"d\" tabindex=\"0\" autofocus></div></fieldset></body></html>",
+    )
+    .expect("parse");
+
+    let div = find_dom2_node_by_id(&dom, "d");
+    assert_eq!(autofocus_target_node_id_dom2(&dom), Some(div));
+    let state = interaction_state_for_autofocus_dom2(&dom).expect("state");
+    assert_eq!(state.focused, Some(div));
+  }
+
+  #[test]
+  fn autofocus_dom2_ignores_controls_disabled_by_fieldset() {
+    let dom = crate::dom2::parse_html(
+      "<html><body><fieldset disabled><input id=\"a\" autofocus></fieldset></body></html>",
+    )
+    .expect("parse");
+
+    assert_eq!(autofocus_target_node_id_dom2(&dom), None);
+    assert!(interaction_state_for_autofocus_dom2(&dom).is_none());
   }
 }
