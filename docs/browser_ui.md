@@ -132,8 +132,8 @@ CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` bina
 `--features browser_ui` on Linux/macOS/Windows; Linux additionally runs the headless smoke mode.
 
 Note: by default, when run **without** a URL, the windowed `browser` app tries to restore the
-previous session (tabs + per-tab zoom). When run **with** a URL, it opens that URL and does not
-restore unless `--restore` is provided.
+previous session (windows + tabs + per-tab zoom). When run **with** a URL, it opens that URL and
+does not restore unless `--restore` is provided.
 
 If no session file exists yet, it falls back to `about:newtab`, which acts as a basic start page
 (showing bookmarks + recently visited pages when available). Use `--no-restore` to disable session
@@ -301,6 +301,12 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
   - Alt+Enter (Win/Linux) / Option+Enter (macOS) opens the resolved navigation in a **new tab**.
 - While typing, the omnibox shows a suggestions dropdown (from history and open tabs).
   - Use ArrowUp/ArrowDown to select a suggestion, Enter to accept, Escape to close the dropdown.
+- Tabs:
+  - Drag tabs in the tab strip to **reorder** them.
+  - Right-click a tab to open a tab context menu (reload/duplicate, pin/unpin, tab grouping, close
+    other tabs, close tabs to the right).
+  - Drag a tab out of the tab strip to **detach** it into a new window.
+- Drag a link from page content and drop it onto the address bar to navigate (Chrome-like UX).
 - Right-clicking in the rendered page opens a basic context menu (for example: open link in new tab,
   copy link address, download link, reload).
 - Click the downloads icon in the toolbar to open the downloads side panel (shows progress and lets
