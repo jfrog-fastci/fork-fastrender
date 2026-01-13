@@ -5,8 +5,9 @@ use crate::scroll::ScrollState;
 use crate::style::display::FormattingContextType;
 use crate::style::types::{Appearance, LineHeight, PointerEvents};
 use crate::style::ComputedStyle;
+use crate::text::caret::CaretAffinity;
 use crate::tree::box_tree::{
-  BoxNode, BoxTree, FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem,
+  BoxNode, BoxTree, FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem, TextControlKind,
 };
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree, TextSourceRange};
 use crate::ui::messages::{PointerButton, PointerModifiers};
@@ -119,6 +120,70 @@ fn text_node_id(root: &DomNode, content: &str) -> usize {
 
 fn default_style() -> Arc<ComputedStyle> {
   Arc::new(ComputedStyle::default())
+}
+
+fn text_input_form_control(value: &str) -> FormControl {
+  FormControl {
+    control: FormControlKind::Text {
+      value: value.to_string(),
+      placeholder: None,
+      placeholder_style: None,
+      size_attr: None,
+      kind: TextControlKind::Plain,
+      caret: value.chars().count(),
+      caret_affinity: CaretAffinity::Downstream,
+      selection: None,
+    },
+    appearance: Appearance::Auto,
+    placeholder_style: None,
+    slider_thumb_style: None,
+    slider_track_style: None,
+    progress_bar_style: None,
+    progress_value_style: None,
+    meter_bar_style: None,
+    meter_optimum_value_style: None,
+    meter_suboptimum_value_style: None,
+    meter_even_less_good_value_style: None,
+    file_selector_button_style: None,
+    disabled: false,
+    focused: false,
+    focus_visible: false,
+    required: false,
+    invalid: false,
+    ime_preedit: None,
+  }
+}
+
+fn textarea_form_control(value: &str) -> FormControl {
+  FormControl {
+    control: FormControlKind::TextArea {
+      value: value.to_string(),
+      placeholder: None,
+      placeholder_style: None,
+      rows: None,
+      cols: None,
+      caret: value.chars().count(),
+      caret_affinity: CaretAffinity::Downstream,
+      selection: None,
+    },
+    appearance: Appearance::Auto,
+    placeholder_style: None,
+    slider_thumb_style: None,
+    slider_track_style: None,
+    progress_bar_style: None,
+    progress_value_style: None,
+    meter_bar_style: None,
+    meter_optimum_value_style: None,
+    meter_suboptimum_value_style: None,
+    meter_even_less_good_value_style: None,
+    file_selector_button_style: None,
+    disabled: false,
+    focused: false,
+    focus_visible: false,
+    required: false,
+    invalid: false,
+    ime_preedit: None,
+  }
 }
 
 fn style_with_pointer_events(pointer_events: PointerEvents) -> Arc<ComputedStyle> {
@@ -6928,5 +6993,295 @@ fn document_selection_drag_creates_range_and_suppresses_click() {
     engine.clipboard_copy_with_layout(&mut dom, &box_tree, &fragment_tree),
     Some(fragment_text.to_string()),
     "clipboard copy should serialize the document selection range"
+  );
+}
+
+#[test]
+fn text_drag_drop_defers_default_insertion_until_apply_text_drop() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("input", vec![("id", "src"), ("value", "hello")], vec![]),
+        el("input", vec![("id", "dst"), ("value", "X")], vec![]),
+      ],
+    )],
+  )]);
+
+  let src_dom_id = node_id(&dom, "src");
+  let dst_dom_id = node_id(&dom, "dst");
+
+  let mut src_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(text_input_form_control("hello")),
+    None,
+    None,
+  );
+  src_box.styled_node_id = Some(src_dom_id);
+
+  let mut dst_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(text_input_form_control("X")),
+    None,
+    None,
+  );
+  dst_box.styled_node_id = Some(dst_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![src_box, dst_box],
+  ));
+  let src_box_id = find_box_id_for_styled_node(&box_tree, src_dom_id);
+  let dst_box_id = find_box_id_for_styled_node(&box_tree, dst_dom_id);
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 160.0, 20.0), src_box_id, vec![]),
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 40.0, 160.0, 20.0),
+        dst_box_id,
+        vec![],
+      ),
+    ],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  let _ = engine.focus_node_id(&mut dom, Some(src_dom_id), false);
+  engine.set_text_selection_range(src_dom_id, 0, "hello".chars().count());
+
+  engine.pointer_down_with_click_count(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(1.0, 10.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    1,
+  );
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(20.0, 10.0),
+  );
+
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(1.0, 50.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    attr_value(&dom, "dst", "value"),
+    Some("X".to_string()),
+    "default drop insertion should be deferred until apply_text_drop"
+  );
+
+  let InteractionAction::TextDrop { target_dom_id, text } = action else {
+    panic!("expected TextDrop action, got {action:?}");
+  };
+  assert_eq!(target_dom_id, dst_dom_id);
+  assert_eq!(text, "hello");
+
+  assert_eq!(
+    engine.take_last_click_target(),
+    None,
+    "drag-drop pointer-up should suppress click target tracking"
+  );
+
+  assert!(engine.apply_text_drop(&mut dom, target_dom_id, &text));
+  assert_eq!(
+    attr_value(&dom, "dst", "value"),
+    Some("helloX".to_string()),
+    "apply_text_drop should perform the default insertion"
+  );
+}
+
+#[test]
+fn document_selection_drag_drop_defers_default_insertion_until_apply_text_drop() {
+  let full_text = "héllo world";
+  let fragment_text = "world";
+
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el(
+          "a",
+          vec![("id", "link"), ("href", "foo")],
+          vec![text(full_text)],
+        ),
+        el(
+          "textarea",
+          vec![("id", "dst"), ("data-fastr-value", "X")],
+          vec![],
+        ),
+      ],
+    )],
+  )]);
+
+  let text_dom_id = text_node_id(&dom, full_text);
+  let dst_dom_id = node_id(&dom, "dst");
+
+  let mut text_box = BoxNode::new_text(default_style(), full_text.to_string());
+  text_box.styled_node_id = Some(text_dom_id);
+
+  let mut textarea_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(textarea_form_control("X")),
+    None,
+    None,
+  );
+  textarea_box.styled_node_id = Some(dst_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![text_box, textarea_box],
+  ));
+  let text_box_id = find_box_id_for_styled_node(&box_tree, text_dom_id);
+  let textarea_box_id = find_box_id_for_styled_node(&box_tree, dst_dom_id);
+
+  let start_byte = full_text
+    .find(fragment_text)
+    .expect("expected substring in test text");
+  let end_byte = start_byte + fragment_text.len();
+  let source_range =
+    TextSourceRange::new(start_byte..end_byte).expect("expected valid packed source range");
+
+  let mut text_fragment =
+    FragmentNode::new_text(Rect::from_xywh(0.0, 0.0, 200.0, 20.0), fragment_text, 16.0);
+  if let crate::tree::fragment_tree::FragmentContent::Text {
+    box_id,
+    source_range: fragment_range,
+    ..
+  } = &mut text_fragment.content
+  {
+    *box_id = Some(text_box_id);
+    *fragment_range = Some(source_range);
+  } else {
+    panic!("expected FragmentContent::Text");
+  }
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![
+      text_fragment,
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 40.0, 200.0, 40.0),
+        textarea_box_id,
+        vec![],
+      ),
+    ],
+  ));
+
+  let mut engine = InteractionEngine::new();
+
+  // First, create a highlighted document selection.
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(1.0, 10.0),
+  );
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(199.0, 10.0),
+  );
+  let _ = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(199.0, 10.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+
+  assert!(
+    engine
+      .interaction_state()
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| sel.has_highlight()),
+    "expected initial drag to create a document selection"
+  );
+
+  // Start a drag-drop gesture from within the highlighted selection.
+  engine.pointer_down_with_click_count(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(1.0, 10.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    1,
+  );
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(1.0, 50.0),
+  );
+
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(1.0, 50.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    attr_value(&dom, "dst", "data-fastr-value"),
+    Some("X".to_string()),
+    "default drop insertion should be deferred until apply_text_drop"
+  );
+
+  let InteractionAction::TextDrop { target_dom_id, text } = action else {
+    panic!("expected TextDrop action, got {action:?}");
+  };
+  assert_eq!(target_dom_id, dst_dom_id);
+  assert_eq!(text, fragment_text);
+
+  assert_eq!(
+    engine.take_last_click_target(),
+    None,
+    "drag-drop pointer-up should suppress click target tracking"
+  );
+
+  assert!(engine.apply_text_drop(&mut dom, target_dom_id, &text));
+  assert_eq!(
+    attr_value(&dom, "dst", "data-fastr-value"),
+    Some(format!("{fragment_text}X")),
+    "apply_text_drop should perform the default insertion"
   );
 }

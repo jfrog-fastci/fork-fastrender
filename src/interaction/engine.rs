@@ -60,6 +60,16 @@ pub enum DateTimeInputKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionAction {
   None,
+  /// A pending default text insertion for a drag-and-drop gesture into a text control.
+  ///
+  /// The interaction engine computes focus/caret placement during the pointer gesture, but defers
+  /// mutating the control's value so higher layers can dispatch cancelable JS `dragover`/`drop`
+  /// events. If default handling is still allowed after event dispatch, the UI should call
+  /// [`InteractionEngine::apply_text_drop`] to perform the insertion.
+  TextDrop {
+    target_dom_id: usize,
+    text: String,
+  },
   Navigate {
     href: String,
   },
@@ -156,6 +166,7 @@ pub struct InteractionEngine {
   text_drag_drop: Option<TextDragDropState>,
   document_drag: Option<DocumentDragState>,
   document_selection_drag_drop: Option<DocumentSelectionDragDropState>,
+  pending_text_drop_move: Option<PendingTextDropMove>,
   text_edit: Option<TextEditState>,
   text_undo: HashMap<usize, TextUndoHistory>,
   form_default_snapshots: HashMap<usize, FormDefaultSnapshot>,
@@ -215,6 +226,14 @@ struct DocumentDragState {
 struct DocumentSelectionDragDropState {
   down_page_point: Point,
   payload: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingTextDropMove {
+  /// The pre-order DOM id of the `<input>`/`<textarea>` whose selection should be moved.
+  node_id: usize,
+  /// The original selected range (start, end) in character indices.
+  selection: (usize, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4839,6 +4858,7 @@ impl InteractionEngine {
       text_drag_drop: None,
       document_drag: None,
       document_selection_drag_drop: None,
+      pending_text_drop_move: None,
       text_edit: None,
       text_undo: HashMap::new(),
       form_default_snapshots: HashMap::new(),
@@ -5680,6 +5700,7 @@ impl InteractionEngine {
       self.document_drag = None;
       self.document_selection_drag_drop = None;
       self.link_drag = None;
+      self.pending_text_drop_move = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
       self.state.document_selection = None;
     }
@@ -5929,6 +5950,7 @@ impl InteractionEngine {
     self.text_drag_drop = None;
     self.document_drag = None;
     self.document_selection_drag_drop = None;
+    self.pending_text_drop_move = None;
     hover_changed | active_changed
   }
 
@@ -5943,6 +5965,7 @@ impl InteractionEngine {
     self.text_drag_drop = None;
     self.document_drag = None;
     self.document_selection_drag_drop = None;
+    self.pending_text_drop_move = None;
   }
 
   /// Update hover state (element under pointer + ancestors).
@@ -6364,6 +6387,7 @@ impl InteractionEngine {
     self.document_drag = None;
     self.document_selection_drag_drop = None;
     self.link_drag = None;
+    self.pending_text_drop_move = None;
     let prev_doc_selection = self.state.document_selection.clone();
 
     let page_point = viewport_point.translate(scroll.viewport);
@@ -7090,6 +7114,21 @@ impl InteractionEngine {
       }
     }
 
+    if let Some(state) = &mut self.pending_text_drop_move {
+      let ptr = old_index
+        .id_to_node
+        .get(state.node_id)
+        .copied()
+        .unwrap_or(std::ptr::null_mut());
+      if ptr.is_null() {
+        self.pending_text_drop_move = None;
+      } else if let Some(&new_id) = new_ids.get(&(ptr as *const DomNode)) {
+        state.node_id = new_id;
+      } else {
+        self.pending_text_drop_move = None;
+      }
+    }
+
     if let Some(state) = &mut self.document_drag {
       let mut ok = true;
       let mut remap_point = |point: &mut DocumentSelectionPoint| {
@@ -7283,9 +7322,12 @@ impl InteractionEngine {
     self.pointer_down_target = None;
     dom_changed |= active_changed;
 
-    // Text drag-and-drop: when active, suppress click behavior and attempt to insert the dragged
-    // text into the drop target.
+    // Text drag-and-drop: when active, suppress click behavior and prepare a deferred default
+    // insertion into the drop target.
     if let Some(active) = drag_drop_active {
+      self.pending_text_drop_move = None;
+      let mut pending_drop: Option<(usize, String)> = None;
+
       if matches!(button, PointerButton::Primary) {
         if let Some(hit) = up_hit.as_ref() {
           let target_id = hit.dom_node_id;
@@ -7311,35 +7353,53 @@ impl InteractionEngine {
             )
             .unwrap_or((0, CaretAffinity::Downstream));
 
+            // Update caret/selection state like a normal pointer interaction, but do not mutate the
+            // value until `apply_text_drop` is called.
+            if self.state.focused == Some(target_id) {
+              match self.text_edit.as_mut().filter(|edit| edit.node_id == target_id) {
+                Some(edit) => {
+                  edit.caret = caret;
+                  edit.caret_affinity = caret_affinity;
+                  edit.selection_anchor = None;
+                  edit.preferred_x = None;
+                }
+                None => {
+                  self.text_edit = Some(TextEditState {
+                    node_id: target_id,
+                    caret,
+                    caret_affinity,
+                    selection_anchor: None,
+                    preferred_x: None,
+                  });
+                }
+              }
+              dom_changed |= self.sync_text_edit_paint_state();
+            }
+
             let force_copy = modifiers.command();
             let same_control = target_id == active.node_id;
             if same_control && !force_copy {
-              dom_changed |= self.move_selected_text_within_text_control_for_drag_drop(
-                &mut index,
-                target_id,
-                active.selection,
-                &active.text,
-                caret,
-              );
-            } else {
-              dom_changed |= self.insert_text_into_text_control_at_caret(
-                &mut index,
-                target_id,
-                &active.text,
-                caret,
-                caret_affinity,
-              );
+              self.pending_text_drop_move = Some(PendingTextDropMove {
+                node_id: target_id,
+                selection: active.selection,
+              });
             }
+
+            pending_drop = Some((target_id, active.text));
           }
         }
       }
 
-      let mut action = InteractionAction::None;
-      if self.state.focused != prev_focus {
-        action = InteractionAction::FocusChanged {
+      let action = if let Some((target_dom_id, text)) = pending_drop {
+        InteractionAction::TextDrop { target_dom_id, text }
+      } else if self.state.focused != prev_focus {
+        InteractionAction::FocusChanged {
           node_id: self.state.focused,
-        };
-      }
+        }
+      } else {
+        InteractionAction::None
+      };
+
       return (dom_changed, action, up_hit);
     }
 
@@ -7395,16 +7455,15 @@ impl InteractionEngine {
                   }
                   dom_changed |= self.sync_text_edit_paint_state();
 
-                  // Drop the current DOM index before delegating to `text_input`; it will re-index.
-                  drop(index);
-                  dom_changed |= self.text_input(dom, &payload);
-
-                  // Drag-drop is a pointer gesture; restore pointer modality and disable
-                  // focus-visible (which `text_input` enables for keyboard input).
-                  self.modality = InputModality::Pointer;
-                  let mut index = DomIndexMut::new(dom);
-                  dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+                  // Defer default insertion until `apply_text_drop` is called.
+                  let action = InteractionAction::TextDrop {
+                    target_dom_id: target_id,
+                    text: payload,
+                  };
+                  // Ensure selection remains highlighted for copy semantics even if focusing cleared
+                  // it above.
                   self.state.document_selection = preserved_selection;
+                  return (dom_changed, action, up_hit);
                 }
               }
             }
@@ -7960,6 +8019,104 @@ impl InteractionEngine {
       document_url,
       base_url,
     )
+  }
+
+  /// Apply a pending [`InteractionAction::TextDrop`] default insertion into a text control.
+  ///
+  /// The interaction engine defers the actual value mutation so higher layers can dispatch
+  /// cancelable JS `dragover`/`drop` events. When those events do not call `preventDefault()`, the
+  /// UI layer should call this method to perform the insertion.
+  ///
+  /// Returns `true` when the DOM or interaction state changed.
+  pub fn apply_text_drop(
+    &mut self,
+    dom: &mut DomNode,
+    target_dom_id: usize,
+    text: &str,
+  ) -> bool {
+    self.modality = InputModality::Pointer;
+
+    // Consume any pending "move selection within same control" state for this drop. If the caller
+    // applies a different drop target than the one that queued the move, drop the pending state.
+    let pending_move = self
+      .pending_text_drop_move
+      .take()
+      .filter(|state| state.node_id == target_dom_id);
+
+    if text.is_empty() {
+      return false;
+    }
+
+    let preserved_document_selection = self.state.document_selection.clone();
+    let mut index = DomIndexMut::new(dom);
+
+    let current_len = {
+      let Some(node) = index.node(target_dom_id) else {
+        return false;
+      };
+      let is_text_input = is_text_input(node);
+      let is_textarea = is_textarea(node);
+      if !(is_text_input || is_textarea) {
+        return false;
+      }
+      if node_or_ancestor_is_inert(&index, target_dom_id)
+        || node_is_disabled(&index, target_dom_id)
+        || node_is_readonly(&index, target_dom_id)
+      {
+        return false;
+      }
+      if is_textarea {
+        textarea_value_for_editing(node).chars().count()
+      } else {
+        node
+          .get_attribute_ref("value")
+          .unwrap_or("")
+          .chars()
+          .count()
+      }
+    };
+
+    // Keep focus on the drop target (browser-like) and ensure pointer-modality semantics
+    // (`focus_visible=false`).
+    let mut changed = if is_focusable_interactive_element(&index, target_dom_id) {
+      let focus_changed = self.set_focus(&mut index, Some(target_dom_id), false);
+      // `set_focus` collapses any active document selection; restore it for drag-drop copy semantics.
+      self.state.document_selection = preserved_document_selection.clone();
+      focus_changed
+    } else {
+      false
+    };
+
+    let (caret, caret_affinity) = self
+      .text_edit
+      .as_ref()
+      .filter(|edit| edit.node_id == target_dom_id)
+      .map(|edit| (edit.caret, edit.caret_affinity))
+      .unwrap_or((current_len, CaretAffinity::Downstream));
+
+    // Apply insertion without treating it as keyboard input.
+    if let Some(move_state) = pending_move {
+      changed |= self.move_selected_text_within_text_control_for_drag_drop(
+        &mut index,
+        target_dom_id,
+        move_state.selection,
+        text,
+        caret,
+      );
+    } else {
+      changed |= self.insert_text_into_text_control_at_caret(
+        &mut index,
+        target_dom_id,
+        text,
+        caret,
+        caret_affinity,
+      );
+    }
+
+    // Restore document selection for copy semantics even if focus changes occurred above.
+    self.state.document_selection = preserved_document_selection;
+
+    changed
   }
 
   /// Drop one or more local files onto the page.
