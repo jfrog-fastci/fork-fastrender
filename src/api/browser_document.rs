@@ -1126,8 +1126,79 @@ impl BrowserDocument {
     // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
     // scroll snap/clamp). This must not mark the document dirty because the frame we just painted
     // already reflects this state.
-    self.options.scroll_x = frame.scroll_state.viewport.x;
-    self.options.scroll_y = frame.scroll_state.viewport.y;
+    //
+    // IMPORTANT: Painting can clamp and/or snap scroll offsets. When that happens, we need to
+    // synchronize both offsets *and* deltas; otherwise `BrowserDocument::scroll_state()` will
+    // report offsets that no longer correspond to the stored deltas.
+    //
+    // Compute deltas relative to the previous internal offsets (the state we asked paint to use)
+    // before overwriting the stored offsets.
+    let prev_viewport = Point::new(self.options.scroll_x, self.options.scroll_y);
+    let effective_viewport = frame.scroll_state.viewport;
+    if effective_viewport != prev_viewport {
+      let dx = effective_viewport.x - prev_viewport.x;
+      let dy = effective_viewport.y - prev_viewport.y;
+      self.options.scroll_delta = Point::new(
+        if dx.is_finite() { dx } else { 0.0 },
+        if dy.is_finite() { dy } else { 0.0 },
+      );
+    }
+
+    // Compute element scroll deltas for any offsets that paint adjusted (including offsets that
+    // were clamped back to 0 and therefore removed from the effective scroll-state map).
+    let mut element_changed = false;
+    let mut updates: Vec<(usize, Point)> = Vec::new();
+    for (&box_id, &effective) in frame.scroll_state.elements.iter() {
+      let prev = self
+        .options
+        .element_scroll_offsets
+        .get(&box_id)
+        .copied()
+        .unwrap_or(Point::ZERO);
+      if effective != prev {
+        element_changed = true;
+        let dx = effective.x - prev.x;
+        let dy = effective.y - prev.y;
+        let delta = Point::new(
+          if dx.is_finite() { dx } else { 0.0 },
+          if dy.is_finite() { dy } else { 0.0 },
+        );
+        updates.push((box_id, delta));
+      }
+    }
+    for (&box_id, &prev) in self.options.element_scroll_offsets.iter() {
+      if frame.scroll_state.elements.contains_key(&box_id) {
+        continue;
+      }
+      let effective = Point::ZERO;
+      if effective != prev {
+        element_changed = true;
+        let dx = effective.x - prev.x;
+        let dy = effective.y - prev.y;
+        let delta = Point::new(
+          if dx.is_finite() { dx } else { 0.0 },
+          if dy.is_finite() { dy } else { 0.0 },
+        );
+        updates.push((box_id, delta));
+      }
+    }
+    if element_changed {
+      for (box_id, delta) in updates {
+        if delta == Point::ZERO {
+          self.options.element_scroll_deltas.remove(&box_id);
+        } else {
+          self.options.element_scroll_deltas.insert(box_id, delta);
+        }
+      }
+      // Canonicalize: omit zero entries.
+      self
+        .options
+        .element_scroll_deltas
+        .retain(|_, delta| *delta != Point::ZERO);
+    }
+
+    self.options.scroll_x = effective_viewport.x;
+    self.options.scroll_y = effective_viewport.y;
     self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
 
     // A successful paint always satisfies any outstanding paint invalidation, but must not clear
@@ -1737,10 +1808,57 @@ mod tests {
   }
 
   #[test]
+  fn paint_syncs_viewport_scroll_delta_when_scroll_snap_adjusts_offset() -> Result<()> {
+    let html = r#"<!doctype html>
+ <html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; scroll-snap-type: y mandatory; }
+      section { height: 100px; scroll-snap-align: start; }
+    </style>
+  </head>
+  <body>
+    <section></section>
+    <section></section>
+  </body>
+ </html>"#;
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      html,
+      RenderOptions::default().with_viewport(100, 100),
+    )?;
+
+    // Prime the layout cache.
+    document.render_frame_with_scroll_state()?;
+
+    // Provide a scroll state without a delta (simulating callers that only set offsets).
+    let requested_y = 60.0;
+    document.set_scroll_state(ScrollState::with_viewport(Point::new(0.0, requested_y)));
+
+    // Paint-from-cache should snap to the nearest scroll-snap target and synchronize deltas to the
+    // effective scroll offset.
+    document.render_frame_with_scroll_state()?;
+
+    let state = document.scroll_state();
+    assert!(
+      (state.viewport.y - 100.0).abs() < 0.5,
+      "expected scroll-snap to snap viewport.y to 100, got {}",
+      state.viewport.y
+    );
+    let expected_delta_y = state.viewport.y - requested_y;
+    assert!(
+      (state.viewport_delta.y - expected_delta_y).abs() < 0.5 && state.viewport_delta.y.abs() > 0.1,
+      "expected viewport_delta.y to reflect paint-time snap adjustment (~{expected_delta_y}), got {}",
+      state.viewport_delta.y
+    );
+    Ok(())
+  }
+
+  #[test]
   fn paint_clamps_programmatic_element_scroll_to_bounds() -> Result<()> {
     let html = r#"<!doctype html>
-<html>
-  <head>
+ <html>
+   <head>
     <style>
       html, body { margin: 0; padding: 0; }
       #scroller { width: 100px; height: 100px; overflow-y: scroll; }
