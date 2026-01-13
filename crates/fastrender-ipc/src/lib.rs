@@ -267,6 +267,15 @@ pub struct NavigationContext {
   pub referrer_policy: ReferrerPolicy,
   /// Site isolation / origin key computed by the browser for this navigation.
   pub site_key: SiteKey,
+  /// Parsed sandbox allowlist flags for the `<iframe sandbox>` attribute, when navigating a
+  /// subframe. Defaults to [`SandboxFlags::NONE`] for top-level navigations.
+  pub sandbox_flags: SandboxFlags,
+  /// True when the browsing context's origin must be treated as opaque (unique origin).
+  ///
+  /// This is typically derived from sandbox flags (e.g. sandbox without `allow-same-origin`), and
+  /// is duplicated here so child renderers can apply origin semantics deterministically without
+  /// re-parsing parent state.
+  pub opaque_origin: bool,
 }
 
 impl Default for NavigationContext {
@@ -275,6 +284,8 @@ impl Default for NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
       site_key: SiteKey::default(),
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin: false,
     }
   }
 }
@@ -290,10 +301,13 @@ impl NavigationContext {
     iframe_referrer_policy: Option<ReferrerPolicy>,
     site_key: SiteKey,
   ) -> Self {
+    let opaque_origin = matches!(site_key, SiteKey::Opaque(_));
     Self {
       referrer_url: Some(referrer_url),
       referrer_policy: iframe_referrer_policy.unwrap_or(parent_referrer_policy),
       site_key,
+      sandbox_flags: SandboxFlags::NONE,
+      opaque_origin,
     }
   }
 
@@ -319,6 +333,8 @@ impl NavigationContext {
       referrer_url: Some(referrer_url),
       referrer_policy: info.referrer_policy.unwrap_or(parent_referrer_policy),
       site_key,
+      sandbox_flags: info.sandbox_flags,
+      opaque_origin: info.opaque_origin,
     }
   }
 }
@@ -1004,6 +1020,8 @@ mod navigation_tests {
 
     assert_eq!(ctx.referrer_url.as_deref(), Some("https://parent.example/"));
     assert_eq!(ctx.referrer_policy, ReferrerPolicy::NoReferrer);
+    assert_eq!(ctx.sandbox_flags, subframe.sandbox_flags);
+    assert_eq!(ctx.opaque_origin, subframe.opaque_origin);
   }
 
   #[test]
@@ -1030,6 +1048,8 @@ mod navigation_tests {
     );
 
     assert_eq!(ctx.referrer_policy, ReferrerPolicy::OriginWhenCrossOrigin);
+    assert_eq!(ctx.sandbox_flags, subframe.sandbox_flags);
+    assert_eq!(ctx.opaque_origin, subframe.opaque_origin);
   }
 
   #[test]

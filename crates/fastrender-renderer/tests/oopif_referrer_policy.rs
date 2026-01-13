@@ -447,6 +447,8 @@ fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fe
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
       site_key: parent_site_key.clone(),
+      sandbox_flags: Default::default(),
+      opaque_origin: false,
     },
   });
   parent_renderer.send(&BrowserToRenderer::RequestRepaint {
