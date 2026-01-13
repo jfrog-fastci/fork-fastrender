@@ -363,7 +363,10 @@ fn dns_lookup_tx() -> mpsc::SyncSender<DnsLookupRequest> {
       // the WebSocket I/O thread can remain responsive to shutdown and enforce a hard connect
       // timeout.
       let (tx, rx) = mpsc::sync_channel::<DnsLookupRequest>(MAX_QUEUED_DNS_LOOKUPS);
-      std::thread::Builder::new()
+      // If the OS refuses to create the worker thread (e.g. thread-limit or memory pressure),
+      // avoid panicking. The returned sender will be disconnected (no receiver), and individual
+      // connects will fail with a normal error.
+      let _ = std::thread::Builder::new()
         .name("websocket-dns".to_string())
         .spawn(move || {
           while let Ok(req) = rx.recv() {
@@ -372,8 +375,7 @@ fn dns_lookup_tx() -> mpsc::SyncSender<DnsLookupRequest> {
               .map(|iter| iter.collect::<Vec<_>>());
             let _ = req.resp.send(result);
           }
-        })
-        .expect("spawn websocket DNS worker");
+        });
       tx
     })
     .clone()
