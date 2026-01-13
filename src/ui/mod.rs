@@ -153,8 +153,9 @@ pub mod session_autosave;
 pub mod browser_cli;
 
 pub use messages::{
-  BrowserMediaPreferences, CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton,
-  PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WakeReason, WorkerToUi,
+  BrowserMediaPreferences, CursorKind, DatalistSuggestion, DownloadId, DownloadOutcome,
+  NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker,
+  WakeReason, WorkerToUi,
 };
 pub use renderer_process_id::RendererProcessId;
 
@@ -208,8 +209,8 @@ pub use search_suggest::{SearchSuggestConfig, SearchSuggestService, SearchSugges
 pub use browser_app::{
   AppUpdate, BrowserAppState, BrowserTabState, ChromeState, ClosedTabState, DownloadEntry,
   DownloadProgressSummary, DownloadStatus, DownloadsState, FrameReadyUpdate, FindInPageState,
-  LatestFrameMeta, OpenSelectDropdownUpdate, RemoteSearchSuggestCache, TabGroupColor, TabGroupId,
-  TabGroupState,
+  LatestFrameMeta, OpenDatalistUpdate, OpenSelectDropdownUpdate, RemoteSearchSuggestCache,
+  TabGroupColor, TabGroupId, TabGroupState,
 };
 pub use global_history::{
   ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistoryStore, DEFAULT_GLOBAL_HISTORY_CAPACITY,

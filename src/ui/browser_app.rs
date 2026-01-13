@@ -5,8 +5,8 @@ use crate::ui::appearance::AppearanceSettings;
 use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
-  CursorKind, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame, ScrollMetrics, TabId,
-  UiToWorker, WorkerToUi,
+  CursorKind, DatalistSuggestion, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame,
+  ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::ui::protocol_limits::{
   MAX_DEBUG_LOG_BYTES, MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_FIND_QUERY_BYTES,
@@ -305,6 +305,8 @@ pub struct AppUpdate {
   /// Front-ends are expected to pick an anchor position (typically current pointer position or the
   /// control's screen-space rect if known).
   pub open_select_dropdown: Option<OpenSelectDropdownUpdate>,
+  /// The worker requested opening a `<datalist>` suggestions popup for a specific tab.
+  pub open_datalist: Option<OpenDatalistUpdate>,
 }
 
 pub struct FrameReadyUpdate {
@@ -366,6 +368,15 @@ pub struct OpenSelectDropdownUpdate {
   ///
   /// Some worker implementations only send cursor-anchored dropdown requests; for those, this will
   /// be `None` and front-ends should pick a reasonable anchor (e.g. current pointer position).
+  pub anchor_css: Option<crate::geometry::Rect>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenDatalistUpdate {
+  pub tab_id: TabId,
+  pub input_node_id: usize,
+  pub options: Vec<DatalistSuggestion>,
+  /// Optional viewport-local CSS-pixel rect for positioning a datalist popup.
   pub anchor_css: Option<crate::geometry::Rect>,
 }
 
@@ -2097,6 +2108,24 @@ impl BrowserAppState {
       }
       WorkerToUi::SelectDropdownClosed { .. } => {
         // Front-ends that show a `<select>` overlay should dismiss it.
+        update.request_redraw = true;
+      }
+      WorkerToUi::DatalistOpened {
+        tab_id,
+        input_node_id,
+        options,
+        anchor_css,
+      } => {
+        update.request_redraw = true;
+        update.open_datalist = Some(OpenDatalistUpdate {
+          tab_id,
+          input_node_id,
+          options,
+          anchor_css: Some(anchor_css),
+        });
+      }
+      WorkerToUi::DatalistClosed { .. } => {
+        // Front-ends that show a `<datalist>` overlay should dismiss it.
         update.request_redraw = true;
       }
       WorkerToUi::DateTimePickerOpened { .. } => {

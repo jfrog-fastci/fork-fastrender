@@ -221,6 +221,15 @@ pub struct RenderedFrame {
   pub wants_ticks: bool,
 }
 
+/// A suggestion row shown in a `<datalist>` popup for an `<input list=...>` control.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatalistSuggestion {
+  /// Value that should be inserted into the input when selected.
+  pub value: String,
+  /// Optional label text shown alongside `value`.
+  pub label: Option<String>,
+}
+
 /// Media preference defaults supplied by the browser UI (theme/accessibility settings).
 ///
 /// These are used to populate the page’s media-query surface (`prefers-*`) when explicit renderer
@@ -757,6 +766,20 @@ pub enum WorkerToUi {
     anchor_css: Rect,
   },
   SelectDropdownClosed {
+    tab_id: TabId,
+  },
+  /// Request that the UI open a `<datalist>` suggestions popup for an `<input list=...>` control.
+  DatalistOpened {
+    tab_id: TabId,
+    input_node_id: usize,
+    options: Vec<DatalistSuggestion>,
+    /// Bounding box of the `<input>` control in **viewport CSS coordinates**.
+    ///
+    /// (0,0 is the top-left of the rendered viewport; does not include scroll offset.)
+    anchor_css: Rect,
+  },
+  /// Notification that a `<datalist>` suggestions popup should be dismissed.
+  DatalistClosed {
     tab_id: TabId,
   },
   /// Request that the UI open a date/time picker popup for an `<input>` control.
