@@ -718,6 +718,24 @@ impl Heap {
         continue;
       };
       match owner_obj {
+        HeapObject::Object(obj) => {
+          // Validate internal-slot-like references stored in `ObjectKind` variants.
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("Object(kind={:?})", obj.base.kind);
+          match &obj.base.kind {
+            ObjectKind::ModuleNamespace(ns) => {
+              self.debug_validate_heap_id_expected(
+                owner_kind,
+                owner_id,
+                format_args!("[[Exports]]"),
+                ns.exports.id(),
+                "live ModuleNamespaceExports",
+                debug_expected_is_module_namespace_exports,
+              );
+            }
+            ObjectKind::Array(_) | ObjectKind::Ordinary | ObjectKind::Date(_) | ObjectKind::Error | ObjectKind::Arguments => {}
+          }
+        }
         HeapObject::TypedArray(arr) => {
           let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
           let owner_kind = format_args!("TypedArray(kind={:?})", arr.kind);
@@ -988,6 +1006,242 @@ impl Heap {
                   debug_expected_is_object,
                 );
               }
+            }
+          }
+        }
+        HeapObject::FinalizationRegistry(fr) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("FinalizationRegistry");
+
+          self.debug_validate_value(owner_kind, owner_id, format_args!("cleanup_callback"), fr.cleanup_callback);
+
+          for (i, cell) in fr.cells.iter().enumerate() {
+            self.debug_validate_value(
+              owner_kind,
+              owner_id,
+              format_args!("cells[{i}].held_value"),
+              cell.held_value,
+            );
+            if let Some(target) = cell.target {
+              if target.upgrade_value(self).is_none() {
+                panic!(
+                  "GC invariant violated: {owner_kind} {owner_id:?} has cells[{i}].target={:?} which does not upgrade to a live value (expected GC hygiene to clear dead targets)",
+                  target.id()
+                );
+              }
+            }
+          }
+        }
+        HeapObject::Map(m) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("Map");
+
+          let live_count = m.entries.iter().filter(|e| e.key.is_some()).count();
+          if live_count != m.size {
+            panic!(
+              "GC invariant violated: {owner_kind} {owner_id:?} has inconsistent size: size={}, live_entry_count={}",
+              m.size, live_count
+            );
+          }
+
+          for (i, entry) in m.entries.iter().enumerate() {
+            match (entry.key, entry.value) {
+              (None, None) => {}
+              (None, Some(v)) => {
+                panic!(
+                  "GC invariant violated: {owner_kind} {owner_id:?} has MapEntry[{i}] with value={v:?} but key=None"
+                );
+              }
+              (Some(k), None) => {
+                panic!(
+                  "GC invariant violated: {owner_kind} {owner_id:?} has MapEntry[{i}] with key={k:?} but value=None"
+                );
+              }
+              (Some(k), Some(v)) => {
+                self.debug_validate_value(owner_kind, owner_id, format_args!("entries[{i}].key"), k);
+                self.debug_validate_value(owner_kind, owner_id, format_args!("entries[{i}].value"), v);
+              }
+            }
+          }
+        }
+        HeapObject::Set(s) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("Set");
+
+          let live_count = s.entries.iter().filter(|e| e.is_some()).count();
+          if live_count != s.size {
+            panic!(
+              "GC invariant violated: {owner_kind} {owner_id:?} has inconsistent size: size={}, live_entry_count={}",
+              s.size, live_count
+            );
+          }
+
+          for (i, entry) in s.entries.iter().enumerate() {
+            if let Some(v) = *entry {
+              self.debug_validate_value(owner_kind, owner_id, format_args!("entries[{i}]"), v);
+            }
+          }
+        }
+        HeapObject::WeakMap(wm) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("WeakMap");
+
+          for (i, entry) in wm.entries.iter().enumerate() {
+            if entry.key.upgrade_value(self).is_none() {
+              panic!(
+                "GC invariant violated: {owner_kind} {owner_id:?} has WeakMapEntry[{i}] with dead key={:?} (expected GC hygiene to remove dead keys)",
+                entry.key.id()
+              );
+            }
+            self.debug_validate_value(owner_kind, owner_id, format_args!("entries[{i}].value"), entry.value);
+          }
+        }
+        HeapObject::WeakSet(ws) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("WeakSet");
+
+          for (i, entry) in ws.entries.iter().enumerate() {
+            if entry.upgrade_value(self).is_none() {
+              panic!(
+                "GC invariant violated: {owner_kind} {owner_id:?} has dead key at entries[{i}]={:?} (expected GC hygiene to remove dead keys)",
+                entry.id()
+              );
+            }
+          }
+        }
+        HeapObject::ModuleNamespaceExports(exports) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("ModuleNamespaceExports");
+
+          for (i, export) in exports.exports.iter().enumerate() {
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("exports[{i}].name"),
+              export.name.0,
+              "live String",
+              debug_expected_is_string,
+            );
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("exports[{i}].getter"),
+              export.getter.0,
+              "live Object",
+              debug_expected_is_object,
+            );
+            match export.value {
+              ModuleNamespaceExportValue::Binding { env, name } => {
+                self.debug_validate_heap_id_expected(
+                  owner_kind,
+                  owner_id,
+                  format_args!("exports[{i}].binding.env"),
+                  env.0,
+                  "live Env",
+                  debug_expected_is_env,
+                );
+                self.debug_validate_heap_id_expected(
+                  owner_kind,
+                  owner_id,
+                  format_args!("exports[{i}].binding.name"),
+                  name.0,
+                  "live String",
+                  debug_expected_is_string,
+                );
+              }
+              ModuleNamespaceExportValue::Namespace { namespace } => {
+                self.debug_validate_heap_id_expected(
+                  owner_kind,
+                  owner_id,
+                  format_args!("exports[{i}].namespace"),
+                  namespace.0,
+                  "live Object",
+                  debug_expected_is_object,
+                );
+              }
+            }
+          }
+        }
+        HeapObject::Env(env) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("Env");
+
+          if let Some(outer) = env.outer() {
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("outer"),
+              outer.0,
+              "live Env",
+              debug_expected_is_env,
+            );
+          }
+
+          match env {
+            EnvRecord::Declarative(env) => {
+              for (i, binding) in env.bindings.iter().enumerate() {
+                if let Some(name) = binding.name {
+                  self.debug_validate_heap_id_expected(
+                    owner_kind,
+                    owner_id,
+                    format_args!("bindings[{i}].name"),
+                    name.0,
+                    "live String",
+                    debug_expected_is_string,
+                  );
+                }
+                match binding.value {
+                  EnvBindingValue::Direct(v) => {
+                    self.debug_validate_value(owner_kind, owner_id, format_args!("bindings[{i}].value"), v);
+                  }
+                  EnvBindingValue::Indirect { env, name } => {
+                    self.debug_validate_heap_id_expected(
+                      owner_kind,
+                      owner_id,
+                      format_args!("bindings[{i}].indirect.env"),
+                      env.0,
+                      "live Env",
+                      debug_expected_is_env,
+                    );
+                    self.debug_validate_heap_id_expected(
+                      owner_kind,
+                      owner_id,
+                      format_args!("bindings[{i}].indirect.name"),
+                      name.0,
+                      "live String",
+                      debug_expected_is_string,
+                    );
+                  }
+                }
+              }
+              if let Some(this_value) = env.this_value {
+                self.debug_validate_value(owner_kind, owner_id, format_args!("this_value"), this_value);
+              }
+              if let Some(new_target) = env.new_target {
+                self.debug_validate_value(owner_kind, owner_id, format_args!("new_target"), new_target);
+              }
+              if let Some(private_names) = env.private_names.as_deref() {
+                for (i, entry) in private_names.iter().enumerate() {
+                  self.debug_validate_heap_id_expected(
+                    owner_kind,
+                    owner_id,
+                    format_args!("private_names[{i}].sym"),
+                    entry.sym.0,
+                    "live Symbol",
+                    debug_expected_is_symbol,
+                  );
+                }
+              }
+            }
+            EnvRecord::Object(env) => {
+              self.debug_validate_heap_id_expected(
+                owner_kind,
+                owner_id,
+                format_args!("binding_object"),
+                env.binding_object.0,
+                "live Object",
+                debug_expected_is_object,
+              );
             }
           }
         }
@@ -10646,6 +10900,11 @@ fn debug_expected_is_env(obj: &HeapObject) -> bool {
   matches!(obj, HeapObject::Env(_))
 }
 
+#[cfg(debug_assertions)]
+fn debug_expected_is_module_namespace_exports(obj: &HeapObject) -> bool {
+  matches!(obj, HeapObject::ModuleNamespaceExports(_))
+}
+
 impl Trace for JsString {
   fn trace(&self, _tracer: &mut Tracer<'_>) {
     // Strings have no outgoing GC references.
@@ -12910,6 +13169,129 @@ mod gc_invariant_other_internal_handle_tests {
     match scope.heap_mut().get_heap_object_mut(promise.0).unwrap() {
       HeapObject::Promise(p) => p.result = Some(Value::String(fake_string)),
       _ => panic!("expected Promise allocation"),
+    }
+
+    scope.heap_mut().collect_garbage();
+  }
+
+  #[test]
+  fn gc_invariant_accepts_valid_map_set_weakmap_finalization_registry_module_namespace_and_env(
+  ) -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    // Map + Set.
+    let map = scope.alloc_map()?;
+    let set = scope.alloc_set()?;
+    scope.push_root(Value::Object(map))?;
+    scope.push_root(Value::Object(set))?;
+    scope
+      .heap_mut()
+      .map_set_with_tick(map, Value::Number(1.0), Value::Number(2.0), || Ok(()))?;
+    scope
+      .heap_mut()
+      .set_add_with_tick(set, Value::Number(3.0), || Ok(()))?;
+
+    // WeakMap: keep the key alive externally so the entry survives GC.
+    let weak_map = scope.alloc_weak_map()?;
+    let weak_key = scope.alloc_object()?;
+    scope.push_root(Value::Object(weak_map))?;
+    scope.push_root(Value::Object(weak_key))?;
+    scope
+      .heap_mut()
+      .weak_map_set_with_tick(weak_map, Value::Object(weak_key), Value::Number(4.0), || Ok(()))?;
+
+    // FinalizationRegistry: keep the target alive externally so the cell target is not cleared.
+    let cleanup_name = scope.alloc_string("cleanup")?;
+    let cleanup_fn = scope.alloc_native_function(NativeFunctionId(0), None, cleanup_name, 0)?;
+    let registry = scope.alloc_finalization_registry_with_prototype(None, Value::Object(cleanup_fn), None)?;
+    scope.push_root(Value::Object(registry))?;
+    let target = scope.alloc_object()?;
+    scope.push_root(Value::Object(target))?;
+    scope
+      .heap_mut()
+      .finalization_registry_register(registry, Value::Object(target), Value::Number(1.0), None)?;
+
+    // EnvRecord.
+    let env = scope.env_create(None)?;
+    scope.push_env_root(env)?;
+
+    // Module Namespace object + exports table.
+    let export_name = scope.alloc_string("x")?;
+    let getter_name = scope.alloc_string("get")?;
+    let getter_fn = scope.alloc_native_function(NativeFunctionId(1), None, getter_name, 0)?;
+    let ns_val = scope.alloc_object()?;
+    let exports: Box<[ModuleNamespaceExport]> = vec![ModuleNamespaceExport {
+      name: export_name,
+      getter: getter_fn,
+      value: ModuleNamespaceExportValue::Namespace { namespace: ns_val },
+    }]
+    .into_boxed_slice();
+    let ns = scope.alloc_module_namespace_object(exports)?;
+    scope.push_root(Value::Object(ns))?;
+
+    scope.heap_mut().collect_garbage();
+    Ok(())
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "Map")]
+  fn gc_invariant_panics_on_map_entry_with_wrong_kind_value() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let map = scope.alloc_map().unwrap();
+    scope.push_root(Value::Object(map)).unwrap();
+    scope
+      .heap_mut()
+      .map_set_with_tick(map, Value::Number(1.0), Value::Number(2.0), || Ok(()))
+      .unwrap();
+
+    let obj = scope.alloc_object().unwrap();
+    let fake_string = GcString(obj.id());
+
+    match scope.heap_mut().get_heap_object_mut(map.0).unwrap() {
+      HeapObject::Map(m) => {
+        m.entries[0].value = Some(Value::String(fake_string));
+      }
+      _ => panic!("expected Map allocation"),
+    }
+
+    scope.heap_mut().collect_garbage();
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "ModuleNamespace")]
+  fn gc_invariant_panics_on_module_namespace_with_wrong_kind_exports_handle() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let export_name = scope.alloc_string("x").unwrap();
+    let getter_name = scope.alloc_string("get").unwrap();
+    let getter_fn = scope
+      .alloc_native_function(NativeFunctionId(0), None, getter_name, 0)
+      .unwrap();
+    let ns_val = scope.alloc_object().unwrap();
+    let exports: Box<[ModuleNamespaceExport]> = vec![ModuleNamespaceExport {
+      name: export_name,
+      getter: getter_fn,
+      value: ModuleNamespaceExportValue::Namespace { namespace: ns_val },
+    }]
+    .into_boxed_slice();
+    let ns = scope.alloc_module_namespace_object(exports).unwrap();
+    scope.push_root(Value::Object(ns)).unwrap();
+
+    let obj = scope.alloc_object().unwrap();
+    let fake_exports = GcModuleNamespaceExports(obj.id());
+
+    match scope.heap_mut().get_heap_object_mut(ns.0).unwrap() {
+      HeapObject::Object(o) => match &mut o.base.kind {
+        ObjectKind::ModuleNamespace(ns) => ns.exports = fake_exports,
+        _ => panic!("expected ModuleNamespace object kind"),
+      },
+      _ => panic!("expected Object allocation"),
     }
 
     scope.heap_mut().collect_garbage();
