@@ -824,6 +824,17 @@ mod tests {
       let mut report = RendererSandboxReport::default();
       linux_hardening::apply_linux_hardening(&config, &mut report);
 
+      let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+      assert_eq!(
+        dumpable, 0,
+        "expected PR_GET_DUMPABLE to be 0 after sandbox hardening"
+      );
+      assert_eq!(
+        report.dumpable_disabled,
+        Some(true),
+        "expected report.dumpable_disabled to be true"
+      );
+
       let (core_cur, core_max) = get_rlimit(libc::RLIMIT_CORE);
       assert_eq!(
         core_cur, 0,
