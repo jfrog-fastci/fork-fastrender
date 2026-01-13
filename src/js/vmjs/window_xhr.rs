@@ -433,6 +433,25 @@ fn decode_response_text(bytes: &[u8], override_mime_type: &str) -> String {
   String::from_utf8_lossy(bytes).to_string()
 }
 
+fn normalize_mime_type_for_blob(value: &str) -> String {
+  // Extract the MIME type "essence" (before `;`) and apply Blob `type` semantics.
+  let essence = value.split(';').next().unwrap_or("").trim();
+  window_blob::normalize_type(essence)
+}
+
+fn derive_blob_type(override_mime_type: &str, response_headers: &[(String, String)]) -> String {
+  if !override_mime_type.is_empty() {
+    return normalize_mime_type_for_blob(override_mime_type);
+  }
+
+  let content_type = response_headers
+    .iter()
+    .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    .map(|(_, value)| value.as_str())
+    .unwrap_or("");
+  normalize_mime_type_for_blob(content_type)
+}
+
 fn sanitize_request_header_value(value: &str) -> String {
   let sanitized = value
     .chars()
@@ -790,6 +809,7 @@ fn xhr_response_type_set(
     "" => "",
     "text" => "text",
     "arraybuffer" => "arraybuffer",
+    "blob" => "blob",
     "json" => "json",
     _ => return Err(VmError::TypeError(XHR_INVALID_RESPONSE_TYPE_ERROR)),
   };
@@ -939,7 +959,7 @@ fn xhr_response_text_get(
     ))
   })?;
 
-  if response_type == "arraybuffer" || response_type == "json" {
+  if response_type == "arraybuffer" || response_type == "blob" || response_type == "json" {
     let s = scope.alloc_string("")?;
     return Ok(Value::String(s));
   }
@@ -963,19 +983,22 @@ fn xhr_response_get(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, xhr_id, _) = xhr_info_from_this(scope, this)?;
-  let (ready_state, status, response_type, bytes, text) = with_env_state(env_id, |state| {
-    let xhr = state
-      .xhrs
-      .get(&xhr_id)
-      .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
-    Ok((
-      xhr.ready_state,
-      xhr.status,
-      xhr.response_type.clone(),
-      xhr.response_bytes.clone(),
-      xhr.response_text.clone(),
-    ))
-  })?;
+  let (ready_state, status, response_type, bytes, text, override_mime_type, response_headers) =
+    with_env_state(env_id, |state| {
+      let xhr = state
+        .xhrs
+        .get(&xhr_id)
+        .ok_or(VmError::TypeError("XMLHttpRequest: invalid backing state"))?;
+      Ok((
+        xhr.ready_state,
+        xhr.status,
+        xhr.response_type.clone(),
+        xhr.response_bytes.clone(),
+        xhr.response_text.clone(),
+        xhr.override_mime_type.clone(),
+        xhr.response_headers.clone(),
+      ))
+    })?;
 
   if response_type == "arraybuffer" {
     if ready_state != XHR_DONE || status == 0 {
@@ -1000,6 +1023,34 @@ fn xhr_response_get(
       Ok(value) => json_to_js(vm, scope, &value),
       Err(_) => Ok(Value::Null),
     };
+  }
+
+  if response_type == "blob" {
+    if ready_state != XHR_DONE || status == 0 {
+      return Ok(Value::Null);
+    }
+
+    // Match fetch's Blob creation behavior: require the Blob bindings to be installed. We return
+    // `null` until DONE, but throw once a Blob instance would be constructed.
+    let realm_id = vm.current_realm().ok_or(VmError::Unimplemented(
+      "Blob creation requires an active realm",
+    ))?;
+    let proto = window_blob::blob_prototype_for_realm(realm_id).ok_or(VmError::Unimplemented(
+      "XMLHttpRequest.responseType 'blob' requires Blob bindings to be installed",
+    ))?;
+
+    let blob_type = derive_blob_type(&override_mime_type, &response_headers);
+    let blob_obj = window_blob::create_blob_with_proto(
+      vm,
+      scope,
+      _callee,
+      proto,
+      window_blob::BlobData {
+        bytes,
+        r#type: blob_type,
+      },
+    )?;
+    return Ok(Value::Object(blob_obj));
   }
 
   // Spec-ish: response is only non-empty in LOADING/DONE for text modes.
@@ -1596,8 +1647,16 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
           if status_text.len() > XHR_STATUS_TEXT_MAX_BYTES {
             status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
           }
-          response_headers =
-            clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
+          let mut headers = res.response_headers.unwrap_or_default();
+          if let Some(ct) = res.content_type.as_deref() {
+            if !headers
+              .iter()
+              .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            {
+              headers.insert(0, ("Content-Type".to_string(), ct.to_string()));
+            }
+          }
+          response_headers = clamp_response_headers(headers, &limits);
           response_url = res.final_url.unwrap_or_else(|| request.url.clone());
         }
       }
@@ -1867,8 +1926,16 @@ fn xhr_send_native<Host: WindowRealmHost + 'static>(
           if status_text.len() > XHR_STATUS_TEXT_MAX_BYTES {
             status_text.truncate(XHR_STATUS_TEXT_MAX_BYTES);
           }
-          response_headers =
-            clamp_response_headers(res.response_headers.unwrap_or_default(), &limits);
+          let mut headers = res.response_headers.unwrap_or_default();
+          if let Some(ct) = res.content_type.as_deref() {
+            if !headers
+              .iter()
+              .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            {
+              headers.insert(0, ("Content-Type".to_string(), ct.to_string()));
+            }
+          }
+          response_headers = clamp_response_headers(headers, &limits);
           response_url = final_url;
         }
       }
@@ -3882,6 +3949,103 @@ mod tests {
       get_prop(&mut scope, global, "__answer"),
       Value::Number(42.0)
     );
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_response_type_blob_returns_blob_with_size_and_type() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__isBlob = false;\n\
+         globalThis.__size = 0;\n\
+         globalThis.__type = '';\n\
+         globalThis.__text = 'unset';\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.responseType = 'blob';\n\
+         xhr.onload = function(){\n\
+           globalThis.__isBlob = (xhr.response instanceof Blob);\n\
+           globalThis.__size = xhr.response.size;\n\
+           globalThis.__type = xhr.response.type;\n\
+           globalThis.__text = xhr.responseText;\n\
+         };\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    assert_eq!(get_prop(&mut scope, global, "__isBlob"), Value::Bool(true));
+    assert_eq!(get_prop(&mut scope, global, "__size"), Value::Number(5.0));
+    let ty = get_prop(&mut scope, global, "__type");
+    assert_eq!(get_string(scope.heap(), ty), "text/plain");
+    let text = get_prop(&mut scope, global, "__text");
+    assert_eq!(get_string(scope.heap(), text), "");
+    Ok(())
+  }
+
+  #[test]
+  fn xhr_response_type_blob_response_is_null_until_done() -> crate::Result<()> {
+    let fetcher = Arc::new(MockFetcher::default());
+    let mut host = Host::new(fetcher);
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window) = host.vm_host_and_window_realm()?;
+      window.reset_interrupt();
+      let result = window.exec_script_with_host_and_hooks(
+        vm_host,
+        &mut hooks,
+        "globalThis.__log = [];\n\
+         var xhr = new XMLHttpRequest();\n\
+         xhr.responseType = 'blob';\n\
+         xhr.open('GET', '/ok', true);\n\
+         xhr.onreadystatechange = function(){\n\
+           globalThis.__log.push(xhr.readyState + ':' + (xhr.response === null ? 'null' : 'notnull'));\n\
+         };\n\
+         xhr.send();",
+      );
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|e| vm_error_to_event_loop_error(window.heap_mut(), e))
+    })?;
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    let Value::Object(arr) = get_prop(&mut scope, global, "__log") else {
+      panic!("expected array");
+    };
+    let log = read_log(vm, &mut scope, arr);
+    assert_eq!(log, vec!["2:null", "3:null", "4:notnull"], "log={log:?}");
     Ok(())
   }
 
