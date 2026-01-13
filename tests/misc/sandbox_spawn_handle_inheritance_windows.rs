@@ -34,7 +34,16 @@ fn assert_child_exited_successfully(child: &fastrender::sandbox::windows::Sandbo
       "GetExitCodeProcess failed: {}",
       GetLastError()
     );
-    assert_eq!(exit_code, 0, "child process exited with code {exit_code}");
+    if exit_code != 0 {
+      let hint = match exit_code {
+        2 => "child argv parsing failed (expected --allowed <u64> --denied <u64>)",
+        3 => "child SetEvent(allowed) failed (allowed handle not inherited/usable)",
+        4 => "child SetEvent(denied) unexpectedly succeeded (denied handle leaked)",
+        5 => "child SetEvent(denied) failed with unexpected error code",
+        _ => "child exited with unexpected non-zero status",
+      };
+      panic!("child process exited with code {exit_code}: {hint}");
+    }
   }
 }
 
