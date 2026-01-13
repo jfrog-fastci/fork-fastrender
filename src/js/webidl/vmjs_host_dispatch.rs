@@ -4823,6 +4823,45 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
+      ("NodeList", "item", 0) => {
+        // NodeList.item(index): return own numeric property if present and not undefined; else null.
+        let Some(Value::Object(list_obj)) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        // Root the receiver across key allocations.
+        scope.push_root(Value::Object(list_obj))?;
+
+        let idx = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
+          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
+          _ => 0,
+        };
+
+        let key = key_from_str(scope, &idx.to_string())?;
+        Ok(
+          scope
+            .heap()
+            .object_get_own_data_property_value(list_obj, &key)?
+            .filter(|v| !matches!(v, Value::Undefined))
+            .unwrap_or(Value::Null),
+        )
+      }
+      ("NodeList", "length", 0) => {
+        // NodeList.length: return own numeric "length" data property if present; else 0.
+        let Some(Value::Object(list_obj)) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        scope.push_root(Value::Object(list_obj))?;
+
+        let length_key = key_from_str(scope, "length")?;
+        let len = match scope
+          .heap()
+          .object_get_own_data_property_value(list_obj, &length_key)?
+        {
+          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n,
+          _ => 0.0,
+        };
+        Ok(Value::Number(len))
+      }
       ("DOMTokenList", "add", 0) => {
         let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
 
@@ -7380,6 +7419,105 @@ mod tests {
     let func = scope.alloc_native_function(id, None, name_s, 0)?;
     scope.push_root(Value::Object(func))?;
     Ok(func)
+  }
+
+  #[test]
+  fn webidl_nodelist_item_and_length_dispatch_read_own_properties() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let global = realm.global_object();
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new(global);
+    let mut scope = heap.scope();
+
+    let list_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(list_obj))?;
+
+    let key0 = key_from_str(&mut scope, "0")?;
+    scope.define_property(list_obj, key0, data_property(Value::Number(10.0), true, true, true))?;
+    let key1 = key_from_str(&mut scope, "1")?;
+    scope.define_property(
+      list_obj,
+      key1,
+      data_property(Value::Undefined, true, true, true),
+    )?;
+    let length_key = key_from_str(&mut scope, "length")?;
+    scope.define_property(
+      list_obj,
+      length_key,
+      data_property(Value::Number(2.0), true, true, true),
+    )?;
+
+    let len = dispatch.call_operation(
+      &mut vm,
+      &mut scope,
+      Some(Value::Object(list_obj)),
+      "NodeList",
+      "length",
+      0,
+      &[],
+    )?;
+    assert_eq!(len, Value::Number(2.0));
+
+    let item0 = dispatch.call_operation(
+      &mut vm,
+      &mut scope,
+      Some(Value::Object(list_obj)),
+      "NodeList",
+      "item",
+      0,
+      &[Value::Number(0.0)],
+    )?;
+    assert_eq!(item0, Value::Number(10.0));
+
+    // Own property exists but is undefined => null.
+    let item1 = dispatch.call_operation(
+      &mut vm,
+      &mut scope,
+      Some(Value::Object(list_obj)),
+      "NodeList",
+      "item",
+      0,
+      &[Value::Number(1.0)],
+    )?;
+    assert_eq!(item1, Value::Null);
+
+    // Missing numeric property => null.
+    let item2 = dispatch.call_operation(
+      &mut vm,
+      &mut scope,
+      Some(Value::Object(list_obj)),
+      "NodeList",
+      "item",
+      0,
+      &[Value::Number(2.0)],
+    )?;
+    assert_eq!(item2, Value::Null);
+
+    // Missing length property => 0.
+    let empty_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(empty_obj))?;
+    let len0 = dispatch.call_operation(
+      &mut vm,
+      &mut scope,
+      Some(Value::Object(empty_obj)),
+      "NodeList",
+      "length",
+      0,
+      &[],
+    )?;
+    assert_eq!(len0, Value::Number(0.0));
+
+    // Brand check: receiver must be an object.
+    let err = dispatch
+      .call_operation(&mut vm, &mut scope, None, "NodeList", "length", 0, &[])
+      .unwrap_err();
+    assert!(matches!(err, VmError::TypeError("Illegal invocation")));
+
+    // Avoid `Realm dropped without calling teardown()` panics in vm-js.
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
   }
 
   #[test]
