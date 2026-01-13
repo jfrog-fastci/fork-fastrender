@@ -1846,13 +1846,10 @@ fn validate_regex_pattern(
           if esc == '-' {
             return Ok((i + esc_len, Some('-' as u32), false));
           }
-          // CharacterClassEscape (not valid as range endpoint).
-          if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
-            return Ok((i + esc_len, None, false));
-          }
-
-          // In UnicodeSets mode, additional punctuators can be escaped within class set
-          // expressions via `\` ClassSetReservedPunctuator.
+ 
+          // ClassSetReservedPunctuator escapes are only valid in UnicodeSets mode (`/v`) inside a
+          // class set. They allow representing punctuators that would otherwise form a reserved
+          // double punctuator/operator (e.g. `[\&\&]`, `[\!\!]`).
           if unicode_sets_mode
             && matches!(
               esc,
@@ -1860,6 +1857,11 @@ fn validate_regex_pattern(
             )
           {
             return Ok((i + esc_len, Some(esc as u32), false));
+          }
+
+          // CharacterClassEscape (not valid as range endpoint).
+          if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
+            return Ok((i + esc_len, None, false));
           }
 
           // IdentityEscape[+UnicodeMode] is limited to SyntaxCharacter or `/`.
