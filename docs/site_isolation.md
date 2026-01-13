@@ -119,14 +119,13 @@ Some documents have an **opaque origin** (unique, not equal to any other origin)
 `SiteKey` is the *process assignment key*: all documents with the same `SiteKey` are allowed to
 share a renderer process.
 
-**Planned default (site-keyed):**
+**Normative model (origin-keyed / per-origin):**
 
-- For `http`/`https`: `SiteKey` is a **schemeful site**: `(scheme, registrable_domain)` (ports ignored).
-  - If a host has no registrable domain (e.g. IP literals, `localhost`), use the host itself as the `registrable_domain`.
+- For `http`/`https`: `SiteKey` is the tuple `(scheme, host, port)` using the effective port
+  (i.e. `https://example.com` and `https://example.com:443` are the same key).
 
-**Optional stricter mode (origin-keyed):**
-
-- Derive `SiteKey` directly from `OriginKey`: `(scheme, host, port)` using the effective port.
+This is intentionally **per-origin** (not per-registrable-domain) so cross-origin iframes isolate
+strictly without needing eTLD+1 reasoning.
 
 For other schemes we either map to a stable bucket (`file://`) or to an *opaque* key (unique).
 
@@ -136,11 +135,7 @@ Recommended representation:
 /// The grouping key used for renderer process assignment.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SiteKey {
-    /// Network "sites" (schemeful site): https://example.com
-    /// (ports are intentionally ignored)
-    Site { scheme: String, registrable_domain: String },
-
-    /// Optional: strict origin isolation, matching `OriginKey`.
+    /// Network origins: https://example.com:443
     Origin { scheme: String, host: String, port: u16 },
 
     /// All file:// documents currently share one site bucket.
@@ -229,8 +224,9 @@ Scope (important):
 
 - The registry is **global to the browser process**, not per-tab.
 - Therefore, different tabs/windows that navigate to the same `SiteKey` are expected to **reuse the
-  same renderer process** (site-per-process, not tab-per-process).
-  - This matches the “one process per site” goal in the multiprocess workstream.
+  same renderer process** (SiteKey-per-process, not tab-per-process).
+  - With the per-origin `SiteKey` model in this document, that effectively means “one process per
+    origin”.
   - Embeddings may optionally provide a debug mode that forces process-per-tab, but it must be
     opt-in and must not be used as the default site isolation semantics.
 
@@ -263,20 +259,6 @@ fn derive_site_key(url: &Url, initiator_site: Option<&SiteKey>) -> SiteKey
 ```
 
 ### 2.1 Network origins (`http`, `https`)
-
-Planned default (site-keyed / schemeful-site):
-
-```
-SiteKey::Site {
-  scheme: url.scheme().lowercase(),
-  registrable_domain: effective_registrable_domain(url.host_str()),
-}
-```
-
-where `effective_registrable_domain` is the host’s eTLD+1 (and for hosts without a registrable
-domain such as IP literals / `localhost`, it returns the host itself).
-
-Optional strict mode (origin-keyed):
 
 ```
 SiteKey::Origin {
