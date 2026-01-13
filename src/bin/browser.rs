@@ -22936,10 +22936,35 @@ fn merge_last_known_good_window_state(
     maximized: false,
   });
 
-  // Always update size/maximized when we have a non-minimized capture.
+  // Always update the maximized state when we have a non-minimized capture.
+  next.maximized = capture.maximized;
+
+  // When a window is maximized, we want to persist the *restored* bounds so that restoring a
+  // maximized session and then unmaximizing produces the expected (pre-maximize) window size.
+  //
+  // `winit` reports the maximized dimensions via `inner_size()`, so we only update the persisted
+  // width/height when the window is not maximized. If we don't have any prior "normal" size (e.g.
+  // first run), fall back to the capture.
+  if capture.maximized {
+    if next.width.is_none() {
+      next.width = Some(width);
+    }
+    if next.height.is_none() {
+      next.height = Some(height);
+    }
+    // Best-effort position tracking: keep the previous restore position if present, but if we don't
+    // have any position yet we may as well take the capture.
+    if next.x.is_none() && capture.x.is_some() {
+      next.x = capture.x;
+    }
+    if next.y.is_none() && capture.y.is_some() {
+      next.y = capture.y;
+    }
+    return Some(next);
+  }
+
   next.width = Some(width);
   next.height = Some(height);
-  next.maximized = capture.maximized;
 
   // Best-effort position tracking: preserve any previously captured position when the platform
   // doesn't expose outer_position.
@@ -23007,7 +23032,7 @@ mod window_state_persistence_tests {
       y: None,
       width: Some(1024),
       height: Some(768),
-      maximized: true,
+      maximized: false,
     };
     let merged = merge_last_known_good_window_state(previous, capture, false)
       .expect("expected merged state");
@@ -23015,6 +23040,49 @@ mod window_state_persistence_tests {
     assert_eq!(merged.y, Some(20));
     assert_eq!(merged.width, Some(1024));
     assert_eq!(merged.height, Some(768));
+    assert!(!merged.maximized);
+  }
+
+  #[test]
+  fn maximized_preserves_previous_restore_bounds() {
+    let previous = Some(fastrender::ui::BrowserWindowState {
+      x: Some(10),
+      y: Some(20),
+      width: Some(800),
+      height: Some(600),
+      maximized: false,
+    });
+    let capture = fastrender::ui::BrowserWindowState {
+      x: Some(0),
+      y: Some(0),
+      width: Some(1920),
+      height: Some(1080),
+      maximized: true,
+    };
+    let merged = merge_last_known_good_window_state(previous, capture, false)
+      .expect("expected merged state");
+    assert_eq!(merged.x, Some(10));
+    assert_eq!(merged.y, Some(20));
+    assert_eq!(merged.width, Some(800));
+    assert_eq!(merged.height, Some(600));
+    assert!(merged.maximized);
+  }
+
+  #[test]
+  fn maximized_without_previous_falls_back_to_capture_size() {
+    let capture = fastrender::ui::BrowserWindowState {
+      x: Some(0),
+      y: Some(0),
+      width: Some(1920),
+      height: Some(1080),
+      maximized: true,
+    };
+    let merged = merge_last_known_good_window_state(None, capture, false)
+      .expect("expected merged state");
+    assert_eq!(merged.x, Some(0));
+    assert_eq!(merged.y, Some(0));
+    assert_eq!(merged.width, Some(1920));
+    assert_eq!(merged.height, Some(1080));
     assert!(merged.maximized);
   }
 }
