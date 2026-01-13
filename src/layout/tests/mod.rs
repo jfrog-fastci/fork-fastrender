@@ -176,6 +176,7 @@ mod flex_zero_main_size;
 mod float_active_edge_prune;
 mod float_blockification;
 mod float_context_current_y_non_finite;
+mod float_context_non_finite_float_coords;
 mod float_context_stress_timeout;
 mod float_context_naive_equivalence;
 mod float_external_context_width;

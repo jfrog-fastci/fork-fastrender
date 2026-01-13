@@ -1174,8 +1174,10 @@ impl FloatContext {
       events: Vec::new(),
       sweep_state: RefCell::new(FloatSweepState::new(0, &[])),
       range_cache: RefCell::new(FloatRangeCache::new()),
-      clearance_left_max_bottom: f32::NEG_INFINITY,
-      clearance_right_max_bottom: f32::NEG_INFINITY,
+      // Use a finite sentinel so non-finite float geometry cannot permanently poison clearance.
+      // `f32::MIN` behaves like `-∞` for all practical layout coordinates while remaining finite.
+      clearance_left_max_bottom: f32::MIN,
+      clearance_right_max_bottom: f32::MIN,
       timeout_elapsed: Cell::new(None),
       current_y: 0.0,
     }
@@ -2138,6 +2140,49 @@ impl FloatContext {
 
   /// Add a float with the given FloatInfo
   pub fn add_float(&mut self, float_info: FloatInfo) {
+    // Float layout should only ever see finite geometry, but layout bugs or hostile inputs can
+    // produce NaN/±inf coordinates. Those values can poison monotonic placement state and cached
+    // sweep/range structures, cascading into massive scans and timeouts. Sanitize at this choke
+    // point so callers don't have to.
+    if !self.current_y.is_finite() {
+      self.current_y = 0.0;
+    }
+    if !self.clearance_left_max_bottom.is_finite() {
+      self.clearance_left_max_bottom = f32::MIN;
+    }
+    if !self.clearance_right_max_bottom.is_finite() {
+      self.clearance_right_max_bottom = f32::MIN;
+    }
+
+    let mut float_info = float_info;
+    let rect = float_info.rect;
+    let mut x = rect.x();
+    let mut y = rect.y();
+    let mut width = clamp_positive_finite(rect.width());
+    let mut height = clamp_positive_finite(rect.height());
+
+    if !x.is_finite() {
+      x = 0.0;
+    }
+    if !y.is_finite() {
+      // Anchor non-finite Y at the current float ceiling so it cannot break source-order monotonicity.
+      y = self.current_y;
+    }
+    if !y.is_finite() {
+      // If the current ceiling was also corrupted, fall back to the origin.
+      y = 0.0;
+    }
+
+    // Avoid overflow to ±inf when computing right/bottom edges.
+    if !(x + width).is_finite() {
+      width = 0.0;
+    }
+    if !(y + height).is_finite() {
+      height = 0.0;
+    }
+
+    float_info.rect = Rect::from_xywh(x, y, width, height);
+
     let (storage, side) = match float_info.side {
       FloatSide::Left => (&mut self.left_floats, FloatSide::Left),
       FloatSide::Right => (&mut self.right_floats, FloatSide::Right),
@@ -2151,7 +2196,14 @@ impl FloatContext {
     } else {
       None
     };
-    let (start_y, end_y) = float_vertical_span(&float_info);
+    let (mut start_y, mut end_y) = float_vertical_span(&float_info);
+    if !(start_y.is_finite() && end_y.is_finite() && start_y <= end_y) {
+      // As a last resort, clamp malformed spans to a zero-height float at the current ceiling.
+      // This avoids inserting non-finite events and keeps the float from perturbing monotonic state.
+      start_y = self.current_y;
+      end_y = self.current_y;
+      float_info.rect = Rect::from_xywh(x, self.current_y, width, 0.0);
+    }
     // CSS 2.1 §9.5.1: a float's outer top may not be higher than the outer top of any earlier
     // float. Track a monotonic "ceiling" so even if callers accidentally pass a smaller `min_y`
     // for subsequent floats, the float context will still enforce source-order constraints.
@@ -2702,8 +2754,8 @@ impl FloatContext {
     self.float_map.clear();
     self.events.clear();
     self.reset_sweep_state();
-    self.clearance_left_max_bottom = f32::NEG_INFINITY;
-    self.clearance_right_max_bottom = f32::NEG_INFINITY;
+    self.clearance_left_max_bottom = f32::MIN;
+    self.clearance_right_max_bottom = f32::MIN;
     self.timeout_elapsed.set(None);
     self.current_y = 0.0;
   }
