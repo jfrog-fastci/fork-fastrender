@@ -1264,14 +1264,20 @@ impl FloatContext {
   ///   printed (`0` suppresses segment printing entirely).
   /// - `FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER` (usize): if set, range queries will automatically
   ///   dump when a scan touches more than this many range-cache segments.
+  #[cold]
+  #[inline(never)]
   pub fn debug_dump(&self, label: &str) {
     self.debug_dump_internal(label, None);
   }
 
+  #[cold]
+  #[inline(never)]
   fn debug_dump_with_sweep_state(&self, label: &str, sweep_state: &FloatSweepState) {
     self.debug_dump_internal(label, Some(sweep_state));
   }
 
+  #[cold]
+  #[inline(never)]
   fn debug_dump_internal(&self, label: &str, sweep_state: Option<&FloatSweepState>) {
     let toggles = runtime::runtime_toggles();
     if !toggles.truthy("FASTR_LOG_FLOAT_CONTEXT") {
