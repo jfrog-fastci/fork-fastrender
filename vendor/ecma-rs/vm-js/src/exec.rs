@@ -14125,6 +14125,12 @@ enum AsyncEval<T> {
 pub(crate) enum GenFrame {
   /// Root frame for block-bodied generator functions (`function* f(){...}`).
   RootBlockBody,
+  /// Converts the internal optional-chaining sentinel value to `undefined`.
+  ///
+  /// This frame is injected by `gen_eval_expr` so the generator continuation evaluator can
+  /// propagate optional-chain short-circuits through non-optional chain segments, while ensuring
+  /// the sentinel never becomes observable from user code when an expression completes.
+  ConvertOptionalChainShortCircuit,
 
   /// Resume statement-list evaluation after a suspended statement completes.
   StmtList {
@@ -31977,11 +31983,52 @@ fn gen_eval_expr(
   scope: &mut Scope<'_>,
   expr: &Node<Expr>,
 ) -> Result<GenEval<Completion>, VmError> {
+  match gen_eval_expr_chain(evaluator, scope, expr)? {
+    GenEval::Complete(completion) => {
+      let completion = match completion {
+        Completion::Normal(Some(v)) => Completion::Normal(Some(
+          convert_optional_chain_sentinel_to_undefined(evaluator.vm, v),
+        )),
+        other => other,
+      };
+      Ok(GenEval::Complete(completion))
+    }
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ConvertOptionalChainShortCircuit,
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_chain_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+) -> Result<GenEval<Completion>, VmError> {
+  // Parenthesized expressions break optional-chain propagation:
+  // `(a?.b).c` should not short-circuit `.c` when `a` is nullish.
+  if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+    return gen_eval_expr(evaluator, scope, expr);
+  }
+  gen_eval_expr_chain(evaluator, scope, expr)
+}
+
+fn gen_eval_expr_chain(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+) -> Result<GenEval<Completion>, VmError> {
   evaluator.tick()?;
 
   if !expr_contains_yield(expr) {
-    return match evaluator.eval_expr(scope, expr) {
-      Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+    return match evaluator.eval_expr_chain(scope, expr) {
+      Ok(OptionalChainEval::Value(v)) => Ok(GenEval::Complete(Completion::normal(v))),
+      Ok(OptionalChainEval::ShortCircuit) => Ok(GenEval::Complete(Completion::normal(
+        optional_chain_sentinel_value(evaluator.vm)?,
+      ))),
       Err(err) => {
         let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
         Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
@@ -32063,7 +32110,7 @@ fn gen_eval_expr(
         Ok(GenEval::Suspend(suspend))
       }
     },
-    Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
+    Expr::Member(member) => match gen_eval_chain_base(evaluator, scope, &member.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
           match gen_member_after_base(evaluator, scope, &member.stx, v.unwrap_or(Value::Undefined))
@@ -32087,7 +32134,8 @@ fn gen_eval_expr(
         Ok(GenEval::Suspend(suspend))
       }
     },
-    Expr::ComputedMember(member) => match gen_eval_expr(evaluator, scope, &member.stx.object)? {
+    Expr::ComputedMember(member) => match gen_eval_chain_base(evaluator, scope, &member.stx.object)?
+    {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_computed_member_after_base(
           evaluator,
@@ -32317,7 +32365,7 @@ fn gen_member_after_base(
     return Ok(base);
   }
   if expr.optional_chaining && is_nullish(base) {
-    return Ok(Value::Undefined);
+    return Ok(optional_chain_sentinel_value(evaluator.vm)?);
   }
 
   let mut key_scope = scope.reborrow();
@@ -32348,8 +32396,13 @@ fn gen_computed_member_after_base(
   expr: &ComputedMemberExpr,
   base: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(GenEval::Complete(Completion::normal(base)));
+  }
   if expr.optional_chaining && is_nullish(base) {
-    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+    return Ok(GenEval::Complete(Completion::normal(
+      optional_chain_sentinel_value(evaluator.vm)?,
+    )));
   }
 
   match gen_eval_expr(evaluator, scope, &expr.member)? {
@@ -32484,8 +32537,16 @@ fn gen_eval_call(
   scope: &mut Scope<'_>,
   expr: &CallExpr,
 ) -> Result<GenEval<Completion>, VmError> {
+  // Parenthesized member expressions are not treated as reference calls:
+  // `((obj.m))()` should call the value with `this = undefined`, not the base object.
+  //
+  // This also affects optional chaining: `(obj?.m)()` must not propagate the optional-chain
+  // short-circuit into the call.
+  let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
+
   match &*expr.callee.stx {
-    Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
+    Expr::Member(member) if !callee_is_parenthesized => {
+      match gen_eval_chain_base(evaluator, scope, &member.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_call_member_after_base(
           evaluator,
@@ -32506,8 +32567,10 @@ fn gen_eval_call(
         )?;
         Ok(GenEval::Suspend(suspend))
       }
-    },
-    Expr::ComputedMember(member) => match gen_eval_expr(evaluator, scope, &member.stx.object)? {
+    }
+    }
+    Expr::ComputedMember(member) if !callee_is_parenthesized => {
+      match gen_eval_chain_base(evaluator, scope, &member.stx.object)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_call_computed_member_after_base(
           evaluator,
@@ -32528,7 +32591,8 @@ fn gen_eval_call(
         )?;
         Ok(GenEval::Suspend(suspend))
       }
-    },
+    }
+    }
     _ => match gen_eval_expr(evaluator, scope, &expr.callee)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_call_begin(
@@ -32566,7 +32630,9 @@ fn gen_call_member_after_base(
     return Ok(GenEval::Complete(Completion::normal(base)));
   }
   if member.optional_chaining && is_nullish(base) {
-    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+    return Ok(GenEval::Complete(Completion::normal(
+      optional_chain_sentinel_value(evaluator.vm)?,
+    )));
   }
   if is_nullish(base) {
     let err = throw_type_error(
@@ -32617,8 +32683,13 @@ fn gen_call_computed_member_after_base(
   member: &ComputedMemberExpr,
   base: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(GenEval::Complete(Completion::normal(base)));
+  }
   if member.optional_chaining && is_nullish(base) {
-    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+    return Ok(GenEval::Complete(Completion::normal(
+      optional_chain_sentinel_value(evaluator.vm)?,
+    )));
   }
 
   match gen_eval_expr(evaluator, scope, &member.member)? {
@@ -32696,8 +32767,13 @@ fn gen_call_begin(
   callee_value: Value,
   this_value: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, callee_value) {
+    return Ok(GenEval::Complete(Completion::normal(callee_value)));
+  }
   if call.optional_chaining && is_nullish(callee_value) {
-    return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
+    return Ok(GenEval::Complete(Completion::normal(
+      optional_chain_sentinel_value(evaluator.vm)?,
+    )));
   }
 
   // Mirror `Evaluator::eval_call`: detect direct eval (`eval(...)`) and execute in the caller's
@@ -32948,6 +33024,15 @@ fn gen_resume_from_frames(
         Completion::Break(..) => return Err(VmError::Unimplemented("break outside of loop")),
         Completion::Continue(..) => return Err(VmError::Unimplemented("continue outside of loop")),
       },
+
+      GenFrame::ConvertOptionalChainShortCircuit => {
+        if let Completion::Normal(Some(v)) = state {
+          state = Completion::Normal(Some(convert_optional_chain_sentinel_to_undefined(
+            evaluator.vm,
+            v,
+          )));
+        }
+      }
 
       GenFrame::YieldAfterOperand => match state {
         Completion::Normal(v) => {
