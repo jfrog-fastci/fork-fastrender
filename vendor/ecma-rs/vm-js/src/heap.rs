@@ -5,7 +5,7 @@ use crate::function::{
   NativeFunctionId, ThisMode,
 };
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
-use crate::promise::{PromiseReaction, PromiseReactionType, PromiseState};
+use crate::promise::{PromiseCapability, PromiseReaction, PromiseReactionType, PromiseState};
 use crate::regexp::{RegExpFlags, RegExpProgram};
 use crate::bigint::JsBigInt;
 use crate::string::JsString;
@@ -5472,6 +5472,189 @@ impl Heap {
     Ok(())
   }
 
+  fn get_async_generator(&self, gen: GcObject) -> Result<&JsAsyncGenerator, VmError> {
+    match self.get_heap_object(gen.0)? {
+      HeapObject::AsyncGenerator(g) => Ok(g),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  fn get_async_generator_mut(&mut self, gen: GcObject) -> Result<&mut JsAsyncGenerator, VmError> {
+    match self.get_heap_object_mut(gen.0)? {
+      HeapObject::AsyncGenerator(g) => Ok(g),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub(crate) fn async_generator_state(&self, gen: GcObject) -> Result<AsyncGeneratorState, VmError> {
+    Ok(self.get_async_generator(gen)?.state)
+  }
+
+  pub(crate) fn async_generator_set_state(
+    &mut self,
+    gen: GcObject,
+    state: AsyncGeneratorState,
+  ) -> Result<(), VmError> {
+    self.get_async_generator_mut(gen)?.state = state;
+    Ok(())
+  }
+
+  /// Takes the async generator continuation out of the generator object.
+  ///
+  /// Note: this does **not** update heap accounting immediately. Callers should update the slot
+  /// bytes after restoring or dropping the continuation.
+  pub(crate) fn async_generator_take_continuation(
+    &mut self,
+    gen: GcObject,
+  ) -> Result<Option<Box<AsyncGeneratorContinuation>>, VmError> {
+    Ok(self.get_async_generator_mut(gen)?.continuation.take())
+  }
+
+  /// Sets the async generator continuation and updates heap accounting.
+  pub(crate) fn async_generator_set_continuation(
+    &mut self,
+    gen: GcObject,
+    continuation: Option<Box<AsyncGeneratorContinuation>>,
+  ) -> Result<(), VmError> {
+    let idx = self
+      .validate(gen.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let new_bytes = {
+      let gen = match self.slots[idx].value.as_mut() {
+        Some(HeapObject::AsyncGenerator(g)) => g,
+        _ => return Err(VmError::invalid_handle()),
+      };
+
+      gen.continuation = continuation;
+      gen.heap_size_bytes()
+    };
+
+    self.update_slot_bytes(idx, new_bytes);
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
+  pub(crate) fn async_generator_request_queue_len(&self, gen: GcObject) -> Result<usize, VmError> {
+    Ok(self.get_async_generator(gen)?.request_queue.len())
+  }
+
+  pub(crate) fn async_generator_request_queue_peek(
+    &self,
+    gen: GcObject,
+  ) -> Result<Option<AsyncGeneratorRequest>, VmError> {
+    Ok(self.get_async_generator(gen)?.request_queue.front().copied())
+  }
+
+  pub(crate) fn async_generator_request_queue_pop(
+    &mut self,
+    gen: GcObject,
+  ) -> Result<Option<AsyncGeneratorRequest>, VmError> {
+    let idx = self
+      .validate(gen.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let (req, new_bytes) = {
+      let gen = match self.slots[idx].value.as_mut() {
+        Some(HeapObject::AsyncGenerator(g)) => g,
+        _ => return Err(VmError::invalid_handle()),
+      };
+      let req = gen.request_queue.pop_front();
+      let new_bytes = gen.heap_size_bytes();
+      (req, new_bytes)
+    };
+
+    self.update_slot_bytes(idx, new_bytes);
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(req)
+  }
+
+  pub(crate) fn async_generator_request_queue_push(
+    &mut self,
+    gen: GcObject,
+    req: AsyncGeneratorRequest,
+  ) -> Result<(), VmError> {
+    debug_assert!(self.debug_value_is_valid_or_primitive(match req.kind {
+      AsyncGeneratorRequestKind::Next(v)
+      | AsyncGeneratorRequestKind::Return(v)
+      | AsyncGeneratorRequestKind::Throw(v) => v,
+    }));
+    debug_assert!(self.debug_value_is_valid_or_primitive(req.capability.promise));
+    debug_assert!(self.debug_value_is_valid_or_primitive(req.capability.resolve));
+    debug_assert!(self.debug_value_is_valid_or_primitive(req.capability.reject));
+
+    let (slot_idx, property_count, continuation_bytes, queue_len, queue_cap, old_bytes) = {
+      let slot_idx = self
+        .validate(gen.0)
+        .ok_or_else(|| VmError::invalid_handle())?;
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::AsyncGenerator(g)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+
+      (
+        slot_idx,
+        g.object.base.properties.len(),
+        g.continuation
+          .as_ref()
+          .map(|c| c.heap_size_bytes())
+          .unwrap_or(0),
+        g.request_queue.len(),
+        g.request_queue.capacity(),
+        slot.bytes,
+      )
+    };
+
+    let required_len = queue_len.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    let desired_capacity = grown_capacity(queue_cap, required_len);
+    if desired_capacity == usize::MAX {
+      return Err(VmError::OutOfMemory);
+    }
+    let queue_bytes = desired_capacity
+      .checked_mul(mem::size_of::<AsyncGeneratorRequest>())
+      .unwrap_or(usize::MAX);
+    let expected_new_bytes = ObjectBase::properties_heap_size_bytes_for_count(property_count)
+      .saturating_add(continuation_bytes)
+      .saturating_add(queue_bytes);
+    let grow_by = expected_new_bytes.saturating_sub(old_bytes);
+
+    if grow_by != 0 {
+      let kind_value = match req.kind {
+        AsyncGeneratorRequestKind::Next(v)
+        | AsyncGeneratorRequestKind::Return(v)
+        | AsyncGeneratorRequestKind::Throw(v) => v,
+      };
+      let extra_roots = [
+        Value::Object(gen),
+        kind_value,
+        req.capability.promise,
+        req.capability.resolve,
+        req.capability.reject,
+      ];
+      self.ensure_can_allocate_with_extra_roots(|_| grow_by, &extra_roots, &[], &[], &[])?;
+
+      let Some(HeapObject::AsyncGenerator(g)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      reserve_vec_deque_to_len::<AsyncGeneratorRequest>(&mut g.request_queue, required_len)?;
+    }
+
+    let new_bytes = {
+      let Some(HeapObject::AsyncGenerator(g)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      g.request_queue.push_back(req);
+      g.heap_size_bytes()
+    };
+
+    self.update_slot_bytes(slot_idx, new_bytes);
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+    Ok(())
+  }
+
   fn get_promise(&self, promise: GcObject) -> Result<&JsPromise, VmError> {
     match self.get_heap_object(promise.0)? {
       HeapObject::Promise(p) => Ok(p),
@@ -10740,7 +10923,7 @@ impl Trace for AsyncGeneratorContinuation {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum AsyncGeneratorRequestKind {
   Next(Value),
   Return(Value),
@@ -10757,16 +10940,16 @@ impl Trace for AsyncGeneratorRequestKind {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct AsyncGeneratorRequest {
   pub(crate) kind: AsyncGeneratorRequestKind,
-  pub(crate) promise: GcObject,
+  pub(crate) capability: PromiseCapability,
 }
 
 impl Trace for AsyncGeneratorRequest {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     self.kind.trace(tracer);
-    tracer.trace_value(Value::Object(self.promise));
+    self.capability.trace(tracer);
   }
 }
 
@@ -11170,6 +11353,23 @@ fn reserve_vec_to_len<T>(vec: &mut Vec<T>, required_len: usize) -> Result<(), Vm
     .checked_sub(vec.len())
     .ok_or(VmError::OutOfMemory)?;
   vec
+    .try_reserve_exact(additional)
+    .map_err(|_| VmError::OutOfMemory)?;
+  Ok(())
+}
+
+fn reserve_vec_deque_to_len<T>(deque: &mut VecDeque<T>, required_len: usize) -> Result<(), VmError> {
+  if required_len <= deque.capacity() {
+    return Ok(());
+  }
+  let desired_capacity = grown_capacity(deque.capacity(), required_len);
+  if desired_capacity == usize::MAX {
+    return Err(VmError::OutOfMemory);
+  }
+  let additional = desired_capacity
+    .checked_sub(deque.len())
+    .ok_or(VmError::OutOfMemory)?;
+  deque
     .try_reserve_exact(additional)
     .map_err(|_| VmError::OutOfMemory)?;
   Ok(())
@@ -11579,6 +11779,175 @@ mod generator_object_tests {
       heap.get(gen, &PropertyKey::from_string(key)),
       Err(VmError::InvalidHandle { .. })
     ));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod async_generator_object_tests {
+  use super::*;
+
+  #[test]
+  fn async_generator_request_queue_is_traced_by_gc() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let gen;
+    let promise;
+    let resolve;
+    let reject;
+    let value;
+
+    {
+      let mut scope = heap.scope();
+
+      gen = scope.alloc_async_generator_with_prototype(
+        None,
+        AsyncGeneratorState::SuspendedStart,
+        None,
+        VecDeque::new(),
+      )?;
+      scope.push_root(Value::Object(gen))?;
+
+      assert_eq!(
+        scope.heap().async_generator_state(gen)?,
+        AsyncGeneratorState::SuspendedStart
+      );
+      scope
+        .heap_mut()
+        .async_generator_set_state(gen, AsyncGeneratorState::Executing)?;
+      assert_eq!(
+        scope.heap().async_generator_state(gen)?,
+        AsyncGeneratorState::Executing
+      );
+      // No continuation was installed.
+      assert!(scope
+        .heap_mut()
+        .async_generator_take_continuation(gen)?
+        .is_none());
+      scope.heap_mut().async_generator_set_continuation(gen, None)?;
+
+      {
+        // Create request capability values, enqueue them, then drop stack roots so the only live
+        // references are through the async generator's internal request queue.
+        let mut init_scope = scope.reborrow();
+
+        promise = init_scope.alloc_promise()?;
+        init_scope.push_root(Value::Object(promise))?;
+        resolve = init_scope.alloc_object()?;
+        init_scope.push_root(Value::Object(resolve))?;
+        reject = init_scope.alloc_object()?;
+        init_scope.push_root(Value::Object(reject))?;
+        value = init_scope.alloc_object()?;
+        init_scope.push_root(Value::Object(value))?;
+
+        let cap = PromiseCapability {
+          promise: Value::Object(promise),
+          resolve: Value::Object(resolve),
+          reject: Value::Object(reject),
+        };
+        let req = AsyncGeneratorRequest {
+          kind: AsyncGeneratorRequestKind::Next(Value::Object(value)),
+          capability: cap,
+        };
+
+        let used_before_push = init_scope.heap().used_bytes();
+        init_scope
+          .heap_mut()
+          .async_generator_request_queue_push(gen, req)?;
+        let used_after_push = init_scope.heap().used_bytes();
+        assert_eq!(
+          used_after_push - used_before_push,
+          mem::size_of::<AsyncGeneratorRequest>()
+        );
+
+        let peeked = init_scope.heap().async_generator_request_queue_peek(gen)?;
+        assert!(matches!(
+          peeked,
+          Some(AsyncGeneratorRequest {
+            kind: AsyncGeneratorRequestKind::Next(_),
+            ..
+          })
+        ));
+      }
+
+      // The request capability values should stay alive via the request queue.
+      scope.heap_mut().collect_garbage();
+      assert!(scope.heap().is_valid_object(gen));
+      assert!(scope.heap().is_valid_object(promise));
+      assert!(scope.heap().is_valid_object(resolve));
+      assert!(scope.heap().is_valid_object(reject));
+      assert!(scope.heap().is_valid_object(value));
+
+      // Dequeueing should drop the last references and allow collection.
+      assert!(scope
+        .heap_mut()
+        .async_generator_request_queue_pop(gen)?
+        .is_some());
+      scope.heap_mut().collect_garbage();
+      assert!(scope.heap().is_valid_object(gen));
+      assert!(!scope.heap().is_valid_object(promise));
+      assert!(!scope.heap().is_valid_object(resolve));
+      assert!(!scope.heap().is_valid_object(reject));
+      assert!(!scope.heap().is_valid_object(value));
+    }
+
+    heap.collect_garbage();
+    assert!(!heap.is_valid_object(gen));
+    Ok(())
+  }
+
+  #[test]
+  fn async_generator_request_queue_len_updates_under_tight_heap_limits() -> Result<(), VmError> {
+    // Use a small heap limit to exercise request-queue growth error paths.
+    let max_bytes = 8 * 1024;
+    let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
+    let mut scope = heap.scope();
+
+    let gen = scope.alloc_async_generator_with_prototype(
+      None,
+      AsyncGeneratorState::SuspendedStart,
+      None,
+      VecDeque::new(),
+    )?;
+    scope.push_root(Value::Object(gen))?;
+
+    let cap = PromiseCapability {
+      promise: Value::Undefined,
+      resolve: Value::Undefined,
+      reject: Value::Undefined,
+    };
+    let req = AsyncGeneratorRequest {
+      kind: AsyncGeneratorRequestKind::Next(Value::Undefined),
+      capability: cap,
+    };
+
+    let mut pushed = 0usize;
+    loop {
+      match scope.heap_mut().async_generator_request_queue_push(gen, req) {
+        Ok(()) => {
+          pushed += 1;
+          assert_eq!(scope.heap().async_generator_request_queue_len(gen)?, pushed);
+          // Avoid accidental infinite loops if the heap limit is larger than expected.
+          if pushed > 10_000 {
+            panic!("unexpectedly pushed 10k async generator requests without hitting OOM");
+          }
+        }
+        Err(VmError::OutOfMemory) => break,
+        Err(other) => return Err(other),
+      }
+    }
+
+    while pushed > 0 {
+      assert!(scope
+        .heap_mut()
+        .async_generator_request_queue_pop(gen)?
+        .is_some());
+      pushed -= 1;
+      assert_eq!(scope.heap().async_generator_request_queue_len(gen)?, pushed);
+    }
+    assert!(scope
+      .heap_mut()
+      .async_generator_request_queue_pop(gen)?
+      .is_none());
     Ok(())
   }
 }
