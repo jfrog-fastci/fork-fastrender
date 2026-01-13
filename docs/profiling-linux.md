@@ -13,6 +13,7 @@ bash scripts/run_limited.sh --as 64G -- \
 
 - Convenience wrappers (see `scripts/`):
   - `scripts/profile_samply.sh <stem>` (writes a `.profile.json.gz` plus a sibling `.pageset_progress` binary snapshot for later symbolication)
+  - `scripts/profile_browser_samply.sh [url]` (interactive windowed `browser` UI profiling; writes a `.profile.json.gz` plus a sibling `.browser` binary snapshot)
   - `scripts/profile_perf.sh <stem>`
   - `scripts/samply_summary.py <profile.json.gz>` (terminal summary)
     - `--list-threads` + `--thread-index N` when CPU is spread across many threads
