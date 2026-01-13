@@ -3699,8 +3699,9 @@ impl BrowserRuntime {
       return;
     };
 
-    let (href, target_id, target_element_id) =
-      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let engine = &mut tab.interaction;
+    let (changed, href, target_id, target_element_id) = match doc.mutate_dom_with_layout_artifacts(
+      |dom, box_tree, fragment_tree| {
         let scrolled =
           (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
         let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
@@ -3711,24 +3712,70 @@ impl BrowserRuntime {
             .and_then(|node| node.get_attribute_ref("id"))
             .map(|id| id.to_string())
         });
-        let href = hit.and_then(|hit| {
+        let href = hit.as_ref().and_then(|hit| {
           if hit.kind == HitTestKind::Link {
-            hit.href
+            hit.href.clone()
           } else {
             None
           }
         });
-        (false, (href, target_id, target_element_id))
-      }) {
-        Ok(result) => result,
-        Err(_) => (None, None, None),
-      };
+
+        // Windowed UIs send `ContextMenuRequest` on right-click without a preceding `PointerDown`.
+        // When a text control is clicked, mirror native browser behavior by focusing it and placing
+        // the caret at the click position so subsequent Paste inserts at the expected offset.
+        let mut changed = false;
+        if let Some(hit) = hit.as_ref() {
+          let node_id = hit.dom_node_id;
+          let box_id = hit.box_id;
+          let is_text_control = crate::dom::find_node_mut_by_preorder_id(dom, node_id)
+            .is_some_and(|node| dom_is_text_input(node) || dom_is_textarea(node));
+
+          if is_text_control {
+            let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
+            let disabled = crate::interaction::effective_disabled::is_effectively_disabled(
+              node_id,
+              &dom_index,
+            );
+            let inert_or_hidden =
+              crate::interaction::effective_disabled::is_effectively_inert_or_hidden(
+                node_id,
+                &dom_index,
+              );
+
+            if !disabled && !inert_or_hidden {
+              let (focused_changed, _) = engine.focus_node_id(dom, Some(node_id), false);
+              changed |= focused_changed;
+              changed |= engine.set_text_caret_from_page_point(
+                dom,
+                box_tree,
+                hit_tree,
+                scroll,
+                node_id,
+                box_id,
+                page_point,
+              );
+            }
+          }
+        }
+
+        (false, (changed, href, target_id, target_element_id))
+      },
+    ) {
+      Ok(result) => result,
+      Err(_) => (false, None, None, None),
+    };
 
     let link_url = href.and_then(|href| resolve_link_url(&base_url, &href));
+
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
 
     // Dispatch a cancelable `contextmenu` event before opening the default UI context menu.
     //
     // If JS calls `preventDefault()`, suppress the UI menu (matching browser behavior).
+    let mut suppress_menu = false;
     if let Some(target_id) = target_id {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let target =
@@ -3758,7 +3805,7 @@ impl BrowserRuntime {
           ) {
             Ok(allowed) => {
               if !allowed {
-                return;
+                suppress_menu = true;
               }
             }
             Err(err) => {
@@ -3770,6 +3817,10 @@ impl BrowserRuntime {
           }
         }
       }
+    }
+
+    if suppress_menu {
+      return;
     }
 
     let _ = self.ui_tx.send(WorkerToUi::ContextMenu {

@@ -4412,6 +4412,70 @@ impl InteractionEngine {
     self.sync_text_edit_paint_state();
   }
 
+  /// Place the caret in the currently-focused text control based on a page-space point.
+  ///
+  /// This is primarily used by UI layers that receive a context-menu/right-click request without a
+  /// preceding `PointerDown`, and still want paste/selection operations to target the clicked caret
+  /// position (matching native browser behavior).
+  ///
+  /// Returns `true` when the caret/selection paint state changed.
+  pub fn set_text_caret_from_page_point(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    node_id: usize,
+    box_id: usize,
+    page_point: Point,
+  ) -> bool {
+    // Only update caret state for the focused node. This keeps invariants simple (text_edit must
+    // track focused).
+    if self.state.focused != Some(node_id) {
+      return false;
+    }
+
+    let index = DomIndexMut::new(dom);
+    let Some((caret, affinity)) = caret_index_for_text_control_point(
+      &index,
+      box_tree,
+      fragment_tree,
+      scroll,
+      node_id,
+      box_id,
+      page_point,
+    ) else {
+      return false;
+    };
+
+    self.text_drag = None;
+
+    let mut changed = false;
+    match self.text_edit.as_mut() {
+      Some(edit) if edit.node_id == node_id => {
+        let prev = (edit.caret, edit.caret_affinity, edit.selection_anchor);
+        edit.caret = caret;
+        edit.caret_affinity = affinity;
+        edit.selection_anchor = None;
+        edit.preferred_x = None;
+        changed |= (edit.caret, edit.caret_affinity, edit.selection_anchor) != prev;
+      }
+      _ => {
+        self.text_edit = Some(TextEditState {
+          node_id,
+          caret,
+          caret_affinity: affinity,
+          selection_anchor: None,
+          preferred_x: None,
+        });
+        changed = true;
+      }
+    }
+
+    changed |= self.sync_text_edit_paint_state();
+    changed
+  }
+
   pub fn clear_pointer_state(&mut self, _dom: &mut DomNode) -> bool {
     let hover_changed = !self.state.hover_chain.is_empty();
     let active_changed = !self.state.active_chain.is_empty();

@@ -61,6 +61,7 @@ mod ui_clipboard;
 mod ui_document_selection_clipboard;
 mod ui_document_selection_multi_range;
 mod ui_context_menu;
+mod ui_context_menu_text_caret_right_click;
 mod ui_context_menu_bookmarks;
 mod ui_fragment_navigation;
 mod ui_frame_upload_coalescing;
