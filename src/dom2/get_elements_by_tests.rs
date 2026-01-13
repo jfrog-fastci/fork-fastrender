@@ -201,6 +201,68 @@ fn get_elements_by_tag_name_ns_supports_wildcards_and_html_namespace_equivalence
 }
 
 #[test]
+fn get_elements_by_tag_name_ns_matches_html_local_name_case_insensitively() {
+  let root = DomNode {
+    node_type: DomNodeType::Document {
+      quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
+      is_html_document: true,
+    },
+    children: vec![
+      DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "SPAN".to_string(),
+          namespace: "".to_string(),
+          attributes: vec![("id".to_string(), "a".to_string())],
+        },
+        children: Vec::new(),
+      },
+      DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "b".to_string())],
+        },
+        children: Vec::new(),
+      },
+      DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "FOO".to_string(),
+          namespace: SVG_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "c".to_string())],
+        },
+        children: Vec::new(),
+      },
+    ],
+  };
+  let doc = Document::from_renderer_dom(&root);
+
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+  let c = doc.get_element_by_id("c").unwrap();
+
+  // HTML namespace matches localName ASCII case-insensitively.
+  assert_eq!(
+    doc.get_elements_by_tag_name_ns_from(doc.root(), Some(HTML_NAMESPACE), "SPAN"),
+    vec![a, b]
+  );
+  assert_eq!(
+    doc.get_elements_by_tag_name_ns_from(doc.root(), Some(HTML_NAMESPACE), "sPaN"),
+    vec![a, b]
+  );
+
+  // Non-HTML namespaces match localName case-sensitively, even in an HTML document.
+  assert_eq!(
+    doc.get_elements_by_tag_name_ns_from(doc.root(), Some(SVG_NAMESPACE), "foo"),
+    Vec::new()
+  );
+  assert_eq!(
+    doc.get_elements_by_tag_name_ns_from(doc.root(), Some(SVG_NAMESPACE), "FOO"),
+    vec![c]
+  );
+}
+
+#[test]
 fn get_elements_by_class_name_tokenizes_by_dom_ascii_whitespace() {
   let root = DomNode {
     node_type: DomNodeType::Document {

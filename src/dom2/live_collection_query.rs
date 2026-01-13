@@ -144,8 +144,6 @@ impl Document {
   ) -> Vec<NodeId> {
     let namespace_is_wildcard = namespace == Some("*");
     let local_is_wildcard = local_name == "*";
-    let query_is_html_namespace =
-      namespace.is_some_and(|ns| self.is_html_case_insensitive_namespace(ns));
 
     self.collect_descendants_from(root, |_, node| {
       let (tag_name, node_ns) = match &node.kind {
@@ -181,12 +179,7 @@ impl Document {
         return true;
       }
 
-      // Per spec-ish behavior: in HTML documents, HTML namespace tag name matching is ASCII
-      // case-insensitive.
-      //
-      // Note: `dom2` stores the HTML namespace as either the real namespace URI or an empty string,
-      // so we treat them as equivalent for this special-casing.
-      if query_is_html_namespace {
+      if self.is_html_case_insensitive_namespace(node_ns) {
         tag_name.eq_ignore_ascii_case(local_name)
       } else {
         tag_name == local_name
