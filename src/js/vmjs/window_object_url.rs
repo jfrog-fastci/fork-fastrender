@@ -29,6 +29,7 @@ pub(crate) struct ObjectUrlEntry {
 pub(crate) enum CreateObjectUrlError {
   TooManyUrls,
   TooManyBytes,
+  OutOfMemory,
 }
 
 #[derive(Default)]
@@ -49,6 +50,24 @@ pub(crate) fn create_object_url(
   bytes: Vec<u8>,
   content_type: String,
 ) -> Result<String, CreateObjectUrlError> {
+  fn u64_decimal_len(mut value: u64) -> usize {
+    let mut len: usize = 1;
+    while value >= 10 {
+      value /= 10;
+      len = len.saturating_add(1);
+    }
+    len
+  }
+
+  fn clone_str_fallible(s: &str) -> Result<String, CreateObjectUrlError> {
+    let mut out = String::new();
+    out
+      .try_reserve_exact(s.len())
+      .map_err(|_| CreateObjectUrlError::OutOfMemory)?;
+    out.push_str(s);
+    Ok(out)
+  }
+
   let mut lock = registry()
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -64,17 +83,44 @@ pub(crate) fn create_object_url(
   }
 
   let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-  let url = format!("blob:{origin}/{id}");
 
-  lock.total_bytes = next_total;
+  // `HashMap::insert` can grow the backing table. Ensure it doesn't implicitly allocate.
+  lock
+    .entries
+    .try_reserve(1)
+    .map_err(|_| CreateObjectUrlError::OutOfMemory)?;
+
+  let mut url = String::new();
+  let url_len = "blob:"
+    .len()
+    .checked_add(origin.len())
+    .and_then(|len| len.checked_add(1)) // '/'
+    .and_then(|len| len.checked_add(u64_decimal_len(id)))
+    .ok_or(CreateObjectUrlError::OutOfMemory)?;
+  url
+    .try_reserve_exact(url_len)
+    .map_err(|_| CreateObjectUrlError::OutOfMemory)?;
+  url.push_str("blob:");
+  url.push_str(origin);
+  url.push('/');
+  // Writing into a pre-reserved `String` avoids any infallible allocations during formatting.
+  use core::fmt::Write;
+  if write!(&mut url, "{id}").is_err() {
+    return Err(CreateObjectUrlError::OutOfMemory);
+  }
+
+  let url_key = clone_str_fallible(&url)?;
+  let origin = clone_str_fallible(origin)?;
+
   lock.entries.insert(
-    url.clone(),
+    url_key,
     ObjectUrlEntry {
       bytes,
       content_type,
-      origin: origin.to_string(),
+      origin,
     },
   );
+  lock.total_bytes = next_total;
 
   Ok(url)
 }

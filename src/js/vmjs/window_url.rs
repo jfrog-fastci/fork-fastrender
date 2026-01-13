@@ -613,8 +613,14 @@ fn url_create_object_url_native(
   };
 
   let origin = current_realm_serialized_origin(vm);
-  let url = window_object_url::create_object_url(&origin, blob.bytes, blob.r#type)
-    .map_err(|_| VmError::TypeError(OBJECT_URL_QUOTA_EXCEEDED_ERROR))?;
+  let url = match window_object_url::create_object_url(&origin, blob.bytes, blob.r#type) {
+    Ok(url) => url,
+    Err(window_object_url::CreateObjectUrlError::OutOfMemory) => return Err(VmError::OutOfMemory),
+    Err(
+      window_object_url::CreateObjectUrlError::TooManyUrls
+      | window_object_url::CreateObjectUrlError::TooManyBytes,
+    ) => return Err(VmError::TypeError(OBJECT_URL_QUOTA_EXCEEDED_ERROR)),
+  };
   let s = scope.alloc_string(&url)?;
   Ok(Value::String(s))
 }
