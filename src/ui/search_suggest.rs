@@ -76,7 +76,7 @@ pub struct SearchSuggestService {
   update_rx: Option<mpsc::Receiver<SearchSuggestUpdate>>,
   worker_join: Option<std::thread::JoinHandle<()>>,
   // Used to suppress redundant requests when the UI is redrawn without input changes.
-  last_requested_query: std::sync::Mutex<String>,
+  last_requested_query: String,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ impl SearchSuggestService {
         request_tx: None,
         update_rx: None,
         worker_join: None,
-        last_requested_query: std::sync::Mutex::new(String::new()),
+        last_requested_query: String::new(),
       };
     }
 
@@ -120,29 +120,25 @@ impl SearchSuggestService {
       request_tx: Some(request_tx),
       update_rx: Some(update_rx),
       worker_join,
-      last_requested_query: std::sync::Mutex::new(String::new()),
+      last_requested_query: String::new(),
     }
   }
 
   /// Request suggestions for `query`.
   ///
   /// This call is non-blocking: it only enqueues work for the background thread.
-  pub fn request(&self, query: String) {
+  pub fn request(&mut self, query: String) {
     let Some(tx) = self.request_tx.as_ref() else {
       return;
     };
 
     // Avoid spamming the worker when we get redraws without input changes.
-    {
-      let mut last = self
-        .last_requested_query
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-      if *last == query {
-        return;
-      }
-      *last = query.clone();
+    if self.last_requested_query == query {
+      return;
     }
+    // Keep the allocation for the cached query around. This runs on a hot path (omnibox typing).
+    self.last_requested_query.clear();
+    self.last_requested_query.push_str(&query);
 
     let gen = self.latest_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let _ = tx.send(SearchSuggestRequest { gen, query });
@@ -364,7 +360,7 @@ mod tests {
     });
 
     let endpoint_base = format!("http://{}/ac/", addr);
-    let service = SearchSuggestService::new(SearchSuggestConfig {
+    let mut service = SearchSuggestService::new(SearchSuggestConfig {
       endpoint_base,
       enabled: true,
       timeout_ms: 1000,
@@ -403,7 +399,7 @@ mod tests {
     });
 
     let endpoint_base = format!("http://{}/ac/", addr);
-    let service = SearchSuggestService::new(SearchSuggestConfig {
+    let mut service = SearchSuggestService::new(SearchSuggestConfig {
       endpoint_base,
       enabled: true,
       timeout_ms: 2000,
@@ -437,6 +433,39 @@ mod tests {
 
     assert!(saw_fast, "expected to receive update for 'fast'");
     assert!(!saw_slow, "expected late 'slow' result to be dropped");
+
+    join.join().unwrap();
+  }
+
+  #[test]
+  fn redundant_requests_are_suppressed() {
+    let _lock = net::net_test_lock();
+    let Some(listener) = net::try_bind_localhost("search suggest redundant request test") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+
+    let join = spawn_server(listener, 1, |q| {
+      assert_eq!(q, "rust");
+      let body = r#"[{"phrase":"rust"}]"#;
+      (Duration::ZERO, body.to_string())
+    });
+
+    let endpoint_base = format!("http://{}/ac/", addr);
+    let mut service = SearchSuggestService::new(SearchSuggestConfig {
+      endpoint_base,
+      enabled: true,
+      timeout_ms: 200,
+    });
+
+    service.request("rust".to_string());
+    let update = poll_update(&service, Duration::from_secs(2)).expect("expected initial update");
+    assert_eq!(update.query, "rust");
+
+    // The UI can redraw without input changes; the service should not re-enqueue identical queries.
+    service.request("rust".to_string());
+    let update = poll_update(&service, Duration::from_millis(700));
+    assert!(update.is_none(), "expected redundant request to be suppressed");
 
     join.join().unwrap();
   }

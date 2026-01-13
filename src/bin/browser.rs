@@ -11167,11 +11167,12 @@ impl App {
       if let Ok(fastrender::ui::OmniboxInputResolution::Search { query, .. }) =
         fastrender::ui::resolve_omnibox_input(&self.browser_state.chrome.address_bar_text)
       {
-        self.search_suggest.request(query.clone());
+        let needs_remote_suggest_poll = self.browser_state.chrome.remote_search_cache.query != query;
+        self.search_suggest.request(query);
 
         // Ensure we poll for remote suggestions even when the user pauses typing (the suggest
         // service runs on a background thread).
-        if self.browser_state.chrome.remote_search_cache.query != query {
+        if needs_remote_suggest_poll {
           ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
       }
