@@ -106,7 +106,9 @@ pub(crate) fn convert_js_to_idl_with_hints<R: JsRuntime>(
         hint
       } else {
         // Spec: https://webidl.spec.whatwg.org/#js-to-async-iterable
-        let obj = cx.as_object(v).unwrap();
+        let Some(obj) = cx.as_object(v) else {
+          return Err(type_error(cx, "async_sequence: expected object"));
+        };
         let async_iter_sym = cx
           .well_known_symbol(WellKnownSymbol::AsyncIterator)
           .map_err(WebIdlError::js)?;
@@ -300,7 +302,9 @@ fn convert_js_to_union<R: JsRuntime>(
       // Distinguishability requirement (d): when a string type is also present, a string object is
       // never converted to async_sequence, even though it might have @@iterator.
       if !types_include_string || !cx.is_string_object(v) {
-        let obj = cx.as_object(v).unwrap();
+        let Some(obj) = cx.as_object(v) else {
+          return Err(type_error(cx, "union: expected object"));
+        };
 
         let async_iter_sym = cx
           .well_known_symbol(WellKnownSymbol::AsyncIterator)
@@ -349,7 +353,9 @@ fn convert_js_to_union<R: JsRuntime>(
       .iter()
       .find_map(|t| if let IdlType::Sequence(_) = t { Some(*t) } else { None })
     {
-      let obj = cx.as_object(v).unwrap();
+      let Some(obj) = cx.as_object(v) else {
+        return Err(type_error(cx, "union: expected object"));
+      };
       let iter_sym = cx
         .well_known_symbol(WellKnownSymbol::Iterator)
         .map_err(WebIdlError::js)?;
@@ -370,7 +376,9 @@ fn convert_js_to_union<R: JsRuntime>(
       .iter()
       .find_map(|t| if let IdlType::FrozenArray(_) = t { Some(*t) } else { None })
     {
-      let obj = cx.as_object(v).unwrap();
+      let Some(obj) = cx.as_object(v) else {
+        return Err(type_error(cx, "union: expected object"));
+      };
       let iter_sym = cx
         .well_known_symbol(WellKnownSymbol::Iterator)
         .map_err(WebIdlError::js)?;

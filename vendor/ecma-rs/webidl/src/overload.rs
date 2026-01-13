@@ -80,7 +80,9 @@ pub fn resolve_overload<R: JsRuntime>(
       && s.iter().any(|o| o.types[i].contains_async_sequence_type())
       && !(s.iter().any(|o| o.types[i].contains_string_type()) && cx.is_string_object(v))
     {
-      let obj = cx.as_object(v).unwrap();
+      let Some(obj) = cx.as_object(v) else {
+        return Err(type_error(cx, "overload resolution: expected object"));
+      };
 
       let async_iter_sym = cx
         .well_known_symbol(WellKnownSymbol::AsyncIterator)
@@ -123,7 +125,9 @@ pub fn resolve_overload<R: JsRuntime>(
       let any_frozen_array = s.iter().any(|o| o.types[i].contains_frozen_array_type());
 
       if any_sequence || any_frozen_array {
-        let obj = cx.as_object(v).unwrap();
+        let Some(obj) = cx.as_object(v) else {
+          return Err(type_error(cx, "overload resolution: expected object"));
+        };
         let iter_sym = cx
           .well_known_symbol(WellKnownSymbol::Iterator)
           .map_err(WebIdlError::js)?;

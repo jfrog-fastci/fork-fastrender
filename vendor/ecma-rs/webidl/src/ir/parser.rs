@@ -501,7 +501,9 @@ pub fn parse_default_value(input: &str) -> Result<DefaultValue, ParseError> {
 }
 
 fn parse_string_literal(p: &mut Parser<'_>) -> Result<DefaultValue, ParseError> {
-  let quote = p.peek_byte().unwrap();
+  let Some(quote) = p.peek_byte() else {
+    return p.err("expected string literal");
+  };
   p.pos += 1;
   let bytes = p.input.as_bytes();
   let mut out = String::new();
