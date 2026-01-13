@@ -9,11 +9,10 @@ use base64::Engine;
 use image::{ImageFormat, Rgba, RgbaImage};
 use resvg::usvg;
 use std::io::Cursor;
+use std::fs;
 use std::sync::{Arc, Mutex};
 use tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
-
-#[cfg(feature = "direct_network")]
-use std::fs;
+use url::Url;
 
 #[test]
 fn usvg_options_for_url_does_not_enable_filesystem_resource_dir() {

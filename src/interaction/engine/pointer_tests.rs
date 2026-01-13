@@ -7148,6 +7148,7 @@ fn text_drag_drop_defers_default_insertion_until_apply_text_drop() {
     Point::new(1.0, 50.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    false,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -7284,6 +7285,7 @@ fn document_selection_drag_drop_defers_default_insertion_until_apply_text_drop()
     Point::new(199.0, 10.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    false,
     "https://example.com/base/",
     "https://example.com/base/",
   );
@@ -7324,6 +7326,7 @@ fn document_selection_drag_drop_defers_default_insertion_until_apply_text_drop()
     Point::new(1.0, 50.0),
     PointerButton::Primary,
     PointerModifiers::default(),
+    false,
     "https://example.com/base/",
     "https://example.com/base/",
   );

@@ -149,7 +149,7 @@ mod tests {
       track_id: u64::from(pkt.track_id()),
       pts_ns,
       duration_ns,
-      data: pkt.data().to_vec(),
+      data: pkt.data.as_ref().to_vec(),
       is_keyframe: false,
     };
     let decoded = decoder

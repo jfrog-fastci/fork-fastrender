@@ -21463,8 +21463,12 @@ mod build_styled_lookup_tests {
   }
 
   fn styled_node(id: usize, styles: &Arc<ComputedStyle>, children: Vec<StyledNode>) -> StyledNode {
+    let subtree_size = children
+      .iter()
+      .fold(1usize, |acc, child| acc.saturating_add(child.subtree_size));
     StyledNode {
       node_id: id,
+      subtree_size,
       node: empty_dom_node(),
       styles: Arc::clone(styles),
       starting_styles: Default::default(),

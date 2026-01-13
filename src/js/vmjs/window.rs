@@ -1205,7 +1205,7 @@ mod tests {
     WindowHost::new_with_fetcher_and_options(dom, document_url, default_test_fetcher(), options)
   }
 
-  fn make_host_state(
+  pub(super) fn make_host_state(
     dom: dom2::Document,
     document_url: impl Into<String>,
   ) -> Result<WindowHostState> {
@@ -7818,7 +7818,7 @@ mod tests {
 
 #[cfg(test)]
 mod import_map_tests {
-  use super::WindowHostState;
+  use super::tests::make_host_state;
   use crate::dom2;
   use crate::js::import_maps::{ImportMapError, SpecifierAsUrlKind};
   use selectors::context::QuirksMode;
