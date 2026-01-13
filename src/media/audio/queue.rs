@@ -563,6 +563,20 @@ mod tests {
   }
 
   #[test]
+  fn pop_into_sanitizes_nan_and_subnormals() {
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 8);
+    let sub = f32::from_bits(1);
+    assert!(!sub.is_normal());
+
+    prod.push(&[f32::NAN, sub, 1.0], Duration::ZERO);
+
+    let mut out = [123.0f32; 3];
+    let n = cons.pop_into(&mut out);
+    assert_eq!(n, 3);
+    assert_eq!(out, [0.0, 0.0, 1.0]);
+  }
+
+  #[test]
   fn concurrent_spsc_roundtrip() {
     let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 256);
     let done = Arc::new(AtomicBool::new(false));

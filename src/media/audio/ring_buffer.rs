@@ -272,6 +272,18 @@ mod tests {
     rb.pop_add_into(&mut out, 0.5);
     assert_eq!(out, vec![0.5, 0.5]);
   }
+
+  #[test]
+  fn ring_buffer_drops_nan_and_subnormal_samples() {
+    let rb = AudioRingBuffer::new(8);
+    let sub = f32::from_bits(1);
+    assert!(!sub.is_normal());
+    assert_eq!(rb.push(&[f32::NAN, sub, 1.0]), 3);
+
+    let mut out = vec![0.0; 3];
+    rb.pop_add_into(&mut out, 1.0);
+    assert_eq!(out, vec![0.0, 0.0, 1.0]);
+  }
   #[test]
   fn ring_buffer_drains_when_gain_is_zero() {
     // 200ms worth of mono 48kHz samples.

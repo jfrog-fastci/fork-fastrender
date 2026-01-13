@@ -270,6 +270,30 @@ mod tests {
   }
 
   #[test]
+  fn mixer_drops_nan_and_subnormal_samples() {
+    let mut mixer = AudioMixer::new(1, 10, Duration::from_secs(10));
+    mixer.add_stream(
+      1,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 1.0,
+      },
+    );
+
+    let sub = f32::from_bits(1);
+    assert!(!sub.is_normal());
+    mixer
+      .stream_queue_mut(1)
+      .unwrap()
+      .push_segment(seg(0, &[f32::NAN, sub, 1.0], 10))
+      .unwrap();
+
+    let mut out = vec![0.0; 3];
+    mixer.mix_into_frames(&mut out, 0, 3);
+    assert_eq!(out, vec![0.0, 0.0, 1.0]);
+  }
+
+  #[test]
   fn stream_offset_inserts_silence() {
     let mut mixer = AudioMixer::new(1, 10, Duration::from_secs(10));
     mixer.add_stream(
