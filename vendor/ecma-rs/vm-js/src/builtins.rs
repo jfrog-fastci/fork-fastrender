@@ -13073,12 +13073,17 @@ pub fn regexp_prototype_source_get(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-get-regexp.prototype.source
+  //
+  // `%RegExp.prototype%` itself is not a RegExp exotic object in vm-js. Per spec, invoking the
+  // getter with `%RegExp.prototype%` as the receiver must return `"(?:)"` instead of throwing.
   let obj = require_object(this)?;
   let intr = require_intrinsics(vm)?;
   if obj == intr.regexp_prototype() {
     let s = scope.alloc_string("(?:)")?;
     return Ok(Value::String(s));
   }
+
   let rx = require_regexp_object(scope, this)?;
   let source = scope.heap().regexp_original_source(rx)?;
   if scope.heap().get_string(source)?.is_empty() {

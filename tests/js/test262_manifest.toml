@@ -1021,6 +1021,11 @@ glob = "built-ins/RegExp/prototype/source/**"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/RegExp/prototype/source/cross-realm.js"
+status = "xfail"
+reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
+
+[[expectations]]
 glob = "built-ins/RegExp/prototype/flags/**"
 status = "pass"
 

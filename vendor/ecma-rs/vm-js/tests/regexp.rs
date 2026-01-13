@@ -458,6 +458,12 @@ fn regexp_unicode_mode_rejects_character_class_escape_ranges() {
 fn regexp_prototype_source_escapes_slash_and_line_terminators() {
   let mut rt = new_runtime();
 
+  // `%RegExp.prototype%` special-case.
+  let value = rt
+    .exec_script(r#"Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get.call(RegExp.prototype)"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "(?:)");
+
   let value = rt.exec_script(r#"new RegExp("/").source"#).unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), "\\/");
 
@@ -476,6 +482,11 @@ fn regexp_prototype_source_escapes_slash_and_line_terminators() {
   // The escaped source should be safe to embed directly in a RegExp literal.
   let value = rt
     .exec_script(r#"eval("/" + new RegExp("/").source + "/").test("/")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  let value = rt
+    .exec_script(r#"eval("/" + new RegExp("\n").source + "/").test("\n")"#)
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
