@@ -17,6 +17,7 @@ mod browser_session_scroll_restore;
 mod browser_tab_fetcher_injection;
 mod browser_tab_vmjs_smoke;
 mod browser_tab_render_interleaving;
+mod browser_tab_dom2_viewport_scroll_sync;
 mod browser_thread_base_url_across_navigations;
 mod browser_thread_cancellation;
 mod browser_thread_history_scroll_restore;

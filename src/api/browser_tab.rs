@@ -25,6 +25,7 @@ use crate::js::{
 use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::ResourceFetcher;
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
+use crate::scroll::ScrollState;
 use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::ui::TabHistory;
 use crate::web::dom::DocumentVisibilityState;
@@ -6847,6 +6848,40 @@ impl BrowserTab {
   #[cfg(test)]
   pub fn reset_renderer_dom_mapping_build_count_for_test() {
     BROWSER_TAB_RENDERER_DOM_MAPPING_BUILD_COUNT.with(|count| count.set(0));
+  }
+
+  /// Updates the viewport size in CSS px, marking the underlying `dom2` renderer state dirty.
+  ///
+  /// This is a lightweight state update used by UI integrations when the embedding window is
+  /// resized; it does **not** trigger navigation or reload the document.
+  pub fn set_viewport(&mut self, width: u32, height: u32) {
+    self.host.document.set_viewport(width, height);
+  }
+
+  /// Returns the current viewport size in CSS px, if explicitly set.
+  pub fn viewport_size_css(&self) -> Option<(u32, u32)> {
+    self.host.document.options().viewport
+  }
+
+  /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
+  ///
+  /// This is a lightweight state update used by UI integrations when the system scale factor
+  /// changes; it does **not** trigger navigation or reload the document.
+  pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
+    self.host.document.set_device_pixel_ratio(dpr);
+  }
+
+  /// Updates the full scroll state (viewport + element scroll offsets) used for hit testing.
+  ///
+  /// This is intended for UI integrations that maintain their own scroll offsets and need to keep
+  /// `Document.elementFromPoint` and DOM geometry queries consistent with the embedding UI.
+  pub fn set_scroll_state(&mut self, state: ScrollState) {
+    self.host.document.set_scroll_state(state);
+  }
+
+  /// Returns the current scroll state used by this tab.
+  pub fn scroll_state(&self) -> ScrollState {
+    self.host.document.scroll_state()
   }
 
   fn reset_event_loop(&mut self) {
