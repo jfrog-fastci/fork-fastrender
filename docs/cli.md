@@ -603,6 +603,8 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - See [`docs/chrome_accessibility.md`](chrome_accessibility.md) for recommended `dump_accesskit`
     invocations (`--named-only`, `--show-menu-bar`, `--focus-address-bar`) and how to interpret the
     output.
+  - `dump_accesskit` is a headless egui snapshot tool; it does **not** run the browser worker and
+    therefore does not include any injected page subtree (e.g. `PageA11ySnapshot`).
 
 ## Offline / cached captures
 

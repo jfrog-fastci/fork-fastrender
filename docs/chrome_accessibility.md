@@ -399,6 +399,9 @@ Limitations:
 
 - `dump_accesskit` only snapshots the **egui** backend (`egui::PlatformOutput::accesskit_update`). It
   does not exercise the renderer-chrome backend (`ui::compositor_accessibility::CompositorAccessibility`).
+- `dump_accesskit` does **not** run the browser worker, so it will not include any injected page
+  content subtree (e.g. `PageA11ySnapshot`). Use the real windowed `browser` + a platform
+  accessibility inspector when debugging page nodes.
 
 Note: on Linux, building with `--features browser_ui` requires system GUI development headers
 (X11/Wayland headers, EGL/Vulkan, etc). Real-time audio output via `--features audio_cpal`
