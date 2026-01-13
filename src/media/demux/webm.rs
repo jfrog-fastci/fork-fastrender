@@ -3,22 +3,56 @@ use crate::media::{
   MediaVideoInfo,
 };
 use matroska_demuxer::{DemuxError, Frame, MatroskaFile, TrackType};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Seek};
+
+#[derive(Debug, Clone, Copy)]
+pub struct WebmDemuxerOptions {
+  /// If enabled, `next_packet()` yields packets ordered by PTS across tracks (video + audio), using
+  /// a small bounded read-ahead buffer per track.
+  pub inter_track_reordering: bool,
+  /// Maximum number of queued packets per track when inter-track reordering is enabled.
+  pub per_track_queue_capacity: usize,
+}
+
+impl Default for WebmDemuxerOptions {
+  fn default() -> Self {
+    Self {
+      inter_track_reordering: true,
+      per_track_queue_capacity: 8,
+    }
+  }
+}
 
 pub struct WebmDemuxer<R: Read + Seek> {
   mkv: MatroskaFile<R>,
+  options: WebmDemuxerOptions,
   tracks: Vec<MediaTrackInfo>,
   timestamp_scale_ns: u64,
   /// Codec delay (nanoseconds) per track.
   codec_delay_ns: HashMap<u64, u64>,
   /// Max codec delay across supported tracks (nanoseconds).
   max_codec_delay_ns: u64,
+  /// Track IDs for which we will emit packets (currently VP9 + Opus only), in deterministic order.
+  active_track_ids: Vec<u64>,
+  /// Bounded per-track packet queues for optional inter-track reordering.
+  packet_queues: HashMap<u64, VecDeque<MediaPacket>>,
   frame: Frame,
+  reached_eof: bool,
 }
 
 impl<R: Read + Seek> WebmDemuxer<R> {
   pub fn open(reader: R) -> MediaResult<Self> {
+    Self::open_with_options(reader, WebmDemuxerOptions::default())
+  }
+
+  pub fn open_with_options(reader: R, options: WebmDemuxerOptions) -> MediaResult<Self> {
+    if options.per_track_queue_capacity == 0 {
+      return Err(MediaError::Unsupported(
+        "invalid WebM demuxer queue capacity (must be >= 1)",
+      ));
+    }
+
     let mkv = MatroskaFile::open(reader).map_err(map_demux_error)?;
     let timestamp_scale_ns = mkv.info().timestamp_scale().get();
 
@@ -73,13 +107,25 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       });
     }
 
+    let mut active_track_ids: Vec<u64> = codec_delay_ns.keys().copied().collect();
+    active_track_ids.sort_unstable();
+
+    let mut packet_queues = HashMap::new();
+    for &track_id in &active_track_ids {
+      packet_queues.insert(track_id, VecDeque::with_capacity(options.per_track_queue_capacity));
+    }
+
     Ok(Self {
       mkv,
+      options,
       tracks,
       timestamp_scale_ns,
       codec_delay_ns,
       max_codec_delay_ns,
+      active_track_ids,
+      packet_queues,
       frame: Frame::default(),
+      reached_eof: false,
     })
   }
 
@@ -87,13 +133,14 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     &self.tracks
   }
 
-  pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
+  fn read_next_supported_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
     loop {
       let has_frame = self
         .mkv
         .next_frame(&mut self.frame)
         .map_err(map_demux_error)?;
       if !has_frame {
+        self.reached_eof = true;
         return Ok(None);
       }
 
@@ -130,6 +177,71 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     }
   }
 
+  fn fill_reorder_queues(&mut self) -> MediaResult<()> {
+    if self.reached_eof {
+      return Ok(());
+    }
+
+    while self
+      .active_track_ids
+      .iter()
+      .any(|id| self.packet_queues.get(id).is_some_and(|q| q.is_empty()))
+    {
+      let Some(pkt) = self.read_next_supported_packet()? else {
+        break;
+      };
+
+      let q = self
+        .packet_queues
+        .get_mut(&pkt.track_id)
+        .expect("queue must exist for supported track");
+      if q.len() >= self.options.per_track_queue_capacity {
+        return Err(MediaError::Demux(format!(
+          "WebM inter-track reorder buffer overflow (track {}, cap {})",
+          pkt.track_id, self.options.per_track_queue_capacity
+        )));
+      }
+      q.push_back(pkt);
+    }
+
+    Ok(())
+  }
+
+  fn pop_next_reordered_packet(&mut self) -> Option<MediaPacket> {
+    let mut best_track: Option<u64> = None;
+    let mut best_pts_ns: u64 = 0;
+
+    for &track_id in &self.active_track_ids {
+      let Some(front) = self.packet_queues.get(&track_id).and_then(|q| q.front()) else {
+        continue;
+      };
+
+      match best_track {
+        None => {
+          best_track = Some(track_id);
+          best_pts_ns = front.pts_ns;
+        }
+        Some(best_id) => {
+          if front.pts_ns < best_pts_ns || (front.pts_ns == best_pts_ns && track_id < best_id) {
+            best_track = Some(track_id);
+            best_pts_ns = front.pts_ns;
+          }
+        }
+      }
+    }
+
+    best_track.and_then(|track_id| self.packet_queues.get_mut(&track_id)?.pop_front())
+  }
+
+  pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
+    if !self.options.inter_track_reordering || self.active_track_ids.len() <= 1 {
+      return self.read_next_supported_packet();
+    }
+
+    self.fill_reorder_queues()?;
+    Ok(self.pop_next_reordered_packet())
+  }
+
   pub fn seek(&mut self, time_ns: u64) -> MediaResult<()> {
     if self.timestamp_scale_ns == 0 {
       return Err(MediaError::Unsupported("invalid Matroska timestamp scale"));
@@ -145,6 +257,12 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     let seek_timestamp = target_ns
       .saturating_add(self.timestamp_scale_ns.saturating_sub(1))
       / self.timestamp_scale_ns;
+
+    // Seeking invalidates any queued packets from the old position.
+    for q in self.packet_queues.values_mut() {
+      q.clear();
+    }
+    self.reached_eof = false;
 
     self.mkv.seek(seek_timestamp).map_err(|err| match err {
       // When seeking in damaged/unindexed files, the demuxer may not be able to locate clusters.
@@ -240,5 +358,35 @@ mod tests {
     }
     assert!(post_seek_video, "expected VP9 packet after seek");
     assert!(post_seek_audio, "expected Opus packet after seek");
+  }
+
+  #[test]
+  fn next_packet_pts_are_non_decreasing_across_tracks() {
+    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let mut demuxer = WebmDemuxer::open_with_options(
+      Cursor::new(bytes.as_slice()),
+      WebmDemuxerOptions {
+        inter_track_reordering: true,
+        per_track_queue_capacity: 8,
+      },
+    )
+    .expect("open webm");
+
+    let mut last_pts_ns = None::<u64>;
+    for _ in 0..500 {
+      let Some(pkt) = demuxer.next_packet().expect("read packet") else {
+        break;
+      };
+      if let Some(prev) = last_pts_ns {
+        assert!(
+          pkt.pts_ns >= prev,
+          "expected non-decreasing PTS, got {}ns then {}ns (track {})",
+          prev,
+          pkt.pts_ns,
+          pkt.track_id
+        );
+      }
+      last_pts_ns = Some(pkt.pts_ns);
+    }
   }
 }
