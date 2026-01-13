@@ -11,6 +11,7 @@
 //! `docs/media_clocking.md`.
 
 use crate::geometry::Size;
+use crate::error::RenderError;
 use crate::paint::display_list::ImageData;
 use std::sync::Arc;
 use thiserror::Error;
@@ -118,6 +119,9 @@ pub type MediaResult<T> = std::result::Result<T, MediaError>;
 pub enum MediaError {
   #[error("i/o error: {0}")]
   Io(#[from] std::io::Error),
+
+  #[error("render error: {0}")]
+  Render(#[from] RenderError),
 
   #[error("unsupported: {0}")]
   Unsupported(&'static str),

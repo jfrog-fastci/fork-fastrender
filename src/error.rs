@@ -11,6 +11,7 @@
 //! proper error trait implementations.
 
 use crate::render_control::StageHeartbeat;
+use crate::media::MediaError;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::Arc;
@@ -286,6 +287,18 @@ impl Error {
       self,
       Error::Layout(LayoutError::Timeout { .. }) | Error::Render(RenderError::Timeout { .. })
     )
+  }
+}
+
+impl From<MediaError> for Error {
+  fn from(err: MediaError) -> Self {
+    match err {
+      MediaError::Render(render_err) => Error::Render(render_err),
+      MediaError::Io(io_err) => Error::Io(io_err),
+      MediaError::Unsupported(message) => Error::Other(format!("[media] unsupported: {message}")),
+      MediaError::Demux(message) => Error::Other(format!("[media] demux error: {message}")),
+      MediaError::Decode(message) => Error::Other(format!("[media] decode error: {message}")),
+    }
   }
 }
 

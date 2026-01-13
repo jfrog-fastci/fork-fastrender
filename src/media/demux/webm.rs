@@ -1,10 +1,52 @@
+use crate::error::{RenderError, RenderStage};
 use crate::media::{
   MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
   MediaVideoInfo,
 };
+use crate::render_control::{check_root, check_root_periodic};
 use matroska_demuxer::{DemuxError, Frame, MatroskaFile, TrackType};
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Seek};
+use std::io::{self, Read, Seek, SeekFrom};
+
+const WEBM_DEMUX_DEADLINE_STRIDE: usize = 1024;
+const WEBM_DEMUX_IO_DEADLINE_STRIDE: usize = 8192;
+
+struct DeadlineReader<R> {
+  inner: R,
+  deadline_counter: usize,
+}
+
+impl<R> DeadlineReader<R> {
+  fn new(inner: R) -> Self {
+    Self {
+      inner,
+      deadline_counter: 0,
+    }
+  }
+
+  fn check_deadline(&mut self) -> io::Result<()> {
+    check_root_periodic(
+      &mut self.deadline_counter,
+      WEBM_DEMUX_IO_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )
+    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+  }
+}
+
+impl<R: Read> Read for DeadlineReader<R> {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    self.check_deadline()?;
+    self.inner.read(buf)
+  }
+}
+
+impl<R: Seek> Seek for DeadlineReader<R> {
+  fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+    self.check_deadline()?;
+    self.inner.seek(pos)
+  }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct WebmDemuxerOptions {
@@ -25,7 +67,7 @@ impl Default for WebmDemuxerOptions {
 }
 
 pub struct WebmDemuxer<R: Read + Seek> {
-  mkv: MatroskaFile<R>,
+  mkv: MatroskaFile<DeadlineReader<R>>,
   options: WebmDemuxerOptions,
   tracks: Vec<MediaTrackInfo>,
   timestamp_scale_ns: u64,
@@ -47,13 +89,15 @@ impl<R: Read + Seek> WebmDemuxer<R> {
   }
 
   pub fn open_with_options(reader: R, options: WebmDemuxerOptions) -> MediaResult<Self> {
+    check_root(RenderStage::Paint).map_err(MediaError::from)?;
+
     if options.per_track_queue_capacity == 0 {
       return Err(MediaError::Unsupported(
         "invalid WebM demuxer queue capacity (must be >= 1)",
       ));
     }
 
-    let mkv = MatroskaFile::open(reader).map_err(map_demux_error)?;
+    let mkv = MatroskaFile::open(DeadlineReader::new(reader)).map_err(map_demux_error)?;
     let timestamp_scale_ns = mkv.info().timestamp_scale().get();
 
     let mut codec_delay_ns = HashMap::new();
@@ -134,7 +178,17 @@ impl<R: Read + Seek> WebmDemuxer<R> {
   }
 
   fn read_next_supported_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
+    check_root(RenderStage::Paint).map_err(MediaError::from)?;
+    let mut deadline_counter = 0usize;
+
     loop {
+      check_root_periodic(
+        &mut deadline_counter,
+        WEBM_DEMUX_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )
+      .map_err(MediaError::from)?;
+
       let has_frame = self
         .mkv
         .next_frame(&mut self.frame)
@@ -234,6 +288,8 @@ impl<R: Read + Seek> WebmDemuxer<R> {
   }
 
   pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
+    check_root(RenderStage::Paint).map_err(MediaError::from)?;
+
     if !self.options.inter_track_reordering || self.active_track_ids.len() <= 1 {
       return self.read_next_supported_packet();
     }
@@ -243,6 +299,8 @@ impl<R: Read + Seek> WebmDemuxer<R> {
   }
 
   pub fn seek(&mut self, time_ns: u64) -> MediaResult<()> {
+    check_root(RenderStage::Paint).map_err(MediaError::from)?;
+
     if self.timestamp_scale_ns == 0 {
       return Err(MediaError::Unsupported("invalid Matroska timestamp scale"));
     }
@@ -276,7 +334,15 @@ impl<R: Read + Seek> WebmDemuxer<R> {
 
 fn map_demux_error(err: DemuxError) -> MediaError {
   match err {
-    DemuxError::IoError(err) => MediaError::Io(err),
+    DemuxError::IoError(err) => {
+      if let Some(render_err) = err
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<RenderError>())
+      {
+        return MediaError::Render(render_err.clone());
+      }
+      MediaError::Io(err)
+    }
     other => MediaError::Demux(other.to_string()),
   }
 }
@@ -286,12 +352,54 @@ mod tests {
   use super::*;
   use std::io::Cursor;
   use std::path::PathBuf;
+  use std::time::Duration;
 
   fn webm_fixture_bytes(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
       .join("tests/fixtures/media")
       .join(name);
     std::fs::read(&path).expect("read WebM fixture")
+  }
+
+  struct TestRenderDelayGuard;
+
+  impl TestRenderDelayGuard {
+    fn set(ms: Option<u64>) -> Self {
+      crate::render_control::set_test_render_delay_ms(ms);
+      Self
+    }
+  }
+
+  impl Drop for TestRenderDelayGuard {
+    fn drop(&mut self) {
+      crate::render_control::set_test_render_delay_ms(None);
+    }
+  }
+
+  #[test]
+  fn demux_respects_render_deadline() {
+    // Use a delay larger than the overall timeout so a single deadline check reliably triggers a
+    // timeout regardless of host speed/caching.
+    let _guard = TestRenderDelayGuard::set(Some(50));
+
+    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let mut demuxer = WebmDemuxer::open(Cursor::new(bytes.as_slice())).expect("open webm");
+
+    let deadline = crate::render_control::RenderDeadline::new(Some(Duration::from_millis(10)), None);
+    let err = crate::render_control::with_deadline(Some(&deadline), || demuxer.next_packet())
+      .expect_err("expected timeout");
+
+    match &err {
+      MediaError::Render(RenderError::Timeout { .. }) => {}
+      other => panic!("expected render timeout, got {other:?}"),
+    }
+
+    let top: crate::error::Error = err.into();
+    assert!(top.is_timeout(), "expected top-level timeout, got {top:?}");
+    match top {
+      crate::error::Error::Render(RenderError::Timeout { .. }) => {}
+      other => panic!("expected top-level render timeout, got {other:?}"),
+    }
   }
 
   #[test]
