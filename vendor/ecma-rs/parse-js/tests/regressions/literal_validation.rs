@@ -203,7 +203,7 @@ fn annex_b_incomplete_hex_and_unicode_regex_escapes_are_identity_in_non_unicode_
 #[test]
 fn incomplete_hex_and_unicode_regex_escapes_are_errors_in_unicode_mode() {
   // UnicodeMode (`/u` or `/v`) uses the stricter grammar where incomplete escapes are early errors.
-  for src in ["/\\xa/u", "/\\u/u", "/\\ua/u"] {
+  for src in ["/\\xa/u", "/\\u/u", "/\\ua/u", "/\\xa/v", "/\\u/v", "/\\ua/v"] {
     let err = parse(src).unwrap_err();
     assert_eq!(
       err.typ,
@@ -215,7 +215,18 @@ fn incomplete_hex_and_unicode_regex_escapes_are_errors_in_unicode_mode() {
 
 #[test]
 fn unicode_mode_invalid_regex_escapes_are_rejected() {
-  for src in ["/\\a/u", "/[\\a]/u", "/\\c!/u", "/\\01/u", "/[\\1]/u"] {
+  for src in [
+    "/\\a/u",
+    "/[\\a]/u",
+    "/\\c!/u",
+    "/\\01/u",
+    "/[\\1]/u",
+    "/\\a/v",
+    "/[\\a]/v",
+    "/\\c!/v",
+    "/\\01/v",
+    "/[\\1]/v",
+  ] {
     let err = parse(src).unwrap_err();
     assert_eq!(
       err.typ,
@@ -227,6 +238,8 @@ fn unicode_mode_invalid_regex_escapes_are_rejected() {
   // Still accept valid unicode-mode identity escapes.
   assert!(parse("/\\^/u").is_ok());
   assert!(parse("/[\\-]/u").is_ok());
+  assert!(parse("/\\^/v").is_ok());
+  assert!(parse("/[\\-]/v").is_ok());
 }
 
 #[test]
