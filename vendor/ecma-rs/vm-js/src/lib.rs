@@ -173,6 +173,7 @@ mod regexp;
 mod regexp_case_folding;
 mod regexp_unicode_property_strings;
 mod regexp_unicode_resolver;
+mod regexp_unicode_tables;
 mod source;
 mod spec_ops;
 mod string;
