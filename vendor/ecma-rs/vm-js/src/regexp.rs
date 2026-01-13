@@ -1371,7 +1371,7 @@ impl RegExpProgram {
                 }
                 cmp_i = cmp_i.wrapping_add(1);
 
-                let (cap_cp, cap_len) = utf16_code_point_at(input, cap_i, cap_end);
+                let (cap_cp, cap_len) = utf16_code_point_at_bounded(input, cap_i, cap_end);
                 if cap_len == 0 {
                   break;
                 }
@@ -1555,7 +1555,7 @@ impl RegExpProgram {
                 }
                 cmp_i = cmp_i.wrapping_add(1);
 
-                let (cap_cp, cap_len) = utf16_code_point_at(input, cap_i, cap_end);
+                let (cap_cp, cap_len) = utf16_code_point_at_bounded(input, cap_i, cap_end);
                 if cap_len == 0 {
                   break;
                 }
@@ -2524,7 +2524,7 @@ fn is_utf16_code_point_boundary(input: &[u16], index: usize) -> bool {
 ///   trailing surrogate, decode as a single supplementary code point and consume 2 code units.
 /// - Otherwise decode the single code unit as a code point and consume 1 code unit.
 #[inline]
-fn utf16_code_point_at(units: &[u16], index: usize, end: usize) -> (u32, usize) {
+fn utf16_code_point_at_bounded(units: &[u16], index: usize, end: usize) -> (u32, usize) {
   debug_assert!(index <= end);
   if index >= end {
     return (0, 0);
