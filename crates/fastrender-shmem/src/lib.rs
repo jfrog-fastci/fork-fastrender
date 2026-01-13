@@ -95,9 +95,18 @@ use std::io;
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 
-const SHMEM_ID_PREFIX: &str = "fastrender-shm-";
-const SHMEM_ID_RANDOM_BYTES: usize = 16; // 128 bits
-const MAX_SHMEM_ID_LEN: usize = 64;
+/// Maximum length of the OS-level name passed to `shm_open`, including the leading `/`.
+///
+/// Many platforms allow longer names, but macOS commonly enforces `PSHMNAMLEN = 31` bytes.
+/// We keep the strictest known limit globally to avoid portability bugs.
+const MAX_SHMEM_NAME_LEN: usize = 31;
+
+/// Maximum length of the user-facing shared-memory identifier (without the leading `/`).
+const MAX_SHMEM_ID_LEN: usize = MAX_SHMEM_NAME_LEN - 1;
+
+// Keep this prefix extremely short so the random payload has room under macOS's strict limit.
+const SHMEM_ID_PREFIX: &str = "fr";
+const SHMEM_ID_RANDOM_BYTES: usize = 14; // 112 bits
 
 /// Generates a fresh shared-memory identifier suitable for POSIX `shm_open`.
 ///
@@ -106,14 +115,19 @@ const MAX_SHMEM_ID_LEN: usize = 64;
 /// browser. A compromised renderer that can guess another tab's shared-memory identifier can open
 /// and read/write its contents (owner-only mode bits don't help against same-UID attackers).
 ///
-/// Therefore, identifiers must be **unguessable**: we use 128 bits of OS randomness.
+/// Therefore, identifiers must be **unguessable**. We use OS randomness and encode it as
+/// lowercase hex. The strictest common `shm_open` name limit (macOS `PSHMNAMLEN = 31` bytes,
+/// including the required leading `/`) constrains the identifier length, so we currently use
+/// 112 bits of randomness (`SHMEM_ID_RANDOM_BYTES = 14`).
 ///
 /// ## Invariants
-/// - Lowercase hex (ASCII-only), with a stable `fastrender-shm-` prefix.
+/// - Lowercase hex (ASCII-only), with a short stable prefix.
 /// - Contains only `[a-z0-9-]`.
 /// - Does **not** include a leading `/`; POSIX requires one for `shm_open`, but we add it only at
 ///   the OS call-site.
-/// - Total length is kept well under typical OS limits (<= 64 chars).
+/// - Total length is capped at [`MAX_SHMEM_ID_LEN`] (30 bytes today) so the final `shm_open` name
+///   including the required leading `/` fits within [`MAX_SHMEM_NAME_LEN`] (31 bytes). This matches
+///   macOS's `PSHMNAMLEN = 31` limit.
 ///
 /// ## Panics
 /// Panics if OS randomness is unavailable. Falling back to predictable identifiers would defeat
@@ -131,11 +145,12 @@ pub fn generate_shmem_id() -> String {
     out.push(HEX[(b & 0x0f) as usize] as char);
   }
 
-  debug_assert!(!out.contains('/'));
-  debug_assert!(
-    out.len() <= 64,
-    "shared memory ids should remain well under OS limits: got {}",
-    out.len()
+  debug_assert!(!out.contains('/'), "shared memory id must not contain '/'");
+  assert!(
+    out.len() <= MAX_SHMEM_ID_LEN,
+    "shared memory id too long: {} bytes (max {})",
+    out.len(),
+    MAX_SHMEM_ID_LEN
   );
   out
 }
@@ -1016,11 +1031,28 @@ mod tests {
       let id = generate_shmem_id();
       assert!(!id.is_empty());
       assert!(id.starts_with(SHMEM_ID_PREFIX));
-      assert!(id.len() <= 64);
-      assert!(id
-        .as_bytes()
-        .iter()
-        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')));
+      assert!(id.is_ascii());
+      assert!(
+        id.len() <= MAX_SHMEM_ID_LEN,
+        "id length {} exceeded MAX_SHMEM_ID_LEN={MAX_SHMEM_ID_LEN}",
+        id.len()
+      );
+      assert!(
+        id.as_bytes()
+          .iter()
+          .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')),
+        "id contains unexpected characters: {id:?}"
+      );
+      assert!(!id.contains('/'), "id must not contain '/': {id:?}");
+      #[cfg(unix)]
+      {
+        let name = posix_shm_name(&id).expect("posix_shm_name should accept generated ids");
+        assert!(
+          name.as_bytes().len() <= MAX_SHMEM_NAME_LEN,
+          "shm_open name length {} exceeded MAX_SHMEM_NAME_LEN={MAX_SHMEM_NAME_LEN}",
+          name.as_bytes().len()
+        );
+      }
     }
   }
 
