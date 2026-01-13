@@ -4256,17 +4256,19 @@ impl App {
             theme_sizing.padding,
           ));
 
-        let presentation = fastrender::ui::classify_warning_toast(Some(&toast_text)).unwrap_or(
-          fastrender::ui::WarningToastPresentation {
-            title: "Warning".to_string(),
-            summary: None,
-            icon: fastrender::ui::WarningToastIcon::Info,
-          },
-        );
+        let presentation =
+          fastrender::ui::classify_warning_toast(Some(&toast_text)).unwrap_or_else(|| {
+            fastrender::ui::WarningToastPresentation {
+              title: fastrender::ui::notifications::derive_warning_toast_title(&toast_text),
+              summary: None,
+              icon: fastrender::ui::WarningToastIcon::WarningInsecure,
+            }
+          });
         let title_text = presentation.title.clone();
         let summary_text = presentation.summary.clone();
         let icon = match presentation.icon {
           fastrender::ui::WarningToastIcon::Info => fastrender::ui::BrowserIcon::Info,
+          fastrender::ui::WarningToastIcon::ViewportClamp => fastrender::ui::BrowserIcon::ZoomOut,
           fastrender::ui::WarningToastIcon::WarningInsecure => {
             fastrender::ui::BrowserIcon::WarningInsecure
           }
@@ -4285,7 +4287,7 @@ impl App {
               let icon_resp = fastrender::ui::icon_tinted(ui, icon, icon_side, accent_color);
               let icon_a11y_label = format!("Warning: {title_text}");
               icon_resp.widget_info(move || {
-                egui::WidgetInfo::labeled(egui::WidgetType::Label, icon_a11y_label.clone())
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, icon_a11y_label)
               });
 
               // Make the title an explicit, focusable control so it is discoverable by both
@@ -4316,7 +4318,7 @@ impl App {
 
               // Expose the title as an expand/collapse control to assistive tech (AccessKit) so
               // screen readers can announce the expanded/collapsed state.
-              let title_a11y_label = format!("Warning details: {title_text}");
+              let title_a11y_label = format!("Warning: {title_text}");
               title_resp.widget_info({
                 let label = title_a11y_label.clone();
                 move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
@@ -4345,9 +4347,8 @@ impl App {
                   "Dismiss",
                   true,
                 );
-                close_resp.widget_info(|| {
-                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss warning")
-                });
+                close_resp
+                  .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss"));
                 if close_resp.clicked() {
                   dismiss = true;
                 }

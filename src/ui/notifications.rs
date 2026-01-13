@@ -3,6 +3,43 @@ use std::time::{Duration, Instant};
 /// Default duration for transient warning toasts.
 pub const WARNING_TOAST_DEFAULT_TTL: Duration = Duration::from_secs(4);
 
+/// Maximum number of characters to show in the collapsed toast title before truncating.
+///
+/// Keep this relatively small so warning toasts don't grow excessively wide, while still allowing
+/// enough context to disambiguate warnings.
+pub const WARNING_TOAST_TITLE_MAX_CHARS: usize = 100;
+
+const WARNING_TOAST_FALLBACK_TITLE: &str = "Unspecified warning";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarningToastText {
+  /// Short, single-line title derived from the warning text.
+  pub title: String,
+  /// Full warning details intended for hover/expanded display.
+  pub details: String,
+}
+
+/// Split raw warning text into a short title + full details.
+///
+/// - Title: first non-empty line (trimmed), truncated with ellipsis.
+/// - Details: full warning text (trimmed).
+pub fn split_warning_toast_text(text: &str) -> WarningToastText {
+  let details = text.trim().to_string();
+  let first_non_empty_line = details
+    .lines()
+    .map(|line| line.trim())
+    .find(|line| !line.is_empty());
+
+  let title_raw = first_non_empty_line.unwrap_or(WARNING_TOAST_FALLBACK_TITLE);
+  let title = truncate_chars(title_raw, WARNING_TOAST_TITLE_MAX_CHARS);
+
+  WarningToastText { title, details }
+}
+
+pub fn derive_warning_toast_title(text: &str) -> String {
+  split_warning_toast_text(text).title
+}
+
 #[derive(Debug, Clone)]
 pub struct WarningToast {
   pub text: String,
@@ -74,6 +111,7 @@ impl WarningToastState {
 pub enum WarningToastIcon {
   Info,
   WarningInsecure,
+  ViewportClamp,
 }
 
 /// User-facing presentation for a warning string shown in a toast.
@@ -192,24 +230,22 @@ pub fn classify_warning_toast(warning: Option<&str>) -> Option<WarningToastPrese
     return None;
   }
 
-  // Known warning prefixes: special-case stable titles/icons so the toast header stays consistent
-  // even when the warning details include dynamic values.
+  let title = derive_warning_toast_title(warning);
+
+  // Known warning patterns: special-case icons/summaries when possible.
   if warning.starts_with("Viewport clamped:") || warning == "Viewport clamped" {
     return Some(WarningToastPresentation {
-      title: "Viewport clamped".to_string(),
+      title,
       summary: viewport_clamped_summary(warning)
         .or_else(|| Some("Viewport was reduced to stay within safety limits.".to_string())),
-      icon: WarningToastIcon::WarningInsecure,
+      icon: WarningToastIcon::ViewportClamp,
     });
   }
 
-  let first_line = warning.lines().next().unwrap_or(warning).trim();
-  let summary = (!first_line.is_empty()).then(|| truncate_chars(first_line, 160));
-
   Some(WarningToastPresentation {
-    title: "Warning".to_string(),
-    summary,
-    icon: WarningToastIcon::Info,
+    title,
+    summary: None,
+    icon: WarningToastIcon::WarningInsecure,
   })
 }
 
@@ -286,19 +322,46 @@ mod tests {
   fn classify_warning_toast_viewport_clamped() {
     let input = "Viewport clamped: requested viewport_css=(800, 600) dpr=2.000 → viewport_css=(800, 600) dpr=1.000 (pixmap_px=800x600; limits: max_dim_px=8192 max_pixels=50000000)";
     let presentation = classify_warning_toast(Some(input)).unwrap();
-    assert_eq!(presentation.title, "Viewport clamped");
+    assert_eq!(presentation.title, derive_warning_toast_title(input));
     assert_eq!(
       presentation.summary.as_deref(),
       Some("800×600 @ 2 → 800×600 @ 1")
     );
-    assert_eq!(presentation.icon, WarningToastIcon::WarningInsecure);
+    assert_eq!(presentation.icon, WarningToastIcon::ViewportClamp);
   }
 
   #[test]
   fn classify_warning_toast_generic() {
     let presentation = classify_warning_toast(Some("Something went wrong")).unwrap();
-    assert_eq!(presentation.title, "Warning");
-    assert_eq!(presentation.summary.as_deref(), Some("Something went wrong"));
-    assert_eq!(presentation.icon, WarningToastIcon::Info);
+    assert_eq!(presentation.title, "Something went wrong");
+    assert_eq!(presentation.summary, None);
+    assert_eq!(presentation.icon, WarningToastIcon::WarningInsecure);
+  }
+
+  #[test]
+  fn split_warning_toast_title_uses_first_non_empty_line() {
+    let out = split_warning_toast_text("\n\n  First line  \nSecond line\n");
+    assert_eq!(out.title, "First line");
+    assert_eq!(out.details, "First line  \nSecond line");
+  }
+
+  #[test]
+  fn split_warning_toast_title_truncates_long_lines() {
+    let long = "a".repeat(WARNING_TOAST_TITLE_MAX_CHARS + 10);
+    let out = split_warning_toast_text(&long);
+    assert!(
+      out.title.ends_with('…'),
+      "expected title to end with ellipsis, got {:?}",
+      out.title
+    );
+    assert_eq!(out.title.chars().count(), WARNING_TOAST_TITLE_MAX_CHARS + 1);
+    assert_eq!(out.details, long);
+  }
+
+  #[test]
+  fn split_warning_toast_empty_string_is_robust() {
+    let out = split_warning_toast_text("   \n\t  ");
+    assert_eq!(out.title, WARNING_TOAST_FALLBACK_TITLE);
+    assert_eq!(out.details, "");
   }
 }
