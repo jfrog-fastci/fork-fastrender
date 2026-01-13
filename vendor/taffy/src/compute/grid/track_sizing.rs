@@ -886,25 +886,36 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
   let mut prefix_none: Vec<u32> = Vec::with_capacity(other_axis_tracks.len() + 1);
   prefix_sum.push(0.0);
   prefix_none.push(0);
+  let mut running_sum = 0.0;
+  let mut running_none = 0u32;
   for track in other_axis_tracks.iter() {
-    let estimate = get_track_size_estimate(track, other_axis_available_space, tree)
-      .map(|v| v + track.content_alignment_adjustment);
-    prefix_sum.push(prefix_sum.last().copied().unwrap() + estimate.unwrap_or(0.0));
-    prefix_none.push(prefix_none.last().copied().unwrap() + u32::from(estimate.is_none()));
+    match get_track_size_estimate(track, other_axis_available_space, tree) {
+      Some(v) => {
+        running_sum += v + track.content_alignment_adjustment;
+      }
+      None => {
+        running_none += 1;
+      }
+    }
+    prefix_sum.push(running_sum);
+    prefix_none.push(running_none);
   }
 
-  let sum_range = |range: core::ops::Range<usize>| -> Option<f32> {
+  #[inline(always)]
+  fn sum_range(prefix_sum: &[f32], prefix_none: &[u32], range: core::ops::Range<usize>) -> Option<f32> {
     if prefix_none[range.end] - prefix_none[range.start] > 0 {
       None
     } else {
       Some(prefix_sum[range.end] - prefix_sum[range.start])
     }
-  };
+  }
 
+  let other_axis = axis.other();
   for item in items.iter_mut() {
     let mut available_space = Size::NONE;
-    let other_axis_size = sum_range(item.track_range_excluding_lines(axis.other()));
-    available_space.set(axis.other(), other_axis_size);
+    let other_axis_size =
+      sum_range(&prefix_sum, &prefix_none, item.track_range_excluding_lines(other_axis));
+    available_space.set(other_axis, other_axis_size);
     item.available_space_cache = Some(available_space);
   }
 
