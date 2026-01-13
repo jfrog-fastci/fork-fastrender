@@ -1861,6 +1861,11 @@ impl<Host: 'static> EventLoop<Host> {
       record_stage(StageHeartbeat::Script);
     }
 
+    // Animation frame turns represent a rendering opportunity, which ends any active idle period.
+    // Ensure a subsequent idle period computes a fresh deadline rather than reusing the previous
+    // one (which may have been clamped by an earlier pending rAF).
+    self.idle_period_deadline = None;
+
     // Integrate renderer-level cancellation/deadlines.
     let stage = render_control::active_stage().unwrap_or(self.default_deadline_stage);
     render_control::check_active(stage)?;
@@ -4459,6 +4464,44 @@ mod tests {
       "expected timeRemaining() to shrink across an idle period even when microtasks run between callbacks; first={}ms second={}ms",
       host.remaining[0],
       host.remaining[1]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn animation_frame_turn_clears_idle_period_deadline() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      raf_ran: bool,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    // Keep a rAF callback pending so the idle period deadline is clamped by a rendering budget.
+    event_loop.request_animation_frame(|host, _event_loop, _timestamp| {
+      host.raf_ran = true;
+      Ok(())
+    })?;
+
+    event_loop.request_idle_callback(None, |_host, _event_loop, did_timeout, _remaining_ms| {
+      assert!(!did_timeout);
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert!(event_loop.run_next_task(&mut host)?, "expected idle callback task to run");
+    assert!(
+      event_loop.idle_period_deadline.is_some(),
+      "expected idle callback to initialize an idle period deadline"
+    );
+
+    event_loop.run_animation_frame(&mut host)?;
+    assert!(host.raf_ran, "expected rAF callback to run");
+    assert!(
+      event_loop.idle_period_deadline.is_none(),
+      "animation frame turns should end an idle period and clear its deadline"
     );
     Ok(())
   }
