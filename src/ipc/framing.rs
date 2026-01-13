@@ -6,7 +6,11 @@ use super::error::IpcError;
 ///
 /// This is intentionally small to cap memory usage and avoid unbounded allocations when parsing a
 /// length-prefixed protocol.
-pub const MAX_IPC_MESSAGE_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
+///
+/// The cap is sized to safely accommodate the largest *allowed* WebSocket payload (4 MiB) plus
+/// serialization overhead for IPC envelopes. Keep this value in sync with any IPC-level limits
+/// enforced by the network process once WebSocket traffic is proxied over renderer↔network IPC.
+pub const MAX_IPC_MESSAGE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 
 /// Write a single length-prefixed frame to `writer`.
 ///
@@ -84,10 +88,27 @@ mod tests {
   }
 
   #[test]
+  fn rejects_length_just_over_cap() {
+    // A regression should fail with `FrameTooLarge` (not `UnexpectedEof`) and must not attempt to
+    // read/allocate the claimed payload.
+    let oversized_len: u32 = (MAX_IPC_MESSAGE_BYTES + 1)
+      .try_into()
+      .expect("MAX_IPC_MESSAGE_BYTES should fit in u32 for framing");
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&oversized_len.to_le_bytes());
+
+    let mut cursor = Cursor::new(buf);
+    let err = read_frame(&mut cursor).unwrap_err();
+    assert!(
+      matches!(err, IpcError::FrameTooLarge { .. }),
+      "unexpected error: {err:?}"
+    );
+  }
+
+  #[test]
   fn eof_is_an_error() {
     let mut cursor = Cursor::new(vec![0, 1, 2]); // 3 bytes; incomplete u32 prefix.
     let err = read_frame(&mut cursor).unwrap_err();
     assert!(matches!(err, IpcError::UnexpectedEof));
   }
 }
-
