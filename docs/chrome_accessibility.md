@@ -70,11 +70,31 @@ When you need “screen reader bounds for a layout rect”, the rule is:
 3. Offset is automatically handled because `InputMapping` already incorporates the `image_rect_points.min` origin.
 4. If the AccessKit adapter expects **physical pixels**, multiply points by `pixels_per_point` (or use the adapter’s helper if it exposes one).
 
+In the windowed `browser` app, the “content offset” (toolbar height, menu bar, etc.) is reflected in
+where the page pixmap is drawn:
+
+- The UI records the page image rect in points (see `App::content_rect_points` in
+  [`src/bin/browser.rs`](../src/bin/browser.rs)).
+- `InputMapping { image_rect_points, viewport_css }` uses that rect as its origin, so conversions
+  automatically include the chrome-to-content offset.
+
 If bounds appear “shifted”:
 
 - check whether you accidentally used **document/page-space** instead of **viewport-local** coordinates (viewport-local should already reflect scrolling),
 - check whether you forgot the **content offset** (the page is drawn below the chrome toolbar),
 - check whether you mixed **points** and **physical pixels** (`pixels_per_point` / `Window::scale_factor()` mismatches).
+
+### Where viewport-local CSS rects come from (content)
+
+FastRender has existing geometry helpers that already return **viewport-local CSS pixels** (i.e.
+translated by `-scroll_state.viewport`), matching the convention needed for overlay placement and
+event hit-testing:
+
+- [`src/api/dom2_geometry.rs`](../src/api/dom2_geometry.rs): `Dom2GeometryContext::{border_box_in_viewport, padding_box_in_viewport, content_box_in_viewport, scrollport_box_in_viewport}`.
+
+These are primarily used by DOM/JS APIs (IntersectionObserver/ResizeObserver-style geometry), but
+they are also the kind of building blocks we’ll want when wiring content accessibility bounds into
+AccessKit in the future.
 
 ---
 
