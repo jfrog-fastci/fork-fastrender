@@ -220,6 +220,33 @@ Implementation note: keep the `UNICODE_VERSION` constant in
 `xtask/src/generate_regexp_unicode_property_strings.rs` aligned with this policy and with test262’s
 generated headers.
 
+## Updating to a new Unicode version (when test262 updates)
+
+Do **not** bump Unicode versions opportunistically: the correctness oracle for this code is the
+vendored test262 corpus, and the generated RegExp property tests are explicitly pinned to a
+concrete Unicode version in their file headers.
+
+When test262 updates its generated property-escape tests to a new Unicode version:
+
+1. **Update the UCD snapshot**
+   * Add a new directory under `tools/unicode/` (e.g. `tools/unicode/ucd-18.0.0/`) containing the
+     same set of input text files (`PropertyAliases.txt`, `PropertyValueAliases.txt`,
+     `DerivedBinaryProperties.txt`, `DerivedGeneralCategory.txt`, `Scripts.txt`,
+     `ScriptExtensions.txt`, `emoji-data.txt`, `CaseFolding.txt`).
+2. **Update generator code that hard-codes the snapshot path/version string**
+   * `vendor/ecma-rs/vm-js/src/bin/generate_regexp_unicode_tables.rs` (`input_dir` + generated header)
+   * `vendor/ecma-rs/vm-js/src/bin/gen_unicode_case_folding.rs` (`input` path + header)
+   * `xtask/src/generate_regexp_unicode_property_strings.rs` (`UNICODE_VERSION`)
+3. **Update pinned CaseFolding copies**
+   * `tools/unicode/ucd-<version>/CaseFolding.txt`
+   * `vendor/ecma-rs/vm-js/unicode/CaseFolding.txt`
+4. **Update the vendored snapshot for string properties (if CI relies on it)**
+   * Copy the 7 `strings/*.js` files from the updated test262 corpus into
+     `tools/unicode/regexp_unicode_string_props/` so `cargo xtask ... --check` can run without the
+     heavyweight submodule.
+5. **Regenerate the checked-in tables** using the commands in the next section, then run the
+   RegExp-related test262 suites.
+
 ## Vendored Unicode input files (and other pinned sources)
 
 ### UCD snapshot (Unicode v17.0.0)
