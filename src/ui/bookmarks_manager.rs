@@ -960,7 +960,7 @@ fn build_visible_rows(ctx: &egui::Context, store: &BookmarkStore, query: &str) -
       .collect();
   }
 
-  let mut out: Vec<BookmarkRow> = Vec::with_capacity(store.roots.len());
+  let mut out: Vec<BookmarkRow> = Vec::with_capacity(store.nodes.len().max(store.roots.len()));
   // Depth-first traversal: push roots in reverse so `pop()` visits them in store order.
   let mut stack: Vec<(usize, BookmarkId)> = store
     .roots
