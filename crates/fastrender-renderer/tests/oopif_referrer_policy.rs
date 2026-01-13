@@ -469,23 +469,35 @@ fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fe
   );
   let iframe = &subframes[0];
   assert_eq!(iframe.referrer_policy, Some(ReferrerPolicy::NoReferrer));
+  assert_eq!(iframe.sandbox_flags, Default::default());
+  assert!(
+    !iframe.opaque_origin,
+    "expected iframe without sandbox to not force opaque origin"
+  );
 
   let mut child_renderer = RendererProc::spawn();
   let child_frame = iframe.child;
   child_renderer.send(&BrowserToRenderer::CreateFrame {
     frame_id: child_frame,
   });
+  let child_site_key = site_keys.site_key_for_navigation(&child_url, Some(&parent_site_key));
+  let child_context = NavigationContext::for_subframe_navigation_from_info(
+    &site_keys,
+    &child_url,
+    Some(&parent_site_key),
+    parent_url.clone(),
+    ReferrerPolicy::default(),
+    iframe,
+  );
+  assert_eq!(child_context.referrer_policy, ReferrerPolicy::NoReferrer);
+  assert_eq!(child_context.referrer_url.as_deref(), Some(parent_url.as_str()));
+  assert_eq!(child_context.site_key, child_site_key);
+  assert_eq!(child_context.sandbox_flags, iframe.sandbox_flags);
+  assert_eq!(child_context.opaque_origin, iframe.opaque_origin);
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
     url: child_url.clone(),
-    context: NavigationContext::for_subframe_navigation_from_info(
-      &site_keys,
-      &child_url,
-      Some(&parent_site_key),
-      parent_url.clone(),
-      ReferrerPolicy::default(),
-      iframe,
-    ),
+    context: child_context,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
     frame_id: child_frame,
