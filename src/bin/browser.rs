@@ -6835,6 +6835,11 @@ impl PerfWindowLog {
       }
     }
   }
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Default)]
+struct PendingPageSubtreeAccessKitUpdate {
+  nodes: Vec<(accesskit::NodeId, accesskit::Node)>,
+  focus: Option<accesskit::NodeId>,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -6945,6 +6950,11 @@ struct App {
   page_viewport_css: Option<(u32, u32)>,
   page_input_tab: Option<fastrender::ui::TabId>,
   page_input_mapping: Option<fastrender::ui::InputMapping>,
+  /// Pending AccessKit subtree updates for the rendered page content, keyed by tab id.
+  pending_page_subtree_accesskit: std::collections::HashMap<
+    fastrender::ui::TabId,
+    PendingPageSubtreeAccessKitUpdate,
+  >,
   /// Whether the page-area loading overlay is currently blocking pointer events from reaching the
   /// page worker.
   ///
@@ -7213,6 +7223,39 @@ impl App {
       self.window_occluded,
       self.window_minimized,
     );
+  }
+
+  fn merge_page_subtree_accesskit_update(
+    platform_output: &mut egui::PlatformOutput,
+    page_subtree: PendingPageSubtreeAccessKitUpdate,
+  ) -> bool {
+    if page_subtree.nodes.is_empty() && page_subtree.focus.is_none() {
+      return false;
+    }
+
+    if platform_output.accesskit_update.is_none() {
+      platform_output.accesskit_update = Some(accesskit::TreeUpdate {
+        nodes: Vec::new(),
+        tree: None,
+        focus: None,
+      });
+    }
+
+    let update = platform_output
+      .accesskit_update
+      .as_mut()
+      .expect("accesskit_update must be present after synthesizing");
+
+    update.nodes.extend(page_subtree.nodes);
+    if let Some(focus) = page_subtree.focus {
+      update.focus = Some(focus);
+    }
+
+    debug_assert!(
+      platform_output.accesskit_update.is_some(),
+      "expected AccessKit update to be Some after merging page subtree nodes"
+    );
+    true
   }
 
   fn sync_media_preferences_to_worker(&mut self, system_theme: Option<winit::window::Theme>) {
@@ -7769,6 +7812,7 @@ impl App {
       page_viewport_css: None,
       page_input_tab: None,
       page_input_mapping: None,
+      pending_page_subtree_accesskit: std::collections::HashMap::new(),
       page_loading_overlay_blocks_input: false,
       page_unresponsive_overlay_rect: None,
       overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars::default(),
@@ -17779,11 +17823,24 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       self.egui_ctx.end_frame()
     };
     let repaint_after = full_output.repaint_after;
-    self.egui_state.handle_platform_output(
-      &self.window,
-      &self.egui_ctx,
-      full_output.platform_output,
-    );
+    if let Some(text) = self.pending_clipboard_text.take() {
+      full_output.platform_output.copied_text = text;
+    }
+
+    let mut platform_output = full_output.platform_output;
+    if let Some(tab_id) = self.browser_state.active_tab_id() {
+      if let Some(page_subtree) = self.pending_page_subtree_accesskit.remove(&tab_id) {
+        let merged = Self::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree);
+        debug_assert!(
+          !merged || platform_output.accesskit_update.is_some(),
+          "expected accesskit_update to be Some after merging page subtree for tab {tab_id:?}"
+        );
+      }
+    }
+
+    self
+      .egui_state
+      .handle_platform_output(&self.window, &self.egui_ctx, platform_output);
     // Egui sets cursor icons as part of platform output. Override it for page content hover
     // semantics (links, text inputs) when the cursor is inside the rendered page image.
     self.apply_page_cursor_icon();
@@ -18886,6 +18943,49 @@ mod error_infobar_a11y_tests {
     assert!(
       !node.supports_action(accesskit::Action::Expand),
       "expected expanded details toggle to not expose Expand action"
+    );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod page_subtree_accesskit_merge_tests {
+  use super::{App, PendingPageSubtreeAccessKitUpdate};
+
+  #[test]
+  fn merge_synthesizes_accesskit_update_when_platform_output_is_none() {
+    let mut platform_output = egui::PlatformOutput::default();
+    platform_output.accesskit_update = None;
+
+    let node_id = accesskit::NodeId(std::num::NonZeroU128::new(42).unwrap());
+    let mut builder = accesskit::NodeBuilder::new(accesskit::Role::Button);
+    builder.set_name("Injected subtree node".to_string());
+    let node = builder.build();
+
+    let page_subtree = PendingPageSubtreeAccessKitUpdate {
+      nodes: vec![(node_id, node)],
+      focus: Some(node_id),
+    };
+
+    let merged = App::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree);
+    assert!(merged, "expected page subtree merge helper to report a merge");
+
+    let update = platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update to be synthesized");
+
+    assert!(
+      update.tree.is_none(),
+      "expected synthesized AccessKit update to leave `tree` as None"
+    );
+    assert!(
+      update.nodes.iter().any(|(id, _node)| id == &node_id),
+      "expected synthesized AccessKit update to contain injected node"
+    );
+    assert_eq!(
+      update.focus,
+      Some(node_id),
+      "expected synthesized AccessKit update to include focus when provided"
     );
   }
 }
