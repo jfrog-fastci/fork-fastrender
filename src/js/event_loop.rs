@@ -16,6 +16,12 @@ const MAX_MICROTASK_CHECKPOINT_HOOKS: usize = 8;
 type MicrotaskCheckpointHooks<Host> =
   SmallVec<[MicrotaskCheckpointHook<Host>; MAX_MICROTASK_CHECKPOINT_HOOKS]>;
 
+// HTML's idle period computation uses a nominal 50ms budget but clamps it based on pending work.
+// FastRender approximates the "pending rendering work" clamp by limiting the idle budget when there
+// are queued requestAnimationFrame callbacks.
+const DEFAULT_IDLE_BUDGET: Duration = Duration::from_millis(50);
+const DEFAULT_FRAME_BUDGET: Duration = Duration::from_millis(16);
+
 /// HTML task sources (WHATWG terminology).
 ///
 /// This enum is intentionally small for now, but designed to be extended as more
@@ -2126,12 +2132,17 @@ impl<Host: 'static> EventLoop<Host> {
       self.idle_period_deadline = None;
       0.0
     } else {
-      const DEFAULT_IDLE_BUDGET: Duration = Duration::from_millis(50);
-
       let deadline = match self.idle_period_deadline {
         Some(deadline) => deadline,
         None => {
           let mut deadline = now.checked_add(DEFAULT_IDLE_BUDGET).unwrap_or(Duration::MAX);
+          if self.has_pending_animation_frame_callbacks() {
+            // When rendering work is pending (e.g. requestAnimationFrame callbacks), HTML clamps the
+            // idle period deadline so idle callbacks don't assume a full 50ms budget when a render
+            // opportunity is imminent.
+            let frame_deadline = now.checked_add(DEFAULT_FRAME_BUDGET).unwrap_or(Duration::MAX);
+            deadline = deadline.min(frame_deadline);
+          }
           if let Some(next_due) = self.next_timer_due_time() {
             deadline = deadline.min(next_due);
           }
@@ -2145,11 +2156,11 @@ impl<Host: 'static> EventLoop<Host> {
       if now >= deadline {
         self.idle_period_deadline = None;
         0.0
-      } else {
-        let remaining = deadline.saturating_sub(now);
-        duration_to_ms_f64(remaining).max(0.0)
-      }
-    };
+       } else {
+         let remaining = deadline.saturating_sub(now);
+         duration_to_ms_f64(remaining).max(0.0)
+       }
+     };
 
     let Some(mut callback) = state.callback.take() else {
       return Err(Error::Other(
@@ -4331,6 +4342,41 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
     assert_eq!(host.log, vec!["a", "b", "c"]);
+    Ok(())
+  }
+
+  #[test]
+  fn idle_callback_budget_is_clamped_when_animation_frame_callbacks_pending() -> Result<()> {
+    #[derive(Default)]
+    struct Host;
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    // Non-empty animation frame callback map is considered pending rendering work by HTML's idle
+    // period deadline computation. FastRender approximates this by clamping the idle budget to a
+    // nominal frame interval.
+    event_loop.request_animation_frame(|_host, _event_loop, _ts| Ok(()))?;
+    assert!(event_loop.has_pending_animation_frame_callbacks());
+
+    let remaining_ms: Rc<Cell<Option<f64>>> = Rc::new(Cell::new(None));
+    let remaining_ms_for_cb = Rc::clone(&remaining_ms);
+    event_loop.request_idle_callback(None, move |_host, _event_loop, did_timeout, remaining_ms| {
+      assert!(!did_timeout);
+      remaining_ms_for_cb.set(Some(remaining_ms));
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let observed = remaining_ms.get().expect("idle callback should have run");
+    let frame_budget_ms = duration_to_ms_f64(DEFAULT_FRAME_BUDGET);
+    assert!(
+      observed <= frame_budget_ms,
+      "expected idle callback remaining budget to be <= {frame_budget_ms}ms when requestAnimationFrame callbacks are pending, got {observed}ms"
+    );
     Ok(())
   }
 
