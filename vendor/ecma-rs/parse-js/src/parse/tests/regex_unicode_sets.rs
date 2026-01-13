@@ -93,3 +93,11 @@ fn rejects_unicode_sets_and_operator_lookahead_early_errors() {
   assert!(parse_with_options("let r = /[(a)]/v;", opts).is_err());
   assert!(parse_with_options("let r = /[a&&&b]/v;", opts).is_err());
 }
+
+#[test]
+fn accepts_q_disjunction_in_negated_class_when_non_stringy() {
+  let opts = ecma_script_opts();
+  assert!(parse_with_options("let r = /[^\\q{a|b}]/v;", opts).is_ok());
+  assert!(parse_with_options("let r = /[^\\q{ab}]/v;", opts).is_err());
+  assert!(parse_with_options("let r = /[^\\q{}]/v;", opts).is_err());
+}

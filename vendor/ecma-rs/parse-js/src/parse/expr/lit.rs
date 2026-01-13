@@ -1275,18 +1275,38 @@ fn validate_regex_pattern(
         len: brace_start.saturating_sub(escape_start),
       });
     }
-    if in_negated_class {
-      return Err(RegexError {
-        kind: RegexErrorKind::InvalidPattern,
-        offset: base_offset + escape_start,
-        len: brace_start + 1 - escape_start,
-      });
-    }
+    // In UnicodeSetsMode, `\q{...}` yields a disjunction of `ClassString`s. Negated classes (`[^...]`)
+    // are only allowed to contain operands that cannot match strings longer (or shorter) than a single
+    // character. This corresponds to `MayContainStrings` in the spec.
+    //
+    // We approximate this check by counting the number of `ClassSetCharacter`s between `|` separators.
+    // If any alternative contains anything other than exactly one `ClassSetCharacter` (including the
+    // empty string), then it "may contain strings" and is invalid inside a negated class.
     let mut j = brace_start + 1;
+    let mut segment_characters: usize = 0;
+    let mut may_contain_strings = false;
     while j < bytes.len() {
       let b = bytes[j];
       if b == b'}' {
+        if segment_characters != 1 {
+          may_contain_strings = true;
+        }
+        if in_negated_class && may_contain_strings {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: j + 1 - escape_start,
+          });
+        }
         return Ok(j + 1);
+      }
+      if b == b'|' {
+        if segment_characters != 1 {
+          may_contain_strings = true;
+        }
+        segment_characters = 0;
+        j += 1;
+        continue;
       }
       if b == b'{' {
         // `{` is a ClassSetSyntaxCharacter and may only appear as the opening delimiter for
@@ -1343,10 +1363,12 @@ fn validate_regex_pattern(
               });
             }
             j = k + 1;
+            segment_characters += 1;
             continue;
           }
-          // `\uXXXX`
+          // `\uXXXX` (optionally followed by a second `\uXXXX` to form a surrogate pair).
           let mut k = after_u;
+          let mut v: u32 = 0;
           for _ in 0..4 {
             if k >= bytes.len() || !(bytes[k] as char).is_ascii_hexdigit() {
               return Err(RegexError {
@@ -1355,9 +1377,31 @@ fn validate_regex_pattern(
                 len: k.saturating_sub(escape_start),
               });
             }
+            v = (v << 4) | (bytes[k] as char).to_digit(16).unwrap();
             k += 1;
           }
+          if (0xD800..=0xDBFF).contains(&v)
+            && k + 6 <= bytes.len()
+            && bytes[k] == b'\\'
+            && bytes[k + 1] == b'u'
+          {
+            let mut k2 = k + 2;
+            let mut low: u32 = 0;
+            let mut ok = true;
+            for _ in 0..4 {
+              if k2 >= bytes.len() || !(bytes[k2] as char).is_ascii_hexdigit() {
+                ok = false;
+                break;
+              }
+              low = (low << 4) | (bytes[k2] as char).to_digit(16).unwrap();
+              k2 += 1;
+            }
+            if ok && (0xDC00..=0xDFFF).contains(&low) {
+              k = k2;
+            }
+          }
           j = k;
+          segment_characters += 1;
           continue;
         }
         if esc == 'x' {
@@ -1374,13 +1418,28 @@ fn validate_regex_pattern(
             k += 1;
           }
           j = k;
+          segment_characters += 1;
           continue;
         }
         // Other escapes: just skip the escaped code point.
         j += esc_len;
+        segment_characters += 1;
         continue;
       }
-      j += 1;
+      // Any other source character inside the disjunction counts as one `ClassSetCharacter`.
+      let ch = pattern[j..].chars().next().unwrap();
+      match ch {
+        '(' | ')' | '[' | ']' | '/' | '-' => {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + j,
+            len: ch.len_utf8(),
+          });
+        }
+        _ => {}
+      }
+      segment_characters += 1;
+      j += ch.len_utf8();
     }
     Err(RegexError {
       kind: RegexErrorKind::InvalidPattern,
@@ -2861,6 +2920,14 @@ mod regex_validation_tests {
     assert_valid(r"/[\q{|a}]/v");
     assert_valid(r"/[\q{a\|b}]/v");
     assert_valid(r"/[\q{a\}b}]/v");
+  }
+
+  #[test]
+  fn unicode_sets_mode_allows_non_string_disjunction_in_negated_class() {
+    assert_valid(r"/[^\q{a|b}]/v");
+    assert_valid(r"/[^\q{\uD83D\uDE00}]/v"); // surrogate pair counts as a single ClassSetCharacter
+    assert_invalid(r"/[^\q{ab}]/v");
+    assert_invalid(r"/[^\q{}]/v");
   }
 
   #[test]
