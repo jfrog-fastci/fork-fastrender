@@ -34,7 +34,7 @@ pub enum RunUntilStableOutcome {
 /// This is a small host container that couples:
 /// - a live `dom2` document + render caching ([`BrowserDocumentDom2`]),
 /// - a JS realm/runtime instance (currently [`VmJsRuntime`] for Web IDL scaffolding),
-/// - an HTML-ish task/microtask event loop ([`EventLoop`]),
+/// - an HTML-ish event loop ([`EventLoop`]) (tasks + microtasks + timers + `requestAnimationFrame`),
 /// - `Document.currentScript` bookkeeping ([`CurrentScriptStateHandle`]/[`ScriptOrchestrator`]).
 ///
 /// The primary API is [`BrowserDocumentJs::run_until_stable`], which drives the JS event loop and
