@@ -14,19 +14,20 @@ use crate::spawn::{build_command_line, build_environment_block, wide_null, Attri
 use crate::{ChildProcess, OwnedHandle, OwnedSid, Result, SpawnConfig, WinSandboxError};
 
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
-use windows_sys::Win32::Foundation::{FALSE, HANDLE, TRUE};
+use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, FALSE, HANDLE, TRUE};
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::{
   CreateRestrictedToken, GetLengthSid, SetTokenInformation, TokenIntegrityLevel,
   DISABLE_MAX_PRIVILEGE, PSID, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
   TOKEN_DUPLICATE, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
+use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::SystemServices::{SE_GROUP_INTEGRITY, SE_GROUP_INTEGRITY_ENABLED};
 use windows_sys::Win32::System::Threading::{
-  CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken, CREATE_UNICODE_ENVIRONMENT,
-  EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-  PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, STARTUPINFOEXW,
-  STARTUPINFOW,
+  CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken, CREATE_BREAKAWAY_FROM_JOB,
+  CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+  PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+  PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 /// A restricted primary token suitable for spawning a sandboxed child process.
@@ -188,6 +189,15 @@ pub fn spawn_with_token(cfg: &SpawnConfig<'_>, token: &OwnedHandle) -> Result<Ch
   let needs_mitigation = mitigation_policy.is_some();
   let attribute_count = (needs_job as u32) + (needs_handle_list as u32) + (needs_mitigation as u32);
 
+  let parent_in_job = if needs_job {
+    let mut in_job: i32 = 0;
+    // SAFETY: `in_job` is a valid out param; null job handle queries "any job".
+    let ok = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) };
+    ok != 0 && in_job != 0
+  } else {
+    false
+  };
+
   // Attribute values must live until after CreateProcessAsUserW returns.
   let mut inherit_handle_list: Vec<HANDLE> =
     cfg.inherit_handles.iter().map(|&h| h as HANDLE).collect();
@@ -204,22 +214,38 @@ pub fn spawn_with_token(cfg: &SpawnConfig<'_>, token: &OwnedHandle) -> Result<Ch
   if attribute_count == 0 {
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
     startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    let ok = unsafe {
-      CreateProcessAsUserW(
-        token.as_raw(),
-        application_name.as_ptr(),
-        cmdline.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        b_inherit_handles,
-        CREATE_UNICODE_ENVIRONMENT,
-        env_ptr as *const _ as *mut _,
-        current_dir_ptr,
-        &startup,
-        &mut pi,
-      )
+    let mut create_process_inner = |flags: u32| -> Result<()> {
+      let ok = unsafe {
+        CreateProcessAsUserW(
+          token.as_raw(),
+          application_name.as_ptr(),
+          cmdline.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          b_inherit_handles,
+          flags,
+          env_ptr as *const _ as *mut _,
+          current_dir_ptr,
+          &startup,
+          &mut pi,
+        )
+      };
+      win32_bool("CreateProcessAsUserW", ok)
     };
-    win32_bool("CreateProcessAsUserW", ok)?;
+
+    let flags = CREATE_UNICODE_ENVIRONMENT;
+    if parent_in_job {
+      match create_process_inner(flags | CREATE_BREAKAWAY_FROM_JOB) {
+        Ok(()) => {}
+        Err(err) if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
+        {
+          create_process_inner(flags)?;
+        }
+        Err(err) => return Err(err),
+      }
+    } else {
+      create_process_inner(flags)?;
+    }
   } else {
     let mut attrs = AttributeList::new(attribute_count)?;
     if needs_job {
@@ -248,22 +274,37 @@ pub fn spawn_with_token(cfg: &SpawnConfig<'_>, token: &OwnedHandle) -> Result<Ch
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attrs.ptr;
     let flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
-    let ok = unsafe {
-      CreateProcessAsUserW(
-        token.as_raw(),
-        application_name.as_ptr(),
-        cmdline.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        b_inherit_handles,
-        flags,
-        env_ptr as *const _ as *mut _,
-        current_dir_ptr,
-        std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
-        &mut pi,
-      )
+    let mut create_process_inner = |flags: u32| -> Result<()> {
+      let ok = unsafe {
+        CreateProcessAsUserW(
+          token.as_raw(),
+          application_name.as_ptr(),
+          cmdline.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          b_inherit_handles,
+          flags,
+          env_ptr as *const _ as *mut _,
+          current_dir_ptr,
+          std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
+          &mut pi,
+        )
+      };
+      win32_bool("CreateProcessAsUserW", ok)
     };
-    win32_bool("CreateProcessAsUserW", ok)?;
+
+    if parent_in_job {
+      match create_process_inner(flags | CREATE_BREAKAWAY_FROM_JOB) {
+        Ok(()) => {}
+        Err(err) if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
+        {
+          create_process_inner(flags)?;
+        }
+        Err(err) => return Err(err),
+      }
+    } else {
+      create_process_inner(flags)?;
+    }
   }
 
   if pi.hProcess.is_null() || pi.hThread.is_null() {

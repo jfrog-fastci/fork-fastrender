@@ -344,7 +344,7 @@ pub fn spawn_sandboxed(
     };
 
     let flags = CREATE_UNICODE_ENVIRONMENT;
-    if parent_in_job {
+    if parent_in_job && cfg.job.is_some() {
       match create_process_inner(flags | CREATE_BREAKAWAY_FROM_JOB) {
         Ok(()) => {}
         Err(err) if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
@@ -442,7 +442,7 @@ pub fn spawn_sandboxed(
     Ok(())
   };
 
-  if parent_in_job {
+  if parent_in_job && needs_job {
     match create_process_inner(flags | CREATE_BREAKAWAY_FROM_JOB) {
       Ok(()) => {}
       Err(err) if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
