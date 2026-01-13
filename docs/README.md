@@ -11,6 +11,8 @@ Browser UI development:
 
 - Running + architecture overview: [`docs/browser_ui.md`](browser_ui.md)
 - Desktop browser app overview: [`docs/browser.md`](browser.md)
+- Manual chrome test matrix (quick parity checklist): [`docs/chrome_test_matrix.md`](chrome_test_matrix.md)
+- Manual chrome regression checklist (full, end-to-end): [`docs/browser_chrome_manual_test_matrix.md`](browser_chrome_manual_test_matrix.md)
 - Internal `about:` pages (offline UI + debugging surfaces): [`docs/about_pages.md`](about_pages.md)
 - Page accessibility workflow (a11y tree + bounds mapping + screen reader testing): [`docs/page_accessibility.md`](page_accessibility.md)
 
