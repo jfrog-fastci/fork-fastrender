@@ -717,3 +717,67 @@ fn regexp_lookbehind_direction_minus_one_forward_reference_backref_sees_capture(
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), r#"["d","x"]"#);
 }
+
+#[test]
+fn regexp_lookbehind_positive_basic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"'abcdef'.match(/(?<=abc)\w\w\w/)[0] === 'def'"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_lookbehind_negative_basic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        ('abcdef'.match(/(?<!abc)def/) === null) &&
+        ('abcdef'.match(/(?<!abc)\w\w\w/)[0] === 'abc')
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_lookbehind_captures_from_positive_propagate() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"'abcdef'.match(/(?<=(c))def/)[1] === 'c'"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_lookbehind_captures_from_negative_do_not_propagate() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var m = 'abcdef'.match(/(?<!(^|[ab]))\w{2}/);
+        m.length === 2 && m[1] === undefined
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_lookbehind_is_atomic_no_backtracking_into_assertion() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"'abcdbc'.match(/(?<=([abc]+)).\1/) === null"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_lookbehind_nested_lookaround_sanity() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"'abcdef'.match(/(?<=ab(?=c)\wd)\w\w/)[0] === 'ef'"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
