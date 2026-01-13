@@ -164,6 +164,9 @@ modes that exercise startup and UI↔worker wiring **without** creating a window
   - Runs an end-to-end smoke test of the real `src/bin/browser.rs` entrypoint + the
     `UiToWorker`/`WorkerToUi` message protocol.
   - On success prints `HEADLESS_SMOKE_OK` to stdout.
+  - JS variant: `browser --headless-smoke --js` runs a small vm-js `api::BrowserTab` smoke test and
+    on success prints `HEADLESS_VMJS_SMOKE_OK` (this is the only thing the `browser --js` flag
+    currently controls).
 - `browser --headless-crash-smoke` / `FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE=1`
   - Runs a smoke test that intentionally crashes the renderer worker and validates that the crash is
     contained/observable (future: renderer *process* crash isolation).
@@ -182,6 +185,10 @@ Run smoke modes under the repo’s resource-limit wrapper:
 # Headless “does it start / is UI↔worker wired up” smoke test:
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke
+
+# JS smoke test (vm-js `BrowserTab` execution path):
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke --js
 
 # Headless “renderer crash shouldn’t take down the browser” smoke test:
 bash scripts/run_limited.sh --as 64G -- \

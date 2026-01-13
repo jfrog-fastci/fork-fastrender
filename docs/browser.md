@@ -57,6 +57,10 @@ hosts without a working display/GPU (they do not create a window or initialise `
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke
 
+# JS smoke test (vm-js `BrowserTab` execution path):
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke --js
+
 # “renderer crash shouldn’t take down the browser” smoke test:
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-crash-smoke
@@ -65,6 +69,8 @@ bash scripts/run_limited.sh --as 64G -- \
 What these validate:
 
 - **`--headless-smoke`**: end-to-end UI↔worker startup and message wiring.
+  - With `--js`: runs a vm-js `api::BrowserTab` smoke test instead (prints `HEADLESS_VMJS_SMOKE_OK` on
+    success).
 - **`--headless-crash-smoke`**: crash isolation (today: worker thread crash; future: renderer process crash).
 
 In the intended multiprocess architecture, a renderer crash should **not** take down the whole
