@@ -3548,7 +3548,7 @@ pub(super) fn tab_strip_ui(
       let visuals = ui.visuals().clone();
       let painter = ui.painter().with_clip_rect(group_clip_rect);
       painter.rect_filled(rect, visuals.widgets.inactive.rounding, visuals.panel_fill);
-      let pulse_target = if motion.enabled && insertion_changed {
+      let pulse_target = if motion_enabled && insertion_changed {
         1.0
       } else {
         0.0
@@ -3612,9 +3612,9 @@ pub(super) fn tab_strip_ui(
         motion.durations.tab_drag_indicator,
       );
       let drop_x = group_clip_rect.min.x + (drop_x_content - segment_scroll_offset_x);
-      let target_alpha = if motion.enabled && insertion_changed {
+      let target_alpha = if motion_enabled && insertion_changed {
         1.0
-      } else if motion.enabled {
+      } else if motion_enabled {
         0.7
       } else {
         1.0
