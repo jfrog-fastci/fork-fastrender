@@ -3242,7 +3242,8 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   // Attr / NamedNodeMap prototypes (used by `Element.attributes` and `Document.createAttribute*`).
   ATTR_PROTOTYPE_KEY,
   NAMED_NODE_MAP_PROTOTYPE_KEY,
-  // TreeWalker prototype (used by Document.createTreeWalker).
+  // Traversal prototypes (used by Document.createTreeWalker / Document.createNodeIterator shims).
+  NODE_ITERATOR_PROTOTYPE_KEY,
   TREE_WALKER_PROTOTYPE_KEY,
   // Live collection helpers used by `getElementsBy*` shims.
   LIVE_COLLECTION_LENGTH_GET_KEY,
@@ -3388,6 +3389,7 @@ const TREE_WALKER_ROOT_KEY: &str = "__fastrender_tree_walker_root";
 const TREE_WALKER_CURRENT_NODE_KEY: &str = "__fastrender_tree_walker_current_node";
 const TREE_WALKER_WHAT_TO_SHOW_KEY: &str = "__fastrender_tree_walker_what_to_show";
 const TREE_WALKER_FILTER_KEY: &str = "__fastrender_tree_walker_filter";
+const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const TREE_WALKER_PROTOTYPE_KEY: &str = "__fastrender_tree_walker_prototype";
 const NODE_FILTER_FILTER_ACCEPT: u16 = 1;
 const NODE_FILTER_FILTER_REJECT: u16 = 2;
@@ -20289,6 +20291,40 @@ fn node_list_prototype_from_document(scope: &mut Scope<'_>, document_obj: GcObje
   }
 }
 
+fn node_iterator_prototype_from_document(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  scope.push_root(Value::Object(document_obj))?;
+  let key = alloc_key(scope, NODE_ITERATOR_PROTOTYPE_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "document missing internal NodeIterator prototype",
+    )),
+  }
+}
+
+fn tree_walker_prototype_from_document(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  scope.push_root(Value::Object(document_obj))?;
+  let key = alloc_key(scope, TREE_WALKER_PROTOTYPE_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "document missing internal TreeWalker prototype",
+    )),
+  }
+}
+
 fn collection_length_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -33829,6 +33865,37 @@ fn ensure_document_handle_for_object_with_platform(
     },
   )?;
 
+  let node_iterator_proto =
+    node_iterator_prototype_from_document(scope, proto_document_obj)?;
+  let node_iterator_proto_internal_key = alloc_key(scope, NODE_ITERATOR_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    node_iterator_proto_internal_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(node_iterator_proto),
+        writable: false,
+      },
+    },
+  )?;
+
+  let tree_walker_proto = tree_walker_prototype_from_document(scope, proto_document_obj)?;
+  let tree_walker_proto_internal_key = alloc_key(scope, TREE_WALKER_PROTOTYPE_KEY)?;
+  scope.define_property(
+    document_obj,
+    tree_walker_proto_internal_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(tree_walker_proto),
+        writable: false,
+      },
+    },
+  )?;
+
   let mutation_record_proto = mutation_record_prototype_from_document(scope, proto_document_obj)?;
   let mutation_record_proto_internal_key = alloc_key(scope, MUTATION_RECORD_PROTOTYPE_KEY)?;
   scope.define_property(
@@ -47153,6 +47220,62 @@ fn init_window_globals(
       },
     )?;
 
+    // NodeIterator prototype + constructor.
+    //
+    // NodeIterator instances are plain JS wrapper objects created by `document.createNodeIterator`.
+    // While NodeIterator itself is not yet fully implemented in the vm-js DOM shims, broader WPT
+    // expects the interface object to exist and for wrappers to pass `instanceof NodeIterator`.
+    let node_iterator_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(node_iterator_proto))?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_proto,
+      Some(realm.intrinsics().object_prototype()),
+    )?;
+
+    // `Object.prototype.toString.call(iterator)` should yield `[object NodeIterator]`.
+    let node_iterator_to_string_tag_key =
+      PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag);
+    let node_iterator_to_string_tag_value = scope.alloc_string("NodeIterator")?;
+    scope.push_root(Value::String(node_iterator_to_string_tag_value))?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_to_string_tag_key,
+      read_only_data_desc(Value::String(node_iterator_to_string_tag_value)),
+    )?;
+
+    let node_iterator_ctor = make_illegal_ctor(&mut scope, "NodeIterator")?;
+    scope.push_root(Value::Object(node_iterator_ctor))?;
+    scope.define_property(
+      node_iterator_ctor,
+      prototype_key,
+      ctor_link_desc(Value::Object(node_iterator_proto)),
+    )?;
+    scope.define_property(
+      node_iterator_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(node_iterator_ctor)),
+    )?;
+    let node_iterator_key = alloc_key(&mut scope, "NodeIterator")?;
+    scope.define_property(
+      global,
+      node_iterator_key,
+      data_desc(Value::Object(node_iterator_ctor)),
+    )?;
+
+    let node_iterator_proto_internal_key = alloc_key(&mut scope, NODE_ITERATOR_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      node_iterator_proto_internal_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(node_iterator_proto),
+          writable: false,
+        },
+      },
+    )?;
+
     // TreeWalker prototype (minimal: root/currentNode/whatToShow/filter + nextNode).
     //
     // TreeWalker instances are plain JS wrapper objects created by `document.createTreeWalker`.
@@ -47311,6 +47434,28 @@ fn init_window_globals(
       tree_walker_proto,
       tree_walker_next_node_key,
       data_desc(Value::Object(tree_walker_next_node_func)),
+    )?;
+
+    // TreeWalker constructor.
+    //
+    // This is needed for `globalThis.TreeWalker` and `walker instanceof TreeWalker`.
+    let tree_walker_ctor = make_illegal_ctor(&mut scope, "TreeWalker")?;
+    scope.push_root(Value::Object(tree_walker_ctor))?;
+    scope.define_property(
+      tree_walker_ctor,
+      prototype_key,
+      ctor_link_desc(Value::Object(tree_walker_proto)),
+    )?;
+    scope.define_property(
+      tree_walker_proto,
+      constructor_key,
+      ctor_link_desc(Value::Object(tree_walker_ctor)),
+    )?;
+    let tree_walker_key = alloc_key(&mut scope, "TreeWalker")?;
+    scope.define_property(
+      global,
+      tree_walker_key,
+      data_desc(Value::Object(tree_walker_ctor)),
     )?;
 
     // Store the TreeWalker prototype on `document` so `createTreeWalker` can wire it up without
@@ -53109,6 +53254,54 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn traversal_interface_objects_exist_and_are_illegal_constructors() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = realm.exec_script(
+      r#"(() => {
+        function check(name) {
+          const ctor = globalThis[name];
+          if (typeof ctor !== 'function') return name + ':typeof';
+          if (!ctor.prototype || typeof ctor.prototype !== 'object') return name + ':prototype';
+          if (ctor.prototype.constructor !== ctor) return name + ':ctorlink';
+          if (!(Object.create(ctor.prototype) instanceof ctor)) return name + ':instanceof';
+
+          let ok = false;
+          try { ctor(); } catch (e) {
+            ok = e && e.name === 'TypeError' && String(e.message).includes('Illegal constructor');
+          }
+          if (!ok) return name + ':call';
+
+          ok = false;
+          try { new ctor(); } catch (e) {
+            ok = e && e.name === 'TypeError' && String(e.message).includes('Illegal constructor');
+          }
+          if (!ok) return name + ':new';
+          return null;
+        }
+        return check('NodeIterator') || check('TreeWalker') || 'ok';
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn tree_walker_instances_are_instanceof_tree_walker() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = realm.exec_script(
+      r#"(() => {
+        const tw = document.createTreeWalker(document);
+        if (!(tw instanceof TreeWalker)) return 'instanceof';
+        if (Object.getPrototypeOf(tw) !== TreeWalker.prototype) return 'proto';
+        if (tw.constructor !== TreeWalker) return 'ctor';
+        return 'ok';
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
