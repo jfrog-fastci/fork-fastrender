@@ -138,7 +138,7 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
         return real + "|" + fake;
       })()"#,
     )?,
-    "[object Object]|[object Object]"
+    "[object WeakMap]|[object Object]"
   );
 
   assert_eq!(
@@ -162,7 +162,7 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
         return real + "|" + fake;
       })()"#,
     )?,
-    "[object Object]|[object Object]"
+    "[object WeakSet]|[object Object]"
   );
 
   assert_eq!(
