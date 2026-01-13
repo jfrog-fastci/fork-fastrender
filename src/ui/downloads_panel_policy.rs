@@ -134,4 +134,16 @@ mod tests {
     assert!(out.downloads_panel_open);
     assert!(out.downloads_panel_request_focus);
   }
+
+  #[test]
+  fn typing_clears_existing_focus_request() {
+    let mut input = base_input();
+    input.chrome_has_text_focus = true;
+    input.downloads_panel_open = true;
+    input.downloads_panel_request_focus = true;
+
+    let out = on_download_started(input);
+    assert!(out.downloads_panel_open);
+    assert!(!out.downloads_panel_request_focus);
+  }
 }
