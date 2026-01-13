@@ -43,9 +43,17 @@ pub(crate) fn ensure_global_pool() -> Result<(), String> {
     .get_or_init(|| {
       // Match the default parallelism cap used by auto layout fan-out. This avoids large fan-out
       // on hosts where `available_parallelism()` sees dozens/hundreds of CPUs.
-      let cpu_budget = crate::system::cpu_budget().max(1);
       let env_value = std::env::var(RAYON_NUM_THREADS_ENV).ok();
-      let desired_threads = desired_global_pool_threads(cpu_budget, env_value.as_deref()).max(1);
+      let desired_threads = if let Some(threads) = parse_rayon_num_threads(env_value.as_deref()) {
+        threads
+      } else {
+        // Only consult `cpu_budget()` when we need a default thread count; when the caller provides
+        // an explicit `RAYON_NUM_THREADS` override we can avoid extra filesystem probing (cgroups,
+        // sysfs) and keep sandboxed environments more predictable.
+        let cpu_budget = crate::system::cpu_budget().max(1);
+        desired_global_pool_threads(cpu_budget, None)
+      }
+      .max(1);
 
       // `ThreadPoolBuildError` does not currently expose its internal kind publicly. The only
       // non-fatal error case is when another crate has already initialised the global pool.
