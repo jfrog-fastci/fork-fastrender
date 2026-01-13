@@ -798,7 +798,7 @@ fn import_html_script_matches_clone_semantics() {
   src2.set_script_parser_document(script2, true).unwrap();
   src2.set_script_already_started(script2, true).unwrap();
   // Ensure import does not just copy the source flag.
-  src2.node_mut(script2).script_force_async = true;
+  src2.set_script_force_async(script2, true).unwrap();
 
   let mut dst2 = Document::new(QuirksMode::NoQuirks);
   let imported2 = dst2

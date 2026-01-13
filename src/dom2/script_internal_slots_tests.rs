@@ -111,7 +111,7 @@ fn clone_preserves_async_attribute_and_keeps_force_async_cleared() {
   assert!(!doc.node(script).script_force_async);
 
   // Ensure clone doesn't just copy this field from the source node.
-  doc.node_mut(script).script_force_async = true;
+  doc.set_script_force_async(script, true).unwrap();
 
   let cloned = doc.clone_node(script, false).unwrap();
   assert!(doc.has_attribute(cloned, "async").unwrap());
