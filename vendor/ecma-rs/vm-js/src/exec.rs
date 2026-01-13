@@ -8239,15 +8239,15 @@ impl<'a> Evaluator<'a> {
             )?;
           }
           ClassOrObjVal::Prop(initializer_expr) => {
-            // Public class fields.
+            // Class fields (public and private).
             //
             // - instance fields are stored as `(key, initializer)` pairs in the class constructor's
             //   native slots, and are initialized per-instance during `[[Construct]]`.
             // - static fields are initialized during the post-definition initialization pass (after
             //   all methods have been defined), in source order relative to static blocks.
             //
-            // Private fields are handled separately so we can enforce the correct property
-            // attributes (notably non-enumerable and non-configurable for private static fields).
+            // Private *static* fields are handled separately so we can enforce the correct property
+            // attributes (notably non-enumerable and non-configurable).
             if is_private_key && member.stx.static_ {
               let PropertyKey::Symbol(sym) = key else {
                 return Err(VmError::InvariantViolation(
