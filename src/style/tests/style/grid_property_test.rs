@@ -351,6 +351,42 @@ fn grid_template_columns_subgrid_accepts_empty_line_name_list() {
 }
 
 #[test]
+fn grid_template_columns_subgrid_repeat_sets_line_names() {
+  let mut style = ComputedStyle::default();
+  let base = ComputedStyle::default();
+
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("subgrid repeat(2, [a])".into()),
+    ),
+    &base,
+    16.0,
+    16.0,
+  );
+  assert_eq!(
+    style.subgrid_column_line_names,
+    vec![vec!["a".to_string()], vec!["a".to_string()]]
+  );
+
+  // Invalid: nested repeat() is not allowed in the name-repeat grammar, so the declaration should
+  // be ignored.
+  let expected = style.subgrid_column_line_names.clone();
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template-columns",
+      PropertyValue::Keyword("subgrid repeat(2, repeat(2, [a]))".into()),
+    ),
+    &base,
+    16.0,
+    16.0,
+  );
+  assert_eq!(style.subgrid_column_line_names, expected);
+}
+
+#[test]
 fn grid_template_shorthand_supports_subgrid_columns_only() {
   let mut style = ComputedStyle::default();
 
