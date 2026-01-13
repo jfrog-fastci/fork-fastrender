@@ -297,8 +297,11 @@ pub fn unregister_window_websocket_env(env_id: u64) {
   for (_id, mut ws) in env_state.sockets.drain() {
     // Best-effort shutdown: if the channel is full/disconnected, dropping the sender will still
     // cause the thread to eventually exit.
-    if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
+    if let Some(cmd_tx) = ws.cmd_tx.take() {
       let _ = cmd_tx.try_send(WsCommand::Shutdown);
+      // Drop the sender before join so the websocket thread can observe disconnect even if the
+      // queue was full and we failed to enqueue `Shutdown`.
+      drop(cmd_tx);
     }
     if let Some(handle) = ws.thread.take() {
       let _ = handle.join();
