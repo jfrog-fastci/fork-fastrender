@@ -2,6 +2,7 @@ use crate::animation::TransitionState;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Rect, Size};
 use crate::interaction::InteractionState;
+use crate::interaction::state::DocumentSelectionStateDom2;
 use crate::clock::{Clock, RealClock};
 use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use crate::js::CurrentScriptStateHandle;
@@ -119,6 +120,12 @@ pub struct BrowserDocumentDom2 {
   layout_dirty: bool,
   paint_dirty: bool,
   interaction_state: Option<InteractionState>,
+  /// Optional document selection keyed by stable `dom2::NodeId` endpoints.
+  ///
+  /// This allows callers to store selection state robustly across DOM mutations (where renderer
+  /// preorder ids can shift). The selection is projected through the most recent
+  /// [`crate::dom2::RendererDomMapping`] at paint time.
+  document_selection_dom2: Option<DocumentSelectionStateDom2>,
   /// Hash of the most recently prepared/painted interaction state.
   ///
   /// Interaction state influences pseudo-class matching (`:hover`, `:focus`, etc) and form control
@@ -205,6 +212,7 @@ impl BrowserDocumentDom2 {
       layout_dirty: true,
       paint_dirty: true,
       interaction_state: None,
+      document_selection_dom2: None,
       interaction_state_hash: interaction_state_fingerprint(None),
       dirty_style_nodes: FxHashSet::default(),
       dirty_text_nodes: FxHashSet::default(),
@@ -376,6 +384,7 @@ impl BrowserDocumentDom2 {
     self.prepared = None;
     self.last_dom_mapping = None;
     self.interaction_state = None;
+    self.document_selection_dom2 = None;
     self.interaction_state_hash = interaction_state_fingerprint(None);
     self.author_stylesheet_has_has_selectors = false;
     // Reset per-document CSP state. `reset_with_dom` replaces the entire document, so any previously
@@ -406,6 +415,7 @@ impl BrowserDocumentDom2 {
     self.layout_dirty = false;
     self.paint_dirty = true;
     self.interaction_state = None;
+    self.document_selection_dom2 = None;
     self.interaction_state_hash = interaction_state_fingerprint(None);
     self.dirty_style_nodes.clear();
     self.dirty_text_nodes.clear();
@@ -643,6 +653,16 @@ impl BrowserDocumentDom2 {
     if fingerprint != self.interaction_state_hash {
       self.invalidate_all();
     }
+  }
+
+  /// Updates the document (non-form-control) selection using stable `dom2::NodeId` endpoints.
+  ///
+  /// This selection is projected through the current renderer DOM mapping so it remains stable
+  /// across DOM mutations that change renderer preorder ids.
+  pub fn set_document_selection_dom2(&mut self, selection: Option<DocumentSelectionStateDom2>) {
+    self.document_selection_dom2 = selection;
+    self.paint_dirty = true;
+    self.apply_document_selection_overlay();
   }
 
   /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
@@ -2167,11 +2187,19 @@ impl BrowserDocumentDom2 {
     deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
     let animation_time = self.animation_time_for_paint();
-    let Some(prepared) = self.prepared.as_ref() else {
+    if self.prepared.is_none() {
       return Err(Error::Render(RenderError::InvalidParameters {
         message: "BrowserDocumentDom2 has no cached layout; call render_frame() first".to_string(),
       }));
-    };
+    }
+
+    // Ensure the cached fragment tree's selection metadata reflects the latest stable selection
+    // state before painting.
+    self.apply_document_selection_overlay();
+    let prepared = self
+      .prepared
+      .as_ref()
+      .expect("checked prepared is Some above");
 
     // Prefer an explicitly provided deadline; otherwise fall back to the currently installed
     // deadline (if any) or this document's configured `RenderOptions::{timeout,cancel_callback}`.
@@ -2235,6 +2263,39 @@ impl BrowserDocumentDom2 {
       self.last_painted_animation_clock = None;
     }
     Ok(frame)
+  }
+
+  fn apply_document_selection_overlay(&mut self) {
+    let Some(prepared) = self.prepared.as_mut() else {
+      return;
+    };
+    let Some(mapping) = self.last_dom_mapping.as_ref() else {
+      return;
+    };
+
+    // Prune detached selection endpoints so callers do not keep references to removed subtrees.
+    if let Some(selection) = &mut self.document_selection_dom2 {
+      if !selection.prune_detached(mapping) {
+        self.document_selection_dom2 = None;
+      }
+    }
+
+    let mut projected_dom2: Option<crate::interaction::state::DocumentSelectionState> = None;
+    let selection_preorder = if let Some(selection) = self.document_selection_dom2.as_ref() {
+      projected_dom2 = Some(selection.project_to_preorder(mapping));
+      projected_dom2.as_ref()
+    } else {
+      self
+        .interaction_state
+        .as_ref()
+        .and_then(|state| state.document_selection.as_ref())
+    };
+
+    crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
+      prepared.box_tree(),
+      &mut prepared.fragment_tree,
+      selection_preorder,
+    );
   }
 
   pub fn paint_from_cache_with_deadline(
@@ -3637,6 +3698,9 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::interaction::selection_serialize::{DocumentSelectionPointDom2, DocumentSelectionRangeDom2};
+  use crate::interaction::state::{DocumentSelectionRangesDom2, DocumentSelectionStateDom2};
+  use crate::tree::box_tree::BoxTree;
   use selectors::context::QuirksMode;
 
   fn renderer_for_tests() -> super::super::FastRender {
@@ -3820,6 +3884,146 @@ mod tests {
       }
     }
     None
+  }
+
+  fn collect_box_id_to_styled_node_id(box_tree: &BoxTree) -> FxHashMap<usize, usize> {
+    let mut mapping: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+    while let Some(node) = stack.pop() {
+      if let Some(styled_id) = node.styled_node_id {
+        mapping.insert(node.id, styled_id);
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    mapping
+  }
+
+  fn collect_selected_styled_node_ids(
+    fragment_tree: &crate::tree::fragment_tree::FragmentTree,
+    box_tree: &BoxTree,
+  ) -> FxHashSet<usize> {
+    let box_id_to_styled_node_id = collect_box_id_to_styled_node_id(box_tree);
+    let mut selected: FxHashSet<usize> = FxHashSet::default();
+
+    let mut stack: Vec<&crate::tree::fragment_tree::FragmentNode> = Vec::new();
+    for root in fragment_tree.additional_fragments.iter().rev() {
+      stack.push(root);
+    }
+    stack.push(&fragment_tree.root);
+
+    while let Some(node) = stack.pop() {
+      if let crate::tree::fragment_tree::FragmentContent::Text {
+        document_selection,
+        box_id,
+        ..
+      } = &node.content
+      {
+        if document_selection.is_some() {
+          if let Some(box_id) = box_id {
+            if let Some(styled_id) = box_id_to_styled_node_id.get(box_id).copied() {
+              selected.insert(styled_id);
+            }
+          }
+        }
+      }
+
+      if matches!(
+        node.content,
+        crate::tree::fragment_tree::FragmentContent::RunningAnchor { .. }
+          | crate::tree::fragment_tree::FragmentContent::FootnoteAnchor { .. }
+      ) {
+        continue;
+      }
+
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+
+    selected
+  }
+
+  #[test]
+  fn document_selection_dom2_tracks_dom_mutations() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body><div id=a>hello</div></body></html>";
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(200, 40))?;
+
+    let div = doc.dom().get_element_by_id("a").expect("div");
+    let text = first_text_child(doc.dom(), div).expect("text node");
+
+    doc.set_document_selection_dom2(Some(DocumentSelectionStateDom2::Ranges(
+      DocumentSelectionRangesDom2 {
+        ranges: vec![DocumentSelectionRangeDom2 {
+          start: DocumentSelectionPointDom2 {
+            node_id: text,
+            char_offset: 1,
+          },
+          end: DocumentSelectionPointDom2 {
+            node_id: text,
+            char_offset: 4,
+          },
+        }],
+        primary: 0,
+        anchor: DocumentSelectionPointDom2 {
+          node_id: text,
+          char_offset: 1,
+        },
+        focus: DocumentSelectionPointDom2 {
+          node_id: text,
+          char_offset: 4,
+        },
+      },
+    )));
+
+    doc.render_frame()?;
+
+    let mapping_1 = doc.last_dom_mapping().expect("dom mapping after render");
+    let preorder_1 = mapping_1
+      .preorder_for_node_id(text)
+      .expect("text node should be connected");
+
+    let prepared_1 = doc.prepared().expect("prepared document after render");
+    let selected_1 = collect_selected_styled_node_ids(prepared_1.fragment_tree(), prepared_1.box_tree());
+    assert!(
+      selected_1.contains(&preorder_1),
+      "expected selection highlight to reference preorder {preorder_1}"
+    );
+
+    // Insert a new earlier sibling before the selected text node, shifting renderer preorder ids.
+    let changed = doc.mutate_dom(|dom| {
+      let new_text = dom.create_text("X");
+      dom.insert_before(div, new_text, Some(text))
+        .expect("insert before");
+      true
+    });
+    assert!(changed);
+
+    doc.render_frame()?;
+
+    let mapping_2 = doc.last_dom_mapping().expect("dom mapping after second render");
+    let preorder_2 = mapping_2
+      .preorder_for_node_id(text)
+      .expect("text node should still be connected");
+    assert_ne!(preorder_1, preorder_2, "expected preorder ids to shift");
+
+    let prepared_2 = doc.prepared().expect("prepared document after second render");
+    let selected_2 = collect_selected_styled_node_ids(prepared_2.fragment_tree(), prepared_2.box_tree());
+    assert!(
+      selected_2.contains(&preorder_2),
+      "expected selection highlight to reference updated preorder {preorder_2}"
+    );
+    assert!(
+      !selected_2.contains(&preorder_1),
+      "expected selection highlight to no longer reference old preorder {preorder_1}"
+    );
+    Ok(())
   }
 
   #[test]
