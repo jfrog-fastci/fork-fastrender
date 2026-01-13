@@ -39,6 +39,10 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 ## Commonly useful
 
 - `FASTR_RENDER_TIMINGS=1` – print per-stage timings during rendering (parse/cascade/box_tree/layout/paint).
+- `FASTR_LOG_INTERACTION_INVALIDATION=0|1` – log interaction invalidation decisions in `BrowserDocument` renders (used by renderer-chrome dogfooding).
+  - Emits one line per `BrowserDocument::render_frame_with_deadlines_and_interaction_state` call with:
+    - path: `paint_only` / `restyle_reuse_layout` / `restyle_relayout` / `full_prepare`
+    - prev/new CSS + paint hashes and whether the layout fingerprint matched.
 - `FASTR_FULL_PAGE=1` – expand output to the full document content size (instead of the viewport).
 - `FASTR_USE_BUNDLED_FONTS=1` – disable system font discovery and use the bundled fixtures (default in CI).
 - `FASTR_JS_CONSOLE_STDERR=0|1` – print JavaScript `console.*` output to stderr (opt-in; default off). Useful for local debugging when render diagnostics collection is disabled.
