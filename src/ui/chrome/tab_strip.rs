@@ -1706,9 +1706,10 @@ fn tab_ui(
         if close_reveal_target {
           Sense::click()
         } else {
-          // When the close icon is hidden (non-active tab, not hovered), avoid stealing clicks/focus
-          // from the tab itself.
-          Sense::hover()
+          // When the close icon is hidden (non-active tab, not hovered), avoid stealing pointer
+          // clicks from the tab itself, but keep the widget focusable so keyboard traversal remains
+          // stable (Tab/Shift+Tab).
+          Sense::focusable_noninteractive()
         },
       )
       .on_hover_text("Close tab (Ctrl/Cmd+W)");
@@ -4132,6 +4133,10 @@ pub(super) fn tab_strip_ui(
       icon_button(ui, BrowserIcon::NewTab, "New tab (Ctrl/Cmd+T)", true)
     })
     .inner;
+  #[cfg(test)]
+  ui
+    .ctx()
+    .data_mut(|d| d.insert_temp(egui::Id::new("test_tab_strip_new_tab_id"), new_tab_resp.id));
   new_tab_resp.widget_info(|| {
     egui::WidgetInfo::labeled(egui::WidgetType::Button, BrowserIcon::NewTab.a11y_label())
   });
@@ -4208,6 +4213,18 @@ mod tests {
     }
   }
 
+  fn shift_tab_press() -> egui::Event {
+    egui::Event::Key {
+      key: egui::Key::Tab,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers {
+        shift: true,
+        ..Default::default()
+      },
+    }
+  }
+
   fn render_tab_strip(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAction> {
     egui::CentralPanel::default()
       .show(ctx, |ui| {
@@ -4225,6 +4242,87 @@ mod tests {
         )
       })
       .inner
+  }
+
+  fn tab_strip_close_ids(ctx: &egui::Context) -> HashMap<TabId, egui::Id> {
+    let close_ids = ctx
+      .data(|d| d.get_temp::<Vec<(TabId, egui::Id)>>(egui::Id::new("test_tab_strip_close_ids")))
+      .expect("expected test_tab_strip_close_ids");
+    let mut map = HashMap::new();
+    for (tab_id, close_id) in close_ids {
+      map.insert(tab_id, close_id);
+    }
+    map
+  }
+
+  fn tab_strip_new_tab_id(ctx: &egui::Context) -> egui::Id {
+    ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_tab_strip_new_tab_id")))
+      .expect("expected test_tab_strip_new_tab_id")
+  }
+
+  fn assert_tab_traversal_forward(ctx: &egui::Context, app: &mut BrowserAppState, order: &[egui::Id]) {
+    assert!(!order.is_empty(), "expected non-empty traversal order");
+    // Frame 1: focus the first widget.
+    ctx.memory_mut(|mem| mem.request_focus(order[0]));
+    begin_frame(ctx, Vec::new());
+    let _ = render_tab_strip(ctx, app);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(order[0])),
+      "expected initial focus on {:#?}",
+      order[0]
+    );
+
+    // Subsequent frames: press Tab and ensure focus advances in the expected order.
+    for (idx, expected) in order.iter().enumerate().skip(1) {
+      begin_frame(ctx, vec![key_press(egui::Key::Tab)]);
+      let _ = render_tab_strip(ctx, app);
+      let _ = ctx.end_frame();
+
+      let focused = order
+        .iter()
+        .copied()
+        .find(|id| ctx.memory(|mem| mem.has_focus(*id)));
+      assert_eq!(
+        focused,
+        Some(*expected),
+        "unexpected focus after Tab step {idx}; expected {expected:?}, got {focused:?}"
+      );
+    }
+  }
+
+  fn assert_tab_traversal_reverse(ctx: &egui::Context, app: &mut BrowserAppState, order: &[egui::Id]) {
+    assert!(!order.is_empty(), "expected non-empty traversal order");
+    let reverse: Vec<_> = order.iter().rev().copied().collect();
+
+    // Frame 1: focus the last widget.
+    ctx.memory_mut(|mem| mem.request_focus(reverse[0]));
+    begin_frame(ctx, Vec::new());
+    let _ = render_tab_strip(ctx, app);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(reverse[0])),
+      "expected initial focus on {:#?}",
+      reverse[0]
+    );
+
+    // Subsequent frames: press Shift+Tab and ensure focus moves in reverse order.
+    for (idx, expected) in reverse.iter().enumerate().skip(1) {
+      begin_frame(ctx, vec![shift_tab_press()]);
+      let _ = render_tab_strip(ctx, app);
+      let _ = ctx.end_frame();
+
+      let focused = order
+        .iter()
+        .copied()
+        .find(|id| ctx.memory(|mem| mem.has_focus(*id)));
+      assert_eq!(
+        focused,
+        Some(*expected),
+        "unexpected focus after Shift+Tab step {idx}; expected {expected:?}, got {focused:?}"
+      );
+    }
   }
 
   #[test]
@@ -4302,6 +4400,161 @@ mod tests {
       ctx.memory(|mem| mem.has_focus(rename_id)),
       "expected focus to move to rename text edit after opening via keyboard"
     );
+  }
+
+  #[test]
+  fn focus_traversal_tab_strip_is_left_to_right() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let tab_c = TabId(3);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_c, "https://c.example/".to_string()),
+      false,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once to capture deterministic close/new-tab ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let close_ids = tab_strip_close_ids(&ctx);
+    let new_tab_id = tab_strip_new_tab_id(&ctx);
+
+    let order = vec![
+      tab_strip_tab_widget_id(tab_a),
+      *close_ids.get(&tab_a).expect("expected close id for tab_a"),
+      tab_strip_tab_widget_id(tab_b),
+      *close_ids.get(&tab_b).expect("expected close id for tab_b"),
+      tab_strip_tab_widget_id(tab_c),
+      *close_ids.get(&tab_c).expect("expected close id for tab_c"),
+      new_tab_id,
+    ];
+
+    assert_tab_traversal_forward(&ctx, &mut app, &order);
+  }
+
+  #[test]
+  fn shift_tab_focus_traversal_tab_strip_is_right_to_left() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let tab_c = TabId(3);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_c, "https://c.example/".to_string()),
+      false,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once to capture deterministic close/new-tab ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let close_ids = tab_strip_close_ids(&ctx);
+    let new_tab_id = tab_strip_new_tab_id(&ctx);
+
+    let order = vec![
+      tab_strip_tab_widget_id(tab_a),
+      *close_ids.get(&tab_a).expect("expected close id for tab_a"),
+      tab_strip_tab_widget_id(tab_b),
+      *close_ids.get(&tab_b).expect("expected close id for tab_b"),
+      tab_strip_tab_widget_id(tab_c),
+      *close_ids.get(&tab_c).expect("expected close id for tab_c"),
+      new_tab_id,
+    ];
+
+    assert_tab_traversal_reverse(&ctx, &mut app, &order);
+  }
+
+  #[test]
+  fn focus_traversal_tab_strip_with_group_chip_is_stable_expanded_and_collapsed() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let tab_c = TabId(3);
+    let tab_d = TabId(4);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_c, "https://c.example/".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_d, "https://d.example/".to_string()),
+      false,
+    );
+    let group_id = app.create_group_with_tabs(&[tab_b, tab_c]);
+    assert_ne!(group_id, TabGroupId(0));
+
+    let ctx = egui::Context::default();
+
+    // Expanded group: the chip should appear between tab_a and tab_b.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let close_ids = tab_strip_close_ids(&ctx);
+    let chip_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_tab_group_chip_id")))
+      .expect("expected test_tab_group_chip_id to be stored");
+    let new_tab_id = tab_strip_new_tab_id(&ctx);
+
+    let expanded_order = vec![
+      tab_strip_tab_widget_id(tab_a),
+      *close_ids.get(&tab_a).expect("expected close id for tab_a"),
+      chip_id,
+      tab_strip_tab_widget_id(tab_b),
+      *close_ids.get(&tab_b).expect("expected close id for tab_b"),
+      tab_strip_tab_widget_id(tab_c),
+      *close_ids.get(&tab_c).expect("expected close id for tab_c"),
+      tab_strip_tab_widget_id(tab_d),
+      *close_ids.get(&tab_d).expect("expected close id for tab_d"),
+      new_tab_id,
+    ];
+    assert_tab_traversal_forward(&ctx, &mut app, &expanded_order);
+
+    // Collapse the group: member tabs should disappear, leaving the chip between tab_a and tab_d.
+    app.toggle_group_collapsed(group_id);
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let new_tab_id = tab_strip_new_tab_id(&ctx);
+    let collapsed_order = vec![
+      tab_strip_tab_widget_id(tab_a),
+      *close_ids.get(&tab_a).expect("expected close id for tab_a"),
+      chip_id,
+      tab_strip_tab_widget_id(tab_d),
+      *close_ids.get(&tab_d).expect("expected close id for tab_d"),
+      new_tab_id,
+    ];
+    assert_tab_traversal_forward(&ctx, &mut app, &collapsed_order);
   }
 
   #[test]
