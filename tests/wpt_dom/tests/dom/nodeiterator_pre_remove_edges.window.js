@@ -195,3 +195,36 @@ test(() => {
   assert_equals(it.referenceNode, container);
   assert_false(it.pointerBeforeReferenceNode);
 }, "NodeIterator pre-remove: innerHTML replacement runs pre-remove updates");
+
+test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+
+  const a = document.createElement("span");
+  const a1 = document.createElement("span");
+  a.appendChild(a1);
+  const b = document.createElement("span");
+
+  root.appendChild(a);
+  root.appendChild(b);
+  document.body.appendChild(root);
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ALL, null);
+
+  it.nextNode(); // root
+  it.nextNode(); // a
+  it.nextNode(); // a1
+  it.previousNode(); // a1 (toggle pointerBeforeReferenceNode => true)
+
+  assert_equals(it.referenceNode, a1);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  assert_equals(it.detach(), undefined, "detach() should be a no-op returning undefined");
+
+  // Removing `a` should still run pre-remove steps even after detach().
+  root.removeChild(a);
+
+  assert_equals(it.referenceNode, b);
+  assert_true(it.pointerBeforeReferenceNode);
+}, "NodeIterator.detach() is a no-op and does not disable pre-remove updates");
