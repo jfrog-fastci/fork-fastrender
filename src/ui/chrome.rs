@@ -3544,6 +3544,15 @@ pub fn chrome_ui_with_bookmarks(
     let tab_id = open_menu.tab_id;
     let menu_id = egui::Id::new(("tab_context_menu", tab_id));
     let menu_focus_ids_id = menu_id.with("popup_focus_ids");
+    let opened_via_keyboard_id = menu_id.with("opened_via_keyboard");
+    let opened_via_keyboard = ctx
+      .data(|d| d.get_temp::<bool>(opened_via_keyboard_id))
+      .unwrap_or(false);
+    if opened_via_keyboard {
+      // One-shot: only focus the first item on the initial keyboard open so we don't steal focus
+      // while the user is navigating within the menu.
+      ctx.data_mut(|d| d.insert_temp(opened_via_keyboard_id, false));
+    }
 
     // If the tab no longer exists (e.g. it was closed while the menu is open), close the menu.
     if app.tab(tab_id).is_none() {
@@ -3615,8 +3624,13 @@ pub fn chrome_ui_with_bookmarks(
 
             let reload_tab = ui.button("Reload Tab");
             popup_focus_ids.push(reload_tab.id);
+            if opened_via_keyboard {
+              reload_tab.request_focus();
+            }
             reload_tab
               .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reload tab"));
+            #[cfg(test)]
+            store_test_id(ctx, "test_tab_context_menu_reload_id", reload_tab.id);
             if reload_tab.clicked() {
               actions.push(ChromeAction::ReloadTab(tab_id));
               app.chrome.open_tab_context_menu = None;
@@ -8893,6 +8907,86 @@ frame={idx} repaint_after={:?}\n",
       ctx.memory(|mem| mem.has_focus(opener_id)),
       "expected focus to be restored to tab opener widget after Escape"
     );
+  }
+
+  #[test]
+  fn tab_context_menu_opens_via_shift_f10_and_focuses_first_item_with_accesskit_labels() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once so the tab widgets exist.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 1: focus the first tab.
+    let tab_id = super::tab_strip::tab_strip_tab_widget_id(tab_a);
+    ctx.memory_mut(|mem| mem.request_focus(tab_id));
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      ctx.memory(|mem| mem.has_focus(tab_id)),
+      "expected invoking tab to have focus before opening the menu"
+    );
+
+    // Frame 2: inject Shift+F10 to open the context menu via keyboard.
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.modifiers.shift = true;
+    raw.events = vec![egui::Event::Key {
+      key: egui::Key::F10,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers {
+        shift: true,
+        ..Default::default()
+      },
+    }];
+    ctx.begin_frame(raw);
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 3: render again so the popup contents are present and AccessKit can see them.
+    ctx.enable_accesskit();
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output = ctx.end_frame();
+
+    let reload_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_tab_context_menu_reload_id")))
+      .expect("expected test_tab_context_menu_reload_id to be stored");
+    assert!(
+      ctx.memory(|mem| mem.has_focus(reload_id)),
+      "expected focus to move to the first menu item when opened via keyboard"
+    );
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    for expected in ["Reload tab", "Duplicate tab", "Close tab"] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in tab context menu output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
   }
 
   #[test]

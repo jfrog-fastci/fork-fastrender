@@ -1852,6 +1852,38 @@ fn tab_ui(
   }
 
   // Input semantics.
+  // Open the tab context menu via keyboard: Shift+F10 while the tab has focus (Windows-style
+  // context menu gesture).
+  //
+  // Egui does not currently provide a built-in keyboard activation path for `Response::context_menu`,
+  // so we handle it explicitly and forward the signal to `chrome_ui` (which renders the actual
+  // popup).
+  let open_by_keyboard = interactive
+    && response.has_focus()
+    && ui.input_mut(|i| {
+      i.consume_key(
+        egui::Modifiers {
+          shift: true,
+          ..Default::default()
+        },
+        egui::Key::F10,
+      )
+    });
+  if open_by_keyboard {
+    // Anchor the menu below the tab when opened via keyboard (no cursor position).
+    chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
+      tab_id: tab.id,
+      anchor_points: (tab_rect.left(), tab_rect.bottom()),
+      opener_focus: Some(UiFocusToken(tab.id.0)),
+    });
+    chrome.tab_context_menu_rect = None;
+
+    // Tell the popup renderer to focus the first item so keyboard navigation starts inside the menu.
+    let menu_id = egui::Id::new(("tab_context_menu", tab.id));
+    ui.ctx()
+      .data_mut(|d| d.insert_temp(menu_id.with("opened_via_keyboard"), true));
+    return (tab_rect, response, None);
+  }
   if response.clicked_by(egui::PointerButton::Secondary) {
     if let Some(pos) = response
       .interact_pointer_pos()
@@ -2069,6 +2101,29 @@ fn pinned_tab_ui(
   }
 
   // Input semantics.
+  let open_by_keyboard = response.has_focus()
+    && ui.input_mut(|i| {
+      i.consume_key(
+        egui::Modifiers {
+          shift: true,
+          ..Default::default()
+        },
+        egui::Key::F10,
+      )
+    });
+  if open_by_keyboard {
+    chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
+      tab_id: tab.id,
+      anchor_points: (tab_rect.left(), tab_rect.bottom()),
+      opener_focus: Some(UiFocusToken(tab.id.0)),
+    });
+    chrome.tab_context_menu_rect = None;
+
+    let menu_id = egui::Id::new(("tab_context_menu", tab.id));
+    ui.ctx()
+      .data_mut(|d| d.insert_temp(menu_id.with("opened_via_keyboard"), true));
+    return (tab_rect, response, None);
+  }
   if response.clicked_by(egui::PointerButton::Secondary) {
     if let Some(pos) = response
       .interact_pointer_pos()
