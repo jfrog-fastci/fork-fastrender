@@ -23,6 +23,11 @@ const ENV_BROWSER_SHOW_MENU_BAR: &str = "FASTR_BROWSER_SHOW_MENU_BAR";
 #[cfg(all(feature = "browser_ui", feature = "audio_cpal"))]
 const ENV_AUDIO_TEST_TONE: &str = "FASTR_AUDIO_TEST_TONE";
 
+// Native `rfd` dialogs can be flaky/unavailable on minimal/CI hosts (e.g. missing
+// xdg-desktop-portal). Allow forcing the in-app dialogs for reliable headless testing/debug.
+#[cfg(any(test, feature = "browser_ui"))]
+const ENV_BROWSER_FORCE_IN_APP_DIALOGS: &str = "FASTR_BROWSER_FORCE_IN_APP_DIALOGS";
+
 // Experimental renderer-chrome toggle (render browser chrome via FastRender HTML/CSS).
 //
 // Manual smoke test (macOS VoiceOver / Windows Narrator / Linux Orca):
@@ -114,6 +119,56 @@ fn maybe_play_startup_test_tone() {
     drop(sink);
     drop(backend);
   });
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageExportKind {
+  SavePage,
+  Print,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl PageExportKind {
+  fn extension(self) -> &'static str {
+    match self {
+      Self::SavePage => "html",
+      Self::Print => "png",
+    }
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn force_in_app_dialogs_from_env(env_value: Option<&str>) -> bool {
+  parse_env_bool(env_value)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NativeSaveDialogOutcome {
+  /// The user chose a destination path.
+  Chosen(std::path::PathBuf),
+  /// The user cancelled the dialog.
+  Cancelled,
+  /// The native dialog could not be opened (or native dialogs are disabled) and the caller should
+  /// fall back to the in-app path popup.
+  FallbackToInApp,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn native_save_dialog_outcome(
+  force_in_app_dialogs: bool,
+  open_dialog: impl FnOnce() -> Option<std::path::PathBuf>,
+) -> NativeSaveDialogOutcome {
+  if force_in_app_dialogs {
+    return NativeSaveDialogOutcome::FallbackToInApp;
+  }
+
+  match std::panic::catch_unwind(std::panic::AssertUnwindSafe(open_dialog)) {
+    Ok(Some(path)) => NativeSaveDialogOutcome::Chosen(path),
+    Ok(None) => NativeSaveDialogOutcome::Cancelled,
+    Err(_) => NativeSaveDialogOutcome::FallbackToInApp,
+  }
 }
 
 // Structured JSONL performance logging used by the windowed browser UI.
@@ -1143,7 +1198,8 @@ fn bookmark_reorder_failure_toast(
     BookmarkError::InvalidStore(msg) => msg.clone(),
     other => format!("{other:?}"),
   };
-  let detail = sanitize_toast_detail_single_line(&detail_raw, BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES);
+  let detail =
+    sanitize_toast_detail_single_line(&detail_raw, BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES);
 
   let mut text = "Failed to reorder bookmarks".to_string();
   if let Some(detail) = detail {
@@ -1230,11 +1286,12 @@ fn sanitize_select_control_for_windowed_ui(
   for item in control.items.iter() {
     match item {
       SelectItem::OptGroupLabel { label, disabled } => {
-        let label = if label.len() <= MAX_SELECT_LABEL_BYTES && label.capacity() <= absurd_label_capacity {
-          label.clone()
-        } else {
-          truncate_utf8_str_to_bytes(label, MAX_SELECT_LABEL_BYTES)
-        };
+        let label =
+          if label.len() <= MAX_SELECT_LABEL_BYTES && label.capacity() <= absurd_label_capacity {
+            label.clone()
+          } else {
+            truncate_utf8_str_to_bytes(label, MAX_SELECT_LABEL_BYTES)
+          };
         items.push(SelectItem::OptGroupLabel {
           label,
           disabled: *disabled,
@@ -1248,16 +1305,18 @@ fn sanitize_select_control_for_windowed_ui(
         disabled,
         in_optgroup,
       } => {
-        let label = if label.len() <= MAX_SELECT_LABEL_BYTES && label.capacity() <= absurd_label_capacity {
-          label.clone()
-        } else {
-          truncate_utf8_str_to_bytes(label, MAX_SELECT_LABEL_BYTES)
-        };
-        let value = if value.len() <= MAX_SELECT_LABEL_BYTES && value.capacity() <= absurd_label_capacity {
-          value.clone()
-        } else {
-          truncate_utf8_str_to_bytes(value, MAX_SELECT_LABEL_BYTES)
-        };
+        let label =
+          if label.len() <= MAX_SELECT_LABEL_BYTES && label.capacity() <= absurd_label_capacity {
+            label.clone()
+          } else {
+            truncate_utf8_str_to_bytes(label, MAX_SELECT_LABEL_BYTES)
+          };
+        let value =
+          if value.len() <= MAX_SELECT_LABEL_BYTES && value.capacity() <= absurd_label_capacity {
+            value.clone()
+          } else {
+            truncate_utf8_str_to_bytes(value, MAX_SELECT_LABEL_BYTES)
+          };
         items.push(SelectItem::Option {
           node_id: *node_id,
           label,
@@ -1282,21 +1341,19 @@ fn sanitize_select_control_for_windowed_ui(
 fn sanitize_worker_to_ui_for_windowed_browser(
   msg: fastrender::ui::WorkerToUi,
 ) -> Option<fastrender::ui::WorkerToUi> {
+  use fastrender::ui::messages::DatalistOption;
   use fastrender::ui::protocol_limits::{
     MAX_ACCEPT_ATTR_BYTES, MAX_INPUT_VALUE_BYTES, MAX_SELECT_ITEMS, MAX_SELECT_LABEL_BYTES,
   };
-  use fastrender::ui::messages::DatalistOption;
   use fastrender::ui::WorkerToUi;
 
   const ABSURD_INPUT_VALUE_BYTES_MULTIPLIER: usize = 64;
   let absurd_input_limit =
     MAX_INPUT_VALUE_BYTES.saturating_mul(ABSURD_INPUT_VALUE_BYTES_MULTIPLIER);
   const ABSURD_DATALIST_OPTIONS_MULTIPLIER: usize = 64;
-  let absurd_datalist_limit =
-    MAX_SELECT_ITEMS.saturating_mul(ABSURD_DATALIST_OPTIONS_MULTIPLIER);
+  let absurd_datalist_limit = MAX_SELECT_ITEMS.saturating_mul(ABSURD_DATALIST_OPTIONS_MULTIPLIER);
   const ABSURD_VEC_CAPACITY_MULTIPLIER: usize = 4;
-  let absurd_item_vec_capacity =
-    MAX_SELECT_ITEMS.saturating_mul(ABSURD_VEC_CAPACITY_MULTIPLIER);
+  let absurd_item_vec_capacity = MAX_SELECT_ITEMS.saturating_mul(ABSURD_VEC_CAPACITY_MULTIPLIER);
 
   match msg {
     WorkerToUi::OpenSelectDropdown {
@@ -1471,9 +1528,7 @@ enum BridgeSanitizedMsgs {
 ///
 /// IMPORTANT: This must not clone/copy `FrameReady` pixmaps.
 #[cfg(any(test, feature = "browser_ui"))]
-fn sanitize_worker_to_ui_for_bridge_queue(
-  msg: fastrender::ui::WorkerToUi,
-) -> BridgeSanitizedMsgs {
+fn sanitize_worker_to_ui_for_bridge_queue(msg: fastrender::ui::WorkerToUi) -> BridgeSanitizedMsgs {
   use fastrender::ui::WorkerToUi;
 
   // Clipboard messages carry potentially large text that must be handled out-of-band (the shared
@@ -1499,10 +1554,9 @@ fn sanitize_worker_to_ui_for_bridge_queue(
   let msg = msg.and_then(sanitize_worker_to_ui_untrusted_payloads);
 
   match (clipboard_update, msg) {
-    (Some(clipboard), Some(msg)) => BridgeSanitizedMsgs::Two(
-      QueuedMsg::Clipboard(clipboard),
-      QueuedMsg::Worker(msg),
-    ),
+    (Some(clipboard), Some(msg)) => {
+      BridgeSanitizedMsgs::Two(QueuedMsg::Clipboard(clipboard), QueuedMsg::Worker(msg))
+    }
     (Some(clipboard), None) => {
       // Clipboard updates must still be processed even if the associated WorkerToUi message was
       // dropped by other sanitizers (should not normally happen, but keep behaviour robust).
@@ -1959,7 +2013,8 @@ mod bridge_worker_to_ui_sanitization_tests {
       text: original,
     };
 
-    let BridgeSanitizedMsgs::Two(first, second) = sanitize_worker_to_ui_for_bridge_queue(msg) else {
+    let BridgeSanitizedMsgs::Two(first, second) = sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
       panic!("expected clipboard message to split into two queued items");
     };
 
@@ -1982,7 +2037,10 @@ mod bridge_worker_to_ui_sanitization_tests {
     match worker_msg {
       WorkerToUi::SetClipboardText { tab_id: got, text } => {
         assert_eq!(got, tab_id);
-        assert!(text.is_empty(), "worker marker should not carry clipboard text");
+        assert!(
+          text.is_empty(),
+          "worker marker should not carry clipboard text"
+        );
       }
       other => panic!("unexpected worker message: {other:?}"),
     }
@@ -1996,7 +2054,8 @@ mod bridge_worker_to_ui_sanitization_tests {
     assert!(text.capacity() > MAX_CLIPBOARD_TEXT_BYTES);
     let msg = WorkerToUi::SetClipboardText { tab_id, text };
 
-    let BridgeSanitizedMsgs::Two(first, _second) = sanitize_worker_to_ui_for_bridge_queue(msg) else {
+    let BridgeSanitizedMsgs::Two(first, _second) = sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
       panic!("expected clipboard message to split into two queued items");
     };
     let QueuedMsg::Clipboard(result) = first else {
@@ -2016,10 +2075,7 @@ mod bridge_worker_to_ui_sanitization_tests {
   fn debug_log_is_sanitized_and_does_not_retain_huge_capacity() {
     let tab_id = TabId(1);
     let huge = "a".repeat(1_000_000);
-    let msg = WorkerToUi::DebugLog {
-      tab_id,
-      line: huge,
-    };
+    let msg = WorkerToUi::DebugLog { tab_id, line: huge };
 
     let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
       sanitize_worker_to_ui_for_bridge_queue(msg)
@@ -2055,7 +2111,10 @@ mod bridge_worker_to_ui_sanitization_tests {
     };
 
     assert!(
-      matches!(sanitize_worker_to_ui_for_bridge_queue(msg), BridgeSanitizedMsgs::Drop),
+      matches!(
+        sanitize_worker_to_ui_for_bridge_queue(msg),
+        BridgeSanitizedMsgs::Drop
+      ),
       "expected oversized favicon payload to be dropped"
     );
   }
@@ -2110,7 +2169,10 @@ mod bridge_worker_to_ui_sanitization_tests {
       panic!("expected FilePickerOpened to be enqueued");
     };
 
-    let WorkerToUi::FilePickerOpened { accept, anchor_css, .. } = worker_msg else {
+    let WorkerToUi::FilePickerOpened {
+      accept, anchor_css, ..
+    } = worker_msg
+    else {
       panic!("expected FilePickerOpened after sanitization");
     };
 
@@ -2199,7 +2261,12 @@ mod bridge_worker_to_ui_sanitization_tests {
     else {
       panic!("expected DatalistOpened to be enqueued");
     };
-    let WorkerToUi::DatalistOpened { options, anchor_css, .. } = worker_msg else {
+    let WorkerToUi::DatalistOpened {
+      options,
+      anchor_css,
+      ..
+    } = worker_msg
+    else {
       panic!("expected DatalistOpened after sanitization");
     };
 
@@ -3366,6 +3433,24 @@ enum UserEvent {
   },
   /// Discard the currently restored session and start fresh (single `about:newtab` tab per window).
   StartNewSession(winit::window::WindowId),
+  PageExportNativeDialogFallback {
+    window_id: winit::window::WindowId,
+    tab_id: fastrender::ui::TabId,
+    kind: PageExportKind,
+    suggested_name: String,
+    default_dir: std::path::PathBuf,
+  },
+  PageExportNativeDialogChosen {
+    window_id: winit::window::WindowId,
+    tab_id: fastrender::ui::TabId,
+    kind: PageExportKind,
+    path: std::path::PathBuf,
+  },
+  PageExportFinished {
+    window_id: winit::window::WindowId,
+    kind: PageExportKind,
+    result: Result<std::path::PathBuf, String>,
+  },
   /// An accessibility action request (e.g. "activate" or "focus") dispatched by the OS via AccessKit.
   AccessKitAction {
     window_id: winit::window::WindowId,
@@ -3653,7 +3738,10 @@ enum StartupSessionSource {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
-fn should_show_crash_recovery_infobar(source: StartupSessionSource, did_exit_cleanly: bool) -> bool {
+fn should_show_crash_recovery_infobar(
+  source: StartupSessionSource,
+  did_exit_cleanly: bool,
+) -> bool {
   matches!(source, StartupSessionSource::Restored) && !did_exit_cleanly
 }
 
@@ -3725,7 +3813,10 @@ mod crash_recovery_prompt_tests {
 
     let mut app = BrowserAppState::new();
     app.push_tab(
-      BrowserTabState::new(fastrender::ui::TabId::new(), "https://example.com".to_string()),
+      BrowserTabState::new(
+        fastrender::ui::TabId::new(),
+        "https://example.com".to_string(),
+      ),
       true,
     );
     app.push_tab(
@@ -3997,6 +4088,46 @@ mod tests {
   }
 
   #[test]
+  fn force_in_app_dialogs_env_override_parses_truthy_values() {
+    assert!(!force_in_app_dialogs_from_env(None));
+    assert!(!force_in_app_dialogs_from_env(Some("0")));
+    assert!(!force_in_app_dialogs_from_env(Some("false")));
+    assert!(force_in_app_dialogs_from_env(Some("1")));
+    assert!(force_in_app_dialogs_from_env(Some("true")));
+    assert!(force_in_app_dialogs_from_env(Some("yes")));
+  }
+
+  #[test]
+  fn native_save_dialog_outcome_skips_dialog_when_forced() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let called = Arc::new(AtomicBool::new(false));
+    let called2 = Arc::clone(&called);
+    let outcome = native_save_dialog_outcome(true, || {
+      called2.store(true, Ordering::SeqCst);
+      Some(std::path::PathBuf::from("ignored"))
+    });
+    assert_eq!(outcome, NativeSaveDialogOutcome::FallbackToInApp);
+    assert!(
+      !called.load(Ordering::SeqCst),
+      "expected dialog closure to be skipped"
+    );
+  }
+
+  #[test]
+  fn native_save_dialog_outcome_catches_panics() {
+    let outcome = native_save_dialog_outcome(false, || panic!("boom"));
+    assert_eq!(outcome, NativeSaveDialogOutcome::FallbackToInApp);
+  }
+
+  #[test]
+  fn native_save_dialog_outcome_distinguishes_cancel() {
+    let outcome = native_save_dialog_outcome(false, || None);
+    assert_eq!(outcome, NativeSaveDialogOutcome::Cancelled);
+  }
+
+  #[test]
   fn worker_wake_notify_coalesces() {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4046,7 +4177,9 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     let pending = Arc::new(AtomicBool::new(false));
-    let coalescer = Arc::new(fastrender::ui::WorkerWakeCoalescer::new(Arc::clone(&pending)));
+    let coalescer = Arc::new(fastrender::ui::WorkerWakeCoalescer::new(Arc::clone(
+      &pending,
+    )));
     let callback_calls = Arc::new(AtomicUsize::new(0));
     let barrier = Arc::new(Barrier::new(3));
 
@@ -4631,7 +4764,10 @@ mod resize_burst_detector_tests {
     assert_eq!(resize_burst_deadline(None), None);
     assert_eq!(
       resize_burst_deadline(Some(t0)),
-      Some(t0.checked_add(RESIZE_BURST_TTL).expect("expected deadline for sane Instant"))
+      Some(
+        t0.checked_add(RESIZE_BURST_TTL)
+          .expect("expected deadline for sane Instant")
+      )
     );
   }
 }
@@ -4776,7 +4912,12 @@ impl WindowRectPx {
   fn edges(self) -> (i64, i64, i64, i64) {
     let x2 = self.x.saturating_add(self.width);
     let y2 = self.y.saturating_add(self.height);
-    (self.x.min(x2), self.y.min(y2), self.x.max(x2), self.y.max(y2))
+    (
+      self.x.min(x2),
+      self.y.min(y2),
+      self.x.max(x2),
+      self.y.max(y2),
+    )
   }
 
   fn intersects(self, other: Self) -> bool {
@@ -4849,7 +4990,9 @@ fn adjust_offscreen_window_rect(
   let window_width = window.width.max(1).min(monitor_width);
   let window_height = window.height.max(1).min(monitor_height);
 
-  let x = target_monitor.x.saturating_add((monitor_width - window_width) / 2);
+  let x = target_monitor
+    .x
+    .saturating_add((monitor_width - window_width) / 2);
 
   // Slightly down from the top edge keeps the restored window from hugging macOS menu bars / X11
   // panels while staying deterministic for tests.
@@ -5109,12 +5252,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     return Ok(());
   }
 
-  let session_path =
-    if let Some(path) = cli.session_path.as_ref().filter(|p| !p.as_os_str().is_empty()) {
-      path.clone()
-    } else {
-      fastrender::ui::session::session_path()
-    };
+  let session_path = if let Some(path) = cli
+    .session_path
+    .as_ref()
+    .filter(|p| !p.as_os_str().is_empty())
+  {
+    path.clone()
+  } else {
+    fastrender::ui::session::session_path()
+  };
   let session_lock = match fastrender::ui::session::acquire_session_lock(&session_path) {
     Ok(lock) => lock,
     Err(fastrender::ui::session::SessionLockError::AlreadyLocked { lock_path }) => {
@@ -5772,9 +5918,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       None
     };
     let worker_perf_log = if perf_log_enabled {
-      worker_wake_counters.as_ref().map(|counters| {
-        WorkerWakePerfLogger::new(window_id, Arc::clone(counters))
-      })
+      worker_wake_counters
+        .as_ref()
+        .map(|counters| WorkerWakePerfLogger::new(window_id, Arc::clone(counters)))
     } else {
       None
     };
@@ -5826,8 +5972,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   //
   // If the existing session file is unreadable (JSON corruption), avoid overwriting it
   // automatically—wait for the first explicit save request.
-  let can_write_startup_snapshot =
-    fastrender::ui::session::load_session(&session_path).is_ok();
+  let can_write_startup_snapshot = fastrender::ui::session::load_session(&session_path).is_ok();
   let mut session_autosave = if can_write_startup_snapshot {
     let active_window_index = active_window_id
       .and_then(|id| window_order.iter().position(|other| *other == id))
@@ -5848,8 +5993,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let appearance = global_appearance.clone();
     let session_home_url = global_home_url.clone();
 
-    let mut session =
-      fastrender::ui::BrowserSession::from_windows(session_windows, active_window_index, appearance);
+    let mut session = fastrender::ui::BrowserSession::from_windows(
+      session_windows,
+      active_window_index,
+      appearance,
+    );
     session.home_url = session_home_url;
     fastrender::ui::session_autosave::SessionAutosave::new_with_initial_session(
       session_path.clone(),
@@ -5920,7 +6068,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ));
           }
           if history_autosave_send_scheduler.take_force(now) {
-            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(global_history.clone()));
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+              global_history.clone(),
+            ));
           }
         }
         autosave.shutdown_with_timeout(std::time::Duration::from_millis(500));
@@ -6063,13 +6213,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           match event {
             WindowEvent::Moved(new_pos) => {
               let size = win.app.window.inner_size();
-              win.app.update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
-                x: Some(new_pos.x as i64),
-                y: Some(new_pos.y as i64),
-                width: Some(size.width as i64),
-                height: Some(size.height as i64),
-                maximized: win.app.window.is_maximized(),
-              });
+              win
+                .app
+                .update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
+                  x: Some(new_pos.x as i64),
+                  y: Some(new_pos.y as i64),
+                  width: Some(size.width as i64),
+                  height: Some(size.height as i64),
+                  maximized: win.app.window.is_maximized(),
+                });
             }
             WindowEvent::Focused(true) => {
               active_window_id = Some(window_id);
@@ -6077,13 +6229,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             WindowEvent::Resized(new_size) => {
               win.app.window_minimized = new_size.width == 0 || new_size.height == 0;
               let pos = win.app.window.outer_position().ok();
-              win.app.update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
-                x: pos.map(|p| p.x as i64),
-                y: pos.map(|p| p.y as i64),
-                width: Some(new_size.width as i64),
-                height: Some(new_size.height as i64),
-                maximized: win.app.window.is_maximized(),
-              });
+              win
+                .app
+                .update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
+                  x: pos.map(|p| p.x as i64),
+                  y: pos.map(|p| p.y as i64),
+                  width: Some(new_size.width as i64),
+                  height: Some(new_size.height as i64),
+                  maximized: win.app.window.is_maximized(),
+                });
               win.app.resize(new_size);
               win.app.schedule_resize_redraw();
             }
@@ -6095,13 +6249,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               win.app.window_minimized = new_size.width == 0 || new_size.height == 0;
               win.app.set_system_pixels_per_point(scale_factor as f32);
               let pos = win.app.window.outer_position().ok();
-              win.app.update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
-                x: pos.map(|p| p.x as i64),
-                y: pos.map(|p| p.y as i64),
-                width: Some(new_size.width as i64),
-                height: Some(new_size.height as i64),
-                maximized: win.app.window.is_maximized(),
-              });
+              win
+                .app
+                .update_last_known_good_window_state(fastrender::ui::BrowserWindowState {
+                  x: pos.map(|p| p.x as i64),
+                  y: pos.map(|p| p.y as i64),
+                  width: Some(new_size.width as i64),
+                  height: Some(new_size.height as i64),
+                  maximized: win.app.window.is_maximized(),
+                });
               win.app.resize(*new_inner_size);
               win.app.schedule_resize_redraw();
             }
@@ -6251,7 +6407,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             history_autosave_send_scheduler.mark_dirty();
             for (id, win) in windows.iter_mut() {
               if *id != window_id {
-                win.app
+                win
+                  .app
                   .browser_state
                   .history
                   .apply_visit_deltas(&history_deltas);
@@ -6273,9 +6430,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   .suggestions
                   .iter()
                   .any(|s| {
-                    s.source == fastrender::ui::OmniboxSuggestionSource::Url(
-                      fastrender::ui::OmniboxUrlSource::Visited,
-                    )
+                    s.source
+                      == fastrender::ui::OmniboxSuggestionSource::Url(
+                        fastrender::ui::OmniboxUrlSource::Visited,
+                      )
                   });
 
               if omnibox_has_visited_suggestions {
@@ -6298,7 +6456,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   .omnibox
                   .last_built_for_input
                   .clone_from(&win.app.browser_state.chrome.address_bar_text);
-                win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
+                win
+                  .app
+                  .browser_state
+                  .chrome
+                  .omnibox
+                  .last_built_remote_fetched_at =
                   win.app.browser_state.chrome.remote_search_cache.fetched_at;
                 if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
                   win.app.browser_state.chrome.omnibox.open = false;
@@ -6391,6 +6554,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           if request_redraw {
             win.app.window.request_redraw();
           }
+        }
+      }
+      Event::UserEvent(UserEvent::PageExportNativeDialogFallback {
+        window_id,
+        tab_id,
+        kind,
+        suggested_name,
+        default_dir,
+      }) => {
+        if let Some(win) = windows.get_mut(&window_id) {
+          win
+            .app
+            .open_page_export_in_app_dialog(kind, tab_id, &suggested_name, &default_dir);
+          win.app.window.request_redraw();
+        }
+      }
+      Event::UserEvent(UserEvent::PageExportNativeDialogChosen {
+        window_id,
+        tab_id,
+        kind,
+        path,
+      }) => {
+        if let Some(win) = windows.get_mut(&window_id) {
+          win.app.begin_page_export(kind, tab_id, path);
+          win.app.window.request_redraw();
+        }
+      }
+      Event::UserEvent(UserEvent::PageExportFinished {
+        window_id,
+        kind,
+        result,
+      }) => {
+        if let Some(win) = windows.get_mut(&window_id) {
+          win.app.handle_page_export_finished(kind, result);
+          win.app.window.request_redraw();
         }
       }
       Event::UserEvent(UserEvent::AccessKitAction { window_id, request }) => {
@@ -6488,9 +6686,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           path: download_dir.clone(),
         }) {
           if let Some(win) = windows.get_mut(&from_id) {
-            win.app.toast_new_window_error(format_args!(
-              "send download directory: {err}"
-            ));
+            win
+              .app
+              .toast_new_window_error(format_args!("send download directory: {err}"));
           }
           return;
         }
@@ -6552,9 +6750,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           None
         };
         let worker_perf_log = if perf_log_enabled {
-          worker_wake_counters.as_ref().map(|counters| {
-            WorkerWakePerfLogger::new(window_id, Arc::clone(counters))
-          })
+          worker_wake_counters
+            .as_ref()
+            .map(|counters| WorkerWakePerfLogger::new(window_id, Arc::clone(counters)))
         } else {
           None
         };
@@ -6568,9 +6766,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           Ok(v) => v,
           Err(err) => {
             if let Some(win) = windows.get_mut(&from_id) {
-              win.app.toast_new_window_error(format_args!(
-                "spawn worker bridge thread: {err}"
-              ));
+              win
+                .app
+                .toast_new_window_error(format_args!("spawn worker bridge thread: {err}"));
             }
             return;
           }
@@ -6671,9 +6869,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           path: download_dir.clone(),
         }) {
           if let Some(win) = windows.get_mut(&from_id) {
-            win.app.toast_new_window_error(format_args!(
-              "send download directory: {err}"
-            ));
+            win
+              .app
+              .toast_new_window_error(format_args!("send download directory: {err}"));
           }
           return;
         }
@@ -6730,9 +6928,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           None
         };
         let worker_perf_log = if perf_log_enabled {
-          worker_wake_counters.as_ref().map(|counters| {
-            WorkerWakePerfLogger::new(window_id, Arc::clone(counters))
-          })
+          worker_wake_counters
+            .as_ref()
+            .map(|counters| WorkerWakePerfLogger::new(window_id, Arc::clone(counters)))
         } else {
           None
         };
@@ -6746,9 +6944,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           Ok(v) => v,
           Err(err) => {
             if let Some(win) = windows.get_mut(&from_id) {
-              win.app.toast_new_window_error(format_args!(
-                "spawn worker bridge thread: {err}"
-              ));
+              win
+                .app
+                .toast_new_window_error(format_args!("spawn worker bridge thread: {err}"));
             }
             return;
           }
@@ -6807,8 +7005,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| global_appearance.clone())
             })
             .collect::<Vec<_>>();
-          let (new_global, updates) =
-            apply_global_appearance(&global_appearance, proposed_appearance, &ordered_appearances);
+          let (new_global, updates) = apply_global_appearance(
+            &global_appearance,
+            proposed_appearance,
+            &ordered_appearances,
+          );
           if new_global != global_appearance {
             global_appearance = new_global;
             global_appearance_changed = true;
@@ -6862,7 +7063,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               fastrender::ui::renderer_media_prefs::ResolvedTheme::Light
             }
             fastrender::ui::theme_parsing::BrowserTheme::System => {
-              match windows.get(&window_id).and_then(|win| win.app.window.theme()) {
+              match windows
+                .get(&window_id)
+                .and_then(|win| win.app.window.theme())
+              {
                 Some(Theme::Dark) => fastrender::ui::renderer_media_prefs::ResolvedTheme::Dark,
                 _ => fastrender::ui::renderer_media_prefs::ResolvedTheme::Light,
               }
@@ -7139,7 +7343,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .omnibox
             .last_built_for_input
             .clone_from(&win.app.browser_state.chrome.address_bar_text);
-          win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
+          win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .last_built_remote_fetched_at =
             win.app.browser_state.chrome.remote_search_cache.fetched_at;
           if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
             win.app.browser_state.chrome.omnibox.open = false;
@@ -7225,9 +7434,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .suggestions
             .iter()
             .any(|s| {
-              s.source == fastrender::ui::OmniboxSuggestionSource::Url(
-                fastrender::ui::OmniboxUrlSource::Visited,
-              )
+              s.source
+                == fastrender::ui::OmniboxSuggestionSource::Url(
+                  fastrender::ui::OmniboxUrlSource::Visited,
+                )
             });
 
         if omnibox_has_visited_suggestions {
@@ -7249,7 +7459,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .omnibox
             .last_built_for_input
             .clone_from(&win.app.browser_state.chrome.address_bar_text);
-          win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
+          win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .last_built_remote_fetched_at =
             win.app.browser_state.chrome.remote_search_cache.fetched_at;
           if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
             win.app.browser_state.chrome.omnibox.open = false;
@@ -7307,7 +7522,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(tx) = profile_autosave_tx.as_ref() {
       let now = std::time::Instant::now();
       if history_autosave_send_scheduler.take_if_due(now) {
-        let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(global_history.clone()));
+        let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+          global_history.clone(),
+        ));
       }
     }
 
@@ -7634,126 +7851,102 @@ fn run_headless_smoke_mode(
   let worker_disabled = std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE_DISABLE_WORKER")
     .is_some_and(|v| !v.is_empty());
 
-  let (pixmap_w, pixmap_h, viewport_css, dpr) =
-    if fastrender::ui::about_pages::is_about_url(active_url) {
-      // Trusted about: rendering: do not spawn the renderer worker and do not send any navigation
-      // messages. This keeps bookmarks/history data in the browser process.
-      let mut renderer = fastrender::FastRender::new()?;
-      renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
-      let html = fastrender::ui::about_pages::html_for_about_url(active_url).unwrap_or_else(|| {
-        fastrender::ui::about_pages::error_page_html(
-          "Unknown about page",
-          &format!("Unknown URL: {active_url}"),
-          None,
+  let (pixmap_w, pixmap_h, viewport_css, dpr) = if fastrender::ui::about_pages::is_about_url(
+    active_url,
+  ) {
+    // Trusted about: rendering: do not spawn the renderer worker and do not send any navigation
+    // messages. This keeps bookmarks/history data in the browser process.
+    let mut renderer = fastrender::FastRender::new()?;
+    renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
+    let html = fastrender::ui::about_pages::html_for_about_url(active_url).unwrap_or_else(|| {
+      fastrender::ui::about_pages::error_page_html(
+        "Unknown about page",
+        &format!("Unknown URL: {active_url}"),
+        None,
+      )
+    });
+    let pixmap = renderer.render_html_with_options(
+      &html,
+      fastrender::RenderOptions::new()
+        .with_viewport(VIEWPORT_CSS.0, VIEWPORT_CSS.1)
+        .with_device_pixel_ratio(DPR),
+    )?;
+    let pixmap_px = (pixmap.width(), pixmap.height());
+    if pixmap_px != (expected_pixmap_w, expected_pixmap_h) {
+      return Err(
+        format!(
+          "unexpected pixmap size from trusted about renderer: got {}x{}, expected {}x{}",
+          pixmap_px.0, pixmap_px.1, expected_pixmap_w, expected_pixmap_h
         )
-      });
-      let pixmap = renderer.render_html_with_options(
-        &html,
-        fastrender::RenderOptions::new()
-          .with_viewport(VIEWPORT_CSS.0, VIEWPORT_CSS.1)
-          .with_device_pixel_ratio(DPR),
-      )?;
-      let pixmap_px = (pixmap.width(), pixmap.height());
-      if pixmap_px != (expected_pixmap_w, expected_pixmap_h) {
-        return Err(
-          format!(
-            "unexpected pixmap size from trusted about renderer: got {}x{}, expected {}x{}",
-            pixmap_px.0, pixmap_px.1, expected_pixmap_w, expected_pixmap_h
-          )
+        .into(),
+      );
+    }
+    (pixmap_px.0, pixmap_px.1, VIEWPORT_CSS, DPR)
+  } else {
+    if worker_disabled {
+      return Err(
+        format!("renderer worker disabled, but active URL is not an about: page ({active_url})")
           .into(),
-        );
-      }
-      (pixmap_px.0, pixmap_px.1, VIEWPORT_CSS, DPR)
-    } else {
-      if worker_disabled {
-        return Err(format!(
-          "renderer worker disabled, but active URL is not an about: page ({active_url})"
-        )
-        .into());
-      }
+      );
+    }
 
-      let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
-        "fastr-browser-headless-smoke-worker",
-      )?;
+    let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
+      "fastr-browser-headless-smoke-worker",
+    )?;
 
-      fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
-        download_dir.display().to_string(),
-      ));
-      renderer_backend.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
+    fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+      download_dir.display().to_string(),
+    ));
+    renderer_backend.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
 
-      let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
-      for _tab in &active_window.tabs {
-        let tab_id = TabId::new();
-        tab_ids.push(tab_id);
-        renderer_backend.send(UiToWorker::CreateTab {
-          tab_id,
-          // Do not start navigation until after the headless harness has applied viewport/DPR. This
-          // avoids a race where the worker begins rendering with its default (800x600, DPR=1) and only
-          // later receives the `ViewportChanged` message, which can make the smoke test slow/flaky on
-          // debug builds / constrained CI.
-          initial_url: None,
-          cancel: CancelGens::new(),
-        })?;
-      }
-
-      let active_idx = active_window
-        .active_tab_index
-        .min(tab_ids.len().saturating_sub(1));
-      let active_tab_id = tab_ids[active_idx];
-      renderer_backend.send(UiToWorker::ViewportChanged {
-        tab_id: active_tab_id,
-        viewport_css: VIEWPORT_CSS,
-        dpr: DPR,
+    let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
+    for _tab in &active_window.tabs {
+      let tab_id = TabId::new();
+      tab_ids.push(tab_id);
+      renderer_backend.send(UiToWorker::CreateTab {
+        tab_id,
+        // Do not start navigation until after the headless harness has applied viewport/DPR. This
+        // avoids a race where the worker begins rendering with its default (800x600, DPR=1) and only
+        // later receives the `ViewportChanged` message, which can make the smoke test slow/flaky on
+        // debug builds / constrained CI.
+        initial_url: None,
+        cancel: CancelGens::new(),
       })?;
-      renderer_backend.send(UiToWorker::SetActiveTab {
+    }
+
+    let active_idx = active_window
+      .active_tab_index
+      .min(tab_ids.len().saturating_sub(1));
+    let active_tab_id = tab_ids[active_idx];
+    renderer_backend.send(UiToWorker::ViewportChanged {
+      tab_id: active_tab_id,
+      viewport_css: VIEWPORT_CSS,
+      dpr: DPR,
+    })?;
+    renderer_backend.send(UiToWorker::SetActiveTab {
+      tab_id: active_tab_id,
+    })?;
+    if let Some(tab) = active_window.tabs.get(active_idx) {
+      renderer_backend.send(UiToWorker::Navigate {
         tab_id: active_tab_id,
+        url: tab.url.clone(),
+        reason: NavigationReason::TypedUrl,
       })?;
-      if let Some(tab) = active_window.tabs.get(active_idx) {
-        renderer_backend.send(UiToWorker::Navigate {
-          tab_id: active_tab_id,
-          url: tab.url.clone(),
-          reason: NavigationReason::TypedUrl,
-        })?;
-      }
+    }
 
-      // Close the UI→worker channel so the worker thread exits after completing the above messages.
-      renderer_backend.shutdown();
+    // Close the UI→worker channel so the worker thread exits after completing the above messages.
+    renderer_backend.shutdown();
 
-      let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
-      let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
-      let mut frames_seen: u32 = 0;
+    let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
+    let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
+    let mut frames_seen: u32 = 0;
 
-      match renderer_watchdog_timeout {
-        Some(timeout) => {
-          let deadline = Instant::now() + timeout;
-          while Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match renderer_backend.recv_timeout(remaining) {
-              Ok(WorkerToUi::FrameReady {
-                tab_id: msg_tab,
-                frame,
-              }) if msg_tab == active_tab_id => {
-                let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
-                frames_seen += 1;
-                last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
-                if frame.viewport_css == VIEWPORT_CSS
-                  && (frame.dpr - DPR).abs() <= 0.01
-                  && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
-                {
-                  smoke_summary = last_frame_meta;
-                  break;
-                }
-              }
-              Ok(_) => {}
-              Err(RecvTimeoutError::Timeout) => break,
-              Err(RecvTimeoutError::Disconnected) => {
-                return Err("headless smoke worker disconnected before FrameReady".into());
-              }
-            }
-          }
-        }
-        None => loop {
-          match renderer_backend.recv() {
+    match renderer_watchdog_timeout {
+      Some(timeout) => {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+          let remaining = deadline.saturating_duration_since(Instant::now());
+          match renderer_backend.recv_timeout(remaining) {
             Ok(WorkerToUi::FrameReady {
               tab_id: msg_tab,
               frame,
@@ -7770,21 +7963,46 @@ fn run_headless_smoke_mode(
               }
             }
             Ok(_) => {}
-            Err(_) => {
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => {
               return Err("headless smoke worker disconnected before FrameReady".into());
             }
           }
-        },
+        }
       }
+      None => loop {
+        match renderer_backend.recv() {
+          Ok(WorkerToUi::FrameReady {
+            tab_id: msg_tab,
+            frame,
+          }) if msg_tab == active_tab_id => {
+            let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
+            frames_seen += 1;
+            last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
+            if frame.viewport_css == VIEWPORT_CSS
+              && (frame.dpr - DPR).abs() <= 0.01
+              && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
+            {
+              smoke_summary = last_frame_meta;
+              break;
+            }
+          }
+          Ok(_) => {}
+          Err(_) => {
+            return Err("headless smoke worker disconnected before FrameReady".into());
+          }
+        }
+      },
+    }
 
-      let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
-        let hint = match last_frame_meta {
+    let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
+      let hint = match last_frame_meta {
           Some((w, h, viewport, dpr)) => format!(
             " (saw {frames_seen} FrameReady; last was viewport_css={viewport:?} dpr={dpr} pixmap_px={w}x{h})"
           ),
           None => " (saw no FrameReady messages)".to_string(),
         };
-        return Err(
+      return Err(
           match renderer_watchdog_timeout {
             Some(timeout) => format!(
               "timed out after {timeout:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?} dpr={DPR} pixmap_px={expected_pixmap_w}x{expected_pixmap_h}{hint}"
@@ -7795,37 +8013,37 @@ fn run_headless_smoke_mode(
           }
           .into(),
         );
-      };
-
-      if viewport_css != VIEWPORT_CSS {
-        return Err(
-          format!(
-            "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
-            viewport_css, VIEWPORT_CSS
-          )
-          .into(),
-        );
-      }
-      if pixmap_w != expected_pixmap_w || pixmap_h != expected_pixmap_h {
-        return Err(
-          format!(
-            "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
-            pixmap_w, pixmap_h, expected_pixmap_w, expected_pixmap_h
-          )
-          .into(),
-        );
-      }
-      if (dpr - DPR).abs() > 0.01 {
-        return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
-      }
-
-      match renderer_backend.join() {
-        Ok(()) => {}
-        Err(_) => return Err("headless smoke worker panicked".into()),
-      }
-
-      (pixmap_w, pixmap_h, viewport_css, dpr)
     };
+
+    if viewport_css != VIEWPORT_CSS {
+      return Err(
+        format!(
+          "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
+          viewport_css, VIEWPORT_CSS
+        )
+        .into(),
+      );
+    }
+    if pixmap_w != expected_pixmap_w || pixmap_h != expected_pixmap_h {
+      return Err(
+        format!(
+          "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
+          pixmap_w, pixmap_h, expected_pixmap_w, expected_pixmap_h
+        )
+        .into(),
+      );
+    }
+    if (dpr - DPR).abs() > 0.01 {
+      return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
+    }
+
+    match renderer_backend.join() {
+      Ok(()) => {}
+      Err(_) => return Err("headless smoke worker panicked".into()),
+    }
+
+    (pixmap_w, pixmap_h, viewport_css, dpr)
+  };
 
   session.did_exit_cleanly = true;
   if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
@@ -8221,6 +8439,30 @@ struct OpenFilePicker {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
+struct OpenPageExport {
+  tab_id: fastrender::ui::TabId,
+  kind: PageExportKind,
+  /// egui widget id that held focus before the dialog was opened.
+  ///
+  /// Used to restore focus when the popup closes (or clear focus when none was set) so we don't
+  /// leave egui focused on widgets that have been removed.
+  focus_before_open: Option<egui::Id>,
+  /// Draft destination path input shown in the popup.
+  draft: String,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+struct PendingPageExport {
+  tab_id: fastrender::ui::TabId,
+  kind: PageExportKind,
+  path: std::path::PathBuf,
+  page_url: Option<String>,
+  page_title: Option<String>,
+}
+
+#[cfg(feature = "browser_ui")]
 fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
   let Some(accept) = accept.map(str::trim).filter(|s| !s.is_empty()) else {
     return Vec::new();
@@ -8236,7 +8478,7 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
       }
       exts.insert(ext.to_ascii_lowercase());
     }
-  }
+  };
 
   for raw_token in accept.split(',') {
     let token = raw_token.trim();
@@ -8263,22 +8505,19 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
       // Wildcard MIME groups.
       "image/*" => push_all(
         &mut exts,
-        &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg"],
-      ),
-      "text/*" => push_all(
-        &mut exts,
-        &["txt", "md", "markdown", "csv", "json", "xml", "html", "htm"],
-      ),
-      "image/*" => push_all(
-        &mut exts,
-        &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg"],
+        &[
+          "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg",
+        ],
       ),
       "text/*" => push_all(
         &mut exts,
         &["txt", "md", "markdown", "csv", "json", "xml", "html", "htm"],
       ),
       "audio/*" => push_all(&mut exts, &["mp3", "wav", "ogg", "flac", "m4a", "aac"]),
-      "video/*" => push_all(&mut exts, &["mp4", "mov", "webm", "mkv", "avi", "mpeg", "mpg"]),
+      "video/*" => push_all(
+        &mut exts,
+        &["mp4", "mov", "webm", "mkv", "avi", "mpeg", "mpg"],
+      ),
 
       // Common specific MIME types.
       "image/png" => push_all(&mut exts, &["png"]),
@@ -8298,6 +8537,25 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
   }
 
   exts.into_iter().collect()
+}
+
+#[cfg(feature = "browser_ui")]
+fn try_native_save_dialog(
+  kind: PageExportKind,
+  suggested_name: &str,
+  default_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+  let mut dialog = rfd::FileDialog::new().set_file_name(suggested_name);
+  if !default_dir.as_os_str().is_empty() {
+    dialog = dialog.set_directory(default_dir);
+  }
+
+  dialog = match kind {
+    PageExportKind::SavePage => dialog.add_filter("HTML file", &["html"]),
+    PageExportKind::Print => dialog.add_filter("PNG image", &["png"]),
+  };
+
+  dialog.save_file()
 }
 
 #[cfg(feature = "browser_ui")]
@@ -8900,9 +9158,10 @@ impl BrowserHud {
     self.page_uploaded_tab_in_frame = None;
 
     if let Some(start) = self.nav_ttfp_start.remove(&active_tab_id) {
-      self
-        .nav_ttfp_last_ms
-        .insert(active_tab_id, now.saturating_duration_since(start).as_millis() as u64);
+      self.nav_ttfp_last_ms.insert(
+        active_tab_id,
+        now.saturating_duration_since(start).as_millis() as u64,
+      );
     }
   }
 
@@ -9041,7 +9300,10 @@ struct WorkerWakePerfLogger {
 impl WorkerWakePerfLogger {
   const PERF_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-  fn new(window_id: winit::window::WindowId, counters: std::sync::Arc<WorkerWakeHudCounters>) -> Self {
+  fn new(
+    window_id: winit::window::WindowId,
+    counters: std::sync::Arc<WorkerWakeHudCounters>,
+  ) -> Self {
     let now = std::time::Instant::now();
     let sent = counters
       .wake_events_sent
@@ -9054,9 +9316,7 @@ impl WorkerWakePerfLogger {
       counters,
       start_time: now,
       last_report_at: now,
-      next_report_at: now
-        .checked_add(Self::PERF_LOG_INTERVAL)
-        .unwrap_or(now),
+      next_report_at: now.checked_add(Self::PERF_LOG_INTERVAL).unwrap_or(now),
       prev_wake_events_sent: sent,
       prev_wake_events_coalesced: coalesced,
       drained_total: 0,
@@ -9109,7 +9369,13 @@ impl WorkerWakePerfLogger {
         let msgs = self.drained_since_report;
         let pending_estimate = forwarded_total.saturating_sub(self.drained_total);
 
-        let clamp_rate = |v: f32| if v.is_finite() { v.min(10_000_000.0) } else { 0.0 };
+        let clamp_rate = |v: f32| {
+          if v.is_finite() {
+            v.min(10_000_000.0)
+          } else {
+            0.0
+          }
+        };
         let forwarded_rate = clamp_rate(forwarded_delta as f32 / secs);
         let msgs_rate = clamp_rate(msgs as f32 / secs);
         let wakes_rate = clamp_rate(wakes as f32 / secs);
@@ -9156,9 +9422,7 @@ impl WorkerWakePerfLogger {
         self.last_report_at = now;
       }
 
-      self.next_report_at = now
-        .checked_add(Self::PERF_LOG_INTERVAL)
-        .unwrap_or(now);
+      self.next_report_at = now.checked_add(Self::PERF_LOG_INTERVAL).unwrap_or(now);
     }
 
     let deadline = self.next_report_at;
@@ -9227,7 +9491,8 @@ fn classify_idle_repaint_frame_activity(
   had_worker_activity_since_present: bool,
   egui_requested_repaint: bool,
 ) -> UiFrameActivity {
-  if had_winit_input_since_present || had_resize_since_present || had_worker_activity_since_present {
+  if had_winit_input_since_present || had_resize_since_present || had_worker_activity_since_present
+  {
     UiFrameActivity::Active
   } else {
     // Frames produced solely because egui requested a repaint (or due to event-loop churn) are the
@@ -9274,9 +9539,7 @@ impl IdleRepaintMonitor {
     window_id: winit::window::WindowId,
     perf_log_writer: Option<
       std::rc::Rc<
-        std::cell::RefCell<
-          perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>,
-        >,
+        std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
       >,
     >,
   ) -> Self {
@@ -9369,11 +9632,8 @@ impl IdleRepaintMonitor {
         if let Some(writer) = self.perf_log_writer.as_ref() {
           let mut writer = writer.borrow_mut();
           let t_ms = writer.ms_since_start(now);
-          let rolling_window_ms = Self::IDLE_WINDOW
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
-          let idle_frames_window =
-            u64::try_from(self.idle_frame_times.len()).unwrap_or(u64::MAX);
+          let rolling_window_ms = Self::IDLE_WINDOW.as_millis().min(u128::from(u64::MAX)) as u64;
+          let idle_frames_window = u64::try_from(self.idle_frame_times.len()).unwrap_or(u64::MAX);
           writer.emit(&perf_log::PerfEvent::IdleSample {
             schema_version: perf_log::SCHEMA_VERSION,
             t_ms,
@@ -9419,9 +9679,7 @@ impl ProcessCpuSampler {
   fn new(
     perf_log_writer: Option<
       std::rc::Rc<
-        std::cell::RefCell<
-          perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>,
-        >,
+        std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
       >,
     >,
     hud_enabled: bool,
@@ -10199,10 +10457,8 @@ struct App {
   page_input_tab: Option<fastrender::ui::TabId>,
   page_input_mapping: Option<fastrender::ui::InputMapping>,
   /// Pending AccessKit subtree updates for the rendered page content, keyed by tab id.
-  pending_page_subtree_accesskit: std::collections::HashMap<
-    fastrender::ui::TabId,
-    PendingPageSubtreeAccessKitUpdate,
-  >,
+  pending_page_subtree_accesskit:
+    std::collections::HashMap<fastrender::ui::TabId, PendingPageSubtreeAccessKitUpdate>,
   /// Whether the page-area loading overlay is currently blocking pointer events from reaching the
   /// page worker.
   ///
@@ -10311,6 +10567,8 @@ struct App {
   open_color_picker_rect: Option<egui::Rect>,
   open_file_picker: Option<OpenFilePicker>,
   open_file_picker_rect: Option<egui::Rect>,
+  open_page_export: Option<OpenPageExport>,
+  open_page_export_rect: Option<egui::Rect>,
   open_media_controls: Option<OpenMediaControls>,
   open_media_controls_rect: Option<egui::Rect>,
   debug_log: std::collections::VecDeque<String>,
@@ -10331,6 +10589,8 @@ struct App {
   crash_recovery_infobar_rect: Option<egui::Rect>,
   chrome_toast: fastrender::ui::ToastState,
   chrome_toast_rect: Option<egui::Rect>,
+
+  pending_page_export: Option<PendingPageExport>,
 
   /// Deadline for the next egui-driven repaint (derived from `egui::FullOutput::repaint_after`).
   ///
@@ -10645,6 +10905,7 @@ impl App {
       self.update_effective_pixels_per_point();
       // Point-space popups/hit boxes become stale when UI scaling changes; close them.
       self.close_select_dropdown();
+      self.close_page_export();
       self.close_media_controls();
       self.close_context_menu();
       if self.scrollbar_drag.is_some() {
@@ -10724,6 +10985,9 @@ impl App {
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_file_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_page_export_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_media_controls_rect
@@ -10982,11 +11246,8 @@ impl App {
     let size = window.inner_size();
     let window_minimized = size.width == 0 || size.height == 0;
     let window_fullscreen = window.fullscreen().is_some();
-    let last_known_good_window_state = merge_last_known_good_window_state(
-      None,
-      capture_window_state_raw(&window),
-      window_minimized,
-    );
+    let last_known_good_window_state =
+      merge_last_known_good_window_state(None, capture_window_state_raw(&window), window_minimized);
     let surface_config = wgpu::SurfaceConfiguration {
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
       format: surface_format,
@@ -11190,6 +11451,8 @@ impl App {
       open_color_picker_rect: None,
       open_file_picker: None,
       open_file_picker_rect: None,
+      open_page_export: None,
+      open_page_export_rect: None,
       open_media_controls: None,
       open_media_controls_rect: None,
       bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState::default(),
@@ -11210,6 +11473,7 @@ impl App {
       crash_recovery_infobar_rect: None,
       chrome_toast: fastrender::ui::ToastState::default(),
       chrome_toast_rect: None,
+      pending_page_export: None,
       next_egui_repaint: None,
       last_egui_redraw_request: None,
       last_resize_redraw_request: None,
@@ -11438,7 +11702,9 @@ impl App {
       if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
         cancel.bump_nav();
       }
-      self.send_worker_msg(UiToWorker::CloseTab { tab_id: closed_tab_id });
+      self.send_worker_msg(UiToWorker::CloseTab {
+        tab_id: closed_tab_id,
+      });
     }
 
     self.sync_window_title();
@@ -11816,9 +12082,7 @@ impl App {
       let tick_deadline = if self.animation_tick_tab == Some(tab_id)
         && self.animation_tick_interval == Some(interval)
       {
-        self
-          .next_animation_tick
-          .unwrap_or(now + interval)
+        self.next_animation_tick.unwrap_or(now + interval)
       } else {
         now + interval
       };
@@ -12108,14 +12372,13 @@ impl App {
         initial_url: None,
         cancel,
       },
-      UiToWorker::NewTab { tab_id, initial_url: Some(url) }
-        if fastrender::ui::about_pages::is_about_url(&url) =>
-      {
-        UiToWorker::NewTab {
-          tab_id,
-          initial_url: None,
-        }
-      }
+      UiToWorker::NewTab {
+        tab_id,
+        initial_url: Some(url),
+      } if fastrender::ui::about_pages::is_about_url(&url) => UiToWorker::NewTab {
+        tab_id,
+        initial_url: None,
+      },
       other => other,
     };
 
@@ -12253,12 +12516,22 @@ impl App {
           | UiToWorker::RequestRepaint { .. }
           | UiToWorker::ContextMenuRequest { .. } => true,
           UiToWorker::Scroll { delta_css, .. } => {
-            let dx = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
-            let dy = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
+            let dx = if delta_css.0.is_finite() {
+              delta_css.0
+            } else {
+              0.0
+            };
+            let dy = if delta_css.1.is_finite() {
+              delta_css.1
+            } else {
+              0.0
+            };
             if dx == 0.0 && dy == 0.0 {
               false
-            } else if let Some(metrics) =
-              self.browser_state.tab(tab_id).and_then(|tab| tab.scroll_metrics)
+            } else if let Some(metrics) = self
+              .browser_state
+              .tab(tab_id)
+              .and_then(|tab| tab.scroll_metrics)
             {
               let current = fastrender::Point::new(metrics.scroll_css.0, metrics.scroll_css.1);
               let desired = fastrender::Point::new(current.x + dx, current.y + dy);
@@ -12271,8 +12544,10 @@ impl App {
           UiToWorker::ScrollTo { pos_css, .. } => {
             if !pos_css.0.is_finite() || !pos_css.1.is_finite() {
               false
-            } else if let Some(metrics) =
-              self.browser_state.tab(tab_id).and_then(|tab| tab.scroll_metrics)
+            } else if let Some(metrics) = self
+              .browser_state
+              .tab(tab_id)
+              .and_then(|tab| tab.scroll_metrics)
             {
               let current = fastrender::Point::new(metrics.scroll_css.0, metrics.scroll_css.1);
               let desired = fastrender::Point::new(pos_css.0, pos_css.1);
@@ -12383,9 +12658,9 @@ impl App {
         self.window.request_redraw();
         return Ok(());
       }
-      UiToWorker::NavigateRequest { tab_id, request, .. }
-        if fastrender::ui::about_pages::is_about_url(request.url.as_str()) =>
-      {
+      UiToWorker::NavigateRequest {
+        tab_id, request, ..
+      } if fastrender::ui::about_pages::is_about_url(request.url.as_str()) => {
         self.trusted_about_rendered_urls.remove(tab_id);
         self.trusted_about_prepared.remove(tab_id);
         if let Some(tab) = self.browser_state.tab_mut(*tab_id) {
@@ -12396,9 +12671,7 @@ impl App {
         return Ok(());
       }
       UiToWorker::Scroll {
-        tab_id,
-        delta_css,
-        ..
+        tab_id, delta_css, ..
       } => {
         let is_trusted_about = self
           .browser_state
@@ -12526,9 +12799,7 @@ impl App {
 
     let should_reprepare = match self.trusted_about_prepared.get(&tab_id) {
       Some(cached) => {
-        cached.url != url
-          || cached.viewport_css != viewport_css
-          || (cached.dpr - dpr).abs() > 0.01
+        cached.url != url || cached.viewport_css != viewport_css || (cached.dpr - dpr).abs() > 0.01
       }
       None => true,
     };
@@ -12560,7 +12831,8 @@ impl App {
         max_x: 0.0,
         max_y: 0.0,
       };
-      let chain = fastrender::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]);
+      let chain =
+        fastrender::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]);
       if let Some(root) = chain.last() {
         bounds = root.bounds;
       }
@@ -12603,16 +12875,27 @@ impl App {
       scroll_state.update_deltas_from(&prev);
     }
 
-    let pixmap = match cached
-      .prepared
-      .paint_with_scroll_state(scroll_state.clone(), None, None, None)
+    let pixmap =
+      match cached
+        .prepared
+        .paint_with_scroll_state(scroll_state.clone(), None, None, None)
+      {
+        Ok(pixmap) => pixmap,
+        Err(err) => {
+          eprintln!("trusted about: paint failed for {url}: {err}");
+          return;
+        }
+      };
+
+    if self
+      .pending_page_export
+      .as_ref()
+      .is_some_and(|export| export.tab_id == tab_id)
     {
-      Ok(pixmap) => pixmap,
-      Err(err) => {
-        eprintln!("trusted about: paint failed for {url}: {err}");
-        return;
+      if let Some(export) = self.pending_page_export.take() {
+        self.spawn_page_export_job(export, pixmap.clone());
       }
-    };
+    }
 
     let sanitize_scroll = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     let scroll_metrics = {
@@ -12650,7 +12933,10 @@ impl App {
     if let Some(frame_ready) = update.frame_ready {
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
         if let Some(hud) = self.hud.as_mut() {
-          if self.pending_frame_uploads.has_pending_for_tab(frame_ready.tab_id) {
+          if self
+            .pending_frame_uploads
+            .has_pending_for_tab(frame_ready.tab_id)
+          {
             hud.coalesced_frames_total = hud.coalesced_frames_total.saturating_add(1);
           }
         }
@@ -12661,8 +12947,7 @@ impl App {
         );
         if evicted > 0 {
           if let Some(hud) = self.hud.as_mut() {
-            hud.coalesced_frames_total =
-              hud.coalesced_frames_total.saturating_add(evicted as u64);
+            hud.coalesced_frames_total = hud.coalesced_frames_total.saturating_add(evicted as u64);
           }
         }
         // `flush_pending_frame_uploads` already ran at the start of this UI frame; flush again so
@@ -12673,13 +12958,15 @@ impl App {
 
     // Mark navigation as committed so the chrome stops showing a loading spinner. `about:` pages do
     // not currently participate in worker-owned history state, so report back/forward as false.
-    let _ = self.browser_state.apply_worker_msg(WorkerToUi::NavigationCommitted {
-      tab_id,
-      url: url.to_string(),
-      title: None,
-      can_go_back: false,
-      can_go_forward: false,
-    });
+    let _ = self
+      .browser_state
+      .apply_worker_msg(WorkerToUi::NavigationCommitted {
+        tab_id,
+        url: url.to_string(),
+        title: None,
+        can_go_back: false,
+        can_go_forward: false,
+      });
 
     self
       .trusted_about_rendered_urls
@@ -12907,6 +13194,303 @@ impl App {
       });
     }
     self.close_file_picker();
+  }
+
+  fn close_page_export(&mut self) {
+    self.open_page_export_rect = None;
+    let Some(dialog) = self.open_page_export.take() else {
+      return;
+    };
+    restore_or_clear_egui_focus(&self.egui_ctx, dialog.focus_before_open);
+  }
+
+  fn cancel_page_export(&mut self) {
+    self.close_page_export();
+    self.page_has_focus = self.should_restore_page_focus();
+  }
+
+  fn open_page_export_in_app_dialog(
+    &mut self,
+    kind: PageExportKind,
+    tab_id: fastrender::ui::TabId,
+    suggested_name: &str,
+    default_dir: &std::path::Path,
+  ) {
+    if self.browser_state.tab(tab_id).is_none() {
+      return;
+    }
+
+    // Treat the export dialog as chrome UI: while it's open, don't forward keyboard input to the
+    // page.
+    self.page_has_focus = false;
+    self.close_page_export();
+
+    let focus_before_open = egui_focused_widget_id(&self.egui_ctx);
+    let draft_path = if default_dir.as_os_str().is_empty() {
+      std::path::PathBuf::from(suggested_name)
+    } else {
+      default_dir.join(suggested_name)
+    };
+    let draft = draft_path.to_string_lossy().to_string();
+
+    self.open_page_export = Some(OpenPageExport {
+      tab_id,
+      kind,
+      focus_before_open,
+      draft,
+    });
+    self.open_page_export_rect = None;
+  }
+
+  fn ensure_export_extension(
+    &self,
+    kind: PageExportKind,
+    path: std::path::PathBuf,
+  ) -> std::path::PathBuf {
+    if path.extension().is_some() {
+      return path;
+    }
+    path.with_extension(kind.extension())
+  }
+
+  fn begin_page_export(
+    &mut self,
+    kind: PageExportKind,
+    tab_id: fastrender::ui::TabId,
+    path: std::path::PathBuf,
+  ) {
+    use fastrender::ui::{RepaintReason, UiToWorker};
+
+    let Some(tab) = self.browser_state.tab(tab_id) else {
+      return;
+    };
+
+    let path = self.ensure_export_extension(kind, path);
+
+    let page_url = tab.committed_url.clone().or(tab.current_url.clone());
+    let page_title = tab.committed_title.clone().or(tab.title.clone());
+
+    self.pending_page_export = Some(PendingPageExport {
+      tab_id,
+      kind,
+      path: path.clone(),
+      page_url: page_url.clone(),
+      page_title: page_title.clone(),
+    });
+
+    if page_url
+      .as_deref()
+      .is_some_and(fastrender::ui::about_pages::is_about_url)
+    {
+      // Force the trusted about: renderer to regenerate a pixmap on the next frame.
+      self.trusted_about_rendered_urls.remove(&tab_id);
+      self.window.request_redraw();
+      return;
+    }
+
+    let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
+      tab_id,
+      reason: RepaintReason::Explicit,
+    });
+    self.window.request_redraw();
+  }
+
+  fn spawn_page_export_job(&self, export: PendingPageExport, pixmap: tiny_skia::Pixmap) {
+    let proxy = self.event_loop_proxy.clone();
+    let window_id = self.window.id();
+    let kind = export.kind;
+
+    let spawn_result = std::thread::Builder::new()
+      .name(format!("fastr-page-export-{}", export.tab_id.0))
+      .spawn(move || {
+        use base64::Engine as _;
+
+        let result: Result<std::path::PathBuf, String> = (|| {
+          match kind {
+            PageExportKind::Print => {
+              let png_bytes = fastrender::image_output::encode_image(&pixmap, fastrender::OutputFormat::Png)
+                .map_err(|err| err.to_string())?;
+              std::fs::write(&export.path, &png_bytes)
+                .map_err(|err| format!("failed to write {}: {err}", export.path.display()))?;
+              Ok(export.path)
+            }
+            PageExportKind::SavePage => {
+              let png_bytes = fastrender::image_output::encode_image(&pixmap, fastrender::OutputFormat::Png)
+                .map_err(|err| err.to_string())?;
+              let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+
+              fn escape_html(raw: &str) -> String {
+                raw
+                  .replace('&', "&amp;")
+                  .replace('<', "&lt;")
+                  .replace('>', "&gt;")
+                  .replace('"', "&quot;")
+                  .replace('\'', "&#39;")
+              }
+
+              let title = export
+                .page_title
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| export.page_url.as_deref())
+                .unwrap_or("Saved page");
+              let title = escape_html(title);
+              let url = export
+                .page_url
+                .as_deref()
+                .map(escape_html)
+                .unwrap_or_default();
+
+              let html = format!(
+                "<!doctype html>\n\
+<meta charset=\"utf-8\">\n\
+<title>{title}</title>\n\
+<style>body{{margin:0;font-family:sans-serif}}.meta{{padding:12px}}</style>\n\
+<div class=\"meta\">Saved from: <a href=\"{url}\">{url}</a></div>\n\
+<img alt=\"Page snapshot\" src=\"data:image/png;base64,{b64}\" style=\"max-width:100%;height:auto\" />\n"
+              );
+
+              std::fs::write(&export.path, html)
+                .map_err(|err| format!("failed to write {}: {err}", export.path.display()))?;
+              Ok(export.path)
+            }
+          }
+        })();
+
+        let _ = proxy.send_event(UserEvent::PageExportFinished {
+          window_id,
+          kind,
+          result,
+        });
+      });
+
+    if let Err(err) = spawn_result {
+      eprintln!("failed to spawn page export thread: {err}");
+    }
+  }
+
+  fn handle_page_export_finished(
+    &mut self,
+    kind: PageExportKind,
+    result: Result<std::path::PathBuf, String>,
+  ) {
+    use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+
+    let now = std::time::Instant::now();
+    match result {
+      Ok(path) => {
+        let label = match kind {
+          PageExportKind::SavePage => format!("Saved page to {}", path.display()),
+          PageExportKind::Print => format!("Printed page to {}", path.display()),
+        };
+        self
+          .chrome_toast
+          .show(ToastKind::Info, label, now, TOAST_DEFAULT_TTL);
+      }
+      Err(err) => {
+        let label = match kind {
+          PageExportKind::SavePage => format!("Save failed: {err}"),
+          PageExportKind::Print => format!("Print failed: {err}"),
+        };
+        self
+          .chrome_toast
+          .show(ToastKind::Error, label, now, TOAST_DEFAULT_TTL);
+      }
+    }
+  }
+
+  fn suggested_page_export_name(
+    &self,
+    kind: PageExportKind,
+    tab: &fastrender::ui::BrowserTabState,
+  ) -> String {
+    use fastrender::ui::downloads::sanitize_download_filename;
+
+    let base = tab
+      .title
+      .as_deref()
+      .filter(|t| !t.trim().is_empty())
+      .or_else(|| tab.current_url.as_deref())
+      .unwrap_or("page");
+
+    // Keep the name reasonably short and filesystem-safe.
+    let mut name = sanitize_download_filename(base);
+    name = truncate_utf8_str_to_bytes(&name, 120);
+    if name.trim().is_empty() {
+      name = "page".to_string();
+    }
+
+    let ext = kind.extension();
+    let name_lower = name.to_ascii_lowercase();
+    if name_lower.ends_with(&format!(".{ext}")) {
+      name
+    } else {
+      format!("{name}.{ext}")
+    }
+  }
+
+  fn trigger_page_export(&mut self, kind: PageExportKind) {
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      return;
+    };
+    let Some(tab) = self.browser_state.tab(tab_id) else {
+      return;
+    };
+
+    let suggested_name = self.suggested_page_export_name(kind, tab);
+    let default_dir = self.download_dir.clone();
+
+    let force_in_app = force_in_app_dialogs_from_env(
+      std::env::var(ENV_BROWSER_FORCE_IN_APP_DIALOGS)
+        .ok()
+        .as_deref(),
+    );
+
+    if force_in_app {
+      self.open_page_export_in_app_dialog(kind, tab_id, &suggested_name, &default_dir);
+      self.window.request_redraw();
+      return;
+    }
+
+    let proxy = self.event_loop_proxy.clone();
+    let window_id = self.window.id();
+    let suggested_name_for_thread = suggested_name.clone();
+    let default_dir_for_thread = default_dir.clone();
+    let spawn_result = std::thread::Builder::new()
+      .name(format!("fastr-page-export-dialog-{}", tab_id.0))
+      .spawn(move || {
+        let outcome = native_save_dialog_outcome(false, || {
+          try_native_save_dialog(kind, &suggested_name_for_thread, &default_dir_for_thread)
+        });
+
+        match outcome {
+          NativeSaveDialogOutcome::Chosen(path) => {
+            let _ = proxy.send_event(UserEvent::PageExportNativeDialogChosen {
+              window_id,
+              tab_id,
+              kind,
+              path,
+            });
+          }
+          NativeSaveDialogOutcome::Cancelled => {}
+          NativeSaveDialogOutcome::FallbackToInApp => {
+            let _ = proxy.send_event(UserEvent::PageExportNativeDialogFallback {
+              window_id,
+              tab_id,
+              kind,
+              suggested_name: suggested_name_for_thread,
+              default_dir: default_dir_for_thread,
+            });
+          }
+        }
+      });
+
+    if let Err(err) = spawn_result {
+      eprintln!("failed to spawn native save dialog thread: {err}");
+      // Fallback immediately if the thread couldn't be spawned.
+      self.open_page_export_in_app_dialog(kind, tab_id, &suggested_name, &default_dir);
+      self.window.request_redraw();
+    }
   }
 
   fn close_media_controls(&mut self) {
@@ -14170,10 +14754,7 @@ impl App {
         (DownloadToastTrigger::Started { .. }, Some(entry)) => Some(DownloadEvent::Started {
           file_name: entry.file_name.clone(),
         }),
-        (
-          DownloadToastTrigger::Finished { outcome, .. },
-          Some(entry),
-        ) => {
+        (DownloadToastTrigger::Finished { outcome, .. }, Some(entry)) => {
           let outcome = match outcome {
             fastrender::ui::DownloadOutcome::Completed => {
               fastrender::ui::downloads_notifications::DownloadOutcome::Completed
@@ -14205,13 +14786,25 @@ impl App {
       }
     }
     if let Some(frame_ready) = update.frame_ready {
+      if self
+        .pending_page_export
+        .as_ref()
+        .is_some_and(|export| export.tab_id == frame_ready.tab_id)
+      {
+        if let Some(export) = self.pending_page_export.take() {
+          self.spawn_page_export_job(export, frame_ready.pixmap.clone());
+        }
+      }
       // Ignore stale frames for tabs that have already been closed.
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
         self.perf_frame_ready(frame_ready.tab_id);
         // Coalesce uploads until the next `render_frame`: uploading each intermediate pixmap is
         // expensive.
         if let Some(hud) = self.hud.as_mut() {
-          if self.pending_frame_uploads.has_pending_for_tab(frame_ready.tab_id) {
+          if self
+            .pending_frame_uploads
+            .has_pending_for_tab(frame_ready.tab_id)
+          {
             hud.coalesced_frames_total = hud.coalesced_frames_total.saturating_add(1);
           }
         }
@@ -14222,8 +14815,7 @@ impl App {
         );
         if evicted > 0 {
           if let Some(hud) = self.hud.as_mut() {
-            hud.coalesced_frames_total =
-              hud.coalesced_frames_total.saturating_add(evicted as u64);
+            hud.coalesced_frames_total = hud.coalesced_frames_total.saturating_add(evicted as u64);
           }
         }
       }
@@ -14721,7 +15313,9 @@ impl App {
     } else {
       format!("Failed to open new window\n{detail}")
     };
-    self.chrome_toast.show(ToastKind::Error, text, now, TOAST_DEFAULT_TTL);
+    self
+      .chrome_toast
+      .show(ToastKind::Error, text, now, TOAST_DEFAULT_TTL);
 
     // Keep stderr logging opt-in (debug builds / explicit env) via the debug log overlay toggle so
     // normal browsing sessions don't get noisy, while still preserving details for debugging.
@@ -14752,7 +15346,9 @@ impl App {
   fn show_chrome_toast_with_kind(&mut self, kind: fastrender::ui::ToastKind, text: &str) {
     use fastrender::ui::TOAST_DEFAULT_TTL;
     let now = std::time::Instant::now();
-    self.chrome_toast.show(kind, text.to_string(), now, TOAST_DEFAULT_TTL);
+    self
+      .chrome_toast
+      .show(kind, text.to_string(), now, TOAST_DEFAULT_TTL);
   }
 
   fn render_chrome_toast(&mut self, ctx: &egui::Context) {
@@ -15517,12 +16113,12 @@ impl App {
       }
     }
 
-    match (hud.process_cpu_percent_recent, hud.process_cpu_time_ms_total) {
+    match (
+      hud.process_cpu_percent_recent,
+      hud.process_cpu_time_ms_total,
+    ) {
       (Some(percent), Some(total_ms)) if percent.is_finite() => {
-        let _ = writeln!(
-          &mut hud.text_buf,
-          "cpu: {percent:.1}%  total: {total_ms}ms"
-        );
+        let _ = writeln!(&mut hud.text_buf, "cpu: {percent:.1}%  total: {total_ms}ms");
       }
       (None, Some(total_ms)) => {
         let _ = writeln!(&mut hud.text_buf, "cpu: -%  total: {total_ms}ms");
@@ -15569,7 +16165,10 @@ impl App {
       let nav_last = hud.nav_ttfp_last_ms.get(&active_tab_id).copied();
       match (nav_last, nav_pending) {
         (Some(last_ms), Some(pending_ms)) => {
-          let _ = writeln!(&mut hud.text_buf, "nav_ttfp: {last_ms}ms (pending {pending_ms}ms)");
+          let _ = writeln!(
+            &mut hud.text_buf,
+            "nav_ttfp: {last_ms}ms (pending {pending_ms}ms)"
+          );
         }
         (None, Some(pending_ms)) => {
           let _ = writeln!(&mut hud.text_buf, "nav_ttfp: pending {pending_ms}ms");
@@ -15588,8 +16187,7 @@ impl App {
     let _ = writeln!(
       &mut hud.text_buf,
       "frames: pending_uploads={}  dropped={}",
-      hud.pending_frame_uploads_at_frame_start,
-      hud.coalesced_frames_total
+      hud.pending_frame_uploads_at_frame_start, hud.coalesced_frames_total
     );
 
     match (
@@ -17583,6 +18181,104 @@ impl App {
     }
   }
 
+  fn render_page_export_dialog(&mut self, ctx: &egui::Context) {
+    let (tab_id, kind) = match self.open_page_export.as_ref() {
+      Some(dialog) => (dialog.tab_id, dialog.kind),
+      None => {
+        self.open_page_export_rect = None;
+        return;
+      }
+    };
+
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      self.cancel_page_export();
+      self.window.request_redraw();
+      return;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      self.cancel_page_export();
+      self.window.request_redraw();
+      return;
+    }
+
+    // When the dialog first opens, force keyboard focus into it so keyboard-only workflows work
+    // without requiring an extra click.
+    let request_initial_focus = self.open_page_export_rect.is_none();
+
+    enum Action {
+      Choose(String),
+      Cancel,
+    }
+
+    let title = match kind {
+      PageExportKind::SavePage => "Save Page",
+      PageExportKind::Print => "Print Page",
+    };
+
+    let popup = egui::Area::new(egui::Id::new((
+      "fastr_page_export_popup",
+      tab_id.0,
+      kind.extension(),
+    )))
+    .order(egui::Order::Foreground)
+    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+    .show(ctx, |ui| {
+      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+        let Some(dialog) = self.open_page_export.as_mut() else {
+          return None;
+        };
+
+        ui.label(egui::RichText::new(title).strong());
+        ui.add_space(4.0);
+
+        let resp = ui.add(
+          egui::TextEdit::singleline(&mut dialog.draft)
+            .desired_width(480.0)
+            .hint_text("Path"),
+        );
+        if request_initial_focus {
+          resp.request_focus();
+        }
+
+        let mut action: Option<Action> = None;
+        ui.horizontal(|ui| {
+          if ui.button("OK").clicked() {
+            action = Some(Action::Choose(dialog.draft.clone()));
+          }
+          if ui.button("Cancel").clicked() {
+            action = Some(Action::Cancel);
+          }
+        });
+
+        action
+      });
+      (frame.response.rect, frame.inner)
+    });
+
+    let (popup_rect, action) = popup.inner;
+    self.open_page_export_rect = Some(popup_rect);
+
+    match action {
+      Some(Action::Choose(draft)) => {
+        let trimmed = draft.trim();
+        if !trimmed.is_empty() {
+          self.close_page_export();
+          self.page_has_focus = self.should_restore_page_focus();
+          self.begin_page_export(kind, tab_id, std::path::PathBuf::from(trimmed));
+        } else {
+          self.cancel_page_export();
+        }
+        self.window.request_redraw();
+      }
+      Some(Action::Cancel) => {
+        self.cancel_page_export();
+        self.window.request_redraw();
+      }
+      None => {}
+    }
+  }
+
   fn render_media_controls(&mut self, ctx: &egui::Context) {
     use fastrender::ui::messages::MediaCommand;
     use fastrender::ui::ChromeAction;
@@ -17993,7 +18689,8 @@ impl App {
       egui::TopBottomPanel::top("renderer_chrome_tab_strip_fallback")
         .exact_height(chrome_height_points)
         .show(ctx, |ui| {
-          ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_gray(30));
+          ui.painter()
+            .rect_filled(ui.max_rect(), 0.0, egui::Color32::from_gray(30));
           ui.label("renderer-chrome unavailable (failed to create document)");
         });
       return false;
@@ -18073,7 +18770,10 @@ impl App {
         let mut reordered = false;
         for output in outputs {
           match output {
-            fastrender::ui::chrome_frame::ChromeFrameOutput::ReorderTab { tab_id, target_index } => {
+            fastrender::ui::chrome_frame::ChromeFrameOutput::ReorderTab {
+              tab_id,
+              target_index,
+            } => {
               if self.browser_state.drag_reorder_tab(tab_id, target_index) {
                 session_dirty = true;
                 reordered = true;
@@ -18113,8 +18813,11 @@ impl App {
             if let Some(tex) = self.chrome_frame_texture.as_mut() {
               tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
             } else {
-              self.chrome_frame_texture =
-                Some(fastrender::ui::WgpuPixmapTexture::new(&self.device, &mut self.egui_renderer, &pixmap));
+              self.chrome_frame_texture = Some(fastrender::ui::WgpuPixmapTexture::new(
+                &self.device,
+                &mut self.egui_renderer,
+                &pixmap,
+              ));
             }
           }
           Ok(None) => {}
@@ -18133,7 +18836,8 @@ impl App {
           ui.painter()
             .image(tex.id(), rect, tex.uv_rect(), egui::Color32::WHITE);
         } else {
-          ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(30));
+          ui.painter()
+            .rect_filled(rect, 0.0, egui::Color32::from_gray(30));
         }
       });
 
@@ -18366,6 +19070,10 @@ impl App {
         }
         if self.open_file_picker.is_some() {
           self.cancel_file_picker();
+          self.window.request_redraw();
+        }
+        if self.open_page_export.is_some() {
+          self.cancel_page_export();
           self.window.request_redraw();
         }
         if self.open_media_controls.is_some() {
@@ -18860,12 +19568,15 @@ impl App {
               }
               // Match mouse click-away semantics: touching the underlying media element should close
               // the overlay without immediately reopening it by forwarding the tap to the page.
-              let clicked_media_element = self.open_media_controls.as_ref().is_some_and(|controls| {
-                self
-                  .page_input_mapping
-                  .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
-                  .is_some_and(|rect_points| rect_points.contains(pos_points))
-              });
+              let clicked_media_element =
+                self.open_media_controls.as_ref().is_some_and(|controls| {
+                  self
+                    .page_input_mapping
+                    .and_then(|mapping| {
+                      mapping.rect_css_to_rect_points_clamped(controls.anchor_css)
+                    })
+                    .is_some_and(|rect_points| rect_points.contains(pos_points))
+                });
               self.close_media_controls();
               self.window.request_redraw();
               if clicked_media_element {
@@ -18934,9 +19645,9 @@ impl App {
             // flips the sign into "document scroll" semantics (down increases scroll_y). That sign
             // convention matches touch-drag scrolling (finger moves down → scroll up), so we can
             // reuse it here.
-            let Some(delta_css) = mapping.wheel_delta_to_delta_css(fastrender::ui::WheelDelta::Points(
-              egui::vec2(delta_points.0, delta_points.1),
-            )) else {
+            let Some(delta_css) = mapping.wheel_delta_to_delta_css(
+              fastrender::ui::WheelDelta::Points(egui::vec2(delta_points.0, delta_points.1)),
+            ) else {
               return;
             };
             if delta_css.0 == 0.0 && delta_css.1 == 0.0 {
@@ -19177,11 +19888,8 @@ impl App {
           // Winit 0.28 does not expose a stable cross-platform cursor-position query API on
           // `Window`, so if egui's hover position isn't available we treat the cursor position as
           // unknown and conservatively avoid focusing the page.
-          let resolved = resolve_cursor_pos_points_for_mouse_input(
-            egui_hover_pos,
-            None,
-            self.pixels_per_point,
-          );
+          let resolved =
+            resolve_cursor_pos_points_for_mouse_input(egui_hover_pos, None, self.pixels_per_point);
           self.last_cursor_pos_points = resolved;
           resolved
         });
@@ -19336,6 +20044,18 @@ impl App {
           }
         }
 
+        if matches!(state, ElementState::Pressed) && self.open_page_export.is_some() {
+          if self
+            .open_page_export_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+          self.cancel_page_export();
+          self.window.request_redraw();
+          return;
+        }
+
         if matches!(state, ElementState::Pressed) && self.open_media_controls.is_some() {
           // If the media controls overlay is open, clicks inside it are handled by egui.
           if self
@@ -19358,14 +20078,15 @@ impl App {
           //
           // Special-case: clicking the underlying media element itself should typically just toggle
           // the overlay closed (don't immediately reopen it by forwarding the click to the page).
-          let clicked_media_element = matches!(mapped_button, fastrender::ui::PointerButton::Primary)
-            && self.open_media_controls.as_ref().is_some_and(|controls| {
-              self
-                .page_input_mapping
-                .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
-                .or(Some(controls.anchor_rect_points))
-                .is_some_and(|rect_points| rect_points.contains(pos_points))
-            });
+          let clicked_media_element =
+            matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+              && self.open_media_controls.as_ref().is_some_and(|controls| {
+                self
+                  .page_input_mapping
+                  .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
+                  .or(Some(controls.anchor_rect_points))
+                  .is_some_and(|rect_points| rect_points.contains(pos_points))
+              });
 
           self.cancel_media_controls();
           self.window.request_redraw();
@@ -19885,9 +20606,7 @@ impl App {
           self.window.request_redraw();
         }
 
-        if self.open_media_controls.is_some()
-          && self.page_has_focus
-          && !self.chrome_has_text_focus
+        if self.open_media_controls.is_some() && self.page_has_focus && !self.chrome_has_text_focus
         {
           // Media keyboard shortcuts should only trigger for the plain key (no browser/chrome
           // command modifiers), otherwise reserved shortcuts like Alt+Left/Right should keep
@@ -19967,6 +20686,11 @@ impl App {
           //
           // Only trigger stop when egui is not actively editing text and when no popups are open,
           // matching typical browser UX.
+          if self.open_page_export.is_some() {
+            self.cancel_page_export();
+            self.window.request_redraw();
+            return;
+          }
           if let Some(tab_id) = self.browser_state.active_tab_id() {
             if self
               .browser_state
@@ -20069,13 +20793,13 @@ impl App {
               }
 
               ShortcutAction::SavePage => {
-                self.show_chrome_toast("Save not implemented yet");
+                self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::SavePage]);
                 self.window.request_redraw();
                 return;
               }
 
               ShortcutAction::PrintPage => {
-                self.show_chrome_toast("Print not implemented yet");
+                self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::PrintPage]);
                 self.window.request_redraw();
                 return;
               }
@@ -20115,8 +20839,7 @@ impl App {
                     if let Some(hud) = self.hud.as_mut() {
                       hud.note_keyboard_input(std::time::Instant::now());
                     }
-                    let _ =
-                      self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
+                    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
                   }
                   ShortcutAction::Paste => {
                     if let Some(text) = os_clipboard::read_text() {
@@ -20514,6 +21237,7 @@ impl App {
       self.cancel_select_dropdown();
       self.cancel_date_time_picker();
       self.cancel_file_picker();
+      self.cancel_page_export();
       self.cancel_media_controls();
       self.cancel_pointer_capture();
       self.close_context_menu();
@@ -20557,11 +21281,11 @@ impl App {
           self.page_has_focus = false;
         }
         ChromeAction::SavePage => {
-          self.show_chrome_toast("Save not implemented yet");
+          self.trigger_page_export(PageExportKind::SavePage);
           self.window.request_redraw();
         }
         ChromeAction::PrintPage => {
-          self.show_chrome_toast("Print not implemented yet");
+          self.trigger_page_export(PageExportKind::Print);
           self.window.request_redraw();
         }
         ChromeAction::FindQuery {
@@ -21542,7 +22266,8 @@ impl App {
       if current_generation != Some(generation) {
         return;
       }
-      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::AccessKitActionRequest { tab_id, request });
+      let _ = self
+        .send_worker_msg(fastrender::ui::UiToWorker::AccessKitActionRequest { tab_id, request });
       return;
     }
 
@@ -21572,8 +22297,8 @@ impl App {
         }
 
         use fastrender::scroll::ScrollBounds;
-        use fastrender::Point;
         use fastrender::ui::UiToWorker;
+        use fastrender::Point;
 
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
@@ -21676,7 +22401,12 @@ impl App {
         let url = tab.current_url().filter(|u| !u.trim().is_empty());
         match (title, url) {
           (Some(title), Some(url)) if title != url => {
-            format!("{}: {} ({})", compositor_a11y::DEFAULT_PAGE_NAME, title, url)
+            format!(
+              "{}: {} ({})",
+              compositor_a11y::DEFAULT_PAGE_NAME,
+              title,
+              url
+            )
           }
           (Some(title), _) => format!("{}: {}", compositor_a11y::DEFAULT_PAGE_NAME, title),
           (None, Some(url)) => format!("{}: {}", compositor_a11y::DEFAULT_PAGE_NAME, url),
@@ -22157,7 +22887,8 @@ impl App {
         }
       }
 
-      if self.bookmarks_panel_open && !(address_bar_has_focus || tab_search_open || find_in_page_open)
+      if self.bookmarks_panel_open
+        && !(address_bar_has_focus || tab_search_open || find_in_page_open)
       {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
           close_bookmarks_panel = true;
@@ -22393,7 +23124,9 @@ impl App {
         .map(str::to_string);
 
       if let Some(url) = trusted_about_url {
-        let clamp = self.browser_limits.clamp_viewport_and_dpr(viewport_css, dpr);
+        let clamp = self
+          .browser_limits
+          .clamp_viewport_and_dpr(viewport_css, dpr);
         let rendered_for_url = self
           .trusted_about_rendered_urls
           .get(&active_tab)
@@ -22456,6 +23189,16 @@ impl App {
               wheel_blocked_by_popup = true;
             } else {
               self.cancel_file_picker();
+            }
+          }
+          if self.open_page_export.is_some() {
+            if self
+              .open_page_export_rect
+              .is_some_and(|rect| rect.contains(pos_points))
+            {
+              wheel_blocked_by_popup = true;
+            } else {
+              self.cancel_page_export();
             }
           }
         }
@@ -22636,7 +23379,8 @@ impl App {
             self.cancel_date_time_picker();
           } else if self.open_file_picker.is_some() {
             self.cancel_file_picker();
-          } else if !self.clear_browsing_data_dialog_open && !self.page_loading_overlay_blocks_input {
+          } else if !self.clear_browsing_data_dialog_open && !self.page_loading_overlay_blocks_input
+          {
             // Mark a pending context menu request so the worker response opens the menu even though
             // we don't yet know the final hit-test position (it will be derived from the focused
             // element bounds).
@@ -23185,6 +23929,7 @@ impl App {
     self.render_date_time_picker(&ctx);
     self.render_color_picker(&ctx);
     self.render_file_picker(&ctx);
+    self.render_page_export_dialog(&ctx);
     session_dirty |= self.render_context_menu(&ctx);
     self.sync_hover_after_tab_change(&ctx);
     // Coalesce scrollbar thumb drag CursorMoved bursts to at most one scroll message per frame.
@@ -23341,7 +24086,10 @@ impl App {
       let _span = self.trace.span("wgpu.present", "ui.frame");
       surface_texture.present();
       if let Some(hud) = self.hud.as_mut() {
-        hud.record_present(std::time::Instant::now(), self.browser_state.active_tab_id());
+        hud.record_present(
+          std::time::Instant::now(),
+          self.browser_state.active_tab_id(),
+        );
       }
     }
 
@@ -23513,7 +24261,10 @@ mod window_state_persistence_tests {
   #[test]
   fn returns_none_when_no_previous_geometry_and_capture_is_invalid() {
     let capture = state(0, 0);
-    assert_eq!(merge_last_known_good_window_state(None, capture, false), None);
+    assert_eq!(
+      merge_last_known_good_window_state(None, capture, false),
+      None
+    );
   }
 
   #[test]
@@ -23542,8 +24293,8 @@ mod window_state_persistence_tests {
       height: Some(768),
       maximized: false,
     };
-    let merged = merge_last_known_good_window_state(previous, capture, false)
-      .expect("expected merged state");
+    let merged =
+      merge_last_known_good_window_state(previous, capture, false).expect("expected merged state");
     assert_eq!(merged.x, Some(10));
     assert_eq!(merged.y, Some(20));
     assert_eq!(merged.width, Some(1024));
@@ -23567,8 +24318,8 @@ mod window_state_persistence_tests {
       height: Some(1080),
       maximized: true,
     };
-    let merged = merge_last_known_good_window_state(previous, capture, false)
-      .expect("expected merged state");
+    let merged =
+      merge_last_known_good_window_state(previous, capture, false).expect("expected merged state");
     assert_eq!(merged.x, Some(10));
     assert_eq!(merged.y, Some(20));
     assert_eq!(merged.width, Some(800));
@@ -23585,8 +24336,8 @@ mod window_state_persistence_tests {
       height: Some(1080),
       maximized: true,
     };
-    let merged = merge_last_known_good_window_state(None, capture, false)
-      .expect("expected merged state");
+    let merged =
+      merge_last_known_good_window_state(None, capture, false).expect("expected merged state");
     assert_eq!(merged.x, Some(0));
     assert_eq!(merged.y, Some(0));
     assert_eq!(merged.width, Some(1920));
@@ -24398,9 +25149,8 @@ mod page_host_accesskit_action_tests {
     ctx.begin_frame(raw);
     egui::CentralPanel::default().show(ctx, |ui| {
       let size_points = ui.available_size().max(egui::Vec2::ZERO);
-      let response = ui.add(
-        egui::Image::new((egui::TextureId::User(0), size_points)).sense(egui::Sense::click()),
-      );
+      let response = ui
+        .add(egui::Image::new((egui::TextureId::User(0), size_points)).sense(egui::Sense::click()));
       response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, "Web page content (rendered image)")
       });
@@ -24413,11 +25163,10 @@ mod page_host_accesskit_action_tests {
   }
 
   fn accesskit_node_id_for_page_host(output: &egui::FullOutput) -> accesskit::NodeId {
-    let update = output
-      .platform_output
-      .accesskit_update
-      .as_ref()
-      .expect("expected AccessKit update to be emitted; ensure ctx.enable_accesskit() was called");
+    let update =
+      output.platform_output.accesskit_update.as_ref().expect(
+        "expected AccessKit update to be emitted; ensure ctx.enable_accesskit() was called",
+      );
 
     update
       .nodes
@@ -24942,7 +25691,10 @@ mod page_subtree_accesskit_merge_tests {
     };
 
     let merged = App::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree);
-    assert!(merged, "expected page subtree merge helper to report a merge");
+    assert!(
+      merged,
+      "expected page subtree merge helper to report a merge"
+    );
 
     let update = platform_output
       .accesskit_update
