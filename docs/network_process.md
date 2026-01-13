@@ -46,6 +46,8 @@ and others are scaffolding. A few important “don’t get surprised” points:
 If you are changing IPC framing/limits, also read:
 - IPC transport invariants (framing + size caps + shared memory safety): [`docs/ipc.md`](ipc.md)
 - Renderer/network threat model: [`docs/multiprocess_threat_model.md`](multiprocess_threat_model.md)
+- Renderer sandbox entrypoint (all platforms): [`docs/renderer_sandbox.md`](renderer_sandbox.md)
+- Linux renderer sandbox deep dive (IPC assumptions + seccomp policy): [`docs/security/sandbox.md`](security/sandbox.md)
 
 ## Process roles
 
