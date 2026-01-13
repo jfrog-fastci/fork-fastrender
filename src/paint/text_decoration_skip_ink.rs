@@ -516,14 +516,28 @@ mod tests {
 
     let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
     let face = cached_face.face();
-    let glyph_id = face
-      .glyph_index('W')
-      .or_else(|| face.glyph_index('A'))
-      .expect("expected glyph in test font")
-      .0 as u32;
+    // `DejaVuSans-subset.ttf` only contains a small subset of glyphs; pick one by glyph ID rather
+    // than relying on a particular Unicode mapping being present.
+    let glyph_id = {
+      let mut best = None;
+      let mut best_diff = 0_i32;
+      for gid in 0..face.number_of_glyphs() {
+        let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(gid)) else {
+          continue;
+        };
+        let w = bbox.x_max as i32 - bbox.x_min as i32;
+        let h = bbox.y_max as i32 - bbox.y_min as i32;
+        let diff = (w - h).abs();
+        if diff > best_diff {
+          best_diff = diff;
+          best = Some(gid);
+        }
+      }
+      best.expect("expected glyph bbox in test font") as u32
+    };
 
     let mk_run = |rotation: RunRotation| ShapedRun {
-      text: "W".to_string(),
+      text: "x".to_string(),
       start: 0,
       end: 1,
       glyphs: vec![crate::text::pipeline::GlyphPosition {
@@ -538,7 +552,7 @@ mod tests {
       level: 0,
       advance: 0.0,
       font: Arc::new(font.clone()),
-      font_size: 20.0,
+      font_size: 100.0,
       baseline_shift: 0.0,
       language: None,
       features: Arc::from(Vec::new()),
@@ -590,15 +604,12 @@ mod tests {
 
     let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
     let face = cached_face.face();
-    let glyph_id = face
-      .glyph_index('g')
-      .or_else(|| face.glyph_index('p'))
-      .or_else(|| face.glyph_index('A'))
-      .expect("expected glyph in test font")
-      .0 as u32;
+    let glyph_id = (0..face.number_of_glyphs())
+      .find(|gid| face.glyph_bounding_box(ttf_parser::GlyphId(*gid)).is_some())
+      .expect("expected glyph bbox in test font") as u32;
 
     let run = ShapedRun {
-      text: "g".to_string(),
+      text: "x".to_string(),
       start: 0,
       end: 1,
       glyphs: vec![crate::text::pipeline::GlyphPosition {
