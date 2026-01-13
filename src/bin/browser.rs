@@ -10630,6 +10630,13 @@ impl App {
     // delta and cancel the drag. This avoids "leaking" drag scroll into the wrong tab.
     if let UiToWorker::SetActiveTab { tab_id } = &msg {
       if self
+        .open_media_controls
+        .as_ref()
+        .is_some_and(|controls| controls.tab_id != *tab_id)
+      {
+        self.cancel_media_controls();
+      }
+      if self
         .scrollbar_drag
         .is_some_and(|drag| drag.tab_id != *tab_id)
       {
@@ -10639,12 +10646,37 @@ impl App {
     }
     if let UiToWorker::CloseTab { tab_id } = &msg {
       if self
+        .open_media_controls
+        .as_ref()
+        .is_some_and(|controls| controls.tab_id == *tab_id)
+      {
+        self.cancel_media_controls();
+      }
+      if self
         .scrollbar_drag
         .is_some_and(|drag| drag.tab_id == *tab_id)
       {
         self.pending_scroll_drag = None;
         self.cancel_scrollbar_drag();
       }
+    }
+
+    // Navigations invalidate page-scoped UI (including media controls anchored to DOM nodes).
+    match &msg {
+      UiToWorker::Navigate { tab_id, .. }
+      | UiToWorker::NavigateRequest { tab_id, .. }
+      | UiToWorker::GoBack { tab_id }
+      | UiToWorker::GoForward { tab_id }
+      | UiToWorker::Reload { tab_id } => {
+        if self
+          .open_media_controls
+          .as_ref()
+          .is_some_and(|controls| controls.tab_id == *tab_id)
+        {
+          self.cancel_media_controls();
+        }
+      }
+      _ => {}
     }
 
     // Security: `UiToWorker::Paste` typically comes from the OS clipboard and may be arbitrarily
@@ -11317,6 +11349,10 @@ impl App {
     }
   }
 
+  fn cancel_media_controls(&mut self) {
+    self.close_media_controls();
+  }
+
   fn launch_native_file_picker_dialog(
     &self,
     tab_id: fastrender::ui::TabId,
@@ -11861,7 +11897,7 @@ impl App {
       self.cancel_file_picker();
     }
     if self.open_media_controls.is_some() {
-      self.close_media_controls();
+      self.cancel_media_controls();
     }
     if self.pointer_captured {
       self.cancel_pointer_capture();
@@ -11899,7 +11935,7 @@ impl App {
       self.cancel_file_picker();
     }
     if self.open_media_controls.is_some() {
-      self.close_media_controls();
+      self.cancel_media_controls();
     }
     if self.pointer_captured {
       self.cancel_pointer_capture();
@@ -15673,7 +15709,7 @@ impl App {
 
     // Media controls are page-scoped; close them if the active tab changes.
     if self.browser_state.active_tab_id() != Some(tab_id) {
-      self.close_media_controls();
+      self.cancel_media_controls();
       self.window.request_redraw();
       return;
     }
@@ -15910,7 +15946,7 @@ impl App {
 
   fn focus_address_bar_select_all(&mut self) {
     self.page_has_focus = false;
-    self.close_media_controls();
+    self.cancel_media_controls();
     self.browser_state.chrome.request_focus_address_bar = true;
     self.browser_state.chrome.request_select_all_address_bar = true;
   }
@@ -16312,7 +16348,7 @@ impl App {
           self.window.request_redraw();
         }
         if self.open_media_controls.is_some() {
-          self.close_media_controls();
+          self.cancel_media_controls();
           self.window.request_redraw();
         }
         if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
@@ -17329,7 +17365,7 @@ impl App {
                 .is_some_and(|rect_points| rect_points.contains(pos_points))
             });
 
-          self.close_media_controls();
+          self.cancel_media_controls();
           self.window.request_redraw();
           if clicked_media_element {
             // Swallow the matching release event too so the toggle-close click is fully UI-owned
@@ -17889,7 +17925,7 @@ impl App {
                   return;
                 }
                 VirtualKeyCode::Escape => {
-                  self.close_media_controls();
+                  self.cancel_media_controls();
                   self.window.request_redraw();
                   return;
                 }
@@ -17956,7 +17992,7 @@ impl App {
 
             if fastrender::ui::shortcuts::shortcut_preempts_page_focus(action) {
               self.page_has_focus = false;
-              self.close_media_controls();
+              self.cancel_media_controls();
             }
 
             match action {
@@ -18496,7 +18532,7 @@ impl App {
       self.cancel_select_dropdown();
       self.cancel_date_time_picker();
       self.cancel_file_picker();
-      self.close_media_controls();
+      self.cancel_media_controls();
       self.cancel_pointer_capture();
       self.close_context_menu();
     }
@@ -19647,7 +19683,7 @@ impl App {
     // never take keyboard focus (e.g. via `response.request_focus()` on the central page image).
     if self.clear_browsing_data_dialog_open {
       self.page_has_focus = false;
-      self.close_media_controls();
+      self.cancel_media_controls();
     }
 
     // When using a full-size content view on macOS (transparent titlebar / unified toolbar),
@@ -20432,7 +20468,7 @@ impl App {
               self.cancel_file_picker();
             }
             if self.open_media_controls.is_some() {
-              self.close_media_controls();
+              self.cancel_media_controls();
             }
             if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
               self.close_context_menu();
