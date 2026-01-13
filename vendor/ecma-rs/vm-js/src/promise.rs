@@ -271,29 +271,179 @@ impl Promise {
     // `[[PromiseIsHandled]]` bookkeeping for unhandled rejection tracking.
     let has_reject_handler = reject_reaction.handler.is_some();
     let mut inner = self.inner.borrow_mut();
-    if has_reject_handler && !inner.is_handled {
-      inner.is_handled = true;
-      if matches!(inner.state, PromiseRecordState::Rejected(_)) {
-        if let Some(handle) = inner.handle {
-          host.host_promise_rejection_tracker(handle, PromiseRejectionOperation::Handle);
-        }
-      }
-    }
-
     match inner.state {
       PromiseRecordState::Pending => {
+        // `Vec::push` will abort the process on allocator OOM. Reactions can be attacker-controlled
+        // (many `.then` chains attached to a pending promise), so use fallible reservation and
+        // surface a recoverable `VmError::OutOfMemory`.
+        //
+        // Reserve for both reaction lists before mutating any Promise state, so we never partially
+        // attach reactions.
+        inner
+          .fulfill_reactions
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        inner
+          .reject_reactions
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+
+        if has_reject_handler && !inner.is_handled {
+          inner.is_handled = true;
+        }
+
         inner.fulfill_reactions.push(fulfill_reaction);
         inner.reject_reactions.push(reject_reaction);
       }
       PromiseRecordState::Fulfilled(v) => {
-        host.host_enqueue_promise_job(new_promise_reaction_job(heap, fulfill_reaction, v)?, None);
+        let job = new_promise_reaction_job(heap, fulfill_reaction, v)?;
+        if has_reject_handler && !inner.is_handled {
+          inner.is_handled = true;
+        }
+        drop(inner);
+        host.host_enqueue_promise_job(job, None);
       }
       PromiseRecordState::Rejected(r) => {
-        host.host_enqueue_promise_job(new_promise_reaction_job(heap, reject_reaction, r)?, None);
+        let job = new_promise_reaction_job(heap, reject_reaction, r)?;
+        if has_reject_handler && !inner.is_handled {
+          inner.is_handled = true;
+          if let Some(handle) = inner.handle {
+            host.host_promise_rejection_tracker(handle, PromiseRejectionOperation::Handle);
+          }
+        }
+        drop(inner);
+        host.host_enqueue_promise_job(job, None);
       }
     }
 
     Ok(())
+  }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+  use super::*;
+  use crate::{HeapLimits, Job, RealmId};
+  use std::io;
+  use std::os::unix::process::CommandExt;
+  use std::process::Command;
+  use std::sync::Mutex;
+
+  static OOM_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+  // Keep the child process's address space comfortably above the vm-js runtime overhead, while
+  // still low enough that reaction-list growth reliably hits `VmError::OutOfMemory` rather than
+  // aborting the process.
+  const LIMIT_AS_BYTES: libc::rlim_t = 192 * 1024 * 1024;
+
+  const CHILD_ENV: &str = "VMJS_INTERNAL_PROMISE_OOM_CHILD";
+  const CHILD_TEST_NAME: &str = "promise::tests::internal_promise_reaction_list_oom_child";
+
+  struct TestHost;
+
+  impl VmHostHooks for TestHost {
+    fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {
+      // Not needed for this test: we only attach reactions to a pending internal Promise.
+    }
+  }
+
+  #[test]
+  fn internal_promise_reaction_lists_do_not_abort_on_oom() {
+    // Don't recursively spawn when we're already in the constrained child process.
+    if std::env::var_os(CHILD_ENV).is_some() {
+      return;
+    }
+
+    // Avoid running multiple memory-pressure subprocesses in parallel (tests run in multiple
+    // threads by default).
+    let _guard = OOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let exe = std::env::current_exe().expect("current_exe");
+    let output = unsafe {
+      let mut cmd = Command::new(exe);
+      cmd.arg("--exact");
+      cmd.arg(CHILD_TEST_NAME);
+      cmd.env(CHILD_ENV, "1");
+
+      cmd.pre_exec(|| {
+        let lim = libc::rlimit {
+          rlim_cur: LIMIT_AS_BYTES,
+          rlim_max: LIMIT_AS_BYTES,
+        };
+        if libc::setrlimit(libc::RLIMIT_AS, &lim) != 0 {
+          return Err(io::Error::last_os_error());
+        }
+        Ok(())
+      });
+
+      cmd.output().expect("spawn child test")
+    };
+
+    assert!(
+      output.status.success(),
+      "child OOM test failed: status={status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+      status = output.status,
+      stdout = String::from_utf8_lossy(&output.stdout),
+      stderr = String::from_utf8_lossy(&output.stderr),
+    );
+  }
+
+  #[test]
+  fn internal_promise_reaction_list_oom_child() {
+    if std::env::var_os(CHILD_ENV).is_none() {
+      return;
+    }
+
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut host = TestHost;
+    let promise = Promise::pending(None);
+
+    let mut iters: usize = 0;
+    loop {
+      if iters > 50_000_000 {
+        panic!("expected VmError::OutOfMemory from reaction list growth under RLIMIT_AS");
+      }
+
+      // Record current list lengths so we can assert we never partially attach reactions on OOM.
+      let (len_fulfill, len_reject) = {
+        let inner = promise.inner.borrow();
+        (inner.fulfill_reactions.len(), inner.reject_reactions.len())
+      };
+
+      let result = promise.then_without_result(
+        &mut host,
+        &mut heap,
+        Value::Undefined,
+        Value::Undefined,
+      );
+
+      match result {
+        Ok(()) => {
+          iters += 1;
+          continue;
+        }
+        Err(VmError::OutOfMemory) => {
+          let inner = promise.inner.borrow();
+          assert_eq!(
+            inner.fulfill_reactions.len(),
+            len_fulfill,
+            "fulfill reactions should not be partially appended on OOM"
+          );
+          assert_eq!(
+            inner.reject_reactions.len(),
+            len_reject,
+            "reject reactions should not be partially appended on OOM"
+          );
+          // The promise stays pending and can be safely observed after the failed `.then`.
+          assert!(matches!(inner.state, PromiseRecordState::Pending));
+          break;
+        }
+        Err(other) => panic!("unexpected error from then_without_result: {other:?}"),
+      }
+    }
+
+    // Sanity check: we actually exercised some growth before failing.
+    assert!(iters > 0, "expected to attach at least one reaction before OOM");
   }
 }
 
