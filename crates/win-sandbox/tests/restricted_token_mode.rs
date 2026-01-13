@@ -13,7 +13,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::{
   GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-  TOKEN_MANDATORY_LABEL, TOKEN_QUERY, PSID,
+  NO_INHERITANCE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, PSID,
 };
 use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
@@ -24,9 +24,6 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 const TEST_NAME: &str = "restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile";
 const ENV_TEST_FILE: &str = "WIN_SANDBOX_TEST_USERPROFILE_FILE";
 const ENV_TEST_DEPTH: &str = "WIN_SANDBOX_TEST_DEPTH";
-
-// `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not currently export it.
-const NO_INHERITANCE: u32 = 0;
 
 #[link(name = "advapi32")]
 extern "system" {
