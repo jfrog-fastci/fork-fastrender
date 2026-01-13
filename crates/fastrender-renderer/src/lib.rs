@@ -301,6 +301,10 @@ fn http_get_follow_redirects(
       let Some(location) = header_value(&headers, "Location") else {
         return Err(format!("redirect {status} missing Location header"));
       };
+      let location = trim_ascii_whitespace(location);
+      if location.is_empty() {
+        return Err(format!("redirect {status} missing Location header"));
+      }
       let next_url = Url::parse(location)
         .ok()
         .or_else(|| url.join(location).ok())
