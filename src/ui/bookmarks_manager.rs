@@ -819,7 +819,11 @@ fn render_nodes(
 
         let row_resp = list_row(ui, ("folder_row", folder_id.0), false, |ui| {
           ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let del = compact_button(ui, "Delete");
+            let del = icon_button(ui, BrowserIcon::Trash, "Delete folder", true);
+            del.widget_info({
+              let label = format!("Delete folder: {title}");
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+            });
             if del.clicked() {
               delete_clicked = true;
             }
@@ -919,12 +923,20 @@ fn render_bookmark_row(
 
   let row_resp = list_row(ui, ("bookmark_row", entry.id.0), editing_this, |ui| {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-      let del = compact_button(ui, "Delete");
+      let del = icon_button(ui, BrowserIcon::Trash, "Delete bookmark", true);
+      del.widget_info({
+        let label = format!("Delete bookmark: {title}");
+        move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+      });
       if del.clicked() {
         delete_clicked = true;
       }
 
-      let edit_btn = compact_button(ui, "Edit");
+      let edit_btn = icon_button(ui, BrowserIcon::Edit, "Edit bookmark", true);
+      edit_btn.widget_info({
+        let label = format!("Edit bookmark: {title}");
+        move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+      });
       if edit_btn.clicked() {
         edit_clicked = true;
       }
@@ -1155,16 +1167,4 @@ fn list_row(
   });
 
   response
-}
-
-fn compact_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-  ui.add(
-    egui::Button::new(label)
-      .small()
-      .min_size(egui::vec2(
-        ui.spacing().interact_size.y,
-        ui.spacing().interact_size.y,
-      ))
-      .wrap(false),
-  )
 }
