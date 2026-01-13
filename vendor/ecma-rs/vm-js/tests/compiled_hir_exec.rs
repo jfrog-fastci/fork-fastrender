@@ -167,7 +167,6 @@ fn compiled_new_target_is_undefined_in_normal_call() -> Result<(), VmError> {
     "#,
   )?;
   let f_body = find_function_body(&script, "f");
-
   let mut vm = Vm::new(VmOptions::default());
   let mut scope = heap.scope();
   let name = scope.alloc_string("f")?;
@@ -182,6 +181,79 @@ fn compiled_new_target_is_undefined_in_normal_call() -> Result<(), VmError> {
 
   let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
   assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_strict_equality_compares_string_contents() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        return ("ab" + "c") === "abc";
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_strict_equality_compares_bigint_values() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(a, b) {
+        return a === b;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    2,
+  )?;
+
+  // Allocate two equal BigInts that are guaranteed to have different GC handles.
+  let a = scope.alloc_bigint_from_u128(3)?;
+  scope.push_root(Value::BigInt(a))?;
+  let b = scope.alloc_bigint_from_u128(3)?;
+  scope.push_root(Value::BigInt(b))?;
+
+  let result = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::BigInt(a), Value::BigInt(b)],
+  )?;
+  assert_eq!(result, Value::Bool(true));
   Ok(())
 }
 
