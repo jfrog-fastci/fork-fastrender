@@ -4731,6 +4731,11 @@ impl BrowserRuntime {
             form_submitter_element_id.as_deref(),
           );
         }
+        // Keep the worker's cached JS mutation generation in sync with dom2 edits caused by
+        // mirroring UI-driven form control state (dom1 → dom2). This prevents the paint pipeline
+        // from treating these internal sync writes as "external" JS mutations that require a full
+        // dom2 → dom1 resnapshot.
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
     }
     let js_mutation_generation_before_dispatch =
@@ -5586,6 +5591,7 @@ impl BrowserRuntime {
           option_node_id,
           element_id,
         );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -5665,6 +5671,7 @@ impl BrowserRuntime {
           option_node_id,
           element_id,
         );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -5781,6 +5788,7 @@ impl BrowserRuntime {
           focused,
           element_id,
         );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -5814,6 +5822,7 @@ impl BrowserRuntime {
           input_node_id,
           element_id,
         );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -5869,6 +5878,7 @@ impl BrowserRuntime {
           input_node_id,
           element_id,
         );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -5912,6 +5922,7 @@ impl BrowserRuntime {
           focused,
           element_id,
         );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -6019,6 +6030,7 @@ impl BrowserRuntime {
           focused,
           element_id,
         );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -6048,6 +6060,7 @@ impl BrowserRuntime {
           focused,
           element_id,
         );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
@@ -6286,6 +6299,7 @@ impl BrowserRuntime {
             target_id,
             click_target_element_id,
           );
+          tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
         }
       }
 
@@ -6352,6 +6366,7 @@ impl BrowserRuntime {
               source_id,
               submit_source_element_id,
             );
+            tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
             let source_node =
               js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
