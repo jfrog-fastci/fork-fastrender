@@ -11160,6 +11160,42 @@ fn compiled_for_in_head_let_object_destructuring_closure_captures_each_iteration
 }
 
 #[test]
+fn compiled_for_of_head_const_object_destructuring_closure_captures_each_iteration_value() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let fs = [];
+        for (const {x} of [{x: 1}, {x: 2}]) {
+          fs.push(function() { return x; });
+        }
+        return fs[0]() * 10 + fs[1]();
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(12.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_head_const_object_destructuring_closure_captures_each_iteration_value() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let fs = [];
+        for (const {length: x} in ({a: 1, bb: 2})) {
+          fs.push(function() { return x; });
+        }
+        return fs[0]() * 10 + fs[1]();
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(12.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_optional_member_callee_parentheses_do_not_short_circuit_call() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
