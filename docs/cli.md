@@ -490,6 +490,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - By default, media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty placeholder files so fixtures stay small/offline-safe.
   - Pass `--include-media` to vendor playable media, subject to size budgets (`--media-max-bytes`, `--media-max-file-bytes`; set to `0` to disable).
   - All HTML/CSS references are rewritten to hashed files under `assets/`, and the importer fails if any network URLs would remain.
+  - Media asset provenance/licensing + regeneration guidance: [`tests/pages/fixtures/assets/media/README.md`](../tests/pages/fixtures/assets/media/README.md).
 
 ## `import_wpt`
 
