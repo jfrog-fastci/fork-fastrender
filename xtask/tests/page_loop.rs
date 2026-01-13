@@ -72,6 +72,33 @@ fn dry_run_prints_expected_plan() {
 }
 
 #[test]
+fn dry_run_accepts_mdn_switch_toggle_fixture() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", "")
+    .args(["page-loop", "--fixture", "mdn_switch_toggle", "--dry-run"])
+    .output()
+    .expect("run xtask page-loop --fixture mdn_switch_toggle --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("fixture: mdn_switch_toggle"),
+    "expected fixture name in plan; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("mdn_switch_toggle/index.html"),
+    "expected fixture HTML path to be present; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn dry_run_forwards_dom_compat_to_renderer_steps() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())

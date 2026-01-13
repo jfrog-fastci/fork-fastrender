@@ -30,19 +30,19 @@
         appearance: none;
         background-color: var(--color-text-secondary);
         background-image: radial-gradient(
-          circle at calc(var(--switch-size) / 2),
-          var(--color-background-primary) calc((var(--switch-size) / 2) * 0.8),
-          #0000 calc((var(--switch-size) / 2) * 0.8 + 1px)
+          circle at calc(var(--switch-size)/2),
+          var(--color-background-primary) calc((var(--switch-size)/2)*.8),
+          #0000 calc((var(--switch-size)/2)*.8 + 1px)
         );
         background-position: var(--switch-position) 0;
         background-repeat: no-repeat;
         background-size: var(--switch-size);
-        width: calc(var(--switch-size) * 1.6);
+        width: calc(var(--switch-size)*1.6);
         height: var(--switch-size);
         margin: 0;
         display: inline-block;
         border-radius: 9999px;
-        transition: --switch-position 0.2s;
+        transition: --switch-position .2s;
       }
 
       .switch__input:checked {
