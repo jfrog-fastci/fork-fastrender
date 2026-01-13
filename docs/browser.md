@@ -185,6 +185,9 @@ Debugging note: you can temporarily disable the renderer OS sandbox with
 [sandboxing.md](sandboxing.md) for details.
 
 To debug Windows sandbox spawn failures, set `FASTR_LOG_SANDBOX=1` for verbose sandbox logs.
+If you need the sandboxed child to inherit the full parent environment on Windows (disabling the
+default environment sanitization / `TEMP`/`TMP` override), set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1`
+(debug only).
 
 ## Implementation notes
 

@@ -76,6 +76,9 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
     spawn helper still uses the handle-inheritance allowlist and still attempts to apply a Job
     Object (kill-on-close, active-process cap). If job assignment fails (e.g. nested jobs are
     disallowed by the parent job), it may run jobless and prints a warning.
+    - The Windows spawn helper also still applies environment sanitization by default (no secret env
+      inheritance; `TEMP`/`TMP` override). Set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` if you need the
+      child to inherit the full parent environment for debugging.
 - `FASTR_ALLOW_UNSANDBOXED_RENDERER=0|1` – **Windows-only**: opt in to running the renderer without the full Windows sandbox when required primitives are missing or sandbox startup fails.
   - Default: disabled (sandbox failures return an error; no silent downgrade).
   - `crates/win-sandbox`: used by `RendererSandboxMode::new_default()` to avoid silently disabling

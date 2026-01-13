@@ -758,6 +758,9 @@ debug escape hatches), see [sandboxing.md](sandboxing.md).
 
 Windows debugging tip: set `FASTR_LOG_SANDBOX=1` for verbose AppContainer/restricted-token spawn
 logs.
+If you need the sandboxed child to inherit the full parent environment on Windows (disabling the
+default environment sanitization / `TEMP`/`TMP` override), set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1`
+(debug only).
 
 The worker boundary keeps the UI responsive under slow network/layout and provides a place to add
 browser-style behaviors over time:
