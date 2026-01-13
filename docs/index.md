@@ -12,19 +12,26 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - **Triage & operations** (priority order, failure classification, operating model): [triage.md](triage.md)
 - **Accuracy workflow** (how to fix rendering issues): [accuracy_workflow.md](accuracy_workflow.md)
 
-## Rendering engine workstreams
+## Core rendering engine workstreams
 
 - Capability buildout (spec-first primitives): [`instructions/capability_buildout.md`](../instructions/capability_buildout.md)
 - Pageset page loop (fix pages one-by-one): [`instructions/pageset_page_loop.md`](../instructions/pageset_page_loop.md)
+- **Live rendering (dynamic browser, not static)**: [`instructions/live_rendering.md`](../instructions/live_rendering.md) ⭐
+- Video support: [`instructions/video_support.md`](../instructions/video_support.md)
 - Page-loop tooling playbook: [page_loop_tooling.md](page_loop_tooling.md)
 
 ## Browser application workstreams
 
 - Browser chrome (tabs, navigation, address bar): [`instructions/browser_chrome.md`](../instructions/browser_chrome.md)
-- Browser UX & visual design: [`instructions/browser_ux.md`](../instructions/browser_ux.md)
+- Browser responsiveness (performance): [`instructions/browser_responsiveness.md`](../instructions/browser_responsiveness.md)
 - Browser page interaction (forms, focus): [`instructions/browser_interaction.md`](../instructions/browser_interaction.md)
 - Desktop browser app (`browser` binary): [browser.md](browser.md)
 - Running the desktop browser UI locally: [browser_ui.md](browser_ui.md)
+
+## Architecture & security workstreams
+
+- Multiprocess & security: [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md)
+- Renderer chrome (future): [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
 
 ## JavaScript workstreams
 

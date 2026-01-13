@@ -6,16 +6,23 @@ This file contains **repo-wide** rules shared by all workstreams.
 
 Pick one workstream and follow its specific doc. Work can proceed **in parallel** across all workstreams.
 
-### Rendering Engine (correctness & capability)
+### Core Rendering Engine
 
 - **Capability buildout (spec-first primitives)**: `instructions/capability_buildout.md`
 - **Pageset page loop (fix pages one-by-one)**: `instructions/pageset_page_loop.md`
+- **Live rendering (dynamic browser, not static images)**: `instructions/live_rendering.md` ⭐ HIGH PRIORITY
+- **Video support**: `instructions/video_support.md`
 
-### Browser Application (user-facing product)
+### Browser Application
 
 - **Browser chrome (tabs, navigation, address bar)**: `instructions/browser_chrome.md`
-- **Browser UX & visual design (modern look, responsiveness)**: `instructions/browser_ux.md`
+- **Browser responsiveness (performance, not aesthetics)**: `instructions/browser_responsiveness.md`
 - **Browser page interaction (forms, focus, scrolling)**: `instructions/browser_interaction.md`
+
+### Architecture & Security
+
+- **Multiprocess & security (process isolation, sandboxing)**: `instructions/multiprocess_security.md`
+- **Renderer chrome (future: UI rendered by FastRender)**: `instructions/renderer_chrome.md`
 
 ### JavaScript (full browser JS support)
 
@@ -30,9 +37,13 @@ Pick one workstream and follow its specific doc. Work can proceed **in parallel*
 |------------|------|--------------|
 | `capability_buildout` | CSS, layout algorithms, paint correctness | Page-specific fixes, browser UI |
 | `pageset_page_loop` | Fixing specific pages end-to-end | Generic capability work |
-| `browser_chrome` | Tabs, address bar, navigation, shortcuts | Visual design, page interaction |
-| `browser_ux` | Theming, loading states, responsiveness | Chrome functionality |
+| `live_rendering` | Dynamic rendering, JS execution, repaint loop | Static image rendering |
+| `video_support` | `<video>`, codecs, HTMLMediaElement | Streaming protocols, DRM |
+| `browser_chrome` | Tabs, address bar, navigation, shortcuts | Visual aesthetics, page interaction |
+| `browser_responsiveness` | Frame rate, input latency, scroll perf | Visual design, theming |
 | `browser_interaction` | Forms, focus, selection, scrolling | Chrome UI, JS events |
+| `multiprocess_security` | Process isolation, sandboxing, IPC | Rendering, UI |
+| `renderer_chrome` | Rendering browser UI with FastRender | Current egui implementation |
 | `js_engine` | vm-js execution, GC, spec compliance | DOM, Web APIs |
 | `js_dom` | Document, Element, Node, events | Web APIs, script loading |
 | `js_web_apis` | fetch, URL, timers, storage, crypto | DOM, engine internals |
@@ -79,64 +90,6 @@ A change counts if it lands at least one of:
 - **Docs-only work** unless it removes confusion actively blocking fixes.
 
 If you find yourself "improving the harness" without changing renderer behavior, **stop and implement the missing behavior**.
-
-## Build performance (critical for agent productivity)
-
-**Read [`docs/build_performance.md`](docs/build_performance.md)** for the full guide.
-
-### Why builds are slow
-
-FastRender is a **1.38 million line** single-crate Rust project (mega-crate architecture). This means:
-- rustc processes everything as one compilation unit
-- Changes to core modules invalidate huge portions of code
-- Full LTO release builds take 30-60 minutes
-
-### Mandatory rules for fast iteration
-
-1. **Use `cargo check` for validation** — 10-50x faster than `cargo build`:
-   ```bash
-   timeout -k 10 120 bash scripts/cargo_agent.sh check -p fastrender
-   ```
-
-2. **Always scope builds to specific targets**:
-   ```bash
-   # GOOD - Build specific binary
-   timeout -k 10 300 bash scripts/cargo_agent.sh build --bin fetch_and_render
-   
-   # BAD - Builds ALL 20+ binaries
-   timeout -k 10 1800 bash scripts/cargo_agent.sh build
-   ```
-
-3. **Use `--profile release-dev` for performance-sensitive work**:
-   ```bash
-   # GOOD - Fast release-quality build (thin LTO, ~3-5x faster than full release)
-   timeout -k 10 300 bash scripts/cargo_agent.sh build --profile release-dev --bin fetch_and_render
-   
-   # BAD - Full LTO, extremely slow
-   timeout -k 10 1800 bash scripts/cargo_agent.sh build --release --bin fetch_and_render
-   ```
-
-4. **Incremental compilation is ON by default** — don't disable it unless you need reproducibility.
-
-5. **Never run bare `cargo build --release`** — this compiles all 20+ binaries with full LTO (30-60 minutes).
-
-### Build profiles
-
-| Profile | Use Case | Speed |
-|---------|----------|-------|
-| `dev` (default) | Day-to-day iteration, debugging | Fast |
-| `release-dev` | Testing release behavior, performance work | Medium |
-| `release` | Final artifacts, CI releases only | **Very slow** |
-
-### Quick reference
-
-| Task | Command | Time |
-|------|---------|------|
-| Type check | `cargo check -p fastrender` | 10-30s |
-| Build one binary (dev) | `cargo build --bin fetch_and_render` | 30-60s |
-| Build one binary (release-dev) | `cargo build --profile release-dev --bin <name>` | 60-120s |
-| Build one binary (release) | `cargo build --release --bin <name>` | 5-10min |
-| **Build ALL release** | `cargo build --release` | **30-60min ⚠️** |
 
 ## System resources (RAM / time / disk) — mandatory safety
 

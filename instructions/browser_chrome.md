@@ -15,21 +15,6 @@
 - `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
 - `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
 
-### Build speed matters
-
-The browser binary requires `--features browser_ui`. See [`docs/build_performance.md`](../docs/build_performance.md):
-
-```bash
-# GOOD - Build browser specifically
-timeout -k 10 300 bash scripts/cargo_agent.sh build --features browser_ui --bin browser
-
-# GOOD - Fast release-quality build for testing
-timeout -k 10 300 bash scripts/cargo_agent.sh build --profile release-dev --features browser_ui --bin browser
-
-# GOOD - Type check only (fastest)
-timeout -k 10 120 bash scripts/cargo_agent.sh check --features browser_ui
-```
-
 ---
 
 This workstream owns the **browser application shell**: the chrome surrounding the rendered page content.
@@ -66,7 +51,7 @@ A change counts if it lands at least one of:
 
 - Page rendering quality → `capability_buildout.md`
 - Page interaction (forms, focus, selection) → `browser_interaction.md`
-- Visual design and polish → `browser_ux.md`
+- Performance (frame rate, responsiveness) → `browser_responsiveness.md`
 - JavaScript execution → `js_*.md` workstreams
 
 ## Priority order (P0 → P1 → P2)
