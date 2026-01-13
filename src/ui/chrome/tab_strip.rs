@@ -2682,6 +2682,21 @@ mod tests {
   }
 
   #[test]
+  fn sizing_overflow_accounts_for_chip_gaps_even_with_zero_chip_width() {
+    // A zero-width "extra item" is unrealistic for a real tab group chip, but it makes the test
+    // specifically validate that *gaps introduced by extra items* participate in overflow.
+    let tabs: usize = 1;
+    let available = TAB_MIN_WIDTH;
+    let sizing_no_chip = compute_tab_strip_sizing(available, tabs);
+    assert!(!sizing_no_chip.overflow);
+
+    // 1 tab + 1 extra item => 2 items => 1 gap.
+    let sizing_with_chip_gap = compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, 1);
+    assert!(sizing_with_chip_gap.overflow);
+    assert!((sizing_with_chip_gap.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
+  }
+
+  #[test]
   fn sizing_with_group_chips_can_overflow_even_when_few_tabs() {
     // 2 tabs + 1 chip => 3 items => 2 gaps.
     let sizing = compute_tab_strip_sizing_with_fixed_width(400.0, 2, 160.0, 2);
