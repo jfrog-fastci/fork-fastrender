@@ -705,11 +705,15 @@ fn blob_slice_native(
   };
   let span = (relative_end - relative_start).max(0) as usize;
   let offset = relative_start as usize;
-  let bytes = data
+  let src = data
     .bytes
     .get(offset..offset.saturating_add(span))
-    .unwrap_or(&[])
-    .to_vec();
+    .unwrap_or(&[]);
+  let mut bytes = Vec::new();
+  bytes
+    .try_reserve_exact(span)
+    .map_err(|_| VmError::OutOfMemory)?;
+  bytes.extend_from_slice(src);
 
   let mut content_type = String::new();
   if let Some(v) = args.get(2).copied() {
