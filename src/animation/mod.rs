@@ -4514,6 +4514,17 @@ struct DecomposedTransform3D {
   quaternion: [f32; 4],  // x, y, z, w
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DecomposedTransform2D {
+  translation: [f32; 2],
+  scale: [f32; 2],
+  angle_degrees: f32,
+  m11: f32,
+  m12: f32,
+  m21: f32,
+  m22: f32,
+}
+
 fn vec3_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
   a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -4640,6 +4651,156 @@ fn mat4_transpose_mul_vec4(m: &Transform3D, v: [f32; 4]) -> Option<[f32; 4]> {
   let z = m.m[8] * v[0] + m.m[9] * v[1] + m.m[10] * v[2] + m.m[11] * v[3];
   let w = m.m[12] * v[0] + m.m[13] * v[1] + m.m[14] * v[2] + m.m[15] * v[3];
   (x.is_finite() && y.is_finite() && z.is_finite() && w.is_finite()).then_some([x, y, z, w])
+}
+
+fn decompose_transform_matrix2d(matrix: &Transform3D) -> Option<DecomposedTransform2D> {
+  // CSS Transforms 1: Decomposing a 2D matrix (column-major indexing).
+  let t = matrix.to_2d()?;
+  if !(t.a.is_finite()
+    && t.b.is_finite()
+    && t.c.is_finite()
+    && t.d.is_finite()
+    && t.e.is_finite()
+    && t.f.is_finite())
+  {
+    return None;
+  }
+
+  let mut row0x = t.a;
+  let mut row0y = t.b;
+  let mut row1x = t.c;
+  let mut row1y = t.d;
+
+  let translation = [t.e, t.f];
+
+  let mut scale_x = (row0x * row0x + row0y * row0y).sqrt();
+  let mut scale_y = (row1x * row1x + row1y * row1y).sqrt();
+  if !scale_x.is_finite() || !scale_y.is_finite() {
+    return None;
+  }
+
+  let determinant = row0x * row1y - row0y * row1x;
+  if !determinant.is_finite() || determinant.abs() <= 1e-12 {
+    // Non-invertible matrices are not interpolated via decomposition per spec; signal failure so
+    // callers can fall back to the more robust behavior.
+    return None;
+  }
+
+  if determinant < 0.0 {
+    // Flip axis with minimum unit vector dot product.
+    if row0x < row1y {
+      scale_x = -scale_x;
+    } else {
+      scale_y = -scale_y;
+    }
+  }
+
+  // Renormalize matrix to remove scale.
+  if scale_x.abs() > 1e-12 {
+    let inv = 1.0 / scale_x;
+    row0x *= inv;
+    row0y *= inv;
+  }
+  if scale_y.abs() > 1e-12 {
+    let inv = 1.0 / scale_y;
+    row1x *= inv;
+    row1y *= inv;
+  }
+
+  // Compute rotation and renormalize matrix.
+  let mut angle = row0y.atan2(row0x);
+  if angle != 0.0 {
+    // Rotate(-angle) = [cos(angle), sin(angle), -sin(angle), cos(angle)]
+    //                = [row0x, -row0y, row0y, row0x] thanks to the normalization above.
+    let sn = -row0y;
+    let cs = row0x;
+
+    let m11 = row0x;
+    let m12 = row0y;
+    let m21 = row1x;
+    let m22 = row1y;
+
+    row0x = cs * m11 + sn * m21;
+    row0y = cs * m12 + sn * m22;
+    row1x = -sn * m11 + cs * m21;
+    row1y = -sn * m12 + cs * m22;
+  }
+
+  let m11 = row0x;
+  let m12 = row0y;
+  let m21 = row1x;
+  let m22 = row1y;
+
+  // Convert into degrees because our rotation functions expect degrees.
+  angle = angle.to_degrees();
+
+  if !translation.iter().all(|v| v.is_finite())
+    || !scale_x.is_finite()
+    || !scale_y.is_finite()
+    || !angle.is_finite()
+    || !m11.is_finite()
+    || !m12.is_finite()
+    || !m21.is_finite()
+    || !m22.is_finite()
+  {
+    return None;
+  }
+
+  Some(DecomposedTransform2D {
+    translation,
+    scale: [scale_x, scale_y],
+    angle_degrees: angle,
+    m11,
+    m12,
+    m21,
+    m22,
+  })
+}
+
+fn recompose_transform_matrix2d(decomp: &DecomposedTransform2D) -> Option<Transform3D> {
+  // CSS Transforms 1: Recomposing to a 2D matrix.
+  if !decomp.translation.iter().all(|v| v.is_finite())
+    || !decomp.scale.iter().all(|v| v.is_finite())
+    || !decomp.angle_degrees.is_finite()
+    || !decomp.m11.is_finite()
+    || !decomp.m12.is_finite()
+    || !decomp.m21.is_finite()
+    || !decomp.m22.is_finite()
+  {
+    return None;
+  }
+
+  let mut matrix = Transform3D::identity();
+  matrix.m[0] = decomp.m11;
+  matrix.m[1] = decomp.m12;
+  matrix.m[4] = decomp.m21;
+  matrix.m[5] = decomp.m22;
+
+  // Translate matrix.
+  matrix.m[12] = decomp.translation[0] * decomp.m11 + decomp.translation[1] * decomp.m21;
+  matrix.m[13] = decomp.translation[0] * decomp.m12 + decomp.translation[1] * decomp.m22;
+
+  // Rotate matrix: matrix = rotateMatrix * matrix.
+  let angle = decomp.angle_degrees.to_radians();
+  let cos_angle = angle.cos();
+  let sin_angle = angle.sin();
+  let rotate = Transform3D {
+    m: [
+      cos_angle, sin_angle, 0.0, 0.0, // column 1
+      -sin_angle, cos_angle, 0.0, 0.0, // column 2
+      0.0, 0.0, 1.0, 0.0, // column 3
+      0.0, 0.0, 0.0, 1.0, // column 4
+    ],
+  };
+  matrix = rotate.multiply(&matrix);
+
+  // Scale matrix.
+  matrix.m[0] *= decomp.scale[0];
+  matrix.m[1] *= decomp.scale[0];
+  matrix.m[4] *= decomp.scale[1];
+  matrix.m[5] *= decomp.scale[1];
+
+  matrix.m.iter().all(|v| v.is_finite()).then_some(matrix)
 }
 
 fn decompose_transform_matrix3d(matrix: &Transform3D) -> Option<DecomposedTransform3D> {
@@ -4914,6 +5075,58 @@ fn interpolate_matrix_decomposition(
   b: &Transform3D,
   t: f32,
 ) -> Option<Transform3D> {
+  // CSS Transforms 1 distinguishes between 2D matrix decomposition and general (3D) decomposition.
+  // Prefer the 2D path when both inputs are 2D-compatible; it preserves expected 2D semantics for
+  // reflections and avoids introducing spurious 3D rotations.
+  if a.to_2d().is_some() && b.to_2d().is_some() {
+    let mut da = decompose_transform_matrix2d(a)?;
+    let mut db = decompose_transform_matrix2d(b)?;
+
+    // If x-axis of one is flipped, and y-axis of the other, convert to an unflipped rotation.
+    if (da.scale[0] < 0.0 && db.scale[1] < 0.0) || (da.scale[1] < 0.0 && db.scale[0] < 0.0) {
+      da.scale[0] = -da.scale[0];
+      da.scale[1] = -da.scale[1];
+      da.angle_degrees += if da.angle_degrees < 0.0 {
+        180.0
+      } else {
+        -180.0
+      };
+    }
+
+    // Don't rotate the long way around.
+    if da.angle_degrees.abs() <= f32::EPSILON {
+      da.angle_degrees = 360.0;
+    }
+    if db.angle_degrees.abs() <= f32::EPSILON {
+      db.angle_degrees = 360.0;
+    }
+    if (da.angle_degrees - db.angle_degrees).abs() > 180.0 {
+      if da.angle_degrees > db.angle_degrees {
+        da.angle_degrees -= 360.0;
+      } else {
+        db.angle_degrees -= 360.0;
+      }
+    }
+
+    let out = DecomposedTransform2D {
+      translation: [
+        lerp(da.translation[0], db.translation[0], t),
+        lerp(da.translation[1], db.translation[1], t),
+      ],
+      scale: [
+        lerp(da.scale[0], db.scale[0], t),
+        lerp(da.scale[1], db.scale[1], t),
+      ],
+      angle_degrees: lerp(da.angle_degrees, db.angle_degrees, t),
+      m11: lerp(da.m11, db.m11, t),
+      m12: lerp(da.m12, db.m12, t),
+      m21: lerp(da.m21, db.m21, t),
+      m22: lerp(da.m22, db.m22, t),
+    };
+
+    return recompose_transform_matrix2d(&out);
+  }
+
   let da = decompose_transform_matrix3d(a)?;
   let db = decompose_transform_matrix3d(b)?;
 
