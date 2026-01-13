@@ -20,14 +20,15 @@ use std::os::windows::io::{AsRawHandle, RawHandle};
 
 use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
 use fastrender::sandbox::windows::appcontainer::appcontainer_apis;
+use win_sandbox::mitigations;
 use windows_sys::Win32::Foundation::{
   CloseHandle, GetHandleInformation, SetHandleInformation, ERROR_INSUFFICIENT_BUFFER, HANDLE,
   HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{
-  GetTokenInformation, OpenProcessToken, TokenCapabilities, TokenIntegrityLevel, TokenIsAppContainer,
-  TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+  GetTokenInformation, OpenProcessToken, TokenCapabilities, TokenIntegrityLevel,
+  TokenIsAppContainer, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
 };
 use windows_sys::Win32::System::Console::{
   GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -219,7 +220,9 @@ fn get_token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Resul
     ));
   }
   if needed == 0 {
-    return Err("GetTokenInformation returned ERROR_INSUFFICIENT_BUFFER but length was 0".to_string());
+    return Err(
+      "GetTokenInformation returned ERROR_INSUFFICIENT_BUFFER but length was 0".to_string(),
+    );
   }
 
   let mut buf = vec![0u8; needed as usize];
@@ -420,6 +423,9 @@ fn appcontainer_renderer_smoke_child() {
       panic!("failed to query sandbox token state in child: {err}");
     }
   }
+
+  mitigations::verify_renderer_mitigations_current_process()
+    .expect("expected renderer mitigations to be active in sandboxed child");
 
   if let Err(err) = renderer_smoke_child_inner() {
     let chain = format_error_chain(&err);

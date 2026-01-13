@@ -231,6 +231,7 @@ windows-sys = { version = "0.52", features = [
   "Win32_System_Memory",
   "Win32_System_Threading",
 ] }
+win-sandbox = { path = "crates/win-sandbox" }
 [dev-dependencies]
 criterion = "0.5"
 filetime = "0.2"
@@ -251,6 +252,7 @@ windows-sys = { version = "0.52", features = [
   "Win32_System_Memory",
   "Win32_System_Threading",
 ] }
+win-sandbox = { path = "crates/win-sandbox" }
 
 [profile.dev]
 # `xtask page-loop --debug` intentionally uses the dev profile to keep iteration quick, but pages

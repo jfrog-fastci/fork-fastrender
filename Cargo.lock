@@ -1884,6 +1884,7 @@ dependencies = [
  "webidl-vm-js",
  "webpki-roots 0.26.11",
  "wgpu",
+ "win-sandbox",
  "windows-sys 0.52.0",
  "winit",
  "wuff",

@@ -306,10 +306,9 @@ In repo reality today:
 - Escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1` disables **mitigation policies only** (useful for
   debugging/compatibility).
 
-Important: `src/sandbox/windows.rs::spawn_sandboxed` does **not** currently apply these mitigation
-policies. Do not assume mitigations are active unless the spawn path explicitly uses the
-`crates/win-sandbox` helper (this is expected to be consolidated as the multiprocess architecture
-lands).
+`src/sandbox/windows.rs::spawn_sandboxed` applies these mitigation policies at process creation time
+(best-effort). If the OS rejects the mitigation attribute (e.g. older Windows builds), the spawn
+logic retries without mitigations instead of failing process creation.
 
 These mitigations reduce the renderer’s attack surface against:
 
