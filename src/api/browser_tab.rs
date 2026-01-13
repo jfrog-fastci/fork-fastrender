@@ -7941,6 +7941,8 @@ impl BrowserTab {
   /// This is intended for UI integrations that maintain their own scroll offsets and need to keep
   /// `Document.elementFromPoint` and DOM geometry queries consistent with the embedding UI.
   pub fn set_scroll_state(&mut self, state: ScrollState) {
+    // Scroll changes affect paint output; any buffered frame is now stale.
+    self.pending_frame = None;
     self.host.document.set_scroll_state(state);
   }
 
