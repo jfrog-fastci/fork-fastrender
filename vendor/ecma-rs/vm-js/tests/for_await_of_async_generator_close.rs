@@ -624,8 +624,9 @@ fn for_await_throw_rejects_if_async_generator_finally_await_rejects() -> Result<
     )?;
     assert_eq!(value_to_string(&rt, value), "");
 
-    // Throw completion still triggers `AsyncIteratorClose`, and (per `AsyncIteratorClose`) errors
-    // from `return()` must override the loop body error.
+    // Throw completion still triggers `AsyncIteratorClose`, but (per ECMA-262 `AsyncIteratorClose`)
+    // errors from `return()` are ignored when the incoming completion is a throw completion. The
+    // loop must still *await* the close before rejecting with the original error.
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let value = rt.exec_script("log")?;
@@ -647,7 +648,7 @@ fn for_await_throw_rejects_if_async_generator_finally_await_rejects() -> Result<
     assert_eq!(value_to_string(&rt, value), "rejected");
 
     let value = rt.exec_script("out")?;
-    assert_eq!(value_to_string(&rt, value), "fail");
+    assert_eq!(value_to_string(&rt, value), "boom");
 
     Ok(())
   })();
