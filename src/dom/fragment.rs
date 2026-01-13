@@ -215,6 +215,10 @@ pub fn parse_html_fragment_with_context_attrs(
     }
   }
 
+  // File input selection state is internal-only and must never be prefilled by authored markup, even
+  // when parsing fragments (e.g. `innerHTML`).
+  super::strip_authored_file_input_state(&mut container, &mut deadline_counter)?;
+
   Ok(std::mem::take(&mut container.children))
 }
 

@@ -11353,6 +11353,25 @@ mod tests {
   }
 
   #[test]
+  fn parse_html_fragment_strips_authored_file_input_selection_state() {
+    let nodes = parse_html_fragment(
+      r#"<input id="f" type="file" data-fastr-files='["/etc/passwd"]' value="/etc/passwd">"#,
+      "div",
+      HTML_NAMESPACE,
+      DomParseOptions::default(),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+
+    let input = nodes
+      .iter()
+      .find_map(|node| find_node_by_id(node, "f"))
+      .expect("file input node");
+    assert_eq!(input.get_attribute_ref("data-fastr-files"), None);
+    assert_eq!(input.get_attribute_ref("value"), None);
+  }
+
+  #[test]
   fn declarative_shadow_dom_skips_in_inert_template() {
     let html = "<template><div id='host'><template shadowroot='open'><p id='shadow'>shadow</p></template></div></template>";
     let dom = parse_html(html).expect("parse html");
