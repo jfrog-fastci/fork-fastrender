@@ -310,7 +310,10 @@ fn js_string_to_rust_string_limited(
   }
 
   let capacity = code_units_len.saturating_mul(3).min(max_bytes);
-  let mut out = String::with_capacity(capacity);
+  let mut out = String::new();
+  out
+    .try_reserve_exact(capacity)
+    .map_err(|_| VmError::OutOfMemory)?;
   let mut written: usize = 0;
 
   for decoded in decode_utf16(js.as_code_units().iter().copied()) {
