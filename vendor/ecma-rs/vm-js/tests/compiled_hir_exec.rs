@@ -334,6 +334,16 @@ fn compiled_bigint_unary_minus_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_bigint_bitwise_or_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint("1n | 2n", 3)
+}
+
+#[test]
+fn compiled_bigint_shift_left_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint("1n << 2n", 4)
+}
+
+#[test]
 fn compiled_new_target_is_undefined_in_normal_call() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
@@ -2160,10 +2170,22 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
       function plus_obj() {
         return +({ valueOf() { return 4; } });
       }
+      function or_obj() {
+        return ({ valueOf() { return 1; } }) | 2;
+      }
+      function shl_obj() {
+        return ({ valueOf() { return 1; } }) << 2;
+      }
+      function ushr_obj() {
+        return ({ valueOf() { return 8; } }) >>> 1;
+      }
     "#,
   )?;
   let mul_body = find_function_body(&script, "mul_obj");
   let plus_body = find_function_body(&script, "plus_obj");
+  let or_body = find_function_body(&script, "or_obj");
+  let shl_body = find_function_body(&script, "shl_obj");
+  let ushr_body = find_function_body(&script, "ushr_obj");
 
   let mut vm = Vm::new(VmOptions::default());
   // `ToPrimitive` (used by `ToNumber` on objects) requires initialized intrinsics for @@toPrimitive.
@@ -2186,7 +2208,7 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
     let plus_name = scope.alloc_string("plus_obj")?;
     let plus_fn = scope.alloc_user_function(
       CompiledFunctionRef {
-        script,
+        script: script.clone(),
         body: plus_body,
       },
       plus_name,
@@ -2194,6 +2216,42 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
     )?;
     let plus_result = vm.call_without_host(&mut scope, Value::Object(plus_fn), Value::Undefined, &[])?;
     assert_eq!(plus_result, Value::Number(4.0));
+
+    let or_name = scope.alloc_string("or_obj")?;
+    let or_fn = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: or_body,
+      },
+      or_name,
+      0,
+    )?;
+    let or_result = vm.call_without_host(&mut scope, Value::Object(or_fn), Value::Undefined, &[])?;
+    assert_eq!(or_result, Value::Number(3.0));
+
+    let shl_name = scope.alloc_string("shl_obj")?;
+    let shl_fn = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: shl_body,
+      },
+      shl_name,
+      0,
+    )?;
+    let shl_result = vm.call_without_host(&mut scope, Value::Object(shl_fn), Value::Undefined, &[])?;
+    assert_eq!(shl_result, Value::Number(4.0));
+
+    let ushr_name = scope.alloc_string("ushr_obj")?;
+    let ushr_fn = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: ushr_body,
+      },
+      ushr_name,
+      0,
+    )?;
+    let ushr_result = vm.call_without_host(&mut scope, Value::Object(ushr_fn), Value::Undefined, &[])?;
+    assert_eq!(ushr_result, Value::Number(4.0));
   }
 
   realm.teardown(&mut heap);

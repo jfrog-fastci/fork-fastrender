@@ -3367,43 +3367,144 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::BinaryOp::ShiftLeft => {
-        let mut tick = || self.vm.tick();
-        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
-        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_int32(ln).wrapping_shl(shift) as f64))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number(to_int32(a).wrapping_shl(shift) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let shift = {
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_negative() {
+                return Err(VmError::RangeError("BigInt shift count must be >= 0"));
+              }
+              let Some(shift) = b.try_to_i128() else {
+                return Err(VmError::OutOfMemory);
+              };
+              if shift > u64::MAX as i128 {
+                return Err(VmError::OutOfMemory);
+              }
+              shift as u64
+            };
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              a.shl(shift)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::ShiftRight => {
-        let mut tick = || self.vm.tick();
-        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
-        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_int32(ln).wrapping_shr(shift) as f64))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number(to_int32(a).wrapping_shr(shift) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let shift = {
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_negative() {
+                return Err(VmError::RangeError("BigInt shift count must be >= 0"));
+              }
+              let Some(shift) = b.try_to_i128() else {
+                return Err(VmError::OutOfMemory);
+              };
+              if shift > u64::MAX as i128 {
+                return Err(VmError::OutOfMemory);
+              }
+              shift as u64
+            };
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              a.shr(shift)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::ShiftRightUnsigned => {
-        let mut tick = || self.vm.tick();
-        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
-        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        // `>>>` always performs `ToNumber` and does not support BigInt.
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
         let shift = to_uint32(rn) & 0x1f;
         Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
       }
       hir_js::BinaryOp::BitOr => {
-        let mut tick = || self.vm.tick();
-        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
-        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
-        Ok(Value::Number((to_int32(ln) | to_int32(rn)) as f64))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) | to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_or(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::BitAnd => {
-        let mut tick = || self.vm.tick();
-        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
-        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
-        Ok(Value::Number((to_int32(ln) & to_int32(rn)) as f64))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) & to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_and(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::BitXor => {
-        let mut tick = || self.vm.tick();
-        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
-        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
-        Ok(Value::Number((to_int32(ln) ^ to_int32(rn)) as f64))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) ^ to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_xor(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::Equality => Ok(Value::Bool(self.abstract_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::Inequality => Ok(Value::Bool(!self.abstract_equality_comparison(scope, l, r)?)),
