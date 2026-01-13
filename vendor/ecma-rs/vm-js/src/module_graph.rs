@@ -1893,64 +1893,76 @@ impl ModuleGraph {
         script_or_module: None,
       };
       let mut vm_ctx = vm.execution_context_guard(link_ctx)?;
+      let prev_state = vm_ctx.load_realm_state(eval_scope.heap_mut(), realm_id)?;
 
-      // Cache SCC structure (cycle roots, dependency edges) before starting evaluation.
-      self.ensure_scc_info(&mut *vm_ctx)?;
+      let inner: Result<Value, VmError> = (|| {
+        // Cache SCC structure (cycle roots, dependency edges) before starting evaluation.
+        self.ensure_scc_info(&mut *vm_ctx)?;
 
-      // Determine the SCC (cycle) root for this module.
-      let idx = module_index(module);
-      let scc_root = self
-        .modules
-        .get(idx)
-        .ok_or_else(|| VmError::invalid_handle())?
-        .cycle_root
-        .unwrap_or(module);
+        // Determine the SCC (cycle) root for this module.
+        let idx = module_index(module);
+        let scc_root = self
+          .modules
+          .get(idx)
+          .ok_or_else(|| VmError::invalid_handle())?
+          .cycle_root
+          .unwrap_or(module);
 
-      // Ensure an evaluation promise exists for the SCC root and return it to the host.
-      let promise =
-        self.ensure_scc_promise(&mut *vm_ctx, &mut eval_scope, host, hooks, scc_root)?;
+        // Ensure an evaluation promise exists for the SCC root and return it to the host.
+        let promise =
+          self.ensure_scc_promise(&mut *vm_ctx, &mut eval_scope, host, hooks, scc_root)?;
 
-      // Link before evaluating. If linking fails (including the module already being in an errored
-      // state), reject the evaluation promise with the thrown/cached value.
-      if let Err(err) = self.link_with_scope(
-        &mut *vm_ctx,
-        &mut eval_scope,
-        global_object,
-        realm_id,
-        module,
-      ) {
-        let reason = if let Some(thrown) = err.thrown_value() {
-          thrown
-        } else {
-          // Best-effort: ensure we have a cached thrown value for deterministic subsequent
-          // operations.
-          self.cache_module_error_from_err(&mut *vm_ctx, &mut eval_scope, idx, &err)?;
-          self.module_errored_value(&mut *vm_ctx, &mut eval_scope, idx)?
-        };
-        self.reject_scc_promise(
+        // Link before evaluating. If linking fails (including the module already being in an errored
+        // state), reject the evaluation promise with the thrown/cached value.
+        if let Err(err) = self.link_with_scope(
           &mut *vm_ctx,
           &mut eval_scope,
+          global_object,
+          realm_id,
+          module,
+        ) {
+          let reason = if let Some(thrown) = err.thrown_value() {
+            thrown
+          } else {
+            // Best-effort: ensure we have a cached thrown value for deterministic subsequent
+            // operations.
+            self.cache_module_error_from_err(&mut *vm_ctx, &mut eval_scope, idx, &err)?;
+            self.module_errored_value(&mut *vm_ctx, &mut eval_scope, idx)?
+          };
+          self.reject_scc_promise(
+            &mut *vm_ctx,
+            &mut eval_scope,
+            host,
+            hooks,
+            scc_root,
+            reason,
+            Some(&err),
+          )?;
+          return Ok(promise);
+        }
+
+        // Start (or continue) evaluating the SCC rooted at `scc_root`.
+        self.start_scc_evaluation(
+          &mut *vm_ctx,
+          &mut eval_scope,
+          global_object,
+          realm_id,
+          scc_root,
           host,
           hooks,
-          scc_root,
-          reason,
-          Some(&err),
         )?;
-        return Ok(promise);
+
+        Ok(promise)
+      })();
+
+      drop(vm_ctx);
+      let restore_res = vm.restore_realm_state(eval_scope.heap_mut(), prev_state);
+      match (inner, restore_res) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(_)) => Err(err),
       }
-
-      // Start (or continue) evaluating the SCC rooted at `scc_root`.
-      self.start_scc_evaluation(
-        &mut *vm_ctx,
-        &mut eval_scope,
-        global_object,
-        realm_id,
-        scc_root,
-        host,
-        hooks,
-      )?;
-
-      Ok(promise)
     })();
 
     // If module evaluation initiated an async continuation whose Promise reactions are still

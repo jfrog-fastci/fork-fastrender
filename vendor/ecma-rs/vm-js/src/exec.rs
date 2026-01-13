@@ -632,53 +632,46 @@ pub fn eval_script_with_host_and_hooks(
   scope.push_roots(&[Value::Object(global_object), Value::String(source_string)])?;
   scope.push_env_root(global_lexical_env)?;
 
-  let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
-  let source = arc_try_new_vm(SourceText::new_charged(
-    scope.heap_mut(),
-    "<evalScript>",
-    source_text,
-  )?)?;
-
-  let (line, col) = source.line_col(0);
-  let frame = StackFrame {
-    function: None,
-    source: source.name.clone(),
-    line,
-    col,
-  };
-  let mut vm_frame = vm.enter_frame(frame)?;
-
-  // Charge at least one tick at entry so even an empty script respects fuel/deadline/interrupt
-  // budgets.
-  vm_frame.tick()?;
-
-  // Parse as a script and convert syntax errors into a thrown `SyntaxError`.
-  let opts = ParseOptions {
-    dialect: Dialect::Ecma,
-    source_type: SourceType::Script,
-  };
-  let top = match vm_frame.parse_top_level_with_budget(&source.text, opts) {
-    Ok(top) => top,
-    Err(VmError::Syntax(diags)) => {
-      let message = diags
-        .first()
-        .map(|d| d.message.as_str())
-        .unwrap_or("Invalid or unexpected token");
-      let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
-      return Err(VmError::Throw(err_obj));
-    }
-    Err(err) => return Err(err),
+  // Ensure heap-level allocation defaults (notably `Heap::default_object_prototype`) match the
+  // current realm while running the script so newly-created constructor `.prototype` objects inherit
+  // from the correct `%Object.prototype%` even when multiple realms share one heap.
+  let realm_id = vm
+    .current_realm()
+    .or_else(|| scope.heap().get_function_job_realm(intr.eval()))
+    .or_else(|| vm.intrinsics_realm());
+  let (loaded_realm, prev_state) = match realm_id {
+    Some(id) => (true, vm.load_realm_state(scope.heap_mut(), id)?),
+    None => (false, None),
   };
 
-  let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
-  {
-    let mut tick = || vm_frame.tick();
-    match crate::early_errors::validate_top_level(
-      &top.stx.body,
-      crate::early_errors::EarlyErrorOptions::script(strict),
-      &mut tick,
-    ) {
-      Ok(()) => {}
+  let result: Result<Value, VmError> = (|| {
+    let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
+    let source = arc_try_new_vm(SourceText::new_charged(
+      scope.heap_mut(),
+      "<evalScript>",
+      source_text,
+    )?)?;
+
+    let (line, col) = source.line_col(0);
+    let frame = StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    };
+    let mut vm_frame = vm.enter_frame(frame)?;
+
+    // Charge at least one tick at entry so even an empty script respects fuel/deadline/interrupt
+    // budgets.
+    vm_frame.tick()?;
+
+    // Parse as a script and convert syntax errors into a thrown `SyntaxError`.
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Script,
+    };
+    let top = match vm_frame.parse_top_level_with_budget(&source.text, opts) {
+      Ok(top) => top,
       Err(VmError::Syntax(diags)) => {
         let message = diags
           .first()
@@ -688,75 +681,109 @@ pub fn eval_script_with_host_and_hooks(
         return Err(VmError::Throw(err_obj));
       }
       Err(err) => return Err(err),
-    }
-  }
-
-  let mut env = RuntimeEnv::new(scope.heap_mut(), global_object, global_lexical_env)?;
-  env.set_source_info(source.clone(), 0, 0);
-
-  let result = (|| {
-    // In classic scripts, top-level `this` is the global object (even in strict mode).
-    let global_this = Value::Object(global_object);
-    let mut evaluator = Evaluator {
-      vm: &mut *vm_frame,
-      host,
-      hooks,
-      env: &mut env,
-      strict,
-      this: global_this,
-      new_target: Value::Undefined,
-      home_object: None,
-      class_constructor: None,
-      derived_constructor: false,
-      this_initialized: true,
-      this_root_idx: None,
     };
 
-    evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+    let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
+    {
+      let mut tick = || vm_frame.tick();
+      match crate::early_errors::validate_top_level(
+        &top.stx.body,
+        crate::early_errors::EarlyErrorOptions::script(strict),
+        &mut tick,
+      ) {
+        Ok(()) => {}
+        Err(VmError::Syntax(diags)) => {
+          let message = diags
+            .first()
+            .map(|d| d.message.as_str())
+            .unwrap_or("Invalid or unexpected token");
+          let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
+          return Err(VmError::Throw(err_obj));
+        }
+        Err(err) => return Err(err),
+      }
+    }
 
-    let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
-    match completion {
-      Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
-      Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
-        value: thrown.value,
-        stack: thrown.stack,
-      }),
-      Completion::Return(_) => Err(VmError::InvariantViolation(
-        "script evaluation produced Return completion (early errors should prevent this)",
+    let mut env = RuntimeEnv::new(scope.heap_mut(), global_object, global_lexical_env)?;
+    env.set_source_info(source.clone(), 0, 0);
+
+    let result = (|| {
+      // In classic scripts, top-level `this` is the global object (even in strict mode).
+      let global_this = Value::Object(global_object);
+      let mut evaluator = Evaluator {
+        vm: &mut *vm_frame,
+        host,
+        hooks,
+        env: &mut env,
+        strict,
+        this: global_this,
+        new_target: Value::Undefined,
+        home_object: None,
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+      };
+
+      evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+
+      let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
+      match completion {
+        Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+        Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+          value: thrown.value,
+          stack: thrown.stack,
+        }),
+        Completion::Return(_) => Err(VmError::InvariantViolation(
+          "script evaluation produced Return completion (early errors should prevent this)",
+        )),
+        Completion::Break(..) => Err(VmError::InvariantViolation(
+          "script evaluation produced Break completion (early errors should prevent this)",
+        )),
+        Completion::Continue(..) => Err(VmError::InvariantViolation(
+          "script evaluation produced Continue completion (early errors should prevent this)",
+        )),
+      }
+    })();
+
+    env.teardown(scope.heap_mut());
+
+    // Syntax errors from instantiation/evaluation should also be catchable.
+    let result = match result {
+      Err(VmError::Syntax(diags)) => {
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
+        Err(VmError::Throw(err_obj))
+      }
+      other => other,
+    };
+
+    // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable, etc.)
+    // when intrinsics are available.
+    match result {
+      Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
+        &*vm_frame,
+        &mut scope,
+        err,
       )),
-      Completion::Break(..) => Err(VmError::InvariantViolation(
-        "script evaluation produced Break completion (early errors should prevent this)",
-      )),
-      Completion::Continue(..) => Err(VmError::InvariantViolation(
-        "script evaluation produced Continue completion (early errors should prevent this)",
-      )),
+      other => other,
     }
   })();
 
-  env.teardown(scope.heap_mut());
-
-  // Syntax errors from instantiation/evaluation should also be catchable.
-  let result = match result {
-    Err(VmError::Syntax(diags)) => {
-      let message = diags
-        .first()
-        .map(|d| d.message.as_str())
-        .unwrap_or("Invalid or unexpected token");
-      let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
-      Err(VmError::Throw(err_obj))
-    }
-    other => other,
+  let restore_res = if loaded_realm {
+    vm.restore_realm_state(scope.heap_mut(), prev_state)
+  } else {
+    Ok(())
   };
 
-  // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable, etc.)
-  // when intrinsics are available.
-  match result {
-    Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
-      &*vm_frame,
-      &mut scope,
-      err,
-    )),
-    other => other,
+  match (result, restore_res) {
+    (Ok(v), Ok(())) => Ok(v),
+    (Err(err), Ok(())) => Err(err),
+    (Ok(_), Err(err)) => Err(err),
+    (Err(err), Err(_)) => Err(err),
   }
 }
 
@@ -2016,6 +2043,7 @@ impl JsRuntime {
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
+      let prev_state = vm_ctx.load_realm_state(&mut self.heap, exec_ctx.realm)?;
 
       // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
       // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
@@ -2060,7 +2088,14 @@ impl JsRuntime {
       // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
       *vm_ctx.microtask_queue_mut() = hooks;
 
-      result
+      drop(vm_ctx);
+      let restore_res = self.vm.restore_realm_state(&mut self.heap, prev_state);
+      match (result, restore_res) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(_)) => Err(err),
+      }
     })();
 
     if let Err(err) = &result {
@@ -2110,6 +2145,7 @@ impl JsRuntime {
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
+      let prev_state = vm_ctx.load_realm_state(&mut self.heap, exec_ctx.realm)?;
       let result: Result<Value, VmError> = {
         let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(hooks);
         (|| {
@@ -2140,7 +2176,13 @@ impl JsRuntime {
         })()
       };
       drop(vm_ctx);
-      result
+      let restore_res = self.vm.restore_realm_state(&mut self.heap, prev_state);
+      match (result, restore_res) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(_)) => Err(err),
+      }
     })();
 
     if let Err(err) = &result {
@@ -2310,6 +2352,7 @@ impl JsRuntime {
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
+      let prev_state = vm_ctx.load_realm_state(&mut self.heap, exec_ctx.realm)?;
 
       // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
       // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
@@ -2728,7 +2771,14 @@ impl JsRuntime {
       // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
       *vm_ctx.microtask_queue_mut() = hooks;
 
-      result
+      drop(vm_ctx);
+      let restore_res = self.vm.restore_realm_state(&mut self.heap, prev_state);
+      match (result, restore_res) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(_)) => Err(err),
+      }
     })();
 
     if let Err(err) = &result {
@@ -2784,6 +2834,7 @@ impl JsRuntime {
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
+      let prev_state = vm_ctx.load_realm_state(&mut self.heap, exec_ctx.realm)?;
       let result = {
         let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(hooks);
         (|| {
@@ -3180,10 +3231,16 @@ impl JsRuntime {
         )),
         other => other,
       }
-    })()
-    };
-    drop(vm_ctx);
-    result
+        })()
+      };
+      drop(vm_ctx);
+      let restore_res = self.vm.restore_realm_state(&mut self.heap, prev_state);
+      match (result, restore_res) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Err(_)) => Err(err),
+      }
     })();
 
     if let Err(err) = &result {
@@ -14990,6 +15047,7 @@ pub(crate) fn async_resume_call(
   // `import()` can observe the active module.
   if let Some(exec_ctx) = cont.exec_ctx {
     vm.push_execution_context(exec_ctx)?;
+    let prev_state = vm.load_realm_state(scope.heap_mut(), exec_ctx.realm)?;
     let res = (|| {
       let mut evaluator = Evaluator {
         vm,
@@ -15033,7 +15091,13 @@ pub(crate) fn async_resume_call(
 
     let popped = vm.pop_execution_context();
     debug_assert_eq!(popped, Some(exec_ctx));
-    return res;
+    let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+    return match (res, restore_res) {
+      (Ok(v), Ok(())) => Ok(v),
+      (Err(err), Ok(())) => Err(err),
+      (Ok(_), Err(err)) => Err(err),
+      (Err(err), Err(_)) => Err(err),
+    };
   }
 
   let mut evaluator = Evaluator {
@@ -32473,6 +32537,10 @@ fn gen_binary_after_left(
   left: Value,
 ) -> Result<GenEval<Completion>, VmError> {
   match expr.operator {
+    // The comma operator evaluates the RHS and returns its result. Since the LHS has already been
+    // evaluated (including any yield boundaries), generator-mode evaluation can simply delegate to
+    // the RHS without adding an extra continuation frame.
+    OperatorName::Comma => gen_eval_expr(evaluator, scope, &expr.right),
     OperatorName::LogicalAnd => {
       if !to_boolean(scope.heap(), left)? {
         return Ok(GenEval::Complete(Completion::normal(left)));
@@ -34674,7 +34742,7 @@ pub(crate) fn instantiate_module_decls(
       script_or_module: Some(ScriptOrModule::Module(module_id)),
     };
     let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
-    let vm = &mut *vm_ctx;
+    let prev_state = vm_ctx.load_realm_state(scope.heap_mut(), realm_id)?;
 
     let mut env =
       RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
@@ -34685,8 +34753,9 @@ pub(crate) fn instantiate_module_decls(
     let mut dummy_host = ();
     let mut dummy_hooks = crate::MicrotaskQueue::new();
     let result = {
+      let vm_inner = &mut *vm_ctx;
       let mut evaluator = Evaluator {
-        vm,
+        vm: vm_inner,
         host: &mut dummy_host,
         hooks: &mut dummy_hooks,
         env: &mut env,
@@ -34704,7 +34773,14 @@ pub(crate) fn instantiate_module_decls(
       evaluator.instantiate_stmt_list(scope, stmts)
     };
     env.teardown(scope.heap_mut());
-    return result;
+    drop(vm_ctx);
+    let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+    return match (result, restore_res) {
+      (Ok(()), Ok(())) => Ok(()),
+      (Err(err), Ok(())) => Err(err),
+      (Ok(_), Err(err)) => Err(err),
+      (Err(err), Err(_)) => Err(err),
+    };
   }
 
   // Best-effort fallback: allow module instantiation to proceed even when no realm has been
@@ -34755,6 +34831,7 @@ pub(crate) fn run_module(
   };
 
   vm.push_execution_context(exec_ctx)?;
+  let prev_state = vm.load_realm_state(scope.heap_mut(), realm_id)?;
 
   let result = (|| -> Result<(), VmError> {
     let mut env =
@@ -34817,7 +34894,13 @@ pub(crate) fn run_module(
     popped.is_some(),
     "module execution popped no execution context"
   );
-  result
+  let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+  match (result, restore_res) {
+    (Ok(v), Ok(())) => Ok(v),
+    (Err(err), Ok(())) => Err(err),
+    (Ok(_), Err(err)) => Err(err),
+    (Err(err), Err(_)) => Err(err),
+  }
 }
 
 /// Result of executing a module statement list until a supported top-level `await` boundary.
@@ -34857,6 +34940,7 @@ pub(crate) fn start_module_tla_evaluation(
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
   vm.push_execution_context(exec_ctx)?;
+  let prev_state = vm.load_realm_state(scope.heap_mut(), realm_id)?;
 
   let result = (|| -> Result<ModuleTlaStepResult, VmError> {
     let mut env =
@@ -35069,7 +35153,13 @@ pub(crate) fn start_module_tla_evaluation(
     popped.is_some(),
     "module execution popped no execution context"
   );
-  result
+  let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+  match (result, restore_res) {
+    (Ok(v), Ok(())) => Ok(v),
+    (Err(err), Ok(())) => Err(err),
+    (Ok(_), Err(err)) => Err(err),
+    (Err(err), Err(_)) => Err(err),
+  }
 }
 
 /// Resumes an async module evaluation continuation (top-level await).
@@ -35092,6 +35182,7 @@ pub(crate) fn resume_module_tla_evaluation(
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
   vm.push_execution_context(exec_ctx)?;
+  let prev_state = vm.load_realm_state(scope.heap_mut(), realm_id)?;
 
   let result = (|| -> Result<ModuleTlaStepResult, VmError> {
     let Some(mut cont) = vm.take_async_continuation(continuation_id) else {
@@ -35244,7 +35335,13 @@ pub(crate) fn resume_module_tla_evaluation(
     popped.is_some(),
     "module execution popped no execution context"
   );
-  result
+  let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+  match (result, restore_res) {
+    (Ok(v), Ok(())) => Ok(v),
+    (Err(err), Ok(())) => Err(err),
+    (Ok(_), Err(err)) => Err(err),
+    (Err(err), Err(_)) => Err(err),
+  }
 }
 
 /// Opaque continuation for async (top-level await) module evaluation.
@@ -35304,6 +35401,7 @@ pub(crate) fn run_module_async_start(
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
   vm.push_execution_context(exec_ctx)?;
+  let prev_state = vm.load_realm_state(scope.heap_mut(), realm_id)?;
 
   let result = (|| -> Result<ModuleAsyncStep, VmError> {
     // Wrap the continuation in an `Option` so we can `take()` it only when returning
@@ -35467,7 +35565,13 @@ pub(crate) fn run_module_async_start(
     popped.is_some(),
     "module execution popped no execution context"
   );
-  result
+  let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+  match (result, restore_res) {
+    (Ok(v), Ok(())) => Ok(v),
+    (Err(err), Ok(())) => Err(err),
+    (Ok(_), Err(err)) => Err(err),
+    (Err(err), Err(_)) => Err(err),
+  }
 }
 
 pub(crate) fn run_module_async_resume(
@@ -35495,6 +35599,7 @@ pub(crate) fn run_module_async_resume(
     script_or_module: Some(ScriptOrModule::Module(module_id)),
   };
   vm.push_execution_context(exec_ctx)?;
+  let prev_state = vm.load_realm_state(scope.heap_mut(), realm_id)?;
 
   let source = cont
     .as_ref()
@@ -35600,7 +35705,7 @@ pub(crate) fn run_module_async_resume(
     "module execution popped no execution context"
   );
 
-  match result {
+  let out = match result {
     Ok(step) => Ok(step),
     Err(err) => {
       // Best-effort: if module evaluation failed after suspending, ensure no GC roots leak.
@@ -35610,6 +35715,14 @@ pub(crate) fn run_module_async_resume(
       // Restore the previous realm-specific stack frames etc is handled by the caller.
       Err(err)
     }
+  };
+
+  let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+  match (out, restore_res) {
+    (Ok(v), Ok(())) => Ok(v),
+    (Err(err), Ok(())) => Err(err),
+    (Ok(_), Err(err)) => Err(err),
+    (Err(err), Err(_)) => Err(err),
   }
 }
 
