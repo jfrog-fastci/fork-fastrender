@@ -366,6 +366,7 @@ impl BrowserDocument2 {
       viewport: None,
       background: None,
       animation_time,
+      media_provider: None,
     };
 
     let frame = if animation_time.is_some() {

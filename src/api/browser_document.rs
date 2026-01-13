@@ -1099,6 +1099,7 @@ impl BrowserDocument {
         viewport: None,
         background: None,
         animation_time,
+        media_provider: None,
       },
       &mut self.animation_state_store,
     )?;

@@ -60,6 +60,7 @@ pub struct BrowserDocumentDom2 {
   /// any per-call host shim.
   current_script: CurrentScriptStateHandle,
   options: RenderOptions,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   prepared: Option<PreparedDocument>,
   last_dom_mapping: Option<crate::dom2::RendererDomMapping>,
   animation_state_store: crate::animation::AnimationStateStore,
@@ -186,6 +187,7 @@ impl BrowserDocumentDom2 {
       visibility_state: DocumentVisibilityState::Visible,
       current_script: CurrentScriptStateHandle::default(),
       options,
+      media_provider: None,
       prepared: None,
       last_dom_mapping: None,
       animation_state_store: crate::animation::AnimationStateStore::new(),
@@ -307,6 +309,14 @@ impl BrowserDocumentDom2 {
       self.last_painted_animation_clock = None;
       self.paint_dirty = true;
     }
+  }
+
+  /// Overrides the media provider used during paint (e.g. to supply `<video>` frames).
+  ///
+  /// Changing the provider only invalidates paint; cached style/layout artifacts remain valid.
+  pub fn set_media_provider(&mut self, provider: Option<Arc<dyn crate::media::MediaFrameProvider>>) {
+    self.media_provider = provider;
+    self.paint_dirty = true;
   }
 
   pub fn needs_animation_frame(&self) -> bool {
@@ -2102,6 +2112,7 @@ impl BrowserDocumentDom2 {
         viewport: None,
         background: None,
         animation_time,
+        media_provider: self.media_provider.clone(),
       },
       &mut self.animation_state_store,
     )?;

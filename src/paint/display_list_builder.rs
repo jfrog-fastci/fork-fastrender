@@ -235,6 +235,9 @@ pub struct DisplayListBuilder {
   /// The display list being built
   list: DisplayList,
   image_cache: Option<ImageCache>,
+  /// Optional provider used to supply decoded media frames (e.g. `<video>`) during display-list
+  /// construction.
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   decoded_image_cache: Arc<Mutex<DecodedImageCache>>,
   /// Serialized SVG filter definitions collected from the document DOM.
   svg_filter_defs: Option<Arc<HashMap<String, String>>>,
@@ -1430,6 +1433,7 @@ impl DisplayListBuilder {
     Self {
       list: DisplayList::new(),
       image_cache: Some(ImageCache::new()),
+      media_provider: None,
       decoded_image_cache: Arc::new(Mutex::new(DecodedImageCache::new(
         decoded_image_cache_entries,
         decoded_image_cache_bytes,
@@ -1477,6 +1481,7 @@ impl DisplayListBuilder {
     Self {
       list: DisplayList::new(),
       image_cache: Some(image_cache),
+      media_provider: None,
       decoded_image_cache: Arc::new(Mutex::new(DecodedImageCache::new(
         decoded_image_cache_entries,
         decoded_image_cache_bytes,
@@ -1623,6 +1628,16 @@ impl DisplayListBuilder {
   /// Sets the scroll state used when translating element content during display list construction.
   pub fn with_scroll_state(mut self, scroll_state: ScrollState) -> Self {
     self.scroll_state = scroll_state;
+    self
+  }
+
+  /// Sets the media provider used for supplying decoded frames (e.g. `<video>`) while building the
+  /// display list.
+  pub fn with_media_provider(
+    mut self,
+    media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
+  ) -> Self {
+    self.media_provider = media_provider;
     self
   }
 
@@ -6655,6 +6670,7 @@ impl DisplayListBuilder {
     DisplayListBuilder {
       list: DisplayList::new(),
       image_cache: self.image_cache.clone(),
+      media_provider: self.media_provider.clone(),
       decoded_image_cache: Arc::clone(&self.decoded_image_cache),
       svg_filter_defs: self.svg_filter_defs.clone(),
       svg_id_defs: self.svg_id_defs.clone(),

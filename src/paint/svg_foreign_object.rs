@@ -1112,6 +1112,7 @@ fn render_foreign_object_data_url(
     background,
     paint_font_ctx,
     paint_image_cache,
+    None,
     device_pixel_ratio,
     offset,
     PaintParallelism::default(),

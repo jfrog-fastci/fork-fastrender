@@ -233,6 +233,8 @@ pub struct Painter {
   font_ctx: FontContext,
   /// Image cache for replaced content
   image_cache: ImageCache,
+  /// Optional media provider used to supply decoded frames (e.g. `<video>`) during paint.
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   /// SVG defs elements (by id) serialized from the DOM (document-level registry).
   svg_id_defs: Option<Arc<HashMap<String, String>>>,
   /// Raw SVG defs elements (by id) serialized from the DOM (document-level registry).
@@ -1469,6 +1471,7 @@ impl Painter {
       shaper: ShapingPipeline::new(),
       font_ctx,
       image_cache,
+      media_provider: None,
       svg_id_defs: None,
       svg_id_defs_raw: None,
       text_shape_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -1490,6 +1493,14 @@ impl Painter {
   /// Attach a scroll state used for translating scroll container contents during paint.
   fn with_scroll_state(mut self, scroll_state: ScrollState) -> Self {
     self.scroll_state = scroll_state;
+    self
+  }
+
+  fn with_media_provider(
+    mut self,
+    media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
+  ) -> Self {
+    self.media_provider = media_provider;
     self
   }
 
@@ -3673,6 +3684,7 @@ impl Painter {
           shaper: ShapingPipeline::new(),
           font_ctx: self.font_ctx.clone(),
           image_cache: self.image_cache.clone(),
+          media_provider: self.media_provider.clone(),
           svg_id_defs: self.svg_id_defs.clone(),
           svg_id_defs_raw: self.svg_id_defs_raw.clone(),
           text_shape_cache: Arc::clone(&self.text_shape_cache),
@@ -3712,6 +3724,7 @@ impl Painter {
             shaper: ShapingPipeline::new(),
             font_ctx: self.font_ctx.clone(),
             image_cache: self.image_cache.clone(),
+            media_provider: self.media_provider.clone(),
             svg_id_defs: self.svg_id_defs.clone(),
             svg_id_defs_raw: self.svg_id_defs_raw.clone(),
             text_shape_cache: Arc::clone(&self.text_shape_cache),
@@ -4373,6 +4386,7 @@ impl Painter {
       shaper: ShapingPipeline::new(),
       font_ctx: self.font_ctx.clone(),
       image_cache: self.image_cache.clone(),
+      media_provider: self.media_provider.clone(),
       svg_id_defs: self.svg_id_defs.clone(),
       svg_id_defs_raw: self.svg_id_defs_raw.clone(),
       text_shape_cache: Arc::clone(&self.text_shape_cache),
@@ -5638,11 +5652,12 @@ impl Painter {
                     css_width: self.css_width,
                     css_height: self.css_height,
                     background: Rgba::new(0, 0, 0, 0.0),
-                    shaper: ShapingPipeline::new(),
-                    font_ctx: self.font_ctx.clone(),
-                    image_cache: self.image_cache.clone(),
-                    svg_id_defs: self.svg_id_defs.clone(),
-                    svg_id_defs_raw: self.svg_id_defs_raw.clone(),
+                      shaper: ShapingPipeline::new(),
+                      font_ctx: self.font_ctx.clone(),
+                      image_cache: self.image_cache.clone(),
+                      media_provider: self.media_provider.clone(),
+                      svg_id_defs: self.svg_id_defs.clone(),
+                      svg_id_defs_raw: self.svg_id_defs_raw.clone(),
                     text_shape_cache: Arc::clone(&self.text_shape_cache),
                     trace: self.trace.clone(),
                     scroll_state: self.scroll_state.clone(),
@@ -5818,6 +5833,7 @@ impl Painter {
       shaper: ShapingPipeline::new(),
       font_ctx: self.font_ctx.clone(),
       image_cache: self.image_cache.clone(),
+      media_provider: self.media_provider.clone(),
       svg_id_defs: self.svg_id_defs.clone(),
       svg_id_defs_raw: self.svg_id_defs_raw.clone(),
       text_shape_cache: Arc::clone(&self.text_shape_cache),
@@ -9996,6 +10012,7 @@ impl Painter {
       shaper: ShapingPipeline::new(),
       font_ctx: self.font_ctx.clone(),
       image_cache: self.image_cache.clone(),
+      media_provider: self.media_provider.clone(),
       svg_id_defs: self.svg_id_defs.clone(),
       svg_id_defs_raw: self.svg_id_defs_raw.clone(),
       text_shape_cache: Arc::clone(&self.text_shape_cache),
@@ -19828,6 +19845,7 @@ fn legacy_paint_tree_with_resources_scaled_offset(
   background: Rgba,
   font_ctx: FontContext,
   image_cache: ImageCache,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   scale: f32,
   offset: Point,
   scroll_state: &ScrollState,
@@ -19838,6 +19856,7 @@ fn legacy_paint_tree_with_resources_scaled_offset(
     Painter::with_resources_scaled(width, height, background, font_ctx, image_cache, scale)?
       .with_max_iframe_depth(max_iframe_depth)
       .with_scroll_state(scroll_state.clone())
+      .with_media_provider(media_provider)
       .with_trace(trace);
   record_stage(StageHeartbeat::PaintRasterize);
   painter.paint_with_offset(tree, offset)
@@ -19893,6 +19912,7 @@ pub fn paint_tree_display_list_with_resources_scaled_offset_depth(
     background,
     font_ctx,
     image_cache,
+    None,
     scale,
     offset,
     paint_parallelism,
@@ -19909,6 +19929,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
   background: Rgba,
   font_ctx: FontContext,
   image_cache: ImageCache,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   scale: f32,
   offset: Point,
   paint_parallelism: PaintParallelism,
@@ -19939,6 +19960,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
         .with_svg_id_defs_raw(tree.svg_id_defs_raw.clone())
         .with_appearance_none_form_controls(tree.appearance_none_form_controls.clone())
         .with_scroll_state(scroll_state.clone())
+        .with_media_provider(media_provider.clone())
         .with_device_pixel_ratio(scale)
         .with_parallelism(&paint_parallelism)
         .with_max_iframe_depth(max_iframe_depth)
@@ -19986,6 +20008,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
           background,
           font_ctx,
           image_cache,
+          media_provider.clone(),
           scale,
           offset,
           scroll_state,
@@ -20237,6 +20260,7 @@ pub fn paint_tree_with_resources_scaled_offset_backend(
     background,
     font_ctx,
     image_cache,
+    None,
     scale,
     offset,
     paint_parallelism,
@@ -20253,6 +20277,7 @@ pub(crate) fn paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
   background: Rgba,
   font_ctx: FontContext,
   image_cache: ImageCache,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   scale: f32,
   offset: Point,
   paint_parallelism: PaintParallelism,
@@ -20268,23 +20293,27 @@ pub(crate) fn paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
       background,
       font_ctx,
       image_cache,
+      media_provider,
       scale,
       offset,
       scroll_state,
       max_iframe_depth,
       TraceHandle::disabled(),
     ),
-    PaintBackend::DisplayList => paint_tree_display_list_with_resources_scaled_offset(
+    PaintBackend::DisplayList => paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
       tree,
       width,
       height,
       background,
       font_ctx,
       image_cache,
+      media_provider,
       scale,
       offset,
       paint_parallelism,
       scroll_state,
+      max_iframe_depth,
+      TraceHandle::disabled(),
     ),
   }
 }
@@ -20369,6 +20398,7 @@ pub(crate) fn paint_tree_with_resources_scaled_offset_with_trace(
   _paint_parallelism: PaintParallelism,
   scroll_state: &ScrollState,
   max_iframe_depth: usize,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   trace: TraceHandle,
 ) -> Result<Pixmap> {
   legacy_paint_tree_with_resources_scaled_offset(
@@ -20378,6 +20408,7 @@ pub(crate) fn paint_tree_with_resources_scaled_offset_with_trace(
     background,
     font_ctx,
     image_cache,
+    media_provider,
     scale,
     offset,
     scroll_state,

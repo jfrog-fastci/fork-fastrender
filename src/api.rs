@@ -2372,7 +2372,7 @@ pub struct PreparedDocument {
 }
 
 /// Painting options for a prepared document.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PreparedPaintOptions {
   /// Scroll offsets to apply before painting. When omitted, the scroll state
   /// captured during preparation is used. Element offsets in the state shift
@@ -2388,6 +2388,22 @@ pub struct PreparedPaintOptions {
   /// `animation-fill-mode: forwards|both` animations sample their end values; other time-based
   /// animations fall back to their underlying style).
   pub animation_time: Option<f32>,
+  /// Optional media provider used to supply decoded frames (e.g. `<video>`) during paint.
+  ///
+  /// When omitted, media elements fall back to posters/placeholders.
+  pub media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
+}
+
+impl std::fmt::Debug for PreparedPaintOptions {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("PreparedPaintOptions")
+      .field("scroll", &self.scroll)
+      .field("viewport", &self.viewport)
+      .field("background", &self.background)
+      .field("animation_time", &self.animation_time)
+      .field("media_provider", &self.media_provider.as_ref().map(|_| "<MediaFrameProvider>"))
+      .finish()
+  }
 }
 
 impl PreparedPaintOptions {
@@ -2429,6 +2445,15 @@ impl PreparedPaintOptions {
     });
     self
   }
+
+  /// Provides a media provider used to supply decoded media frames during paint.
+  pub fn with_media_provider(
+    mut self,
+    provider: Arc<dyn crate::media::MediaFrameProvider>,
+  ) -> Self {
+    self.media_provider = Some(provider);
+    self
+  }
 }
 
 impl Default for PreparedPaintOptions {
@@ -2438,6 +2463,7 @@ impl Default for PreparedPaintOptions {
       viewport: None,
       background: None,
       animation_time: None,
+      media_provider: None,
     }
   }
 }
@@ -2531,6 +2557,7 @@ impl PreparedDocument {
         options.background.unwrap_or(self.background_color),
         &self.font_context,
         &self.image_cache,
+        options.media_provider.clone(),
         paint_scale,
         animation_time,
         self.paint_parallelism,
@@ -5891,6 +5918,7 @@ fn paint_fragment_tree_with_state(
   background: Rgba,
   font_context: &FontContext,
   image_cache: &ImageCache,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   device_pixel_ratio: f32,
   animation_time: Option<f32>,
   paint_parallelism: PaintParallelism,
@@ -6216,6 +6244,7 @@ fn paint_fragment_tree_with_state(
     background,
     font_context.clone(),
     paint_image_cache,
+    media_provider,
     device_pixel_ratio,
     offset,
     paint_parallelism,
@@ -7973,6 +8002,7 @@ impl FastRender {
           offset,
           paint_parallelism,
           &scroll_state_for_paint,
+          None,
           trace,
         )?
       };
@@ -14169,6 +14199,17 @@ impl FastRender {
   /// # }
   /// ```
   pub fn paint(&self, fragment_tree: &FragmentTree, width: u32, height: u32) -> Result<Pixmap> {
+    self.paint_with_media_provider(fragment_tree, width, height, None)
+  }
+
+  /// Paints a fragment tree to a pixmap while supplying an optional media provider.
+  pub fn paint_with_media_provider(
+    &self,
+    fragment_tree: &FragmentTree,
+    width: u32,
+    height: u32,
+    media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
+  ) -> Result<Pixmap> {
     runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
       let fit_canvas = self.fit_canvas_to_content || Self::fit_canvas_env_enabled();
       let (target_width, target_height) =
@@ -14206,6 +14247,7 @@ impl FastRender {
           self.paint_parallelism,
           &scroll_state,
           self.max_iframe_depth,
+          media_provider.clone(),
           TraceHandle::disabled(),
         ),
         PaintBackend::DisplayList => {
@@ -14216,6 +14258,7 @@ impl FastRender {
             self.background_color,
             self.font_context.clone(),
             image_cache,
+            media_provider.clone(),
             self.device_pixel_ratio,
             Point::ZERO,
             self.paint_parallelism,
@@ -14235,6 +14278,19 @@ impl FastRender {
     width: u32,
     height: u32,
     offset: Point,
+  ) -> Result<Pixmap> {
+    self.paint_with_offset_and_media_provider(fragment_tree, width, height, offset, None)
+  }
+
+  /// Paints a fragment tree with an additional translation applied to all fragments while supplying
+  /// an optional media provider.
+  pub fn paint_with_offset_and_media_provider(
+    &self,
+    fragment_tree: &FragmentTree,
+    width: u32,
+    height: u32,
+    offset: Point,
+    media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   ) -> Result<Pixmap> {
     runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
       let fit_canvas = self.fit_canvas_to_content || Self::fit_canvas_env_enabled();
@@ -14273,6 +14329,7 @@ impl FastRender {
           self.paint_parallelism,
           &scroll_state,
           self.max_iframe_depth,
+          media_provider.clone(),
           TraceHandle::disabled(),
         ),
         PaintBackend::DisplayList => {
@@ -14283,6 +14340,7 @@ impl FastRender {
             self.background_color,
             self.font_context.clone(),
             image_cache,
+            media_provider.clone(),
             self.device_pixel_ratio,
             offset,
             self.paint_parallelism,
@@ -14303,6 +14361,7 @@ impl FastRender {
     offset: Point,
     paint_parallelism: PaintParallelism,
     scroll_state: &ScrollState,
+    media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
     trace: &TraceHandle,
   ) -> Result<Pixmap> {
     let backend = paint_backend_from_env();
@@ -14324,6 +14383,7 @@ impl FastRender {
         paint_parallelism,
         scroll_state,
         self.max_iframe_depth,
+        media_provider.clone(),
         trace.clone(),
       ),
       PaintBackend::DisplayList => {
@@ -14334,6 +14394,7 @@ impl FastRender {
           self.background_color,
           self.font_context.clone(),
           self.image_cache.clone(),
+          media_provider.clone(),
           self.device_pixel_ratio,
           offset,
           paint_parallelism,
