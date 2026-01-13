@@ -40,6 +40,12 @@ const ENV_BROWSER_LOG_SURFACE_CONFIGURE: &str = "FASTR_BROWSER_LOG_SURFACE_CONFI
 #[cfg(feature = "browser_ui")]
 const ENV_BROWSER_TRACE_OUT: &str = "FASTR_BROWSER_TRACE_OUT";
 
+#[cfg(feature = "browser_ui")]
+const ENV_BROWSER_MAX_PENDING_FRAME_BYTES: &str = "FASTR_BROWSER_MAX_PENDING_FRAME_BYTES";
+
+#[cfg(feature = "browser_ui")]
+const DEFAULT_BROWSER_MAX_PENDING_FRAME_BYTES: u64 = 512 * 1024 * 1024;
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn parse_env_bool(raw: Option<&str>) -> bool {
   let Some(raw) = raw else {
@@ -1574,6 +1580,27 @@ fn parse_u64_mb(raw: &str) -> Result<u64, String> {
 #[cfg(feature = "browser_ui")]
 fn parse_u64_ms(raw: &str) -> Result<u64, String> {
   parse_u64_mb(raw)
+}
+
+#[cfg(feature = "browser_ui")]
+fn max_pending_frame_bytes_from_env() -> u64 {
+  let raw = match std::env::var(ENV_BROWSER_MAX_PENDING_FRAME_BYTES) {
+    Ok(raw) => raw,
+    Err(_) => return DEFAULT_BROWSER_MAX_PENDING_FRAME_BYTES,
+  };
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return DEFAULT_BROWSER_MAX_PENDING_FRAME_BYTES;
+  }
+  match trimmed.replace('_', "").parse::<u64>() {
+    Ok(value) => value,
+    Err(_) => {
+      eprintln!(
+        "{ENV_BROWSER_MAX_PENDING_FRAME_BYTES}: invalid value {trimmed:?}; expected an integer byte count"
+      );
+      DEFAULT_BROWSER_MAX_PENDING_FRAME_BYTES
+    }
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -4765,6 +4792,8 @@ struct App {
   /// before the windowed UI draws again. We store at most one pending frame per tab and only upload
   /// for the active tab.
   pending_frame_uploads: fastrender::ui::FrameUploadCoalescer,
+  /// Upper bound (in bytes) on `pending_frame_uploads` pixmaps that may be retained in RAM.
+  max_pending_frame_bytes: u64,
   /// Timestamp of the most recent page pixmap upload to the GPU.
   ///
   /// Used to rate-limit `queue.write_texture` during interactive resize; when we skip an upload we
@@ -5419,6 +5448,7 @@ impl App {
       tab_cancel: std::collections::HashMap::new(),
       pending_scroll_restores: std::collections::HashMap::new(),
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
+      max_pending_frame_bytes: max_pending_frame_bytes_from_env(),
       last_page_upload_at: None,
       next_page_upload_redraw: None,
       content_rect_points: None,
@@ -7004,6 +7034,10 @@ impl App {
         // Coalesce uploads until the next `render_frame`: uploading each intermediate pixmap is
         // expensive.
         self.pending_frame_uploads.push(frame_ready);
+        self.pending_frame_uploads.evict_to_budget(
+          self.max_pending_frame_bytes,
+          self.browser_state.active_tab_id(),
+        );
       }
     }
 
