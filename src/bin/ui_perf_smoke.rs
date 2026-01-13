@@ -1044,8 +1044,10 @@ fn run_resize_fixture(
     return summary;
   }
 
-  let small = DEFAULT_VIEWPORT_CSS;
-  let large = (1_000, 700);
+  // Pick widths that force a different number of columns in the layout-stress fixture's
+  // `repeat(auto-fit, minmax(240px, 1fr))` grid so resize latency reflects meaningful reflow.
+  let wide = DEFAULT_VIEWPORT_CSS;
+  let narrow = (360, DEFAULT_VIEWPORT_CSS.1);
   let warmup = RESIZE_WARMUP + run_config.warmup;
   let samples = run_config.iterations.unwrap_or(RESIZE_SAMPLES);
   let mut step = 0usize;
@@ -1054,7 +1056,7 @@ fn run_resize_fixture(
     let idx = step;
     step += 1;
 
-    let viewport = if idx % 2 == 0 { large } else { small };
+    let viewport = if idx % 2 == 0 { wide } else { narrow };
     let start = Instant::now();
     tx.send(UiToWorker::ViewportChanged {
       tab_id,
@@ -1085,7 +1087,7 @@ fn run_resize_fixture(
   };
 
   if summary.status == ScenarioStatus::Ok {
-    summary.viewport_css = small;
+    summary.viewport_css = narrow;
     summary.samples_ms = measured.clone();
     summary.metrics_ms = latency_metrics("resize_latency", &measured);
   }
