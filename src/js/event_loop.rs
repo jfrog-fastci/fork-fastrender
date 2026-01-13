@@ -5128,6 +5128,21 @@ mod tests {
   }
 
   #[test]
+  fn maybe_compact_animation_frame_queue_clears_queue_when_no_live_callbacks() {
+    let mut event_loop = EventLoop::<()>::new();
+    // Simulate a stale queue entry (e.g. callbacks map cleared while IDs remain queued).
+    event_loop.animation_frame_queue.push_back(1);
+    assert!(event_loop.animation_frame_callbacks.is_empty());
+    assert_eq!(event_loop.animation_frame_queue.len(), 1);
+
+    event_loop.maybe_compact_animation_frame_queue();
+    assert!(
+      event_loop.animation_frame_queue.is_empty(),
+      "expected queue to be cleared when no callbacks are live"
+    );
+  }
+
+  #[test]
   fn request_animation_frame_compacts_stale_queue_entries_from_canceled_handles() -> Result<()> {
     #[derive(Default)]
     struct Host;
