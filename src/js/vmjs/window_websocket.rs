@@ -6,11 +6,11 @@
 //! Design notes:
 //! - Connection I/O is performed on a dedicated thread per WebSocket.
 //! - Network callbacks are delivered by queueing `EventLoop` tasks via
-//!   [`crate::js::event_loop::ExternalTaskQueueHandle`].
+//!   [`crate::js::ExternalTaskQueueHandle`].
 //! - The JS-visible object is a non-DOM `EventTarget` (inherits from `EventTarget.prototype`) and
 //!   dispatches `open`/`message`/`error`/`close` events via `dispatchEvent`.
 
-use crate::js::event_loop::{ExternalTaskQueueHandle, TaskSource};
+use crate::js::{ExternalTaskQueueHandle, TaskSource};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
 use crate::js::window_realm::{

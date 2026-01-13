@@ -2280,7 +2280,7 @@ struct WindowHostStorageEventListener {
   window_id: u64,
   local_storage_area_ptr: usize,
   session_storage_area_ptr: usize,
-  task_queue: crate::js::event_loop::ExternalTaskQueueHandle<WindowHostState>,
+  task_queue: crate::js::ExternalTaskQueueHandle<WindowHostState>,
 }
 
 static WINDOW_HOST_STORAGE_EVENT_LISTENERS: OnceLock<Mutex<Vec<WindowHostStorageEventListener>>> =
@@ -2311,7 +2311,7 @@ pub(crate) fn register_window_host_storage_event_listener(
   window_id: u64,
   local_storage_area_ptr: usize,
   session_storage_area_ptr: usize,
-  task_queue: crate::js::event_loop::ExternalTaskQueueHandle<WindowHostState>,
+  task_queue: crate::js::ExternalTaskQueueHandle<WindowHostState>,
 ) -> WindowHostStorageEventListenerGuard {
   window_host_storage_event_listeners()
     .lock()
@@ -2341,7 +2341,7 @@ fn queue_storage_event_to_other_window_hosts(
   storage_area_ptr: usize,
   event: QueuedStorageEvent,
 ) {
-  let queues: Vec<crate::js::event_loop::ExternalTaskQueueHandle<WindowHostState>> = {
+  let queues: Vec<crate::js::ExternalTaskQueueHandle<WindowHostState>> = {
     let lock = window_host_storage_event_listeners().lock();
     lock
       .iter()
