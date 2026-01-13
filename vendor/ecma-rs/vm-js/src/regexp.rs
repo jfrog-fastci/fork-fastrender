@@ -181,6 +181,403 @@ impl<'a> CompileCtx<'a> {
   }
 }
 
+// --- RegExp `/v` (UnicodeSets mode) data model ---
+//
+// ECMAScript RegExp UnicodeSets mode extends character classes to support:
+// - set operations (union / intersection / subtraction), and
+// - string elements (e.g. `\q{...}`).
+//
+// The main engine currently operates over UTF-16 code units, so the “character” universe here is
+// `u16` (0..=0xFFFF). This data model is intended for RegExp compilation and must therefore charge
+// all dynamic allocations against `CompileCtx` to respect heap limits.
+
+const CHARSET_WORDS: usize = 0x10000 / 64;
+
+/// A set of UTF-16 code units (0..=0xFFFF).
+#[derive(Clone, PartialEq, Eq)]
+struct CharSet {
+  bits: [u64; CHARSET_WORDS],
+}
+
+impl Default for CharSet {
+  fn default() -> Self {
+    Self {
+      bits: [0u64; CHARSET_WORDS],
+    }
+  }
+}
+
+impl CharSet {
+  #[inline]
+  fn is_empty(&self) -> bool {
+    self.bits.iter().all(|&w| w == 0)
+  }
+
+  #[inline]
+  fn contains(&self, u: u16) -> bool {
+    let idx = (u as usize) / 64;
+    let bit = (u as usize) % 64;
+    (self.bits[idx] & (1u64 << bit)) != 0
+  }
+
+  #[inline]
+  fn insert(&mut self, u: u16) {
+    let idx = (u as usize) / 64;
+    let bit = (u as usize) % 64;
+    self.bits[idx] |= 1u64 << bit;
+  }
+
+  #[inline]
+  fn union(&self, other: &Self) -> Self {
+    let mut out = Self::default();
+    for i in 0..CHARSET_WORDS {
+      out.bits[i] = self.bits[i] | other.bits[i];
+    }
+    out
+  }
+
+  #[inline]
+  fn intersection(&self, other: &Self) -> Self {
+    let mut out = Self::default();
+    for i in 0..CHARSET_WORDS {
+      out.bits[i] = self.bits[i] & other.bits[i];
+    }
+    out
+  }
+
+  #[inline]
+  fn difference(&self, other: &Self) -> Self {
+    let mut out = Self::default();
+    for i in 0..CHARSET_WORDS {
+      out.bits[i] = self.bits[i] & !other.bits[i];
+    }
+    out
+  }
+}
+
+/// A RegExp UnicodeSets-mode set containing UTF-16 code units and string elements.
+///
+/// Invariant: `strings` contains **no** length-1 strings (they are canonicalized into `chars`).
+/// Invariant: `strings` are stored in **descending length** order, stable for equal lengths.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct UnicodeSet {
+  chars: CharSet,
+  strings: Vec<Vec<u16>>,
+}
+
+impl UnicodeSet {
+  #[inline]
+  fn new() -> Self {
+    Self::default()
+  }
+
+  #[inline]
+  fn is_empty(&self) -> bool {
+    self.chars.is_empty() && self.strings.is_empty()
+  }
+
+  #[inline]
+  fn insert_char(&mut self, u: u16) {
+    self.chars.insert(u);
+  }
+
+  /// Adds a string element to this set, canonicalizing length-1 strings into `chars`.
+  fn insert_string(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    units: &[u16],
+  ) -> Result<(), RegExpCompileError> {
+    match units.len() {
+      0 => self.insert_string_non1(ctx, units),
+      1 => {
+        self.insert_char(units[0]);
+        Ok(())
+      }
+      _ => self.insert_string_non1(ctx, units),
+    }
+  }
+
+  fn insert_string_non1(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    units: &[u16],
+  ) -> Result<(), RegExpCompileError> {
+    debug_assert_ne!(units.len(), 1, "length-1 strings must be canonicalized");
+
+    let len = units.len();
+
+    // Find the insertion point so `strings` stays sorted by descending length (stable for equal
+    // lengths). While scanning the equal-length group we can also deduplicate.
+    let mut insert_at = 0usize;
+    while insert_at < self.strings.len() {
+      let cur_len = self.strings[insert_at].len();
+      if cur_len > len {
+        insert_at += 1;
+        continue;
+      }
+      if cur_len < len {
+        break;
+      }
+      // Equal-length group: scan until end, checking for duplicates.
+      let mut i = insert_at;
+      while i < self.strings.len() && self.strings[i].len() == len {
+        if self.strings[i].as_slice() == units {
+          return Ok(());
+        }
+        i += 1;
+      }
+      insert_at = i;
+      break;
+    }
+
+    let mut owned: Vec<u16> = Vec::new();
+    ctx.reserve_vec_to_len(&mut owned, units.len())?;
+    owned.extend_from_slice(units);
+
+    let required_len = self
+      .strings
+      .len()
+      .checked_add(1)
+      .ok_or(RegExpCompileError::OutOfMemory)?;
+    ctx.reserve_vec_to_len(&mut self.strings, required_len)?;
+    self.strings.insert(insert_at, owned);
+    Ok(())
+  }
+
+  /// Mirrors the intent of spec `MayContainStrings`:
+  /// `true` if the set contains the empty string or any string element longer than 1 code unit.
+  #[inline]
+  fn may_contain_strings(&self) -> bool {
+    self
+      .strings
+      .iter()
+      .any(|s| s.is_empty() || s.len() > 1)
+  }
+
+  /// Iterates string elements in descending length order (stable for equal lengths).
+  #[inline]
+  fn iter_strings_desc_len(&self) -> impl Iterator<Item = &[u16]> {
+    // `strings` is stored in the required order as an invariant.
+    self.strings.iter().map(|s| s.as_slice())
+  }
+
+  #[inline]
+  fn contains_char(&self, u: u16) -> bool {
+    self.chars.contains(u)
+  }
+
+  fn contains_string(&self, units: &[u16]) -> bool {
+    match units.len() {
+      0 => self.strings.iter().any(|s| s.is_empty()),
+      1 => self.contains_char(units[0]),
+      _ => self.strings.iter().any(|s| s.as_slice() == units),
+    }
+  }
+
+  fn union(
+    &self,
+    ctx: &mut CompileCtx<'_>,
+    other: &Self,
+  ) -> Result<Self, RegExpCompileError> {
+    let chars = self.chars.union(&other.chars);
+    let mut out = Self {
+      chars,
+      strings: Vec::new(),
+    };
+
+    let reserve = self
+      .strings
+      .len()
+      .checked_add(other.strings.len())
+      .ok_or(RegExpCompileError::OutOfMemory)?;
+    ctx.reserve_vec_to_len(&mut out.strings, reserve)?;
+
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < self.strings.len() && j < other.strings.len() {
+      let len_a = self.strings[i].len();
+      let len_b = other.strings[j].len();
+      if len_a > len_b {
+        out.push_string_clone(ctx, &self.strings[i])?;
+        i += 1;
+        continue;
+      }
+      if len_a < len_b {
+        out.push_string_clone(ctx, &other.strings[j])?;
+        j += 1;
+        continue;
+      }
+
+      // Equal-length groups: emit all from `self`, then the unique ones from `other`.
+      let len = len_a;
+      let i_start = i;
+      while i < self.strings.len() && self.strings[i].len() == len {
+        i += 1;
+      }
+      let i_end = i;
+
+      let j_start = j;
+      while j < other.strings.len() && other.strings[j].len() == len {
+        j += 1;
+      }
+      let j_end = j;
+
+      for s in &self.strings[i_start..i_end] {
+        out.push_string_clone(ctx, s)?;
+      }
+      for s in &other.strings[j_start..j_end] {
+        if !self.strings[i_start..i_end]
+          .iter()
+          .any(|a| a.as_slice() == s.as_slice())
+        {
+          out.push_string_clone(ctx, s)?;
+        }
+      }
+    }
+
+    while i < self.strings.len() {
+      out.push_string_clone(ctx, &self.strings[i])?;
+      i += 1;
+    }
+    while j < other.strings.len() {
+      out.push_string_clone(ctx, &other.strings[j])?;
+      j += 1;
+    }
+
+    Ok(out)
+  }
+
+  fn intersection(
+    &self,
+    ctx: &mut CompileCtx<'_>,
+    other: &Self,
+  ) -> Result<Self, RegExpCompileError> {
+    let chars = self.chars.intersection(&other.chars);
+    let mut out = Self {
+      chars,
+      strings: Vec::new(),
+    };
+
+    let reserve = self.strings.len().min(other.strings.len());
+    ctx.reserve_vec_to_len(&mut out.strings, reserve)?;
+
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < self.strings.len() && j < other.strings.len() {
+      let len_a = self.strings[i].len();
+      let len_b = other.strings[j].len();
+      if len_a > len_b {
+        i = Self::group_end(&self.strings, i);
+        continue;
+      }
+      if len_a < len_b {
+        j = Self::group_end(&other.strings, j);
+        continue;
+      }
+
+      let i_start = i;
+      i = Self::group_end(&self.strings, i_start);
+      let i_end = i;
+
+      let j_start = j;
+      j = Self::group_end(&other.strings, j_start);
+      let j_end = j;
+
+      for s in &self.strings[i_start..i_end] {
+        if other.strings[j_start..j_end]
+          .iter()
+          .any(|b| b.as_slice() == s.as_slice())
+        {
+          out.push_string_clone(ctx, s)?;
+        }
+      }
+    }
+
+    Ok(out)
+  }
+
+  fn difference(
+    &self,
+    ctx: &mut CompileCtx<'_>,
+    other: &Self,
+  ) -> Result<Self, RegExpCompileError> {
+    let chars = self.chars.difference(&other.chars);
+    let mut out = Self {
+      chars,
+      strings: Vec::new(),
+    };
+    ctx.reserve_vec_to_len(&mut out.strings, self.strings.len())?;
+
+    let mut j = 0usize;
+    let mut i = 0usize;
+    while i < self.strings.len() {
+      let len = self.strings[i].len();
+      let i_start = i;
+      i = Self::group_end(&self.strings, i_start);
+      let i_end = i;
+
+      while j < other.strings.len() && other.strings[j].len() > len {
+        j = Self::group_end(&other.strings, j);
+      }
+
+      let (j_start, j_end) = if j < other.strings.len() && other.strings[j].len() == len {
+        let start = j;
+        let end = Self::group_end(&other.strings, start);
+        (start, end)
+      } else {
+        (0usize, 0usize)
+      };
+
+      for s in &self.strings[i_start..i_end] {
+        let in_other = j_end != 0
+          && other.strings[j_start..j_end]
+            .iter()
+            .any(|b| b.as_slice() == s.as_slice());
+        if !in_other {
+          out.push_string_clone(ctx, s)?;
+        }
+      }
+    }
+
+    Ok(out)
+  }
+
+  /// Computes the complement of this set against an explicit universe.
+  ///
+  /// This is useful for future support of negated UnicodeSets-mode character classes (`[^...]`),
+  /// where the universe is the full UTF-16 code unit range.
+  #[inline]
+  fn complement_in(
+    &self,
+    ctx: &mut CompileCtx<'_>,
+    universe: &Self,
+  ) -> Result<Self, RegExpCompileError> {
+    universe.difference(ctx, self)
+  }
+
+  fn group_end(strings: &[Vec<u16>], start: usize) -> usize {
+    let len = strings[start].len();
+    let mut end = start;
+    while end < strings.len() && strings[end].len() == len {
+      end += 1;
+    }
+    end
+  }
+
+  fn push_string_clone(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    units: &[u16],
+  ) -> Result<(), RegExpCompileError> {
+    debug_assert_ne!(units.len(), 1, "length-1 strings must be canonicalized");
+    let mut owned: Vec<u16> = Vec::new();
+    ctx.reserve_vec_to_len(&mut owned, units.len())?;
+    owned.extend_from_slice(units);
+    ctx.vec_try_push(&mut self.strings, owned)?;
+    Ok(())
+  }
+}
+
 fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
   let size = mem::size_of::<T>();
   if size == 0 {
@@ -2503,5 +2900,129 @@ mod tests {
       }
       other => panic!("expected syntax error, got {other:?}"),
     }
+  }
+}
+
+#[cfg(test)]
+mod unicode_set_tests {
+  use super::*;
+
+  fn test_ctx() -> (Heap, CompileCtx<'static>) {
+    let heap = Heap::new(HeapLimits::new(1024 * 1024 * 1024, 1024 * 1024 * 1024));
+    // Leak the closure so `CompileCtx` can borrow it with a `'static` lifetime in tests.
+    //
+    // Tests are short-lived and this keeps the helper ergonomic.
+    let tick: &'static mut dyn FnMut() -> Result<(), VmError> = Box::leak(Box::new(|| Ok(())));
+    let ctx = CompileCtx::new(&heap, tick);
+    (heap, ctx)
+  }
+
+  #[test]
+  fn unicode_set_canonicalizes_len1_strings_into_chars() {
+    let (_heap, mut ctx) = test_ctx();
+
+    let mut set = UnicodeSet::new();
+    set
+      .insert_string(&mut ctx, &[b'x' as u16])
+      .expect("insert");
+    assert!(set.contains_char(b'x' as u16));
+    assert!(!set.may_contain_strings());
+    assert!(set.iter_strings_desc_len().next().is_none());
+  }
+
+  #[test]
+  fn unicode_set_set_ops_chars_vs_strings() {
+    let (_heap, mut ctx) = test_ctx();
+
+    // Mirrors a common test262-style case:
+    // `_ && \q{0|9\uFE0F\u20E3}` => empty.
+    let mut left = UnicodeSet::new();
+    left.insert_char(b'_' as u16);
+
+    let mut right = UnicodeSet::new();
+    right
+      .insert_string(&mut ctx, &[b'0' as u16])
+      .expect("insert"); // canonicalized into chars
+    right
+      .insert_string(&mut ctx, &[b'9' as u16, 0xFE0F, 0x20E3])
+      .expect("insert");
+
+    let inter = left.intersection(&mut ctx, &right).expect("intersection");
+    assert!(inter.is_empty());
+
+    // Union should contain both the character and the multi-unit string.
+    let uni = left.union(&mut ctx, &right).expect("union");
+    assert!(uni.contains_char(b'_' as u16));
+    assert!(uni.contains_char(b'0' as u16));
+    assert!(uni.contains_string(&[b'9' as u16, 0xFE0F, 0x20E3]));
+
+    // Subtraction should remove only matching element kinds.
+    let diff = uni.difference(&mut ctx, &right).expect("difference");
+    assert!(diff.contains_char(b'_' as u16));
+    assert!(!diff.contains_char(b'0' as u16));
+    assert!(!diff.contains_string(&[b'9' as u16, 0xFE0F, 0x20E3]));
+  }
+
+  #[test]
+  fn unicode_set_string_iteration_is_descending_length_stable() {
+    let (_heap, mut ctx) = test_ctx();
+
+    let mut set = UnicodeSet::new();
+    // len2
+    set
+      .insert_string(&mut ctx, &[b'b' as u16, b'b' as u16])
+      .expect("insert");
+    // len3
+    set
+      .insert_string(&mut ctx, &[b'c' as u16, b'c' as u16, b'c' as u16])
+      .expect("insert");
+    // empty string
+    set.insert_string(&mut ctx, &[]).expect("insert");
+    // len2 (should come after "bb", stable for equal lengths)
+    set
+      .insert_string(&mut ctx, &[b'd' as u16, b'd' as u16])
+      .expect("insert");
+    // len1 (canonicalized, not a string element)
+    set
+      .insert_string(&mut ctx, &[b'a' as u16])
+      .expect("insert");
+
+    let got: Vec<Vec<u16>> = set.iter_strings_desc_len().map(|s| s.to_vec()).collect();
+    let want: Vec<Vec<u16>> = vec![
+      vec![b'c' as u16, b'c' as u16, b'c' as u16],
+      vec![b'b' as u16, b'b' as u16],
+      vec![b'd' as u16, b'd' as u16],
+      vec![],
+    ];
+    assert_eq!(got, want);
+  }
+
+  #[test]
+  fn unicode_set_complement_against_universe() {
+    let (_heap, mut ctx) = test_ctx();
+
+    let mut universe = UnicodeSet::new();
+    universe.insert_char(b'a' as u16);
+    universe.insert_char(b'b' as u16);
+    universe.insert_char(b'c' as u16);
+    universe
+      .insert_string(&mut ctx, &[b'x' as u16, b'y' as u16])
+      .expect("insert");
+    universe.insert_string(&mut ctx, &[]).expect("insert");
+
+    let mut subset = UnicodeSet::new();
+    subset.insert_char(b'b' as u16);
+    subset
+      .insert_string(&mut ctx, &[b'x' as u16, b'y' as u16])
+      .expect("insert");
+
+    let comp = subset
+      .complement_in(&mut ctx, &universe)
+      .expect("complement");
+    assert!(comp.contains_char(b'a' as u16));
+    assert!(!comp.contains_char(b'b' as u16));
+    assert!(comp.contains_char(b'c' as u16));
+    assert!(comp.contains_string(&[]));
+    assert!(!comp.contains_string(&[b'x' as u16, b'y' as u16]));
   }
 }
