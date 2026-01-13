@@ -12,19 +12,14 @@
 /// 4. deliver it to the OS via `accesskit_winit::Adapter`.
 ///
 /// `accesskit_winit::Adapter::update_if_active` will drop updates when assistive technology is not
-/// connected, but callers must still avoid doing the *construction work* in that case.
-///
-/// This module provides a small, unit-testable gate that checks `Adapter::is_active()` before
-/// running expensive builders.
+/// connected. The closure-based API allows callers to keep expensive accessibility builders inside
+/// the `update_if_active` callback so no work happens while AccessKit is inactive.
 
 use accesskit::TreeUpdate;
 
 /// Small abstraction over `accesskit_winit::Adapter` so we can unit test the active/inactive gate
 /// without constructing a real winit window.
 pub trait AccessKitAdapterLike {
-  /// Whether AccessKit is currently active for this window (i.e. assistive tech is connected).
-  fn is_active(&self) -> bool;
-
   /// Deliver an update if AccessKit is active.
   fn update_if_active<F>(&self, update: F)
   where
@@ -32,10 +27,6 @@ pub trait AccessKitAdapterLike {
 }
 
 impl AccessKitAdapterLike for accesskit_winit::Adapter {
-  fn is_active(&self) -> bool {
-    accesskit_winit::Adapter::is_active(self)
-  }
-
   fn update_if_active<F>(&self, update: F)
   where
     F: FnOnce() -> TreeUpdate,
@@ -59,14 +50,8 @@ pub fn update_accesskit_if_active<A, Tree, Bounds, BuildTree, BuildBounds, Build
   BuildBounds: FnOnce(&Tree) -> Bounds,
   BuildUpdate: FnOnce(Tree, Bounds) -> TreeUpdate,
 {
-  // Critical performance gate: do not build any accessibility structures when AccessKit is
-  // inactive (no screen reader / assistive tech connected).
-  if !adapter.is_active() {
-    return;
-  }
-
-  // Keep the expensive work inside the `update_if_active` closure as well. This avoids wasted work
-  // if AccessKit becomes inactive between the `is_active` check and the update call.
+  // Keep the expensive work inside the `update_if_active` closure. The AccessKit adapter will only
+  // invoke this callback when assistive technology is connected.
   adapter.update_if_active(|| {
     let tree = build_tree();
     let bounds = build_bounds(&tree);
@@ -95,10 +80,6 @@ mod tests {
   }
 
   impl AccessKitAdapterLike for StubAdapter {
-    fn is_active(&self) -> bool {
-      self.active
-    }
-
     fn update_if_active<F>(&self, update: F)
     where
       F: FnOnce() -> TreeUpdate,

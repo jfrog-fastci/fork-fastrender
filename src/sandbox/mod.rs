@@ -501,6 +501,7 @@ pub fn linux_set_parent_death_signal() -> io::Result<()> {
     Ok(())
   }
 }
+
 /// Apply the renderer sandbox for the current process.
 ///
 /// Call this during renderer startup, before spawning any thread pools. On Linux, the sandbox is

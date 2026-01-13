@@ -11,6 +11,7 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::accessibility::AccessibilityNode;
+use crate::Transform2D;
 
 use accesskit::{Node, NodeBuilder, NodeClassSet, NodeId, Rect, Role, Tree, TreeUpdate};
 use std::num::NonZeroU128;
@@ -18,6 +19,29 @@ use std::num::NonZeroU128;
 fn node_id_from_u128(raw: u128) -> NodeId {
   // AccessKit requires non-zero node IDs.
   NodeId(NonZeroU128::new(raw).expect("node id must be non-zero"))
+}
+
+/// Namespaces used when composing multiple independently generated subtrees into a single AccessKit
+/// tree.
+///
+/// FastRender's browser UI has two primary regions:
+/// - Chrome (toolbar/tab strip/etc.)
+/// - Page content (the rendered document)
+///
+/// These subtrees are generated separately, so we encode a namespace discriminator into the high
+/// 64-bits of each AccessKit `NodeId` to guarantee there are no collisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+enum NodeIdNamespace {
+  /// Synthetic nodes owned by the compositor (window root, region wrappers, ...).
+  Compositor = 0,
+  Chrome = 1,
+  Content = 2,
+}
+
+fn node_id_namespaced(namespace: NodeIdNamespace, local: u64) -> NodeId {
+  let raw = ((namespace as u128) << 64) | (local as u128);
+  node_id_from_u128(raw)
 }
 
 fn normalize_optional_name(raw: Option<&str>) -> Option<String> {
@@ -118,6 +142,103 @@ fn build_subtree_nodes(
   out.push((node_id, builder.build(classes)));
 }
 
+fn build_subtree_nodes_namespaced(
+  node: &AccessibilityNode,
+  node_id: NodeId,
+  namespace: NodeIdNamespace,
+  default_bounds: Rect,
+  classes: &mut NodeClassSet,
+  next_local: &mut u64,
+  out: &mut Vec<(NodeId, Node)>,
+) -> Option<NodeId> {
+  let mut child_ids: Vec<NodeId> = Vec::with_capacity(node.children.len());
+  let mut focus = node.states.focused.then_some(node_id);
+
+  for child in &node.children {
+    let id = node_id_namespaced(namespace, *next_local);
+    *next_local = next_local.saturating_add(1);
+    child_ids.push(id);
+
+    let child_focus = build_subtree_nodes_namespaced(
+      child,
+      id,
+      namespace,
+      default_bounds,
+      classes,
+      next_local,
+      out,
+    );
+    if focus.is_none() {
+      focus = child_focus;
+    }
+  }
+
+  let role = role_from_fastrender(&node.role);
+  let mut builder = NodeBuilder::new(role);
+
+  if let Some(name) = normalize_optional_name(node.name.as_deref()) {
+    builder.set_name(name);
+  }
+
+  if let Some(role_description) = normalize_optional_name(node.role_description.as_deref()) {
+    builder.set_role_description(role_description);
+  }
+
+  if let Some(desc) = normalize_optional_name(node.description.as_deref()) {
+    builder.set_description(desc);
+  }
+
+  // For text inputs, preserve empty-string values (screen readers expect to query current value even
+  // when empty). The JSON accessibility tree omits empty `value`s, so treat `None` as empty for
+  // editable controls.
+  if matches!(node.role.as_str(), "textbox" | "searchbox" | "combobox") {
+    builder.set_value(node.value.clone().unwrap_or_default());
+  } else if let Some(value) = normalize_optional_name(node.value.as_deref()) {
+    builder.set_value(value);
+  }
+
+  // We currently do not have per-node bounds available in the exported `AccessibilityNode` tree.
+  // Provide a conservative default so screen readers still have something reasonable to anchor to.
+  builder.set_bounds(default_bounds);
+  builder.set_children(child_ids);
+
+  out.push((node_id, builder.build(classes)));
+  focus
+}
+
+fn build_forest_namespaced(
+  roots: &[AccessibilityNode],
+  namespace: NodeIdNamespace,
+  default_bounds: Rect,
+  classes: &mut NodeClassSet,
+  next_local: &mut u64,
+  out: &mut Vec<(NodeId, Node)>,
+) -> (Vec<NodeId>, Option<NodeId>) {
+  let mut ids: Vec<NodeId> = Vec::with_capacity(roots.len());
+  let mut focus: Option<NodeId> = None;
+
+  for root in roots {
+    let id = node_id_namespaced(namespace, *next_local);
+    *next_local = next_local.saturating_add(1);
+    ids.push(id);
+
+    let subtree_focus = build_subtree_nodes_namespaced(
+      root,
+      id,
+      namespace,
+      default_bounds,
+      classes,
+      next_local,
+      out,
+    );
+    if focus.is_none() {
+      focus = subtree_focus;
+    }
+  }
+
+  (ids, focus)
+}
+
 /// Build an AccessKit [`TreeUpdate`] for a FastRender document.
 ///
 /// The returned tree has a synthetic `Role::Window` root node that contains the FastRender document
@@ -165,9 +286,97 @@ pub fn build_accesskit_tree_update(
   }
 }
 
+/// Build a composited AccessKit [`TreeUpdate`] for a browser window.
+///
+/// The returned tree has a synthetic `Role::Window` root node whose children are:
+/// - a chrome region wrapper (`Role::Group`)
+/// - a content/document region wrapper (`Role::Document`)
+///
+/// The chrome/content subtrees are assigned distinct `NodeIdNamespace`s so their node IDs can never
+/// collide when merged.
+///
+/// `*_bounds_transform` are reserved for the future when FastRender exports per-node bounds; they
+/// will be used to map subtree-local bounds into window coordinates.
+#[allow(clippy::needless_pass_by_value)]
+pub fn build_window_tree_update(
+  chrome_a11y_root: &AccessibilityNode,
+  chrome_bounds_transform: Transform2D,
+  content_a11y_root: &AccessibilityNode,
+  content_bounds_transform: Transform2D,
+  window_title: Option<&str>,
+  window_bounds: Rect,
+) -> TreeUpdate {
+  let _ = chrome_bounds_transform;
+  let _ = content_bounds_transform;
+
+  // Keep the top-level compositor IDs stable so the AccessKit adapter sees a consistent tree.
+  let window_id = node_id_namespaced(NodeIdNamespace::Compositor, 1);
+  let chrome_region_id = node_id_namespaced(NodeIdNamespace::Compositor, 2);
+  let content_region_id = node_id_namespaced(NodeIdNamespace::Compositor, 3);
+
+  let mut nodes: Vec<(NodeId, Node)> = Vec::new();
+  let mut classes = NodeClassSet::new();
+
+  let mut chrome_next = 1u64;
+  let (chrome_children, chrome_focus) = build_forest_namespaced(
+    chrome_a11y_root.children.as_slice(),
+    NodeIdNamespace::Chrome,
+    window_bounds,
+    &mut classes,
+    &mut chrome_next,
+    &mut nodes,
+  );
+
+  let mut content_next = 1u64;
+  let (content_children, content_focus) = build_forest_namespaced(
+    content_a11y_root.children.as_slice(),
+    NodeIdNamespace::Content,
+    window_bounds,
+    &mut classes,
+    &mut content_next,
+    &mut nodes,
+  );
+
+  // Prefer chrome focus if both subtrees report focus (chrome is "active" whenever the user is
+  // interacting with browser UI controls).
+  let focus = chrome_focus.or(content_focus);
+
+  // Chrome wrapper.
+  let mut chrome_builder = NodeBuilder::new(Role::Group);
+  chrome_builder.set_bounds(window_bounds);
+  chrome_builder.set_children(chrome_children);
+  nodes.push((chrome_region_id, chrome_builder.build(&mut classes)));
+
+  // Content wrapper (Document). Preserve the document title from the subtree root when available.
+  let mut content_builder = NodeBuilder::new(Role::Document);
+  if let Some(name) = normalize_optional_name(content_a11y_root.name.as_deref()) {
+    content_builder.set_name(name);
+  }
+  content_builder.set_bounds(window_bounds);
+  content_builder.set_children(content_children);
+  nodes.push((content_region_id, content_builder.build(&mut classes)));
+
+  // Window root.
+  let mut window_builder = NodeBuilder::new(Role::Window);
+  let window_name =
+    normalize_optional_name(window_title).unwrap_or_else(|| "FastRender".to_string());
+  window_builder.set_name(window_name);
+  window_builder.set_bounds(window_bounds);
+  window_builder.set_children(vec![chrome_region_id, content_region_id]);
+  nodes.push((window_id, window_builder.build(&mut classes)));
+
+  TreeUpdate {
+    nodes,
+    tree: Some(Tree::new(window_id)),
+    focus,
+  }
+}
+
 #[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::*;
+  use crate::{FastRender, FontConfig, RenderOptions};
+  use std::collections::HashSet;
 
   fn find_node<'a>(update: &'a TreeUpdate, id: NodeId) -> &'a Node {
     update
@@ -175,6 +384,37 @@ mod tests {
       .iter()
       .find_map(|(node_id, node)| (*node_id == id).then_some(node))
       .expect("node must exist in TreeUpdate")
+  }
+
+  fn node_name(node: &Node) -> &str {
+    node.name().unwrap_or("").trim()
+  }
+
+  fn contains_name(update: &TreeUpdate, expected: &str) -> bool {
+    update
+      .nodes
+      .iter()
+      .any(|(_id, node)| node_name(node) == expected)
+  }
+
+  fn clear_focus(node: &mut AccessibilityNode) {
+    node.states.focused = false;
+    for child in &mut node.children {
+      clear_focus(child);
+    }
+  }
+
+  fn set_focus_by_id(node: &mut AccessibilityNode, id: &str) -> bool {
+    if node.id.as_deref() == Some(id) {
+      node.states.focused = true;
+      return true;
+    }
+    for child in &mut node.children {
+      if set_focus_by_id(child, id) {
+        return true;
+      }
+    }
+    false
   }
 
   #[test]
@@ -307,5 +547,143 @@ mod tests {
       text_fields.len()
     );
     assert_eq!(text_fields[0].description(), Some("Helpful hint"));
+  }
+
+  #[test]
+  fn composited_window_tree_contains_both_subtrees_and_unique_ids() {
+    let mut renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build renderer");
+
+    let options = RenderOptions::new().with_viewport(200, 120);
+    let window_bounds = Rect {
+      x0: 0.0,
+      y0: 0.0,
+      x1: 200.0,
+      y1: 120.0,
+    };
+
+    let chrome_html = r#"<!doctype html>
+      <html>
+        <body>
+          <button id="chrome-btn">Chrome</button>
+        </body>
+      </html>"#;
+
+    let content_html = r#"<!doctype html>
+      <html>
+        <body>
+          <button id="content-btn">Content</button>
+        </body>
+      </html>"#;
+
+    let chrome = renderer
+      .accessibility_tree_html(chrome_html, options.clone())
+      .expect("chrome a11y tree");
+    let content = renderer
+      .accessibility_tree_html(content_html, options)
+      .expect("content a11y tree");
+
+    let update = build_window_tree_update(
+      &chrome,
+      Transform2D::IDENTITY,
+      &content,
+      Transform2D::translate(0.0, 40.0),
+      Some("Window title"),
+      window_bounds,
+    );
+
+    assert!(
+      update.tree.is_some(),
+      "expected TreeUpdate.tree to be Some(..)"
+    );
+    assert!(contains_name(&update, "Chrome"));
+    assert!(contains_name(&update, "Content"));
+
+    let mut ids: HashSet<u128> = HashSet::new();
+    for (id, _node) in &update.nodes {
+      assert!(
+        ids.insert(id.0.get()),
+        "duplicate NodeId detected: {}",
+        id.0.get()
+      );
+    }
+  }
+
+  #[test]
+  fn composited_window_tree_focus_can_come_from_chrome_or_content() {
+    let mut renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build renderer");
+
+    let options = RenderOptions::new().with_viewport(200, 120);
+    let window_bounds = Rect {
+      x0: 0.0,
+      y0: 0.0,
+      x1: 200.0,
+      y1: 120.0,
+    };
+
+    let chrome_html = r#"<!doctype html>
+      <html>
+        <body>
+          <button id="chrome-btn">Chrome</button>
+        </body>
+      </html>"#;
+    let content_html = r#"<!doctype html>
+      <html>
+        <body>
+          <button id="content-btn">Content</button>
+        </body>
+      </html>"#;
+
+    let chrome = renderer
+      .accessibility_tree_html(chrome_html, options.clone())
+      .expect("chrome a11y tree");
+    let content = renderer
+      .accessibility_tree_html(content_html, options)
+      .expect("content a11y tree");
+
+    // Chrome focus.
+    let mut chrome_focus = chrome.clone();
+    let mut content_focus = content.clone();
+    clear_focus(&mut chrome_focus);
+    clear_focus(&mut content_focus);
+    assert!(set_focus_by_id(&mut chrome_focus, "chrome-btn"));
+
+    let update = build_window_tree_update(
+      &chrome_focus,
+      Transform2D::IDENTITY,
+      &content_focus,
+      Transform2D::IDENTITY,
+      None,
+      window_bounds,
+    );
+    let focus = update.focus.expect("expected focus for chrome-focused tree");
+    let node = find_node(&update, focus);
+    assert_eq!(node_name(node), "Chrome");
+
+    // Content focus.
+    let mut chrome_focus = chrome.clone();
+    let mut content_focus = content.clone();
+    clear_focus(&mut chrome_focus);
+    clear_focus(&mut content_focus);
+    assert!(set_focus_by_id(&mut content_focus, "content-btn"));
+
+    let update = build_window_tree_update(
+      &chrome_focus,
+      Transform2D::IDENTITY,
+      &content_focus,
+      Transform2D::IDENTITY,
+      None,
+      window_bounds,
+    );
+    let focus = update
+      .focus
+      .expect("expected focus for content-focused tree");
+    let node = find_node(&update, focus);
+    assert_eq!(node_name(node), "Content");
   }
 }

@@ -8145,7 +8145,7 @@ mod tests {
     app.chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
       tab_id: tab_a,
       anchor_points: (screen_rect.right() - 1.0, screen_rect.bottom() - 1.0),
-      opener_id: egui::Id::new("tab_context_menu_test_opener"),
+      opener_focus: None,
     });
     app.chrome.tab_context_menu_rect = None;
 
