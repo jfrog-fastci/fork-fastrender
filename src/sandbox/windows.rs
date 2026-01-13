@@ -100,7 +100,7 @@ fn log_sandbox_disabled_once() {
   static LOGGED: OnceLock<()> = OnceLock::new();
   LOGGED.get_or_init(|| {
     eprintln!(
-      "warning: Windows renderer sandbox is DISABLED (debug escape hatch). \
+      "warning: Windows renderer sandbox is DISABLED (debug escape hatch; INSECURE). \
 Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1 or {ENV_WINDOWS_RENDERER_SANDBOX}=off to control this."
     );
   });
