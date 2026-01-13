@@ -59,6 +59,7 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 These are consumed by the experimental desktop browser UI (`browser` binary; see [browser_ui.md](browser_ui.md); run with `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --features browser_ui --bin browser`).
 
 - `FASTR_BROWSER_MEM_LIMIT_MB=<MiB>` – best-effort address-space (virtual memory) limit for the `browser` process.
+  - CLI equivalent: `browser --mem-limit-mb <MiB>`.
   - Set to `0`, empty, or unset to disable.
   - Accepts `_` separators (e.g. `1_024`).
   - On Linux this attempts to apply an `RLIMIT_AS` cap at process start; on other platforms it is currently unsupported.
@@ -86,7 +87,9 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 - `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/bookmarks.json` – override the bookmarks persistence file path (JSON).
 - `FASTR_BROWSER_HISTORY_PATH=/path/to/history.json` – override the history persistence file path (JSON).
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
+  - CLI equivalent: `browser --exit-immediately`.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
+  - CLI equivalent: `browser --headless-smoke`.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON=<json>` – **test-only** hook: override the restored session used by headless smoke mode with an explicit `BrowserSession` JSON value.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_BOOKMARKS_JSON=<json>` – **test-only** hook: override the bookmarks store used by headless smoke mode with an explicit JSON value.
   - This is expected to be the same schema as the bookmarks file on disk (`BookmarkStore`), but legacy bookmark list schemas are still accepted and migrated.
