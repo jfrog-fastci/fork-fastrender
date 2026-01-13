@@ -33,7 +33,7 @@ use super::form_submit::{
   form_submission, form_submission_without_submitter, FormSubmission, FormSubmissionMethod,
 };
 use super::fragment_geometry::content_rect_for_border_rect;
-use super::hit_test::{hit_test_dom, HitTestKind};
+use super::hit_test::{hit_test_dom, HitTestKind, HitTestResult};
 use super::image_maps;
 use super::resolve_url;
 use super::state::{
@@ -5996,9 +5996,12 @@ impl InteractionEngine {
     )
   }
 
-  /// Like [`InteractionEngine::pointer_down`], but allows the UI layer to provide click metadata
-  /// needed for browser-like text selection gestures in `<input>`/`<textarea>`.
-  pub fn pointer_down_with_click_count(
+  /// Like [`InteractionEngine::pointer_down_with_click_count`], but also returns the hit-test
+  /// result used to resolve the pointer-down target.
+  ///
+  /// Returning the hit test allows UI layers to reuse the interaction engine's source-of-truth
+  /// target resolution for tasks like JS event dispatch without performing a second DOM hit test.
+  pub fn pointer_down_with_click_count_and_hit(
     &mut self,
     dom: &mut DomNode,
     box_tree: &BoxTree,
@@ -6008,7 +6011,7 @@ impl InteractionEngine {
     button: PointerButton,
     modifiers: PointerModifiers,
     click_count: u8,
-  ) -> bool {
+  ) -> (bool, Option<HitTestResult>) {
     self.modality = InputModality::Pointer;
 
     self.range_drag = None;
@@ -6083,7 +6086,7 @@ impl InteractionEngine {
               box_id: hit.box_id,
               direction,
             });
-            return dom_changed;
+            return (dom_changed, down_hit);
           }
 
           let (caret, caret_affinity) = caret_index_for_text_control_point(
@@ -6432,7 +6435,38 @@ impl InteractionEngine {
       }
     }
     dom_changed |= prev_doc_selection != self.state.document_selection;
-    dom_changed
+    (dom_changed, down_hit)
+  }
+
+  /// Like [`InteractionEngine::pointer_down`], but allows the UI layer to provide click metadata
+  /// needed for browser-like text selection gestures in `<input>`/`<textarea>`.
+  ///
+  /// This is a convenience wrapper for call sites that don't need access to the hit-test result.
+  /// Use [`InteractionEngine::pointer_down_with_click_count_and_hit`] to reuse the engine's hit
+  /// target without performing an extra `hit_test_dom`.
+  pub fn pointer_down_with_click_count(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    viewport_point: Point,
+    button: PointerButton,
+    modifiers: PointerModifiers,
+    click_count: u8,
+  ) -> bool {
+    self
+      .pointer_down_with_click_count_and_hit(
+        dom,
+        box_tree,
+        fragment_tree,
+        scroll,
+        viewport_point,
+        button,
+        modifiers,
+        click_count,
+      )
+      .0
   }
 
   /// Prepare text-control caret/selection state for a context-menu (right-click) gesture.
@@ -6758,17 +6792,12 @@ impl InteractionEngine {
     // state.
     let _ = self.sync_text_edit_paint_state();
   }
-  /// End active state, and if click qualifies, perform action:
-  /// - link: return Navigate
-  /// - checkbox/radio: toggle/activate
-  /// - text control/textarea: focus
-  /// - dropdown select: return OpenSelectDropdown (selection deferred to UI)
-  /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
-  /// translating it by `scroll.viewport`.
+  /// Like [`InteractionEngine::pointer_up_with_scroll`], but also returns the hit-test result used
+  /// to resolve the pointer-up target.
   ///
-  /// The provided `fragment_tree` must already have element scroll offsets applied (e.g. via
-  /// [`crate::interaction::fragment_tree_with_scroll`]).
-  pub fn pointer_up_with_scroll(
+  /// Returning the hit test allows UI layers to reuse the interaction engine's source-of-truth hit
+  /// target for tasks like JS event dispatch without performing a second DOM hit test.
+  pub fn pointer_up_with_scroll_and_hit(
     &mut self,
     dom: &mut DomNode,
     box_tree: &BoxTree,
@@ -6779,7 +6808,7 @@ impl InteractionEngine {
     modifiers: PointerModifiers,
     document_url: &str,
     base_url: &str,
-  ) -> (bool, InteractionAction) {
+  ) -> (bool, InteractionAction, Option<HitTestResult>) {
     self.last_click_target = None;
     self.last_form_submitter = None;
 
@@ -6919,7 +6948,7 @@ impl InteractionEngine {
           node_id: self.state.focused,
         };
       }
-      return (dom_changed, action);
+      return (dom_changed, action, up_hit);
     }
 
     if let Some(drag_drop) = document_selection_drag_drop {
@@ -6997,7 +7026,7 @@ impl InteractionEngine {
             InteractionAction::None
           };
 
-          return (dom_changed, action);
+          return (dom_changed, action, up_hit);
         }
         None => {
           // Drag candidate ended without activation: fall back to normal click behavior by
@@ -7473,7 +7502,43 @@ impl InteractionEngine {
       };
     }
 
-    (dom_changed, action)
+    (dom_changed, action, up_hit)
+  }
+
+  /// End active state, and if click qualifies, perform action:
+  /// - link: return Navigate
+  /// - checkbox/radio: toggle/activate
+  /// - text control/textarea: focus
+  /// - dropdown select: return OpenSelectDropdown (selection deferred to UI)
+  /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
+  /// translating it by `scroll.viewport`.
+  ///
+  /// The provided `fragment_tree` must already have element scroll offsets applied (e.g. via
+  /// [`crate::interaction::fragment_tree_with_scroll`]).
+  pub fn pointer_up_with_scroll(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    viewport_point: Point,
+    button: PointerButton,
+    modifiers: PointerModifiers,
+    document_url: &str,
+    base_url: &str,
+  ) -> (bool, InteractionAction) {
+    let (changed, action, _hit) = self.pointer_up_with_scroll_and_hit(
+      dom,
+      box_tree,
+      fragment_tree,
+      scroll,
+      viewport_point,
+      button,
+      modifiers,
+      document_url,
+      base_url,
+    );
+    (changed, action)
   }
 
   /// Legacy wrapper for [`InteractionEngine::pointer_up_with_scroll`] that assumes no scrolling.

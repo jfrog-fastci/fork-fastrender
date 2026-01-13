@@ -5,9 +5,45 @@ use crate::style::types::PointerEvents;
 use crate::tree::box_tree::{BoxNode, BoxTree};
 use crate::tree::fragment_tree::FragmentTree;
 use crate::ui::messages::CursorKind;
+#[cfg(feature = "browser_ui")]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::ptr;
 
 use super::image_maps;
+
+// -----------------------------------------------------------------------------
+// Test hooks
+// -----------------------------------------------------------------------------
+
+/// When enabled, `hit_test_dom` increments a global counter on every call.
+///
+/// This is used by browser UI integration tests to assert that input handlers reuse the
+/// interaction engine's hit-test results instead of performing redundant DOM hit-tests.
+#[cfg(feature = "browser_ui")]
+static HIT_TEST_DOM_COUNTING_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "browser_ui")]
+static HIT_TEST_DOM_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Enable or disable `hit_test_dom` call counting (browser UI integration test hook).
+#[cfg(feature = "browser_ui")]
+pub fn set_hit_test_dom_counting_enabled_for_test(enabled: bool) {
+  HIT_TEST_DOM_COUNTING_ENABLED.store(enabled, Ordering::Relaxed);
+  if enabled {
+    HIT_TEST_DOM_CALL_COUNT.store(0, Ordering::Relaxed);
+  }
+}
+
+/// Reset the `hit_test_dom` call count to zero (browser UI integration test hook).
+#[cfg(feature = "browser_ui")]
+pub fn reset_hit_test_dom_call_count_for_test() {
+  HIT_TEST_DOM_CALL_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Return the current `hit_test_dom` call count (browser UI integration test hook).
+#[cfg(feature = "browser_ui")]
+pub fn hit_test_dom_call_count_for_test() -> usize {
+  HIT_TEST_DOM_CALL_COUNT.load(Ordering::Relaxed)
+}
 
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| {
@@ -382,6 +418,11 @@ pub fn hit_test_dom(
   fragment_tree: &FragmentTree,
   point: Point,
 ) -> Option<HitTestResult> {
+  #[cfg(feature = "browser_ui")]
+  if HIT_TEST_DOM_COUNTING_ENABLED.load(Ordering::Relaxed) {
+    HIT_TEST_DOM_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+  }
+
   let box_index = BoxIndex::new(box_tree);
   let dom_index = DomIndex::new(dom);
 

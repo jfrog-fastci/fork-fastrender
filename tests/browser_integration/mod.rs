@@ -150,6 +150,7 @@ mod ui_worker_renderer_reuse;
 mod ui_worker_robustness;
 mod ui_worker_scroll;
 mod ui_worker_scroll_hit_test;
+mod ui_worker_pointer_hit_test_dedup;
 mod ui_worker_shutdown;
 mod ui_worker_disconnect;
 mod ui_worker_stage_listener_scoping;

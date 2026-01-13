@@ -3515,28 +3515,27 @@ impl BrowserRuntime {
           (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
         let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
-        let changed = if matches!(button, PointerButton::Primary | PointerButton::Middle) {
-          engine.pointer_down_with_click_count(
-            dom,
-            box_tree,
-            fragment_tree,
-            scroll,
-            viewport_point,
-            button,
-            modifiers,
-            click_count,
-          )
-        } else {
-          false
-        };
+         let (changed, hit) = if matches!(button, PointerButton::Primary | PointerButton::Middle) {
+           engine.pointer_down_with_click_count_and_hit(
+             dom,
+             box_tree,
+             fragment_tree,
+             scroll,
+             viewport_point,
+             button,
+             modifiers,
+             click_count,
+           )
+         } else {
+           let page_point = viewport_point.translate(scroll.viewport);
+           (false, hit_test_dom(dom, box_tree, fragment_tree, page_point))
+         };
 
-        let page_point = viewport_point.translate(scroll.viewport);
-        let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
-        let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
-        let target_element_id = target_id.and_then(|target_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
+         let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
+         let target_element_id = target_id.and_then(|target_id| {
+           crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+             .and_then(|node| node.get_attribute_ref("id"))
+             .map(|id| id.to_string())
         });
 
         (changed, (changed, target_id, target_element_id))
@@ -3610,7 +3609,12 @@ impl BrowserRuntime {
       let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
       let pointer_buttons = tab.pointer_buttons;
 
-      let (target_id, target_element_id) =
+      let (target_id, target_element_id) = if tab.last_pointer_pos_css == Some(pos_css) {
+        (
+          tab.last_hovered_dom_node_id,
+          tab.last_hovered_dom_element_id.clone(),
+        )
+      } else {
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let scrolled =
             (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
@@ -3629,7 +3633,8 @@ impl BrowserRuntime {
         }) {
           Ok(result) => result,
           Err(_) => (None, None),
-        };
+        }
+      };
 
       if let Some(target_id) = target_id {
         if let Some(js_tab) = tab.js_tab.as_mut() {
@@ -3711,25 +3716,23 @@ impl BrowserRuntime {
         let scrolled = (!scroll_snapshot.elements.is_empty())
           .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
         let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-        let (dom_changed, action) = engine.pointer_up_with_scroll(
-          dom,
-          box_tree,
-          hit_tree,
-          &scroll_snapshot,
-          viewport_point,
-          button,
-          modifiers,
-          &document_url,
-          &base_url,
-        );
+         let (dom_changed, action, up_hit) = engine.pointer_up_with_scroll_and_hit(
+           dom,
+           box_tree,
+           hit_tree,
+           &scroll_snapshot,
+           viewport_point,
+           button,
+           modifiers,
+           &document_url,
+           &base_url,
+         );
 
-        let page_point = viewport_point.translate(scroll_snapshot.viewport);
-        let mouseup_target =
-          hit_test_dom(dom, box_tree, hit_tree, page_point).map(|hit| hit.dom_node_id);
-        let mouseup_target_element_id = mouseup_target.and_then(|target_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
+         let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
+         let mouseup_target_element_id = mouseup_target.and_then(|target_id| {
+           crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+             .and_then(|node| node.get_attribute_ref("id"))
+             .map(|id| id.to_string())
         });
 
         let click_target = engine.take_last_click_target();
@@ -3808,8 +3811,8 @@ impl BrowserRuntime {
             //
             // Only apply focus scrolling when the focused element is the actual hit-test target at
             // the pointer location.
-            let page_point = viewport_point.translate(scroll_snapshot.viewport);
-            crate::interaction::hit_test::hit_test_dom(dom, box_tree, hit_tree, page_point)
+            up_hit
+              .as_ref()
               .is_some_and(|hit| hit.styled_node_id == *node_id || hit.dom_node_id == *node_id)
           }),
           _ => None,
