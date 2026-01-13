@@ -815,3 +815,60 @@ fn compiled_dynamic_import_evaluates_options_even_when_specifier_to_string_throw
   hooks.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn compiled_dynamic_import_does_not_evaluate_options_when_specifier_expr_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      var log = "";
+      function s() { log = log + "s"; throw 1; }
+      function o() { log = log + "o"; return undefined; }
+      try {
+        import(s(), o());
+      } catch (e) {
+        log = log + "c";
+      }
+    "#,
+  )?;
+
+  let mut hooks = TestHostHooks::new();
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  assert_eq!(
+    hooks.pending_count(),
+    0,
+    "host loader should not be invoked when specifier evaluation throws"
+  );
+
+  let log_val = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("log")?);
+    scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?
+  };
+  let Value::String(log_s) = log_val else {
+    return Err(VmError::InvariantViolation(
+      "expected global `log` to be a string",
+    ));
+  };
+  assert_eq!(
+    rt.heap.get_string(log_s)?.to_utf8_lossy(),
+    "sc",
+    "expected options expression not to run when specifier evaluation throws"
+  );
+
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
