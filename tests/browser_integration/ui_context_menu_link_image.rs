@@ -1,0 +1,126 @@
+#![cfg(feature = "browser_ui")]
+
+use super::support;
+use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::spawn_ui_worker;
+use std::time::Duration;
+
+// Link+image hit-testing requires a fully prepared document, so keep a generous timeout to
+// accommodate renderer initialization and layout work on slower CI hosts.
+const TIMEOUT: Duration = Duration::from_secs(20);
+
+fn fixture() -> (support::TempSite, String, String, String) {
+  let site = support::TempSite::new();
+  let index_url = site.write(
+    "index.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; }
+      a { display: block; }
+    </style>
+  </head>
+  <body>
+    <a href="target.html"><img src="img.svg" style="display:block;width:64px;height:64px"></a>
+  </body>
+</html>
+"#,
+  );
+  let _target_url = site.write(
+    "target.html",
+    r#"<!doctype html><html><head><meta charset="utf-8"></head><body>Target</body></html>"#,
+  );
+  let _img_url = site.write(
+    "img.svg",
+    r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>"#,
+  );
+
+  let base = url::Url::parse(&index_url).expect("parse base URL");
+  let expected_link_url = base
+    .join("target.html")
+    .expect("join relative href")
+    .to_string();
+  let expected_image_url = base.join("img.svg").expect("join relative src").to_string();
+
+  (site, index_url, expected_link_url, expected_image_url)
+}
+
+#[test]
+fn context_menu_request_resolves_link_url_and_image_url_for_nested_link_image() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let (_site, index_url, expected_link_url, expected_image_url) = fixture();
+
+  let worker = spawn_ui_worker("fastr-ui-worker-context-menu-link-image").expect("spawn ui worker");
+  let tab_id = TabId(1);
+
+  worker
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (320, 240), 1.0))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      index_url,
+      NavigationReason::TypedUrl,
+    ))
+    .unwrap();
+
+  // Wait for the first paint so the worker has layout artifacts for hit-testing.
+  let frame_msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
+    )
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for initial FrameReady for tab {tab_id:?}"));
+  if let WorkerToUi::NavigationFailed { url, error, .. } = frame_msg {
+    panic!("navigation failed for {url}: {error}");
+  }
+
+  // Request a context menu at a point inside the <img> (which is nested inside the <a>).
+  let pos_css = (10.0, 10.0);
+  worker
+    .ui_tx
+    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .unwrap();
+
+  let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ContextMenu { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for ContextMenu for tab {tab_id:?}"));
+
+  match msg {
+    WorkerToUi::ContextMenu {
+      tab_id: got_tab,
+      pos_css: got_pos,
+      default_prevented,
+      link_url,
+      image_url,
+      ..
+    } => {
+      assert_eq!(got_tab, tab_id);
+      assert_eq!(got_pos, pos_css);
+      assert!(
+        !default_prevented,
+        "expected default context menu not to be suppressed"
+      );
+      assert_eq!(link_url.as_deref(), Some(expected_link_url.as_str()));
+      assert_eq!(image_url.as_deref(), Some(expected_image_url.as_str()));
+      assert!(
+        link_url.is_some() && image_url.is_some(),
+        "expected link_url and image_url to both be populated"
+      );
+    }
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  }
+
+  worker.join().unwrap();
+}
