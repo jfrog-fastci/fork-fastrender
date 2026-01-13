@@ -20,6 +20,7 @@ mod layout;
 mod misc;
 mod progress;
 mod render;
+mod renderer_chrome;
 mod resource;
 mod multiprocess;
 mod sandbox;

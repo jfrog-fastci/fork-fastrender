@@ -322,19 +322,19 @@ mod tests {
   fn chrome_frame_html_renders_omnibox_popup_with_clickable_suggestions() {
     let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
     app.chrome.omnibox.open = true;
-    app.chrome.omnibox.selected = Some(0);
+    app.chrome.omnibox.selected = Some(1);
     app.chrome.omnibox.suggestions = vec![
       OmniboxSuggestion {
         action: OmniboxAction::NavigateToUrl("https://example.com/".to_string()),
-        title: Some("Example".to_string()),
+        title: Some("Example <Title>".to_string()),
         url: Some("https://example.com/".to_string()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
       },
       OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl("https://rust-lang.org/?a=1&b=2".to_string()),
-        title: Some("Rust".to_string()),
-        url: Some("https://rust-lang.org/?a=1&b=2".to_string()),
-        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+        action: OmniboxAction::ActivateTab(TabId(42)),
+        title: Some("Tab".to_string()),
+        url: Some("https://tab.example/".to_string()),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
       },
       OmniboxSuggestion {
         action: OmniboxAction::ActivateTab(TabId(42)),
@@ -370,19 +370,14 @@ mod tests {
 
     let expected_href_1 = format!(
       r#"href="{}""#,
-      crate::ui::ChromeActionUrl::Navigate {
-        url: "https://rust-lang.org/?a=1&b=2".to_string()
+      crate::ui::ChromeActionUrl::ActivateTab {
+        tab_id: TabId(42),
       }
       .to_url_string()
     );
     assert!(
       html.contains(&expected_href_1),
-      "expected second suggestion href, got html: {html}"
-    );
-
-    assert!(
-      html.contains(r#"href="chrome-action:activate-tab?tab=42""#),
-      "expected activate-tab href for open-tab suggestion, got html: {html}"
+      "expected activate-tab suggestion href, got html: {html}"
     );
 
     let expected_search_href = format!(
@@ -396,6 +391,20 @@ mod tests {
       html.contains(&expected_search_href),
       "expected search suggestion href, got html: {html}"
     );
+
+    // Selected row uses the `.selected` class and aria-selected.
+    assert!(
+      html.contains(r#"id="omnibox-suggestion-1""#)
+        && html.contains(r#"aria-selected="true""#)
+        && html.contains(
+          r#"class="omnibox-suggestion omnibox-type-tab omnibox-source-open-tab selected""#
+        ),
+      "expected selected row markup, got html: {html}"
+    );
+
+    // Titles are escaped.
+    assert!(html.contains("Example &lt;Title&gt;"));
+    assert!(!html.contains("Example <Title>"));
 
     // Ensure the HTML remains parseable by BrowserDocument.
     let renderer = FastRender::builder()

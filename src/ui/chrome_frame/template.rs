@@ -189,6 +189,7 @@ pub fn chrome_frame_html(app: &BrowserAppState) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ui::messages::TabId;
   use crate::ui::{OmniboxAction, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::{BrowserDocument, FastRender, FontConfig, RenderOptions};
 
@@ -278,10 +279,10 @@ mod tests {
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
       },
       OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl("https://rust-lang.org/?a=1&b=2".to_string()),
-        title: Some("Rust".to_string()),
-        url: Some("https://rust-lang.org/?a=1&b=2".to_string()),
-        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+        action: OmniboxAction::ActivateTab(TabId(42)),
+        title: Some("Tab".to_string()),
+        url: Some("https://tab.example/".to_string()),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
       },
       OmniboxSuggestion {
         action: OmniboxAction::ActivateTab(crate::ui::TabId(77)),
@@ -317,8 +318,8 @@ mod tests {
 
     let expected_href_1 = format!(
       r#"href="{}""#,
-      crate::ui::ChromeActionUrl::Navigate {
-        url: "https://rust-lang.org/?a=1&b=2".to_string()
+      crate::ui::ChromeActionUrl::ActivateTab {
+        tab_id: TabId(42),
       }
       .to_url_string()
     );
