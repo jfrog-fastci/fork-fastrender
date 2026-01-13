@@ -898,6 +898,11 @@ pub trait VmHostHooks {
         self.0.host_make_job_callback(callback)
       }
 
+      #[allow(deprecated)]
+      fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+        self.0.host_make_job_callback_fallible(callback)
+      }
+
       fn host_call_job_callback(
         &mut self,
         ctx: &mut dyn VmJobContext,
@@ -1084,6 +1089,11 @@ pub trait VmHostHooks {
 
       fn host_make_job_callback(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
         self.0.host_make_job_callback(callback)
+      }
+
+      #[allow(deprecated)]
+      fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+        self.0.host_make_job_callback_fallible(callback)
       }
 
       fn host_call_job_callback(

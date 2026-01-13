@@ -131,6 +131,13 @@ fn job_queue_enqueue_does_not_abort_on_oom() {
 }
 
 #[test]
+fn job_callback_creation_does_not_abort_on_oom() {
+  // Creating JobCallback records (HostMakeJobCallback) must be fallible under allocator OOM and
+  // must never abort the process.
+  run_oom_harness("jobCallback", 0);
+}
+
+#[test]
 fn alloc_string_from_u16_vec_with_spare_capacity_does_not_abort_on_oom() {
   // Converting a UTF-16 buffer with spare capacity into a heap `JsString` should not use infallible
   // reallocations (e.g. `shrink_to_fit` / `into_boxed_slice`) that could abort the process under

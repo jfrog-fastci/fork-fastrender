@@ -57,7 +57,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | globalVarDecl | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions | promiseJob | generatorInstance | register_ecma_function"
+    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | jobCallback | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | globalVarDecl | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions | promiseJob | generatorInstance | register_ecma_function"
   );
   process::exit(2);
 }
@@ -144,6 +144,53 @@ fn main() {
           eprintln!(
             "oom_harness: unexpected error from JobQueue::try_push after {count} jobs: {err:?}"
           );
+          process::exit(1);
+        }
+      }
+    }
+
+    // If we somehow didn't OOM, treat that as success: the key invariant is that we didn't abort.
+    process::exit(0);
+  }
+
+  if scenario == "jobCallback" {
+    // Keep `filler` alive for the duration of the run.
+    let _keep = &filler;
+
+    // Stress the default `VmHostHooks::host_make_job_callback` implementation under an OS
+    // address-space limit. This hook must be fallible: allocator OOM should surface as
+    // `VmError::OutOfMemory` rather than panicking/aborting.
+    struct NoopHost;
+
+    impl vm_js::VmHostHooks for NoopHost {
+      fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
+    }
+
+    let mut host = NoopHost;
+
+    // Create a callback object handle to store in each JobCallback record.
+    let mut heap = vm_js::Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let callback_obj = {
+      let mut scope = heap.scope();
+      match scope.alloc_object() {
+        Ok(o) => o,
+        Err(VmError::OutOfMemory) => process::exit(0),
+        Err(err) => {
+          eprintln!("oom_harness: failed to allocate callback object: {err:?}");
+          process::exit(1);
+        }
+      }
+    };
+
+    // Allocate JobCallback records until we hit allocator OOM. Leak each record to ensure memory is
+    // not reclaimed.
+    const MAX_CALLBACKS: usize = 100_000_000;
+    for i in 0..MAX_CALLBACKS {
+      match host.host_make_job_callback(callback_obj) {
+        Ok(cb) => std::mem::forget(cb),
+        Err(VmError::OutOfMemory) => process::exit(0),
+        Err(err) => {
+          eprintln!("oom_harness: unexpected error after {i} JobCallback allocations: {err:?}");
           process::exit(1);
         }
       }
