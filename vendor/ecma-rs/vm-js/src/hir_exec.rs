@@ -7276,11 +7276,8 @@ impl<'vm> HirEvaluator<'vm> {
     if class_body.kind != hir_js::BodyKind::Class {
       return Err(VmError::InvariantViolation("class expr body is not a class"));
     }
-    let Some(class_meta) = class_body.class.as_ref() else {
+    if class_body.class.is_none() {
       return Err(VmError::InvariantViolation("class body missing class metadata"));
-    };
-    if class_meta.extends.is_some() {
-      return Err(VmError::Unimplemented("class inheritance"));
     }
 
     let outer = self.env.lexical_env();
@@ -7316,11 +7313,32 @@ impl<'vm> HirEvaluator<'vm> {
        let hir = self.script.hir.clone();
 
        let Some(class_meta) = class_body.class.as_ref() else {
-         return Err(VmError::InvariantViolation("class body missing class metadata"));
-       };
-       if class_meta.extends.is_some() {
-         return Err(VmError::Unimplemented("class inheritance"));
-       }
+          return Err(VmError::InvariantViolation("class body missing class metadata"));
+        };
+
+        // Evaluate `extends` (class heritage), if present.
+        //
+        // - `undefined` => no `extends` (base class).
+        // - `null` => `extends null`.
+        // - object => superclass constructor.
+        let super_value = match class_meta.extends {
+          None => Value::Undefined,
+          Some(expr_id) => {
+            let v = self.eval_expr(scope, class_body, expr_id)?;
+            match v {
+              Value::Null => Value::Null,
+              Value::Object(_) => {
+                if !scope.heap().is_constructor(v)? {
+                  return Err(VmError::TypeError("Class extends value is not a constructor"));
+                }
+                v
+              }
+              _ => {
+                return Err(VmError::TypeError("Class extends value is not a constructor"));
+              }
+            }
+          }
+        };
 
       let class_env = self.env.lexical_env();
 
@@ -7418,7 +7436,14 @@ impl<'vm> HirEvaluator<'vm> {
         None
       };
 
-       let func_obj = self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+        let func_obj = self.create_class_constructor_object(
+          scope,
+          func_name,
+          ctor_length,
+          ctor_body_func,
+          super_value,
+          /* instance_field_count */ 0,
+        )?;
 
        // `NamedEvaluation` assigns inferred names to anonymous class expressions in specific syntactic
        // positions (e.g. `{ key: class {} }`).
@@ -7460,16 +7485,71 @@ impl<'vm> HirEvaluator<'vm> {
           "class constructor prototype property is not a data property",
         ));
       };
-      let Value::Object(prototype_obj) = value else {
-        return Err(VmError::InvariantViolation(
-          "class constructor prototype property is not an object",
-        ));
-      };
-      class_scope.push_root(Value::Object(prototype_obj))?;
+       let Value::Object(prototype_obj) = value else {
+         return Err(VmError::InvariantViolation(
+           "class constructor prototype property is not an object",
+         ));
+       };
+       class_scope.push_root(Value::Object(prototype_obj))?;
 
-      // Per ECMAScript, class constructors have a non-writable `prototype` property.
-      class_scope.define_property_or_throw(
-        func_obj,
+       // Wire the instance prototype chain:
+       //
+       // - base class: `prototype.[[Prototype]] = %Object.prototype%`
+       // - `extends null`: `prototype.[[Prototype]] = null`
+       // - derived class: `prototype.[[Prototype]] = super.prototype`
+       let intr = self
+         .vm
+         .intrinsics()
+         .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+       match super_value {
+         Value::Undefined => {
+           class_scope
+             .heap_mut()
+             .object_set_prototype(prototype_obj, Some(intr.object_prototype()))?;
+         }
+         Value::Null => {
+           class_scope.heap_mut().object_set_prototype(prototype_obj, None)?;
+         }
+         Value::Object(super_ctor) => {
+           let proto_parent = {
+             // `Get(superCtor, "prototype")` (Proxy-aware / accessor-aware).
+             let mut proto_scope = class_scope.reborrow();
+             proto_scope.push_root(Value::Object(super_ctor))?;
+             let proto_key_s = proto_scope.alloc_string("prototype")?;
+             proto_scope.push_root(Value::String(proto_key_s))?;
+             let proto_key = PropertyKey::from_string(proto_key_s);
+             let proto_value = proto_scope.ordinary_get_with_host_and_hooks(
+               self.vm,
+               &mut *self.host,
+               &mut *self.hooks,
+               super_ctor,
+               proto_key,
+               Value::Object(super_ctor),
+             )?;
+             match proto_value {
+               Value::Object(o) => Some(o),
+               Value::Null => None,
+               _ => {
+                 return Err(VmError::TypeError(
+                   "Class extends value does not have a valid prototype property",
+                 ))
+               }
+             }
+           };
+           class_scope
+             .heap_mut()
+             .object_set_prototype(prototype_obj, proto_parent)?;
+         }
+         _ => {
+           return Err(VmError::InvariantViolation(
+             "class constructor super value is not undefined, null, or object",
+           ))
+         }
+       }
+
+       // Per ECMAScript, class constructors have a non-writable `prototype` property.
+       class_scope.define_property_or_throw(
+         func_obj,
         prototype_key,
         PropertyDescriptorPatch {
           writable: Some(false),
@@ -7736,40 +7816,57 @@ impl<'vm> HirEvaluator<'vm> {
     name: &str,
     length: u32,
     constructor_body: Option<GcObject>,
+    super_value: Value,
+    instance_field_count: usize,
   ) -> Result<GcObject, VmError> {
     let intr = self
       .vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-    // Root the optional constructor body function before allocating any strings/function objects in
-    // case those allocations trigger GC.
+    // Root the optional constructor body function and superclass value before allocating any
+    // strings/function objects in case those allocations trigger GC.
     let mut init_scope = scope.reborrow();
     if let Some(body) = constructor_body {
       init_scope.push_root(Value::Object(body))?;
     }
+    init_scope.push_root(super_value)?;
 
     let name_s = init_scope.alloc_string(name)?;
-    let slots_buf;
-    let slots = if let Some(body) = constructor_body {
-      slots_buf = [Value::Object(body)];
-      &slots_buf[..]
-    } else {
-      &[][..]
-    };
+    let slots_len = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+      .saturating_add(instance_field_count.saturating_mul(2));
+    let mut slots_vec: Vec<Value> = Vec::new();
+    slots_vec
+      .try_reserve_exact(slots_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    slots_vec.push(constructor_body.map(Value::Object).unwrap_or(Value::Undefined));
+    slots_vec.push(super_value);
+    slots_vec.resize(slots_len, Value::Undefined);
 
     let func_obj = init_scope.alloc_native_function_with_slots(
       intr.class_constructor_call(),
       Some(intr.class_constructor_construct()),
       name_s,
       length,
-      slots,
+      &slots_vec,
     )?;
     init_scope.push_root(Value::Object(func_obj))?;
 
+    // Per ECMA-262 `ClassDefinitionEvaluation`:
+    // - base classes: `F.[[Prototype]] = %Function.prototype%`
+    // - derived classes: `F.[[Prototype]] = superCtor` (static inheritance)
+    let proto_parent = match super_value {
+      Value::Object(super_ctor) => super_ctor,
+      Value::Undefined | Value::Null => intr.function_prototype(),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "class constructor super value is not undefined, null, or object",
+        ))
+      }
+    };
     init_scope
       .heap_mut()
-      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      .object_set_prototype(func_obj, Some(proto_parent))?;
     init_scope
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
