@@ -1053,6 +1053,131 @@ fn compiled_dynamic_import_options_proxy_get_trap_is_observed() -> Result<(), Vm
 }
 
 #[test]
+fn compiled_dynamic_import_attributes_proxy_traps_are_observed() -> Result<(), VmError> {
+  // Proxy-based attribute enumeration triggers a handful of allocations during import option
+  // normalization; keep the heap small to catch leaks, but large enough to cover the Proxy paths.
+  let mut rt = new_runtime_with_heap_limit(2 * 1024 * 1024)?;
+  let mut hooks = TestHostHooks::new();
+
+  // Create a Proxy target + handler in JS so the traps can mutate JS-visible state (`log`).
+  rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      var log = "";
+      var __attrs_target = { type: "json" };
+      var __attrs_handler = {
+        ownKeys: function (t) {
+          log += "ownKeys,";
+          return ["type"];
+        },
+        getOwnPropertyDescriptor: function (t, k) {
+          log += "gopd:" + String(k) + ",";
+          // vm-js currently exposes `Reflect.getOwnPropertyDescriptor` but may not implement
+          // `Object.getOwnPropertyDescriptor` yet. Use Reflect so the trap can return a complete
+          // descriptor object and attribute processing can continue to the `Get` path.
+          return Reflect.getOwnPropertyDescriptor(t, k);
+        },
+        get: function (t, k, r) {
+          log += "get:" + String(k) + ",";
+          return Reflect.get(t, k, r);
+        },
+      };
+      var __opts = {};
+    "#,
+  )?;
+
+  let Value::Object(target) = rt.exec_script_with_hooks(&mut hooks, "__attrs_target")? else {
+    return Err(VmError::InvariantViolation("__attrs_target should be an object"));
+  };
+  let Value::Object(handler) = rt.exec_script_with_hooks(&mut hooks, "__attrs_handler")? else {
+    return Err(VmError::InvariantViolation("__attrs_handler should be an object"));
+  };
+  let Value::Object(opts) = rt.exec_script_with_hooks(&mut hooks, "__opts")? else {
+    return Err(VmError::InvariantViolation("__opts should be an object"));
+  };
+
+  // Install `__opts.with` as a host-created Proxy object.
+  {
+    let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(opts))?;
+    let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+    scope.push_root(Value::Object(proxy))?;
+
+    let with_key_s = scope.alloc_string("with")?;
+    scope.push_root(Value::String(with_key_s))?;
+    let with_key = PropertyKey::from_string(with_key_s);
+    scope.create_data_property_or_throw(opts, with_key, Value::Object(proxy))?;
+  }
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      // Host supports no import attributes, so this should reject before invoking HostLoadImportedModule.
+      var p = import('./m.js', __opts);
+    "#,
+  )?;
+
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  let promise_obj = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let promise_value = scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?;
+    let Value::Object(obj) = promise_value else {
+      panic!("import() should assign a Promise object to global `p`");
+    };
+    obj
+  };
+
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  assert_eq!(hooks.pending_count(), 0, "host loader should not be invoked");
+
+  let log_val = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("log")?);
+    scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?
+  };
+  let Value::String(log_s) = log_val else {
+    return Err(VmError::InvariantViolation("expected global `log` to be a string"));
+  };
+  let log = rt.heap.get_string(log_s)?.to_utf8_lossy();
+  assert!(
+    log.contains("ownKeys"),
+    "expected attributes Proxy ownKeys trap to be invoked, got {log:?}"
+  );
+  assert!(
+    log.contains("gopd:type"),
+    "expected attributes Proxy getOwnPropertyDescriptor trap to be invoked, got {log:?}"
+  );
+  assert!(
+    log.contains("get:type"),
+    "expected attributes Proxy get trap to be invoked for 'type', got {log:?}"
+  );
+
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
+
+#[test]
 fn compiled_dynamic_import_roots_specifier_across_options_eval_under_gc_stress() -> Result<(), VmError> {
   // Force a GC on every allocation so an unrooted specifier Value would be collected while
   // evaluating the second argument.
