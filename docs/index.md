@@ -31,6 +31,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 ## Architecture & security workstreams
 
 - Multiprocess & security: [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md)
+- Multiprocess threat model (renderer IPC trust boundary): [multiprocess_threat_model.md](multiprocess_threat_model.md)
 - Renderer chrome (future): [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
 
 ## JavaScript workstreams
