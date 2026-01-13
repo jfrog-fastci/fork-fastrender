@@ -378,7 +378,7 @@ Defaults are 20ms / 80ms / 40ms respectively (see `src/media/av_sync.rs`).
 
 ---
 
-## Deterministic tests: `NullAudioBackend` + `VirtualClock`
+## Deterministic tests: `VirtualClock` + injectable clocks
 
 Media timing code is notoriously hard to test if it depends on real audio hardware and real wall
 time.
