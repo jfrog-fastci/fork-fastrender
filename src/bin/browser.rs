@@ -19655,17 +19655,21 @@ impl App {
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 0.0);
 
             ui.horizontal(|ui| {
-              let play_resp = ui.button("Play/Pause");
-              play_resp
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Play/Pause"));
+              let play_resp = fastrender::ui::icon_button(
+                ui,
+                fastrender::ui::BrowserIcon::Play,
+                "Play/Pause (Space)",
+                true,
+              );
+              play_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Play/Pause")
+              });
               if play_resp.clicked() {
                 pending_commands.push(MediaCommand::TogglePlayPause);
               }
 
               let seek_resp = ui.add(
-                egui::Slider::new(&mut seek_seconds, 0.0..=100.0)
-                  .show_value(false)
-                  .text("Seek"),
+                egui::Slider::new(&mut seek_seconds, 0.0..=100.0).show_value(false),
               );
               seek_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, "Seek"));
               if seek_resp.drag_started() || seek_resp.dragged() {
@@ -19677,30 +19681,55 @@ impl App {
 
               ui.label(egui::RichText::new("00:00").small());
 
-              let mute_resp = ui.button("Mute");
+              let mute_resp = fastrender::ui::icon_button(
+                ui,
+                fastrender::ui::BrowserIcon::Mute,
+                "Mute (M)",
+                true,
+              );
               mute_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Mute"));
               if mute_resp.clicked() {
                 pending_commands.push(MediaCommand::ToggleMute);
               }
 
-              let volume_resp = ui.add(
-                egui::Slider::new(&mut volume, 0.0..=1.0)
-                  .show_value(false)
-                  .text("Volume"),
-              );
-              volume_resp
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, "Volume"));
-              if volume_resp.drag_started() || volume_resp.dragged() {
-                request_pointer_capture = true;
-              }
-              if volume_resp.changed() {
-                volume = volume.clamp(0.0, 1.0);
-                pending_commands.push(MediaCommand::SetVolume(volume as f64));
-              }
+              ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                let icon_side = ui.spacing().icon_width;
+                let volume_icon_resp =
+                  fastrender::ui::icon(ui, fastrender::ui::BrowserIcon::Volume, icon_side);
+                volume_icon_resp
+                  .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, "Volume"));
 
-              let fs_resp = ui.button("Fullscreen");
+                let volume_resp =
+                  ui.add(egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false));
+                volume_resp
+                  .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, "Volume"));
+                if volume_resp.drag_started() || volume_resp.dragged() {
+                  request_pointer_capture = true;
+                }
+                if volume_resp.changed() {
+                  volume = volume.clamp(0.0, 1.0);
+                  pending_commands.push(MediaCommand::SetVolume(volume as f64));
+                }
+              });
+
+              let (fs_icon, fs_tooltip, fs_label) = if self.window_fullscreen {
+                (
+                  fastrender::ui::BrowserIcon::ExitFullscreen,
+                  "Exit fullscreen (F)",
+                  "Exit fullscreen",
+                )
+              } else {
+                (
+                  fastrender::ui::BrowserIcon::Fullscreen,
+                  "Fullscreen (F)",
+                  "Fullscreen",
+                )
+              };
+
+              let fs_resp = fastrender::ui::icon_button(ui, fs_icon, fs_tooltip, true);
               fs_resp
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Fullscreen"));
+                .widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, fs_label));
               if fs_resp.clicked() {
                 toggle_fullscreen = true;
               }
