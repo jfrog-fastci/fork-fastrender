@@ -32,6 +32,7 @@ mod ring_buffer;
 #[cfg(feature = "audio_cpal")]
 mod thread_priority;
 pub mod convert;
+pub mod drift;
 pub mod mixer;
 pub mod queue;
 pub mod timed_queue;
@@ -47,6 +48,7 @@ pub use convert::convert_to_f32_interleaved;
 pub use latency::{
   duration_to_frames_ceil, duration_to_frames_floor, frames_to_duration, latency_from_timestamps,
 };
+pub use drift::{DriftController, DriftControllerConfig};
 pub use null_backend::NullAudioBackend;
 pub use queue::{pcm_f32_queue, PcmF32QueueConsumer, PcmF32QueueProducer};
 pub use timed_queue::{PushError, ReadResult, TimedAudioQueue, TimedAudioSegment};
