@@ -28,7 +28,6 @@ use crate::resource::{
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::style::types::OrientationTransform;
-use crate::style::types::CursorKeyword;
 use crate::text::font_db::FontConfig;
 use crate::tree::box_tree::{BoxNode, BoxType, ImageSelectionContext, ReplacedType};
 use crate::ui::about_pages;
@@ -1372,19 +1371,6 @@ fn js_find_form_owner_for_submitter(
   None
 }
 
-fn cursor_kind_from_css_cursor(cursor: CursorKeyword) -> Option<CursorKind> {
-  match cursor {
-    CursorKeyword::Auto => None,
-    CursorKeyword::None => Some(CursorKind::Hidden),
-    CursorKeyword::Pointer => Some(CursorKind::Pointer),
-    CursorKeyword::Text | CursorKeyword::VerticalText => Some(CursorKind::Text),
-    CursorKeyword::Crosshair => Some(CursorKind::Crosshair),
-    CursorKeyword::NotAllowed | CursorKeyword::NoDrop => Some(CursorKind::NotAllowed),
-    CursorKeyword::Grab => Some(CursorKind::Grab),
-    CursorKeyword::Grabbing => Some(CursorKind::Grabbing),
-    _ => Some(CursorKind::Default),
-  }
-}
 fn compute_scroll_metrics(
   doc: Option<&BrowserDocument>,
   viewport_css: (u32, u32),
@@ -4711,7 +4697,7 @@ impl BrowserRuntime {
               // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
               // behaviour matches the platform. Only fall back to legacy heuristics when the computed
               // cursor is `auto`.
-              let css_cursor_kind = cursor_kind_from_css_cursor(css_cursor);
+              let css_cursor_kind = CursorKind::from_css_cursor_keyword(css_cursor);
 
               // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
               let hovered_url = match kind {
