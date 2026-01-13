@@ -39,6 +39,16 @@ pub struct CompiledScript {
   pub source: Arc<SourceText>,
   pub hir: Arc<hir_js::LowerResult>,
   pub contains_async_generators: bool,
+  /// True if the source contains any generator function (`function*` or `async function*`).
+  pub contains_generators: bool,
+  /// True if the source contains any async function (`async function` / `async () =>` / `async function*`).
+  pub contains_async_functions: bool,
+  /// True if the compiled (HIR) execution path must fall back to the AST interpreter.
+  ///
+  /// The HIR executor does not currently support async/generator function bodies, so any script
+  /// containing them must be re-run from source to avoid mid-execution `VmError::Unimplemented`
+  /// failures.
+  pub requires_ast_fallback: bool,
   #[allow(dead_code)]
   source_type: SourceType,
   #[allow(dead_code)]
@@ -79,7 +89,11 @@ impl CompiledScript {
       )?;
     }
 
-    let contains_async_generators = ast_contains_async_generators(&parsed);
+    let feature_flags = ast_feature_flags(&parsed);
+    let contains_async_generators = feature_flags.contains_async_generators;
+    let contains_generators = feature_flags.contains_generators;
+    let contains_async_functions = feature_flags.contains_async_functions;
+    let requires_ast_fallback = contains_generators || contains_async_functions;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -94,6 +108,9 @@ impl CompiledScript {
       source,
       hir,
       contains_async_generators,
+      contains_generators,
+      contains_async_functions,
+      requires_ast_fallback,
       source_type: SourceType::Script,
       external_memory,
     })?)
@@ -125,7 +142,11 @@ impl CompiledScript {
       )?;
     }
 
-    let contains_async_generators = ast_contains_async_generators(&parsed);
+    let feature_flags = ast_feature_flags(&parsed);
+    let contains_async_generators = feature_flags.contains_async_generators;
+    let contains_generators = feature_flags.contains_generators;
+    let contains_async_functions = feature_flags.contains_async_functions;
+    let requires_ast_fallback = contains_generators || contains_async_functions;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -139,6 +160,9 @@ impl CompiledScript {
       source,
       hir,
       contains_async_generators,
+      contains_generators,
+      contains_async_functions,
+      requires_ast_fallback,
       source_type: SourceType::Module,
       external_memory,
     })?)
@@ -179,7 +203,11 @@ impl CompiledScript {
       )?;
     }
 
-    let contains_async_generators = ast_contains_async_generators(&parsed);
+    let feature_flags = ast_feature_flags(&parsed);
+    let contains_async_generators = feature_flags.contains_async_generators;
+    let contains_generators = feature_flags.contains_generators;
+    let contains_async_functions = feature_flags.contains_async_functions;
+    let requires_ast_fallback = contains_generators || contains_async_functions;
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
@@ -189,6 +217,9 @@ impl CompiledScript {
       source,
       hir,
       contains_async_generators,
+      contains_generators,
+      contains_async_functions,
+      requires_ast_fallback,
       source_type: SourceType::Script,
       external_memory,
     })?)
@@ -216,7 +247,11 @@ impl CompiledScript {
         &mut tick,
       )?;
     }
-    let contains_async_generators = ast_contains_async_generators(&parsed);
+    let feature_flags = ast_feature_flags(&parsed);
+    let contains_async_generators = feature_flags.contains_async_generators;
+    let contains_generators = feature_flags.contains_generators;
+    let contains_async_functions = feature_flags.contains_async_functions;
+    let requires_ast_fallback = contains_generators || contains_async_functions;
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
@@ -225,6 +260,9 @@ impl CompiledScript {
       source,
       hir,
       contains_async_generators,
+      contains_generators,
+      contains_async_functions,
+      requires_ast_fallback,
       source_type: SourceType::Module,
       external_memory,
     })?)
@@ -241,12 +279,21 @@ pub struct CompiledFunctionRef {
   pub body: hir_js::BodyId,
 }
 
-fn ast_contains_async_generators<T: Drive>(root: &T) -> bool {
-  let found = Cell::new(false);
+#[derive(Clone, Copy, Debug, Default)]
+struct AstFeatureFlags {
+  contains_generators: bool,
+  contains_async_functions: bool,
+  contains_async_generators: bool,
+}
+
+fn ast_feature_flags<T: Drive>(root: &T) -> AstFeatureFlags {
+  let found = Cell::new(AstFeatureFlags::default());
   let mut visitor = visitor_enter_fn(|func: &Func| {
-    if func.async_ && func.generator {
-      found.set(true);
-    }
+    let mut flags = found.get();
+    flags.contains_generators |= func.generator;
+    flags.contains_async_functions |= func.async_;
+    flags.contains_async_generators |= func.async_ && func.generator;
+    found.set(flags);
   });
   root.drive(&mut visitor);
   found.get()
