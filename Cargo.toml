@@ -30,11 +30,13 @@ resolver = "2"
 default = ["preserve3d_warp", "avif"]
 a11y_debug = []
 avif = ["dep:avif-decode", "dep:avif-parse"]
+audio_cpal = ["dep:cpal"]
 box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
 quickjs = ["dep:rquickjs"]
 browser_ui = [
+  "audio_cpal",
   "dep:winit",
   "dep:wgpu",
   "dep:egui",
@@ -65,6 +67,7 @@ base64 = "0.22"
 avif-decode = { version = "1.0", default-features = false, optional = true }
 avif-parse = { version = "1.4", optional = true }
 arboard = { version = "3.6", optional = true }
+cpal = { version = "0.15", optional = true }
 # Keep AccessKit versions aligned with egui/egui-winit 0.23 so we don't pull in a second
 # (newer) winit via accesskit_winit.
 accesskit = { version = "0.11", optional = true }
