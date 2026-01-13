@@ -2297,6 +2297,97 @@ fn column_gap_em_resolves_against_font_size() {
 }
 
 #[test]
+fn multicol_padding_border_box_sizing_uses_content_box_geometry() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi {
+        box-sizing: border-box;
+        width: 300px;
+        padding: 20px;
+        border: 5px solid black;
+        column-count: 2;
+        column-gap: 10px;
+      }
+      #multi p { margin: 0; }
+    </style>
+    <div id=multi>
+      <p>line1</p><p>line2</p><p>line3</p><p>line4</p><p>line5</p>
+    </div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
+
+  let expected_content_width = 300.0 - 2.0 * (20.0 + 5.0);
+  let expected_column_width = (expected_content_width - 10.0) / 2.0;
+
+  assert_eq!(info.column_count, 2);
+  assert!(
+    (info.column_gap - 10.0).abs() < 0.1,
+    "expected 10px gap (got {})",
+    info.column_gap
+  );
+  assert!(
+    (info.column_width - expected_column_width).abs() < 0.1,
+    "expected column width from content box (got {})",
+    info.column_width
+  );
+
+  let reconstructed_content_width = info.column_width * info.column_count as f32
+    + info.column_gap * (info.column_count.saturating_sub(1) as f32);
+  assert!(
+    (reconstructed_content_width - expected_content_width).abs() < 0.2,
+    "expected column geometry to be based on content width {} (got {})",
+    expected_content_width,
+    reconstructed_content_width
+  );
+
+  let mut line_positions = Vec::new();
+  collect_line_positions(container, (0.0, 0.0), &mut line_positions);
+  assert!(
+    !line_positions.is_empty(),
+    "expected line fragments inside multicol container"
+  );
+
+  let expected_first_column_x = container.bounds.x() + 25.0;
+  let expected_second_column_x = expected_first_column_x + expected_column_width + info.column_gap;
+  let tol = 0.6;
+
+  let min_x = line_positions
+    .iter()
+    .map(|(x, _)| *x)
+    .fold(f32::INFINITY, f32::min);
+  assert!(
+    (min_x - expected_first_column_x).abs() < tol,
+    "columns should start inside padding/border (min x={}, expected around {})",
+    min_x,
+    expected_first_column_x
+  );
+
+  assert!(
+    line_positions
+      .iter()
+      .any(|(x, _)| (*x - expected_first_column_x).abs() < tol),
+    "expected some line boxes in the first column (x≈{}, got {:?})",
+    expected_first_column_x,
+    line_positions
+  );
+  assert!(
+    line_positions
+      .iter()
+      .any(|(x, _)| (*x - expected_second_column_x).abs() < tol),
+    "expected some line boxes in the second column (x≈{}, got {:?})",
+    expected_second_column_x,
+    line_positions
+  );
+}
+
+#[test]
 fn column_rule_fragments_are_generated_clamped_and_centered() {
   let color = Rgba::new(10, 20, 30, 1.0);
 
