@@ -63,7 +63,9 @@ pub fn theme_tuning(high_contrast: bool) -> HighContrastThemeTuning {
   if high_contrast {
     HighContrastThemeTuning {
       bg_stroke_width: 2.0,
-      focus_stroke_width: 2.0,
+      // In high-contrast mode, keep the focus ring obviously stronger than normal mode so keyboard
+      // focus is unmistakable across all widgets (including built-in egui controls).
+      focus_stroke_width: 3.0,
       focus_stroke_alpha: 255,
       selection_bg_alpha: 140,
       hover_stroke_alpha: 220,
@@ -71,8 +73,11 @@ pub fn theme_tuning(high_contrast: bool) -> HighContrastThemeTuning {
   } else {
     HighContrastThemeTuning {
       bg_stroke_width: 1.0,
-      focus_stroke_width: 1.0,
-      focus_stroke_alpha: 230,
+      // Many egui widgets use `Visuals::selection.stroke` as their focus outline. A 1px stroke can
+      // be too subtle, especially on high-DPI displays, so we default to a thicker focus ring even
+      // outside high-contrast mode.
+      focus_stroke_width: 2.0,
+      focus_stroke_alpha: 240,
       selection_bg_alpha: 90,
       hover_stroke_alpha: 180,
     }
@@ -123,6 +128,11 @@ mod tests {
     let normal = theme_tuning(false);
     let high = theme_tuning(true);
 
+    assert!(
+      normal.focus_stroke_width >= 2.0,
+      "expected normal focus_stroke_width to be thick enough for focus visibility (got {})",
+      normal.focus_stroke_width
+    );
     assert!(
       high.bg_stroke_width > normal.bg_stroke_width,
       "expected high-contrast bg_stroke_width to be stronger ({} > {})",
