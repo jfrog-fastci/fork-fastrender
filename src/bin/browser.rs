@@ -296,7 +296,8 @@ mod open_typed_in_new_tab_tests {
   #[test]
   fn typed_open_in_new_tab_creates_and_activates_tab() {
     let mut browser_state = BrowserAppState::new();
-    let tab_a = TabId(1);
+    // Avoid colliding with `TabId::new()` (used by `open_typed_in_new_tab_state`) which starts at 1.
+    let tab_a = TabId(1_000_000);
     browser_state.push_tab(
       BrowserTabState::new(tab_a, "https://example.org/".to_string()),
       true,
@@ -967,6 +968,94 @@ mod date_time_picker_a11y_tests {
     );
     assert_eq!(hour_label.as_deref(), Some("Hour"));
     assert_eq!(minute_label.as_deref(), Some("Minute"));
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod page_context_menu_keyboard_shortcut_tests {
+  use super::keyboard_page_context_menu_request;
+
+  use egui::{Pos2, Rect, Vec2};
+  use fastrender::ui::{InputMapping, TabId, UiToWorker};
+  use winit::event::{ModifiersState, VirtualKeyCode};
+
+  fn shift_mods() -> ModifiersState {
+    let mut modifiers = ModifiersState::empty();
+    modifiers.insert(ModifiersState::SHIFT);
+    modifiers
+  }
+
+  #[test]
+  fn shift_f10_opens_page_context_menu_at_cursor_position() {
+    let tab_id = TabId(1);
+    let page_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(page_rect, (800, 600));
+    let cursor = Pos2::new(110.0, 70.0);
+
+    let (pending, msg) = keyboard_page_context_menu_request(
+      VirtualKeyCode::F10,
+      shift_mods(),
+      true,
+      false,
+      false,
+      tab_id,
+      page_rect,
+      mapping,
+      Some(cursor),
+    )
+    .expect("expected Shift+F10 to open page context menu");
+
+    assert_eq!(pending.tab_id, tab_id);
+    assert_eq!(pending.anchor_points, cursor);
+    assert!((pending.pos_css.0 - 100.0).abs() < 1e-4);
+    assert!((pending.pos_css.1 - 50.0).abs() < 1e-4);
+
+    match msg {
+      UiToWorker::ContextMenuRequest {
+        tab_id: msg_tab_id,
+        pos_css,
+      } => {
+        assert_eq!(msg_tab_id, tab_id);
+        assert_eq!(pos_css, pending.pos_css);
+      }
+      other => panic!("unexpected worker message: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn apps_key_anchors_menu_to_center_when_cursor_outside_page() {
+    let tab_id = TabId(1);
+    let page_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(page_rect, (800, 600));
+
+    let cursor_outside = Pos2::new(0.0, 0.0);
+    let expected_anchor = page_rect.center();
+    let expected_pos_css = mapping
+      .pos_points_to_pos_css_clamped(expected_anchor)
+      .expect("mapping should convert center point");
+
+    let (pending, msg) = keyboard_page_context_menu_request(
+      VirtualKeyCode::Apps,
+      ModifiersState::empty(),
+      true,
+      false,
+      false,
+      tab_id,
+      page_rect,
+      mapping,
+      Some(cursor_outside),
+    )
+    .expect("expected Apps key to open page context menu");
+
+    assert_eq!(pending.anchor_points, expected_anchor);
+    assert_eq!(pending.pos_css, expected_pos_css);
+
+    match msg {
+      UiToWorker::ContextMenuRequest { tab_id: msg_tab_id, .. } => {
+        assert_eq!(msg_tab_id, tab_id);
+      }
+      other => panic!("unexpected worker message: {other:?}"),
+    }
   }
 }
 
@@ -2643,6 +2732,44 @@ struct OpenContextMenu {
   can_paste: bool,
   can_select_all: bool,
   selected_idx: usize,
+}
+
+#[cfg(feature = "browser_ui")]
+fn keyboard_page_context_menu_request(
+  key: winit::event::VirtualKeyCode,
+  modifiers: winit::event::ModifiersState,
+  page_has_focus: bool,
+  egui_wants_keyboard_input: bool,
+  page_loading_overlay_blocks_input: bool,
+  tab_id: fastrender::ui::TabId,
+  page_rect_points: egui::Rect,
+  mapping: fastrender::ui::InputMapping,
+  last_cursor_pos_points: Option<egui::Pos2>,
+) -> Option<(PendingContextMenuRequest, fastrender::ui::UiToWorker)> {
+  use winit::event::VirtualKeyCode;
+
+  let is_shortcut =
+    matches!(key, VirtualKeyCode::Apps) || (matches!(key, VirtualKeyCode::F10) && modifiers.shift());
+  if !is_shortcut {
+    return None;
+  }
+
+  if !page_has_focus || egui_wants_keyboard_input || page_loading_overlay_blocks_input {
+    return None;
+  }
+
+  let anchor_points = last_cursor_pos_points
+    .filter(|pos| page_rect_points.contains(*pos))
+    .unwrap_or_else(|| page_rect_points.center());
+
+  let pos_css = mapping.pos_points_to_pos_css_clamped(anchor_points)?;
+  let pending = PendingContextMenuRequest {
+    tab_id,
+    pos_css,
+    anchor_points,
+  };
+  let msg = fastrender::ui::UiToWorker::ContextMenuRequest { tab_id, pos_css };
+  Some((pending, msg))
 }
 
 #[cfg(feature = "browser_ui")]
@@ -8244,6 +8371,56 @@ impl App {
           return;
         }
 
+        // Keyboard-accessible page context menu (Shift+F10 / Menu key).
+        //
+        // This is handled at the winit layer so keyboard-only users can open the context menu even
+        // when no pointer interaction has occurred.
+        let wants_page_context_menu = matches!(key, VirtualKeyCode::Apps)
+          || (matches!(key, VirtualKeyCode::F10) && self.modifiers.shift());
+        if wants_page_context_menu {
+          // If a popup is already open, dismiss it rather than opening a new one.
+          if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
+            self.close_context_menu();
+            self.window.request_redraw();
+            return;
+          }
+          if self.open_select_dropdown.is_some() {
+            self.cancel_select_dropdown();
+            self.window.request_redraw();
+            return;
+          }
+          if self.open_date_time_picker.is_some() {
+            self.cancel_date_time_picker();
+            self.window.request_redraw();
+            return;
+          }
+
+          if let (Some(tab_id), Some(page_rect_points), Some(mapping)) = (
+            self.page_input_tab.or(self.browser_state.active_tab_id()),
+            self.page_rect_points,
+            self.page_input_mapping,
+          ) {
+            if let Some((pending, msg)) = keyboard_page_context_menu_request(
+              key,
+              self.modifiers,
+              self.page_has_focus,
+              self.egui_ctx.wants_keyboard_input(),
+              self.page_loading_overlay_blocks_input,
+              tab_id,
+              page_rect_points,
+              mapping,
+              self.last_cursor_pos_points,
+            ) {
+              // Ensure the menu opens fresh (selection starts at index 0 once the worker replies).
+              self.close_context_menu();
+              self.pending_context_menu_request = Some(pending);
+              self.send_worker_msg(msg);
+              self.window.request_redraw();
+              return;
+            }
+          }
+        }
+
         if self.open_select_dropdown.is_some() {
           if matches!(key, VirtualKeyCode::Escape) {
             self.cancel_select_dropdown();
@@ -11499,17 +11676,6 @@ mod page_form_popup_focus_tests {
       "expected the picker text edit to claim keyboard focus"
     );
 
-    // Frame 2: render without the text edit (simulating the picker being removed), without any
-    // focus restore/clear requests. This reproduces the failure mode: egui focus stays on the
-    // removed text edit, so `wants_keyboard_input` remains true.
-    begin_frame(&ctx);
-    egui::CentralPanel::default().show(&ctx, |_ui| {});
-    let _ = ctx.end_frame();
-    assert!(
-      ctx.wants_keyboard_input(),
-      "expected egui to retain focus on the removed picker text edit"
-    );
-
     // Simulate the browser closing the picker with no previous focused id.
     let mut open_picker = Some(OpenDateTimePicker {
       tab_id: TabId(1),
@@ -11524,6 +11690,11 @@ mod page_form_popup_focus_tests {
     });
     let mut picker_rect = Some(egui::Rect::NOTHING);
     close_date_time_picker_popup(&ctx, &mut open_picker, &mut picker_rect);
+    assert_eq!(
+      egui_focused_widget_id(&ctx),
+      None,
+      "expected closing the picker to clear focus immediately"
+    );
 
     begin_frame(&ctx);
     egui::CentralPanel::default().show(&ctx, |_ui| {});
