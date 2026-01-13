@@ -8015,58 +8015,99 @@ fn emit_union_conversion_expr_vmjs(
     out.push_str("\n  }");
   }
 
+  let emit_object_discrimination = |out: &mut String, indent: &str| {
+    if let Some(seq_expr) = &seq_expr {
+      out.push_str(indent);
+      out.push_str(&format!(
+        "let iter_method = conversions::get_iterator_method({rt_expr}, host, hooks, obj)?;\n",
+        rt_expr = rt_expr
+      ));
+
+      out.push_str(indent);
+      out.push_str("if let Some(iter_method) = iter_method {\n");
+      out.push_str(indent);
+      out.push_str("  ");
+      out.push_str(seq_expr);
+      out.push_str("\n");
+      out.push_str(indent);
+      out.push_str("}");
+
+      // Dictionary/record should only be considered when the object is not iterable.
+      if let Some(dict_expr) = &dict_expr {
+        out.push_str(" else {\n");
+        out.push_str(indent);
+        out.push_str("  ");
+        out.push_str(dict_expr);
+        out.push_str("\n");
+        out.push_str(indent);
+        out.push_str("}");
+      } else if let Some(record_expr) = &record_expr {
+        out.push_str(" else {\n");
+        out.push_str(indent);
+        out.push_str("  ");
+        out.push_str(record_expr);
+        out.push_str("\n");
+        out.push_str(indent);
+        out.push_str("}");
+      } else if let Some(callback_iface_expr) = &callback_iface_expr {
+        out.push_str(" else {\n");
+        out.push_str(indent);
+        out.push_str("  ");
+        out.push_str(callback_iface_expr);
+        out.push_str("\n");
+        out.push_str(indent);
+        out.push_str("}");
+      } else if has_object || has_any {
+        out.push_str(" else {\n");
+        out.push_str(indent);
+        out.push_str("  v\n");
+        out.push_str(indent);
+        out.push_str("}");
+      } else {
+        out.push_str(" else {\n");
+        out.push_str(indent);
+        out.push_str("  return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n");
+        out.push_str(indent);
+        out.push_str("}");
+      }
+      return;
+    }
+
+    out.push_str(indent);
+    if let Some(dict_expr) = &dict_expr {
+      out.push_str(dict_expr);
+    } else if let Some(record_expr) = &record_expr {
+      out.push_str(record_expr);
+    } else if let Some(callback_iface_expr) = &callback_iface_expr {
+      out.push_str(callback_iface_expr);
+    } else if has_object || has_any {
+      out.push_str("v");
+    } else {
+      out.push_str("return Err(rt.throw_type_error(\"Value is not a valid union type\"));");
+    }
+  };
+
   // Object branch: sequence/record/dictionary/callback interface/object.
-  if seq_expr.is_some() {
+  let needs_obj_binding = seq_expr.is_some() || string_expr.is_some();
+  if needs_obj_binding {
     out.push_str(" else if let Value::Object(obj) = v {\n");
   } else {
     out.push_str(" else if let Value::Object(_) = v {\n");
   }
 
-  if let Some(seq_expr) = &seq_expr {
+  // WebIDL union conversions treat boxed String objects as strings when the union includes a string
+  // type, and this check must occur before iterable/record/dictionary discrimination.
+  if let Some(string_expr) = &string_expr {
     out.push_str(&format!(
-      "    let iter_method = conversions::get_iterator_method({rt_expr}, host, hooks, obj)?;\n",
-      rt_expr = rt_expr
+      "    if conversions::is_string_object({rt_expr}, host, hooks, obj)? {{\n      {string_expr}\n    }} else {{\n",
+      rt_expr = rt_expr,
+      string_expr = string_expr
     ));
-
-    out.push_str("    if let Some(iter_method) = iter_method {\n      ");
-    out.push_str(seq_expr);
-    out.push_str("\n    }");
-
-    // Dictionary/record should only be considered when the object is not iterable.
-    if let Some(dict_expr) = &dict_expr {
-      out.push_str(" else {\n      ");
-      out.push_str(dict_expr);
-      out.push_str("\n    }");
-    } else if let Some(record_expr) = &record_expr {
-      out.push_str(" else {\n      ");
-      out.push_str(record_expr);
-      out.push_str("\n    }");
-    } else if let Some(callback_iface_expr) = &callback_iface_expr {
-      out.push_str(" else {\n      ");
-      out.push_str(callback_iface_expr);
-      out.push_str("\n    }");
-    } else if has_object || has_any {
-      out.push_str(" else {\n      v\n    }");
-    } else {
-      out.push_str(" else {\n      return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n    }");
-    }
-    out.push_str("\n  }");
-  } else if let Some(dict_expr) = &dict_expr {
-    out.push_str("    ");
-    out.push_str(dict_expr);
-    out.push_str("\n  }");
-  } else if let Some(record_expr) = &record_expr {
-    out.push_str("    ");
-    out.push_str(record_expr);
-    out.push_str("\n  }");
-  } else if let Some(callback_iface_expr) = &callback_iface_expr {
-    out.push_str("    ");
-    out.push_str(callback_iface_expr);
-    out.push_str("\n  }");
-  } else if has_object || has_any {
-    out.push_str("    v\n  }");
+    emit_object_discrimination(&mut out, "      ");
+    out.push_str("\n    }\n  }");
   } else {
-    out.push_str("    return Err(rt.throw_type_error(\"Value is not a valid union type\"));\n  }");
+    emit_object_discrimination(&mut out, "    ");
+    out.push_str("\n  }");
   }
 
   // Primitive fast paths and fallthrough conversions.

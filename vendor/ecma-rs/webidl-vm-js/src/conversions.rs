@@ -64,6 +64,24 @@ pub fn object_has_iterator<'a>(
   Ok(get_iterator_method(rt, host, hooks, obj)?.is_some())
 }
 
+/// Returns `true` if `obj` is a boxed `String` object (i.e. has `[[StringData]]`).
+///
+/// WebIDL union conversions treat boxed `String` objects as strings when the union includes a
+/// string type. This must be detected via the internal `[[StringData]]` slot marker (not by
+/// prototype checks) so it remains true even if user code mutates `obj.[[Prototype]]`.
+#[inline]
+pub fn is_string_object<'a>(
+  rt: &mut BindingsRuntime<'a>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+) -> Result<bool, VmError> {
+  let _ = (&mut *host, &mut *hooks);
+  // Root `obj` in case the caller performs allocations after this check.
+  rt.scope.push_root(Value::Object(obj))?;
+  rt.scope.heap().object_is_string_object(obj)
+}
+
 /// Convert an ECMAScript value to an IDL `sequence<T>`/`FrozenArray<T>` value.
 ///
 /// The bindings layer representation used by the `vm-js` WebIDL backend is a JavaScript `Array`

@@ -7324,6 +7324,31 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     self.internal_symbols.string_data
   }
 
+  /// Returns whether `obj` is a boxed String object (i.e. has a `[[StringData]]` internal slot).
+  ///
+  /// This check is:
+  /// - **internal-slot based** (not prototype based), so it stays true even if user code mutates
+  ///   `obj.[[Prototype]]` (e.g. `Object.setPrototypeOf(new String("x"), {})`), and
+  /// - **non-observable**: it does not invoke Proxy traps or user code.
+  ///
+  /// Per ECMAScript semantics, Proxy objects are never treated as having `[[StringData]]`, even if
+  /// their targets do.
+  pub fn object_is_string_object(&self, obj: GcObject) -> Result<bool, VmError> {
+    if self.is_proxy_object(obj) {
+      return Ok(false);
+    }
+    let Some(marker_sym) = self.internal_string_data_symbol() else {
+      return Ok(false);
+    };
+    let key = PropertyKey::from_symbol(marker_sym);
+    Ok(
+      self
+        .object_get_own_property(obj, &key)?
+        .map(|d| d.is_data_descriptor())
+        .unwrap_or(false),
+    )
+  }
+
   pub(crate) fn ensure_internal_string_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
     self.ensure_internal_symbol(
       "vm-js.internal.StringData",

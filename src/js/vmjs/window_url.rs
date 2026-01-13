@@ -1588,29 +1588,51 @@ fn urlsp_construct_native(
       // - record<USVString, USVString>
       // - USVString
       //
-      // For now we interpret objects with an @@iterator method (or array exotic objects) as the
-      // sequence form. Otherwise, we treat them as record-like.
-      let intrinsics = vm
-        .intrinsics()
-        .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
-      let iterator_key = PropertyKey::from_symbol(intrinsics.well_known_symbols().iterator);
+      // Per WebIDL union conversion semantics, boxed String objects must be treated as strings (not
+      // as generic iterables/records). Without this, `new URLSearchParams(new String("a=1"))` would
+      // take the iterable path and attempt to interpret individual characters as pairs.
+      if scope.heap().object_is_string_object(obj)? {
+        let init = value_to_limited_string(
+          vm,
+          scope,
+          host,
+          hooks,
+          Value::Object(obj),
+          limits.max_input_bytes,
+          URLSP_INIT_TOO_LONG_ERROR,
+        )?;
+        UrlSearchParams::parse(&init, &limits).map_err(map_url_error)?
+      } else {
+        // For now we interpret objects with an @@iterator method (or array exotic objects) as the
+        // sequence form. Otherwise, we treat them as record-like.
+        let intrinsics = vm
+          .intrinsics()
+          .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+        let iterator_key = PropertyKey::from_symbol(intrinsics.well_known_symbols().iterator);
 
-      match vm.get_method_with_host_and_hooks(host, scope, hooks, Value::Object(obj), iterator_key)
-      {
-        Ok(Some(method)) => {
-          let record =
-            iterator::get_iterator_from_method(vm, host, hooks, scope, Value::Object(obj), method)?;
-          urlsp_init_from_iterable(vm, scope, host, hooks, &limits, record)?
-        }
-        Ok(None) => {
-          // Array fast-path: `vm-js` supports iterating array exotic objects before full
-          // `%Array.prototype%[@@iterator]` exists. If it's not an array, fall back to record.
-          match iterator::get_iterator(vm, host, hooks, scope, Value::Object(obj)) {
-            Ok(record) => urlsp_init_from_iterable(vm, scope, host, hooks, &limits, record)?,
-            Err(_) => urlsp_init_from_record(vm, scope, host, hooks, &limits, obj)?,
+        match vm.get_method_with_host_and_hooks(host, scope, hooks, Value::Object(obj), iterator_key)
+        {
+          Ok(Some(method)) => {
+            let record = iterator::get_iterator_from_method(
+              vm,
+              host,
+              hooks,
+              scope,
+              Value::Object(obj),
+              method,
+            )?;
+            urlsp_init_from_iterable(vm, scope, host, hooks, &limits, record)?
           }
+          Ok(None) => {
+            // Array fast-path: `vm-js` supports iterating array exotic objects before full
+            // `%Array.prototype%[@@iterator]` exists. If it's not an array, fall back to record.
+            match iterator::get_iterator(vm, host, hooks, scope, Value::Object(obj)) {
+              Ok(record) => urlsp_init_from_iterable(vm, scope, host, hooks, &limits, record)?,
+              Err(_) => urlsp_init_from_record(vm, scope, host, hooks, &limits, obj)?,
+            }
+          }
+          Err(err) => return Err(err),
         }
-        Err(err) => return Err(err),
       }
     }
     other => {

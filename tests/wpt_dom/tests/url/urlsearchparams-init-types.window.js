@@ -54,6 +54,11 @@ test(() => {
 }, "URLSearchParams constructor evaluates @@iterator Proxy get trap only once when converting union init");
 
 test(() => {
+  const params = new URLSearchParams(new String("a=1&b=2"));
+  assert_equals(params.toString(), "a=1&b=2");
+}, "URLSearchParams constructor treats String objects as strings");
+
+test(() => {
   const assert_invalid = init => {
     let threw = false;
     try {

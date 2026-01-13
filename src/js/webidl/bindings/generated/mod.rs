@@ -1298,8 +1298,12 @@ pub mod window {
             Value::Undefined
           } else if matches!(v, Value::Null | Value::Undefined) {
             js_to_dict_element_creation_options(rt, host, hooks, v)?
-          } else if let Value::Object(_) = v {
-            js_to_dict_element_creation_options(rt, host, hooks, v)?
+          } else if let Value::Object(obj) = v {
+            if conversions::is_string_object(rt, host, hooks, obj)? {
+              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+            } else {
+              js_to_dict_element_creation_options(rt, host, hooks, v)?
+            }
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
           } else {
@@ -2033,8 +2037,12 @@ pub mod window {
           let v = v;
           if false {
             Value::Undefined
-          } else if let Value::Object(_) = v {
-            v
+          } else if let Value::Object(obj) = v {
+            if conversions::is_string_object(rt, host, hooks, obj)? {
+              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+            } else {
+              v
+            }
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
           } else {
@@ -2361,8 +2369,12 @@ pub mod window {
         let v = v1;
         if false {
           Value::Undefined
-        } else if let Value::Object(_) = v {
-          v
+        } else if let Value::Object(obj) = v {
+          if conversions::is_string_object(rt, host, hooks, obj)? {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          } else {
+            v
+          }
         } else if matches!(v, Value::String(_)) {
           Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
         } else {
@@ -2487,8 +2499,12 @@ pub mod window {
           let v = v;
           if false {
             Value::Undefined
-          } else if let Value::Object(_) = v {
-            v
+          } else if let Value::Object(obj) = v {
+            if conversions::is_string_object(rt, host, hooks, obj)? {
+              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+            } else {
+              v
+            }
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
           } else {
@@ -2672,8 +2688,12 @@ pub mod window {
           let v = v;
           if false {
             Value::Undefined
-          } else if let Value::Object(_) = v {
-            v
+          } else if let Value::Object(obj) = v {
+            if conversions::is_string_object(rt, host, hooks, obj)? {
+              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+            } else {
+              v
+            }
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
           } else {
@@ -2729,8 +2749,12 @@ pub mod window {
         let v = v1;
         if false {
           Value::Undefined
-        } else if let Value::Object(_) = v {
-          v
+        } else if let Value::Object(obj) = v {
+          if conversions::is_string_object(rt, host, hooks, obj)? {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          } else {
+            v
+          }
         } else if matches!(v, Value::String(_)) {
           Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
         } else {
@@ -3087,8 +3111,16 @@ pub mod window {
         let v = v0;
         if false {
           Value::Undefined
-        } else if let Value::Object(_) = v {
-          v
+        } else if let Value::Object(obj) = v {
+          if conversions::is_string_object(rt, host, hooks, obj)? {
+            if matches!(v, Value::Null | Value::Undefined) {
+              Value::String(rt.alloc_string("")?)
+            } else {
+              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+            }
+          } else {
+            v
+          }
         } else if matches!(v, Value::String(_)) {
           if matches!(v, Value::Null | Value::Undefined) {
             Value::String(rt.alloc_string("")?)
@@ -3326,8 +3358,16 @@ pub mod window {
         let v = v0;
         if false {
           Value::Undefined
-        } else if let Value::Object(_) = v {
-          v
+        } else if let Value::Object(obj) = v {
+          if conversions::is_string_object(rt, host, hooks, obj)? {
+            if matches!(v, Value::Null | Value::Undefined) {
+              Value::String(rt.alloc_string("")?)
+            } else {
+              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+            }
+          } else {
+            v
+          }
         } else if matches!(v, Value::String(_)) {
           if matches!(v, Value::Null | Value::Undefined) {
             Value::String(rt.alloc_string("")?)
@@ -7260,49 +7300,53 @@ pub mod window {
           if false {
             Value::Undefined
           } else if let Value::Object(obj) = v {
-            let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
-            if let Some(iter_method) = iter_method {
-              conversions::to_iterable_list_from_method(
-                rt,
-                host,
-                hooks,
-                v,
-                iter_method,
-                "expected object for sequence",
-                |rt, host, hooks, next| {
-                  Ok(conversions::to_iterable_list(
-                    rt,
-                    host,
-                    hooks,
-                    next,
-                    "expected object for sequence",
-                    |rt, host, hooks, next| {
-                      Ok(Value::String(rt.scope.to_string(
-                        &mut *rt.vm,
-                        host,
-                        hooks,
-                        next,
-                      )?))
-                    },
-                  )?)
-                },
-              )?
+            if conversions::is_string_object(rt, host, hooks, obj)? {
+              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
             } else {
-              conversions::to_record(
-                rt,
-                host,
-                hooks,
-                v,
-                "expected object for record",
-                |rt, host, hooks, prop_value| {
-                  Ok(Value::String(rt.scope.to_string(
-                    &mut *rt.vm,
-                    host,
-                    hooks,
-                    prop_value,
-                  )?))
-                },
-              )?
+              let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
+              if let Some(iter_method) = iter_method {
+                conversions::to_iterable_list_from_method(
+                  rt,
+                  host,
+                  hooks,
+                  v,
+                  iter_method,
+                  "expected object for sequence",
+                  |rt, host, hooks, next| {
+                    Ok(conversions::to_iterable_list(
+                      rt,
+                      host,
+                      hooks,
+                      next,
+                      "expected object for sequence",
+                      |rt, host, hooks, next| {
+                        Ok(Value::String(rt.scope.to_string(
+                          &mut *rt.vm,
+                          host,
+                          hooks,
+                          next,
+                        )?))
+                      },
+                    )?)
+                  },
+                )?
+              } else {
+                conversions::to_record(
+                  rt,
+                  host,
+                  hooks,
+                  v,
+                  "expected object for record",
+                  |rt, host, hooks, prop_value| {
+                    Ok(Value::String(rt.scope.to_string(
+                      &mut *rt.vm,
+                      host,
+                      hooks,
+                      prop_value,
+                    )?))
+                  },
+                )?
+              }
             }
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
@@ -15648,49 +15692,53 @@ pub mod worker {
           if false {
             Value::Undefined
           } else if let Value::Object(obj) = v {
-            let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
-            if let Some(iter_method) = iter_method {
-              conversions::to_iterable_list_from_method(
-                rt,
-                host,
-                hooks,
-                v,
-                iter_method,
-                "expected object for sequence",
-                |rt, host, hooks, next| {
-                  Ok(conversions::to_iterable_list(
-                    rt,
-                    host,
-                    hooks,
-                    next,
-                    "expected object for sequence",
-                    |rt, host, hooks, next| {
-                      Ok(Value::String(rt.scope.to_string(
-                        &mut *rt.vm,
-                        host,
-                        hooks,
-                        next,
-                      )?))
-                    },
-                  )?)
-                },
-              )?
+            if conversions::is_string_object(rt, host, hooks, obj)? {
+              Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
             } else {
-              conversions::to_record(
-                rt,
-                host,
-                hooks,
-                v,
-                "expected object for record",
-                |rt, host, hooks, prop_value| {
-                  Ok(Value::String(rt.scope.to_string(
-                    &mut *rt.vm,
-                    host,
-                    hooks,
-                    prop_value,
-                  )?))
-                },
-              )?
+              let iter_method = conversions::get_iterator_method(rt, host, hooks, obj)?;
+              if let Some(iter_method) = iter_method {
+                conversions::to_iterable_list_from_method(
+                  rt,
+                  host,
+                  hooks,
+                  v,
+                  iter_method,
+                  "expected object for sequence",
+                  |rt, host, hooks, next| {
+                    Ok(conversions::to_iterable_list(
+                      rt,
+                      host,
+                      hooks,
+                      next,
+                      "expected object for sequence",
+                      |rt, host, hooks, next| {
+                        Ok(Value::String(rt.scope.to_string(
+                          &mut *rt.vm,
+                          host,
+                          hooks,
+                          next,
+                        )?))
+                      },
+                    )?)
+                  },
+                )?
+              } else {
+                conversions::to_record(
+                  rt,
+                  host,
+                  hooks,
+                  v,
+                  "expected object for record",
+                  |rt, host, hooks, prop_value| {
+                    Ok(Value::String(rt.scope.to_string(
+                      &mut *rt.vm,
+                      host,
+                      hooks,
+                      prop_value,
+                    )?))
+                  },
+                )?
+              }
             }
           } else if matches!(v, Value::String(_)) {
             Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
