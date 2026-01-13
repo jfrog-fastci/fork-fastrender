@@ -20,7 +20,7 @@ mod enabled {
   use std::os::unix::io::FromRawFd;
   use std::os::unix::net::{UnixListener, UnixStream};
   use std::path::PathBuf;
-  use std::time::Duration;
+  use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
   #[derive(Parser)]
   #[command(about = "Probe FastRender's macOS renderer sandbox (Seatbelt) behavior")]
@@ -42,6 +42,7 @@ mod enabled {
   enum SandboxMode {
     Strict,
     Relaxed,
+    PureComputation,
   }
 
   pub(crate) fn run() -> i32 {
@@ -50,9 +51,10 @@ mod enabled {
 
     let temp_dir = std::env::temp_dir();
     let (listener, connect_port) = prepare_listener(args.port);
+    let (preopened_shm_fd, post_sandbox_shm_name) = setup_posix_shm_inputs();
 
-    let profile = build_profile(args.mode, &temp_dir);
-    if let Err(err) = apply_sandbox(&profile) {
+    let (profile, profile_flags) = build_profile(args.mode, &temp_dir);
+    if let Err(err) = apply_sandbox(&profile, profile_flags) {
       eprintln!("sandbox: failed to apply: {err}");
       // Distinct from probe failures so scripts can tell "sandbox didn't load".
       return 2;
@@ -68,21 +70,27 @@ mod enabled {
     unexpected_success |= report_action(
       "read /etc/passwd",
       read_result,
-      matches!(args.mode, SandboxMode::Strict | SandboxMode::Relaxed),
+      matches!(
+        args.mode,
+        SandboxMode::Strict | SandboxMode::Relaxed | SandboxMode::PureComputation
+      ),
     );
 
     let write_result = probe_write_temp_file(&temp_dir);
     unexpected_success |= report_action(
       &format!("write temp file under {}", temp_dir.display()),
       write_result,
-      matches!(args.mode, SandboxMode::Strict),
+      matches!(args.mode, SandboxMode::Strict | SandboxMode::PureComputation),
     );
 
     let connect_result = probe_connect_localhost(connect_port);
     unexpected_success |= report_action(
       &format!("connect to 127.0.0.1:{}", connect_port),
       connect_result,
-      matches!(args.mode, SandboxMode::Strict | SandboxMode::Relaxed),
+      matches!(
+        args.mode,
+        SandboxMode::Strict | SandboxMode::Relaxed | SandboxMode::PureComputation
+      ),
     );
 
     println!();
@@ -102,8 +110,35 @@ mod enabled {
     unexpected_success |= report_action(
       &format!("ipc: unix listener bind under {}", temp_dir.display()),
       listener_result,
-      matches!(args.mode, SandboxMode::Strict),
+      matches!(args.mode, SandboxMode::Strict | SandboxMode::PureComputation),
     );
+
+    println!();
+    println!("== POSIX shared memory (after sandbox) ==");
+
+    let shm_create_result = probe_posix_shm_create_after_sandbox(&post_sandbox_shm_name);
+    unexpected_success |= report_action(
+      "ipc: posix shmem create (shm_open+ftruncate+mmap)",
+      shm_create_result,
+      false,
+    );
+
+    let shm_mmap_result = match preopened_shm_fd {
+      Ok(fd) => probe_posix_shm_mmap_inherited_fd(fd),
+      Err(err) => ActionResult::failure(err),
+    };
+    unexpected_success |= report_action(
+      "ipc: posix shmem mmap(inherited fd) (mmap)",
+      shm_mmap_result,
+      false,
+    );
+
+    if let Ok(fd) = preopened_shm_fd {
+      // SAFETY: `fd` is a live file descriptor owned by this process.
+      unsafe {
+        libc::close(fd);
+      }
+    }
 
     let exit_code = if unexpected_success { 1 } else { 0 };
     println!("exit_code: {exit_code}");
@@ -139,25 +174,32 @@ mod enabled {
     }
   }
 
-  fn build_profile(mode: SandboxMode, temp_dir: &PathBuf) -> String {
+  fn build_profile(mode: SandboxMode, temp_dir: &PathBuf) -> (String, u64) {
     // NOTE: Seatbelt string escaping is C-like; we keep it minimal and only escape quotes and
     // backslashes in the dynamically injected temp-dir path.
     let temp_dir = escape_seatbelt_string(&temp_dir.to_string_lossy());
     match mode {
-      SandboxMode::Strict => format!(
-        r#"(version 1)
+      SandboxMode::Strict => (
+        format!(
+          r#"(version 1)
 (allow default)
 (deny network*)
 (deny file-read* (literal "/etc/passwd"))
 (deny file-write* (subpath "{temp_dir}"))
 "#
+        ),
+        0,
       ),
-      SandboxMode::Relaxed => r#"(version 1)
+      SandboxMode::Relaxed => (
+        r#"(version 1)
 (allow default)
 (deny network*)
 (deny file-read* (literal "/etc/passwd"))
 "#
-      .to_string(),
+        .to_string(),
+        0,
+      ),
+      SandboxMode::PureComputation => ("pure-computation".to_string(), SANDBOX_NAMED),
     }
   }
 
@@ -309,7 +351,7 @@ mod enabled {
     let denied = matches!(result.kind, Some(io::ErrorKind::PermissionDenied))
       || matches!(result.raw_os_error, Some(libc::EACCES | libc::EPERM));
     let status = if result.ok {
-      "OK"
+      "ALLOWED"
     } else if denied {
       "DENIED"
     } else {
@@ -325,7 +367,11 @@ mod enabled {
     if result.ok {
       println!("{name}: {status} ({expected}; {})", result.detail);
     } else {
-      println!("{name}: {status} ({expected}; error={})", result.detail);
+      if let Some(errno) = result.raw_os_error {
+        println!("{name}: {status} ({expected}; errno={errno}; error={})", result.detail);
+      } else {
+        println!("{name}: {status} ({expected}; error={})", result.detail);
+      }
       if expected_denied
         && matches!(
           result.kind,
@@ -356,13 +402,16 @@ to probe against a self-bound listener."
     fn sandbox_free_error(errorbuf: *mut libc::c_char);
   }
 
-  fn apply_sandbox(profile: &str) -> Result<(), String> {
+  const SANDBOX_NAMED: u64 = 1;
+  const POSIX_SHM_LEN: usize = 4096;
+
+  fn apply_sandbox(profile: &str, flags: u64) -> Result<(), String> {
     let profile =
       CString::new(profile).map_err(|_| "sandbox profile contains NUL byte".to_string())?;
     let mut errorbuf: *mut libc::c_char = std::ptr::null_mut();
     // SAFETY: Calls into macOS' libsandbox. `errorbuf` is either left null or set to a malloc'd
     // C-string that must be released with `sandbox_free_error`.
-    let rc = unsafe { sandbox_init(profile.as_ptr(), 0, &mut errorbuf) };
+    let rc = unsafe { sandbox_init(profile.as_ptr(), flags, &mut errorbuf) };
     if rc == 0 {
       return Ok(());
     }
@@ -376,6 +425,149 @@ to probe against a self-bound listener."
     // SAFETY: `sandbox_free_error` is the documented destructor for the returned buffer.
     unsafe { sandbox_free_error(errorbuf) };
     Err(message)
+  }
+
+  // ============================================================================
+  // POSIX shared memory probes (shm_open + mmap)
+  // ============================================================================
+
+  fn setup_posix_shm_inputs() -> (Result<i32, io::Error>, CString) {
+    let pid = std::process::id();
+    let ts = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap_or_default()
+      .as_nanos();
+
+    let pre_name = format!("/fastrender_sandbox_probe_shm_pre_{pid}_{ts}");
+    let post_name = format!("/fastrender_sandbox_probe_shm_post_{pid}_{ts}");
+
+    let post_name = CString::new(post_name).expect("generated shm name contains no NUL");
+    let pre_name = CString::new(pre_name).expect("generated shm name contains no NUL");
+
+    (create_posix_shm_object_pre_sandbox(&pre_name), post_name)
+  }
+
+  fn create_posix_shm_object_pre_sandbox(name: &CString) -> io::Result<i32> {
+    // Best-effort cleanup in case a previous run left the name behind.
+    unsafe {
+      libc::shm_unlink(name.as_ptr());
+    }
+
+    // SAFETY: libc FFI. Returns an owned FD on success.
+    let fd = unsafe {
+      libc::shm_open(
+        name.as_ptr(),
+        libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+        0o600,
+      )
+    };
+    if fd < 0 {
+      return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: libc FFI.
+    let rc = unsafe { libc::ftruncate(fd, POSIX_SHM_LEN as libc::off_t) };
+    if rc != 0 {
+      let err = io::Error::last_os_error();
+      unsafe {
+        libc::shm_unlink(name.as_ptr());
+        libc::close(fd);
+      }
+      return Err(err);
+    }
+
+    // Unlink immediately so we don't leave named objects behind even if `shm_unlink` is denied
+    // after sandbox activation. The FD remains usable.
+    unsafe {
+      libc::shm_unlink(name.as_ptr());
+    }
+
+    Ok(fd)
+  }
+
+  fn best_effort_shm_unlink(name: &CString) {
+    unsafe {
+      libc::shm_unlink(name.as_ptr());
+    }
+  }
+
+  fn probe_posix_shm_create_after_sandbox(name: &CString) -> ActionResult {
+    // Best-effort cleanup if a previous run left the name behind.
+    best_effort_shm_unlink(name);
+
+    // SAFETY: libc FFI. Returns an owned FD on success.
+    let fd = unsafe {
+      libc::shm_open(
+        name.as_ptr(),
+        libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+        0o600,
+      )
+    };
+    if fd < 0 {
+      return ActionResult::failure(io::Error::last_os_error());
+    }
+
+    // SAFETY: libc FFI.
+    let rc = unsafe { libc::ftruncate(fd, POSIX_SHM_LEN as libc::off_t) };
+    if rc != 0 {
+      let err = io::Error::last_os_error();
+      unsafe {
+        libc::close(fd);
+      }
+      best_effort_shm_unlink(name);
+      return ActionResult::failure(err);
+    }
+
+    // SAFETY: libc FFI. `mmap` returns MAP_FAILED on error and sets errno.
+    let mapped = unsafe {
+      libc::mmap(
+        std::ptr::null_mut(),
+        POSIX_SHM_LEN,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_SHARED,
+        fd,
+        0,
+      )
+    };
+    if mapped == libc::MAP_FAILED {
+      let err = io::Error::last_os_error();
+      unsafe {
+        libc::close(fd);
+      }
+      best_effort_shm_unlink(name);
+      return ActionResult::failure(err);
+    }
+
+    unsafe {
+      // Touch the mapping to confirm it's writable.
+      (mapped as *mut u8).write_volatile(0xAB);
+      libc::munmap(mapped, POSIX_SHM_LEN);
+      libc::close(fd);
+    }
+    best_effort_shm_unlink(name);
+    ActionResult::success("created+mapped".to_string())
+  }
+
+  fn probe_posix_shm_mmap_inherited_fd(fd: i32) -> ActionResult {
+    // SAFETY: libc FFI. `mmap` returns MAP_FAILED on error and sets errno.
+    let mapped = unsafe {
+      libc::mmap(
+        std::ptr::null_mut(),
+        POSIX_SHM_LEN,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_SHARED,
+        fd,
+        0,
+      )
+    };
+    if mapped == libc::MAP_FAILED {
+      return ActionResult::failure(io::Error::last_os_error());
+    }
+    unsafe {
+      (mapped as *mut u8).write_volatile(0xCD);
+      libc::munmap(mapped, POSIX_SHM_LEN);
+    }
+    ActionResult::success("mapped".to_string())
   }
 }
 

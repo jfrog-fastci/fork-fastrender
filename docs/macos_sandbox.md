@@ -32,16 +32,19 @@ is listening there you may see `connection refused` instead of a sandbox permiss
 ## Modes
 
 - `--mode strict`
-  - Intended to be the “locked down” profile: denies network, denies reading `/etc/passwd`, and
-    denies writing under `temp_dir()`.
+  - Intended to be the “locked down” profile for iteration: denies network, denies reading
+    `/etc/passwd`, and denies writing under `temp_dir()`.
 - `--mode relaxed`
   - Still denies network and denies reading `/etc/passwd`, but may allow more filesystem access for
     iteration.
+- `--mode pure-computation`
+  - Applies Apple’s built-in `pure-computation` Seatbelt profile (very strict).
+  - This is the closest quick approximation to a “renderer can only compute” sandbox.
 
 ## IPC capability matrix (Seatbelt)
 
-The probe also attempts a few IPC primitives **after** applying the sandbox. This is intended to
-inform the renderer<->browser IPC transport choice.
+The probe attempts a few IPC primitives **after** applying the sandbox. This is intended to inform
+the renderer↔browser IPC transport choice.
 
 | Capability | Primitive | Strict profile expectation | Recommendation |
 |---|---|---|---|
@@ -49,7 +52,28 @@ inform the renderer<->browser IPC transport choice.
 | Anonymous Unix domain socketpair | `UnixStream::pair()` (`socketpair`) | **ALLOWED** | Prefer for bidirectional framed IPC on Unix-y platforms. If denied under a future profile, create the socketpair in the parent before sandboxing the renderer. |
 | Filesystem-backed Unix domain socket | `UnixListener::bind($TMPDIR/…)` | **DENIED** (filesystem write denied) | Avoid named UDS paths inside the renderer sandbox. Use inherited FDs (pipes/socketpair), or a macOS-specific transport (Mach/XPC) if needed. |
 
-### Design implications
+### POSIX shared memory (`shm_open`) + `mmap` (Seatbelt)
+
+FastRender’s planned “shared memory pixel buffer” IPC design depends on whether the renderer
+sandbox can:
+
+1. Create new POSIX shared memory objects (`shm_open` + `ftruncate` + `mmap`) *after* sandboxing.
+2. `mmap` an **inherited** shared memory fd (opened before sandbox activation).
+
+The probe prints `ALLOWED` / `DENIED` and the relevant `errno` for both cases.
+
+#### Recommendation (pixel buffer IPC)
+
+If `shm_open` is **DENIED** under `pure-computation`, but mapping an inherited fd is **ALLOWED**,
+the recommended design is:
+
+> **Browser creates the POSIX shared memory object and passes the fd to the renderer; the renderer
+> only `mmap`s the inherited fd.**
+
+This avoids needing “create global named objects” privileges in the renderer sandbox while still
+allowing a shared pixel buffer.
+
+## Design implications
 
 - Do **not** rely on creating/binding IPC endpoints that require filesystem access from inside the
   sandbox.
