@@ -86,7 +86,7 @@ should take the spellings *verbatim* from the spec/UCD.
 
 Canonical property names (exact spellings used by the generator):
 
-```
+```text
 ASCII
 ASCII_Hex_Digit
 Alphabetic
