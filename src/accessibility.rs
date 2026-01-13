@@ -10,6 +10,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ptr;
 
+// AccessKit integration (used by the windowed browser UI) lives in a separate submodule so the core
+// renderer can compile without pulling in the optional `accesskit` dependency.
+#[cfg(feature = "browser_ui")]
+pub mod accesskit_tree;
+
 fn is_html_ascii_whitespace(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
 }
