@@ -10432,30 +10432,94 @@ fn array_species_create_with_host_and_hooks(
   original: GcObject,
   len: usize,
 ) -> Result<GcObject, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-arrayspeciescreate
+  //
+  // Note: `ArraySpeciesCreate` has cross-realm semantics that are *not* captured by a direct call to
+  // `SpeciesConstructor(originalArray, %Array%)`: if `originalArray.constructor` is the `%Array%`
+  // intrinsic of a different realm, it must be treated as `undefined` without consulting
+  // `@@species`.
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(original))?;
+
   // 1. Let isArray be ? IsArray(originalArray).
-  let is_array =
-    crate::spec_ops::is_array_with_host_and_hooks(vm, scope, host, hooks, Value::Object(original))?;
+  let is_array = crate::spec_ops::is_array_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    Value::Object(original),
+  )?;
   if !is_array {
     // 2. If isArray is false, return ? ArrayCreate(length).
-    return array_create_with_intrinsics(vm, scope, len);
+    return array_create_with_intrinsics(vm, &mut scope, len);
   }
 
-  let intr = require_intrinsics(vm)?;
-  let default_ctor = Value::Object(intr.array_constructor());
-
-  // 3. Let C be ? SpeciesConstructor(originalArray, %Array%).
-  let ctor = crate::spec_ops::species_constructor_with_host_and_hooks(
+  // 3. Let C be ? Get(originalArray, "constructor").
+  let constructor_key = string_key(&mut scope, "constructor")?;
+  let mut c = scope.get_with_host_and_hooks(
     vm,
-    scope,
     host,
     hooks,
     original,
-    default_ctor,
+    constructor_key,
+    Value::Object(original),
   )?;
+  scope.push_root(c)?;
 
-  // 4. Return ? Construct(C, « length »).
+  // 4. If IsConstructor(C) is true, then:
+  if scope.heap().is_constructor(c)? {
+    // a. Let thisRealm be the current Realm Record.
+    // b. Let realmC be ? GetFunctionRealm(C).
+    // c. If thisRealm and realmC are not the same Realm Record, then:
+    //    i. If SameValue(C, realmC.[[Intrinsics]].[[%Array%]]) is true, let C be undefined.
+    let this_realm = vm.current_realm().or_else(|| vm.active_realm_state());
+    let realm_c = match c {
+      Value::Object(obj) => scope.heap().get_function_job_realm(obj),
+      _ => None,
+    };
+    if let (Some(this_realm), Some(realm_c)) = (this_realm, realm_c) {
+      if this_realm != realm_c {
+        if let Some(intr_c) = vm.intrinsics_for_realm(realm_c) {
+          if c == Value::Object(intr_c.array_constructor()) {
+            c = Value::Undefined;
+          }
+        }
+      }
+    }
+  }
+
+  // 5. If Type(C) is Object, then:
+  if let Value::Object(c_obj) = c {
+    let species_sym = require_intrinsics(vm)?.well_known_symbols().species;
+    scope.push_root(Value::Symbol(species_sym))?;
+    let species_key = PropertyKey::from_symbol(species_sym);
+
+    // a. Set C to ? Get(C, @@species).
+    let mut species =
+      scope.get_with_host_and_hooks(vm, host, hooks, c_obj, species_key, Value::Object(c_obj))?;
+    scope.push_root(species)?;
+
+    // b. If C is null, set C to undefined.
+    if matches!(species, Value::Null) {
+      species = Value::Undefined;
+    }
+    c = species;
+  }
+
+  // 6. If C is undefined, return ? ArrayCreate(length).
+  if matches!(c, Value::Undefined) {
+    return array_create_with_intrinsics(vm, &mut scope, len);
+  }
+
+  // 7. If IsConstructor(C) is false, throw a TypeError exception.
+  if !scope.heap().is_constructor(c)? {
+    return Err(VmError::TypeError("ArraySpeciesCreate: @@species is not a constructor"));
+  }
+
+  // 8. Return ? Construct(C, « length »).
   let constructed =
-    vm.construct_with_host_and_hooks(host, scope, hooks, ctor, &[Value::Number(len as f64)], ctor)?;
+    vm.construct_with_host_and_hooks(host, &mut scope, hooks, c, &[Value::Number(len as f64)], c)?;
   let Value::Object(obj) = constructed else {
     return Err(VmError::InvariantViolation(
       "ArraySpeciesCreate: Construct did not return an object",
@@ -12115,12 +12179,9 @@ pub fn array_prototype_concat(
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
-  let intr = require_intrinsics(vm)?;
-  let out = scope.alloc_array(0)?;
+  // `A = ArraySpeciesCreate(O, 0)`.
+  let out = array_species_create_with_host_and_hooks(vm, &mut scope, host, hooks, obj, 0)?;
   scope.push_root(Value::Object(out))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(out, Some(intr.array_prototype()))?;
 
   let length_key = string_key(&mut scope, "length")?;
   // Per ECMA-262 `Array.prototype.concat`, `n` is the next insertion index and is guarded against
@@ -12189,11 +12250,20 @@ pub fn array_prototype_concat(
             key,
             Value::Object(source_obj),
           )?;
+          iter_scope.push_root(value)?;
 
           let to_s = alloc_string_from_u64(&mut iter_scope, *n)?;
           iter_scope.push_root(Value::String(to_s))?;
           let to_key = PropertyKey::from_string(to_s);
-          iter_scope.create_data_property_or_throw(out, to_key, value)?;
+          crate::spec_ops::create_data_property_or_throw_with_host_and_hooks(
+            vm,
+            &mut iter_scope,
+            host,
+            hooks,
+            out,
+            to_key,
+            value,
+          )?;
         }
         *n = (*n).checked_add(1).ok_or(VmError::OutOfMemory)?;
       }
@@ -12207,10 +12277,19 @@ pub fn array_prototype_concat(
       ));
     }
     let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(item)?;
     let to_s = alloc_string_from_u64(&mut iter_scope, *n)?;
     iter_scope.push_root(Value::String(to_s))?;
     let to_key = PropertyKey::from_string(to_s);
-    iter_scope.create_data_property_or_throw(out, to_key, item)?;
+    crate::spec_ops::create_data_property_or_throw_with_host_and_hooks(
+      vm,
+      &mut iter_scope,
+      host,
+      hooks,
+      out,
+      to_key,
+      item,
+    )?;
     *n = (*n).checked_add(1).ok_or(VmError::OutOfMemory)?;
     Ok(())
   };
@@ -12221,8 +12300,9 @@ pub fn array_prototype_concat(
   }
 
   // Ensure the final length accounts for trailing holes created by spreading arrays.
-  let ok = scope.ordinary_set_with_host_and_hooks(
+  let ok = crate::spec_ops::internal_set_with_host_and_hooks(
     vm,
+    &mut scope,
     host,
     hooks,
     out,
@@ -12811,12 +12891,9 @@ pub fn array_prototype_slice(
   let (start, end) = slice_range_from_args(vm, &mut scope, host, hooks, len, args)?;
   let count = end.saturating_sub(start);
 
-  let intr = require_intrinsics(vm)?;
-  let out = scope.alloc_array(count)?;
+  // `A = ArraySpeciesCreate(O, count)`.
+  let out = array_species_create_with_host_and_hooks(vm, &mut scope, host, hooks, obj, count)?;
   scope.push_root(Value::Object(out))?;
-  scope
-    .heap_mut()
-    .object_set_prototype(out, Some(intr.array_prototype()))?;
 
   for k in 0..count {
     if k % 1024 == 0 {
@@ -12840,7 +12917,16 @@ pub fn array_prototype_slice(
     }
 
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
-    iter_scope.create_data_property_or_throw(out, to_key, value)?;
+    iter_scope.push_root(value)?;
+    crate::spec_ops::create_data_property_or_throw_with_host_and_hooks(
+      vm,
+      &mut iter_scope,
+      host,
+      hooks,
+      out,
+      to_key,
+      value,
+    )?;
   }
 
   Ok(Value::Object(out))

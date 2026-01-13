@@ -727,6 +727,29 @@ impl Vm {
     Ok(())
   }
 
+  /// Returns the intrinsics for `realm` if the VM has previously initialized or loaded that realm.
+  ///
+  /// This is primarily used by spec operations that need to consult a *different* realm's
+  /// intrinsics without switching the VM's active realm state (e.g. `ArraySpeciesCreate`'s
+  /// cross-realm `%Array%` check).
+  pub(crate) fn intrinsics_for_realm(&self, realm: RealmId) -> Option<Intrinsics> {
+    // If the requested realm is the currently-active realm, prefer the live `self.intrinsics`
+    // snapshot so callers observe any in-place updates.
+    if self.active_realm_id == Some(realm) || self.intrinsics_realm == Some(realm) {
+      return self.intrinsics;
+    }
+    self.realm_states.get(&realm).map(|state| state.intrinsics)
+  }
+
+  /// Returns the realm id associated with the VM's currently loaded per-realm state, if any.
+  ///
+  /// This is distinct from [`Vm::current_realm`], which reflects the realm of the active execution
+  /// context stack. Host code may call into the VM without an execution context (e.g. native tests);
+  /// in that case, built-ins can treat this as the "current" realm for realm-sensitive operations.
+  pub(crate) fn active_realm_state(&self) -> Option<RealmId> {
+    self.active_realm_id.or(self.intrinsics_realm)
+  }
+
   pub(crate) fn global_var_names_contains(&self, name: &str) -> bool {
     self.global_var_names.contains(name)
   }
