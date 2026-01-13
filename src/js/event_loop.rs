@@ -119,6 +119,11 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
     }
   }
 
+  fn wake_callback(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+    let lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.wake.clone()
+  }
+
   pub fn set_wake_callback(&self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
     let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.wake = cb;
@@ -572,14 +577,7 @@ impl<Host: 'static> EventLoop<Host> {
     // Preserve the external wake callback across resets: it is host/embedding state, not document
     // state, and embedding-level wake mechanisms (condvars, UI event-loop proxies, etc) should keep
     // working after navigation swaps the underlying event loop.
-    let wake = {
-      let lock = self
-        .external_task_queue
-        .inner
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-      lock.wake.clone()
-    };
+    let wake_callback = self.external_task_queue.wake_callback();
 
     // Close the current external task queue before we overwrite `self`.
     //
@@ -600,7 +598,7 @@ impl<Host: 'static> EventLoop<Host> {
     new_event_loop.set_default_deadline_stage(default_deadline_stage);
     new_event_loop.microtask_checkpoint_hooks = hooks;
     new_event_loop.currently_running_task = currently_running_task;
-    new_event_loop.set_external_wake_callback(wake);
+    new_event_loop.set_external_wake_callback(wake_callback);
     *self = new_event_loop;
   }
 
