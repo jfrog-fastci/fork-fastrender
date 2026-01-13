@@ -932,8 +932,7 @@ impl BrowserDocument {
   /// Updates the viewport size (in CSS px), marking layout+paint dirty.
   pub fn set_viewport(&mut self, width: u32, height: u32) {
     self.options.viewport = Some((width, height));
-    self.layout_dirty = true;
-    self.paint_dirty = true;
+    self.invalidate_layout();
   }
 
   /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
@@ -944,8 +943,7 @@ impl BrowserDocument {
     let sanitized = super::sanitize_scale(Some(dpr));
     if sanitized != self.options.device_pixel_ratio {
       self.options.device_pixel_ratio = sanitized;
-      self.layout_dirty = true;
-      self.paint_dirty = true;
+      self.invalidate_layout();
     }
   }
 
@@ -966,6 +964,20 @@ impl BrowserDocument {
   pub fn invalidate_paint(&mut self) {
     self.paint_dirty = true;
   }
+
+  /// Marks the layout stage dirty without invalidating style.
+  ///
+  /// This is intended for dynamic sources whose intrinsic sizing information can change without
+  /// any DOM mutations (for example: video metadata becoming available, or aspect ratio updates).
+  /// Calling this ensures the next [`render_if_needed`](Self::render_if_needed) recomputes layout
+  /// (and then paints) while reusing the cached stylesheet/styled tree when possible.
+  ///
+  /// This sets `layout_dirty = true` and `paint_dirty = true` while leaving `style_dirty`
+  /// unchanged, and does not clear any existing dirtiness flags.
+  pub fn invalidate_layout(&mut self) {
+    self.layout_dirty = true;
+    self.paint_dirty = true;
+  }
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
   pub fn set_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
     if self.options.scroll_x != scroll_x || self.options.scroll_y != scroll_y {
@@ -975,7 +987,7 @@ impl BrowserDocument {
       );
       self.options.scroll_x = scroll_x;
       self.options.scroll_y = scroll_y;
-      self.paint_dirty = true;
+      self.invalidate_paint();
     }
   }
 
@@ -988,7 +1000,7 @@ impl BrowserDocument {
     let sanitized = super::sanitize_animation_time_ms(time_ms);
     if sanitized != self.options.animation_time {
       self.options.animation_time = sanitized;
-      self.paint_dirty = true;
+      self.invalidate_paint();
     }
   }
 
@@ -1019,7 +1031,7 @@ impl BrowserDocument {
       self.options.element_scroll_offsets = elements;
       self.options.scroll_delta = viewport_delta;
       self.options.element_scroll_deltas = elements_delta;
-      self.paint_dirty = true;
+      self.invalidate_paint();
     }
   }
 
@@ -1867,6 +1879,45 @@ mod tests {
       stages.contains(&StageHeartbeat::Layout),
       "expected layout stage after DPR change; got {stages:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn invalidate_paint_triggers_repaint_without_layout() -> Result<()> {
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      "<div>hi</div>",
+      RenderOptions::default().with_viewport(32, 32),
+    )?;
+
+    // Prime the layout cache.
+    document.render_frame()?;
+    assert!(
+      !document.needs_layout(),
+      "expected needs_layout to be false after first render"
+    );
+
+    document.invalidate_paint();
+    assert!(
+      !document.needs_layout(),
+      "expected invalidate_paint to not mark layout dirty"
+    );
+
+    let stages = capture_stages(|| {
+      let painted = document.render_if_needed()?;
+      assert!(painted.is_some(), "expected render_if_needed to repaint");
+      Ok(())
+    })?;
+    assert!(
+      !stages.contains(&StageHeartbeat::Layout),
+      "expected paint-only rerender; got {stages:?}"
+    );
+    assert!(
+      stages.contains(&StageHeartbeat::PaintBuild)
+        || stages.contains(&StageHeartbeat::PaintRasterize),
+      "expected paint stage heartbeats; got {stages:?}"
+    );
+
     Ok(())
   }
 
