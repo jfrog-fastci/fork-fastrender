@@ -5927,14 +5927,15 @@ impl<'a> Evaluator<'a> {
       }
     };
 
-    let thrown_at_stmt = |value: Value| {
+    let thrown_at_stmt = |scope: &mut Scope<'_>, value: Value| {
       let mut stack = self.vm.capture_stack();
       update_top_frame(&mut stack);
+      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
       Thrown { value, stack }
     };
 
     match res {
-      Err(VmError::Throw(value)) => Ok(Completion::Throw(thrown_at_stmt(value))),
+      Err(VmError::Throw(value)) => Ok(Completion::Throw(thrown_at_stmt(scope, value))),
       Err(VmError::ThrowWithStack { value, mut stack }) => {
         // If the stack trace was captured while executing a native builtin, the top frame's
         // location will be `<native>:0:0`. Patch that frame to the current statement location so
@@ -5945,6 +5946,7 @@ impl<'a> Evaluator<'a> {
         if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
           update_top_frame(&mut stack);
         }
+        crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
         Ok(Completion::Throw(Thrown { value, stack }))
       }
       Err(VmError::TypeError(message)) => {
@@ -5953,7 +5955,7 @@ impl<'a> Evaluator<'a> {
           .intrinsics()
           .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
         let err = new_error(scope, intr.type_error_prototype(), "TypeError", message)?;
-        Ok(Completion::Throw(thrown_at_stmt(err)))
+        Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
       Err(VmError::RangeError(message)) => {
         let intr = self
@@ -5961,7 +5963,7 @@ impl<'a> Evaluator<'a> {
           .intrinsics()
           .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
         let err = new_error(scope, intr.range_error_prototype(), "RangeError", message)?;
-        Ok(Completion::Throw(thrown_at_stmt(err)))
+        Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
       Err(VmError::PrototypeCycle) => {
         let intr = self
@@ -5974,7 +5976,7 @@ impl<'a> Evaluator<'a> {
           "TypeError",
           "prototype cycle",
         )?;
-        Ok(Completion::Throw(thrown_at_stmt(err)))
+        Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
       Err(VmError::PrototypeChainTooDeep) => {
         let intr = self
@@ -5987,7 +5989,7 @@ impl<'a> Evaluator<'a> {
           "TypeError",
           "prototype chain too deep",
         )?;
-        Ok(Completion::Throw(thrown_at_stmt(err)))
+        Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
       Err(VmError::InvalidPropertyDescriptorPatch) => {
         let intr = self
@@ -6000,7 +6002,7 @@ impl<'a> Evaluator<'a> {
           "TypeError",
           "invalid property descriptor patch: cannot mix data and accessor fields",
         )?;
-        Ok(Completion::Throw(thrown_at_stmt(err)))
+        Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
       Err(VmError::NotCallable) => {
         let intr = self
@@ -6013,7 +6015,7 @@ impl<'a> Evaluator<'a> {
           "TypeError",
           "value is not callable",
         )?;
-        Ok(Completion::Throw(thrown_at_stmt(err)))
+        Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
       Err(VmError::NotConstructable) => {
         let intr = self
@@ -6026,7 +6028,7 @@ impl<'a> Evaluator<'a> {
           "TypeError",
           "value is not a constructor",
         )?;
-        Ok(Completion::Throw(thrown_at_stmt(err)))
+        Ok(Completion::Throw(thrown_at_stmt(scope, err)))
       }
       other => other,
     }
@@ -7423,6 +7425,7 @@ impl<'a> Evaluator<'a> {
       });
     }
 
+    crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
     Ok(Completion::Throw(Thrown { value, stack }))
   }
 
@@ -7441,11 +7444,12 @@ impl<'a> Evaluator<'a> {
 
     if matches!(result, Completion::Throw(_)) {
       if let Some(catch) = &stmt.catch {
-        let thrown = match result {
-          Completion::Throw(thrown) => thrown.value,
+        let (thrown_value, thrown_stack) = match result {
+          Completion::Throw(thrown) => (thrown.value, thrown.stack),
           _ => return Err(VmError::Unimplemented("try/catch missing thrown value")),
         };
-        result = self.eval_catch(&mut try_scope, &catch.stx, thrown)?;
+        crate::error_object::attach_stack_property_for_throw(&mut try_scope, thrown_value, &thrown_stack);
+        result = self.eval_catch(&mut try_scope, &catch.stx, thrown_value)?;
       }
     }
 
@@ -14837,15 +14841,16 @@ fn async_try_after_wrapped(
 ) -> Result<AsyncEval<Completion>, VmError> {
   if matches!(result, Completion::Throw(_)) {
     if let Some(catch) = &stmt.catch {
-      let thrown = match result {
-        Completion::Throw(thrown) => thrown.value,
+      let (thrown_value, thrown_stack) = match result {
+        Completion::Throw(thrown) => (thrown.value, thrown.stack),
         _ => {
           return Err(VmError::InvariantViolation(
             "async try expected throw completion when entering catch",
           ));
         }
       };
-      match async_eval_catch(evaluator, scope, &catch.stx, thrown)? {
+      crate::error_object::attach_stack_property_for_throw(scope, thrown_value, &thrown_stack);
+      match async_eval_catch(evaluator, scope, &catch.stx, thrown_value)? {
         AsyncEval::Complete(c) => result = c,
         AsyncEval::Suspend(mut suspend) => {
           async_frames_push(
@@ -15017,6 +15022,7 @@ fn async_eval_stmt_labelled(
 
 fn async_throw_completion(
   evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
   stmt: &Node<ThrowStmt>,
   value: Value,
 ) -> Completion {
@@ -15040,6 +15046,7 @@ fn async_throw_completion(
     });
   }
 
+  crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
   Completion::Throw(Thrown { value, stack })
 }
 
@@ -15049,7 +15056,7 @@ fn async_eval_throw_stmt(
   stmt: &Node<ThrowStmt>,
 ) -> Result<AsyncEval<Completion>, VmError> {
   match async_eval_expr(evaluator, scope, &stmt.stx.value) {
-    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, stmt, v))),
+    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v))),
     Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,
@@ -25906,7 +25913,7 @@ fn async_resume_from_frames(
         AsyncState::Expr(expr_res) => match expr_res {
           Ok(v) => {
             let stmt = unsafe { &*stmt };
-            state = AsyncState::Completion(async_throw_completion(evaluator, stmt, v));
+            state = AsyncState::Completion(async_throw_completion(evaluator, scope, stmt, v));
           }
           Err(err) => state = AsyncState::Completion(completion_from_expr_result(Err(err))?),
         },
@@ -28423,11 +28430,12 @@ fn gen_try_after_wrapped(
 ) -> Result<GenEval<Completion>, VmError> {
   if matches!(result, Completion::Throw(_)) {
     if let Some(catch) = &stmt.catch {
-      let thrown = match result {
-        Completion::Throw(thrown) => thrown.value,
+      let (thrown_value, thrown_stack) = match result {
+        Completion::Throw(thrown) => (thrown.value, thrown.stack),
         _ => unreachable!(),
       };
-      match gen_eval_catch(evaluator, scope, &catch.stx, thrown)? {
+      crate::error_object::attach_stack_property_for_throw(scope, thrown_value, &thrown_stack);
+      match gen_eval_catch(evaluator, scope, &catch.stx, thrown_value)? {
         GenEval::Complete(c) => result = c,
         GenEval::Suspend(mut suspend) => {
           gen_frames_push(
@@ -29353,6 +29361,7 @@ fn gen_eval_stmt_labelled(
 
 fn gen_throw_completion(
   evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
   stmt: &Node<ThrowStmt>,
   value: Value,
 ) -> Completion {
@@ -29380,6 +29389,7 @@ fn gen_throw_completion(
     });
   }
 
+  crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
   Completion::Throw(Thrown { value, stack })
 }
 
@@ -29390,7 +29400,7 @@ fn gen_eval_throw_stmt(
 ) -> Result<GenEval<Completion>, VmError> {
   match gen_eval_expr(evaluator, scope, &stmt.stx.value)? {
     GenEval::Complete(c) => Ok(GenEval::Complete(match c {
-      Completion::Normal(v) => gen_throw_completion(evaluator, stmt, v.unwrap_or(Value::Undefined)),
+      Completion::Normal(v) => gen_throw_completion(evaluator, scope, stmt, v.unwrap_or(Value::Undefined)),
       abrupt => abrupt,
     })),
     GenEval::Suspend(mut suspend) => {
@@ -30843,7 +30853,7 @@ fn gen_resume_from_frames(
       GenFrame::Throw { stmt } => match state {
         Completion::Normal(v) => {
           let stmt = unsafe { &*stmt };
-          state = gen_throw_completion(evaluator, stmt, v.unwrap_or(Value::Undefined));
+          state = gen_throw_completion(evaluator, scope, stmt, v.unwrap_or(Value::Undefined));
         }
         abrupt => state = abrupt,
       },
