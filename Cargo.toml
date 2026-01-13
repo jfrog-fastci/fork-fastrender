@@ -380,6 +380,10 @@ harness = false
 name = "audio_benches"
 harness = false
 
+[[bench]]
+name = "chrome_frame_render"
+harness = false
+
 # Default release profile: fast compilation, good performance.
 #
 # This is what agents and developers use for day-to-day work. Optimized but
