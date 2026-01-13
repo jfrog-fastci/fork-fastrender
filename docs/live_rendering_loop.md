@@ -221,13 +221,16 @@ You can inject a `VirtualClock` by constructing the tab with a custom `EventLoop
 use std::sync::Arc;
 
 use fastrender::{BrowserTab, BrowserTabHost, RenderOptions, Result, VmJsBrowserTabExecutor};
-use fastrender::js::{EventLoop, VirtualClock};
+use fastrender::js::{Clock, EventLoop, VirtualClock};
 
 fn main() -> Result<()> {
     let clock = Arc::new(VirtualClock::new());
 
     // The event loop clock drives timers and the rAF timestamp argument.
-    let event_loop: EventLoop<BrowserTabHost> = EventLoop::with_clock(clock.clone());
+    //
+    // (The explicit `Arc<dyn Clock>` cast is just to make the trait-object boundary obvious.)
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let event_loop: EventLoop<BrowserTabHost> = EventLoop::with_clock(clock_for_loop);
 
     let mut tab = BrowserTab::from_html_with_event_loop(
         "<!doctype html><p>hi</p>",
