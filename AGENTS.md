@@ -6,23 +6,16 @@ This file contains **repo-wide** rules shared by all workstreams.
 
 Pick one workstream and follow its specific doc. Work can proceed **in parallel** across all workstreams.
 
-### Core Rendering Engine
+### Rendering Engine (correctness & capability)
 
 - **Capability buildout (spec-first primitives)**: `instructions/capability_buildout.md`
 - **Pageset page loop (fix pages one-by-one)**: `instructions/pageset_page_loop.md`
-- **Live rendering (dynamic browser, not static images)**: `instructions/live_rendering.md` ⭐ HIGH PRIORITY
-- **Video support**: `instructions/video_support.md`
 
-### Browser Application
+### Browser Application (user-facing product)
 
 - **Browser chrome (tabs, navigation, address bar)**: `instructions/browser_chrome.md`
 - **Browser responsiveness (performance, not aesthetics)**: `instructions/browser_responsiveness.md`
 - **Browser page interaction (forms, focus, scrolling)**: `instructions/browser_interaction.md`
-
-### Architecture & Security
-
-- **Multiprocess & security (process isolation, sandboxing)**: `instructions/multiprocess_security.md`
-- **Renderer chrome (future: UI rendered by FastRender)**: `instructions/renderer_chrome.md`
 
 ### JavaScript (full browser JS support)
 
@@ -37,13 +30,9 @@ Pick one workstream and follow its specific doc. Work can proceed **in parallel*
 |------------|------|--------------|
 | `capability_buildout` | CSS, layout algorithms, paint correctness | Page-specific fixes, browser UI |
 | `pageset_page_loop` | Fixing specific pages end-to-end | Generic capability work |
-| `live_rendering` | Dynamic rendering, JS execution, repaint loop | Static image rendering |
-| `video_support` | `<video>`, codecs, HTMLMediaElement | Streaming protocols, DRM |
-| `browser_chrome` | Tabs, address bar, navigation, shortcuts | Visual aesthetics, page interaction |
-| `browser_responsiveness` | Frame rate, input latency, scroll perf | Visual design, theming |
+| `browser_chrome` | Tabs, address bar, navigation, shortcuts | Visual design, page interaction |
+| `browser_responsiveness` | Frame rate, input latency, scroll perf | Visual design, chrome functionality |
 | `browser_interaction` | Forms, focus, selection, scrolling | Chrome UI, JS events |
-| `multiprocess_security` | Process isolation, sandboxing, IPC | Rendering, UI |
-| `renderer_chrome` | Rendering browser UI with FastRender | Current egui implementation |
 | `js_engine` | vm-js execution, GC, spec compliance | DOM, Web APIs |
 | `js_dom` | Document, Element, Node, events | Web APIs, script loading |
 | `js_web_apis` | fetch, URL, timers, storage, crypto | DOM, engine internals |
