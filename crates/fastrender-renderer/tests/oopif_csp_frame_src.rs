@@ -5,6 +5,8 @@ use fastrender_ipc::csp::FrameNode;
 use fastrender_ipc::{
   composite_subframes, BrowserToRenderer, FrameId, NavigationContext, ReferrerPolicy, SiteKeyFactory,
 };
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[test]
@@ -145,6 +147,217 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
 
   parent_renderer.shutdown();
   let _ = parent_server.shutdown_and_join();
+}
+
+#[test]
+fn oopif_parent_csp_src_change_to_blocked_url_does_not_navigate_child() {
+  let _net_guard = net_test_lock();
+
+  let Some(blocked_server) = TestServer::start(
+    "oopif_parent_csp_src_change_blocked_child",
+    |path| match path {
+      "/blocked.html" => Some((b"<!doctype html><p>blocked</p>".to_vec(), "text/html")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+  let blocked_url = blocked_server.url("blocked.html");
+  let blocked_src = blocked_url
+    .strip_prefix("http:")
+    .unwrap_or(blocked_url.as_str())
+    .to_string();
+
+  let index_counter = Arc::new(AtomicUsize::new(0));
+  let index_counter_for_server = Arc::clone(&index_counter);
+  let blocked_src_for_server = blocked_src.clone();
+
+  let Some(server) = TestServer::start(
+    "oopif_parent_csp_src_change_parent",
+    move |path| match path {
+      "/index.html" => {
+        let idx = index_counter_for_server.fetch_add(1, Ordering::SeqCst);
+        let html = if idx == 0 {
+          r#"<!doctype html><html><head>
+              <meta http-equiv="Content-Security-Policy" content="frame-src 'self'">
+              </head><body>
+              <iframe src="/frame.html"></iframe>
+              </body></html>"#
+            .to_string()
+        } else {
+          format!(
+            "<!doctype html><html><head>\
+             <meta http-equiv=\"Content-Security-Policy\" content=\"frame-src 'self'\">\
+             </head><body>\
+             <iframe src=\"{blocked_src_for_server}\"></iframe>\
+             </body></html>"
+          )
+        };
+        Some((html.into_bytes(), "text/html"))
+      }
+      "/frame.html" => Some((b"<!doctype html><p>child</p>".to_vec(), "text/html")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+
+  let parent_url = server.url("index.html");
+  let expected_allowed_child_url = server.url("frame.html");
+
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
+
+  let mut parent_renderer = RendererProc::spawn();
+  let parent_frame = FrameId(1);
+  parent_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: parent_frame,
+  });
+  parent_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: parent_frame,
+    width: 2,
+    height: 2,
+    dpr: 1.0,
+  });
+  parent_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: parent_frame,
+    url: parent_url.clone(),
+    context: NavigationContext {
+      referrer_url: None,
+      referrer_policy: ReferrerPolicy::default(),
+      site_key: parent_site_key.clone(),
+      ..Default::default()
+    },
+  });
+
+  // First paint: iframe src is same-origin /frame.html (allowed by frame-src 'self').
+  parent_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: parent_frame,
+  });
+  let ready1 = parent_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(
+    ready1.frame_id, parent_frame,
+    "expected FrameReady for parent (err={:?})",
+    ready1.last_error
+  );
+  assert_eq!(ready1.subframes.len(), 1);
+  let (committed1, csp1) = ready1
+    .last_committed
+    .clone()
+    .expect("expected NavigationCommitted before FrameReady");
+  let mut node = FrameNode::new(parent_frame);
+  node.navigation_committed(committed1, csp1);
+
+  let iframe1 = &ready1.subframes[0];
+  let src1 = iframe1
+    .src
+    .as_deref()
+    .expect("expected iframe src");
+  assert_eq!(src1, "/frame.html");
+  let resolved_allowed = node
+    .check_frame_src(src1)
+    .expect("expected initial iframe to be allowed by frame-src 'self'");
+  assert_eq!(resolved_allowed.as_str(), expected_allowed_child_url);
+
+  // Spawn a child renderer and navigate to the allowed URL.
+  let mut child_renderer = RendererProc::spawn();
+  let child_frame = iframe1.child;
+  child_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: child_frame,
+  });
+  child_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: child_frame,
+    width: 1,
+    height: 1,
+    dpr: 1.0,
+  });
+  let child_ctx = NavigationContext::for_subframe_navigation_from_info(
+    &site_keys,
+    resolved_allowed.as_str(),
+    Some(&parent_site_key),
+    parent_url.clone(),
+    ReferrerPolicy::default(),
+    iframe1,
+  );
+  child_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: child_frame,
+    url: resolved_allowed.to_string(),
+    context: child_ctx,
+  });
+  child_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: child_frame,
+  });
+  let child_ready = child_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(
+    child_ready.frame_id, child_frame,
+    "expected FrameReady for child (err={:?})",
+    child_ready.last_error
+  );
+  server.wait_for_request(
+    |req| req.path == "/frame.html",
+    "expected child renderer to fetch /frame.html",
+  );
+
+  // Second paint: parent HTML changes iframe src to a cross-origin URL; the browser must block the
+  // navigation and keep the existing child content.
+  parent_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: parent_frame,
+  });
+  let ready2 = parent_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(
+    ready2.frame_id, parent_frame,
+    "expected FrameReady for parent after src change (err={:?})",
+    ready2.last_error
+  );
+  assert_eq!(ready2.subframes.len(), 1);
+  let (committed2, csp2) = ready2
+    .last_committed
+    .clone()
+    .expect("expected NavigationCommitted before FrameReady");
+  node.navigation_committed(committed2, csp2);
+
+  let iframe2 = &ready2.subframes[0];
+  assert_eq!(iframe2.child, child_frame, "iframe FrameId should be stable");
+  let src2 = iframe2
+    .src
+    .as_deref()
+    .expect("expected iframe src after update");
+  assert_eq!(src2, blocked_src, "expected raw src to reflect updated HTML");
+
+  let diag = node
+    .check_frame_src(src2)
+    .expect_err("expected updated iframe src to be blocked by frame-src 'self'");
+  assert_eq!(
+    diag,
+    format!("Blocked by Content-Security-Policy (frame-src) for requested URL: {blocked_url}")
+  );
+
+  // The browser should continue presenting the existing child surface (no navigation).
+  let composed1 = composite_subframes(
+    ready1.buffer.clone(),
+    std::iter::once((iframe1, &child_ready.buffer)),
+  )
+  .expect("composite first paint");
+  let composed2 = composite_subframes(
+    ready2.buffer.clone(),
+    std::iter::once((iframe2, &child_ready.buffer)),
+  )
+  .expect("composite second paint");
+  assert_eq!(
+    composed2.rgba8, composed1.rgba8,
+    "expected blocked src change to keep previous iframe content"
+  );
+
+  // The blocked server must not be contacted (browser refused to navigate).
+  let blocked_captured = blocked_server.shutdown_and_join();
+  assert!(
+    blocked_captured.is_empty(),
+    "expected no network requests to blocked iframe URL, got {blocked_captured:?}"
+  );
+
+  child_renderer.shutdown();
+  parent_renderer.shutdown();
+  let _ = server.shutdown_and_join();
 }
 
 #[test]
