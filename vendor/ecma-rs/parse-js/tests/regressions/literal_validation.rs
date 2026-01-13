@@ -185,3 +185,32 @@ fn unicode_mode_invalid_regex_escapes_are_rejected() {
   assert!(parse("/\\^/u").is_ok());
   assert!(parse("/[\\-]/u").is_ok());
 }
+
+#[test]
+fn unicode_mode_character_class_ranges_reject_property_escape_endpoints() {
+  for src in [
+    "/[\\p{Hex}--]/u",
+    "/[--\\p{Hex}]/u",
+    "/[\\p{Hex}-\\uFFFF]/u",
+    "/[\\uFFFF-\\p{Hex}]/u",
+  ] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+}
+
+#[test]
+fn unicode_mode_character_class_ranges_reject_builtin_class_escape_endpoints() {
+  for src in ["/[\\d-a]/u", "/[a-\\d]/u", "/[\\s-z]/u", "/[z-\\w]/u"] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+}
