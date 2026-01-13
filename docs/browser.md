@@ -23,7 +23,9 @@ Code lives in:
   extensions/devtools/service workers, etc.).
 - A JavaScript-capable browser (yet): the `browser` binary does not currently execute author
   JavaScript (`<script>` does not run in the GUI today). See [javascript.md](javascript.md) and
-  [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream.
+  [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream, and
+  [runtime_stacks.md](runtime_stacks.md) for which public API containers currently include JS +
+  an event loop.
 - A renderer-chrome browser UI (yet): the `browser` chrome is currently rendered via egui. The
   renderer-chrome workstream aims to render the chrome UI using FastRender; trusted chrome pages
   would then use the privileged JS bridge documented in [chrome_js_bridge.md](chrome_js_bridge.md).
