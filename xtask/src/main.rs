@@ -2390,7 +2390,6 @@ fn run_ui_perf_smoke(args: UiPerfSmokeArgs) -> Result<()> {
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg("run");
   cmd.arg("--release");
-  cmd.args(["--features", "browser_ui"]);
   cmd.args(["--bin", "ui_perf_smoke", "--"]);
 
   if let Some(output) = &args.output {

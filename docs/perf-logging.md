@@ -90,7 +90,7 @@ Or run the binary directly:
 
 ```bash
 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin ui_perf_smoke -- \
+  bash scripts/cargo_agent.sh run --release --bin ui_perf_smoke -- \
   --output target/ui_perf_smoke.json
 ```
 
