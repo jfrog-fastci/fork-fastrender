@@ -1413,6 +1413,13 @@ mod tests {
   }
 
   #[test]
+  fn session_backup_path_appends_bak_suffix_after_existing_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    assert_eq!(session_backup_path(&path), dir.path().join("session.json.bak"));
+  }
+
+  #[test]
   fn session_sanitizes_empty_and_invalid_indices() {
     let session = BrowserSession {
       version: 999,
