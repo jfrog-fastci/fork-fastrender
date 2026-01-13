@@ -87,6 +87,7 @@ mod ui_worker_click_prevent_default;
 mod ui_worker_dpr;
 mod ui_worker_favicon;
 mod ui_worker_focus_scroll;
+mod ui_worker_image_input_submit;
 mod ui_worker_form_submit;
 mod ui_worker_fragment_navigation;
 mod ui_worker_history;

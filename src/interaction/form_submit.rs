@@ -182,7 +182,8 @@ fn button_type(node: &DomNode) -> &str {
 }
 
 fn is_submit_control(node: &DomNode) -> bool {
-  (is_input(node) && input_type(node).eq_ignore_ascii_case("submit"))
+  (is_input(node)
+    && (input_type(node).eq_ignore_ascii_case("submit") || input_type(node).eq_ignore_ascii_case("image")))
     || (is_button(node) && button_type(node).eq_ignore_ascii_case("submit"))
 }
 

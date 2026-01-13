@@ -1765,12 +1765,16 @@ fn is_submit_input(node: &DomNode) -> bool {
   is_input(node) && input_type(node).eq_ignore_ascii_case("submit")
 }
 
+fn is_image_submit_input(node: &DomNode) -> bool {
+  is_input(node) && input_type(node).eq_ignore_ascii_case("image")
+}
+
 fn is_submit_button(node: &DomNode) -> bool {
   is_button(node) && button_type(node).eq_ignore_ascii_case("submit")
 }
 
 fn is_submit_control(node: &DomNode) -> bool {
-  is_submit_input(node) || is_submit_button(node)
+  is_submit_input(node) || is_image_submit_input(node) || is_submit_button(node)
 }
 
 fn is_text_input(node: &DomNode) -> bool {
