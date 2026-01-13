@@ -2,7 +2,7 @@ use crate::code::{CompiledFunctionRef, CompiledScript};
 use crate::conversion_ops::ToPrimitiveHint;
 use crate::exec::RuntimeEnv;
 use crate::function::ThisMode;
-use crate::property::PropertyKey;
+use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
@@ -721,6 +721,7 @@ impl<'vm> HirEvaluator<'vm> {
           self.eval_expr(scope, body, *alternate)
         }
       }
+      hir_js::ExprKind::Array(arr) => self.eval_array_literal(scope, body, arr),
       hir_js::ExprKind::Object(obj) => self.eval_object_literal(scope, body, obj),
       hir_js::ExprKind::FunctionExpr {
         body: func_body,
@@ -738,7 +739,6 @@ impl<'vm> HirEvaluator<'vm> {
         Ok(Value::Object(func_obj))
       }
       other => Err(match other {
-        hir_js::ExprKind::Array(_) => VmError::Unimplemented("array literal (hir-js compiled path)"),
         hir_js::ExprKind::ClassExpr { .. } => VmError::Unimplemented("class expression (hir-js compiled path)"),
         hir_js::ExprKind::Template(_) | hir_js::ExprKind::TaggedTemplate { .. } => {
           VmError::Unimplemented("template literal (hir-js compiled path)")
@@ -759,6 +759,184 @@ impl<'vm> HirEvaluator<'vm> {
         _ => VmError::Unimplemented("expression (hir-js compiled path)"),
       }),
     }
+  }
+
+  fn iterator_close_on_error(
+    &mut self,
+    scope: &mut Scope<'_>,
+    record: &crate::iterator::IteratorRecord,
+    err: VmError,
+  ) -> VmError {
+    if record.done {
+      return err;
+    }
+    // If we are going to return the original error, ensure any thrown value survives across
+    // iterator closing (which can allocate/run JS).
+    let mut close_scope = scope.reborrow();
+    if let Some(v) = err.thrown_value() {
+      // If rooting fails (OOM), propagate that error (best-effort).
+      if let Err(root_err) = close_scope.push_root(v) {
+        return root_err;
+      }
+    }
+
+    let original_is_throw = err.is_throw_completion();
+    match crate::iterator::iterator_close(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      &mut close_scope,
+      record,
+      crate::iterator::CloseCompletionKind::Throw,
+    ) {
+      Ok(()) => err,
+      Err(close_err) => {
+        // Do not replace VM-fatal errors (OOM/termination/etc) with a JS-catchable iterator-closing
+        // exception.
+        if original_is_throw {
+          close_err
+        } else {
+          err
+        }
+      }
+    }
+  }
+
+  fn eval_array_literal(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    arr: &hir_js::ArrayLiteral,
+  ) -> Result<Value, VmError> {
+    let mut arr_scope = scope.reborrow();
+    let arr_obj = arr_scope.alloc_array(0)?;
+    arr_scope.push_root(Value::Object(arr_obj))?;
+
+    // Best-effort `[[Prototype]]` wiring so builtins like `%Array.prototype%.push` work when a
+    // realm/intrinsics are present.
+    if let Some(intr) = self.vm.intrinsics() {
+      arr_scope
+        .heap_mut()
+        .object_set_prototype(arr_obj, Some(intr.array_prototype()))?;
+    }
+
+    let mut next_index: u32 = 0;
+    for elem in &arr.elements {
+      match elem {
+        hir_js::ArrayElement::Empty => {
+          // Per-hole tick: `[,,,,]` can have arbitrarily many elements without nested expression
+          // evaluations.
+          self.vm.tick()?;
+          next_index = next_index
+            .checked_add(1)
+            .ok_or(VmError::RangeError("Array literal length exceeds 2^32-1"))?;
+        }
+        hir_js::ArrayElement::Expr(expr_id) => {
+          if next_index == u32::MAX {
+            return Err(VmError::RangeError("Array literal length exceeds 2^32-1"));
+          }
+          let idx = next_index;
+
+          let mut elem_scope = arr_scope.reborrow();
+          let value = self.eval_expr(&mut elem_scope, body, *expr_id)?;
+          elem_scope.push_root(value)?;
+
+          let key_s = elem_scope.alloc_u32_index_string(idx)?;
+          elem_scope.push_root(Value::String(key_s))?;
+          let key = PropertyKey::from_string(key_s);
+          elem_scope.create_data_property_or_throw(arr_obj, key, value)?;
+
+          next_index = next_index
+            .checked_add(1)
+            .ok_or(VmError::RangeError("Array literal length exceeds 2^32-1"))?;
+        }
+        hir_js::ArrayElement::Spread(expr_id) => {
+          let mut spread_scope = arr_scope.reborrow();
+          let spread_value = self.eval_expr(&mut spread_scope, body, *expr_id)?;
+          spread_scope.push_root(spread_value)?;
+
+          let mut iter = crate::iterator::get_iterator(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut spread_scope,
+            spread_value,
+          )?;
+
+          // Root `iter.iterator` before any further operations so we can safely close on later
+          // errors. Use `extra_roots` to keep `next_method` alive if rooting the iterator triggers
+          // GC.
+          if let Err(err) =
+            spread_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])
+          {
+            return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
+          }
+          if let Err(err) = spread_scope.push_root(iter.next_method) {
+            return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
+          }
+
+          loop {
+            let next_value = match crate::iterator::iterator_step_value(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut spread_scope,
+              &mut iter,
+            ) {
+              Ok(v) => v,
+              // Spec: array spread does not perform `IteratorClose` on errors produced while
+              // stepping the iterator (`next`/`done`/`value`).
+              Err(err) => return Err(err),
+            };
+
+            let Some(value) = next_value else {
+              break;
+            };
+
+            let step_res: Result<(), VmError> = (|| {
+              // Per-spread-element tick: spreading large iterators should be budgeted even when the
+              // iterator's `next()` is native/cheap.
+              self.vm.tick()?;
+
+              if next_index == u32::MAX {
+                return Err(VmError::RangeError("Array literal length exceeds 2^32-1"));
+              }
+              let idx = next_index;
+
+              let mut elem_scope = spread_scope.reborrow();
+              elem_scope.push_root(value)?;
+              let key_s = elem_scope.alloc_u32_index_string(idx)?;
+              elem_scope.push_root(Value::String(key_s))?;
+              let key = PropertyKey::from_string(key_s);
+              elem_scope.create_data_property_or_throw(arr_obj, key, value)?;
+
+              next_index = next_index
+                .checked_add(1)
+                .ok_or(VmError::RangeError("Array literal length exceeds 2^32-1"))?;
+              Ok(())
+            })();
+            if let Err(err) = step_res {
+              return Err(self.iterator_close_on_error(&mut spread_scope, &iter, err));
+            }
+          }
+        }
+      }
+    }
+
+    // Match interpreter behavior: explicitly write the final length so trailing holes are
+    // represented correctly (e.g. `[1,,].length === 2`).
+    let length_key_s = arr_scope.alloc_string("length")?;
+    let length_desc = PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(next_index as f64),
+        writable: true,
+      },
+    };
+    arr_scope.define_property(arr_obj, PropertyKey::from_string(length_key_s), length_desc)?;
+
+    Ok(Value::Object(arr_obj))
   }
 
   fn eval_literal(&mut self, scope: &mut Scope<'_>, lit: &hir_js::Literal) -> Result<Value, VmError> {
