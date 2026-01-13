@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -89,6 +90,7 @@ pub struct CpalAudioBackend {
   estimated_latency_nanos: Arc<AtomicU64>,
   mixer: Arc<MixerState>,
   clock: Arc<InterpolatedAudioClock>,
+  diagnostics: Arc<CpalStreamDiagnostics>,
   // `cpal::Stream` is neither `Send` nor `Sync`, so it cannot live inside a `Send + Sync`
   // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its lifetime
   // via a shutdown channel + join handle.
@@ -118,6 +120,7 @@ impl CpalAudioBackend {
     let max_buffered_duration = engine_cfg
       .per_stream_max_buffered_duration
       .min(MAX_BUFFERED_DURATION);
+    let diagnostics = Arc::new(CpalStreamDiagnostics::new());
 
     // `cpal::Stream` is not `Send`/`Sync`, so it cannot live inside a `Send + Sync`
     // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its
@@ -133,6 +136,7 @@ impl CpalAudioBackend {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<ReadyState, AudioError>>();
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
 
+    let diagnostics_thread = diagnostics.clone();
     let thread = std::thread::spawn(move || {
       let selector = selector;
       let init = (|| -> Result<(ReadyState, cpal::Stream), AudioError> {
@@ -167,6 +171,7 @@ impl CpalAudioBackend {
           fixed_callback_frames,
           last_callback_frames.clone(),
           estimated_latency_nanos.clone(),
+          diagnostics_thread.clone(),
         )?;
         stream
           .play()
@@ -228,9 +233,14 @@ impl CpalAudioBackend {
       estimated_latency_nanos,
       mixer,
       clock,
+      diagnostics,
       shutdown_tx,
       stream_thread: Mutex::new(Some(thread)),
     })
+  }
+
+  fn report_warnings_once(&self) {
+    self.diagnostics.report_warnings_once();
   }
 }
 
@@ -248,10 +258,12 @@ impl Drop for CpalAudioBackend {
 
 impl AudioBackend for CpalAudioBackend {
   fn output_config(&self) -> AudioStreamConfig {
+    self.report_warnings_once();
     self.config
   }
 
   fn output_info(&self) -> AudioOutputInfo {
+    self.report_warnings_once();
     let callback_frames = self.fixed_callback_frames.or_else(|| match self
       .last_callback_frames
       .load(Ordering::Relaxed)
@@ -271,15 +283,75 @@ impl AudioBackend for CpalAudioBackend {
   }
 
   fn clock(&self) -> AudioClock {
+    self.report_warnings_once();
     AudioClock::OutputFrames {
       clock: self.clock.clone(),
     }
   }
 
   fn create_sink(&self) -> Box<dyn AudioSink> {
+    self.report_warnings_once();
     let sink = Arc::new(SinkState::new(self.config, self.max_buffered_duration));
     self.mixer.register_sink(&sink);
     Box::new(CpalAudioSink { state: sink })
+  }
+}
+
+/// Thread-safe, allocation-free diagnostics shared between the non-RT host code and the RT output
+/// callback.
+///
+/// This is intentionally minimal:
+/// - All state updates in the RT callback are atomic and never allocate.
+/// - Warnings are printed at most once from a non-RT context.
+struct CpalStreamDiagnostics {
+  /// Sticky flag: set to true if the CPAL output callback panics and we had to recover by outputting
+  /// silence.
+  panic_in_callback: AtomicBool,
+  /// Non-zero if the CPAL stream error callback was invoked.
+  ///
+  /// We do not store the full error string because that would require allocation in the RT error
+  /// callback. Instead we record a simple code and print a generic warning once from a non-RT
+  /// context.
+  stream_error_code: AtomicU32,
+  reported_panic: AtomicBool,
+  reported_stream_error: AtomicBool,
+}
+
+impl CpalStreamDiagnostics {
+  fn new() -> Self {
+    Self {
+      panic_in_callback: AtomicBool::new(false),
+      stream_error_code: AtomicU32::new(0),
+      reported_panic: AtomicBool::new(false),
+      reported_stream_error: AtomicBool::new(false),
+    }
+  }
+
+  fn set_panic_in_callback(&self) {
+    self.panic_in_callback.store(true, Ordering::Relaxed);
+  }
+
+  fn set_stream_error(&self, code: u32) {
+    // Keep the first error code so we have at least some signal about what happened.
+    let _ = self.stream_error_code.compare_exchange(
+      0,
+      code.max(1),
+      Ordering::Relaxed,
+      Ordering::Relaxed,
+    );
+  }
+
+  fn report_warnings_once(&self) {
+    if self.panic_in_callback.load(Ordering::Relaxed)
+      && !self.reported_panic.swap(true, Ordering::Relaxed)
+    {
+      eprintln!("warning: CPAL output callback panicked; audio output has been silenced");
+    }
+
+    let code = self.stream_error_code.load(Ordering::Relaxed);
+    if code != 0 && !self.reported_stream_error.swap(true, Ordering::Relaxed) {
+      eprintln!("warning: CPAL output stream reported an error (code {code})");
+    }
   }
 }
 
@@ -530,6 +602,7 @@ fn build_stream(
   fixed_callback_frames: Option<u32>,
   last_callback_frames: Arc<AtomicU32>,
   estimated_latency_nanos: Arc<AtomicU64>,
+  diagnostics: Arc<CpalStreamDiagnostics>,
 ) -> Result<cpal::Stream, AudioError> {
   match sample_format {
     cpal::SampleFormat::F32 => build_stream_typed::<f32>(
@@ -540,6 +613,7 @@ fn build_stream(
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
+      diagnostics,
     ),
     cpal::SampleFormat::I16 => build_stream_typed::<i16>(
       device,
@@ -549,6 +623,7 @@ fn build_stream(
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
+      diagnostics,
     ),
     cpal::SampleFormat::U16 => build_stream_typed::<u16>(
       device,
@@ -558,6 +633,7 @@ fn build_stream(
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
+      diagnostics,
     ),
     other => Err(AudioError::UnsupportedSampleFormat(format!("{other:?}"))),
   }
@@ -571,6 +647,7 @@ fn build_stream_typed<T>(
   fixed_callback_frames: Option<u32>,
   last_callback_frames: Arc<AtomicU32>,
   estimated_latency_nanos: Arc<AtomicU64>,
+  diagnostics: Arc<CpalStreamDiagnostics>,
 ) -> Result<cpal::Stream, AudioError>
 where
   T: OutputSample + cpal::SizedSample,
@@ -578,12 +655,18 @@ where
   use cpal::traits::DeviceTrait;
 
   let channels = mixer.channels_usize();
-  let mut mix_buf: Vec<f32> = Vec::new();
+  let mut mix_buf: Vec<f32> =
+    vec![0.0; preallocate_mix_buffer_len(config, channels, fixed_callback_frames)];
   let mut playback_origin = None;
   let sample_rate_hz = mixer.config.sample_rate_hz;
 
-  let err_cb = |err| {
-    eprintln!("warning: CPAL output stream error: {err}");
+  let err_cb = {
+    let diagnostics = diagnostics.clone();
+    move |_err| {
+      // Avoid printing from the (likely RT) error callback. Record the event and let non-RT code
+      // print at most once.
+      diagnostics.set_stream_error(1);
+    }
   };
 
   let stream = device
@@ -591,55 +674,93 @@ where
       config,
       move |output: &mut [T], info| {
         super::thread_priority::promote_current_thread_for_audio();
-        let ts = info.timestamp();
-        let latency = ts.playback.duration_since(&ts.callback);
-        if mix_buf.len() < output.len() {
-          mix_buf.resize(output.len(), 0.0);
-        }
-        let mix = &mut mix_buf[..output.len()];
-        mix.fill(0.0);
 
-        mixer.mix_into(mix);
+        // If we've already panicked once, keep outputting silence to avoid repeated unwinds from
+        // unpredictable RT callback state. Still advance the clock/counters so A/V sync doesn't
+        // stall completely.
+        if diagnostics.panic_in_callback.load(Ordering::Relaxed) {
+          output.fill(T::from_mixed_f32(0.0));
+          if channels != 0 {
+            let frames = (output.len() / channels) as u64;
+            let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+            last_callback_frames.store(frames_u32, Ordering::Relaxed);
+            clock.on_callback_end_at(Instant::now(), frames_u32, None);
 
-        for (out, sample) in output.iter_mut().zip(mix.iter()) {
-          *out = T::from_mixed_f32(*sample);
-        }
-
-        if channels != 0 {
-          let frames = (output.len() / channels) as u64;
-          let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
-          last_callback_frames.store(frames_u32, Ordering::Relaxed);
-          let callback_end = Instant::now();
-
-          // Prefer CPAL's device timestamps (when monotonic) as the base time, falling back to a
-          // pure frame counter when unavailable.
-          let device_time_at_end = {
-            let playback = ts.playback;
-            let buffer_duration = frames_to_duration(sample_rate_hz, frames);
-
-            match playback_origin.as_ref() {
-              Some(origin) => playback
-                .duration_since(origin)
-                .map(|since_origin| since_origin.saturating_add(buffer_duration)),
-              None => {
-                playback_origin = Some(playback);
-                Some(buffer_duration)
-              }
+            if fixed_callback_frames.is_none() {
+              let latency = frames_to_duration(sample_rate_hz, frames);
+              estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
             }
-          };
-
-          clock.on_callback_end_at(callback_end, frames_u32, device_time_at_end);
+          }
+          return;
         }
 
-        // Best-effort latency estimate:
-        // - prefer CPAL timestamps when available (callback vs playback instant),
-        // - otherwise fall back to observed callback buffer size (only when buffer size isn't fixed).
-        if let Some(latency) = latency {
-          estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
-        } else if fixed_callback_frames.is_none() && channels != 0 {
-          let frames = (output.len() / channels) as u64;
-          let latency = frames_to_duration(sample_rate_hz, frames);
-          estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+        let res = catch_unwind(AssertUnwindSafe(|| {
+          let ts = info.timestamp();
+          let latency = ts.playback.duration_since(&ts.callback);
+
+          // CPAL can (rarely) provide variable callback buffer sizes. Never resize or allocate in
+          // the callback; instead, process in bounded chunks using the preallocated mix buffer.
+          for out_chunk in output.chunks_mut(mix_buf.len()) {
+            let mix = &mut mix_buf[..out_chunk.len()];
+            mix.fill(0.0);
+            mixer.mix_into(mix);
+            for (out, sample) in out_chunk.iter_mut().zip(mix.iter()) {
+              *out = T::from_mixed_f32(*sample);
+            }
+          }
+
+          if channels != 0 {
+            let frames = (output.len() / channels) as u64;
+            let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+            last_callback_frames.store(frames_u32, Ordering::Relaxed);
+            let callback_end = Instant::now();
+
+            // Prefer CPAL's device timestamps (when monotonic) as the base time, falling back to a
+            // pure frame counter when unavailable.
+            let device_time_at_end = {
+              let playback = ts.playback;
+              let buffer_duration = frames_to_duration(sample_rate_hz, frames);
+
+              match playback_origin.as_ref() {
+                Some(origin) => playback
+                  .duration_since(origin)
+                  .map(|since_origin| since_origin.saturating_add(buffer_duration)),
+                None => {
+                  playback_origin = Some(playback);
+                  Some(buffer_duration)
+                }
+              }
+            };
+
+            clock.on_callback_end_at(callback_end, frames_u32, device_time_at_end);
+
+            // Best-effort latency estimate:
+            // - prefer CPAL timestamps when available (callback vs playback instant),
+            // - otherwise fall back to observed callback buffer size (only when buffer size isn't fixed).
+            if let Some(latency) = latency {
+              estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+            } else if fixed_callback_frames.is_none() {
+              let latency = frames_to_duration(sample_rate_hz, frames);
+              estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+            }
+          }
+        }));
+
+        if res.is_err() {
+          diagnostics.set_panic_in_callback();
+          output.fill(T::from_mixed_f32(0.0));
+
+          if channels != 0 {
+            let frames = (output.len() / channels) as u64;
+            let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+            last_callback_frames.store(frames_u32, Ordering::Relaxed);
+            clock.on_callback_end_at(Instant::now(), frames_u32, None);
+
+            if fixed_callback_frames.is_none() {
+              let latency = frames_to_duration(sample_rate_hz, frames);
+              estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+            }
+          }
         }
       },
       err_cb,
@@ -650,6 +771,28 @@ where
   Ok(stream)
 }
 
+fn preallocate_mix_buffer_len(
+  config: &cpal::StreamConfig,
+  channels: usize,
+  fixed_callback_frames: Option<u32>,
+) -> usize {
+  // When the host requests `BufferSize::Default`, the actual callback size is backend-dependent and
+  // may vary. Choose a conservative upper bound to ensure we never allocate in the RT callback.
+  //
+  // The callback still handles larger slices by processing in chunks of this size (no allocations).
+  const DEFAULT_MAX_FRAMES: usize = 8192;
+  const MAX_FRAMES_CAP: usize = 32_768;
+
+  let frames = fixed_callback_frames
+    .map(|frames| frames as usize)
+    .unwrap_or_else(|| match config.buffer_size {
+      cpal::BufferSize::Fixed(frames) => frames as usize,
+      cpal::BufferSize::Default => DEFAULT_MAX_FRAMES,
+    });
+
+  let frames = frames.clamp(1, MAX_FRAMES_CAP);
+  frames.saturating_mul(channels.max(1)).max(1)
+}
 fn duration_to_nanos_u64(duration: Duration) -> u64 {
   u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
@@ -689,7 +832,9 @@ impl OutputSample for u16 {
 
 #[cfg(test)]
 mod tests {
-  use super::{f32_to_i16, f32_to_u16};
+  use std::sync::atomic::Ordering;
+
+  use super::{f32_to_i16, f32_to_u16, CpalStreamDiagnostics};
   use crate::media::audio::convert::sanitize_sample;
 
   #[test]
@@ -711,5 +856,11 @@ mod tests {
     assert_eq!(f32_to_u16(0.0), u16::MAX / 2);
     assert_eq!(f32_to_u16(1.0), u16::MAX);
     assert_eq!(f32_to_u16(-1.0), 0);
+  }
+
+  #[test]
+  fn cpal_backend_panic_flag_starts_false() {
+    let diag = CpalStreamDiagnostics::new();
+    assert!(!diag.panic_in_callback.load(Ordering::Relaxed));
   }
 }
