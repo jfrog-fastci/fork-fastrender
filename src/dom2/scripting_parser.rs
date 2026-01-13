@@ -187,6 +187,55 @@ mod tests {
   }
 
   #[test]
+  fn range_updates_account_for_shadowroot_template_promotion_after_script_pause() {
+    // `dom2` promotes legacy declarative shadow DOM templates (`<template shadowroot=open>`) as a
+    // post-processing step after parsing completes. If a script creates a live Range while parsing
+    // is paused, that later template removal must still update its boundary-point offsets.
+    //
+    // This checks a subtle case: the template is removed (shifting light-DOM offsets), then a
+    // ShadowRoot node is attached under the host (which must *not* count as a tree child for Range
+    // offsets).
+    let html = concat!(
+      "<!doctype html>",
+      "<div id=host>",
+      "<template shadowroot=open><span>shadow</span></template>",
+      "<script>1</script>",
+      "<p id=after></p>",
+      "</div>",
+    );
+    let mut range_id: Option<RangeId> = None;
+    let mut host_id: Option<NodeId> = None;
+
+    let doc = parse_html_with_scripting_dom2(html, None, |partial_doc, _script_id, _spec| {
+      let host = partial_doc
+        .get_element_by_id("host")
+        .expect("expected host element to exist at script boundary");
+      host_id = Some(host);
+
+      // At the </script> boundary, the host has two light-DOM children: the <template> and the
+      // <script>. Offset 2 is the boundary point after the <script>.
+      let range = partial_doc.create_range();
+      partial_doc.range_set_start(range, host, 2).unwrap();
+      partial_doc.range_set_end(range, host, 2).unwrap();
+      range_id = Some(range);
+      Ok(())
+    })
+    .unwrap();
+
+    let range = range_id.expect("expected Range to be created during parsing pause");
+    let host = host_id.expect("expected host to exist at script boundary");
+
+    // After parsing completes:
+    // - The <p> is inserted after the <script>, so the boundary point remains between <script> and <p>.
+    // - The `<template shadowroot=open>` is promoted: the template is removed from the light DOM,
+    //   shifting offsets left by 1, but the inserted ShadowRoot must not shift offsets.
+    assert_eq!(doc.range_start_container(range).unwrap(), host);
+    assert_eq!(doc.range_end_container(range).unwrap(), host);
+    assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+    assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+  }
+
+  #[test]
   fn noscript_parsing_depends_on_scripting_enabled() {
     // Place `<noscript>` in the document body so we exercise the InBody rules.
     let html = "<!doctype html><html><body><noscript><p>hi</p></noscript></body></html>";
