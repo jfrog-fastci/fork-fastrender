@@ -16,5 +16,8 @@ Start here:
 - Windows renderer sandbox quick reference: [`docs/security/windows_renderer_sandbox.md`](security/windows_renderer_sandbox.md)
 - macOS renderer sandbox quick reference: [`docs/security/macos_renderer_sandbox.md`](security/macos_renderer_sandbox.md)
 
+Linux diagnostics tooling:
+- `sandbox_probe` (`src/bin/sandbox_probe.rs`) and the Linux-only `fastrender::sandbox::linux_preflight()` helper (see [`docs/security/sandbox.md`](security/sandbox.md)).
+
 Environment variables / escape hatches: [`docs/env-vars.md`](env-vars.md) (`FASTR_DISABLE_RENDERER_SANDBOX`,
 `FASTR_RENDERER_SECCOMP`, ...).
