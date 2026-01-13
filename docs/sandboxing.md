@@ -33,6 +33,19 @@ capabilities**:
 
 AppContainer is the preferred mode because it provides a strong, OS-supported isolation boundary.
 
+#### Developer note: executing the renderer binary under AppContainer
+
+On Windows, un-packaged dev/test binaries may not be executable by an AppContainer token if the
+binary’s directory does not grant the derived AppContainer SID read/execute access. In that case,
+`spawn_sandboxed(...)` may:
+
+1. Copy the renderer image to a temporary directory, and
+2. Grant the AppContainer SID (or, as a fallback, **ALL APPLICATION PACKAGES**) read/execute ACLs on
+   the copied file,
+3. Retry the AppContainer spawn.
+
+Use `FASTR_LOG_SANDBOX=1` to see detailed logs for this path.
+
 ### Defense in depth: Job object guardrails
 
 In addition to the token/AppContainer sandbox, the renderer process is placed in a Windows **Job

@@ -46,9 +46,6 @@ fn disable_renderer_sandbox_env_forces_unsandboxed_spawn() {
   let prev_disable = std::env::var_os(DISABLE_ENV);
   let prev_legacy = std::env::var_os(LEGACY_ENV);
 
-  std::env::set_var(DISABLE_ENV, "1");
-  std::env::remove_var(LEGACY_ENV);
-
   let exe = std::env::current_exe().expect("current test exe path");
   let args = vec![
     OsString::from("--exact"),
@@ -56,16 +53,28 @@ fn disable_renderer_sandbox_env_forces_unsandboxed_spawn() {
     OsString::from("--nocapture"),
   ];
 
-  let child = spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child");
-  assert_eq!(
-    child.level,
-    WindowsSandboxLevel::None,
-    "expected sandbox opt-out to force unsandboxed spawn"
-  );
+  let spawn_and_wait = || {
+    let child = spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child");
+    assert_eq!(
+      child.level,
+      WindowsSandboxLevel::None,
+      "expected sandbox opt-out to force unsandboxed spawn"
+    );
 
-  let handle = child.process.as_raw_handle() as HANDLE;
-  let status = wait_process(handle).expect("wait for child");
-  assert!(status.success(), "child should exit successfully");
+    let handle = child.process.as_raw_handle() as HANDLE;
+    let status = wait_process(handle).expect("wait for child");
+    assert!(status.success(), "child should exit successfully");
+  };
+
+  // Primary opt-out env var.
+  std::env::set_var(DISABLE_ENV, "1");
+  std::env::remove_var(LEGACY_ENV);
+  spawn_and_wait();
+
+  // Legacy spelling.
+  std::env::remove_var(DISABLE_ENV);
+  std::env::set_var(LEGACY_ENV, "off");
+  spawn_and_wait();
 
   match prev_disable {
     Some(value) => std::env::set_var(DISABLE_ENV, value),
