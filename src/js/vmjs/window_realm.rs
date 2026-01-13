@@ -19829,7 +19829,7 @@ fn drag_event_constructor_impl(
         .heap()
         .object_get_own_data_property_value(init_obj, &data_transfer_key)?
       {
-        if !matches!(value, Value::Undefined) {
+        if let Value::Object(_) = value {
           data_transfer = value;
         }
       }
@@ -52237,6 +52237,10 @@ fn init_window_globals(
     data_desc(Value::Object(mouse_event_ctor_func)),
   )?;
 
+  // --- DragEvent --------------------------------------------------------------------------------
+  //
+  // Many applications manually construct `DragEvent` objects (e.g. for tests) and expect
+  // `DragEventInit.dataTransfer` to be preserved.
   let drag_event_ctor_call_id = vm.register_native_call(drag_event_constructor_native)?;
   let drag_event_ctor_construct_id =
     vm.register_native_construct(drag_event_constructor_construct_native)?;
@@ -68552,6 +68556,23 @@ mod tests {
       );
     }
 
+    Ok(())
+  }
+
+  #[test]
+  fn drag_event_constructor_preserves_data_transfer_init() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const dt = new DataTransfer();\n\
+        dt.setData('text/plain', 'x');\n\
+        const ev = new DragEvent('drop', { dataTransfer: dt });\n\
+        return ev.dataTransfer.getData('text/plain') === 'x'\n\
+          && (ev instanceof DragEvent)\n\
+          && (ev instanceof MouseEvent);\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
