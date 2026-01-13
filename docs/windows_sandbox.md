@@ -616,8 +616,10 @@ Repo reality (`src/sandbox/windows.rs::spawn_appcontainer`):
   - Note: when the AppContainer token is hardened to remove `ALL APPLICATION PACKAGES` (via
     `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`), granting ACLs to the `ALL APPLICATION
     PACKAGES` SID is only useful when the hardening attribute is disabled/unsupported on the host.
-- We also set `lpCurrentDirectory` to the temp dir on retry to avoid inheriting a parent CWD the
-  AppContainer can’t read.
+- We always set an explicit `lpCurrentDirectory` to a sandbox-accessible working directory so we do
+  **not** inherit the parent process CWD (including on relocation retries). In the main spawner this
+  is typically the AppContainer profile storage folder returned by `GetAppContainerFolderPath`
+  (fallback: `C:\\Windows\\System32`).
 
 Enable `FASTR_LOG_SANDBOX=1` to see which path was taken.
 
