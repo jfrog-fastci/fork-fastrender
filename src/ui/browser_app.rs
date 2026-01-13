@@ -34,8 +34,9 @@ const DEBUG_LOG_CAPACITY: usize = protocol_limits::MAX_DEBUG_LOG_LINES;
 const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 /// Maximum number of download entries stored in the browser UI state.
 ///
-/// In a multi-process architecture the renderer is untrusted; without a hard cap a compromised
-/// renderer could spam download messages and grow memory unboundedly.
+/// This bounds memory growth and keeps the downloads panel responsive in long sessions. In a
+/// multi-process architecture the renderer is untrusted; without a hard cap a compromised renderer
+/// could spam download messages and grow memory unboundedly.
 const MAX_DOWNLOAD_ENTRIES: usize = 512;
 const CRASH_REASON_MAX_CHARS: usize = 200;
 
@@ -4986,6 +4987,44 @@ mod tab_group_tests {
     }
 
     assert_eq!(app.downloads.downloads.len(), MAX_DOWNLOAD_ENTRIES);
+  }
+
+  #[test]
+  fn completed_download_history_is_capped() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+
+    let total_downloads = MAX_DOWNLOAD_ENTRIES + 50;
+    for i in 0..total_downloads {
+      let download_id = DownloadId((i + 1) as u64);
+      app.apply_worker_msg(WorkerToUi::DownloadStarted {
+        tab_id,
+        download_id,
+        url: format!("https://example.test/{i}"),
+        file_name: format!("file{i}.bin"),
+        path: std::path::PathBuf::from(format!("file{i}.bin")),
+        total_bytes: None,
+      });
+      app.apply_worker_msg(WorkerToUi::DownloadFinished {
+        tab_id,
+        download_id,
+        outcome: DownloadOutcome::Completed,
+      });
+    }
+
+    assert_eq!(app.downloads.downloads.len(), MAX_DOWNLOAD_ENTRIES);
+    assert_eq!(
+      app.downloads.downloads.first().unwrap().download_id,
+      DownloadId((total_downloads - MAX_DOWNLOAD_ENTRIES + 1) as u64)
+    );
+    assert_eq!(
+      app.downloads.downloads.last().unwrap().download_id,
+      DownloadId(total_downloads as u64)
+    );
   }
 
   #[test]
