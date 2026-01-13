@@ -354,13 +354,6 @@ impl<'vm> HirEvaluator<'vm> {
         .set_function_script_or_module_token(func_obj, Some(token))?;
     }
 
-    // Ordinary functions are constructors and get a `.prototype` object. This is required for
-    // `instanceof` and user code that accesses `F.prototype` (even though `new` is not yet
-    // implemented in the compiled path).
-    if !is_arrow {
-      let _ = crate::function_properties::make_constructor(&mut scope, func_obj)?;
-    }
-
     Ok(func_obj)
   }
 
@@ -3585,16 +3578,42 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     call: &hir_js::CallExpr,
   ) -> Result<Value, VmError> {
-    if call.is_new {
-      return Err(VmError::Unimplemented("new (hir-js compiled path)"));
-    }
-
     // Only support non-spread arguments for now.
     if call.args.iter().any(|arg| arg.spread) {
       return Err(VmError::Unimplemented("spread arguments (hir-js compiled path)"));
     }
 
     let mut scope = scope.reborrow();
+
+    if call.is_new {
+      let callee_value = self.eval_expr(&mut scope, body, call.callee)?;
+      if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
+        return Ok(Value::Undefined);
+      }
+
+      // Root callee while evaluating args.
+      scope.push_root(callee_value)?;
+
+      let mut args: Vec<Value> = Vec::new();
+      args
+        .try_reserve_exact(call.args.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for arg in &call.args {
+        let v = self.eval_expr(&mut scope, body, arg.expr)?;
+        scope.push_root(v)?;
+        args.push(v);
+      }
+
+      // For `new F(...)`, the `newTarget` is `F` itself.
+      return self.vm.construct_with_host_and_hooks(
+        &mut *self.host,
+        &mut scope,
+        &mut *self.hooks,
+        callee_value,
+        args.as_slice(),
+        callee_value,
+      );
+    }
 
     // Method call detection: `obj.prop(...)` uses `this = obj`.
     let (callee_value, this_value) = match &self.get_expr(body, call.callee)?.kind {

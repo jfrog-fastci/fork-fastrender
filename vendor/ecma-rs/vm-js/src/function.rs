@@ -50,6 +50,11 @@ pub(crate) enum CallHandler {
 pub(crate) enum ConstructHandler {
   Native(NativeConstructId),
   Ecma(EcmaFunctionId),
+  /// A user-defined function backed by compiled HIR (`CallHandler::User`).
+  ///
+  /// The function's [`crate::CompiledFunctionRef`] is stored in its `[[Call]]` handler, so this
+  /// variant does not need to carry any additional payload.
+  User,
 }
 
 /// Extra per-function internal-slot-like data used by certain built-ins.
@@ -291,9 +296,14 @@ impl JsFunction {
     is_strict: bool,
     closure_env: Option<GcEnv>,
   ) -> Self {
+    // Arrow functions (ThisMode::Lexical) are not constructable.
+    let construct = match this_mode {
+      ThisMode::Lexical => None,
+      ThisMode::Strict | ThisMode::Global => Some(ConstructHandler::User),
+    };
     Self {
       call: CallHandler::User(func),
-      construct: None,
+      construct,
       name,
       length,
       this_mode,

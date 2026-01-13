@@ -185,6 +185,28 @@ fn compiled_new_target_is_undefined_in_normal_call() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_new_target_is_constructor_function_in_new_call() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function C() {
+        this.ok = new.target === C;
+      }
+      let o = new C();
+      o.ok === true
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_strict_equality_compares_string_contents() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

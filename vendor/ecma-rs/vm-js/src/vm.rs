@@ -3212,6 +3212,22 @@ impl Vm {
           }
           None => (Arc::<str>::from("<call>"), 0, 0),
         },
+        ConstructHandler::User => {
+          let call_handler = scope.heap().get_function_call_handler(callee_obj)?;
+          let CallHandler::User(func) = call_handler else {
+            return Err(VmError::InvariantViolation(
+              "ConstructHandler::User used on non-user function",
+            ));
+          };
+          let source = func.script.source.name.clone();
+          let (line, col) = func
+            .script
+            .hir
+            .body(func.body)
+            .map(|body| func.script.source.line_col(body.span.start))
+            .unwrap_or((0, 0));
+          (source, line, col)
+        }
       }
     };
     let frame = StackFrame {
@@ -3281,6 +3297,15 @@ impl Vm {
       ConstructHandler::Ecma(code_id) => vm.construct_ecma_function(
         &mut scope, host, hooks, code_id, callee_obj, args, new_target,
       ),
+      ConstructHandler::User => {
+        let call_handler = scope.heap().get_function_call_handler(callee_obj)?;
+        let CallHandler::User(func) = call_handler else {
+          return Err(VmError::InvariantViolation(
+            "ConstructHandler::User used on non-user function",
+          ));
+        };
+        vm.construct_user_function(&mut scope, host, hooks, func, callee_obj, args, new_target)
+      }
     };
 
     // Capture a stack trace for thrown exceptions before the current frame is popped.
@@ -3470,6 +3495,98 @@ impl Vm {
 
     env.teardown(scope.heap_mut());
     result
+  }
+
+  fn construct_user_function(
+    &mut self,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    func: crate::CompiledFunctionRef,
+    callee: crate::GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let (is_strict, realm, outer) = {
+      let f = scope.heap().get_function(callee)?;
+      (f.is_strict, f.realm, f.closure_env)
+    };
+
+    // See `call_user_function`: user functions can exist without a realm in low-level embeddings /
+    // unit tests. Synthesize one if needed so sloppy-mode semantics and global identifier fallback
+    // remain usable.
+    let global_object = match realm {
+      Some(obj) => obj,
+      None => {
+        let mut init_scope = scope.reborrow();
+        init_scope.push_root(Value::Object(callee))?;
+        let global_object = init_scope.alloc_object()?;
+        init_scope.push_root(Value::Object(global_object))?;
+        init_scope.heap_mut().set_function_realm(callee, global_object)?;
+        global_object
+      }
+    };
+
+    // GetPrototypeFromConstructor(newTarget, %Object.prototype%), but tolerate missing intrinsics
+    // by falling back to the heap's best-effort default prototype.
+    let proto = match new_target {
+      Value::Object(new_target_obj) => {
+        let default_proto = scope.heap().default_object_prototype();
+
+        let mut proto_scope = scope.reborrow();
+        proto_scope.push_root(Value::Object(new_target_obj))?;
+        if let Some(default_proto) = default_proto {
+          proto_scope.push_root(Value::Object(default_proto))?;
+        }
+
+        let key_s = proto_scope.alloc_string("prototype")?;
+        proto_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let proto_val = proto_scope.get_with_host_and_hooks(
+          self,
+          host,
+          hooks,
+          new_target_obj,
+          key,
+          Value::Object(new_target_obj),
+        )?;
+        match proto_val {
+          Value::Object(o) => Some(o),
+          _ => default_proto,
+        }
+      }
+      _ => scope.heap().default_object_prototype(),
+    };
+
+    let mut this_scope = scope.reborrow();
+    this_scope.push_root(new_target)?;
+    let this_obj = this_scope.alloc_object_with_prototype(proto)?;
+    this_scope.push_root(Value::Object(this_obj))?;
+
+    let func_env = this_scope.env_create(outer)?;
+    let mut env =
+      RuntimeEnv::new_with_var_env(this_scope.heap_mut(), global_object, func_env, func_env)?;
+
+    let result = crate::hir_exec::run_compiled_function(
+      self,
+      &mut this_scope,
+      host,
+      hooks,
+      &mut env,
+      func,
+      is_strict,
+      Value::Object(this_obj),
+      new_target,
+      args,
+    );
+
+    env.teardown(this_scope.heap_mut());
+
+    // If the constructor returns an object, return it; otherwise return the newly-created `this`.
+    match result? {
+      Value::Object(o) => Ok(Value::Object(o)),
+      _ => Ok(Value::Object(this_obj)),
+    }
   }
 
   fn construct_ecma_function(

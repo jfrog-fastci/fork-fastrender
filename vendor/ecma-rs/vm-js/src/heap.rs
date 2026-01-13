@@ -9050,6 +9050,7 @@ impl<'a> Scope<'a> {
       /* is_strict */ false,
       /* closure_env */ None,
     );
+    let is_constructable = func.construct.is_some();
     let new_bytes = func.heap_size_bytes();
     scope.heap.ensure_can_allocate(new_bytes)?;
 
@@ -9064,6 +9065,11 @@ impl<'a> Scope<'a> {
       None,
     )?;
     crate::function_properties::set_function_length(&mut scope, func, length)?;
+
+    // Constructors get a `.prototype` object.
+    if is_constructable {
+      crate::function_properties::make_constructor(&mut scope, func)?;
+    }
 
     Ok(func)
   }
@@ -9088,6 +9094,7 @@ impl<'a> Scope<'a> {
     }
 
     let func = JsFunction::new_user(func, name, length, this_mode, is_strict, closure_env);
+    let is_constructable = func.construct.is_some();
     let new_bytes = func.heap_size_bytes();
     scope.heap.ensure_can_allocate(new_bytes)?;
 
@@ -9102,6 +9109,11 @@ impl<'a> Scope<'a> {
       None,
     )?;
     crate::function_properties::set_function_length(&mut scope, func, length)?;
+
+    // Constructors get a `.prototype` object.
+    if is_constructable {
+      crate::function_properties::make_constructor(&mut scope, func)?;
+    }
 
     Ok(func)
   }
