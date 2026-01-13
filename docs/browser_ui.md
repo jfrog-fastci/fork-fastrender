@@ -57,7 +57,7 @@ bash scripts/run_limited.sh --as 64G -- \
 ```
 
 The `browser` binary also supports an in-process, best-effort address-space cap via
-`FASTR_BROWSER_MEM_LIMIT_MB` (see [env-vars.md](env-vars.md)).
+`browser --mem-limit-mb <MB>` or `FASTR_BROWSER_MEM_LIMIT_MB` (see [env-vars.md](env-vars.md)).
 
 The download directory can be configured via `browser --download-dir <path>` or
 `FASTR_BROWSER_DOWNLOAD_DIR=<path>`.
