@@ -130,6 +130,9 @@ fn validate_size(size: usize) -> Result<(), ShmError> {
 mod linux {
   use super::{validate_size, SealStatus, ShmError, MAX_SHM_SIZE};
   use crate::ipc::sync;
+  use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+  use base64::Engine;
+  use getrandom::getrandom;
   use std::ffi::CString;
   use std::io;
   use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -220,6 +223,20 @@ mod linux {
   static SHM_OPEN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
   fn generate_shm_open_name() -> String {
+    // Prefer cryptographically-strong randomness so other same-UID processes cannot guess the name
+    // during the brief window between `shm_open` and the immediate `shm_unlink` that follows.
+    //
+    // If OS randomness is unavailable (extremely unusual), fall back to a best-effort unique name
+    // based on pid/time/counter. This is less secure but still benefits from `O_EXCL` + immediate
+    // unlinking.
+    let mut rand_bytes = [0u8; 16];
+    if getrandom(&mut rand_bytes).is_ok() {
+      // 16 bytes -> 22 chars base64url (unpadded).
+      let encoded = URL_SAFE_NO_PAD.encode(rand_bytes);
+      // POSIX requires the name to start with `/` and contain no other `/` characters.
+      return format!("/fastr-{encoded}");
+    }
+
     let pid = std::process::id();
     let counter = SHM_OPEN_COUNTER.fetch_add(1, Ordering::Relaxed);
     let now = SystemTime::now()
