@@ -273,7 +273,6 @@ pub struct ShmemRegion {
 enum ShmemRegionBackend {
   #[cfg(unix)]
   PosixShm {
-    file: File,
     id: String,
     creator: bool,
   },
@@ -315,7 +314,6 @@ impl ShmemRegion {
           len: *len,
           mmap,
           backend: ShmemRegionBackend::PosixShm {
-            file,
             id: id.clone(),
             creator: false,
           },
@@ -375,7 +373,6 @@ impl ShmemRegion {
         len,
         mmap,
         backend: ShmemRegionBackend::PosixShm {
-          file,
           id,
           creator: true,
         },
