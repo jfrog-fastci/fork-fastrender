@@ -3984,6 +3984,7 @@ impl Vm {
       func,
       is_strict,
       this,
+      /* this_initialized */ true,
       new_target,
       args,
     );
@@ -4071,6 +4072,7 @@ impl Vm {
       func,
       is_strict,
       Value::Object(this_obj),
+      /* this_initialized */ true,
       new_target,
       args,
     );

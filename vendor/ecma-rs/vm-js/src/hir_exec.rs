@@ -124,6 +124,7 @@ fn compiled_constructor_body_construct(
       func_ref,
       is_strict,
       Value::Object(this_obj),
+      /* this_initialized */ true,
       new_target,
       args,
     );
@@ -153,6 +154,7 @@ fn compiled_constructor_body_construct(
       func_ref,
       is_strict,
       Value::Undefined,
+      /* this_initialized */ false,
       new_target,
       args,
     );
@@ -449,6 +451,11 @@ struct HirEvaluator<'vm> {
   env: &'vm mut RuntimeEnv,
   strict: bool,
   this: Value,
+  /// Whether the current `this` binding is initialized.
+  ///
+  /// This is relevant for **derived class constructors**, where `this` is uninitialized until
+  /// `super()` returns. Accessing `this` before initialization must throw a ReferenceError.
+  this_initialized: bool,
   new_target: Value,
   script: Arc<CompiledScript>,
 }
@@ -3254,7 +3261,16 @@ impl<'vm> HirEvaluator<'vm> {
           }
         }
       }
-      hir_js::ExprKind::This => Ok(self.this),
+      hir_js::ExprKind::This => {
+        if !self.this_initialized {
+          return Err(throw_reference_error(
+            self.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
+        }
+        Ok(self.this)
+      }
       hir_js::ExprKind::NewTarget => Ok(self.new_target),
       hir_js::ExprKind::Literal(lit) => self.eval_literal(scope, lit),
       hir_js::ExprKind::Unary { op, expr } => self.eval_unary(scope, body, *op, *expr),
@@ -7807,12 +7823,14 @@ impl<'vm> HirEvaluator<'vm> {
     block_scope.push_root(Value::Object(receiver))?;
 
     let saved_this = self.this;
+    let saved_this_initialized = self.this_initialized;
     let saved_new_target = self.new_target;
     let saved_lex = self.env.lexical_env();
     let saved_var_env = self.env.var_env();
 
     let res: Result<Flow, VmError> = (|| {
       self.this = Value::Object(receiver);
+      self.this_initialized = true;
       self.new_target = Value::Undefined;
 
       let var_env = block_scope.env_create(Some(saved_lex))?;
@@ -7846,6 +7864,7 @@ impl<'vm> HirEvaluator<'vm> {
     self.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
     self.env.set_var_env(saved_var_env);
     self.this = saved_this;
+    self.this_initialized = saved_this_initialized;
     self.new_target = saved_new_target;
 
     match res? {
@@ -8140,6 +8159,7 @@ pub(crate) fn run_compiled_function(
   func: CompiledFunctionRef,
   strict: bool,
   this: Value,
+  this_initialized: bool,
   new_target: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
@@ -8174,6 +8194,7 @@ pub(crate) fn run_compiled_function(
     env,
     strict,
     this,
+    this_initialized,
     new_target,
     script: func.script.clone(),
   };
@@ -8210,6 +8231,7 @@ pub(crate) fn run_compiled_script(
     // Best-effort strict detection.
     strict: false,
     this: Value::Object(global_object),
+    this_initialized: true,
     new_target: Value::Undefined,
     script: script.clone(),
   };
