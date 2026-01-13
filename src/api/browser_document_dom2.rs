@@ -2470,8 +2470,22 @@ impl BrowserDocumentDom2 {
       updates.insert(preorder, text);
     }
 
-    if !updates.is_empty() {
-      apply_text_updates_to_box_tree(&mut prepared.box_tree.root, &updates);
+    let updated_styled_ids = if updates.is_empty() {
+      FxHashSet::default()
+    } else {
+      apply_text_updates_to_box_tree(&mut prepared.box_tree.root, &updates)
+    };
+
+    // Incremental relayout can only be correct when every dirty text node actually corresponds to at
+    // least one `BoxType::Text` node. Some text nodes do not generate text boxes (e.g. `<textarea>`
+    // contents or `<option>` labels inside a `<select>` replaced control). In those cases we must
+    // fall back to a full pipeline run so form control models and other non-text-box consumers see
+    // the update.
+    if updates
+      .keys()
+      .any(|styled_id| !updated_styled_ids.contains(styled_id))
+    {
+      return Ok(false);
     }
 
     // Snapshot animation timing once so the layout/transition update is consistent within the call.
@@ -2561,7 +2575,11 @@ impl BrowserDocumentDom2 {
   }
 }
 
-fn apply_text_updates_to_box_tree(root: &mut BoxNode, updates: &FxHashMap<usize, String>) {
+fn apply_text_updates_to_box_tree(
+  root: &mut BoxNode,
+  updates: &FxHashMap<usize, String>,
+) -> FxHashSet<usize> {
+  let mut updated: FxHashSet<usize> = FxHashSet::default();
   let mut stack: Vec<*mut BoxNode> = vec![root as *mut _];
   while let Some(node_ptr) = stack.pop() {
     // Safety: stack contains pointers to nodes owned by `root` and we never move nodes during the
@@ -2573,6 +2591,7 @@ fn apply_text_updates_to_box_tree(root: &mut BoxNode, updates: &FxHashMap<usize,
           if let BoxType::Text(text_box) = &mut node.box_type {
             text_box.text.clear();
             text_box.text.push_str(new_text);
+            updated.insert(styled_id);
           }
         }
       }
@@ -2585,6 +2604,8 @@ fn apply_text_updates_to_box_tree(root: &mut BoxNode, updates: &FxHashMap<usize,
       }
     }
   }
+
+  updated
 }
 
 fn principal_box_style_for_styled_node_id(
@@ -2988,6 +3009,144 @@ mod tests {
     assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
     assert_eq!(after.full_restyles, before.full_restyles);
     assert_eq!(after.full_relayouts, before.full_relayouts);
+    Ok(())
+  }
+
+  fn first_child_text_node_id(
+    doc: &crate::dom2::Document,
+    parent: crate::dom2::NodeId,
+  ) -> Option<crate::dom2::NodeId> {
+    doc
+      .node(parent)
+      .children
+      .iter()
+      .copied()
+      .find(|&child| matches!(doc.node(child).kind, crate::dom2::NodeKind::Text { .. }))
+  }
+
+  fn find_select_control<'a>(
+    root: &'a BoxNode,
+  ) -> Option<&'a crate::tree::box_tree::SelectControl> {
+    let mut stack: Vec<&BoxNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if let crate::tree::box_tree::ReplacedType::FormControl(control) = &replaced.replaced_type {
+          if let crate::tree::box_tree::FormControlKind::Select(select) = &control.control {
+            return Some(select);
+          }
+        }
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn find_textarea_value<'a>(root: &'a BoxNode) -> Option<&'a str> {
+    let mut stack: Vec<&BoxNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if let crate::tree::box_tree::ReplacedType::FormControl(control) = &replaced.replaced_type {
+          if let crate::tree::box_tree::FormControlKind::TextArea { value, .. } = &control.control
+          {
+            return Some(value.as_str());
+          }
+        }
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  #[test]
+  fn option_text_mutation_falls_back_to_full_pipeline_and_updates_select_model() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body>\
+      <select id=\"s\">\
+        <option id=\"o\">One</option>\
+        <option>Two</option>\
+      </select>\
+    </body></html>";
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+
+    doc.render_frame()?;
+    {
+      let prepared = doc.prepared().expect("prepared");
+      let select = find_select_control(&prepared.box_tree().root).expect("select control");
+      let first = select.items.first().expect("select option 0");
+      match first {
+        crate::tree::box_tree::SelectItem::Option { label, .. } => assert_eq!(label, "One"),
+        other => panic!("expected SelectItem::Option, got {other:?}"),
+      }
+    }
+
+    let before = doc.invalidation_counters();
+
+    let option = doc.dom().get_element_by_id("o").expect("<option id=o>");
+    let text_id = first_child_text_node_id(doc.dom(), option).expect("option text node");
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_id, "Uno").expect("set text"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(
+      after.incremental_relayouts, before.incremental_relayouts,
+      "option text changes should fall back to full pipeline (no incremental relayout)"
+    );
+    assert_eq!(after.full_restyles, before.full_restyles + 1);
+    assert_eq!(after.full_relayouts, before.full_relayouts + 1);
+
+    let prepared = doc.prepared().expect("prepared");
+    let select = find_select_control(&prepared.box_tree().root).expect("select control");
+    let first = select.items.first().expect("select option 0");
+    match first {
+      crate::tree::box_tree::SelectItem::Option { label, .. } => assert_eq!(label, "Uno"),
+      other => panic!("expected SelectItem::Option, got {other:?}"),
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn textarea_text_mutation_falls_back_to_full_pipeline_and_updates_control_value() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body><textarea id=\"t\">hello</textarea></body></html>";
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+
+    doc.render_frame()?;
+    assert_eq!(
+      find_textarea_value(&doc.prepared().expect("prepared").box_tree().root).expect("textarea"),
+      "hello"
+    );
+
+    let before = doc.invalidation_counters();
+
+    let textarea = doc.dom().get_element_by_id("t").expect("<textarea id=t>");
+    let text_id = first_child_text_node_id(doc.dom(), textarea).expect("textarea text node");
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_id, "updated").expect("set text"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(
+      after.incremental_relayouts, before.incremental_relayouts,
+      "textarea text changes should fall back to full pipeline (no incremental relayout)"
+    );
+    assert_eq!(after.full_restyles, before.full_restyles + 1);
+    assert_eq!(after.full_relayouts, before.full_relayouts + 1);
+    assert_eq!(
+      find_textarea_value(&doc.prepared().expect("prepared").box_tree().root).expect("textarea"),
+      "updated"
+    );
+
     Ok(())
   }
 
