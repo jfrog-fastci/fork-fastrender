@@ -7836,6 +7836,43 @@ fn compiled_for_of_head_let_destructuring_default_observes_tdz() -> Result<(), V
 }
 
 #[test]
+fn compiled_for_loop_lexical_init_destructuring_default_observes_tdz() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let x = 1;
+        let threw = false;
+        try {
+          for (let {x = x} = {}; ; ) break;
+        } catch (e) {
+          threw = true;
+        }
+        return threw;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_of_head_assignment_object_destructuring_executes() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let x = 0;
+        for ({x} of [{x: 4}]) {}
+        return x;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(4.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_optional_member_callee_parentheses_do_not_short_circuit_call() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
