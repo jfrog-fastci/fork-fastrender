@@ -2232,6 +2232,7 @@ mod tests {
     let _disable_guard = EnvVarGuard::remove(ENV_DISABLE_RENDERER_SANDBOX);
     let _windows_guard = EnvVarGuard::remove(ENV_WINDOWS_RENDERER_SANDBOX);
     let _allow_guard = EnvVarGuard::remove(ENV_ALLOW_UNSANDBOXED_RENDERER);
+    let _inherit_guard = EnvVarGuard::remove(ENV_INHERIT_RENDERER_ENV);
 
     let support = win_sandbox::SandboxSupport::detect();
     if support != win_sandbox::SandboxSupport::Full {
@@ -2239,6 +2240,73 @@ mod tests {
         "skipping Windows sandbox spawn token-state test: Windows sandbox is unavailable ({support})"
       );
       return;
+    }
+
+    // Some hardened Windows environments expose AppContainer APIs but deny creating/using profiles
+    // (for example via group policy). In that case, spawning an AppContainer child will fail; skip
+    // this unit test with a clear message instead of failing the entire suite.
+    fn hresult_from_win32_code(hresult: u32) -> Option<u32> {
+      const FACILITY_WIN32_MASK: u32 = 0xFFFF_0000;
+      const FACILITY_WIN32_PREFIX: u32 = 0x8007_0000;
+      if (hresult & FACILITY_WIN32_MASK) == FACILITY_WIN32_PREFIX {
+        Some(hresult & 0xFFFF)
+      } else {
+        None
+      }
+    }
+
+    fn win32_code_from_error(err: &win_sandbox::WinSandboxError) -> Option<u32> {
+      match err {
+        win_sandbox::WinSandboxError::Win32 { code, .. } => Some(*code),
+        win_sandbox::WinSandboxError::HResult { hresult, .. } => {
+          hresult_from_win32_code(*hresult)
+        }
+        _ => None,
+      }
+    }
+
+    fn should_skip_appcontainer_profile_error(err: &win_sandbox::WinSandboxError) -> bool {
+      const ERROR_ACCESS_DENIED: u32 = 5;
+      const ERROR_ACCESS_DISABLED_BY_POLICY: u32 = 1260;
+      const ERROR_PROC_NOT_FOUND: u32 = 127;
+      const ERROR_NOT_SUPPORTED: u32 = 50;
+      const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
+
+      match win32_code_from_error(err) {
+        Some(code) => matches!(
+          code,
+          ERROR_ACCESS_DENIED
+            | ERROR_ACCESS_DISABLED_BY_POLICY
+            | ERROR_PRIVILEGE_NOT_HELD
+            | ERROR_NOT_SUPPORTED
+            | ERROR_PROC_NOT_FOUND
+        ),
+        None => false,
+      }
+    }
+
+    match win_sandbox::AppContainerProfile::ensure(
+      "FastRender.Renderer",
+      "FastRender Renderer",
+      "FastRender renderer AppContainer profile",
+    ) {
+      Ok(profile) => {
+        if !profile.is_enabled() {
+          eprintln!(
+            "skipping Windows sandbox spawn token-state test: AppContainer profile is disabled"
+          );
+          return;
+        }
+      }
+      Err(err) if should_skip_appcontainer_profile_error(&err) => {
+        eprintln!(
+          "skipping Windows sandbox spawn token-state test: AppContainer profile could not be ensured ({err})"
+        );
+        return;
+      }
+      Err(err) => panic!(
+        "Windows sandbox spawn token-state test: AppContainer profile ensure failed unexpectedly: {err}"
+      ),
     }
 
     let mut listener: Option<TcpListener> = None;
