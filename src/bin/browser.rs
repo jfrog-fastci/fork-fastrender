@@ -4330,6 +4330,11 @@ struct BrowserHud {
   worker_msgs_per_nonempty_wake: Option<f32>,
   worker_last_drain: u64,
   worker_max_drain_recent: u64,
+  surface_configure_calls_total: u64,
+  page_texture_recreates_total: u64,
+  last_upload_ms: f32,
+  last_upload_bytes: u64,
+  uploads_this_frame: u32,
   text_buf: String,
 }
 
@@ -4356,6 +4361,11 @@ impl BrowserHud {
       worker_msgs_per_nonempty_wake: None,
       worker_last_drain: 0,
       worker_max_drain_recent: 0,
+      surface_configure_calls_total: 0,
+      page_texture_recreates_total: 0,
+      last_upload_ms: 0.0,
+      last_upload_bytes: 0,
+      uploads_this_frame: 0,
       text_buf: String::with_capacity(384),
     }
   }
@@ -5309,7 +5319,16 @@ impl App {
       alpha_mode,
       view_formats: vec![],
     };
+
+    let mut hud = if browser_hud_enabled_from_env() {
+      Some(BrowserHud::new())
+    } else {
+      None
+    };
     surface.configure(&device, &surface_config);
+    if let Some(hud) = hud.as_mut() {
+      hud.surface_configure_calls_total = hud.surface_configure_calls_total.saturating_add(1);
+    }
 
     let egui_renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1);
     let debug_log_ui_enabled = debug_log_ui_enabled();
@@ -5444,11 +5463,7 @@ impl App {
       debug_log_filter: String::new(),
       debug_log_overlay_rect: None,
       debug_log_overlay_pointer_capture: false,
-      hud: if browser_hud_enabled_from_env() {
-        Some(BrowserHud::new())
-      } else {
-        None
-      },
+      hud,
       tab_notifications: std::collections::HashMap::new(),
       warning_toast_rect: None,
       error_infobar_rect: None,
@@ -6125,6 +6140,9 @@ impl App {
 
   fn configure_surface(&mut self, reason: &'static str) {
     self.surface.configure(&self.device, &self.surface_config);
+    if let Some(hud) = self.hud.as_mut() {
+      hud.surface_configure_calls_total = hud.surface_configure_calls_total.saturating_add(1);
+    }
     self.surface_needs_configure = false;
     self.surface_configure_count = self.surface_configure_count.saturating_add(1);
     if self.log_surface_configure {
@@ -7049,6 +7067,13 @@ impl App {
 
   fn flush_pending_frame_uploads(&mut self) {
     let _span = self.trace.span("flush_pending_frame_uploads", "ui.upload");
+    // Reset per-frame upload stats so the HUD remains stable when idle (or when uploads are
+    // rate-limited).
+    if let Some(hud) = self.hud.as_mut() {
+      hud.uploads_this_frame = 0;
+      hud.last_upload_bytes = 0;
+      hud.last_upload_ms = 0.0;
+    }
 
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       self.next_page_upload_redraw = None;
@@ -7089,6 +7114,7 @@ impl App {
 
     self.next_page_upload_redraw = None;
 
+    let upload_start = self.hud.is_some().then(std::time::Instant::now);
     let Some(frame_ready) = self.pending_frame_uploads.take_for_tab(tab_id) else {
       return;
     };
@@ -7099,16 +7125,37 @@ impl App {
     }
 
     let pixmap = frame_ready.pixmap;
+    let uploaded_bytes = u64::from(pixmap.width())
+      .saturating_mul(u64::from(pixmap.height()))
+      .saturating_mul(4);
     if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
-      tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+      let recreated = tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+      if recreated {
+        if let Some(hud) = self.hud.as_mut() {
+          hud.page_texture_recreates_total = hud.page_texture_recreates_total.saturating_add(1);
+        }
+      }
     } else {
       let mut tex =
         fastrender::ui::WgpuPixmapTexture::new_page(&self.device, &mut self.egui_renderer, &pixmap);
-      tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+      let recreated = tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+      if recreated {
+        if let Some(hud) = self.hud.as_mut() {
+          hud.page_texture_recreates_total = hud.page_texture_recreates_total.saturating_add(1);
+        }
+      }
       self.tab_textures.insert(tab_id, tex);
     }
 
     self.last_page_upload_at = Some(now);
+    if let Some(hud) = self.hud.as_mut() {
+      hud.uploads_this_frame = 1;
+      hud.last_upload_bytes = uploaded_bytes;
+      hud.last_upload_ms = upload_start
+        .map(|t| t.elapsed().as_secs_f32() * 1000.0)
+        .filter(|ms| ms.is_finite())
+        .unwrap_or(0.0);
+    }
   }
 
   fn send_viewport_changed_clamped_if_needed(
@@ -7942,6 +7989,29 @@ impl App {
       let _ = writeln!(&mut hud.text_buf, "viewport_css: {w}x{h}  dpr: {dpr:.2}");
     } else {
       let _ = writeln!(&mut hud.text_buf, "viewport_css: -  dpr: -");
+    }
+
+    let _ = writeln!(
+      &mut hud.text_buf,
+      "wgpu: surface.configure={}  page_tex_recreate={}",
+      hud.surface_configure_calls_total,
+      hud.page_texture_recreates_total
+    );
+    if hud.last_upload_ms.is_finite() {
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "upload: {}  {:.2}ms  {} bytes",
+        hud.uploads_this_frame,
+        hud.last_upload_ms,
+        hud.last_upload_bytes
+      );
+    } else {
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "upload: {}  - ms  {} bytes",
+        hud.uploads_this_frame,
+        hud.last_upload_bytes
+      );
     }
 
     let _ = writeln!(

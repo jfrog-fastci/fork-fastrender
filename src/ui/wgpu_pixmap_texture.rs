@@ -274,10 +274,11 @@ impl WgpuPixmapTexture {
     queue: &wgpu::Queue,
     egui_renderer: &mut egui_wgpu::Renderer,
     pixmap: &Pixmap,
-  ) {
+  ) -> bool {
     let (w, h) = (pixmap.width(), pixmap.height());
     let new_content_size_px = (w, h);
     let src_stride = w.saturating_mul(4);
+    let mut recreated = false;
 
     match self.allocation {
       WgpuPixmapTextureAllocation::Exact => {
@@ -295,6 +296,7 @@ impl WgpuPixmapTexture {
         ) {
           self.texture = texture;
           self.view = view;
+          recreated = true;
         }
       }
       WgpuPixmapTextureAllocation::PageBucketed => {
@@ -313,6 +315,7 @@ impl WgpuPixmapTexture {
         ) {
           self.texture = texture;
           self.view = view;
+          recreated = true;
         }
       }
     }
@@ -349,7 +352,7 @@ impl WgpuPixmapTexture {
           depth_or_array_layers: 1,
         },
       );
-      return;
+      return recreated;
     }
 
     // Ensure staging is correctly sized even if the pixmap dimensions match but the alignment
@@ -377,6 +380,7 @@ impl WgpuPixmapTexture {
         depth_or_array_layers: 1,
       },
     );
+    recreated
   }
 
   pub fn id(&self) -> egui::TextureId {
