@@ -63,9 +63,13 @@ A change counts if it lands at least one of:
 ### Profiling tools
 
 ```bash
-# Enable performance logging
+# Enable performance logging (JSONL)
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  env FASTR_PERF_LOG=1 bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+  env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+
+# Headless benchmark harness (JSON summary)
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
 
 # Profile with samply (Linux)
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \

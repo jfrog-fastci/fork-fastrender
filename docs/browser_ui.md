@@ -826,6 +826,26 @@ windowed app.
 The worker can emit best-effort structured debug lines via `WorkerToUi::DebugLog { tab_id, line }`.
 Front-ends are encouraged to print these to stderr while developing new protocol behavior.
 
+### Measuring browser responsiveness (frame times / latency)
+
+For machine-readable UI responsiveness metrics (frame times during scroll/resize, input latency, and
+navigation TTFP), enable JSONL perf logging:
+
+```bash
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
+  bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+```
+
+For automated/headless runs, use the `ui_perf_smoke` harness:
+
+```bash
+bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+```
+
+See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness) for
+details and metric mapping.
+
 ## Known limitations (as of now)
 
 - **No author JavaScript in the browser UI yet**: `<script>` does not run in the windowed `browser`

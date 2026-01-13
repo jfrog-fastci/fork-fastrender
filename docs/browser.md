@@ -135,6 +135,8 @@ binary)”). Notably:
   `wgpu` to use a fallback (software) adapter when selecting a GPU for the windowed UI.
 - `FASTR_BROWSER_WGPU_BACKENDS=...` / `browser --wgpu-backends ...` (alias: `--wgpu-backend`) – restrict
   the `wgpu` backend set (for example `gl`) when the default backend selection fails.
+- `FASTR_PERF_LOG=1` – enable JSONL responsiveness logging for the windowed UI (frame times, input
+  latency, TTFP). See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness).
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).
@@ -163,6 +165,25 @@ Most renderer debug knobs are environment variables; the canonical list is
 - `FASTR_TRACE_OUT=/tmp/trace.json` – write Chrome trace events for a render.
 - `FASTR_TRACE_MAX_EVENTS=<N>` – cap the number of trace events retained per render (default 200000).
 - `FASTR_PAINT_BACKEND=display_list|legacy` – switch paint backend.
+
+### Browser responsiveness tooling
+
+To capture machine-readable browser responsiveness metrics:
+
+```bash
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
+  bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+```
+
+For automated, headless measurements (JSON summary):
+
+```bash
+bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+```
+
+See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness) for how the
+metrics map to the workstream targets.
 
 ### Where to look for logs
 
