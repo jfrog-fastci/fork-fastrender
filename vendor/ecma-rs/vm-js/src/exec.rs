@@ -778,6 +778,16 @@ fn throw_reference_error(
   Ok(VmError::Throw(value))
 }
 
+#[inline]
+fn try_clone_string(value: &str) -> Result<String, VmError> {
+  let mut out = String::new();
+  out
+    .try_reserve_exact(value.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  out.push_str(value);
+  Ok(out)
+}
+
 fn syntax_error(loc: parse_js::loc::Loc, message: impl Into<String>) -> VmError {
   let span = loc.to_diagnostics_span(FileId(0));
   VmError::Syntax(vec![Diagnostic::error("VMJS0002", message, span)])
@@ -3672,7 +3682,11 @@ impl<'a> Evaluator<'a> {
           }
           return Err(VmError::Unimplemented("anonymous function declaration"));
         };
-        var_names.insert(name.stx.name.clone());
+        let name_str = name.stx.name.as_str();
+        if !var_names.contains(name_str) {
+          var_names.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          var_names.insert(try_clone_string(name_str)?);
+        }
       }
     } else {
       // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
@@ -3710,13 +3724,21 @@ impl<'a> Evaluator<'a> {
           let Some(name) = class.stx.name.as_ref() else {
             continue;
           };
-          if !lexical_seen.insert(name.stx.name.clone()) {
+          let name_str = name.stx.name.as_str();
+          if lexical_seen.contains(name_str) {
             return Err(syntax_error(
               stmt.loc,
               "Identifier has already been declared",
             ));
           }
-          lexical_bindings.push((name.stx.name.clone(), stmt.loc));
+          lexical_seen
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          lexical_seen.insert(try_clone_string(name_str)?);
+          lexical_bindings
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          lexical_bindings.push((try_clone_string(name_str)?, stmt.loc));
         }
         _ => {}
       }
@@ -3769,26 +3791,31 @@ impl<'a> Evaluator<'a> {
     self.collect_var_declared_names_in_stmt_list(stmts, &mut var_decl_names)?;
 
     // Step 6: For each name in varNames, reject collisions with existing lexical declarations.
-    let mut var_names_to_check: Vec<String> = Vec::new();
-    let mut seen_var_name: HashSet<String> = HashSet::new();
+    let mut var_names_to_check: Vec<&str> = Vec::new();
+    let mut seen_var_name: HashSet<&str> = HashSet::new();
     for name in var_decl_names
       .iter()
-      .cloned()
-      .chain(function_decls.iter().filter_map(|decl| decl.stx.name.as_ref().map(|n| n.stx.name.clone())))
+      .map(|n| n.as_str())
+      .chain(
+        function_decls
+          .iter()
+          .filter_map(|decl| decl.stx.name.as_ref().map(|n| n.stx.name.as_str())),
+      )
     {
-      if seen_var_name.try_reserve(1).is_err() {
-        return Err(VmError::OutOfMemory);
-      }
-      if !seen_var_name.insert(name.clone()) {
+      if seen_var_name.contains(name) {
         continue;
       }
+      seen_var_name
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      seen_var_name.insert(name);
       var_names_to_check
         .try_reserve(1)
         .map_err(|_| VmError::OutOfMemory)?;
       var_names_to_check.push(name);
     }
 
-    for name in &var_names_to_check {
+    for &name in &var_names_to_check {
       self.tick()?;
       if scope.heap().env_has_binding(global_lex, name)? {
         return Err(throw_syntax_error(
@@ -3801,17 +3828,18 @@ impl<'a> Evaluator<'a> {
 
     // Step 10: Determine which function declarations to initialize (last declaration wins), and
     // validate CanDeclareGlobalFunction for each.
-    let mut declared_function_names: HashSet<String> = HashSet::new();
+    let mut declared_function_names: HashSet<&str> = HashSet::new();
     let mut functions_to_initialize_rev: Vec<&Node<FuncDecl>> = Vec::new();
     for decl in function_decls.iter().rev() {
       self.tick()?;
       let Some(name) = &decl.stx.name else {
         return Err(VmError::Unimplemented("anonymous function declaration"));
       };
-      if declared_function_names.contains(&name.stx.name) {
+      let name_str = name.stx.name.as_str();
+      if declared_function_names.contains(name_str) {
         continue;
       }
-      if !self.can_declare_global_function(scope, global_object, &name.stx.name)? {
+      if !self.can_declare_global_function(scope, global_object, name_str)? {
         return Err(throw_type_error(
           self.vm,
           scope,
@@ -3821,7 +3849,7 @@ impl<'a> Evaluator<'a> {
       if declared_function_names.try_reserve(1).is_err() {
         return Err(VmError::OutOfMemory);
       }
-      declared_function_names.insert(name.stx.name.clone());
+      declared_function_names.insert(name_str);
       functions_to_initialize_rev
         .try_reserve(1)
         .map_err(|_| VmError::OutOfMemory)?;
@@ -3832,27 +3860,28 @@ impl<'a> Evaluator<'a> {
 
     // Step 12: Validate CanDeclareGlobalVar for each var-declared name (excluding function names),
     // and compute the final `declaredVarNames` list.
-    let mut declared_var_names: Vec<String> = Vec::new();
-    let mut declared_var_set: HashSet<String> = HashSet::new();
+    let mut declared_var_names: Vec<&str> = Vec::new();
+    let mut declared_var_set: HashSet<&str> = HashSet::new();
     for name in &var_decl_names {
       self.tick()?;
-      if declared_function_names.contains(name) {
+      let name_str = name.as_str();
+      if declared_function_names.contains(name_str) {
         continue;
       }
-      if declared_var_set.contains(name) {
+      if declared_var_set.contains(name_str) {
         continue;
       }
-      if !self.can_declare_global_var(scope, global_object, name)? {
+      if !self.can_declare_global_var(scope, global_object, name_str)? {
         return Err(throw_type_error(self.vm, scope, "Cannot declare global variable")?);
       }
       if declared_var_set.try_reserve(1).is_err() {
         return Err(VmError::OutOfMemory);
       }
-      declared_var_set.insert(name.clone());
+      declared_var_set.insert(name_str);
       declared_var_names
         .try_reserve(1)
         .map_err(|_| VmError::OutOfMemory)?;
-      declared_var_names.push(name.clone());
+      declared_var_names.push(name_str);
     }
 
     // Step 15/16: Create global lexical bindings (uninitialized).
@@ -3879,7 +3908,7 @@ impl<'a> Evaluator<'a> {
     }
 
     // Step 18: Create global var bindings (undefined-initialized properties on the global object).
-    for name in &declared_var_names {
+    for &name in &declared_var_names {
       self.tick()?;
       self.env.declare_var(self.vm, scope, name)?;
     }
@@ -3889,11 +3918,13 @@ impl<'a> Evaluator<'a> {
     record
       .try_reserve(declared_var_names.len().saturating_add(functions_to_initialize.len()))
       .map_err(|_| VmError::OutOfMemory)?;
-    record.extend(declared_var_names.into_iter());
+    for &name in &declared_var_names {
+      record.push(try_clone_string(name)?);
+    }
     for decl in functions_to_initialize {
       // Safe: scripts always have named function declarations here.
       if let Some(name) = &decl.stx.name {
-        record.push(name.stx.name.clone());
+        record.push(try_clone_string(name.stx.name.as_str())?);
       }
     }
     self.vm.global_var_names_insert_all(record)?;
@@ -3930,29 +3961,33 @@ impl<'a> Evaluator<'a> {
       self.collect_var_names(&stmt.stx, &mut var_names)?;
     }
 
-      if self.strict {
-        // Strict mode: only top-level function declarations are var-scoped; block function
-        // declarations are instantiated at block entry.
-        for stmt in stmts {
-          self.tick()?;
-          let Stmt::FunctionDecl(decl) = &*stmt.stx else {
+    if self.strict {
+      // Strict mode: only top-level function declarations are var-scoped; block function
+      // declarations are instantiated at block entry.
+      for stmt in stmts {
+        self.tick()?;
+        let Stmt::FunctionDecl(decl) = &*stmt.stx else {
+          continue;
+        };
+        let Some(name) = &decl.stx.name else {
+          // `export default function() {}` is parsed as an anonymous function declaration with an
+          // engine-internal `*default*` binding created during module linking. It does not
+          // participate in var-scoped name collision checks.
+          if decl.stx.export_default {
             continue;
-          };
-          let Some(name) = &decl.stx.name else {
-            // `export default function() {}` is parsed as an anonymous function declaration with an
-            // engine-internal `*default*` binding created during module linking. It does not
-            // participate in var-scoped name collision checks.
-            if decl.stx.export_default {
-              continue;
-            }
-            return Err(VmError::Unimplemented("anonymous function declaration"));
-          };
-          var_names.insert(name.stx.name.clone());
+          }
+          return Err(VmError::Unimplemented("anonymous function declaration"));
+        };
+        let name_str = name.stx.name.as_str();
+        if !var_names.contains(name_str) {
+          var_names.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          var_names.insert(try_clone_string(name_str)?);
         }
-      } else {
-        // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
-        for stmt in stmts {
-          self.collect_sloppy_function_decl_names(&stmt.stx, &mut var_names)?;
+      }
+    } else {
+      // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
+      for stmt in stmts {
+        self.collect_sloppy_function_decl_names(&stmt.stx, &mut var_names)?;
       }
     }
 
@@ -3985,13 +4020,21 @@ impl<'a> Evaluator<'a> {
           let Some(name) = class.stx.name.as_ref() else {
             continue;
           };
-          if !lexical_seen.insert(name.stx.name.clone()) {
+          let name_str = name.stx.name.as_str();
+          if lexical_seen.contains(name_str) {
             return Err(syntax_error(
               stmt.loc,
               "Identifier has already been declared",
             ));
           }
-          lexical_bindings.push((name.stx.name.clone(), stmt.loc));
+          lexical_seen
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          lexical_seen.insert(try_clone_string(name_str)?);
+          lexical_bindings
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          lexical_bindings.push((try_clone_string(name_str)?, stmt.loc));
         }
         _ => {}
       }
@@ -4599,7 +4642,11 @@ impl<'a> Evaluator<'a> {
           let Some(name) = &decl.stx.name else {
             return Err(VmError::Unimplemented("anonymous function declaration"));
           };
-          out.insert(name.stx.name.clone());
+          let name_str = name.stx.name.as_str();
+          if !out.contains(name_str) {
+            out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+            out.insert(try_clone_string(name_str)?);
+          }
         }
         Ok(())
       }
@@ -4679,10 +4726,14 @@ impl<'a> Evaluator<'a> {
   ) -> Result<(), VmError> {
     match pat {
       Pat::Id(id) => {
-        if !seen.insert(id.stx.name.clone()) {
+        let name_str = id.stx.name.as_str();
+        if seen.contains(name_str) {
           return Err(syntax_error(loc, "Identifier has already been declared"));
         }
-        out.push((id.stx.name.clone(), loc));
+        seen.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+        seen.insert(try_clone_string(name_str)?);
+        out.push((try_clone_string(name_str)?, loc));
         Ok(())
       }
       Pat::Obj(obj) => {
@@ -4979,17 +5030,23 @@ impl<'a> Evaluator<'a> {
           let Some(name) = decl.stx.name.as_ref() else {
             continue;
           };
-          if !seen.insert(name.stx.name.clone()) {
+          let name_str = name.stx.name.as_str();
+          if seen.contains(name_str) {
             return Err(syntax_error(stmt.loc, "Identifier has already been declared"));
           }
+          seen.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          seen.insert(try_clone_string(name_str)?);
         }
         Stmt::FunctionDecl(decl) if self.strict || Self::is_non_annex_b_hoistable_decl(decl) => {
           let Some(name) = &decl.stx.name else {
             return Err(VmError::Unimplemented("anonymous function declaration"));
           };
-          if !seen.insert(name.stx.name.clone()) {
+          let name_str = name.stx.name.as_str();
+          if seen.contains(name_str) {
             return Err(syntax_error(stmt.loc, "Identifier has already been declared"));
           }
+          seen.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          seen.insert(try_clone_string(name_str)?);
         }
         _ => {}
       }
@@ -5494,7 +5551,7 @@ impl<'a> Evaluator<'a> {
     match pat {
       Pat::Id(id) => {
         out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-        out.push(id.stx.name.clone());
+        out.push(try_clone_string(id.stx.name.as_str())?);
         Ok(())
       }
       Pat::Obj(obj) => {
@@ -5642,7 +5699,11 @@ impl<'a> Evaluator<'a> {
   ) -> Result<(), VmError> {
     match pat {
       Pat::Id(id) => {
-        out.insert(id.stx.name.clone());
+        let name = id.stx.name.as_str();
+        if !out.contains(name) {
+          out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          out.insert(try_clone_string(name)?);
+        }
         Ok(())
       }
       Pat::Obj(obj) => {
