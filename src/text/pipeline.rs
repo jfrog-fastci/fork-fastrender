@@ -135,6 +135,8 @@ thread_local! {
   // counter makes "reset + assert" patterns flaky.
   static SHAPE_FONT_RUN_INVOCATIONS: Cell<usize> = Cell::new(0);
   static SHAPING_PIPELINE_NEW_CALLS: Cell<usize> = Cell::new(0);
+  static ITEMIZE_TEXT_RUNS_PRODUCED: Cell<usize> = Cell::new(0);
+  static ITEMIZE_TEXT_BYTES_COPIED: Cell<usize> = Cell::new(0);
 }
 
 #[cfg(test)]
@@ -1873,6 +1875,22 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
     return Vec::new();
   }
 
+  #[inline]
+  fn slice_to_string(text: &str, start: usize, end: usize) -> String {
+    let start = start.min(text.len());
+    let end = end.min(text.len());
+    if start >= end {
+      return String::new();
+    }
+
+    // `start`/`end` are expected to be char boundaries (they originate from `char_indices()`),
+    // but use a lossy fallback to avoid panicking if upstream indices are ever inconsistent.
+    match text.get(start..end) {
+      Some(slice) => slice.to_string(),
+      None => String::from_utf8_lossy(&text.as_bytes()[start..end]).into_owned(),
+    }
+  }
+
   // Bidi levels are only needed when we will reorder runs for visual display. When the bidi
   // analysis reports no reordering is required (e.g. pure LTR text with embedded isolates),
   // splitting runs on level boundaries is pure churn and can break adjacency-sensitive shaping
@@ -1908,30 +1926,58 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
 
   let mut runs = Vec::new();
   let mut current_start = 0;
-  let mut current_text = String::new();
   let mut current_script: Option<Script> = None;
   let mut current_direction: Option<Direction> = None;
   let mut current_level: Option<u8> = None;
 
+  let mut flush_run = |end: usize,
+                       runs: &mut Vec<ItemizedRun>,
+                       current_start: usize,
+                       current_script: Option<Script>,
+                       current_direction: Option<Direction>,
+                       current_level: Option<u8>| {
+    if current_start >= end {
+      return;
+    }
+    let (Some(script), Some(direction), Some(level)) =
+      (current_script, current_direction, current_level)
+    else {
+      return;
+    };
+
+    let run_text = slice_to_string(text, current_start, end);
+    if run_text.is_empty() {
+      return;
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    {
+      ITEMIZE_TEXT_RUNS_PRODUCED.with(|runs_count| runs_count.set(runs_count.get() + 1));
+      ITEMIZE_TEXT_BYTES_COPIED.with(|bytes| bytes.set(bytes.get() + run_text.len()));
+    }
+
+    runs.push(ItemizedRun {
+      start: current_start,
+      end,
+      text: run_text,
+      script,
+      direction,
+      level,
+    });
+  };
+
   for (idx, ch) in text.char_indices() {
     while idx >= paragraph_end && paragraph_index + 1 < paragraphs.len() {
-      if let (Some(script), Some(direction), Some(level)) =
-        (current_script, current_direction, current_level)
-      {
-        if !current_text.is_empty() {
-          runs.push(ItemizedRun {
-            start: current_start,
-            end: idx,
-            text: std::mem::take(&mut current_text),
-            script,
-            direction,
-            level,
-          });
-        }
-      }
+      flush_run(
+        idx,
+        &mut runs,
+        current_start,
+        current_script,
+        current_direction,
+        current_level,
+      );
 
       current_start = idx;
-      current_text.clear();
       current_script = None;
       current_direction = None;
       current_level = None;
@@ -1995,18 +2041,14 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
 
     if needs_new_run {
       // Finish current run
-      if let (Some(script), Some(direction), Some(level)) =
-        (current_script, current_direction, current_level)
-      {
-        runs.push(ItemizedRun {
-          start: current_start,
-          end: idx,
-          text: std::mem::take(&mut current_text),
-          script,
-          direction,
-          level,
-        });
-      }
+      flush_run(
+        idx,
+        &mut runs,
+        current_start,
+        current_script,
+        current_direction,
+        current_level,
+      );
       current_start = idx;
     }
 
@@ -2018,96 +2060,19 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
     }
     current_direction = Some(char_direction);
     current_level = Some(char_level);
-    current_text.push(ch);
   }
 
   // Finish last run
-  if !current_text.is_empty() {
-    if let (Some(script), Some(direction), Some(level)) =
-      (current_script, current_direction, current_level)
-    {
-      runs.push(ItemizedRun {
-        start: current_start,
-        end: text.len(),
-        text: current_text,
-        script,
-        direction,
-        level,
-      });
-    }
-  }
+  flush_run(
+    text.len(),
+    &mut runs,
+    current_start,
+    current_script,
+    current_direction,
+    current_level,
+  );
 
   runs
-}
-
-fn split_itemized_runs_by_paragraph(
-  runs: Vec<ItemizedRun>,
-  paragraphs: &[ParagraphBoundary],
-) -> Vec<ItemizedRun> {
-  if runs.is_empty() || paragraphs.is_empty() {
-    return runs;
-  }
-
-  let mut out = Vec::with_capacity(runs.len());
-  let mut para_iter = paragraphs.iter().peekable();
-
-  for mut run in runs {
-    while let Some(para) = para_iter.peek().copied() {
-      // Advance paragraph iterator if run starts after the current paragraph.
-      if run.start >= para.end_byte {
-        para_iter.next();
-        continue;
-      }
-
-      let para_end = para.end_byte;
-      if run.end <= para_end {
-        out.push(run);
-        break;
-      }
-
-      // Split the run at the paragraph boundary.
-      let split_point = para_end;
-      let split_offset = split_point.saturating_sub(run.start);
-      if let Some((left, right)) = split_run_at(&run, split_offset) {
-        out.push(left);
-        run = right;
-        para_iter.next();
-      } else {
-        // If the boundary isn't a valid UTF-8 split, keep the remainder intact.
-        out.push(run);
-        break;
-      }
-    }
-  }
-
-  out
-}
-
-fn split_run_at(run: &ItemizedRun, split_offset: usize) -> Option<(ItemizedRun, ItemizedRun)> {
-  if split_offset == 0 || split_offset >= run.text.len() || !run.text.is_char_boundary(split_offset)
-  {
-    return None;
-  }
-
-  let left_text = run.text[..split_offset].to_string();
-  let right_text = run.text[split_offset..].to_string();
-  let left = ItemizedRun {
-    start: run.start,
-    end: run.start + split_offset,
-    text: left_text,
-    script: run.script,
-    direction: run.direction,
-    level: run.level,
-  };
-  let right = ItemizedRun {
-    start: run.start + split_offset,
-    end: run.end,
-    text: right_text,
-    script: run.script,
-    direction: run.direction,
-    level: run.level,
-  };
-  Some((left, right))
 }
 
 // ============================================================================
@@ -6664,7 +6629,6 @@ impl ShapingPipeline {
 
     // Step 2: Script itemization
     let itemized_runs = itemize_text(text, &bidi);
-    let itemized_runs = split_itemized_runs_by_paragraph(itemized_runs, bidi.paragraphs());
 
     // Step 3: Font matching
     let coverage_timer = text_diagnostics_timer(TextDiagnosticsStage::Coverage);
@@ -8332,7 +8296,6 @@ mod tests {
     let text = "abc\n\u{201C}漢字";
     let bidi = BidiAnalysis::analyze(text, &style);
     let runs = itemize_text(text, &bidi);
-    let runs = split_itemized_runs_by_paragraph(runs, bidi.paragraphs());
 
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].text, "abc\n");
@@ -8368,6 +8331,212 @@ mod tests {
     let runs = itemize_text("", &bidi);
 
     assert!(runs.is_empty());
+  }
+
+  fn legacy_itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
+    if text.is_empty() {
+      return Vec::new();
+    }
+
+    let split_by_level = bidi.needs_reordering();
+
+    let paragraphs = bidi.paragraphs();
+    let mut paragraph_index = 0usize;
+    let mut paragraph_end = paragraphs
+      .first()
+      .map(|para| para.end_byte.min(text.len()))
+      .unwrap_or(text.len());
+    let compute_paragraph_first_strong_script = |start: usize, end: usize| {
+      let start = start.min(text.len());
+      let end = end.min(text.len());
+      let Some(slice) = text.get(start..end) else {
+        return Script::Latin;
+      };
+      for ch in slice.chars() {
+        let script = Script::detect(ch);
+        if !script.is_neutral() {
+          return script;
+        }
+      }
+      Script::Latin
+    };
+    let mut paragraph_first_strong_script = match paragraphs.first() {
+      Some(first_para) => {
+        compute_paragraph_first_strong_script(first_para.start_byte, first_para.end_byte)
+      }
+      None => compute_paragraph_first_strong_script(0, text.len()),
+    };
+
+    let mut runs = Vec::new();
+    let mut current_start = 0;
+    let mut current_text = String::new();
+    let mut current_script: Option<Script> = None;
+    let mut current_direction: Option<Direction> = None;
+    let mut current_level: Option<u8> = None;
+
+    for (idx, ch) in text.char_indices() {
+      while idx >= paragraph_end && paragraph_index + 1 < paragraphs.len() {
+        if let (Some(script), Some(direction), Some(level)) =
+          (current_script, current_direction, current_level)
+        {
+          if !current_text.is_empty() {
+            runs.push(ItemizedRun {
+              start: current_start,
+              end: idx,
+              text: std::mem::take(&mut current_text),
+              script,
+              direction,
+              level,
+            });
+          }
+        }
+
+        current_start = idx;
+        current_text.clear();
+        current_script = None;
+        current_direction = None;
+        current_level = None;
+
+        paragraph_index += 1;
+        let para = paragraphs[paragraph_index];
+        paragraph_end = para.end_byte.min(text.len());
+        paragraph_first_strong_script =
+          compute_paragraph_first_strong_script(para.start_byte, para.end_byte);
+      }
+
+      let char_script = Script::detect(ch);
+      let level = bidi.level_at(idx);
+      let mut char_direction = Direction::from_level(level);
+      let mut char_level = if split_by_level {
+        level.number()
+      } else {
+        let base_level = bidi.base_level();
+        if Direction::from_level(base_level) == char_direction {
+          base_level.number()
+        } else {
+          level.number()
+        }
+      };
+
+      if is_bidi_format_char(ch) {
+        if let Some(dir) = current_direction {
+          char_direction = dir;
+        }
+        if let Some(run_level) = current_level {
+          char_level = run_level;
+        }
+      }
+
+      let resolved_script = if char_script.is_neutral() {
+        current_script.unwrap_or(paragraph_first_strong_script)
+      } else {
+        char_script
+      };
+
+      let needs_new_run = match (current_script, current_direction, current_level) {
+        (None, _, _) => false,
+        (Some(script), Some(dir), Some(level)) => {
+          dir != char_direction
+            || (split_by_level && level != char_level)
+            || (!char_script.is_neutral() && script != resolved_script)
+        }
+        _ => false,
+      };
+
+      if needs_new_run {
+        if let (Some(script), Some(direction), Some(level)) =
+          (current_script, current_direction, current_level)
+        {
+          runs.push(ItemizedRun {
+            start: current_start,
+            end: idx,
+            text: std::mem::take(&mut current_text),
+            script,
+            direction,
+            level,
+          });
+        }
+        current_start = idx;
+      }
+
+      if !char_script.is_neutral() {
+        current_script = Some(resolved_script);
+      } else if current_script.is_none() {
+        current_script = Some(paragraph_first_strong_script);
+      }
+      current_direction = Some(char_direction);
+      current_level = Some(char_level);
+      current_text.push(ch);
+    }
+
+    if !current_text.is_empty() {
+      if let (Some(script), Some(direction), Some(level)) =
+        (current_script, current_direction, current_level)
+      {
+        runs.push(ItemizedRun {
+          start: current_start,
+          end: text.len(),
+          text: current_text,
+          script,
+          direction,
+          level,
+        });
+      }
+    }
+
+    runs
+  }
+
+  #[test]
+  fn itemize_text_matches_legacy_mixed_scripts_neutrals_and_bidi_controls() {
+    // Regression test for the itemizer: mixed scripts + neutrals + bidi formatting chars should
+    // produce stable run boundaries and script assignments.
+    let style = ComputedStyle::default();
+    let text = "Hello,\u{200E} 世界123 \u{202B}שלום\u{202C}!";
+    let bidi = BidiAnalysis::analyze(text, &style);
+
+    let legacy = legacy_itemize_text(text, &bidi);
+    let runs = itemize_text(text, &bidi);
+
+    assert_eq!(
+      runs.len(),
+      legacy.len(),
+      "run count mismatch\nnew={runs:#?}\nold={legacy:#?}"
+    );
+    for (new, old) in runs.iter().zip(legacy.iter()) {
+      assert_eq!(new.start, old.start);
+      assert_eq!(new.end, old.end);
+      assert_eq!(new.text, old.text);
+      assert_eq!(new.script, old.script);
+      assert_eq!(new.direction, old.direction);
+      assert_eq!(new.level, old.level);
+    }
+  }
+
+  #[test]
+  fn itemize_text_long_ltr_paragraph_does_not_overproduce_runs() {
+    // Guardrail against pathological per-character itemization on long paragraphs.
+    let style = ComputedStyle::default();
+    let text = "a".repeat(20_000);
+    let bidi = BidiAnalysis::analyze(&text, &style);
+
+    ITEMIZE_TEXT_RUNS_PRODUCED.with(|runs| runs.set(0));
+    ITEMIZE_TEXT_BYTES_COPIED.with(|bytes| bytes.set(0));
+
+    let runs = itemize_text(&text, &bidi);
+    assert_eq!(runs.len(), 1, "expected single run for pure LTR paragraph");
+    assert_eq!(runs[0].text.len(), text.len());
+
+    assert_eq!(
+      ITEMIZE_TEXT_RUNS_PRODUCED.with(|runs| runs.get()),
+      1,
+      "expected exactly one allocated run text"
+    );
+    assert_eq!(
+      ITEMIZE_TEXT_BYTES_COPIED.with(|bytes| bytes.get()),
+      text.len(),
+      "expected copied bytes to match input length"
+    );
   }
 
   #[test]
@@ -8865,7 +9034,6 @@ mod tests {
 
     let bidi = BidiAnalysis::analyze(text, &style);
     let runs = itemize_text(text, &bidi);
-    let runs = split_itemized_runs_by_paragraph(runs, bidi.paragraphs());
 
     assert_eq!(
       runs.len(),
@@ -8878,29 +9046,6 @@ mod tests {
     assert_eq!(runs[0].end, paras[0].end_byte);
     assert_eq!(runs[1].start, paras[1].start_byte);
     assert_eq!(runs[1].end, paras[1].end_byte);
-  }
-
-  #[test]
-  fn split_run_at_rejects_non_char_boundary_offsets() {
-    let run = ItemizedRun {
-      start: 0,
-      end: "a😊b".len(),
-      text: "a😊b".to_string(),
-      script: Script::Latin,
-      direction: Direction::LeftToRight,
-      level: 0,
-    };
-
-    assert!(
-      split_run_at(&run, 2).is_none(),
-      "should not split inside a multibyte codepoint"
-    );
-
-    let (left, right) = split_run_at(&run, 1).expect("valid split at char boundary");
-    assert_eq!(left.text, "a");
-    assert_eq!(right.text, "😊b");
-    assert_eq!(left.end, 1);
-    assert_eq!(right.start, 1);
   }
 
   #[test]
