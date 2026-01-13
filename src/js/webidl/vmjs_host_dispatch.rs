@@ -4602,7 +4602,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           return Err(VmError::TypeError("Illegal invocation"));
         };
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let old_parent = match dom.parent(child_id) {
               Ok(v) => v,
@@ -4611,7 +4611,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             let res = if child_id.index() < dom.nodes_len()
               && matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. })
             {
-              dom.with_shadow_root_as_document_fragment(child_id, |dom| dom.append_child(parent_id, child_id))
+              dom.with_shadow_root_as_document_fragment(child_id, |dom| {
+                dom.append_child(parent_id, child_id)
+              })
             } else {
               dom.append_child(parent_id, child_id)
             };
@@ -4656,7 +4658,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
 
             self.sync_live_html_collections(vm, scope)?;
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
                   DomInterface::Node
@@ -4784,7 +4786,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             // ShadowRoot is never a tree child in the DOM Standard, so it cannot be removed (even
             // though dom2 stores it as a child of its host element).
@@ -4809,7 +4811,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               document_id,
             )?;
             self.sync_live_html_collections(vm, scope)?;
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
                   DomInterface::Node
