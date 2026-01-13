@@ -185,9 +185,7 @@ impl Document {
       //
       // Note: `dom2` stores the HTML namespace as either the real namespace URI or an empty string,
       // so we treat them as equivalent for this special-casing.
-      if query_is_html_namespace
-        || (namespace_is_wildcard && self.is_html_case_insensitive_namespace(node_ns))
-      {
+      if query_is_html_namespace {
         tag_name.eq_ignore_ascii_case(local_name)
       } else {
         tag_name == local_name
