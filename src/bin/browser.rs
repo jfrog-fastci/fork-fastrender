@@ -11036,20 +11036,28 @@ impl App {
               && response.hovered()
               && !self.clear_browsing_data_dialog_open
             {
-              let mut delta_css = (0.0, 0.0);
-              for (unit, delta) in &wheel_events {
-                let Some((dx, dy)) = mapping
-                  .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
-                else {
-                  continue;
-                };
-                delta_css.0 += dx;
-                delta_css.1 += dy;
-              }
-              if delta_css.0 != 0.0 || delta_css.1 != 0.0 {
-                self
-                  .overlay_scrollbar_visibility
-                  .register_interaction(std::time::Instant::now());
+              let cursor_over_debug_overlay = self.debug_log_overlay_pointer_capture
+                || response.hover_pos().is_some_and(|pos| {
+                  self
+                    .debug_log_overlay_rect
+                    .is_some_and(|rect| rect.contains(pos))
+                });
+              if !cursor_over_debug_overlay {
+                let mut delta_css = (0.0, 0.0);
+                for (unit, delta) in &wheel_events {
+                  let Some((dx, dy)) = mapping
+                    .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
+                  else {
+                    continue;
+                  };
+                  delta_css.0 += dx;
+                  delta_css.1 += dy;
+                }
+                if delta_css.0 != 0.0 || delta_css.1 != 0.0 {
+                  self
+                    .overlay_scrollbar_visibility
+                    .register_interaction(std::time::Instant::now());
+                }
               }
             }
 
@@ -11314,29 +11322,35 @@ impl App {
             return;
           };
 
-          let mut delta_css = (0.0, 0.0);
-          for (unit, delta) in &wheel_events {
-            let Some((dx, dy)) = mapping
-              .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
-            else {
-              continue;
-            };
-            delta_css.0 += dx;
-            delta_css.1 += dy;
-          }
-          if delta_css.0 != 0.0 || delta_css.1 != 0.0 {
-            // Treat wheel scrolling over overlay scrollbars as viewport scrolling (like browsers):
-            // do not route the scroll delta to underlying element scrollers via hit-testing.
-            let pointer_css = if self.cursor_over_overlay_scrollbars(hover_pos) {
-              None
-            } else {
-              mapping.pos_points_to_pos_css_clamped(hover_pos)
-            };
-            self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-              tab_id: active_tab,
-              delta_css,
-              pointer_css,
-            });
+          if !self.debug_log_overlay_pointer_capture
+            && !self
+              .debug_log_overlay_rect
+              .is_some_and(|rect| rect.contains(hover_pos))
+          {
+            let mut delta_css = (0.0, 0.0);
+            for (unit, delta) in &wheel_events {
+              let Some((dx, dy)) = mapping
+                .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
+              else {
+                continue;
+              };
+              delta_css.0 += dx;
+              delta_css.1 += dy;
+            }
+            if delta_css.0 != 0.0 || delta_css.1 != 0.0 {
+              // Treat wheel scrolling over overlay scrollbars as viewport scrolling (like browsers):
+              // do not route the scroll delta to underlying element scrollers via hit-testing.
+              let pointer_css = if self.cursor_over_overlay_scrollbars(hover_pos) {
+                None
+              } else {
+                mapping.pos_points_to_pos_css_clamped(hover_pos)
+              };
+              self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                tab_id: active_tab,
+                delta_css,
+                pointer_css,
+              });
+            }
           }
         }
       } else {
