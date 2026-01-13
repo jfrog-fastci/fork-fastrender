@@ -257,11 +257,6 @@ fn apply_paint_interaction_state_to_fragment_tree(
   fragment_tree: &mut FragmentTree,
   interaction_state: Option<&InteractionState>,
 ) {
-  // Split borrows of `PreparedDocument` fields so we can read the box tree while mutating the
-  // fragment tree in the same call chain (these fields are disjoint).
-  let box_tree = &prepared.box_tree;
-  let fragment_tree = &mut prepared.fragment_tree;
-
   // Apply document selection onto the fragment tree for paint-time highlighting.
   crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
     box_tree,
