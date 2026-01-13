@@ -569,6 +569,18 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   pub(crate) fn reset_for_navigation(&mut self, trace: TraceHandle, queue_limits: QueueLimits) {
+    // Preserve the external wake callback across resets: it is host/embedding state, not document
+    // state, and embedding-level wake mechanisms (condvars, UI event-loop proxies, etc) should keep
+    // working after navigation swaps the underlying event loop.
+    let wake = {
+      let lock = self
+        .external_task_queue
+        .inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock.wake.clone()
+    };
+
     // Close the current external task queue before we overwrite `self`.
     //
     // Embeddings can hold cloned `ExternalTaskQueueHandle`s across navigations (e.g. WebSocket
@@ -588,6 +600,7 @@ impl<Host: 'static> EventLoop<Host> {
     new_event_loop.set_default_deadline_stage(default_deadline_stage);
     new_event_loop.microtask_checkpoint_hooks = hooks;
     new_event_loop.currently_running_task = currently_running_task;
+    new_event_loop.set_external_wake_callback(wake);
     *self = new_event_loop;
   }
 
@@ -2614,6 +2627,27 @@ mod tests {
       .external_task_queue_handle()
       .queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))
       .expect("expected new external task queue handle to be live after reset");
+  }
+
+  #[test]
+  fn reset_for_navigation_preserves_external_task_queue_wake_callback() -> Result<()> {
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let handle = event_loop.external_task_queue_handle();
+
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wakes_for_cb = Arc::clone(&wakes);
+    handle.set_wake_callback(Some(Arc::new(move || {
+      wakes_for_cb.fetch_add(1, Ordering::SeqCst);
+    })));
+
+    event_loop.reset_for_navigation(TraceHandle::default(), QueueLimits::default());
+
+    // The old handle should be closed (existing test covers this), but the wake callback should be
+    // reinstalled on the new queue.
+    let new_handle = event_loop.external_task_queue_handle();
+    new_handle.queue_task(TaskSource::Networking, |_host, _event_loop| Ok(()))?;
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    Ok(())
   }
 
   #[test]
