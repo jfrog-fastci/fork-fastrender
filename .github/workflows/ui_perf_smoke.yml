@@ -1,0 +1,166 @@
+name: UI perf smoke regression
+
+on:
+  schedule:
+    # Nightly-ish. This intentionally does not run on every PR to avoid noisy perf gating.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Relative regression threshold (0.05 = 5%).
+  UI_PERF_SMOKE_REGRESSION_THRESHOLD: "0.05"
+
+jobs:
+  ui-perf-smoke:
+    name: ui_perf_smoke regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Linux GUI build deps (winit/wgpu)
+        shell: bash
+        run: bash scripts/ci_install_gui_deps_ubuntu.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ui-perf-smoke-cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ui-perf-smoke-cargo-index-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ui-perf-smoke-cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
+            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init vendor/ecma-rs" >&2
+            exit 1
+          fi
+
+      - name: Build ui_perf_smoke (release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout -k 10 3600 bash scripts/cargo_agent.sh build --locked --release --features browser_ui --bin ui_perf_smoke
+
+      - name: Download previous baseline (main)
+        id: download_baseline
+        uses: dawidd6/action-download-artifact@v3
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: ui_perf_smoke.yml
+          workflow_conclusion: success
+          branch: main
+          name: ui_perf_smoke
+          path: baseline
+
+      - name: Locate baseline JSON
+        if: steps.download_baseline.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f baseline/target/ui_perf_smoke.json ]; then
+            echo "UI_PERF_SMOKE_BASELINE=baseline/target/ui_perf_smoke.json" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          match=$(find baseline -type f -name "ui_perf_smoke.json" | head -n 1 || true)
+          if [ -z "$match" ]; then
+            echo "Downloaded baseline artifact did not contain ui_perf_smoke.json" >&2
+            exit 1
+          fi
+          echo "UI_PERF_SMOKE_BASELINE=$match" >> "$GITHUB_ENV"
+          echo "Using ui_perf_smoke baseline at $match"
+
+      - name: Run ui_perf_smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          out_json="target/ui_perf_smoke.json"
+          report_path="target/ui_perf_smoke_regression_report.txt"
+          status=0
+
+          # Run with baseline regression gating when available.
+          if [ -n "${UI_PERF_SMOKE_BASELINE:-}" ]; then
+            timeout -k 10 1800 bash scripts/run_limited.sh --as 64G -- \
+              target/release/ui_perf_smoke \
+                --output "${out_json}" \
+                --baseline "${UI_PERF_SMOKE_BASELINE}" \
+                --threshold "${UI_PERF_SMOKE_REGRESSION_THRESHOLD}" \
+                --fail-on-regression \
+              > /dev/null 2> "${report_path}" || status=$?
+
+            # If the baseline is incompatible (schema mismatch), regenerate output without gating and
+            # let this run upload a new baseline artifact.
+            if [ "$status" -ne 0 ] && grep -q "baseline schema_version" "${report_path}"; then
+              echo "Baseline schema mismatch; skipping regression gate and generating a new baseline." >&2
+              status=0
+              timeout -k 10 1800 bash scripts/run_limited.sh --as 64G -- \
+                target/release/ui_perf_smoke --output "${out_json}" \
+                > /dev/null
+            fi
+          else
+            # No baseline available; just produce the artifact for the next run.
+            timeout -k 10 1800 bash scripts/run_limited.sh --as 64G -- \
+              target/release/ui_perf_smoke --output "${out_json}" \
+              > /dev/null
+          fi
+
+          test -s "${out_json}"
+
+          if [ -f "${report_path}" ]; then
+            cat "${report_path}" >&2
+          fi
+
+          {
+            echo "## ui_perf_smoke regression check"
+            echo
+            if [ -n "${UI_PERF_SMOKE_BASELINE:-}" ]; then
+              echo "Baseline: ${UI_PERF_SMOKE_BASELINE}"
+              echo "Threshold: ${UI_PERF_SMOKE_REGRESSION_THRESHOLD} (relative)"
+              echo
+              if [ -f "${report_path}" ]; then
+                echo '```'
+                cat "${report_path}"
+                echo '```'
+              else
+                echo "(no ui_perf_smoke report output)"
+              fi
+            else
+              echo "No prior baseline artifact was available from main."
+              echo "The uploaded ui_perf_smoke output from this run will serve as the next baseline."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit $status
+
+      - name: Upload ui_perf_smoke output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui_perf_smoke
+          path: target/ui_perf_smoke.json
+          if-no-files-found: error
