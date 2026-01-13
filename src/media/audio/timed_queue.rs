@@ -173,7 +173,28 @@ impl TimedAudioQueue {
     let add_frames = internal.remaining_frames(channels);
     if add_frames > 0 && self.max_buffered_frames != u64::MAX {
       let buffered = self.buffered_frames();
-      if buffered.saturating_add(add_frames) > self.max_buffered_frames {
+      let internal_end = internal.end_frame(channels);
+      // If the new segment overlaps *later* segments, `normalize()` will trim/drop those later
+      // segments. Account for those freed frames in the backpressure calculation so callers don't
+      // see spurious backpressure when pushing "replacement" audio that simply covers existing
+      // buffered ranges.
+      let mut freed_frames: u64 = 0;
+      for seg in self.segments.iter().skip(insert_idx) {
+        if seg.start_frame >= internal_end {
+          break;
+        }
+        let seg_end = seg.end_frame(channels);
+        let overlap_end = seg_end.min(internal_end);
+        if overlap_end > seg.start_frame {
+          freed_frames = freed_frames.saturating_add(overlap_end - seg.start_frame);
+        }
+      }
+
+      let predicted = buffered
+        .saturating_add(add_frames)
+        .saturating_sub(freed_frames);
+
+      if predicted > self.max_buffered_frames {
         return Err(PushError::Backpressure);
       }
     }
@@ -471,5 +492,42 @@ mod tests {
     let mut out2 = vec![0.0; 2];
     q.read_into(&mut out2, Duration::from_millis(250), 2);
     assert_eq!(out2, vec![3.0, 4.0]);
+  }
+
+  #[test]
+  fn overlap_with_future_segment_does_not_trigger_spurious_backpressure() {
+    // 10 Hz sample rate => 1 frame = 100 ms. Buffer cap: 20 frames.
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(2));
+
+    // Existing audio covers frames 10..20 (1s..2s).
+    q.push_segment(seg(
+      1000,
+      &[
+        100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0,
+      ],
+    ))
+    .unwrap();
+
+    // New audio covers frames 0..15 (0s..1.5s), overlapping the existing segment by 5 frames.
+    // Total buffered frames after trimming overlap should be 15 + 5 = 20 (fits exactly).
+    q.push_segment(seg(
+      0,
+      &[
+        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+      ],
+    ))
+    .unwrap();
+
+    assert_eq!(q.buffered_frames(), 20);
+
+    let mut out = vec![0.0; 20];
+    q.read_into(&mut out, Duration::ZERO, 20);
+    assert_eq!(
+      out,
+      vec![
+        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+        105.0, 106.0, 107.0, 108.0, 109.0,
+      ]
+    );
   }
 }
