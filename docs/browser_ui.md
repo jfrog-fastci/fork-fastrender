@@ -303,8 +303,8 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
     - filesystem paths like `/tmp/a.html` → `file://...`
   - Non-URL queries (e.g. `cats`) are treated as searches using the default search engine.
   - Alt+Enter (Win/Linux) / Option+Enter (macOS) opens the resolved navigation in a **new tab**.
-- While typing, the omnibox shows a suggestions dropdown (from history, open tabs, and remote search
-  suggestions when available).
+- While typing, the omnibox shows a suggestions dropdown (from open tabs, bookmarks, history, and
+  remote search suggestions when available).
   - Use ArrowUp/ArrowDown to select a suggestion, Enter to accept, Escape to close the dropdown.
   - Remote suggestions (when available) are fetched asynchronously using DuckDuckGo’s autocomplete
     endpoint.
