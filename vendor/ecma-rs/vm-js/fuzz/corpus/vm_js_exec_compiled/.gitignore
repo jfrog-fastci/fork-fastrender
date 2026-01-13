@@ -1,0 +1,8 @@
+# Curated, checked-in regression seeds live in this directory (as `*.js`).
+#
+# `cargo fuzz` / libFuzzer writes new corpus entries using hash-like filenames without extensions.
+# If a developer accidentally points the fuzzer at this directory as its *output* corpus, we'd
+# rather ignore those generated files than spam `git status` with hundreds of entries.
+*
+!*.js
+!.gitignore

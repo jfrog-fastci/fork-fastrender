@@ -1,6 +1,6 @@
 use vm_js::{
-  Agent, Budget, CompiledScript, HeapLimits, HostHooks, TerminationReason, Value, VmError,
-  VmOptions,
+  Agent, Budget, CompiledScript, HeapLimits, HostHooks, Termination, TerminationReason, Value,
+  VmError, VmOptions,
 };
 
 #[test]
@@ -122,4 +122,55 @@ fn run_compiled_script_invokes_microtask_checkpoint_hook() {
     .unwrap();
 
   assert_eq!(v, Value::Number(123.0));
+}
+
+#[test]
+fn run_compiled_script_tears_down_microtasks_on_hook_hard_stop_error() {
+  let mut agent = Agent::with_options(
+    VmOptions::default(),
+    HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024),
+  )
+  .unwrap();
+
+  struct Hooks;
+
+  impl HostHooks for Hooks {
+    fn microtask_checkpoint(&mut self, _agent: &mut Agent) -> Result<(), VmError> {
+      // Simulate a hard-stop error in the host checkpoint hook without draining the VM-owned
+      // microtask queue.
+      Err(VmError::Termination(Termination::new(
+        TerminationReason::OutOfFuel,
+        Vec::new(),
+      )))
+    }
+  }
+
+  // Enqueue a Promise job (microtask) during script execution.
+  let src = "Promise.resolve(1).then(() => { globalThis.__x = 456; });";
+  let script = CompiledScript::compile_script(agent.heap_mut(), "<regression>", src).unwrap();
+
+  let mut hooks = Hooks;
+  let err = agent
+    .run_compiled_script(
+      script,
+      Budget {
+        fuel: Some(10_000),
+        deadline: None,
+        check_time_every: 1,
+      },
+      Some(&mut hooks),
+    )
+    .unwrap_err();
+
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  // The job enqueued by the script must be discarded on hard-stop so persistent roots are cleaned
+  // up and the embedding can safely reuse the heap.
+  assert!(
+    agent.vm().microtask_queue().is_empty(),
+    "expected VM-owned microtask queue to be torn down on hook termination"
+  );
 }

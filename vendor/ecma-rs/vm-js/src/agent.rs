@@ -429,6 +429,20 @@ impl Agent {
     }
 
     self.runtime.vm.restore_budget_state(prev_budget);
+
+    if let Err(err) = &result {
+      // Match `run_script` behaviour: if the run terminated due to a hard-stop error (fuel/deadline
+      // exhaustion, interrupt, or OOM), discard any queued microtasks so we don't leak persistent
+      // roots when the embedding will not drive the event loop further.
+      //
+      // Note: `JsRuntime::exec_compiled_script*` already tears down microtasks on hard-stop errors
+      // originating from script execution. This is primarily a safety net for hard-stop errors
+      // returned by the *host microtask checkpoint hook* itself.
+      if is_hard_stop_error(err) {
+        self.runtime.teardown_microtasks();
+      }
+    }
+
     result
   }
 
@@ -746,7 +760,8 @@ impl Agent {
       },
       VmError::TypeError(msg) => VmErrorReport {
         kind: "type_error",
-        message: fallible_format::try_format_error_message("type error: ", msg, "").unwrap_or_default(),
+        message: fallible_format::try_format_error_message("type error: ", msg, "")
+          .unwrap_or_default(),
         exception_name: None,
         exception_message: None,
         stack: Vec::new(),
@@ -754,7 +769,8 @@ impl Agent {
       },
       VmError::RangeError(msg) => VmErrorReport {
         kind: "range_error",
-        message: fallible_format::try_format_error_message("range error: ", msg, "").unwrap_or_default(),
+        message: fallible_format::try_format_error_message("range error: ", msg, "")
+          .unwrap_or_default(),
         exception_name: None,
         exception_message: None,
         stack: Vec::new(),
@@ -1104,7 +1120,10 @@ mod error_report_tests {
 
     let report = agent.error_report(&err);
     assert_eq!(report.kind, "termination");
-    assert_eq!(report.termination_reason, Some(TerminationReason::OutOfFuel));
+    assert_eq!(
+      report.termination_reason,
+      Some(TerminationReason::OutOfFuel)
+    );
   }
 
   #[test]
@@ -1128,7 +1147,10 @@ mod error_report_tests {
 
     let report = agent.error_report(&err);
     assert_eq!(report.kind, "termination");
-    assert_eq!(report.termination_reason, Some(TerminationReason::OutOfFuel));
+    assert_eq!(
+      report.termination_reason,
+      Some(TerminationReason::OutOfFuel)
+    );
     assert!(
       !report.stack.is_empty(),
       "expected termination report to include captured stack frames"
