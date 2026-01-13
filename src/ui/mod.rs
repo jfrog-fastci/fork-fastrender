@@ -1,4 +1,5 @@
 pub mod about_pages;
+pub(crate) mod about_pages_fetcher;
 pub mod html_escape;
 pub mod appearance;
 pub mod renderer_media_prefs;

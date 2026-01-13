@@ -20744,7 +20744,6 @@ mod tests {
   use crate::image_loader::ImageCache;
   use crate::paint::display_list::BorderRadii;
   use crate::paint::pixmap::NewPixmapAllocRecorder;
-  use crate::text::caret::CaretAffinity;
   use crate::style::types::BackgroundAttachment;
   use crate::style::types::BackgroundBox;
   use crate::style::types::BackgroundImage;
@@ -20761,6 +20760,7 @@ mod tests {
   use crate::style::types::BorderImageSource;
   use crate::style::types::ClipPath;
   // `CaretAffinity` is used by selection/caret layout tests below.
+  use crate::text::caret::CaretAffinity;
   use crate::style::types::FilterShadow;
   use crate::style::types::ImageRendering;
   use crate::style::types::Isolation;
@@ -20770,7 +20770,6 @@ mod tests {
   use crate::style::types::MaskMode;
   use crate::style::types::MaskOrigin;
   use crate::style::types::MixBlendMode;
-  use crate::text::caret::CaretAffinity;
   use crate::style::types::OutlineColor;
   use crate::style::types::OutlineStyle;
   use crate::style::types::Overflow;

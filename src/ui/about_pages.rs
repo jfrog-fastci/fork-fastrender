@@ -12,6 +12,7 @@ pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
 pub const ABOUT_TEST_LAYOUT_STRESS: &str = "about:test-layout-stress";
 pub const ABOUT_TEST_FORM: &str = "about:test-form";
+pub const ABOUT_SHARED_CSS_URL: &str = "chrome://styles/about.css";
 
 /// Known `about:` page URLs.
 ///
@@ -215,195 +216,17 @@ fn history_snapshots_from_global_history_store(store: &GlobalHistoryStore) -> Ve
   out
 }
 
+#[cfg(test)]
 const ABOUT_SHARED_CSS_MARKER: &str = "FASTR_ABOUT_SHARED_CSS";
 
-const ABOUT_SHARED_CSS: &str = r#"/* FASTR_ABOUT_SHARED_CSS */
-:root {
-  color-scheme: light dark;
-  --about-bg: rgb(250, 250, 252);
-  --about-bg-grad1: rgba(37, 99, 235, 0.10);
-  --about-bg-grad2: rgba(16, 185, 129, 0.08);
-  --about-text: rgb(15, 23, 42);
-  --about-muted: rgba(15, 23, 42, 0.78);
-  --about-accent: rgb(37, 99, 235);
-  --about-accent-bg: rgba(37, 99, 235, 0.14);
-  --about-accent-border: rgba(37, 99, 235, 0.42);
-  --about-border: rgba(15, 23, 42, 0.16);
-  --about-border-strong: rgba(15, 23, 42, 0.24);
-  --about-surface: rgba(255, 255, 255, 0.70);
-  --about-surface-2: rgba(255, 255, 255, 0.55);
-  --about-surface-strong: var(--about-surface-2);
-  --about-surface-hover: rgba(15, 23, 42, 0.07);
-  --about-code-bg: rgba(15, 23, 42, 0.08);
-  --about-code-border: rgba(15, 23, 42, 0.12);
-  --about-focus: rgba(37, 99, 235, 0.55);
-  --about-focus-ring: var(--about-focus);
-  --about-shadow: 0 18px 60px rgba(0, 0, 0, 0.12);
-  --about-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --about-bg: rgb(8, 12, 20);
-    --about-bg-grad1: rgba(59, 130, 246, 0.20);
-    --about-bg-grad2: rgba(16, 185, 129, 0.13);
-    --about-text: rgb(229, 231, 235);
-    --about-muted: rgba(229, 231, 235, 0.78);
-    --about-accent: rgb(96, 165, 250);
-    --about-accent-bg: rgba(96, 165, 250, 0.20);
-    --about-accent-border: rgba(96, 165, 250, 0.44);
-    --about-border: rgba(255, 255, 255, 0.16);
-    --about-border-strong: rgba(255, 255, 255, 0.24);
-    --about-surface: rgba(255, 255, 255, 0.06);
-    --about-surface-2: rgba(255, 255, 255, 0.08);
-    --about-surface-hover: rgba(255, 255, 255, 0.10);
-    --about-code-bg: rgba(255, 255, 255, 0.12);
-    --about-code-border: rgba(255, 255, 255, 0.14);
-    --about-focus: rgba(96, 165, 250, 0.62);
-    --about-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
-  }
-}
-body {
-  margin: 0;
-  padding: 32px 18px;
-  font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
-  color: var(--about-text);
-  background:
-    radial-gradient(900px circle at 20% 0%, var(--about-bg-grad1), transparent 45%),
-    radial-gradient(900px circle at 80% 20%, var(--about-bg-grad2), transparent 45%),
-    var(--about-bg);
-}
-h1 { font-size: 20px; margin: 0 0 12px; letter-spacing: -0.01em; }
-h2 { font-size: 16px; margin: 18px 0 8px; }
-p { margin: 0 0 10px; }
-ul { margin: 0 0 10px; padding-left: 18px; }
-code, kbd {
-  font-family: var(--about-mono);
-  padding: 0.1em 0.3em;
-  border-radius: 6px;
-  background: var(--about-code-bg);
-  border: 1px solid var(--about-code-border);
-}
-table { border-collapse: collapse; }
-td { padding: 4px 10px 4px 0; vertical-align: top; }
-
-.about-wrap { max-width: 880px; margin: 0 auto; }
-
-.about-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0 0 14px;
-}
-.about-brand {
-  font-weight: 650;
-  text-decoration: none;
-  color: inherit;
-}
-.about-nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.about-nav a,
-.about-button,
-button {
-  display: inline-block;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--about-border);
-  background: var(--about-surface-strong);
-  color: inherit;
-  text-decoration: none;
-  font: inherit;
-}
-.about-nav a:hover,
-.about-button:hover,
-button:hover {
-  background: var(--about-surface-hover);
-}
-.about-nav a:focus,
-.about-button:focus,
-button:focus {
-  outline: 3px solid var(--about-focus);
-  outline-offset: 2px;
-}
-.about-button.primary {
-  border-color: var(--about-accent-border);
-  background: var(--about-accent-bg);
-}
-.about-nav a[aria-current="page"] {
-  border-color: var(--about-border);
-  background: var(--about-surface-hover);
-}
-
-.about-card {
-  border: 1px solid var(--about-border);
-  border-radius: 16px;
-  background: var(--about-surface);
-  box-shadow: var(--about-shadow);
-  padding: 20px;
-}
-
-.about-footer { margin-top: 14px; }
-
-.about-hint {
-  margin-top: 16px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid var(--about-border);
-  background: var(--about-surface-2);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.about-kbd {
-  font-family: var(--about-mono);
-  font-size: 12px;
-  padding: 2px 7px;
-  border-radius: 8px;
-  border: 1px solid var(--about-border);
-  background: var(--about-surface);
-  color: inherit;
-}
-.about-actions {
-  margin-top: 18px;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-}
-a.about-tile {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-  border: 1px solid var(--about-border);
-  background: var(--about-surface);
-  border-radius: 12px;
-  padding: 12px 14px;
-}
-a.about-tile:hover { background: var(--about-surface-hover); }
-.about-tile .label { font-weight: 650; margin: 0 0 4px; }
-.about-tile .url {
-  font-family: var(--about-mono);
-  font-size: 12px;
-  color: var(--about-muted);
-}
-.about-tip {
-  margin-top: 18px;
-  font-size: 13px;
-  color: var(--about-muted);
-}
-
-a { color: var(--about-accent); text-underline-offset: 2px; }
-"#;
-
+#[cfg(test)]
 fn about_shared_css() -> &'static str {
+  const CSS: &str = include_str!("../../assets/chrome/about.css");
   debug_assert!(
-    ABOUT_SHARED_CSS.contains(ABOUT_SHARED_CSS_MARKER),
+    CSS.contains(ABOUT_SHARED_CSS_MARKER),
     "ABOUT_SHARED_CSS_MARKER must be present in shared about-page CSS"
   );
-  ABOUT_SHARED_CSS
+  CSS
 }
 
 fn about_header_html(current: &str) -> String {
@@ -476,8 +299,8 @@ fn about_layout_html(title: &str, current: &str, body: &str, extra_css: &str) ->
     <meta charset=\"utf-8\">
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
     <title>{safe_title}</title>
+    <link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">
     <style>
-{shared}
 {theme_css}
 {extra_css}
     </style>
@@ -492,7 +315,6 @@ fn about_layout_html(title: &str, current: &str, body: &str, extra_css: &str) ->
     </div>
   </body>
 </html>",
-    shared = about_shared_css(),
   )
 }
 
@@ -1523,8 +1345,8 @@ fn test_scroll_html() -> String {
   <head>
     <meta charset=\"utf-8\">
     <title>Scroll Test</title>
+    <link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">
     <style>
-{shared}
       body {{ margin: 0; padding: 0; font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }}
       a {{ display: block; padding: 8px; }}
       .spacer {{ height: 4000px; background: linear-gradient(#eee, #ccc); }}
@@ -1535,21 +1357,20 @@ fn test_scroll_html() -> String {
     <div class=\"spacer\">scroll</div>
   </body>
 </html>",
-    shared = about_shared_css(),
   )
 }
 
 fn test_heavy_html() -> String {
   // Large DOM used by cancellation tests. Keep this deterministic and offline.
   let mut out = String::with_capacity(256 * 1024);
-  out.push_str(
-    "<!doctype html><html><head><meta charset=\"utf-8\"><title>Heavy Test</title><style>",
-  );
-  out.push_str(about_shared_css());
+  out.push_str("<!doctype html><html><head><meta charset=\"utf-8\"><title>Heavy Test</title>");
+  out.push_str(&format!("<link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">"));
+  out.push_str("<style>");
   out.push_str(
     "body{margin:0;padding:0;font:14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif;}\
-     .row{padding:4px 8px;border-bottom:1px solid rgba(0,0,0,0.08);}</style></head><body>",
+     .row{padding:4px 8px;border-bottom:1px solid rgba(0,0,0,0.08);}",
   );
+  out.push_str("</style></head><body>");
   // Keep this large enough that cancellation tests can reliably interrupt in-flight layout/paint,
   // but small enough that debug builds complete comfortably under CI contention.
   for i in 0..3000u32 {
@@ -1577,8 +1398,9 @@ fn test_layout_stress_html() -> String {
   let mut out = String::with_capacity(512 * 1024);
   out.push_str("<!doctype html><html><head><meta charset=\"utf-8\">");
   out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-  out.push_str("<title>Layout Stress Test</title><style>");
-  out.push_str(about_shared_css());
+  out.push_str("<title>Layout Stress Test</title>");
+  out.push_str(&format!("<link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">"));
+  out.push_str("<style>");
   out.push_str(
     "body{margin:0;padding:0;font:14px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;}\
      .topbar{position:sticky;top:0;z-index:10;padding:10px 12px;border-bottom:1px solid rgba(127,127,127,0.22);\
@@ -1654,8 +1476,8 @@ fn test_form_html() -> String {
   <head>
     <meta charset=\"utf-8\">
     <title>Form Test</title>
+    <link rel=\"stylesheet\" href=\"{ABOUT_SHARED_CSS_URL}\">
     <style>
-{shared}
       body {{ margin: 0; padding: 0; font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }}
       input {{ display: block; width: 180px; height: 28px; }}
       button {{ display: block; width: 180px; height: 28px; margin-top: 8px; }}
@@ -1668,7 +1490,6 @@ fn test_form_html() -> String {
     </form>
   </body>
 </html>",
-    shared = about_shared_css(),
   )
 }
 
@@ -1869,11 +1690,11 @@ mod tests {
   }
 
   #[test]
-  fn newtab_html_includes_color_scheme_and_primary_links() {
+  fn newtab_html_links_shared_stylesheet_and_primary_links() {
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
     assert!(
-      html.contains("color-scheme: light dark"),
-      "expected about:newtab to set `color-scheme: light dark`"
+      html.contains(&format!("href=\"{ABOUT_SHARED_CSS_URL}\"")),
+      "expected about:newtab to link the shared chrome stylesheet"
     );
 
     for url in [
@@ -2152,7 +1973,13 @@ mod tests {
   }
 
   #[test]
-  fn about_pages_include_shared_css_marker() {
+  fn about_pages_link_shared_chrome_stylesheet() {
+    let css = about_shared_css();
+    assert!(
+      css.contains(ABOUT_SHARED_CSS_MARKER),
+      "expected shared about-page stylesheet to include marker"
+    );
+
     for url in [
       ABOUT_NEWTAB,
       ABOUT_SETTINGS,
@@ -2170,13 +1997,13 @@ mod tests {
     ] {
       let html = html_for_about_url(url).unwrap();
       assert!(
-        html.contains(ABOUT_SHARED_CSS_MARKER),
-        "expected {url} to include shared about-page CSS marker"
+        html.contains(&format!("href=\"{ABOUT_SHARED_CSS_URL}\"")),
+        "expected {url} to link shared about-page chrome stylesheet"
       );
     }
 
     let html = error_page_html("Navigation error", "details", None);
-    assert!(html.contains(ABOUT_SHARED_CSS_MARKER));
+    assert!(html.contains(&format!("href=\"{ABOUT_SHARED_CSS_URL}\"")));
   }
 
   #[cfg(feature = "browser_ui")]
@@ -2193,16 +2020,30 @@ mod tests {
     });
 
     let html = html_for_about_url(ABOUT_HELP).unwrap();
+    assert!(
+      html.contains(&format!("href=\"{ABOUT_SHARED_CSS_URL}\"")),
+      "expected about pages to link shared chrome stylesheet"
+    );
+
     for needle in [
       "--about-focus: rgba(255, 0, 255, 0.65);",
       "--about-accent-border: rgba(255, 0, 255, 0.55);",
       "--about-accent-bg: rgba(255, 0, 255, 0.18);",
-      "radial-gradient(900px circle at 20% 0%, var(--about-accent-bg)",
-      "@media (prefers-color-scheme: dark)",
     ] {
       assert!(
         html.contains(needle),
         "expected about page HTML to include themed accent CSS, missing {needle:?}"
+      );
+    }
+
+    let css = about_shared_css();
+    for needle in [
+      "radial-gradient(900px circle at 20% 0%, var(--about-bg-grad1)",
+      "@media (prefers-color-scheme: dark)",
+    ] {
+      assert!(
+        css.contains(needle),
+        "expected shared about-page stylesheet to include {needle:?}"
       );
     }
 

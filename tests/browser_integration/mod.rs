@@ -122,6 +122,7 @@ mod ui_worker_anchor_scroll_percent_encoded;
 mod ui_worker_anchor_scroll_percent_escaped_percent;
 mod ui_worker_base_url_isolation;
 mod ui_worker_cancellation;
+mod ui_worker_chrome_subresource_blocked;
 mod ui_worker_click_prevent_default;
 mod ui_worker_color_picker_choose;
 mod ui_worker_crash_hook;

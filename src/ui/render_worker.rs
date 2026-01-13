@@ -22,6 +22,7 @@ use crate::paint::rasterize::fill_rect;
 use crate::render_control::{
   push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard,
 };
+use crate::resource::{CachingFetcher, HttpFetcher, ResourceFetcher};
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::style::types::OrientationTransform;
@@ -7085,7 +7086,26 @@ fn default_ui_worker_factory() -> crate::Result<FastRenderFactory> {
   // the bundled font set so navigation/scroll renders remain deterministic and avoid expensive
   // system font database scans under CI.
   let renderer_config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
-  FastRenderFactory::with_config(FastRenderPoolConfig::new().with_renderer_config(renderer_config))
+
+  // `about:` pages are treated as trusted UI surfaces and are allowed to load shared chrome assets
+  // via `chrome://...`. Untrusted pages (http/https/file/...) must not be able to load those
+  // internal resources, so we install an origin-gated composite fetcher.
+  let base_fetcher: Arc<dyn ResourceFetcher> = if let Some(cache) = renderer_config.resource_cache {
+    let policy = renderer_config.resource_policy.clone();
+    Arc::new(
+      CachingFetcher::with_config(HttpFetcher::new().with_policy(policy.clone()), cache).with_policy(policy),
+    )
+  } else {
+    Arc::new(HttpFetcher::new().with_policy(renderer_config.resource_policy.clone()))
+  };
+  let fetcher =
+    Arc::new(crate::ui::about_pages_fetcher::AboutPagesCompositeFetcher::new(base_fetcher));
+
+  FastRenderFactory::with_config(
+    FastRenderPoolConfig::new()
+      .with_renderer_config(renderer_config)
+      .with_fetcher(fetcher),
+  )
 }
 
 /// Spawn the headless UI render worker loop.
