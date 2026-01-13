@@ -207,11 +207,12 @@ use them. This is the best way to make `audio_device_time` stable and low-jitter
 
 ### Fallback: sample-counter clock
 
-If no timestamps are available, derive time from the number of played frames:
+If no timestamps are available, derive time from the number of output frames written/committed (a
+sample-counter clock):
 
 ```text
-played_time = played_frames / sample_rate
-audio_device_time ≈ played_time + output_latency_constant
+written_time = frames_written / sample_rate
+time_heard ≈ written_time - output_latency_constant
 ```
 
 Notes:
@@ -454,10 +455,11 @@ FastRender includes building blocks for this in `src/media/audio/drift.rs`:
 ### Constant output latency model
 
 Many audio APIs do not provide a precise “samples hit the speaker at time X” timestamp. A common
-fallback is to assume a **constant output latency**:
+fallback is to assume a **constant output latency** and treat the backend clock as “frames
+written/committed”:
 
 ```text
-audio_device_time ≈ (played_frames / sample_rate) + output_latency_constant
+time_heard ≈ (frames_written / sample_rate) - output_latency_constant
 ```
 
 This has two implications:
