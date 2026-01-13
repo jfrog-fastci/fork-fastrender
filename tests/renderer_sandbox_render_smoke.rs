@@ -107,12 +107,47 @@ fn sandboxed_child_entrypoint() {
     start.elapsed() < Duration::from_secs(5),
     "expected sleep/clock syscalls to keep working under sandbox"
   );
-  std::thread::Builder::new()
+  // Also assert the syscall filter applies to newly-spawned threads (important for TSYNC fallback
+  // kernels where the filter must be installed before spawning any threads).
+  let probe_path_bytes = probe_path.as_os_str().as_bytes().to_vec();
+  let (open_errno, socket_errno) = std::thread::Builder::new()
     .name("fastr-sandbox-smoke-thread".to_string())
-    .spawn(|| 1u8)
+    .spawn(move || {
+      use std::ffi::CString;
+      use std::io;
+
+      let probe_cstr = CString::new(probe_path_bytes).expect("cstr probe path bytes");
+      let fd = unsafe { libc::open(probe_cstr.as_ptr(), libc::O_RDONLY) };
+      let open_errno = if fd == -1 {
+        io::Error::last_os_error().raw_os_error()
+      } else {
+        unsafe { libc::close(fd) };
+        Some(0)
+      };
+
+      let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+      let socket_errno = if sock == -1 {
+        io::Error::last_os_error().raw_os_error()
+      } else {
+        unsafe { libc::close(sock) };
+        Some(0)
+      };
+
+      (open_errno, socket_errno)
+    })
     .expect("spawn thread under sandbox")
     .join()
     .expect("join thread under sandbox");
+  assert_eq!(
+    open_errno,
+    Some(libc::EPERM),
+    "expected open() to be blocked in sandboxed thread"
+  );
+  assert_eq!(
+    socket_errno,
+    Some(libc::EPERM),
+    "expected socket() to be blocked in sandboxed thread"
+  );
 
   // Minimal offline HTML render using only bundled fonts (avoids system font scanning).
   let mut paint = fastrender::PaintParallelism::enabled();
