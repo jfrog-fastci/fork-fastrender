@@ -131,6 +131,11 @@ Imperative navigation on the **active tab**.
 - `chrome.navigation.goForward()`
 - `chrome.navigation.reload()`
 - `chrome.navigation.stop()`
+  - Cancel the current in-flight navigation and/or paint work for the active tab.
+  - Intended to match the “Stop loading” chrome button behavior:
+    - keep the currently committed document visible (do not navigate to an error page),
+    - clear provisional/pending navigation state,
+    - update loading state promptly so the UI can toggle stop → reload.
 
 ### `chrome.tabs`
 
@@ -140,6 +145,8 @@ Tab management within the current window (MVP).
   - Opens a new foreground tab.
   - If `url` is provided, the new tab navigates to it; otherwise the embedder chooses a default
     (commonly `about:newtab`).
+  - Like `chrome.navigation.navigate(url)`, the argument should be treated as omnibox-style input
+    and normalized/validated by the host (do not assume it is already a safe/absolute URL).
 - `chrome.tabs.closeTab(id)`
 - `chrome.tabs.activateTab(id)`
   - `id` is an **opaque** tab identifier allocated by the host.
