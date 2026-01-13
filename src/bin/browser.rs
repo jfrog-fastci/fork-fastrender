@@ -3660,6 +3660,13 @@ struct App {
   /// before the windowed UI draws again. We store at most one pending frame per tab and only upload
   /// for the active tab.
   pending_frame_uploads: fastrender::ui::FrameUploadCoalescer,
+  /// Timestamp of the most recent page pixmap upload to the GPU.
+  ///
+  /// Used to rate-limit `queue.write_texture` during interactive resize; when we skip an upload we
+  /// keep the latest pixmap pending and rely on scaling the already-uploaded texture.
+  last_page_upload_at: Option<std::time::Instant>,
+  /// When to request the next redraw to retry a rate-limited page upload.
+  next_page_upload_redraw: Option<std::time::Instant>,
 
   /// Rect of the central content panel (in egui points) from the last painted frame.
   ///
@@ -3792,6 +3799,7 @@ struct WorkerMessageResult {
 impl App {
   const DEBUG_LOG_MAX_LINES: usize = 200;
   const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+  const PAGE_UPLOAD_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
   const CLOSE_ANIM_FAVICON_TTL: std::time::Duration = std::time::Duration::from_millis(250);
   const MAX_CLOSING_TAB_FAVICONS: usize = 64;
   const RESIZE_VIEWPORT_THROTTLE_CONFIG: fastrender::ui::ViewportThrottleConfig =
@@ -4265,6 +4273,8 @@ impl App {
       tab_cancel: std::collections::HashMap::new(),
       pending_scroll_restores: std::collections::HashMap::new(),
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
+      last_page_upload_at: None,
+      next_page_upload_redraw: None,
       content_rect_points: None,
       page_rect_points: None,
       page_viewport_css: None,
@@ -4503,6 +4513,7 @@ impl App {
     self.drive_animation_tick();
     self.drive_viewport_throttle();
     self.drive_egui_repaint();
+    self.drive_page_upload_redraw();
     self.update_control_flow_for_animation_ticks(control_flow);
   }
 
@@ -4568,6 +4579,34 @@ impl App {
     }
   }
 
+  fn drive_page_upload_redraw(&mut self) {
+    if self.window_occluded || self.window_minimized {
+      self.next_page_upload_redraw = None;
+      return;
+    }
+
+    let Some(deadline) = self.next_page_upload_redraw else {
+      return;
+    };
+
+    // Drop the scheduled redraw if there is no longer anything to upload for the active tab (e.g.
+    // the tab was closed or a different tab became active).
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      self.next_page_upload_redraw = None;
+      return;
+    };
+    if !self.pending_frame_uploads.has_pending_for_tab(tab_id) {
+      self.next_page_upload_redraw = None;
+      return;
+    }
+
+    let now = std::time::Instant::now();
+    if now >= deadline {
+      self.next_page_upload_redraw = None;
+      self.window.request_redraw();
+    }
+  }
+
   fn update_control_flow_for_animation_ticks(
     &mut self,
     control_flow: &mut winit::event_loop::ControlFlow,
@@ -4613,6 +4652,14 @@ impl App {
       deadline = Some(match deadline {
         Some(existing) => existing.min(egui_deadline),
         None => egui_deadline,
+      });
+    }
+
+    // Rate-limited page pixmap uploads (retry uploads after `PAGE_UPLOAD_MIN_INTERVAL`).
+    if let Some(upload_deadline) = self.next_page_upload_redraw {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(upload_deadline),
+        None => upload_deadline,
       });
     }
 
@@ -5791,23 +5838,65 @@ impl App {
   }
 
   fn flush_pending_frame_uploads(&mut self) {
-    for frame_ready in self.pending_frame_uploads.drain() {
-      // Ignore stale frames for tabs that have already been closed.
-      if self.browser_state.tab(frame_ready.tab_id).is_none() {
-        continue;
-      }
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      self.next_page_upload_redraw = None;
+      return;
+    };
 
-      let tab_id = frame_ready.tab_id;
-      let pixmap = frame_ready.pixmap;
-      if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
-        tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
-      } else {
-        let mut tex =
-          fastrender::ui::WgpuPixmapTexture::new_page(&self.device, &mut self.egui_renderer, &pixmap);
-        tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
-        self.tab_textures.insert(tab_id, tex);
+    // Only upload page pixmaps for the active tab. Background tabs keep their latest pixmap pending
+    // in `pending_frame_uploads` so tab switches can upload immediately without burning GPU upload
+    // time on every redraw (especially during resize).
+    if !self.pending_frame_uploads.has_pending_for_tab(tab_id) {
+      self.next_page_upload_redraw = None;
+      return;
+    }
+
+    let now = std::time::Instant::now();
+
+    // If we already have a texture for this tab, we can rate-limit uploads and let egui scale the
+    // existing texture during interactive resize.
+    if self.tab_textures.contains_key(&tab_id) {
+      if let Some(last) = self.last_page_upload_at {
+        if let Some(earliest) = last.checked_add(Self::PAGE_UPLOAD_MIN_INTERVAL) {
+          if now < earliest {
+            self.next_page_upload_redraw = Some(
+              self
+                .next_page_upload_redraw
+                .map(|existing| existing.min(earliest))
+                .unwrap_or(earliest),
+            );
+            return;
+          }
+        } else {
+          // Overflow is vanishingly unlikely, but treat it as "not rate limited" so we don't wedge
+          // the uploader.
+          self.last_page_upload_at = None;
+        }
       }
     }
+
+    self.next_page_upload_redraw = None;
+
+    let Some(frame_ready) = self.pending_frame_uploads.take_for_tab(tab_id) else {
+      return;
+    };
+
+    // Ignore stale frames for tabs that have already been closed.
+    if self.browser_state.tab(frame_ready.tab_id).is_none() {
+      return;
+    }
+
+    let pixmap = frame_ready.pixmap;
+    if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
+      tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+    } else {
+      let mut tex =
+        fastrender::ui::WgpuPixmapTexture::new_page(&self.device, &mut self.egui_renderer, &pixmap);
+      tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+      self.tab_textures.insert(tab_id, tex);
+    }
+
+    self.last_page_upload_at = Some(now);
   }
 
   fn send_viewport_changed_clamped_if_needed(
@@ -10508,6 +10597,8 @@ impl App {
 
           if was_active {
             self.viewport_cache_tab = None;
+            self.last_page_upload_at = None;
+            self.next_page_upload_redraw = None;
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
             self.cursor_in_page = false;
@@ -10549,6 +10640,9 @@ impl App {
               tab_id: new_active,
               reason: RepaintReason::Explicit,
             });
+            if self.pending_frame_uploads.has_pending_for_tab(new_active) {
+              self.window.request_redraw();
+            }
           }
         }
         ChromeAction::CloseTab(tab_id) => {
@@ -10598,6 +10692,8 @@ impl App {
 
           if was_active {
             self.viewport_cache_tab = None;
+            self.last_page_upload_at = None;
+            self.next_page_upload_redraw = None;
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
             self.cursor_in_page = false;
@@ -10671,19 +10767,20 @@ impl App {
           }
 
           let new_active = self.browser_state.active_tab_id();
-          if new_active != prev_active {
-            if let Some(new_active) = new_active {
-              self.viewport_cache_tab = None;
-              self.pointer_captured = false;
-              self.captured_button = fastrender::ui::PointerButton::None;
-              self.cursor_in_page = false;
-              self.hover_sync_pending = true;
-              self.pending_pointer_move = None;
-              self.pending_frame_uploads.clear();
-              self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
-              self.send_worker_msg(UiToWorker::RequestRepaint {
-                tab_id: new_active,
-                reason: RepaintReason::Explicit,
+            if new_active != prev_active {
+              if let Some(new_active) = new_active {
+                self.viewport_cache_tab = None;
+                self.last_page_upload_at = None;
+                self.next_page_upload_redraw = None;
+                self.pointer_captured = false;
+                self.captured_button = fastrender::ui::PointerButton::None;
+                self.cursor_in_page = false;
+                self.hover_sync_pending = true;
+                self.pending_pointer_move = None;
+                self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+                self.send_worker_msg(UiToWorker::RequestRepaint {
+                  tab_id: new_active,
+                  reason: RepaintReason::Explicit,
               });
             }
           }
@@ -10718,19 +10815,20 @@ impl App {
           }
 
           let new_active = self.browser_state.active_tab_id();
-          if new_active != prev_active {
-            if let Some(new_active) = new_active {
-              self.viewport_cache_tab = None;
-              self.pointer_captured = false;
-              self.captured_button = fastrender::ui::PointerButton::None;
-              self.cursor_in_page = false;
-              self.hover_sync_pending = true;
-              self.pending_pointer_move = None;
-              self.pending_frame_uploads.clear();
-              self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
-              self.send_worker_msg(UiToWorker::RequestRepaint {
-                tab_id: new_active,
-                reason: RepaintReason::Explicit,
+            if new_active != prev_active {
+              if let Some(new_active) = new_active {
+                self.viewport_cache_tab = None;
+                self.last_page_upload_at = None;
+                self.next_page_upload_redraw = None;
+                self.pointer_captured = false;
+                self.captured_button = fastrender::ui::PointerButton::None;
+                self.cursor_in_page = false;
+                self.hover_sync_pending = true;
+                self.pending_pointer_move = None;
+                self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+                self.send_worker_msg(UiToWorker::RequestRepaint {
+                  tab_id: new_active,
+                  reason: RepaintReason::Explicit,
               });
             }
           }
@@ -10777,12 +10875,13 @@ impl App {
           // Match typical UX: duplicating a tab activates the new tab, but should not steal focus to
           // the address bar.
           self.viewport_cache_tab = None;
+          self.last_page_upload_at = None;
+          self.next_page_upload_redraw = None;
           self.pointer_captured = false;
           self.captured_button = fastrender::ui::PointerButton::None;
           self.cursor_in_page = false;
           self.hover_sync_pending = true;
           self.pending_pointer_move = None;
-          self.pending_frame_uploads.clear();
 
           self.send_worker_msg(UiToWorker::CreateTab {
             tab_id,
@@ -10803,6 +10902,8 @@ impl App {
           if self.browser_state.set_active_tab(tab_id) {
             session_dirty = true;
             self.viewport_cache_tab = None;
+            self.last_page_upload_at = None;
+            self.next_page_upload_redraw = None;
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
             self.cursor_in_page = false;
@@ -10813,6 +10914,12 @@ impl App {
               tab_id,
               reason: RepaintReason::Explicit,
             });
+            // `flush_pending_frame_uploads` runs before chrome actions are processed each frame, so
+            // ensure we draw a follow-up frame to upload any pending pixmap for the newly active
+            // tab.
+            if self.pending_frame_uploads.has_pending_for_tab(tab_id) {
+              self.window.request_redraw();
+            }
           }
         }
         ChromeAction::OpenUrlInNewTab(raw) => {

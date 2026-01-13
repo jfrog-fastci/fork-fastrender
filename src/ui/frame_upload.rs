@@ -45,6 +45,11 @@ impl FrameUploadCoalescer {
     self.latest_by_tab.insert(frame.tab_id, frame);
   }
 
+  /// Remove and return the pending upload for `tab_id`, if any.
+  pub fn take_for_tab(&mut self, tab_id: TabId) -> Option<FrameReadyUpdate> {
+    self.latest_by_tab.remove(&tab_id)
+  }
+
   /// Drains all pending uploads.
   pub fn drain(&mut self) -> std::collections::hash_map::IntoValues<TabId, FrameReadyUpdate> {
     std::mem::take(&mut self.latest_by_tab).into_values()
@@ -104,5 +109,41 @@ mod tests {
     assert_eq!(drained.len(), 2);
     let ids: HashSet<_> = drained.into_iter().map(|f| f.tab_id).collect();
     assert_eq!(ids, HashSet::from([tab_a, tab_b]));
+  }
+
+  #[test]
+  fn take_for_tab_removes_only_selected_tab() {
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let mut coalescer = FrameUploadCoalescer::new();
+
+    coalescer.push(make_frame(tab_a, (1, 1), (10, 10), 1.0));
+    coalescer.push(make_frame(tab_b, (2, 2), (20, 20), 1.0));
+
+    let taken = coalescer.take_for_tab(tab_a).expect("tab A should be pending");
+    assert_eq!(taken.tab_id, tab_a);
+    assert!(!coalescer.has_pending_for_tab(tab_a));
+    assert!(coalescer.has_pending_for_tab(tab_b));
+
+    let drained: Vec<_> = coalescer.drain().collect();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].tab_id, tab_b);
+  }
+
+  #[test]
+  fn take_for_tab_returns_latest_frame_for_that_tab() {
+    let tab = TabId(1);
+    let mut coalescer = FrameUploadCoalescer::new();
+
+    coalescer.push(make_frame(tab, (1, 1), (100, 100), 1.0));
+    coalescer.push(make_frame(tab, (3, 4), (200, 150), 2.0));
+
+    let taken = coalescer.take_for_tab(tab).expect("frame should be pending");
+    assert_eq!(taken.tab_id, tab);
+    assert_eq!((taken.pixmap.width(), taken.pixmap.height()), (3, 4));
+    assert_eq!(taken.viewport_css, (200, 150));
+    assert!((taken.dpr - 2.0).abs() < f32::EPSILON);
+
+    assert!(coalescer.is_empty());
   }
 }
