@@ -35,6 +35,18 @@ pub enum IpcError {
   Deserialize(#[source] serde_json::Error),
 
   // ==========================================================================
+  // Generic validation errors (higher-level IPC helpers)
+  // ==========================================================================
+
+  /// Invalid parameters supplied by trusted code (e.g. frame pool configuration).
+  #[error("invalid IPC parameters: {message}")]
+  InvalidParameters { message: String },
+
+  /// A higher-level protocol invariant was violated (e.g. mismatched buffer descriptors).
+  #[error("IPC protocol violation: {message}")]
+  ProtocolViolation { message: String },
+
+  // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================
 

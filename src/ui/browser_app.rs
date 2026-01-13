@@ -9,6 +9,7 @@ use crate::ui::messages::{
   CursorKind, DatalistSuggestion, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame,
   ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
+use crate::multiprocess::{RendererProcessId, SiteKey};
 use crate::ui::protocol_limits::{
   MAX_DEBUG_LOG_BYTES, MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_FIND_QUERY_BYTES,
   MAX_TITLE_BYTES, MAX_URL_BYTES, MAX_WARNING_BYTES,
@@ -37,20 +38,6 @@ static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 /// Identifier for a chrome tab group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabGroupId(pub u64);
-
-/// Identifier for a renderer process assigned by the browser process manager.
-///
-/// This is browser-side state used for compositor/IPC routing; it is not persisted as part of the
-/// browsing session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RendererProcessId(pub u64);
-
-/// Debug-friendly key representing the "site" a tab is currently assigned to.
-///
-/// This is intended to support future site isolation (process-per-site) policies. The exact
-/// semantics are currently opaque to the UI layer and are owned by the browser process manager.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SiteKey(pub String);
 
 impl TabGroupId {
   /// Generate a new process-unique tab group id.
@@ -2548,6 +2535,11 @@ mod browser_tab_tests {
 mod browser_app_tests {
   use super::*;
   use crate::geometry::Point;
+  use url::Url;
+
+  fn site(url: &str) -> SiteKey {
+    SiteKey::from_url(&Url::parse(url).expect("test url should parse"))
+  }
 
   fn assert_active_is_valid(app: &BrowserAppState) {
     let active = app.active_tab_id();
@@ -2585,25 +2577,21 @@ mod browser_app_tests {
     assert_eq!(app.tab_renderer(a), None);
     assert_eq!(app.tab_renderer(b), None);
 
-    let pid_a = RendererProcessId(10);
-    assert!(app.set_tab_renderer(
-      a,
-      pid_a,
-      Some(SiteKey("https://a.test".to_string()))
-    ));
+    let pid_a = RendererProcessId::new(10);
+    assert!(app.set_tab_renderer(a, pid_a, Some(site("https://a.test"))));
     assert_eq!(app.tab_renderer(a), Some(pid_a));
-    assert_eq!(app.tab(a).unwrap().site_key, Some(SiteKey("https://a.test".to_string())));
+    assert_eq!(app.tab(a).unwrap().site_key, Some(site("https://a.test")));
     assert_eq!(app.tab_renderer(b), None);
 
     // Missing tab id should not mutate existing tabs.
-    let pid_missing = RendererProcessId(11);
+    let pid_missing = RendererProcessId::new(11);
     assert!(!app.set_tab_renderer(
       TabId(9_999_999),
       pid_missing,
-      Some(SiteKey("https://missing.test".to_string()))
+      Some(site("https://missing.test"))
     ));
     assert_eq!(app.tab_renderer(a), Some(pid_a));
-    assert_eq!(app.tab(a).unwrap().site_key, Some(SiteKey("https://a.test".to_string())));
+    assert_eq!(app.tab(a).unwrap().site_key, Some(site("https://a.test")));
     assert_eq!(app.tab_renderer(b), None);
     assert_eq!(app.tab(b).unwrap().site_key, None);
   }
