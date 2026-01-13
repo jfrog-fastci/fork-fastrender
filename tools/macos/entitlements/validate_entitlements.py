@@ -44,6 +44,17 @@ def main() -> int:
     for p in ent_files:
         plists[p.name] = load_plist(p)
 
+    browser = plists.get("browser.entitlements")
+    if browser is None:
+        print("missing browser.entitlements", file=sys.stderr)
+        return 2
+    if browser.get("com.apple.security.app-sandbox") is True:
+        print(
+            "browser.entitlements must not enable com.apple.security.app-sandbox in the initial .app iteration",
+            file=sys.stderr,
+        )
+        return 2
+
     renderer = plists.get("renderer.entitlements")
     if renderer is None:
         print("missing renderer.entitlements", file=sys.stderr)
@@ -79,4 +90,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
