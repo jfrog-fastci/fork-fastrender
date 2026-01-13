@@ -243,6 +243,13 @@ vendor/ecma-rs/vm-js/
 │   └── ...
 ```
 
+### RegExp `/v` Unicode string properties
+
+vm-js uses generated Unicode “property of strings” tables (emoji sequences) to support RegExp `/v`
+escapes such as `\p{RGI_Emoji}`. See:
+
+- `vendor/ecma-rs/vm-js/docs/regexp_unicode_properties.md`
+
 ### Host hooks
 
 vm-js uses `VmHostHooks` for browser integration:

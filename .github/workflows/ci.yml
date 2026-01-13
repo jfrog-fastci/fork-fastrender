@@ -292,7 +292,9 @@ jobs:
       - name: Validate generated emoji tables
         run: cargo xtask generate-emoji-tables --check
 
-      - name: Validate generated RegExp Unicode property-of-strings tables
+      - name: Validate generated RegExp `/v` Unicode property-of-strings tables
+        # To reproduce locally:
+        #   bash scripts/cargo_agent.sh xtask generate-regexp-unicode-property-strings
         run: cargo xtask generate-regexp-unicode-property-strings --check
 
       - name: Validate generated WebIDL bindings

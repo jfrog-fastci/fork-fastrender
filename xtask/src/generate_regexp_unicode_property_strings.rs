@@ -56,7 +56,25 @@ pub fn run_generate_regexp_unicode_property_strings(
     .context("xtask should live one directory below the repo root")?
     .to_path_buf();
 
-  let input_dir = repo_root.join("vendor/ecma-rs/test262-semantic/data/test/built-ins/RegExp/property-escapes/generated/strings");
+  let test262_input_dir = repo_root.join(
+    "vendor/ecma-rs/test262-semantic/data/test/built-ins/RegExp/property-escapes/generated/strings",
+  );
+  // The test262 corpus is a heavyweight nested submodule which CI intentionally does not fetch by
+  // default. Keep CI deterministic by falling back to a small vendored snapshot of the generated
+  // input lists.
+  let vendored_input_dir = repo_root.join("tools/unicode/regexp_unicode_string_props");
+  let input_dir = if test262_input_dir.join("RGI_Emoji.js").is_file() {
+    test262_input_dir
+  } else if vendored_input_dir.join("RGI_Emoji.js").is_file() {
+    vendored_input_dir
+  } else {
+    bail!(
+      "missing RegExp Unicode property-of-strings inputs (expected either {:?} (test262 submodule) \
+       or {:?} (vendored snapshot))",
+      test262_input_dir,
+      vendored_input_dir
+    );
+  };
   let output = repo_root.join("vendor/ecma-rs/vm-js/src/regexp_unicode_property_strings.rs");
 
   let generated =
