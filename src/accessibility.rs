@@ -2390,8 +2390,7 @@ fn has_landmark_ancestor(ancestors: &[&DomNode], ctx: Option<&BuildContext<'_, '
       // Fall back to the attribute-presence heuristic when no `BuildContext` is available.
       let is_named = if let Some(ctx) = ctx {
         if let Some(styled) = ctx.styled_for_dom_node(ancestor) {
-          compute_name(styled, ctx, /*allow_name_from_content=*/ false)
-            .is_some_and(|name| !name.is_empty())
+          landmark_author_name(styled, ctx).is_some_and(|name| !name.is_empty())
         } else {
           // Defensive fallback: if the ancestor isn't part of the styled lookup for some reason,
           // preserve the old attribute-based behavior.

@@ -245,6 +245,42 @@ fn accessibility_named_form_only_scopes_other_landmarks_when_resolved_name_is_no
 }
 
 #[test]
+fn accessibility_form_landmark_role_is_preserved_when_named_by_title() {
+  let html = r##"
+    <html><body>
+      <form id="f" title="Named form"><input id="i" /></form>
+    </body></html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let form = find_json_node(&tree, "f").expect("form");
+
+  assert_eq!(form.get("role").and_then(|v| v.as_str()), Some("form"));
+  assert_eq!(
+    form.get("name").and_then(|v| v.as_str()),
+    Some("Named form")
+  );
+}
+
+#[test]
+fn accessibility_title_only_form_scopes_other_landmarks_only_when_title_is_non_empty() {
+  let html = r##"
+    <html><body>
+      <form id="missing" title="   "><header id="hdr1">Site</header></form>
+      <form id="named" title="Named"><header id="hdr2">Site</header></form>
+    </body></html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+
+  let hdr1 = find_json_node(&tree, "hdr1").expect("hdr1");
+  assert_eq!(hdr1.get("role").and_then(|v| v.as_str()), Some("banner"));
+
+  let hdr2 = find_json_node(&tree, "hdr2").expect("hdr2");
+  assert_eq!(hdr2.get("role").and_then(|v| v.as_str()), Some("generic"));
+}
+
+#[test]
 fn accessibility_roles_and_states_basic() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
