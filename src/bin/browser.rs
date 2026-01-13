@@ -13437,6 +13437,11 @@ struct App {
   /// wheels). Coalescing here prevents the UI→worker channel from accumulating an unbounded number
   /// of scroll messages when the worker is slow.
   pending_scroll: ScrollCoalescer,
+  /// Pending page text input buffered from `WindowEvent::ReceivedCharacter` events.
+  ///
+  /// Winit emits one `ReceivedCharacter` per typed character. Buffering here avoids sending a
+  /// `UiToWorker::TextInput` message for every character when the worker is slow to paint.
+  pending_text_input: fastrender::ui::TextInputBuffer,
   /// Whether the next `render_frame` should send a synthetic `PointerMove` to the active tab based
   /// on the current cursor position.
   ///
@@ -14441,6 +14446,7 @@ impl App {
       page_cursor_override: None,
       pending_pointer_move: None,
       pending_scroll: ScrollCoalescer::default(),
+      pending_text_input: fastrender::ui::TextInputBuffer::default(),
       hover_sync_pending: false,
       pending_dropped_files: Vec::new(),
       pending_dropped_files_tab: None,
@@ -14726,7 +14732,7 @@ impl App {
     self.scrollbar_drag = None;
     self.pointer_captured = false;
     self.captured_button = PointerButton::None;
-    self.page_has_focus = false;
+    self.clear_page_focus();
     self.chrome_has_text_focus = false;
     self.cursor_in_page = false;
     self.pending_pointer_move = None;
@@ -15681,6 +15687,13 @@ impl App {
       | UiToWorker::CancelDownload { tab_id, .. } => Some(*tab_id),
     };
 
+    // Flush buffered text input at a message boundary so the worker observes typed text before
+    // subsequent page-directed events (pointer/key/scroll/etc). This keeps UI→worker traffic bounded
+    // by frame rate instead of character rate.
+    if tab_id.is_some() && !matches!(&msg, UiToWorker::TextInput { .. }) {
+      self.flush_pending_text_input();
+    }
+
     // Arm the unresponsive watchdog timer for tab-scoped UI actions that expect some kind of worker
     // activity. This allows the watchdog to detect hangs even when a tab is not currently in a
     // `loading` state (e.g. user scrolls/clicks but the renderer never responds).
@@ -16411,7 +16424,7 @@ impl App {
 
   fn cancel_page_export(&mut self) {
     self.close_page_export();
-    self.page_has_focus = self.should_restore_page_focus();
+    self.set_page_focus(self.should_restore_page_focus());
   }
 
   fn open_page_export_in_app_dialog(
@@ -16427,7 +16440,7 @@ impl App {
 
     // Treat the export dialog as chrome UI: while it's open, don't forward keyboard input to the
     // page.
-    self.page_has_focus = false;
+    self.clear_page_focus();
     self.close_page_export();
 
     let focus_before_open = egui_focused_widget_id(&self.egui_ctx);
@@ -16962,6 +16975,44 @@ impl App {
       }
     }
     let _ = self.send_worker_msg(msg);
+  }
+
+  fn page_input_is_blocked_for_tab(&self, tab_id: fastrender::ui::TabId) -> bool {
+    let (loading, stage) = self
+      .browser_state
+      .tab(tab_id)
+      .map(|tab| (tab.loading, tab.load_stage))
+      .unwrap_or((false, None));
+    let has_frame = self.tab_textures.contains_key(&tab_id);
+    fastrender::ui::loading_overlay::decide_page_loading_ui(has_frame, loading, stage)
+      .intercept_pointer_events
+  }
+
+  fn flush_pending_text_input(&mut self) {
+    let Some((tab_id, text)) = self.pending_text_input.take() else {
+      return;
+    };
+
+    if self.page_input_is_blocked_for_tab(tab_id) {
+      // Match the loading-overlay input suppression semantics: while we are showing a stale frame
+      // (or no frame) for a loading tab, do not forward text input to the render worker.
+      return;
+    }
+
+    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::TextInput { tab_id, text });
+  }
+
+  fn clear_page_focus(&mut self) {
+    self.flush_pending_text_input();
+    self.page_has_focus = false;
+  }
+
+  fn set_page_focus(&mut self, focus: bool) {
+    if focus {
+      self.page_has_focus = true;
+    } else {
+      self.clear_page_focus();
+    }
   }
 
   fn page_pos_points_to_pos_css_for_drop(&self, pos_points: egui::Pos2) -> Option<(f32, f32)> {
@@ -17834,11 +17885,11 @@ impl App {
       if self.downloads_panel_request_focus {
         // When the downloads panel intends to take focus (when allowed), do not keep forwarding
         // keyboard focus/input to the rendered page.
-        self.page_has_focus = false;
+        self.clear_page_focus();
       } else if opened_downloads_panel {
         // Even when we avoid requesting focus (e.g. the user is typing in a chrome text input),
         // opening the side panel should not re-enable page focus.
-        self.page_has_focus = false;
+        self.clear_page_focus();
       }
     }
 
@@ -20850,7 +20901,7 @@ impl App {
             self.downloads_panel_request_focus = true;
           }
           self.downloads_panel_open = true;
-          self.page_has_focus = false;
+          self.clear_page_focus();
         }
       }
       PageContextMenuAction::OpenLinkInNewTab(url) => {
@@ -20946,7 +20997,7 @@ impl App {
 
     if output.close_requested {
       self.close_downloads_panel();
-      self.page_has_focus = self.should_restore_page_focus();
+      self.set_page_focus(self.should_restore_page_focus());
     }
 
     if output.clear_completed_requested {
@@ -22138,7 +22189,7 @@ impl App {
         let trimmed = draft.trim();
         if !trimmed.is_empty() {
           self.close_page_export();
-          self.page_has_focus = self.should_restore_page_focus();
+          self.set_page_focus(self.should_restore_page_focus());
           self.begin_page_export(kind, tab_id, std::path::PathBuf::from(trimmed));
         } else {
           self.cancel_page_export();
@@ -22560,7 +22611,7 @@ impl App {
   }
 
   fn focus_address_bar_select_all(&mut self) {
-    self.page_has_focus = false;
+    self.clear_page_focus();
     self.cancel_media_controls();
     if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
       let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
@@ -23045,6 +23096,9 @@ impl App {
         if *focused {
           return;
         }
+        // Losing focus is a natural boundary for buffered text input; flush any pending characters
+        // so they are not stranded behind an idle event loop.
+        self.flush_pending_text_input();
         // Losing window focus should cancel temporary UI state such as `<select>` popups and active
         // pointer drags.
         self.debug_log_overlay_pointer_capture = false;
@@ -23480,7 +23534,7 @@ impl App {
               }),
               fastrender::Point::new(pos_points.x, pos_points.y),
             ) {
-              self.page_has_focus = false;
+              self.clear_page_focus();
               if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
                 let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
               }
@@ -24154,7 +24208,7 @@ impl App {
         {
           // Treat the debug log UI as an egui overlay: don't forward clicks to the page and clear
           // focus so keyboard input can remain in egui (e.g. the filter text edit).
-          self.page_has_focus = false;
+          self.clear_page_focus();
           if matches!(state, ElementState::Pressed)
             && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
           {
@@ -24237,7 +24291,7 @@ impl App {
               }),
               fastrender::Point::new(pos_points.x, pos_points.y),
             ) {
-              self.page_has_focus = false;
+              self.clear_page_focus();
             }
             if self.page_loading_overlay_blocks_input
               && self
@@ -24750,7 +24804,7 @@ impl App {
                 tab.find = fastrender::ui::FindInPageState::default();
               }
               let _ = self.send_worker_msg(fastrender::ui::UiToWorker::FindStop { tab_id });
-              self.page_has_focus = self.should_restore_page_focus();
+              self.set_page_focus(self.should_restore_page_focus());
               self.window.request_redraw();
               return;
             }
@@ -24787,7 +24841,7 @@ impl App {
             use fastrender::ui::shortcuts::ShortcutAction;
 
             if fastrender::ui::shortcuts::shortcut_preempts_page_focus(action) {
-              self.page_has_focus = false;
+              self.clear_page_focus();
               self.cancel_media_controls();
             }
 
@@ -24819,7 +24873,7 @@ impl App {
               ShortcutAction::FindInPage => {
                 // Prevent text typed before the next egui frame (when the find bar takes focus)
                 // from being forwarded to the page.
-                self.page_has_focus = false;
+                self.clear_page_focus();
                 self.window.request_redraw();
                 return;
               }
@@ -25266,10 +25320,25 @@ impl App {
         if let Some(hud) = self.hud.as_mut() {
           hud.note_keyboard_input(std::time::Instant::now());
         }
-        let _ = self.send_worker_msg(fastrender::ui::UiToWorker::TextInput {
-          tab_id,
-          text: ch.to_string(),
-        });
+        if self.page_input_is_blocked_for_tab(tab_id) {
+          return;
+        }
+
+        let push = self.pending_text_input.push_char(tab_id, *ch);
+        if let Some((flushed_tab_id, text)) = push.flushed {
+          if !self.page_input_is_blocked_for_tab(flushed_tab_id) {
+            let _ = self.send_worker_msg(fastrender::ui::UiToWorker::TextInput {
+              tab_id: flushed_tab_id,
+              text,
+            });
+          }
+        }
+        if push.started_new {
+          // `egui_winit` does not necessarily request a repaint for `ReceivedCharacter` when the
+          // page owns keyboard focus. Request a redraw so `render_frame` can flush the buffered text
+          // (at most once per UI frame).
+          self.window.request_redraw();
+        }
       }
       _ => {}
     }
@@ -25332,7 +25401,7 @@ impl App {
         ChromeAction::OpenFindInPage => {
           // Treat the find bar as chrome text input: while it's opening/active, don't forward
           // keyboard events to the page.
-          self.page_has_focus = false;
+          self.clear_page_focus();
         }
         ChromeAction::SavePage => {
           self.trigger_page_export(PageExportKind::SavePage);
@@ -25361,19 +25430,19 @@ impl App {
         }
         ChromeAction::CloseFindInPage(tab_id) => {
           let _ = self.send_worker_msg(UiToWorker::FindStop { tab_id });
-          self.page_has_focus = self.should_restore_page_focus();
+          self.set_page_focus(self.should_restore_page_focus());
           self.window.request_redraw();
         }
         ChromeAction::OpenTabSearch => {
           // The tab search overlay owns keyboard focus while open; keep page focus disabled so the
           // rendered page doesn't steal egui focus from the overlay input.
-          self.page_has_focus = false;
+          self.clear_page_focus();
           self.window.request_redraw();
         }
         ChromeAction::CloseTabSearch => {
           // After dismissing the overlay, restore page focus so keyboard scrolling works without an
           // extra click.
-          self.page_has_focus = self.should_restore_page_focus();
+          self.set_page_focus(self.should_restore_page_focus());
           self.window.request_redraw();
         }
         ChromeAction::ToggleDownloadsPanel => {
@@ -25387,10 +25456,10 @@ impl App {
             self.bookmarks_panel_open = false;
             self.history_panel_request_focus_search = false;
             self.bookmarks_manager.clear_transient();
-            self.page_has_focus = false;
+            self.clear_page_focus();
           } else {
             self.close_downloads_panel();
-            self.page_has_focus = self.should_restore_page_focus();
+            self.set_page_focus(self.should_restore_page_focus());
           }
           self.window.request_redraw();
         }
@@ -25400,7 +25469,7 @@ impl App {
           // When the address bar has focus, keyboard input should not be forwarded to the page.
           // When it loses focus (via Enter/Escape/clicking elsewhere), restore page focus so common
           // scrolling shortcuts work without requiring an extra click.
-          self.page_has_focus = self.should_restore_page_focus();
+          self.set_page_focus(self.should_restore_page_focus());
         }
         ChromeAction::ToggleBookmarkForActiveTab => {
           self.toggle_bookmark_for_active_tab();
@@ -25425,9 +25494,9 @@ impl App {
             self.close_downloads_panel();
             self.bookmarks_manager.clear_transient();
             self.history_panel_request_focus_search = true;
-            self.page_has_focus = false;
+            self.clear_page_focus();
           } else {
-            self.page_has_focus = self.should_restore_page_focus();
+            self.set_page_focus(self.should_restore_page_focus());
           }
           self.window.request_redraw();
         }
@@ -25439,10 +25508,10 @@ impl App {
             self.bookmarks_manager.request_focus_search();
             // While the manager is open, do not forward keyboard focus to the page. The manager
             // itself will request focus for its search box.
-            self.page_has_focus = false;
+            self.clear_page_focus();
           } else {
             self.bookmarks_manager.clear_transient();
-            self.page_has_focus = self.should_restore_page_focus();
+            self.set_page_focus(self.should_restore_page_focus());
           }
           self.window.request_redraw();
         }
@@ -25467,7 +25536,7 @@ impl App {
           self.browser_state.chrome.clear_link_drag();
           // Treat the dialog as a modal: while it's open, keyboard focus/input should not be
           // forwarded to the rendered page.
-          self.page_has_focus = false;
+          self.clear_page_focus();
           // End any in-flight page-scoped drags so the page doesn't keep scrolling underneath the
           // modal dialog.
           self.cancel_scrollbar_drag();
@@ -25488,7 +25557,7 @@ impl App {
           self.tab_cancel.insert(tab_id, cancel.clone());
           self.browser_state.push_tab(tab_state, true);
           self.browser_state.chrome.address_bar_text = initial_url.clone();
-          self.page_has_focus = false;
+          self.clear_page_focus();
           self.viewport_cache_tab = None;
           self.pointer_captured = false;
           self.captured_button = fastrender::ui::PointerButton::None;
@@ -26397,7 +26466,7 @@ impl App {
             self.window.request_redraw();
           }
         } else if request.target == compositor_a11y::chrome_node_id() && self.page_has_focus {
-          self.page_has_focus = false;
+          self.clear_page_focus();
           self.window.request_redraw();
         }
       }
@@ -26582,6 +26651,9 @@ impl App {
     } else {
       self.flush_pending_frame_uploads();
     }
+    // Flush any buffered `ReceivedCharacter` text input once per UI frame so rapid typing doesn't
+    // generate one worker message per character.
+    self.flush_pending_text_input();
 
     let session_revision_before = self.browser_state.session_revision();
     // Keep fullscreen tracking in sync with winit (e.g. when the user toggles fullscreen via
@@ -26794,7 +26866,7 @@ impl App {
     // Treat modal dialogs as modal: while they're open, the rendered page should never take
     // keyboard focus (e.g. via `response.request_focus()` on the central page image).
     if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
-      self.page_has_focus = false;
+      self.clear_page_focus();
       self.cancel_media_controls();
     }
 
@@ -26869,9 +26941,9 @@ impl App {
                 self.close_downloads_panel();
                 self.bookmarks_manager.clear_transient();
                 self.history_panel_request_focus_search = true;
-                self.page_has_focus = false;
+                self.clear_page_focus();
               } else {
-                self.page_has_focus = self.should_restore_page_focus();
+                self.set_page_focus(self.should_restore_page_focus());
               }
             }
             fastrender::ui::MenuCommand::ToggleBookmarksPanel => {
@@ -26881,10 +26953,10 @@ impl App {
                 self.close_downloads_panel();
                 self.history_panel_request_focus_search = false;
                 self.bookmarks_manager.request_focus_search();
-                self.page_has_focus = false;
+                self.clear_page_focus();
               } else {
                 self.bookmarks_manager.clear_transient();
-                self.page_has_focus = self.should_restore_page_focus();
+                self.set_page_focus(self.should_restore_page_focus());
               }
             }
             fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
@@ -27118,7 +27190,7 @@ impl App {
         close_bookmarks_panel = true;
       }
       if output.unfocus_page {
-        self.page_has_focus = false;
+        self.clear_page_focus();
       }
       if !output.bookmark_deltas.is_empty() || output.changed {
         let deltas = std::mem::take(&mut output.bookmark_deltas);
@@ -27207,7 +27279,7 @@ impl App {
         close_history_panel = true;
       }
       if output.unfocus_page {
-        self.page_has_focus = false;
+        self.clear_page_focus();
       }
       if output.open_clear_browsing_data_dialog {
         panel_actions.push(fastrender::ui::ChromeAction::OpenClearBrowsingDataDialog);
@@ -27281,11 +27353,11 @@ impl App {
     if close_bookmarks_panel {
       self.bookmarks_panel_open = false;
       self.bookmarks_manager.clear_transient();
-      self.page_has_focus = self.should_restore_page_focus();
+      self.set_page_focus(self.should_restore_page_focus());
     }
     if close_history_panel {
       self.history_panel_open = false;
-      self.page_has_focus = self.should_restore_page_focus();
+      self.set_page_focus(self.should_restore_page_focus());
     }
     if !panel_actions.is_empty() {
       session_dirty |= self.handle_chrome_actions(panel_actions);
@@ -27315,7 +27387,7 @@ impl App {
         self.clear_browsing_data(self.clear_browsing_data_range);
       }
       if was_open && !self.clear_browsing_data_dialog_open {
-        self.page_has_focus = self.should_restore_page_focus();
+        self.set_page_focus(self.should_restore_page_focus());
         self.window.request_redraw();
       }
     }
@@ -27338,7 +27410,7 @@ impl App {
       && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
       self.close_downloads_panel();
-      self.page_has_focus = self.should_restore_page_focus();
+      self.set_page_focus(self.should_restore_page_focus());
     }
 
     // -----------------------------------------------------------------------------
@@ -27415,7 +27487,7 @@ impl App {
       if tab_crashed {
         // The page renderer crashed. Prevent forwarding any further input into the page and clear
         // any page-scoped overlays so the user sees a deterministic crash surface.
-        self.page_has_focus = false;
+        self.clear_page_focus();
         self.cursor_in_page = false;
         self.pending_pointer_move = None;
         self.cancel_select_dropdown();

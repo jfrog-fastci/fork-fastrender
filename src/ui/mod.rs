@@ -56,6 +56,7 @@ pub mod search_suggest;
 pub mod trusted_chrome_fetcher;
 pub mod messages;
 pub mod clipboard;
+pub mod text_input_buffer;
 pub mod media_prefs;
 pub mod window_title;
 pub mod downloads;
@@ -241,6 +242,7 @@ pub use process_assignment::{ProcessAssignmentEvent, ProcessAssignmentState, Pro
 
 #[cfg(feature = "a11y_accesskit")]
 pub use page_a11y::{decode_page_node_id, dom_node_id_for_current_page_action, encode_page_node_id};
+pub use text_input_buffer::{TextInputBuffer, TextInputPushResult};
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the
 // `browser_ui` feature gate.
