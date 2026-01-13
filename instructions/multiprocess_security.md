@@ -100,6 +100,9 @@ Beyond process-per-tab, consider site isolation:
 - Prevents Spectre-style cross-origin attacks
 - Chrome's model: one process per site (not per tab)
 
+FastRender's intended per-origin process assignment + OOPIF semantics are specified in:
+- [`docs/site_isolation.md`](../docs/site_isolation.md) (normative)
+
 ### IPC design
 
 ```rust
