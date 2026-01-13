@@ -983,7 +983,7 @@ mod date_time_picker_a11y_tests {
 
 #[cfg(all(test, feature = "browser_ui"))]
 mod page_context_menu_keyboard_shortcut_tests {
-  use super::keyboard_page_context_menu_request;
+  use super::{keyboard_page_context_menu_request, KeyboardPageContextMenuOpenPlan};
 
   use egui::{Pos2, Rect, Vec2};
   use fastrender::ui::{InputMapping, TabId, UiToWorker};
@@ -1002,7 +1002,7 @@ mod page_context_menu_keyboard_shortcut_tests {
     let mapping = InputMapping::new(page_rect, (800, 600));
     let cursor = Pos2::new(110.0, 70.0);
 
-    let (pending, msg) = keyboard_page_context_menu_request(
+    let plan = keyboard_page_context_menu_request(
       VirtualKeyCode::F10,
       shift_mods(),
       true,
@@ -1010,10 +1010,15 @@ mod page_context_menu_keyboard_shortcut_tests {
       false,
       tab_id,
       page_rect,
-      mapping,
+      Some(mapping),
       Some(cursor),
     )
     .expect("expected Shift+F10 to open page context menu");
+
+    let (pending, msg) = match plan {
+      KeyboardPageContextMenuOpenPlan::WorkerRequest { pending, msg } => (pending, msg),
+      other => panic!("expected worker request plan, got: {other:?}"),
+    };
 
     assert_eq!(pending.tab_id, tab_id);
     assert_eq!(pending.anchor_points, cursor);
@@ -1044,7 +1049,7 @@ mod page_context_menu_keyboard_shortcut_tests {
       .pos_points_to_pos_css_clamped(expected_anchor)
       .expect("mapping should convert center point");
 
-    let (pending, msg) = keyboard_page_context_menu_request(
+    let plan = keyboard_page_context_menu_request(
       VirtualKeyCode::Apps,
       ModifiersState::empty(),
       true,
@@ -1052,10 +1057,15 @@ mod page_context_menu_keyboard_shortcut_tests {
       false,
       tab_id,
       page_rect,
-      mapping,
+      Some(mapping),
       Some(cursor_outside),
     )
     .expect("expected Apps key to open page context menu");
+
+    let (pending, msg) = match plan {
+      KeyboardPageContextMenuOpenPlan::WorkerRequest { pending, msg } => (pending, msg),
+      other => panic!("expected worker request plan, got: {other:?}"),
+    };
 
     assert_eq!(pending.anchor_points, expected_anchor);
     assert_eq!(pending.pos_css, expected_pos_css);
@@ -1068,6 +1078,41 @@ mod page_context_menu_keyboard_shortcut_tests {
       }
       other => panic!("unexpected worker message: {other:?}"),
     }
+  }
+
+  #[test]
+  fn opens_ui_only_menu_when_mapping_unavailable() {
+    let tab_id = TabId(1);
+    let page_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let cursor = Pos2::new(110.0, 70.0);
+
+    let plan = keyboard_page_context_menu_request(
+      VirtualKeyCode::F10,
+      shift_mods(),
+      true,
+      false,
+      false,
+      tab_id,
+      page_rect,
+      None,
+      Some(cursor),
+    )
+    .expect("expected Shift+F10 to open page context menu");
+
+    let menu = match plan {
+      KeyboardPageContextMenuOpenPlan::OpenUiOnly(menu) => menu,
+      other => panic!("expected ui-only plan, got: {other:?}"),
+    };
+
+    assert_eq!(menu.tab_id, tab_id);
+    assert_eq!(menu.anchor_points, cursor);
+    assert_eq!(menu.pos_css, (-1.0, -1.0));
+    assert!(menu.link_url.is_none());
+    assert!(menu.image_url.is_none());
+    assert!(!menu.can_copy);
+    assert!(!menu.can_cut);
+    assert!(!menu.can_paste);
+    assert!(!menu.can_select_all);
   }
 }
 
@@ -2772,6 +2817,19 @@ struct OpenContextMenu {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+enum KeyboardPageContextMenuOpenPlan {
+  WorkerRequest {
+    pending: PendingContextMenuRequest,
+    msg: fastrender::ui::UiToWorker,
+  },
+  /// Fallback when the point->CSS mapping isn't available (or fails due to a degenerate render
+  /// rect). In this mode we still open the context menu, but only with page-level entries (no
+  /// hit-tested link/image/selection actions).
+  OpenUiOnly(OpenContextMenu),
+}
+
+#[cfg(feature = "browser_ui")]
 fn keyboard_page_context_menu_request(
   key: winit::event::VirtualKeyCode,
   modifiers: winit::event::ModifiersState,
@@ -2780,9 +2838,9 @@ fn keyboard_page_context_menu_request(
   page_loading_overlay_blocks_input: bool,
   tab_id: fastrender::ui::TabId,
   page_rect_points: egui::Rect,
-  mapping: fastrender::ui::InputMapping,
+  mapping: Option<fastrender::ui::InputMapping>,
   last_cursor_pos_points: Option<egui::Pos2>,
-) -> Option<(PendingContextMenuRequest, fastrender::ui::UiToWorker)> {
+) -> Option<KeyboardPageContextMenuOpenPlan> {
   use winit::event::VirtualKeyCode;
 
   let is_shortcut = matches!(key, VirtualKeyCode::Apps)
@@ -2799,14 +2857,29 @@ fn keyboard_page_context_menu_request(
     .filter(|pos| page_rect_points.contains(*pos))
     .unwrap_or_else(|| page_rect_points.center());
 
-  let pos_css = mapping.pos_points_to_pos_css_clamped(anchor_points)?;
-  let pending = PendingContextMenuRequest {
+  if let Some(pos_css) = mapping.and_then(|mapping| mapping.pos_points_to_pos_css_clamped(anchor_points))
+  {
+    let pending = PendingContextMenuRequest {
+      tab_id,
+      pos_css,
+      anchor_points,
+    };
+    let msg = fastrender::ui::UiToWorker::ContextMenuRequest { tab_id, pos_css };
+    return Some(KeyboardPageContextMenuOpenPlan::WorkerRequest { pending, msg });
+  }
+
+  Some(KeyboardPageContextMenuOpenPlan::OpenUiOnly(OpenContextMenu {
     tab_id,
-    pos_css,
+    pos_css: (-1.0, -1.0),
     anchor_points,
-  };
-  let msg = fastrender::ui::UiToWorker::ContextMenuRequest { tab_id, pos_css };
-  Some((pending, msg))
+    link_url: None,
+    image_url: None,
+    can_copy: false,
+    can_cut: false,
+    can_paste: false,
+    can_select_all: false,
+    selected_idx: 0,
+  }))
 }
 
 #[cfg(feature = "browser_ui")]
@@ -8805,12 +8878,11 @@ impl App {
             return;
           }
 
-          if let (Some(tab_id), Some(page_rect_points), Some(mapping)) = (
+          if let (Some(tab_id), Some(page_rect_points)) = (
             self.page_input_tab.or(self.browser_state.active_tab_id()),
             self.page_rect_points,
-            self.page_input_mapping,
           ) {
-            if let Some((pending, msg)) = keyboard_page_context_menu_request(
+            if let Some(plan) = keyboard_page_context_menu_request(
               key,
               self.modifiers,
               self.page_has_focus,
@@ -8818,13 +8890,21 @@ impl App {
               self.page_loading_overlay_blocks_input,
               tab_id,
               page_rect_points,
-              mapping,
+              self.page_input_mapping,
               self.last_cursor_pos_points,
             ) {
               // Ensure the menu opens fresh (selection starts at index 0 once the worker replies).
               self.close_context_menu();
-              self.pending_context_menu_request = Some(pending);
-              self.send_worker_msg(msg);
+              match plan {
+                KeyboardPageContextMenuOpenPlan::WorkerRequest { pending, msg } => {
+                  self.pending_context_menu_request = Some(pending);
+                  self.send_worker_msg(msg);
+                }
+                KeyboardPageContextMenuOpenPlan::OpenUiOnly(menu) => {
+                  self.open_context_menu = Some(menu);
+                  self.open_context_menu_rect = None;
+                }
+              }
               self.window.request_redraw();
               return;
             }
