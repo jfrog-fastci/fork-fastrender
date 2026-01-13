@@ -625,7 +625,9 @@ jobs:
 
           # The Seatbelt sandbox assertions live in the `sandbox` module unit tests, so run a
           # library-scoped test filter instead of expecting a separate integration test binary.
-          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --lib sandbox
+          # Keep this job lightweight: the sandbox checks do not require default features (AVIF,
+          # preserve3d_warp, etc).
+          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib sandbox
 
   # ===========================================================================
   # Browser UI - Cross-platform compile + Linux headless smoke (no display/GPU)
