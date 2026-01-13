@@ -504,6 +504,147 @@ fn margin_box_min_width_clamps_used_size() {
 }
 
 #[test]
+fn margin_box_fixed_heights_are_positioned_per_css_page_three_box_algorithm() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @left-top { height: 30px; content: "A"; }
+            @left-middle { height: 40px; content: "B"; }
+            @left-bottom { height: 30px; content: "C"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 1px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let a = find_margin_box_fragment(page, "A").expect("expected @left-top margin box");
+  let b = find_margin_box_fragment(page, "B").expect("expected @left-middle margin box");
+  let c = find_margin_box_fragment(page, "C").expect("expected @left-bottom margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (a.bounds.y() - 40.0).abs() < epsilon,
+    "left-top y mismatch: actual {}, expected 40",
+    a.bounds.y()
+  );
+  assert!(
+    (b.bounds.y() - 80.0).abs() < epsilon,
+    "left-middle y mismatch: actual {}, expected 80",
+    b.bounds.y()
+  );
+  assert!(
+    (c.bounds.y() - 130.0).abs() < epsilon,
+    "left-bottom y mismatch: actual {}, expected 130",
+    c.bounds.y()
+  );
+
+  assert!(
+    (a.bounds.height() - 30.0).abs() < epsilon,
+    "left-top height mismatch: actual {}, expected 30",
+    a.bounds.height()
+  );
+  assert!(
+    (b.bounds.height() - 40.0).abs() < epsilon,
+    "left-middle height mismatch: actual {}, expected 40",
+    b.bounds.height()
+  );
+  assert!(
+    (c.bounds.height() - 30.0).abs() < epsilon,
+    "left-bottom height mismatch: actual {}, expected 30",
+    c.bounds.height()
+  );
+}
+
+#[test]
+fn margin_box_max_height_clamps_used_size() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @left-middle { height: 200px; max-height: 40px; content: "B"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 1px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let b = find_margin_box_fragment(page, "B").expect("expected @left-middle margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (b.bounds.height() - 40.0).abs() < epsilon,
+    "expected max-height to clamp used size to 40px, got {}",
+    b.bounds.height()
+  );
+}
+
+#[test]
+fn margin_box_min_height_clamps_used_size() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            @left-top { height: 10px; min-height: 50px; content: "A"; }
+          }
+          html, body { margin: 0; padding: 0; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 1px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  let a = find_margin_box_fragment(page, "A").expect("expected @left-top margin box");
+
+  let epsilon = 0.1;
+  assert!(
+    (a.bounds.height() - 50.0).abs() < epsilon,
+    "expected min-height to clamp used size to 50px, got {}",
+    a.bounds.height()
+  );
+}
+
+#[test]
 fn page_rule_important_overrides_non_important() {
   let html = r#"
     <html>
