@@ -391,6 +391,39 @@ Repo reality note:
     protocol violation (or redesign so the browser allocates + seals the buffer before handing it to
     the renderer).
 
+### Frame pixels via FD attachment (`FrameReady`)
+
+For browser↔renderer rendering, the in-tree protocol schema is designed so that **pixel bytes are not
+serialized inline**:
+
+- `RendererToBrowser::FrameReady { frame: SharedFrameDescriptor, ... }` must be accompanied by
+  exactly **one** FD (see `expected_fds()` in
+  [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs)).
+- The FD contents are `frame.byte_len` bytes of **premultiplied RGBA8** pixels, row-major, with
+  `frame.stride_bytes` bytes per row.
+
+Receiver invariants (browser-side):
+
+1. **FD arity check:** enforce `expected_fds() == 1` for `FrameReady`; reject and close any message
+   that comes with the wrong FD count.
+2. **Checked arithmetic only:** treat all dimensions/strides as attacker-controlled and compute
+   expected sizes with overflow checks:
+   - `min_stride = width_px * 4`
+   - require `stride_bytes >= min_stride`
+   - `expected_len = stride_bytes * height_px`
+   - require `expected_len == byte_len` (or, if you intentionally allow padding, require
+     `expected_len <= byte_len` and clearly document the padding rule)
+3. **Hard caps:** `expected_len` must be <=:
+   - the global SHM cap (`shm::MAX_SHM_SIZE`), and
+   - your compositor/pixmap policy cap (e.g. `MAX_PIXMAP_BYTES`)
+4. **FD validation before `mmap`:** `fstat` the FD and require `st_size == expected_len`, then map
+   only that length.
+5. **Prefer read-only mapping:** the browser should map with `PROT_READ` unless there is a strong
+   reason to allow writes.
+
+This is the main place where “IPC bytes → allocation” and “IPC metadata → mapping length” meet. Any
+relaxation here is a potential browser crash/DoS primitive.
+
 ---
 
 ## Protocol versioning + upgrade strategy
