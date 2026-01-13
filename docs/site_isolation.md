@@ -127,7 +127,10 @@ share a renderer process.
 This is intentionally **per-origin** (not per-registrable-domain) so cross-origin iframes isolate
 strictly without needing eTLD+1 reasoning.
 
-For other schemes we either map to a stable bucket (`file://`) or to an *opaque* key (unique).
+For other schemes we either:
+
+- map to a stable bucket (`file://` → `SiteKey::File`, `about:*` internal pages → `SiteKey::Internal`), or
+- use an *opaque* key (`SiteKey::Opaque(_)`) when the document has an opaque origin.
 
 Recommended representation:
 
@@ -222,6 +225,8 @@ Responsibilities:
 
 - Maintain a mapping `SiteKey -> RendererProcess` (1 process per SiteKey, unless explicitly
   configured otherwise).
+- Ensure `SiteKey::Internal` is routed to a **trusted** renderer context (browser process or a
+  dedicated privileged renderer) and never co-hosted with untrusted web content.
 - Enforce global/per-tab process limits (see §5).
 - Reference-count processes by the number of live frames currently assigned to them.
 - Handle crashes (mark dead; notify `FrameTree` owners; allow reload to respawn).
@@ -365,7 +370,7 @@ For the site isolation process model, we still need an explicit fallback rule:
 
 **Rule (normative):**
 
-- If a URL’s scheme is not covered above (Origin/File/about:blank/about:srcdoc/data/about-internal),
+- If a URL’s scheme is not covered above (`http(s)` origins, `file:`, `about:blank`, `about:srcdoc`, internal `about:*`, `data:`),
   treat it as a fresh opaque site: `SiteKey::Opaque(new_opaque_id())`.
 - Do not attempt to “guess” an origin for schemes we don’t fully model yet. Add explicit handling
   plus tests when a new scheme is introduced (e.g. `blob:` origin tracking).
@@ -397,15 +402,17 @@ Algorithm (normative):
    - Stay in the same process (`no process swap`).
 3. Else:
    - Ask `RendererProcessRegistry::get_or_spawn(&target_site)`.
-    - If allocation fails due to quota (see §5), the navigation **must not** silently fall back to a
-      different `SiteKey`’s process. Instead:
-      - treat the navigation as **failed** and do **not** commit a new document that would require a
-        different `SiteKey`/process.
-        - The frame remains on its previously committed document (often an initial `about:blank`).
-        - The browser may surface an error via chrome UI and/or render a non-document placeholder in
-          the frame rectangle (for subframes).
-      - Security invariant: **never merge sites** (run `target_site` content in some other site’s
-        process) to satisfy quotas.
+     - For `SiteKey::Internal`, this must route to the browser’s trusted internal renderer context
+       (not a sandboxed content renderer).
+   - If allocation fails due to quota (see §5), the navigation **must not** silently fall back to a
+     different `SiteKey`’s process. Instead:
+     - treat the navigation as **failed** and do **not** commit a new document that would require a
+       different `SiteKey`/process.
+       - The frame remains on its previously committed document (often an initial `about:blank`).
+       - The browser may surface an error via chrome UI and/or render a non-document placeholder in
+         the frame rectangle (for subframes).
+     - Security invariant: **never merge `SiteKey`s** (run `target_site` content in some other
+       process) to satisfy quotas.
 4. Update `FrameTree` node:
    - `node.site = target_site`
    - `node.process = assigned_process`
