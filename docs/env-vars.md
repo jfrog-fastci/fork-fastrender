@@ -331,12 +331,14 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - When enabled, the browser uses a custom `accesskit_winit::Adapter` path instead of egui’s
     built-in AccessKit integration. See [chrome_accessibility.md](chrome_accessibility.md).
 
-### Browser session file (tabs / zoom persistence)
+### Browser session file (tabs + UI config persistence)
 
 - `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` – override where the browser session file is stored.
   - Primary use case: tests/integration harnesses that need an isolated session file.
   - CLI equivalent: `browser --session-path /path/to/fastrender_session.json` (takes precedence over the env var).
   - The default is a per-user config path (via `directories`) with a fallback to `./fastrender_session.json` in the current working directory.
+  - The session file stores both session-restore state (windows/tabs) and persisted chrome settings
+    (appearance/UI scale, home page, menu bar visibility, window geometry).
   - Note: the browser may create sidecar files next to the session path:
     - a lock file (same path with `.lock` extension) to prevent multiple `browser` instances from writing the same session, and
     - a last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`) used to recover if the primary session file is corrupted/unparseable.

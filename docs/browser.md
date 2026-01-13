@@ -129,8 +129,8 @@ Startup note:
     start with a “safe” `about:newtab` instead. Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is provided.
   - Even when tabs are not restored (CLI URL or `--no-restore`), the browser may still reuse persisted
-    **configuration** from the previous session (appearance/UI scale, menu bar visibility, and window
-    geometry) when available.
+    **configuration** from the previous session (appearance/UI scale, home page, menu bar visibility,
+    and window geometry) when available.
 - If the primary session file is corrupted/unparseable, the browser can fall back to a retained
   last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`).
 - If no session exists yet, it falls back to `about:newtab`, which acts as a basic start page

@@ -249,8 +249,8 @@ Note: startup/session restore:
   provided.
 - `--no-restore` disables tab/session restore even when no URL is provided.
 - Even when tabs are not restored (CLI URL or `--no-restore`), the browser may still reuse persisted
-  **configuration** from the previous session (appearance/UI scale, menu bar visibility, and window
-  geometry) when available.
+  **configuration** from the previous session (appearance/UI scale, home page, menu bar visibility,
+  and window geometry) when available.
 
 If no session file exists yet, it falls back to `about:newtab`, which acts as a basic start page
 (showing bookmarks + recently visited pages when available).
