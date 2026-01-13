@@ -690,7 +690,7 @@ impl InteractionState {
   /// Callers that mutate focus/hover/active/visited/user-validity state must invoke this so render
   /// caching can observe the change without re-hashing large sets every frame.
   #[inline]
-  pub(crate) fn mark_css_hash_dirty(&self) {
+  pub fn mark_css_hash_dirty(&self) {
     self.css_hash_dirty.store(true, AtomicOrdering::Release);
   }
 
@@ -700,12 +700,12 @@ impl InteractionState {
   /// input state must invoke this so render caching can observe the change without re-hashing large
   /// structures every frame.
   #[inline]
-  pub(crate) fn mark_paint_hash_dirty(&self) {
+  pub fn mark_paint_hash_dirty(&self) {
     self.paint_hash_dirty.store(true, AtomicOrdering::Release);
   }
 
   #[inline]
-  pub(crate) fn mark_all_hashes_dirty(&self) {
+  pub fn mark_all_hashes_dirty(&self) {
     self.mark_css_hash_dirty();
     self.mark_paint_hash_dirty();
   }
