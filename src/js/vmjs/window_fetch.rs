@@ -7107,6 +7107,16 @@ fn make_response_wrapper(
   let ok = (200..300).contains(&status);
   set_data_prop(scope, obj, "status", Value::Number(status as f64), false)?;
   set_data_prop(scope, obj, "ok", Value::Bool(ok), false)?;
+  // Fetch's `Response.url` getter serializes the response URL with `exclude fragment = true`.
+  // We store it as a data property for simplicity, so strip the fragment at wrapper creation.
+  let url = if url.is_empty() {
+    url
+  } else if let Ok(mut parsed) = ::url::Url::parse(&url) {
+    parsed.set_fragment(None);
+    parsed.to_string()
+  } else {
+    url.split('#').next().unwrap_or("").to_string()
+  };
   let url_s = scope.alloc_string(&url)?;
   let st_s = scope.alloc_string(&status_text)?;
   set_data_prop(scope, obj, "url", Value::String(url_s), false)?;
@@ -15848,6 +15858,18 @@ mod tests {
     }
   }
 
+  struct FinalUrlWithFragmentFetcher;
+
+  impl ResourceFetcher for FinalUrlWithFragmentFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Ok(FetchedResource::with_final_url(
+        format!("ok:{url}").into_bytes(),
+        Some("text/plain".to_string()),
+        Some(format!("{url}#frag")),
+      ))
+    }
+  }
+
   #[derive(Debug, Clone)]
   struct CapturedHttpRequest {
     method: String,
@@ -15898,6 +15920,46 @@ mod tests {
       .iter()
       .find(|(k, _)| k.eq_ignore_ascii_case(name))
       .map(|(_, v)| v.as_str())
+  }
+
+  #[test]
+  fn fetch_response_url_excludes_fragment() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+    let env = WindowFetchEnv::for_document(
+      Arc::new(FinalUrlWithFragmentFetcher),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            (async () => {
+              const resp = await fetch('https://example.invalid/ok');
+              globalThis.__url = resp.url;
+            })();
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let url_val = host.window.exec_script("globalThis.__url").unwrap();
+    assert_eq!(get_string(host.window.heap(), url_val), "https://example.invalid/ok");
+    Ok(())
   }
 
   #[test]
