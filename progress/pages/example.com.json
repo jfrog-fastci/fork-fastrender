@@ -16,7 +16,7 @@
     "layout": 2.00770925,
     "paint": 21.080947125
   },
-  "notes": "",
+  "notes": "Visually good vs Chrome baseline. Remaining diffs are tiny and dominated by text rasterization/AA (a few stray/missing edge pixels around glyphs/underlines). No known missing primitives.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 13455,

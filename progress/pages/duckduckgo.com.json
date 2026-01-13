@@ -16,7 +16,7 @@
     "layout": 1.007176772727273,
     "paint": 13.093298045454546
   },
-  "notes": "",
+  "notes": "Visually good vs Chrome baseline (very low perceptual diff). Remaining diffs are subtle: slight off-white/background tinting and minor edge AA on text/borders.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 11363,

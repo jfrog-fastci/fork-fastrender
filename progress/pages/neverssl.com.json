@@ -14,7 +14,7 @@
     "layout": 26.1294626056338,
     "paint": 14.069710633802815
   },
-  "notes": "",
+  "notes": "Not visually good vs Chrome baseline. Major remaining diffs are structural: the full-width red warning banner and blue header have noticeably different heights/line-wrapping, shifting large horizontal bands of background color. Likely rooted in text measurement/line-box or block margin behavior; needs follow-up.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 3098,

@@ -16,7 +16,7 @@
     "layout": 2.011685354166667,
     "paint": 21.122696218750004
   },
-  "notes": "",
+  "notes": "Visually good vs Chrome baseline. Remaining diffs are concentrated in the main text block (font hinting/AA/weight differences), not layout. No explicit missing features identified.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 10916,

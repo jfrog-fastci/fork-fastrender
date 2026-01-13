@@ -14,7 +14,7 @@
     "layout": 1.9994330172413792,
     "paint": 18.994613663793103
   },
-  "notes": "",
+  "notes": "Mostly visually good vs Chrome baseline. Remaining diffs are localized around the top red Fast.com mark and primary text (minor text AA/weight and subtle color/gradient differences).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 9027,
