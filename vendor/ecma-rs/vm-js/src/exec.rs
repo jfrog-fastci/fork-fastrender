@@ -16511,6 +16511,56 @@ fn async_eval_for_in(
     .map_err(|_| VmError::OutOfMemory)?;
   label_vec.extend_from_slice(label_set);
 
+  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
+  // If the head is a lexical `ForDeclaration` (`let`/`const`/`using`/`await using`), create a TDZ
+  // environment containing uninitialized bindings for `BoundNames(ForDeclaration)` while
+  // evaluating the RHS expression.
+  if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
+    if matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
+      let old_lex = evaluator.env.lexical_env;
+      let tdz_env = scope.env_create(Some(old_lex))?;
+      evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+
+      let mutable = *mode == VarDeclMode::Let;
+      let inst_res = evaluator.instantiate_lexical_names_from_pat(
+        scope,
+        tdz_env,
+        &pat_decl.stx.pat.stx,
+        pat_decl.loc,
+        mutable,
+      );
+      if let Err(err) = inst_res {
+        evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+        return Err(err);
+      }
+
+      return match async_eval_expr(evaluator, scope, &stmt.rhs) {
+        Ok(AsyncEval::Complete(rhs_value)) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+          async_for_in_after_rhs(evaluator, scope, stmt, label_vec, rhs_value)
+        }
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: old_lex })?;
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::ForInAfterRhs {
+              stmt: stmt as *const ForInStmt,
+              label_set: label_vec,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
+        Err(err) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+          Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+      };
+    }
+  }
+
   match async_eval_expr(evaluator, scope, &stmt.rhs) {
     Ok(AsyncEval::Complete(rhs_value)) => async_for_in_after_rhs(evaluator, scope, stmt, label_vec, rhs_value),
     Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -16910,6 +16960,71 @@ fn async_eval_for_await_of(
     return Err(VmError::OutOfMemory);
   }
   label_vec.extend_from_slice(label_set);
+
+  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = asynciterate):
+  // If the head is a lexical `ForDeclaration` (`let`/`const`/`using`/`await using`), create a TDZ
+  // environment containing uninitialized bindings for `BoundNames(ForDeclaration)` while
+  // evaluating the RHS expression.
+  if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
+    if matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
+      let tdz_env = match scope.env_create(Some(outer_lex)) {
+        Ok(env) => env,
+        Err(err) => {
+          scope.heap_mut().remove_root(v_root);
+          return Err(err);
+        }
+      };
+      evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+
+      let mutable = *mode == VarDeclMode::Let;
+      let inst_res = evaluator.instantiate_lexical_names_from_pat(
+        scope,
+        tdz_env,
+        &pat_decl.stx.pat.stx,
+        pat_decl.loc,
+        mutable,
+      );
+      if let Err(err) = inst_res {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+        scope.heap_mut().remove_root(v_root);
+        return Err(err);
+      }
+
+      return match async_eval_expr(evaluator, scope, &stmt.rhs) {
+        Ok(AsyncEval::Complete(iterable)) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          async_for_await_of_after_rhs(evaluator, scope, stmt, label_vec, v_root, outer_lex, iterable)
+        }
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: outer_lex }) {
+            scope.heap_mut().remove_root(v_root);
+            return Err(err);
+          }
+          if let Err(err) = async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::ForAwaitOfAfterRhs {
+              stmt: stmt as *const ForOfStmt,
+              label_set: label_vec,
+              v_root,
+              outer_lex,
+            },
+          ) {
+            scope.heap_mut().remove_root(v_root);
+            return Err(err);
+          }
+          Ok(AsyncEval::Suspend(suspend))
+        }
+        Err(err) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          scope.heap_mut().remove_root(v_root);
+          Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+      };
+    }
+  }
 
   match async_eval_expr(evaluator, scope, &stmt.rhs) {
     Ok(AsyncEval::Complete(iterable)) => {
@@ -17540,6 +17655,56 @@ fn async_eval_for_of(
     .try_reserve_exact(label_set.len())
     .map_err(|_| VmError::OutOfMemory)?;
   label_vec.extend_from_slice(label_set);
+
+  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = iterate):
+  // If the head is a lexical `ForDeclaration` (`let`/`const`/`using`/`await using`), create a TDZ
+  // environment containing uninitialized bindings for `BoundNames(ForDeclaration)` while
+  // evaluating the RHS expression.
+  if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
+    if matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
+      let old_lex = evaluator.env.lexical_env;
+      let tdz_env = scope.env_create(Some(old_lex))?;
+      evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+
+      let mutable = *mode == VarDeclMode::Let;
+      let inst_res = evaluator.instantiate_lexical_names_from_pat(
+        scope,
+        tdz_env,
+        &pat_decl.stx.pat.stx,
+        pat_decl.loc,
+        mutable,
+      );
+      if let Err(err) = inst_res {
+        evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+        return Err(err);
+      }
+
+      return match async_eval_expr(evaluator, scope, &stmt.rhs) {
+        Ok(AsyncEval::Complete(iterable)) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+          async_for_of_after_rhs(evaluator, scope, stmt, label_vec, iterable)
+        }
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: old_lex })?;
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::ForOfAfterRhs {
+              stmt: stmt as *const ForOfStmt,
+              label_set: label_vec,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
+        Err(err) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+          Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+      };
+    }
+  }
 
   match async_eval_expr(evaluator, scope, &stmt.rhs) {
     Ok(AsyncEval::Complete(iterable)) => async_for_of_after_rhs(evaluator, scope, stmt, label_vec, iterable),
@@ -27577,6 +27742,61 @@ fn gen_eval_for_of(
     .try_reserve_exact(label_set.len())
     .map_err(|_| VmError::OutOfMemory)?;
   label_vec.extend_from_slice(label_set);
+
+  // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = iterate):
+  // If the head is a lexical `ForDeclaration` (`let`/`const`/`using`/`await using`), create a TDZ
+  // environment containing uninitialized bindings for `BoundNames(ForDeclaration)` while
+  // evaluating the RHS expression.
+  if let ForInOfLhs::Decl((mode, pat_decl)) = &stmt.lhs {
+    if matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
+      let old_lex = evaluator.env.lexical_env;
+      let tdz_env = scope.env_create(Some(old_lex))?;
+      evaluator.env.set_lexical_env(scope.heap_mut(), tdz_env);
+
+      let mutable = *mode == VarDeclMode::Let;
+      let inst_res = evaluator.instantiate_lexical_names_from_pat(
+        scope,
+        tdz_env,
+        &pat_decl.stx.pat.stx,
+        pat_decl.loc,
+        mutable,
+      );
+      if let Err(err) = inst_res {
+        evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+        return Err(err);
+      }
+
+      return match gen_eval_expr(evaluator, scope, &stmt.rhs)? {
+        GenEval::Complete(c) => {
+          evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+          match c {
+            Completion::Normal(v) => gen_for_of_after_rhs(
+              evaluator,
+              scope,
+              stmt,
+              label_vec,
+              v.unwrap_or(Value::Undefined),
+            ),
+            abrupt => Ok(GenEval::Complete(abrupt)),
+          }
+        }
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer: old_lex })?;
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::ForOfAfterRhs {
+              stmt: stmt as *const ForOfStmt,
+              label_set: label_vec,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      };
+    }
+  }
 
   match gen_eval_expr(evaluator, scope, &stmt.rhs)? {
     GenEval::Complete(c) => match c {
