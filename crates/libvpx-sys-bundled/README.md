@@ -17,6 +17,9 @@ The libvpx sources are vendored under:
 
 Current version: **libvpx 1.13.1**
 
+`build.rs` explicitly lists all files under `upstream/libvpx/` via `cargo:rerun-if-changed=...`
+so that changes to the vendored source reliably trigger a rebuild.
+
 ## Build configuration
 
 `build.rs` runs libvpx's `configure` + `make` inside `OUT_DIR`, using a configuration intended for
@@ -43,4 +46,3 @@ High-level steps:
 1. Replace `upstream/libvpx/` with the new libvpx release source (keep `LICENSE`/`PATENTS`).
 2. Regenerate bindings (or copy updated bindings) and update `src/lib.rs`.
 3. Run `cargo test -p libvpx-sys-bundled`.
-
