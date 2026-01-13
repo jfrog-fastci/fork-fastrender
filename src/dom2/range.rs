@@ -1467,6 +1467,63 @@ impl Document {
       }
     }
   }
+
+  /// Range `deleteContents()` algorithm.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-deletecontents
+  pub fn range_delete_contents(&mut self, range: RangeId) -> DomResult<()> {
+    let (start, end) = {
+      let range_ref = self.range(range)?;
+      (range_ref.start, range_ref.end)
+    };
+    if start == end {
+      return Ok(());
+    }
+
+    // Fast-path for a selection wholly within a single CharacterData node.
+    if start.node == end.node && self.node_is_character_data_for_range(start.node) {
+      // Per spec, this delegates to the CharacterData "replace data" algorithm and returns early.
+      let _ = self.replace_data(
+        start.node,
+        start.offset,
+        end.offset.saturating_sub(start.offset),
+        "",
+      )?;
+
+      let bp = BoundaryPoint {
+        node: start.node,
+        offset: start.offset,
+      };
+      let range_mut = self.range_mut(range)?;
+      range_mut.start = bp;
+      range_mut.end = bp;
+      return Ok(());
+    }
+
+    // DeleteContents shares the same mutation behavior as extractContents (it removes the selected
+    // contents from the document) but does not return a fragment that keeps the removed nodes
+    // parented. Reuse the extract algorithm and then detach any nodes moved into its internal
+    // fragment so their `parent` pointer becomes `None`.
+    let (fragment, collapse_to) = self.extract_contents_between_impl(start, end)?;
+
+    let moved = std::mem::take(&mut self.nodes[fragment.index()].children);
+    for child in moved {
+      if child.index() >= self.nodes.len() {
+        continue;
+      }
+      if self.nodes[child.index()].parent == Some(fragment) {
+        self.nodes[child.index()].parent = None;
+      }
+    }
+
+    if let Some(bp) = collapse_to {
+      let range_mut = self.range_mut(range)?;
+      range_mut.start = bp;
+      range_mut.end = bp;
+    }
+
+    Ok(())
+  }
 }
 
 #[cfg(test)]

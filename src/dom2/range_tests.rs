@@ -1029,6 +1029,7 @@ fn live_range_replace_data_insertion_shifts_by_utf16_code_units() {
   // End of text shifts by +2 code units.
   assert_eq!(doc.range_start_offset(r).unwrap(), 6);
   assert_eq!(doc.range_end_offset(r).unwrap(), 6);
+}
 
 #[test]
 fn live_range_insert_steps_updates_collapsed_range_offsets() {
@@ -1078,4 +1079,39 @@ fn live_range_insert_steps_updates_range_offsets_span() {
 
   assert_eq!(doc.range_start_offset(range).unwrap(), 2);
   assert_eq!(doc.range_end_offset(range).unwrap(), 3);
+}
+
+#[test]
+fn range_delete_contents_character_data_collapses_to_start() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let text = doc.create_text("abcdef");
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 2).unwrap();
+  doc.range_set_end(range, text, 5).unwrap();
+
+  doc.range_delete_contents(range).unwrap();
+
+  assert_eq!(doc.text_data(text).unwrap(), "abf");
+  assert_range_collapsed(&doc, range, text, 2);
+}
+
+#[test]
+fn range_extract_contents_character_data_collapses_to_start() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let text = doc.create_text("abcdef");
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 2).unwrap();
+  doc.range_set_end(range, text, 5).unwrap();
+
+  let fragment = doc.range_extract_contents(range).unwrap();
+
+  assert_eq!(doc.text_data(text).unwrap(), "abf");
+  assert_range_collapsed(&doc, range, text, 2);
+
+  // The extracted DocumentFragment should contain a single Text child with the extracted substring.
+  assert!(matches!(doc.node(fragment).kind, NodeKind::DocumentFragment));
+  let child = doc.node(fragment).children[0];
+  assert_eq!(doc.text_data(child).unwrap(), "cde");
 }
