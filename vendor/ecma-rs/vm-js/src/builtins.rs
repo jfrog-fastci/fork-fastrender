@@ -18659,11 +18659,7 @@ pub fn string_prototype_to_locale_lower_case(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
+  crate::spec_ops::require_object_coercible(this)?;
   string_prototype_to_lower_case(vm, scope, host, hooks, callee, this, &[])
 }
 
@@ -18680,11 +18676,7 @@ pub fn string_prototype_to_locale_upper_case(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
+  crate::spec_ops::require_object_coercible(this)?;
   string_prototype_to_upper_case(vm, scope, host, hooks, callee, this, &[])
 }
 
@@ -18701,11 +18693,7 @@ pub fn string_prototype_locale_compare(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "Cannot convert undefined or null to object",
-    ));
-  }
+  crate::spec_ops::require_object_coercible(this)?;
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
   let a = scope.to_string(vm, host, hooks, o)?;
@@ -18738,7 +18726,6 @@ pub fn string_prototype_locale_compare(
     Ok(Value::Number(0.0))
   }
 }
-
 /// `%String.prototype%[@@iterator]` (ECMA-262).
 ///
 /// This returns an iterator object with internal slots:

@@ -4628,6 +4628,29 @@ fn compiled_function_use_strict_makes_unbound_assignment_throw_reference_error()
 }
 
 #[test]
+fn compiled_function_use_strict_not_first_stmt_is_not_a_directive() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Directive prologues are only recognized at the start of a function body statement list. If any
+  // non-directive statement appears first (like `0;`), later `"use strict"` string literals must not
+  // enable strict mode.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ 0; "use strict"; return this === undefined; }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(false));
+  Ok(())
+}
+
+#[test]
 fn compiled_arrow_function_use_strict_makes_unbound_assignment_throw_reference_error() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
