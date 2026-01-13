@@ -18,16 +18,16 @@ fn logical_assignment_short_circuit_rhs_not_evaluated() -> Result<(), VmError> {
           function sideEffect() { called++; }
 
           let x = false;
-          x &&= (sideEffect(), true);
-          if (called !== 0) return false;
+          let r = (x &&= (sideEffect(), true));
+          if (called !== 0 || x !== false || r !== false) return false;
 
           x = true;
-          x ||= (sideEffect(), false);
-          if (called !== 0) return false;
+          r = (x ||= (sideEffect(), false));
+          if (called !== 0 || x !== true || r !== true) return false;
 
           x = 0;
-          x ??= (sideEffect(), 1);
-          if (called !== 0) return false;
+          r = (x ??= (sideEffect(), 1));
+          if (called !== 0 || x !== 0 || r !== 0) return false;
 
           return true;
         })()
@@ -89,12 +89,12 @@ fn logical_assignment_member_reference_getter_setter_semantics() -> Result<(), V
               set f(v) { setCount++; stored = v; },
             };
 
-            o.f &&= (rhsCount++, 1);
-            if (getCount !== 1 || setCount !== 0 || rhsCount !== 0) return false;
+            let res = (o.f &&= (rhsCount++, 1));
+            if (res !== 0 || stored !== 0 || getCount !== 1 || setCount !== 0 || rhsCount !== 0) return false;
 
             stored = 1;
-            o.f &&= (rhsCount++, 2);
-            if (getCount !== 2 || setCount !== 1 || rhsCount !== 1 || stored !== 2) return false;
+            res = (o.f &&= (rhsCount++, 2));
+            if (res !== 2 || getCount !== 2 || setCount !== 1 || rhsCount !== 1 || stored !== 2) return false;
           }
 
           // `||=`
@@ -109,12 +109,12 @@ fn logical_assignment_member_reference_getter_setter_semantics() -> Result<(), V
               set f(v) { setCount++; stored = v; },
             };
 
-            o.f ||= (rhsCount++, 2);
-            if (getCount !== 1 || setCount !== 0 || rhsCount !== 0) return false;
+            let res = (o.f ||= (rhsCount++, 2));
+            if (res !== 1 || stored !== 1 || getCount !== 1 || setCount !== 0 || rhsCount !== 0) return false;
 
             stored = 0;
-            o.f ||= (rhsCount++, 3);
-            if (getCount !== 2 || setCount !== 1 || rhsCount !== 1 || stored !== 3) return false;
+            res = (o.f ||= (rhsCount++, 3));
+            if (res !== 3 || getCount !== 2 || setCount !== 1 || rhsCount !== 1 || stored !== 3) return false;
           }
 
           // `??=`
@@ -129,12 +129,12 @@ fn logical_assignment_member_reference_getter_setter_semantics() -> Result<(), V
               set f(v) { setCount++; stored = v; },
             };
 
-            o.f ??= (rhsCount++, 1);
-            if (getCount !== 1 || setCount !== 0 || rhsCount !== 0) return false;
+            let res = (o.f ??= (rhsCount++, 1));
+            if (res !== 0 || stored !== 0 || getCount !== 1 || setCount !== 0 || rhsCount !== 0) return false;
 
             stored = null;
-            o.f ??= (rhsCount++, 2);
-            if (getCount !== 2 || setCount !== 1 || rhsCount !== 1 || stored !== 2) return false;
+            res = (o.f ??= (rhsCount++, 2));
+            if (res !== 2 || getCount !== 2 || setCount !== 1 || rhsCount !== 1 || stored !== 2) return false;
           }
 
           return true;
@@ -176,4 +176,3 @@ fn logical_assignment_anonymous_function_name_inference() -> Result<(), VmError>
 
   Ok(())
 }
-
