@@ -602,13 +602,68 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   fn drain_external_tasks(&mut self) -> Result<()> {
-    let tasks = self.external_task_queue.drain();
-    for task in tasks {
+    loop {
+      // Peek without consuming so we don't lose tasks if enqueuing fails (e.g. queue limit reached,
+      // allocation failure during reservation).
+      let source = {
+        let lock = self
+          .external_task_queue
+          .inner
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(task) = lock.queue.front() else {
+          break;
+        };
+        task.source
+      };
+
+      // Mirror `queue_task`'s failure modes, but ensure the external task stays queued if we
+      // cannot accept more work right now.
+      if self.pending_task_count() >= self.queue_limits.max_pending_tasks {
+        return Err(Error::Other(format!(
+          "EventLoop exceeded max pending tasks (limit={})",
+          self.queue_limits.max_pending_tasks
+        )));
+      }
+
+      // Reserve space up-front so we can safely move the `FnOnce` out of the external queue
+      // without risking it being dropped on enqueue failure.
+      {
+        let queue = self.task_queues.entry(source).or_default();
+        queue
+          .try_reserve(1)
+          .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
+      }
+
+      let task = {
+        let mut lock = self
+          .external_task_queue
+          .inner
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner());
+        lock.queue.pop_front()
+      };
+
+      let Some(task) = task else {
+        // Raced with `close()` or another drain; nothing left to do.
+        break;
+      };
+
+      let seq = self.next_task_seq;
+      self.next_task_seq = self.next_task_seq.wrapping_add(1);
+
       let source = task.source;
       let runnable = task.runnable;
       // `EventLoop::queue_task` does not require `Send`, so wrap the Send task in a local closure.
-      self.queue_task(source, move |host, event_loop| runnable(host, event_loop))?;
+      self
+        .task_queues
+        .entry(source)
+        .or_default()
+        .push_back(Task::new_with_seq(source, seq, move |host, event_loop| {
+          runnable(host, event_loop)
+        }));
     }
+
     Ok(())
   }
 
@@ -1834,20 +1889,29 @@ impl<Host: 'static> EventLoop<Host> {
       if due > now {
         break;
       }
-      let _ = self.timer_queue.pop();
 
-      let Some(timer) = self.timers.get(&id) else {
-        continue;
-      };
-      if timer.schedule_seq != schedule_seq {
-        continue;
+      // Discard stale entries (cleared or rescheduled timers) before attempting to enqueue.
+      match self.timers.get(&id) {
+        Some(timer) if timer.schedule_seq == schedule_seq => {}
+        _ => {
+          // Stale queue entry: timer was cleared or rescheduled since it was pushed.
+          let _ = self.timer_queue.pop();
+          continue;
+        }
       }
 
-      self.queue_task(TaskSource::Timer, move |host, event_loop| {
+      if let Err(err) = self.queue_task(TaskSource::Timer, move |host, event_loop| {
         // HTML timers validate the global ID→uniqueHandle map at *task execution time* so that
         // `clearTimeout`/`clearInterval` (and potential ID reuse) can cancel already-queued tasks.
         event_loop.fire_timer(host, id, schedule_seq)
-      })?;
+      }) {
+        // If the task queue is full (or allocation fails), keep the heap entry so the timer can be
+        // retried later.
+        return Err(err);
+      }
+
+      // Only drop the heap entry once the corresponding timer task is successfully queued.
+      let _ = self.timer_queue.pop();
     }
     Ok(())
   }
@@ -1860,26 +1924,38 @@ impl<Host: 'static> EventLoop<Host> {
 
     // Promote any timed-out idle callbacks into the normal task queue so they can run even when
     // regular tasks keep the event loop busy.
-    let mut due: Vec<IdleCallbackId> = Vec::new();
-    self.idle_callback_queue.retain(|id| {
-      let Some(state) = self.idle_callbacks.get(id) else {
-        return false;
+    //
+    // Important: do not permanently remove an ID from `idle_callback_queue` until we have
+    // successfully queued the corresponding task. Otherwise, a failure to enqueue (due to queue
+    // limits or allocation failure) would leak the callback by making it unreachable.
+    let mut idx: usize = 0;
+    while idx < self.idle_callback_queue.len() {
+      let id = match self.idle_callback_queue.get(idx).copied() {
+        Some(id) => id,
+        None => break,
       };
-      if state.timeout_at.is_some_and(|t| t <= now) {
-        due.push(*id);
-        return false;
-      }
-      true
-    });
 
-    for id in due {
       let Some(state) = self.idle_callbacks.get(&id) else {
+        // Stale ID: callback was cancelled/cleared.
+        let _ = self.idle_callback_queue.remove(idx);
         continue;
       };
-      let schedule_seq = state.schedule_seq;
-      self.queue_task(TaskSource::IdleCallback, move |host, event_loop| {
-        event_loop.fire_idle_callback(host, id, schedule_seq)
-      })?;
+
+      if state.timeout_at.is_some_and(|t| t <= now) {
+        let schedule_seq = state.schedule_seq;
+        if let Err(err) = self.queue_task(TaskSource::IdleCallback, move |host, event_loop| {
+          event_loop.fire_idle_callback(host, id, schedule_seq)
+        }) {
+          // Leave the ID in `idle_callback_queue` so it can be promoted later.
+          return Err(err);
+        }
+
+        // Only remove the ID once the task has been successfully queued.
+        let _ = self.idle_callback_queue.remove(idx);
+        continue;
+      }
+
+      idx += 1;
     }
 
     Ok(())
@@ -3239,6 +3315,135 @@ mod tests {
   }
 
   #[test]
+  fn queue_due_timers_failure_does_not_leak_timer_queue_entry() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      fired: usize,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 1,
+      max_pending_microtasks: usize::MAX,
+      max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
+    });
+
+    // Fill the task queue so queuing due timers fails.
+    event_loop.queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+
+    let id = event_loop.set_timeout(Duration::from_millis(0), |host, _event_loop| {
+      host.fired += 1;
+      Ok(())
+    })?;
+
+    let err = event_loop
+      .queue_due_timers()
+      .expect_err("expected due timer enqueue to fail");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg.contains("max pending tasks")),
+      "unexpected error: {err:?}"
+    );
+
+    // The timer should still be present and still be schedulable.
+    assert!(
+      event_loop.timers.contains_key(&id),
+      "timer should not be dropped from timers map"
+    );
+    assert_eq!(
+      event_loop.next_timer_due_time(),
+      Some(Duration::from_millis(0)),
+      "timer heap entry should not be lost"
+    );
+
+    // Once capacity becomes available again, the timer should still fire.
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 2,
+      max_pending_microtasks: usize::MAX,
+      max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
+    });
+    event_loop.queue_due_timers()?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.fired, 1);
+    assert!(!event_loop.timers.contains_key(&id));
+    Ok(())
+  }
+
+  #[test]
+  fn queue_due_idle_callbacks_failure_does_not_leak_callback() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      fired: usize,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 1,
+      max_pending_microtasks: usize::MAX,
+      max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
+    });
+
+    // Fill the task queue so promoting timed-out idle callbacks fails.
+    event_loop.queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+
+    let id = event_loop.request_idle_callback(Some(Duration::from_millis(0)), |host, _, did_timeout, _| {
+      assert!(did_timeout);
+      host.fired += 1;
+      Ok(())
+    })?;
+
+    let err = event_loop
+      .queue_due_idle_callbacks()
+      .expect_err("expected idle callback promotion to fail");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg.contains("max pending tasks")),
+      "unexpected error: {err:?}"
+    );
+
+    assert!(
+      event_loop.idle_callbacks.contains_key(&id),
+      "idle callback should remain stored"
+    );
+    assert!(
+      event_loop.idle_callback_queue.contains(&id),
+      "idle callback ID should remain queued for later promotion"
+    );
+
+    // Once capacity becomes available again, promotion should succeed and the callback should run.
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 2,
+      max_pending_microtasks: usize::MAX,
+      max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
+    });
+    event_loop.queue_due_idle_callbacks()?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.fired, 1);
+    assert!(!event_loop.idle_callbacks.contains_key(&id));
+    Ok(())
+  }
+
+  #[test]
   fn interval_cleared_inside_callback_does_not_reschedule() -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());
@@ -3735,6 +3940,76 @@ mod tests {
       matches!(err, Error::Other(ref msg) if msg.contains("max pending timers")),
       "unexpected error: {err:?}"
     );
+  }
+
+  #[test]
+  fn drain_external_tasks_failure_does_not_drop_remaining_tasks() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    // Queue multiple tasks into the external thread-safe buffer before shrinking the task queue
+    // limit (the external buffer shares the same limit).
+    let handle = event_loop.external_task_queue_handle();
+    handle.queue_task(TaskSource::Networking, |host, _event_loop| {
+      host.log.push("a");
+      Ok(())
+    })?;
+    handle.queue_task(TaskSource::Networking, |host, _event_loop| {
+      host.log.push("b");
+      Ok(())
+    })?;
+    handle.queue_task(TaskSource::Networking, |host, _event_loop| {
+      host.log.push("c");
+      Ok(())
+    })?;
+
+    // Limit the main task queue to 1 so draining will fail after the first task is promoted.
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 1,
+      max_pending_microtasks: usize::MAX,
+      max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
+    });
+
+    let err = event_loop
+      .drain_external_tasks()
+      .expect_err("expected external task drain to fail due to queue limit");
+    assert!(
+      matches!(err, Error::Other(ref msg) if msg.contains("max pending tasks")),
+      "unexpected error: {err:?}"
+    );
+
+    // One task should have been queued; the others must remain in the external buffer.
+    assert_eq!(event_loop.pending_task_count(), 1);
+    {
+      let lock = handle.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      assert_eq!(lock.queue.len(), 2, "remaining external tasks should not be lost");
+    }
+
+    // Increase capacity and drain again; all tasks should now run.
+    event_loop.set_queue_limits(QueueLimits {
+      max_pending_tasks: 10,
+      max_pending_microtasks: usize::MAX,
+      max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
+    });
+    event_loop.drain_external_tasks()?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.log, vec!["a", "b", "c"]);
+    Ok(())
   }
 
   #[test]
