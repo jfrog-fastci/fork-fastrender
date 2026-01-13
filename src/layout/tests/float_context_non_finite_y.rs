@@ -53,7 +53,15 @@ fn float_context_non_finite_y_is_fast_and_does_not_poison_state() {
 
   let timeout = with_deadline(Some(&deadline), || {
     for non_finite_y in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+      assert!(ctx.left_edge_at_y(non_finite_y).is_finite());
+      assert!(ctx.right_edge_at_y(non_finite_y).is_finite());
+
       let (left, width) = ctx.available_width_at_y(non_finite_y);
+      assert!(left.is_finite());
+      assert!(width.is_finite());
+
+      let (left, width) =
+        ctx.available_width_at_y_in_containing_block(non_finite_y, f32::NAN, f32::NAN);
       assert!(left.is_finite());
       assert!(width.is_finite());
 
@@ -64,7 +72,17 @@ fn float_context_non_finite_y_is_fast_and_does_not_poison_state() {
       assert!(left.is_finite());
       assert!(width.is_finite());
 
+      let (left, width) =
+        ctx.available_width_in_range_in_containing_block(non_finite_y, 10.0, f32::NAN, f32::NAN);
+      assert!(left.is_finite());
+      assert!(width.is_finite());
+
       let (left, width) = ctx.available_width_in_range(0.0, non_finite_y);
+      assert!(left.is_finite());
+      assert!(width.is_finite());
+
+      let (left, width) =
+        ctx.available_width_in_range_in_containing_block(0.0, non_finite_y, f32::NAN, f32::NAN);
       assert!(left.is_finite());
       assert!(width.is_finite());
     }
@@ -128,7 +146,20 @@ fn float_context_non_finite_min_y_is_sanitized_for_placement_queries() {
       let fit_y = ctx.find_fit(150.0, 1.0, non_finite_min_y);
       assert!(fit_y.is_finite());
 
+      let fit_y = ctx.find_fit_in_containing_block(150.0, 1.0, non_finite_min_y, f32::NAN, f32::NAN);
+      assert!(fit_y.is_finite());
+
       let (x, y) = ctx.compute_float_position(FloatSide::Left, 20.0, 1.0, non_finite_min_y);
+      assert!(x.is_finite() && y.is_finite());
+
+      let (x, y) = ctx.compute_float_position_in_containing_block(
+        FloatSide::Left,
+        20.0,
+        1.0,
+        non_finite_min_y,
+        f32::NAN,
+        f32::NAN,
+      );
       assert!(x.is_finite() && y.is_finite());
     }
 
