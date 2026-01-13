@@ -181,7 +181,13 @@ pub fn try_spawn_network_process(config: NetworkProcessConfig) -> Result<Network
     use std::os::unix::process::CommandExt as _;
     let keep = [0, 1, 2];
     unsafe {
-      cmd.pre_exec(move || crate::sandbox::set_cloexec_on_fds_except(&keep));
+      cmd.pre_exec(move || {
+        // Ensure the network process is killed if the parent disappears (defense-in-depth; avoids
+        // leaving a privileged background process running unexpectedly).
+        let _ = crate::sandbox::linux_set_parent_death_signal();
+
+        crate::sandbox::set_cloexec_on_fds_except(&keep)
+      });
     }
   }
 
