@@ -463,9 +463,6 @@ function assert_throws_dom(name, target, func, message) {
   if (typeof name !== "string") {
     throw Error(resolved_message || "assert_throws_dom: expected DOMException name must be a string");
   }
-  if (typeof resolved_func !== "function") {
-    throw Error(resolved_message || "assert_throws_dom: function is not callable");
-  }
   //
   var expected_name = name;
   var expected_for_message = name;
@@ -476,6 +473,10 @@ function assert_throws_dom(name, target, func, message) {
       expected_for_message = [name, " (", mapped_name, ")"].join("");
     }
   } catch (_e0) {}
+  //
+  if (typeof resolved_func !== "function") {
+    throw Error(resolved_message || "assert_throws_dom: function is not callable");
+  }
   //
   var threw = false;
   var thrown = null;
