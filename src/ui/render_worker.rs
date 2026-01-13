@@ -3980,12 +3980,18 @@ impl BrowserRuntime {
     if let Some(js_tab) = tab.js_tab.as_mut() {
       let generation_before = js_tab.dom().mutation_generation();
       let prev_generation = tab.js_dom_mutation_generation;
-      if let Err(err) = js_tab.run_until_stable(/* max_frames */ 1) {
-        if self.debug_log_enabled {
-          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-            tab_id,
-            line: format!("js tick failed: {err}"),
-          });
+      let cancel_snapshot = tab.cancel.snapshot_paint();
+      let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+      let deadline = deadline_for(cancel_callback.clone(), None);
+      let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+      if !cancel_callback() {
+        if let Err(err) = js_tab.run_until_stable(/* max_frames */ 1) {
+          if self.debug_log_enabled && !cancel_callback() {
+            let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("js tick failed: {err}"),
+            });
+          }
         }
       }
       let generation_after = js_tab.dom().mutation_generation();
@@ -4406,7 +4412,7 @@ impl BrowserRuntime {
     };
     let cancel_snapshot = tab.cancel.snapshot_paint();
     let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
-    let deadline = deadline_for(cancel_callback, Some(DOM_EVENT_JS_PUMP_TIMEOUT));
+    let deadline = deadline_for(cancel_callback.clone(), Some(DOM_EVENT_JS_PUMP_TIMEOUT));
     let _deadline_guard = DeadlineGuard::install(Some(&deadline));
 
     let run_limits = RunLimits {
@@ -4417,7 +4423,7 @@ impl BrowserRuntime {
 
     let prev_generation = tab.js_dom_mutation_generation;
     if let Err(err) = js_tab.run_event_loop_until_idle(run_limits) {
-      if self.debug_log_enabled {
+      if self.debug_log_enabled && !cancel_callback() {
         let _ = self.ui_tx.send(WorkerToUi::DebugLog {
           tab_id,
           line: format!("js event-loop pump failed: {err}"),
@@ -7908,7 +7914,7 @@ impl BrowserRuntime {
     // Pump JS once (bounded) so any post-parse lifecycle tasks run.
     let cancel_snapshot = tab.cancel.snapshot_paint();
     let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
-    let deadline = deadline_for(cancel_callback, Some(POST_NAV_JS_PUMP_TIMEOUT));
+    let deadline = deadline_for(cancel_callback.clone(), Some(POST_NAV_JS_PUMP_TIMEOUT));
     let _deadline_guard = DeadlineGuard::install(Some(&deadline));
 
     // Limit execution to a single task turn plus microtasks. This keeps the worker responsive while
@@ -7924,10 +7930,12 @@ impl BrowserRuntime {
         return false;
       };
       if let Err(err) = js_tab.run_event_loop_until_idle(run_limits) {
-        msgs.push(WorkerToUi::DebugLog {
-          tab_id,
-          line: format!("js post-navigation pump failed: {err}"),
-        });
+        if !cancel_callback() {
+          msgs.push(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("js post-navigation pump failed: {err}"),
+          });
+        }
       }
       // The post-navigation pump can resume streaming parsing and run lifecycle tasks, mutating the
       // JS DOM. Prewarm the JS tab's renderer-preorder → dom2 NodeId mapping cache *after* the pump
