@@ -37,6 +37,17 @@ const ERROR_INVALID_PARAMETER: u32 = 87;
 pub struct SpawnConfig<'a> {
   pub exe: PathBuf,
   pub args: Vec<OsString>,
+  /// Environment variable overrides to apply when spawning the child.
+  ///
+  /// This is an *override list* applied on top of the current process environment:
+  ///
+  /// - If `env` is empty, the child inherits the full parent environment (`lpEnvironment = NULL`).
+  /// - Otherwise, we inherit `std::env::vars_os()` and apply the provided overrides
+  ///   (case-insensitive on Windows).
+  ///
+  /// This low-level helper does **not** perform environment sanitization. Callers that need to
+  /// avoid leaking secrets into an untrusted child process should build a fully-specified
+  /// environment block (or use a higher-level spawner that implements sanitization).
   pub env: Vec<(OsString, OsString)>,
   pub current_dir: Option<PathBuf>,
   pub inherit_handles: Vec<RawHandle>,

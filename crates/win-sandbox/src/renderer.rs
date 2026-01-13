@@ -141,6 +141,10 @@ impl RendererSandbox {
     RendererSandboxBuilder::new()
   }
 
+  /// Spawns a child process under the configured renderer-style sandbox.
+  ///
+  /// Note: `env` is an override list applied on top of the current process environment; this helper
+  /// does **not** perform environment sanitization.
   pub fn spawn(
     &self,
     exe: PathBuf,
