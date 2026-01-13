@@ -8005,6 +8005,9 @@ fn regexp_exec_array(
     let value = if start == usize::MAX || end == usize::MAX || end < start {
       Value::Undefined
     } else {
+      let cap_len = end.saturating_sub(start);
+      // Preflight heap limits before allocating potentially-large off-heap buffers.
+      scope.ensure_can_alloc_string_units(cap_len)?;
       let units: Vec<u16> = {
         let s = scope.heap().get_string(input)?;
         let slice = &s.as_code_units()[start..end];
@@ -8012,7 +8015,7 @@ fn regexp_exec_array(
         buf
           .try_reserve_exact(slice.len())
           .map_err(|_| VmError::OutOfMemory)?;
-        buf.extend_from_slice(slice);
+        vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, slice)?;
         buf
       };
       let s = scope.alloc_string_from_u16_vec(units)?;
@@ -13538,6 +13541,8 @@ pub fn regexp_prototype_symbol_match(
     } else if from == to {
       iter_scope.alloc_string("")?
     } else {
+      let part_len = to.saturating_sub(from);
+      iter_scope.ensure_can_alloc_string_units(part_len)?;
       let units: Vec<u16> = {
         let js = iter_scope.heap().get_string(s)?;
         let slice = &js.as_code_units()[from..to];
@@ -13545,7 +13550,7 @@ pub fn regexp_prototype_symbol_match(
         buf
           .try_reserve_exact(slice.len())
           .map_err(|_| VmError::OutOfMemory)?;
-        buf.extend_from_slice(slice);
+        vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, slice)?;
         buf
       };
       iter_scope.alloc_string_from_u16_vec(units)?
@@ -13773,6 +13778,9 @@ pub fn regexp_prototype_symbol_replace(
         if cap_start == usize::MAX || cap_end == usize::MAX || cap_end < cap_start {
           args_vec.push(Value::Undefined);
         } else {
+          let cap_len = cap_end.saturating_sub(cap_start);
+          // Preflight heap limits before allocating the capture substring buffer.
+          scope.ensure_can_alloc_string_units(cap_len)?;
           let units: Vec<u16> = {
             let js = scope.heap().get_string(input)?;
             let slice = &js.as_code_units()[cap_start..cap_end];
@@ -13780,7 +13788,7 @@ pub fn regexp_prototype_symbol_replace(
             buf
               .try_reserve_exact(slice.len())
               .map_err(|_| VmError::OutOfMemory)?;
-            buf.extend_from_slice(slice);
+            vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, slice)?;
             buf
           };
           let s = scope.alloc_string_from_u16_vec(units)?;
@@ -14002,11 +14010,12 @@ pub fn regexp_prototype_symbol_split(
           Value::String(iter_scope.alloc_string("")?)
         } else {
           let units = &input_units[from..to];
+          iter_scope.ensure_can_alloc_string_units(units.len())?;
           let mut buf: Vec<u16> = Vec::new();
           buf
             .try_reserve_exact(units.len())
             .map_err(|_| VmError::OutOfMemory)?;
-          buf.extend_from_slice(units);
+          vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
           let s = iter_scope.alloc_string_from_u16_vec(buf)?;
           iter_scope.push_root(Value::String(s))?;
           Value::String(s)
