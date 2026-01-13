@@ -136,6 +136,9 @@ that spawns a sandboxed copy of itself and prints observed sandbox state from in
 bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- --connect-localhost
 ```
 
+Pass `--no-aap-hardening` to disable the `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`
+startup attribute and compare token group state (presence of `S-1-15-2-1`).
+
 ### Allow running without the full Windows sandbox (opt-in)
 
 On unsupported Windows versions (or when sandbox setup fails due to host job restrictions), you can
