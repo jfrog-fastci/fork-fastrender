@@ -39,6 +39,7 @@ const FAVICON_MAX_EDGE_PX: u32 = 32;
 /// In a multi-process architecture the renderer is untrusted; without a hard cap a compromised
 /// renderer could spam download messages and grow memory unboundedly.
 const MAX_DOWNLOAD_ENTRIES: usize = 512;
+const CRASH_REASON_MAX_CHARS: usize = 200;
 
 static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -56,6 +57,17 @@ impl TabGroupId {
         return Self(id);
       }
     }
+  }
+}
+
+impl SiteKey {
+  /// Derive a site key from a parsed URL.
+  ///
+  /// This is a thin wrapper around [`crate::site_isolation::site_key_for_navigation`] to make it
+  /// convenient for UI state to derive best-effort `SiteKey` snapshots after validating URLs with
+  /// `url::Url`.
+  pub fn from_url(url: &Url) -> Self {
+    crate::site_isolation::site_key_for_navigation(url.as_str(), None)
   }
 }
 
@@ -438,7 +450,7 @@ pub struct BrowserTabState {
   /// Best-effort site isolation key snapshot derived from the latest navigation URL.
   ///
   /// This is primarily for debugging and future site isolation policies.
-  pub site_key: Option<SiteKey>,
+  pub renderer_site_key: Option<SiteKey>,
   /// Whether this tab is pinned in the tab strip.
   ///
   /// Invariant (enforced by [`BrowserAppState`]): all pinned tabs are stored contiguously at the
@@ -466,6 +478,9 @@ pub struct BrowserTabState {
   /// pending navigation.
   pub committed_title: Option<String>,
   pub loading: bool,
+  pub crashed: bool,
+  /// Optional crash reason for this tab, sanitized and bounded.
+  pub crash_reason: Option<String>,
   /// Whether the tab is currently considered unresponsive by the browser UI watchdog.
   ///
   /// This is set when `loading == true` but the UI has not observed any `WorkerToUi` messages for
@@ -519,7 +534,7 @@ impl BrowserTabState {
     Self {
       id: tab_id,
       renderer_process: None,
-      site_key,
+      renderer_site_key: site_key,
       pinned: false,
       group: None,
       cancel: CancelGens::new(),
@@ -528,6 +543,8 @@ impl BrowserTabState {
       title: None,
       committed_title: None,
       loading: false,
+      crashed: false,
+      crash_reason: None,
       unresponsive: false,
       last_worker_msg_at: SystemTime::UNIX_EPOCH,
       renderer_crashed: false,
@@ -570,6 +587,92 @@ impl BrowserTabState {
     crate::ui::chrome_loading_progress::chrome_loading_progress(self.loading, self.load_progress)
   }
 
+  fn sanitize_crash_reason(raw: &str) -> Option<String> {
+    if CRASH_REASON_MAX_CHARS == 0 {
+      return None;
+    }
+    let raw = raw.trim();
+    if raw.is_empty() {
+      return None;
+    }
+
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut last_space = false;
+    let mut truncated = false;
+
+    for mut ch in raw.chars() {
+      if ch.is_control() {
+        // Preserve line breaks/tabs as spaces so multi-line panic messages become single-line.
+        if matches!(ch, '\n' | '\r' | '\t') {
+          ch = ' ';
+        } else {
+          continue;
+        }
+      }
+
+      if ch.is_whitespace() {
+        if last_space {
+          continue;
+        }
+        ch = ' ';
+        last_space = true;
+      } else {
+        last_space = false;
+      }
+
+      if count >= CRASH_REASON_MAX_CHARS {
+        truncated = true;
+        break;
+      }
+      out.push(ch);
+      count += 1;
+    }
+
+    let mut out = out.trim().to_string();
+    if out.is_empty() {
+      return None;
+    }
+    if truncated {
+      if CRASH_REASON_MAX_CHARS == 1 {
+        return Some("…".to_string());
+      }
+      let max_without_ellipsis = CRASH_REASON_MAX_CHARS - 1;
+      if out.chars().count() > max_without_ellipsis {
+        out = out.chars().take(max_without_ellipsis).collect();
+        out = out.trim_end().to_string();
+      }
+      out.push('…');
+      Some(out)
+    } else {
+      Some(out)
+    }
+  }
+
+  pub fn mark_crashed(&mut self, reason: impl Into<String>) {
+    let reason = reason.into();
+    let sanitized = Self::sanitize_crash_reason(&reason);
+
+    self.crashed = true;
+    self.crash_reason = sanitized.clone();
+    self.loading = false;
+    self.unresponsive = false;
+    self.warning = None;
+    self.error = Some(match sanitized.as_deref() {
+      Some(reason) => format!("Tab crashed: {reason}"),
+      None => "Tab crashed".to_string(),
+    });
+
+    // Clear transient per-load state.
+    self.stage = None;
+    self.clear_load_progress();
+    self.hovered_url = None;
+    self.cursor = CursorKind::Default;
+    self.find = FindInPageState::default();
+    self.scroll_metrics = None;
+    self.latest_frame_meta = None;
+  }
+
   /// Validate + normalize an address-bar navigation and produce a `UiToWorker::Navigate` message.
   ///
   /// This applies a scheme allowlist for typed URLs (http/https/file/about), rejecting
@@ -601,6 +704,8 @@ impl BrowserTabState {
     };
     validate_user_navigation_url_scheme(&normalized)?;
 
+    self.crashed = false;
+    self.crash_reason = None;
     self.current_url = Some(normalized.clone());
     self.loading = true;
     self.unresponsive = false;
@@ -669,8 +774,9 @@ pub struct ClosedTabState {
 #[cfg(test)]
 mod tab_tests {
   use super::BrowserTabState;
+  use crate::render_control::StageHeartbeat;
   use crate::ui::messages::{NavigationReason, UiToWorker};
-  use crate::ui::TabId;
+  use crate::ui::{CursorKind, TabId};
 
   #[test]
   fn typed_javascript_url_is_rejected() {
@@ -763,6 +869,61 @@ mod tab_tests {
     );
     assert_eq!(tab.error, None);
     assert!(tab.loading);
+  }
+
+  #[test]
+  fn mark_crashed_sets_flags_and_clears_load_state() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    tab.loading = true;
+    tab.stage = Some(StageHeartbeat::DomParse);
+    tab.load_stage = Some(StageHeartbeat::DomParse);
+    tab.load_progress = Some(0.5);
+    tab.warning = Some("warning".to_string());
+    tab.hovered_url = Some("https://example.com/".to_string());
+    tab.cursor = CursorKind::Pointer;
+    tab.find.open = true;
+
+    tab.mark_crashed("panic!\nbacktrace…");
+
+    assert!(tab.crashed);
+    assert!(!tab.loading);
+    assert_eq!(tab.stage, None);
+    assert_eq!(tab.load_stage, None);
+    assert_eq!(tab.load_progress, None);
+    assert_eq!(tab.warning, None);
+    assert_eq!(tab.hovered_url, None);
+    assert_eq!(tab.cursor, CursorKind::Default);
+    assert!(!tab.find.open);
+    assert!(
+      tab.error.as_deref().is_some_and(|err| err.contains("Tab crashed")),
+      "expected crash error message, got {:?}",
+      tab.error
+    );
+    assert!(
+      tab.crash_reason.as_deref().is_some_and(|r| !r.contains('\n')),
+      "expected sanitized crash reason, got {:?}",
+      tab.crash_reason
+    );
+  }
+
+  #[test]
+  fn mark_crashed_sanitizes_and_bounds_reason() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    let long = format!(
+      "line1\n{}\u{0000}line2",
+      "a".repeat(super::CRASH_REASON_MAX_CHARS + 50)
+    );
+    tab.mark_crashed(long);
+
+    let reason = tab.crash_reason.clone().expect("reason should be present");
+    assert!(!reason.contains('\n'));
+    assert!(!reason.contains('\u{0000}'));
+    assert!(
+      reason.chars().count() <= super::CRASH_REASON_MAX_CHARS,
+      "expected reason <= {} chars, got {}",
+      super::CRASH_REASON_MAX_CHARS,
+      reason.chars().count()
+    );
   }
 }
 
@@ -1202,7 +1363,7 @@ impl BrowserAppState {
       return false;
     };
     tab.renderer_process = Some(process_id);
-    tab.site_key = site_key;
+    tab.renderer_site_key = site_key;
     true
   }
 
@@ -1973,6 +2134,8 @@ impl BrowserAppState {
     self.chrome.address_bar_text = normalized.clone();
 
     if let Some(tab) = self.tab_mut(tab_id) {
+      tab.crashed = false;
+      tab.crash_reason = None;
       tab.current_url = Some(normalized.clone());
       tab.loading = true;
       tab.unresponsive = false;
@@ -2125,6 +2288,11 @@ impl BrowserAppState {
 
         if pixmap_nonzero && pixmap_within_limits && viewport_nonzero && dims_match {
           if let Some(tab) = self.tab_mut(tab_id) {
+            if tab.crashed {
+              tab.crashed = false;
+              tab.crash_reason = None;
+              tab.error = None;
+            }
             tab.scroll_state = scroll_state;
             tab.scroll_metrics = Some(scroll_metrics);
             tab.latest_frame_meta = Some(LatestFrameMeta {
@@ -2233,6 +2401,11 @@ impl BrowserAppState {
       }
       WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.tab_mut(tab_id) {
+          if tab.crashed {
+            tab.crashed = false;
+            tab.crash_reason = None;
+            tab.error = None;
+          }
           tab.stage = Some(stage);
           tab.update_load_progress_for_stage(stage);
           update.request_redraw = true;
@@ -2249,7 +2422,9 @@ impl BrowserAppState {
             .map(|url| SiteKey::from_url(&url))
         };
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.site_key = site_key;
+          tab.crashed = false;
+          tab.crash_reason = None;
+          tab.renderer_site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
             tab.current_url = Some(url.clone());
           }
@@ -2323,7 +2498,9 @@ impl BrowserAppState {
           self.visited.record_visit(normalized_about, safe_title.clone());
         }
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.site_key = site_key;
+          tab.crashed = false;
+          tab.crash_reason = None;
+          tab.renderer_site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
             tab.current_url = Some(url.clone());
             tab.committed_url = Some(url.clone());
@@ -2367,7 +2544,9 @@ impl BrowserAppState {
         };
         // Do not record failed navigations in global omnibox history.
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.site_key = site_key;
+          tab.crashed = false;
+          tab.crash_reason = None;
+          tab.renderer_site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
             tab.current_url = Some(url.clone());
           }
@@ -2644,7 +2823,7 @@ mod browser_app_tests {
   fn newly_created_tabs_have_no_renderer_process_until_assigned() {
     let tab = BrowserTabState::new(TabId(1_000_000), about_pages::ABOUT_NEWTAB.to_string());
     assert_eq!(tab.renderer_process, None);
-    assert_eq!(tab.site_key, None);
+    assert_eq!(tab.renderer_site_key, None);
   }
 
   #[test]
@@ -2669,7 +2848,10 @@ mod browser_app_tests {
     let pid_a = RendererProcessId::new(10);
     assert!(app.set_tab_renderer(a, pid_a, Some(site("https://a.test"))));
     assert_eq!(app.tab_renderer(a), Some(pid_a));
-    assert_eq!(app.tab(a).unwrap().site_key, Some(site("https://a.test")));
+    assert_eq!(
+      app.tab(a).unwrap().renderer_site_key,
+      Some(site("https://a.test"))
+    );
     assert_eq!(app.tab_renderer(b), None);
 
     // Missing tab id should not mutate existing tabs.
@@ -2680,9 +2862,12 @@ mod browser_app_tests {
       Some(site("https://missing.test"))
     ));
     assert_eq!(app.tab_renderer(a), Some(pid_a));
-    assert_eq!(app.tab(a).unwrap().site_key, Some(site("https://a.test")));
+    assert_eq!(
+      app.tab(a).unwrap().renderer_site_key,
+      Some(site("https://a.test"))
+    );
     assert_eq!(app.tab_renderer(b), None);
-    assert_eq!(app.tab(b).unwrap().site_key, None);
+    assert_eq!(app.tab(b).unwrap().renderer_site_key, None);
   }
 
   #[test]
@@ -3052,7 +3237,7 @@ mod browser_app_tests {
 
     let tab = app.active_tab().unwrap();
     let expected = SiteKey::from_url(&Url::parse("https://example.com/").unwrap());
-    assert_eq!(tab.site_key, Some(expected));
+    assert_eq!(tab.renderer_site_key, Some(expected));
 
     app.apply_worker_msg(WorkerToUi::NavigationCommitted {
       tab_id,
@@ -3063,7 +3248,7 @@ mod browser_app_tests {
     });
 
     let tab = app.active_tab().unwrap();
-    assert_eq!(tab.site_key, None);
+    assert_eq!(tab.renderer_site_key, None);
   }
 
   #[test]

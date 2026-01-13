@@ -15698,13 +15698,25 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           if self.browser_state.tab(tab_id).is_none() {
             continue;
           }
+          let was_crashed = self
+            .browser_state
+            .tab(tab_id)
+            .is_some_and(|tab| tab.crashed);
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+            tab.crashed = false;
+            tab.crash_reason = None;
             tab.loading = true;
             tab.unresponsive = false;
             tab.last_worker_msg_at = std::time::SystemTime::now();
             tab.error = None;
             tab.stage = None;
             tab.title = None;
+          }
+          if was_crashed {
+            self.pending_frame_uploads.remove_tab(tab_id);
+            if let Some(tex) = self.tab_textures.remove(&tab_id) {
+              tex.destroy(&mut self.egui_renderer);
+            }
           }
           let _ = self.send_worker_msg(UiToWorker::Reload { tab_id });
         }
@@ -15836,13 +15848,25 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
+          let was_crashed = self
+            .browser_state
+            .tab(tab_id)
+            .is_some_and(|tab| tab.crashed);
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+            tab.crashed = false;
+            tab.crash_reason = None;
             tab.loading = true;
             tab.unresponsive = false;
             tab.last_worker_msg_at = std::time::SystemTime::now();
             tab.error = None;
             tab.stage = None;
             tab.title = None;
+          }
+          if was_crashed {
+            self.pending_frame_uploads.remove_tab(tab_id);
+            if let Some(tex) = self.tab_textures.remove(&tab_id) {
+              tex.destroy(&mut self.egui_renderer);
+            }
           }
 
           let _ = self.send_worker_msg(UiToWorker::Reload { tab_id });
@@ -16549,6 +16573,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       ctx.request_repaint_after(next_check);
     }
 
+    let mut crash_reload_requested = false;
     let central_response = egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
 
@@ -16585,6 +16610,49 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         ui.label("No active tab.");
         return;
       };
+
+      let (tab_crashed, crash_reason) = self
+        .browser_state
+        .tab(active_tab)
+        .map(|tab| (tab.crashed, tab.crash_reason.clone()))
+        .unwrap_or((false, None));
+
+      if tab_crashed {
+        // The page renderer crashed. Prevent forwarding any further input into the page and clear
+        // any page-scoped overlays so the user sees a deterministic crash surface.
+        self.page_has_focus = false;
+        self.cursor_in_page = false;
+        self.pending_pointer_move = None;
+        self.cancel_select_dropdown();
+        self.cancel_date_time_picker();
+        self.cancel_file_picker();
+        self.cancel_scrollbar_drag();
+        self.cancel_pointer_capture();
+        self.close_context_menu();
+        if let Some(tab) = self.browser_state.tab_mut(active_tab) {
+          tab.hovered_url = None;
+          tab.cursor = fastrender::ui::CursorKind::Default;
+        }
+
+        let rect = ui.available_rect_before_wrap();
+        ui.allocate_ui_at_rect(rect, |ui| {
+          ui.with_layout(
+            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+            |ui| {
+              ui.spacing_mut().item_spacing.y = 12.0;
+              ui.label(egui::RichText::new("Tab crashed").strong().size(18.0));
+              ui.label(egui::RichText::new("The tab has crashed and cannot be displayed.").small());
+              if let Some(reason) = crash_reason.as_deref().filter(|s| !s.trim().is_empty()) {
+                ui.label(egui::RichText::new(reason).small());
+              }
+              if ui.button("Reload").clicked() {
+                crash_reload_requested = true;
+              }
+            },
+          );
+        });
+        return;
+      }
 
       // Best-effort popup UX: when a native wheel scroll happens outside an open picker/dropdown,
       // close it (matching typical browser behaviour).
@@ -17252,6 +17320,12 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     });
 
     self.content_rect_points = Some(central_response.response.rect);
+    if crash_reload_requested {
+      session_dirty |= self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::Reload]);
+      // Chrome UI was already drawn this frame; request another redraw so the toolbar reflects the
+      // updated loading state immediately.
+      self.window.request_redraw();
+    }
 
     let now = std::time::Instant::now();
     self.sync_tab_notifications(now);
