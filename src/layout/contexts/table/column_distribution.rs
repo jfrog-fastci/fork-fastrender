@@ -1695,12 +1695,18 @@ mod tests {
   #[test]
   fn percentage_columns_ignore_content_max_without_cap() {
     // Content-based max widths should not cap percentages unless an authored cap exists.
-    let columns = vec![ColumnConstraints::percentage(50.0, 5.0, 20.0)];
+    // Use two 50% columns so the percentage widths fully account for the available width, avoiding
+    // fixed-layout slack distribution and isolating the max-width clamp behaviour.
+    let columns = vec![
+      ColumnConstraints::percentage(50.0, 5.0, 20.0),
+      ColumnConstraints::percentage(50.0, 5.0, 500.0),
+    ];
     let distributor = ColumnDistributor::new(DistributionMode::Fixed);
 
     let result = distributor.distribute(&columns, 100.0);
     // 50% of 100 is 50; since no authored cap is present, the content max of 20 should not clamp.
     assert!((result.widths[0] - 50.0).abs() < 0.01);
+    assert!((result.widths[1] - 50.0).abs() < 0.01);
   }
 
   #[test]

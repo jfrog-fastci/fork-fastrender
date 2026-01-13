@@ -184,49 +184,58 @@ const ABOUT_SHARED_CSS_MARKER: &str = "FASTR_ABOUT_SHARED_CSS";
 const ABOUT_SHARED_CSS: &str = r#"/* FASTR_ABOUT_SHARED_CSS */
 :root {
   color-scheme: light dark;
+  --about-bg: rgb(250, 250, 252);
+  --about-bg-grad1: rgba(37, 99, 235, 0.10);
+  --about-bg-grad2: rgba(16, 185, 129, 0.08);
+  --about-text: rgb(15, 23, 42);
+  --about-muted: rgba(15, 23, 42, 0.78);
+  --about-accent: rgb(37, 99, 235);
+  --about-accent-bg: rgba(37, 99, 235, 0.14);
+  --about-accent-border: rgba(37, 99, 235, 0.42);
+  --about-border: rgba(15, 23, 42, 0.16);
+  --about-border-strong: rgba(15, 23, 42, 0.24);
+  --about-surface: rgba(255, 255, 255, 0.70);
+  --about-surface-2: rgba(255, 255, 255, 0.55);
+  --about-surface-strong: var(--about-surface-2);
+  --about-surface-hover: rgba(15, 23, 42, 0.07);
+  --about-code-bg: rgba(15, 23, 42, 0.08);
+  --about-code-border: rgba(15, 23, 42, 0.12);
+  --about-focus: rgba(37, 99, 235, 0.55);
+  --about-focus-ring: var(--about-focus);
+  --about-shadow: 0 18px 60px rgba(0, 0, 0, 0.12);
   --about-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
-  --about-surface: rgba(127,127,127,0.06);
-  --about-surface-strong: rgba(127,127,127,0.08);
-  --about-surface-hover: rgba(127,127,127,0.12);
-  --about-border: rgba(127,127,127,0.25);
-  --about-border-strong: rgba(127,127,127,0.35);
-  --about-focus: rgba(10, 132, 255, 0.65);
-  --about-accent-border: rgba(10, 132, 255, 0.55);
-  --about-accent-bg: rgba(10, 132, 255, 0.18);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --about-bg: rgb(8, 12, 20);
+    --about-bg-grad1: rgba(59, 130, 246, 0.20);
+    --about-bg-grad2: rgba(16, 185, 129, 0.13);
+    --about-text: rgb(229, 231, 235);
+    --about-muted: rgba(229, 231, 235, 0.78);
+    --about-accent: rgb(96, 165, 250);
+    --about-accent-bg: rgba(96, 165, 250, 0.20);
+    --about-accent-border: rgba(96, 165, 250, 0.44);
+    --about-border: rgba(255, 255, 255, 0.16);
+    --about-border-strong: rgba(255, 255, 255, 0.24);
+    --about-surface: rgba(255, 255, 255, 0.06);
+    --about-surface-2: rgba(255, 255, 255, 0.08);
+    --about-surface-hover: rgba(255, 255, 255, 0.10);
+    --about-code-bg: rgba(255, 255, 255, 0.12);
+    --about-code-border: rgba(255, 255, 255, 0.14);
+    --about-focus: rgba(96, 165, 250, 0.62);
+    --about-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  }
 }
 body {
   margin: 0;
   padding: 32px 18px;
   font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+  color: var(--about-text);
   background:
-    radial-gradient(900px circle at 20% 0%, var(--about-accent-bg), transparent 45%),
-    radial-gradient(900px circle at 80% 20%, rgba(127,127,127,0.10), transparent 45%),
-    rgba(127,127,127,0.04);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --about-surface: rgba(255,255,255,0.06);
-    --about-surface-strong: rgba(255,255,255,0.08);
-    --about-surface-hover: rgba(255,255,255,0.12);
-    --about-border: rgba(255,255,255,0.20);
-    --about-border-strong: rgba(255,255,255,0.30);
-  }
-  body {
-    color: rgba(255,255,255,0.92);
-    background:
-      radial-gradient(900px circle at 20% 0%, var(--about-accent-bg), transparent 45%),
-      radial-gradient(900px circle at 80% 20%, rgba(255,255,255,0.06), transparent 45%),
-      rgba(0,0,0,0.88);
-  }
-  code, kbd {
-    background: rgba(255,255,255,0.16);
-  }
-  .about-card {
-    border-color: rgba(255,255,255,0.14);
-    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
-  }
+    radial-gradient(900px circle at 20% 0%, var(--about-bg-grad1), transparent 45%),
+    radial-gradient(900px circle at 80% 20%, var(--about-bg-grad2), transparent 45%),
+    var(--about-bg);
 }
 h1 { font-size: 20px; margin: 0 0 12px; letter-spacing: -0.01em; }
 h2 { font-size: 16px; margin: 18px 0 8px; }
@@ -236,7 +245,8 @@ code, kbd {
   font-family: var(--about-mono);
   padding: 0.1em 0.3em;
   border-radius: 6px;
-  background: rgba(127,127,127,0.2);
+  background: var(--about-code-bg);
+  border: 1px solid var(--about-code-border);
 }
 table { border-collapse: collapse; }
 td { padding: 4px 10px 4px 0; vertical-align: top; }
@@ -288,15 +298,15 @@ button:focus {
   background: var(--about-accent-bg);
 }
 .about-nav a[aria-current="page"] {
-  border-color: rgba(127,127,127,0.42);
-  background: rgba(127,127,127,0.14);
+  border-color: var(--about-border);
+  background: var(--about-surface-hover);
 }
 
 .about-card {
-  border: 1px solid rgba(127,127,127,0.18);
+  border: 1px solid var(--about-border);
   border-radius: 16px;
   background: var(--about-surface);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--about-shadow);
   padding: 20px;
 }
 
@@ -306,8 +316,8 @@ button:focus {
   margin-top: 16px;
   padding: 12px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(127,127,127,0.25);
-  background: rgba(127,127,127,0.10);
+  border: 1px solid var(--about-border);
+  background: var(--about-surface-2);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -317,8 +327,8 @@ button:focus {
   font-size: 12px;
   padding: 2px 7px;
   border-radius: 8px;
-  border: 1px solid rgba(127,127,127,0.25);
-  background: rgba(127,127,127,0.08);
+  border: 1px solid var(--about-border);
+  background: var(--about-surface);
   color: inherit;
 }
 .about-actions {
@@ -336,20 +346,20 @@ a.about-tile {
   border-radius: 12px;
   padding: 12px 14px;
 }
-a.about-tile:hover { background: rgba(127,127,127,0.10); }
+a.about-tile:hover { background: var(--about-surface-hover); }
 .about-tile .label { font-weight: 650; margin: 0 0 4px; }
 .about-tile .url {
   font-family: var(--about-mono);
   font-size: 12px;
-  opacity: 0.82;
+  color: var(--about-muted);
 }
 .about-tip {
   margin-top: 18px;
   font-size: 13px;
-  opacity: 0.82;
+  color: var(--about-muted);
 }
 
-a { text-underline-offset: 2px; }
+a { color: var(--about-accent); text-underline-offset: 2px; }
 "#;
 
 fn about_shared_css() -> &'static str {
@@ -582,6 +592,9 @@ fn newtab_html() -> String {
   const MAX_HISTORY: usize = 12;
 
   let snapshot = about_page_snapshot();
+  let omnibox_modifier = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+  use std::fmt::Write;
+
   let search_form = search_form_config_from_template(DEFAULT_SEARCH_ENGINE_TEMPLATE).unwrap_or(
     SearchFormConfig {
       action: "https://duckduckgo.com/".to_string(),
@@ -595,13 +608,11 @@ fn newtab_html() -> String {
   for (key, value) in search_form.hidden_inputs.into_iter() {
     let safe_key = escape_html(&key);
     let safe_value = escape_html(&value);
-    use std::fmt::Write;
     let _ = write!(
       hidden_inputs_html,
       r#"<input type="hidden" name="{safe_key}" value="{safe_value}">"#
     );
   }
-  use std::fmt::Write;
 
   let mut bookmark_tiles = String::new();
   let mut bookmark_count = 0usize;
@@ -743,7 +754,7 @@ fn newtab_html() -> String {
       </form>
 
       <div class="about-hint" role="note">
-        <span class="about-kbd">Ctrl</span>
+        <span class="about-kbd">{omnibox_modifier}</span>
         <span class="about-kbd">L</span>
         <span>Type to search or enter a URL</span>
       </div>
@@ -790,7 +801,8 @@ fn newtab_html() -> String {
       history_body = history_body,
       safe_search_action = safe_search_action,
       safe_search_param = safe_search_param,
-      hidden_inputs_html = hidden_inputs_html
+      hidden_inputs_html = hidden_inputs_html,
+      omnibox_modifier = omnibox_modifier,
     ),
     r#"
 .about-search {
@@ -991,32 +1003,41 @@ fn matches_search_tokens(url: &str, title: Option<&str>, tokens: &[&str]) -> boo
 }
 
 const ABOUT_SEARCH_PAGE_CSS: &str = r#"
-.sub { opacity: 0.82; margin: 0 0 14px; }
+.sub { color: var(--about-muted); margin: 0 0 14px; }
 .search { display: flex; gap: 8px; margin: 0 0 18px; flex-wrap: wrap; }
 .search input {
   flex: 1;
   min-width: min(420px, 100%);
   padding: 8px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(127,127,127,0.35);
-  background: rgba(127,127,127,0.06);
+  border: 1px solid var(--about-border);
+  background: var(--about-surface-2);
   color: inherit;
   font: inherit;
 }
+.search input:focus {
+  outline: 3px solid var(--about-focus-ring);
+  outline-offset: 2px;
+}
+.search input::placeholder {
+  color: var(--about-muted);
+  opacity: 0.9;
+}
 .search button { cursor: pointer; }
 
+.empty { color: var(--about-muted); }
 .list {
   list-style: none;
   padding: 0;
   margin: 0;
   border-radius: 14px;
-  border: 1px solid rgba(127,127,127,0.28);
+  border: 1px solid var(--about-border);
   overflow: hidden;
 }
-.item { padding: 10px 12px; border-bottom: 1px solid rgba(127,127,127,0.22); }
+.item { padding: 10px 12px; border-bottom: 1px solid var(--about-border); }
 .item:last-child { border-bottom: none; }
 .title { font-weight: 650; }
-.url { margin-top: 4px; font-size: 12px; opacity: 0.82; }
+.url { margin-top: 4px; font-size: 12px; color: var(--about-muted); }
 code { word-break: break-all; }
 "#;
 
@@ -1553,6 +1574,29 @@ mod tests {
     assert!(
       html.contains(&format!("name=\"{query_param}\"")),
       "expected about:newtab HTML to include an <input> with name={query_param:?}, got: {html}"
+    );
+  }
+
+  #[test]
+  fn about_shared_css_includes_dark_mode_overrides() {
+    let css = about_shared_css();
+    assert!(
+      css.contains("prefers-color-scheme: dark"),
+      "expected shared about-page CSS to include a dark-mode media query"
+    );
+  }
+
+  #[test]
+  fn newtab_keyboard_hint_uses_platform_correct_modifier() {
+    let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
+    let expected = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+    assert!(
+      html.contains(&format!("<span class=\"about-kbd\">{expected}</span>")),
+      "expected about:newtab to contain platform modifier key hint {expected}, got: {html}"
+    );
+    assert!(
+      html.contains("<span class=\"about-kbd\">L</span>"),
+      "expected about:newtab to contain L key hint, got: {html}"
     );
   }
 

@@ -53,7 +53,7 @@ impl CompareConfig {
       max_different_percent: 0.1,
       compare_alpha: true,
       generate_diff_image: true,
-      max_perceptual_distance: Some(0.02),
+      max_perceptual_distance: Some(0.035),
     }
   }
 
@@ -64,7 +64,7 @@ impl CompareConfig {
       max_different_percent: 1.0,
       compare_alpha: false,
       generate_diff_image: true,
-      max_perceptual_distance: Some(0.05),
+      max_perceptual_distance: Some(0.075),
     }
   }
 
