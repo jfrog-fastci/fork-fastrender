@@ -919,3 +919,7 @@ pub unsafe fn vpx_codec_dec_init(
 ) -> vpx_codec_err_t {
     vpx_codec_dec_init_ver(ctx, iface, cfg, flags, VPX_DECODER_ABI_VERSION)
 }
+
+pub mod vp9_decoder;
+
+pub use vp9_decoder::{MediaError, Vp9Decoder, Vp9Frame};

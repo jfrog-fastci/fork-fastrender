@@ -114,6 +114,7 @@ Alternatively, link against a system-provided libvpx.",
         // code (and C++ sources) by default.
         "--enable-vp8-decoder",
         "--enable-vp9-decoder",
+        "--enable-vp9-highbitdepth",
         "--disable-vp8-encoder",
         "--disable-vp9-encoder",
         "--disable-webm-io",
