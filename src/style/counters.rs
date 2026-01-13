@@ -408,6 +408,23 @@ impl CounterManager {
   /// Counters reset in this scope will shadow any counters with the same name
   /// in parent scopes.
   pub fn enter_scope(&mut self) {
+    // The counter manager should always keep at least one root scope, but avoid panicking if the
+    // internal stack is corrupted (e.g. via a bug in traversal code).
+    if self.scopes.is_empty() {
+      debug_assert!(false, "counter scope stack unexpectedly empty");
+      self.scopes.push(CounterScope::new());
+      // Keep `new_with_styles` behavior consistent when recovering.
+      if let Some(root) = self.scopes.first_mut() {
+        root.counters.insert("footnote".to_string(), 0);
+      }
+      self.style_containment_roots.clear();
+      self.list_item_increments.clear();
+      self.list_item_increments.push(1);
+    } else if self.list_item_increments.is_empty() {
+      debug_assert!(false, "list-item increment stack unexpectedly empty");
+      self.list_item_increments.push(1);
+    }
+
     self.scopes.push(CounterScope::new());
     // Inherit the current list-item increment for the new scope
     let inherited = *self.list_item_increments.last().unwrap_or(&1);
@@ -444,6 +461,16 @@ impl CounterManager {
     self.enter_scope();
     let Some(idx) = self.scopes.len().checked_sub(1) else {
       debug_assert!(false, "enter_scope always leaves at least one scope");
+      // In release builds, recover a root scope so callers can continue without panicking.
+      if self.scopes.is_empty() {
+        self.scopes.push(CounterScope::new());
+        if let Some(root) = self.scopes.first_mut() {
+          root.counters.insert("footnote".to_string(), 0);
+        }
+      }
+      if self.list_item_increments.is_empty() {
+        self.list_item_increments.push(1);
+      }
       return;
     };
     self.style_containment_roots.push(idx);
@@ -1286,6 +1313,33 @@ mod tests {
     manager.leave_scope();
     manager.leave_scope();
     assert_eq!(manager.depth(), 1); // Still have root scope
+  }
+
+  #[test]
+  fn test_manager_style_containment_nested_and_empty_stack() {
+    let mut manager = CounterManager::new();
+    // Nested enter/exit around style containment should leave the manager in a consistent state.
+    manager.enter_scope();
+    manager.enter_style_containment();
+    manager.enter_scope();
+    manager.leave_scope();
+    manager.leave_style_containment();
+    manager.leave_scope();
+    assert_eq!(manager.depth(), 1);
+
+    // Simulate a corrupted internal state where the scope stack is empty. This should not panic
+    // and should recover a root scope.
+    manager.scopes.clear();
+    manager.list_item_increments.clear();
+    manager.style_containment_roots.clear();
+
+    manager.enter_style_containment();
+    assert_eq!(manager.depth(), 2); // recovered root + containment scope
+    assert_eq!(manager.style_containment_roots.len(), 1);
+
+    manager.leave_style_containment();
+    assert_eq!(manager.depth(), 1);
+    assert!(manager.style_containment_roots.is_empty());
   }
 
   #[test]

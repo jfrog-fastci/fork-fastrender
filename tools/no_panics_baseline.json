@@ -1,5 +1,47 @@
 [
   {
+    "path": "src/accessibility/accesskit.rs",
+    "kind": "expect",
+    "line": "NodeId(NonZeroU128::new(raw).expect(\"node id counter must never be zero\"))",
+    "count": 1
+  },
+  {
+    "path": "src/accessibility/accesskit_tree.rs",
+    "kind": "expect",
+    "line": "NodeId(NonZeroU128::new(raw).expect(\"node id must be non-zero\"))",
+    "count": 1
+  },
+  {
+    "path": "src/accesskit_integration.rs",
+    "kind": "expect",
+    "line": ".expect(\"DOM traversal should have assigned a preorder id\");",
+    "count": 1
+  },
+  {
+    "path": "src/accesskit_integration.rs",
+    "kind": "expect",
+    "line": ".expect(\"root DOM node should have a preorder id\");",
+    "count": 1
+  },
+  {
+    "path": "src/accesskit_integration.rs",
+    "kind": "expect",
+    "line": "let children = children_stack.pop().expect(\"children stack should align\");",
+    "count": 1
+  },
+  {
+    "path": "src/accesskit_integration.rs",
+    "kind": "expect",
+    "line": "let finished = stack.pop().expect(\"frame exists\");",
+    "count": 1
+  },
+  {
+    "path": "src/accesskit_integration.rs",
+    "kind": "panic",
+    "line": ".unwrap_or_else(|| panic!(\"preorder id must be non-zero (got {preorder_id})\")),",
+    "count": 1
+  },
+  {
     "path": "src/api.rs",
     "kind": "expect",
     "line": ".expect(\"build intrinsic probe pool\");",
@@ -21,7 +63,31 @@
     "path": "src/api/browser_document_dom2.rs",
     "kind": "expect",
     "line": ".expect(\"prepared exists when can_incremental_relayout=true\");",
-    "count": 3
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_tab.rs",
+    "kind": "expect",
+    "line": ".expect(\"set_script_already_started should succeed for <script>\");",
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_tab.rs",
+    "kind": "expect",
+    "line": ".expect(\"set_script_force_async should succeed for <script>\");",
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_tab.rs",
+    "kind": "expect",
+    "line": ".expect(\"set_script_parser_document should succeed for <script>\");",
+    "count": 1
+  },
+  {
+    "path": "src/bin/browser.rs",
+    "kind": "expect",
+    "line": ".expect(\"non-empty bookmark dirty list\");",
+    "count": 1
   },
   {
     "path": "src/bin/browser.rs",
@@ -33,6 +99,48 @@
     "path": "src/bin/browser.rs",
     "kind": "expect",
     "line": ".expect(\"tab exists (checked above)\");",
+    "count": 1
+  },
+  {
+    "path": "src/bin/browser.rs",
+    "kind": "unreachable",
+    "line": "CursorKind::Hidden => unreachable!(\"handled above\"),",
+    "count": 1
+  },
+  {
+    "path": "src/bin/macos_sandbox_probe/probe.rs",
+    "kind": "expect",
+    "line": ".expect(\"embedded fallback contains no NUL bytes\");",
+    "count": 1
+  },
+  {
+    "path": "src/bin/macos_sandbox_probe/probe.rs",
+    "kind": "expect",
+    "line": "let post_name = CString::new(post_name).expect(\"generated shm name contains no NUL\");",
+    "count": 1
+  },
+  {
+    "path": "src/bin/macos_sandbox_probe/probe.rs",
+    "kind": "expect",
+    "line": "let pre_name = CString::new(pre_name).expect(\"generated shm name contains no NUL\");",
+    "count": 1
+  },
+  {
+    "path": "src/bin/sandbox_exec_stdio_ipc_child.rs",
+    "kind": "expect",
+    "line": "stdin.read_line(&mut line).expect(\"read line from stdin\");",
+    "count": 1
+  },
+  {
+    "path": "src/bin/sandbox_exec_stdio_ipc_child.rs",
+    "kind": "expect",
+    "line": "stdout.flush().expect(\"flush stdout\");",
+    "count": 1
+  },
+  {
+    "path": "src/bin/sandbox_exec_stdio_ipc_child.rs",
+    "kind": "expect",
+    "line": "writeln!(stdout, \"{stdout_sentinel}\").expect(\"write stdout sentinel\");",
     "count": 1
   },
   {
@@ -66,10 +174,58 @@
     "count": 1
   },
   {
+    "path": "src/html/streaming_parser.rs",
+    "kind": "expect",
+    "line": ".expect(\"set_script_force_async should succeed for <script>\");",
+    "count": 1
+  },
+  {
+    "path": "src/html/streaming_parser.rs",
+    "kind": "expect",
+    "line": ".expect(\"set_script_parser_document should succeed for <script>\");",
+    "count": 1
+  },
+  {
     "path": "src/image_loader.rs",
     "kind": "unwrap",
     "line": "guard.as_ref().unwrap().as_result()",
     "count": 2
+  },
+  {
+    "path": "src/ipc/protocol/network.rs",
+    "kind": "panic",
+    "line": "panic!(\"MAX_COOKIE_STRING_BYTES must be <= MAX_IPC_MESSAGE_BYTES\");",
+    "count": 1
+  },
+  {
+    "path": "src/ipc/protocol/network.rs",
+    "kind": "panic",
+    "line": "panic!(\"MAX_URL_BYTES must be <= MAX_IPC_MESSAGE_BYTES\");",
+    "count": 1
+  },
+  {
+    "path": "src/ipc/unix_seqpacket.rs",
+    "kind": "expect",
+    "line": "cmsg_align(mem::size_of::<libc::cmsghdr>()).expect(\"cmsghdr align overflow\")",
+    "count": 1
+  },
+  {
+    "path": "src/ipc/websocket.rs",
+    "kind": "panic",
+    "line": "panic!(\"websocket IPC module contains a forbidden integer token\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/mod.rs",
+    "kind": "expect",
+    "line": ".expect(\"set_script_force_async should succeed for <script>\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/mod.rs",
+    "kind": "expect",
+    "line": ".expect(\"set_script_parser_document should succeed for <script>\");",
+    "count": 1
   },
   {
     "path": "src/js/vmjs/vm_error_format.rs",
@@ -92,8 +248,20 @@
   {
     "path": "src/js/vmjs/window_realm.rs",
     "kind": "expect",
+    "line": "Url::parse(base_str).unwrap_or_else(|_| Url::parse(\"about:blank\").expect(\"about:blank\"));",
+    "count": 1
+  },
+  {
+    "path": "src/js/vmjs/window_realm.rs",
+    "kind": "expect",
     "line": "let f = f.take().expect(\"closure is only taken once\");",
     "count": 2
+  },
+  {
+    "path": "src/js/vmjs/window_realm.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"how validated to 0..=3\"),",
+    "count": 1
   },
   {
     "path": "src/js/vmjs/window_realm.rs",
@@ -105,12 +273,12 @@
     "path": "src/js/vmjs/window_streams.rs",
     "kind": "unreachable",
     "line": "_ => unreachable!(),",
-    "count": 2
+    "count": 3
   },
   {
     "path": "src/js/vmjs/window_websocket.rs",
-    "kind": "unwrap",
-    "line": ".insert(\"Sec-WebSocket-Protocol\", header.parse().unwrap());",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"websocket_send only queues SendText/SendBinary\"),",
     "count": 1
   },
   {
@@ -351,6 +519,162 @@
     "path": "src/layout/taffy_integration/tests/taffy_template_cache_evictions_test.rs",
     "kind": "assert_eq",
     "line": "assert_eq!(",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/drift.rs",
+    "kind": "assert",
+    "line": "assert!(sample_rate_hz > 0);",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/drift.rs",
+    "kind": "assert",
+    "line": "assert!(self.high_watermark_s.is_finite() && self.high_watermark_s >= 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/drift.rs",
+    "kind": "assert",
+    "line": "assert!(self.ki.is_finite() && self.ki >= 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/drift.rs",
+    "kind": "assert",
+    "line": "assert!(self.kp.is_finite() && self.kp >= 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/drift.rs",
+    "kind": "assert",
+    "line": "assert!(self.low_watermark_s.is_finite() && self.low_watermark_s >= 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/drift.rs",
+    "kind": "assert",
+    "line": "assert!(self.max_playback_rate_adjust.is_finite() && self.max_playback_rate_adjust >= 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/drift.rs",
+    "kind": "assert",
+    "line": "assert!(self.max_slew_per_s.is_finite() && self.max_slew_per_s >= 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/drift.rs",
+    "kind": "assert",
+    "line": "assert!(self.target_buffer_s.is_finite() && self.target_buffer_s >= 0.0);",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/mixer.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 2
+  },
+  {
+    "path": "src/media/audio/queue.rs",
+    "kind": "expect",
+    "line": ".expect(\"buffer length overflow\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/queue.rs",
+    "kind": "assert",
+    "line": "assert!(channels > 0, \"channels must be > 0\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/queue.rs",
+    "kind": "assert",
+    "line": "assert!(max_buffered_frames > 0, \"max_buffered_frames must be > 0\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/queue.rs",
+    "kind": "assert",
+    "line": "assert!(sample_rate_hz > 0, \"sample_rate_hz must be > 0\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/timed_queue.rs",
+    "kind": "expect",
+    "line": ".expect(\"frames * channels should not overflow\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/timed_queue.rs",
+    "kind": "expect",
+    "line": "let start_frame = self.cursor_frame.expect(\"cursor_frame initialized\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/timed_queue.rs",
+    "kind": "expect",
+    "line": "let tail = normalized.pop_back().expect(\"last segment exists\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/timed_queue.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/timed_queue.rs",
+    "kind": "assert",
+    "line": "assert!(channels > 0, \"channels must be non-zero\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/audio/timed_queue.rs",
+    "kind": "assert",
+    "line": "assert!(sample_rate > 0, \"sample_rate must be non-zero\");",
+    "count": 1
+  },
+  {
+    "path": "src/media/master_clock.rs",
+    "kind": "unwrap",
+    "line": "let audio_now_nanos = duration_to_nanos_i128(inner.audio.as_ref().unwrap().now());",
+    "count": 2
+  },
+  {
+    "path": "src/media/mp4.rs",
+    "kind": "unwrap",
+    "line": "let v = u16::from_be_bytes(self.data[self.pos..self.pos + 2].try_into().unwrap());",
+    "count": 1
+  },
+  {
+    "path": "src/media/mp4.rs",
+    "kind": "unwrap",
+    "line": "let v = u32::from_be_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());",
+    "count": 1
+  },
+  {
+    "path": "src/media/mp4.rs",
+    "kind": "unwrap",
+    "line": "let v = u64::from_be_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());",
+    "count": 1
+  },
+  {
+    "path": "src/multiprocess/frame_tree.rs",
+    "kind": "expect",
+    "line": ".expect(\"FrameId counter overflow\");",
+    "count": 1
+  },
+  {
+    "path": "src/multiprocess/frame_tree.rs",
+    "kind": "panic",
+    "line": ".unwrap_or_else(|| panic!(\"unknown parent frame id {parent:?}\"));",
+    "count": 2
+  },
+  {
+    "path": "src/network_process/client.rs",
+    "kind": "expect",
+    "line": "try_spawn_network_process(config).expect(\"spawn network process\")",
     "count": 1
   },
   {
@@ -1034,13 +1358,19 @@
   {
     "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
     "kind": "expect",
-    "line": "let border_px = pixmap.pixel(0, 0).expect(\"border pixel in bounds\");",
+    "line": "let bg_px = pixmap.pixel(0, 0).expect(\"pixel in bounds\");",
     "count": 2
   },
   {
     "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
     "kind": "expect",
     "line": "let empty_url = Url::from_file_path(&empty_path).expect(\"file URL\");",
+    "count": 2
+  },
+  {
+    "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
+    "kind": "expect",
+    "line": "let icon_border_px = pixmap.pixel(2, 2).expect(\"icon border pixel in bounds\");",
     "count": 2
   },
   {
@@ -1101,7 +1431,7 @@
     "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
     "kind": "assert_eq",
     "line": "assert_eq!(",
-    "count": 5
+    "count": 7
   },
   {
     "path": "src/paint/display_list_renderer/tests/display_list/missing_image_placeholder.rs",
@@ -1548,6 +1878,12 @@
     "count": 1
   },
   {
+    "path": "src/paint/text_decoration_skip_ink.rs",
+    "kind": "unwrap",
+    "line": "NonZeroUsize::new(UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES).unwrap(),",
+    "count": 1
+  },
+  {
     "path": "src/resource.rs",
     "kind": "expect",
     "line": ".expect(\"failed to build reqwest HTTP client\"),",
@@ -1575,6 +1911,36 @@
     "path": "src/resource/disk_cache_index.rs",
     "kind": "expect",
     "line": "Ok(state.journal_append.as_mut().expect(\"just set\"))",
+    "count": 1
+  },
+  {
+    "path": "src/sandbox/linux_seccomp.rs",
+    "kind": "expect",
+    "line": ".expect(\"seccomp filter length should fit in u16\"),",
+    "count": 1
+  },
+  {
+    "path": "src/sandbox/macos.rs",
+    "kind": "expect",
+    "line": "let key = CString::new(\"HOME\").expect(\"static cstr should not contain NUL\");",
+    "count": 1
+  },
+  {
+    "path": "src/sandbox/macos.rs",
+    "kind": "expect",
+    "line": "let tmpdir_key = CString::new(\"TMPDIR\").expect(\"static cstr should not contain NUL\");",
+    "count": 1
+  },
+  {
+    "path": "src/sandbox/macos_spawn.rs",
+    "kind": "expect",
+    "line": ".expect(\"OnceLock should contain invocation after initialization\"),",
+    "count": 1
+  },
+  {
+    "path": "src/sandbox/windows.rs",
+    "kind": "unwrap",
+    "line": "if let Err(err) = job.as_ref().unwrap().assign_process(h_process) {",
     "count": 1
   },
   {
@@ -1618,6 +1984,24 @@
     "kind": "assert_eq",
     "line": "assert_eq!(chain.len(), 1);",
     "count": 7
+  },
+  {
+    "path": "src/security/macos_renderer_sandbox.rs",
+    "kind": "expect",
+    "line": "let profile_c = CString::new(profile).expect(\"SBPL profile contains interior NUL byte\");",
+    "count": 1
+  },
+  {
+    "path": "src/shm.rs",
+    "kind": "expect",
+    "line": "let name = CStr::from_bytes_with_nul(b\"fastrender-shm\\0\").expect(\"nul-terminated\");",
+    "count": 1
+  },
+  {
+    "path": "src/site_isolation/site_key.rs",
+    "kind": "expect",
+    "line": "origin_from_url(\"file:///\").expect(\"file:/// must be a parseable URL\")",
+    "count": 1
   },
   {
     "path": "src/style/cascade/tests/container_scroll_state_queries_test.rs",
@@ -3054,96 +3438,6 @@
     "count": 1
   },
   {
-    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
-    "kind": "expect",
-    "line": ".expect(\"expected ::placeholder styles to be computed\");",
-    "count": 2
-  },
-  {
-    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
-    "kind": "expect",
-    "line": ".expect(\"parse html\");",
-    "count": 2
-  },
-  {
-    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
-    "kind": "expect",
-    "line": "let input = find_by_id(&styled, \"input\").expect(\"input styled\");",
-    "count": 2
-  },
-  {
-    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
-    "kind": "expect",
-    "line": "parse_stylesheet(\"input::placeholder { color: rgb(11 22 33); }\").expect(\"parse stylesheet\");",
-    "count": 1
-  },
-  {
-    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
-    "kind": "assert_eq",
-    "line": "assert_eq!(placeholder.color, Rgba::rgb(11, 22, 33));",
-    "count": 1
-  },
-  {
-    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
-    "kind": "assert_eq",
-    "line": "assert_eq!(placeholder.color, Rgba::rgb(128, 128, 128));",
-    "count": 1
-  },
-  {
-    "path": "src/style/tests/style/user_agent_placeholder_pseudo_test.rs",
-    "kind": "assert_eq",
-    "line": "assert_eq!(placeholder.opacity, 1.0);",
-    "count": 2
-  },
-  {
-    "path": "src/text/color_fonts/mod.rs",
-    "kind": "unwrap",
-    "line": "NonZeroUsize::new(size.max(1)).unwrap()",
-    "count": 1
-  },
-  {
-    "path": "src/text/color_fonts/svg.rs",
-    "kind": "unwrap",
-    "line": "let re = CONTEXT_RE.get_or_init(|| Regex::new(\"(?i)context-(fill|stroke)\").unwrap());",
-    "count": 1
-  },
-  {
-    "path": "src/text/face_cache.rs",
-    "kind": "unwrap",
-    "line": "let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();",
-    "count": 2
-  },
-  {
-    "path": "src/text/font_db.rs",
-    "kind": "expect",
-    "line": "let face_info = self.db.face(id).expect(\"Font should exist\");",
-    "count": 1
-  },
-  {
-    "path": "src/text/font_db.rs",
-    "kind": "unwrap",
-    "line": "let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/text/font_fallback.rs",
-    "kind": "unwrap",
-    "line": "let shard_capacity = NonZeroUsize::new(shard_capacity.max(1)).unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/text/font_loader.rs",
-    "kind": "unwrap",
-    "line": "NonZeroUsize::new(SCALED_METRICS_CACHE_SIZE).unwrap(),",
-    "count": 1
-  },
-  {
-    "path": "src/text/pipeline.rs",
-    "kind": "unwrap",
-    "line": "let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();",
-    "count": 1
-  },
-  {
     "path": "src/tree/anonymous.rs",
     "kind": "expect",
     "line": ".expect(\"first_split_idx should point at an in-bounds child\");",
@@ -3186,12 +3480,6 @@
     "count": 1
   },
   {
-    "path": "src/tree/box_generation_demo.rs",
-    "kind": "unwrap",
-    "line": "let text = node.text.as_ref().unwrap().clone();",
-    "count": 1
-  },
-  {
     "path": "src/tree/fragment_tree.rs",
     "kind": "expect",
     "line": ".expect(\"at least one fragment root required\");",
@@ -3210,9 +3498,21 @@
     "count": 1
   },
   {
+    "path": "src/ui/bookmarks_manager.rs",
+    "kind": "expect",
+    "line": ".expect(\"list cache present when not rebuilding\")",
+    "count": 1
+  },
+  {
     "path": "src/ui/browser_app.rs",
     "kind": "expect",
     "line": "let group_id = left.expect(\"checked is_some above\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/browser_app.rs",
+    "kind": "unwrap",
+    "line": "let url = safe_url.as_ref().unwrap();",
     "count": 1
   },
   {
@@ -3228,9 +3528,45 @@
     "count": 1
   },
   {
+    "path": "src/ui/chrome_frame/template.rs",
+    "kind": "expect",
+    "line": ".expect(\"write omnibox suggestion html\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/chrome_frame/template.rs",
+    "kind": "expect",
+    "line": ".expect(\"write omnibox suggestion url\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/compositor_accessibility.rs",
+    "kind": "expect",
+    "line": "NodeId(NonZeroU128::new(1).expect(\"nonzero\"))",
+    "count": 1
+  },
+  {
+    "path": "src/ui/compositor_accessibility.rs",
+    "kind": "expect",
+    "line": "NodeId(NonZeroU128::new(2).expect(\"nonzero\"))",
+    "count": 1
+  },
+  {
+    "path": "src/ui/compositor_accessibility.rs",
+    "kind": "expect",
+    "line": "NodeId(NonZeroU128::new(3).expect(\"nonzero\"))",
+    "count": 1
+  },
+  {
     "path": "src/ui/downloads.rs",
     "kind": "unreachable",
     "line": "unreachable!(\"u32::MAX exhausted while searching for a unique download filename\")",
+    "count": 1
+  },
+  {
+    "path": "src/ui/fast_accesskit_actions.rs",
+    "kind": "expect",
+    "line": "let raw = NonZeroU128::new(node_id as u128).expect(\"DOM node ids are 1-indexed\");",
     "count": 1
   },
   {
@@ -3255,6 +3591,18 @@
     "path": "src/ui/render_worker.rs",
     "kind": "expect",
     "line": ".expect(\"spawn UI worker router thread\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/render_worker.rs",
+    "kind": "panic",
+    "line": "panic!(\"deliberate UI worker crash requested via crash://panic\");",
+    "count": 1
+  },
+  {
+    "path": "src/ui/site_isolation.rs",
+    "kind": "expect",
+    "line": ".expect(\"http/https URLs always have a known default port\");",
     "count": 1
   }
 ]
