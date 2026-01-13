@@ -17,6 +17,7 @@ use crate::interaction::{
   fragment_tree_with_scroll, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind,
   InteractionAction, InteractionEngine,
 };
+use crate::js::RunLimits;
 use crate::paint::rasterize::fill_rect;
 use crate::render_control::{
   push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard,
@@ -340,6 +341,20 @@ fn should_emit_download_progress(
   // Slow transfers: still emit occasional updates so UI shows liveness.
   elapsed_since_last_sent >= DOWNLOAD_PROGRESS_MAX_INTERVAL
 }
+
+// -----------------------------------------------------------------------------
+// JS post-navigation pump
+// -----------------------------------------------------------------------------
+//
+// The UI worker renders using `BrowserDocument` (dom1) but also maintains a JS-capable `BrowserTab`
+// (dom2) for event dispatch and (eventually) DOM-driven rendering. After committing a navigation we
+// run a small bounded JS "pump" so pages that build UI during initial load (DOMContentLoaded
+// handlers, deferred scripts, etc) can execute without waiting for a user event.
+//
+// Budgets must remain tight so hostile pages cannot hang the worker.
+const POST_NAV_JS_PUMP_MAX_TASKS: usize = 1;
+const POST_NAV_JS_PUMP_MAX_MICROTASKS: usize = 10_000;
+const POST_NAV_JS_PUMP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
 #[derive(Debug, Clone, Default)]
 struct FindInPageWorkerState {
   query: String,
@@ -472,6 +487,80 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   // HTML attribute parsing ignores leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but does
   // not treat all Unicode whitespace as ignorable (e.g. NBSP).
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn dom_node_type_eq(a: &crate::dom::DomNodeType, b: &crate::dom::DomNodeType) -> bool {
+  use crate::dom::DomNodeType;
+  match (a, b) {
+    (
+      DomNodeType::Document {
+        quirks_mode: a_quirks,
+        scripting_enabled: a_scripting,
+        is_html_document: a_html,
+      },
+      DomNodeType::Document {
+        quirks_mode: b_quirks,
+        scripting_enabled: b_scripting,
+        is_html_document: b_html,
+      },
+    ) => a_quirks == b_quirks && a_scripting == b_scripting && a_html == b_html,
+    (
+      DomNodeType::ShadowRoot {
+        mode: a_mode,
+        delegates_focus: a_delegates,
+      },
+      DomNodeType::ShadowRoot {
+        mode: b_mode,
+        delegates_focus: b_delegates,
+      },
+    ) => a_mode == b_mode && a_delegates == b_delegates,
+    (
+      DomNodeType::Slot {
+        namespace: a_ns,
+        attributes: a_attrs,
+        assigned: a_assigned,
+      },
+      DomNodeType::Slot {
+        namespace: b_ns,
+        attributes: b_attrs,
+        assigned: b_assigned,
+      },
+    ) => a_ns == b_ns && a_attrs == b_attrs && a_assigned == b_assigned,
+    (
+      DomNodeType::Element {
+        tag_name: a_tag,
+        namespace: a_ns,
+        attributes: a_attrs,
+      },
+      DomNodeType::Element {
+        tag_name: b_tag,
+        namespace: b_ns,
+        attributes: b_attrs,
+      },
+    ) => a_tag == b_tag && a_ns == b_ns && a_attrs == b_attrs,
+    (DomNodeType::Text { content: a_content }, DomNodeType::Text { content: b_content }) => {
+      a_content == b_content
+    }
+    _ => false,
+  }
+}
+
+fn dom_tree_eq(a: &crate::dom::DomNode, b: &crate::dom::DomNode) -> bool {
+  // Avoid recursion (deep/degenerate DOM trees can be hostile input).
+  let mut stack: Vec<(&crate::dom::DomNode, &crate::dom::DomNode)> = vec![(a, b)];
+  while let Some((a, b)) = stack.pop() {
+    if !dom_node_type_eq(&a.node_type, &b.node_type) {
+      return false;
+    }
+    if a.children.len() != b.children.len() {
+      return false;
+    }
+    // Push in reverse so we compare children in document order.
+    for (ac, bc) in a.children.iter().zip(b.children.iter()).rev() {
+      stack.push((ac, bc));
+    }
+  }
+  true
 }
 
 fn dom_input_type(node: &crate::dom::DomNode) -> &str {
@@ -5913,6 +6002,64 @@ impl BrowserRuntime {
     tab.js_dom_mutation_generation = generation;
   }
 
+  // Run a single bounded JS "pump" after a navigation commits, then (best-effort) sync the JS DOM
+  // snapshot back into the renderer DOM so any script-driven UI changes become visible.
+  //
+  // Returns `true` when the renderer DOM was replaced and a repaint was scheduled.
+  fn pump_js_once_and_sync_dom_after_committed_navigation(
+    tab_id: TabId,
+    tab: &mut TabState,
+    msgs: &mut Vec<WorkerToUi>,
+  ) -> bool {
+    // Pump JS once (bounded) so any post-parse lifecycle tasks run.
+    let cancel_snapshot = tab.cancel.snapshot_paint();
+    let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+    let deadline = deadline_for(cancel_callback, Some(POST_NAV_JS_PUMP_TIMEOUT));
+    let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+    // Limit execution to a single task turn plus microtasks. This keeps the worker responsive while
+    // still allowing initial DOMContentLoaded/defer-style work to run.
+    let run_limits = RunLimits {
+      max_tasks: POST_NAV_JS_PUMP_MAX_TASKS,
+      max_microtasks: POST_NAV_JS_PUMP_MAX_MICROTASKS,
+      max_wall_time: Some(POST_NAV_JS_PUMP_TIMEOUT),
+    };
+
+    let js_dom_snapshot = {
+      let Some(js_tab) = tab.js_tab.as_mut() else {
+        return false;
+      };
+      if let Err(err) = js_tab.run_event_loop_until_idle(run_limits) {
+        msgs.push(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("js post-navigation pump failed: {err}"),
+        });
+      }
+      // Snapshot the post-pump DOM so we can compare against the renderer DOM without holding a
+      // borrow into `tab.js_tab` across the subsequent `tab.document` mutation.
+      js_tab.dom().to_renderer_dom()
+    };
+
+    let Some(doc) = tab.document.as_mut() else {
+      return false;
+    };
+
+    // Sync dom2 → dom1 and schedule a repaint when the JS DOM snapshot differs from the renderer's
+    // current DOM.
+    if dom_tree_eq(doc.dom(), &js_dom_snapshot) {
+      return false;
+    }
+
+    doc.mutate_dom(|dom| {
+      *dom = js_dom_snapshot;
+      true
+    });
+
+    tab.cancel.bump_paint();
+    tab.needs_repaint = true;
+    true
+  }
+
   fn run_navigation(&mut self, tab_id: TabId, request: NavigationRequest) -> Option<JobOutput> {
     let preempt_cancel_callback = self.preempt_cancel_callback_for_job(tab_id);
     let request_for_retry = request.clone();
@@ -6296,6 +6443,8 @@ impl BrowserRuntime {
             &mut msgs,
           );
 
+          let _ = Self::pump_js_once_and_sync_dom_after_committed_navigation(tab_id, tab, &mut msgs);
+
           let _ = tab
             .history
             .commit_navigation(&original_url, Some(committed_url.as_str()));
@@ -6428,6 +6577,9 @@ impl BrowserRuntime {
       &mut msgs,
     );
 
+    let js_dom_changed =
+      Self::pump_js_once_and_sync_dom_after_committed_navigation(tab_id, tab, &mut msgs);
+
     let _ = tab
       .history
       .commit_navigation(&original_url, Some(committed_url.as_str()));
@@ -6454,7 +6606,7 @@ impl BrowserRuntime {
     // Only emit FrameReady when the paint snapshot is still current. If the UI bumped paint while
     // we were rendering, skip this frame and let the subsequent repaint win.
     if let Some(frame) = painted {
-      if paint_snapshot.is_still_current_for_paint(&cancel) {
+      if paint_snapshot.is_still_current_for_paint(&cancel) && !js_dom_changed {
         let actual_dpr = tab
           .document
           .as_ref()
