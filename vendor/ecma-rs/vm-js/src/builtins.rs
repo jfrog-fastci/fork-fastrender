@@ -15165,7 +15165,19 @@ fn get_substitution(
         let mut name_scope = scope.reborrow();
         name_scope.push_root(Value::Object(named_captures))?;
 
-        let name_s = name_scope.alloc_string_from_code_units(name_units)?;
+        // Construct the name string with preflight and ticked copying: replacement templates can
+        // contain arbitrarily large `$<...>` spans, and this allocation should respect heap limits
+        // and VM budgets.
+        name_scope.ensure_can_alloc_string_units(name_units.len())?;
+        let name_units: Vec<u16> = {
+          let mut buf: Vec<u16> = Vec::new();
+          buf
+            .try_reserve_exact(name_units.len())
+            .map_err(|_| VmError::OutOfMemory)?;
+          vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, name_units)?;
+          buf
+        };
+        let name_s = name_scope.alloc_string_from_u16_vec(name_units)?;
         name_scope.push_root(Value::String(name_s))?;
 
         let key = PropertyKey::from_string(name_s);
