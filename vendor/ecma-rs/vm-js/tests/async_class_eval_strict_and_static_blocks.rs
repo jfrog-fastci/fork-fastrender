@@ -250,3 +250,66 @@ fn async_class_can_extend_awaited_null_and_wires_null_prototype() -> Result<(), 
   assert_eq!(value_to_string(&rt, out), "SN");
   Ok(())
 }
+
+#[test]
+fn async_class_heritage_evaluation_is_strict_even_in_sloppy_outer_code() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        try {
+          class C extends (await Promise.resolve(0), unbound = 1, null) {}
+          return "no";
+        } catch (e) {
+          return e.name;
+        }
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn async_class_heritage_requires_object_or_null_super_prototype() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        function B() {}
+        B.prototype = 1;
+        try {
+          class D extends (await Promise.resolve(B)) {}
+          return "no";
+        } catch (e) {
+          return e.message;
+        }
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(
+    value_to_string(&rt, out),
+    "Class extends value does not have a valid prototype property"
+  );
+  Ok(())
+}
