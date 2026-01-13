@@ -572,31 +572,42 @@ impl<'vm> HirEvaluator<'vm> {
       let hir_js::StmtKind::Var(decl) = &stmt.kind else {
         continue;
       };
-      match decl.kind {
-        hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const => {}
-        _ => continue,
+      self.instantiate_lexical_decl(scope, body, decl, env)?;
+    }
+    Ok(())
+  }
+
+  fn instantiate_lexical_decl(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    decl: &hir_js::VarDecl,
+    env: GcEnv,
+  ) -> Result<(), VmError> {
+    match decl.kind {
+      hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const => {}
+      _ => return Ok(()),
+    }
+
+    for declarator in &decl.declarators {
+      self.vm.tick()?;
+      let pat = self.get_pat(body, declarator.pat)?;
+      let hir_js::PatKind::Ident(name_id) = pat.kind else {
+        return Err(VmError::Unimplemented(
+          "non-identifier variable declarations (hir-js compiled path)",
+        ));
+      };
+      let name = self.resolve_name(name_id)?;
+
+      // Keep the engine robust against malformed HIR (e.g. a binding already exists).
+      if scope.heap().env_has_binding(env, name.as_str())? {
+        continue;
       }
 
-      for declarator in &decl.declarators {
-        self.vm.tick()?;
-        let pat = self.get_pat(body, declarator.pat)?;
-        let hir_js::PatKind::Ident(name_id) = pat.kind else {
-          return Err(VmError::Unimplemented(
-            "non-identifier variable declarations (hir-js compiled path)",
-          ));
-        };
-        let name = self.resolve_name(name_id)?;
-
-        // Keep the engine robust against malformed HIR (e.g. a binding already exists).
-        if scope.heap().env_has_binding(env, name.as_str())? {
-          continue;
-        }
-
-        match decl.kind {
-          hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env, name.as_str())?,
-          hir_js::VarDeclKind::Const => scope.env_create_immutable_binding(env, name.as_str())?,
-          _ => unreachable!(),
-        }
+      match decl.kind {
+        hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env, name.as_str())?,
+        hir_js::VarDeclKind::Const => scope.env_create_immutable_binding(env, name.as_str())?,
+        _ => unreachable!(),
       }
     }
     Ok(())
@@ -795,7 +806,6 @@ impl<'vm> HirEvaluator<'vm> {
           self.env.set_lexical_env(scope.heap_mut(), outer_lex);
           return result;
         }
-
         if let Some(init) = init {
           match init {
             hir_js::ForInit::Expr(expr) => {
