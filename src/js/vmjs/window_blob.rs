@@ -493,6 +493,10 @@ fn blob_ctor_construct(
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
   with_realm_state_mut(vm, &mut scope, callee, |state| {
+    state
+      .blobs
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.blobs.insert(
       WeakGcObject::from(obj),
       BlobData {
@@ -557,6 +561,10 @@ pub(crate) fn create_blob_with_proto(
   scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
   with_realm_state_mut(vm, scope, callee, |state| {
+    state
+      .blobs
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.blobs.insert(WeakGcObject::from(obj), data);
     Ok(())
   })?;
@@ -910,6 +918,10 @@ pub fn install_window_blob_bindings(
   scope.define_property(global, ctor_key, data_desc(Value::Object(ctor), true))?;
 
   let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
+  registry
+    .realms
+    .try_reserve(1)
+    .map_err(|_| VmError::OutOfMemory)?;
   registry.realms.insert(
     realm_id,
     BlobRealmState {
