@@ -328,6 +328,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Cmd+[ (macOS) | Back |
 | Cmd+] (macOS) | Forward |
 | Ctrl/Cmd+R / F5 | Reload |
+| Esc (while loading) | Stop loading |
 | Alt+Home (Win/Linux); Cmd+Shift+H (macOS) | Home page |
 | Ctrl+D (Win/Linux); Cmd+D (macOS) | Toggle bookmark for current page |
 | Ctrl+H (Win/Linux); Cmd+Y (macOS) | Toggle history panel |
