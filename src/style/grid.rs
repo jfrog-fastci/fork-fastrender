@@ -1549,6 +1549,8 @@ pub(crate) fn parse_track_list(input: &str) -> ParsedTracks {
 /// Parse a single grid track value
 pub(crate) fn parse_single_grid_track(track_str: &str) -> Option<GridTrack> {
   let track_str = trim_ascii_whitespace(track_str);
+  let stripped = strip_css_comments_to_whitespace(track_str);
+  let track_str = trim_ascii_whitespace(stripped.as_ref());
   if track_str.is_empty() {
     return None;
   }
