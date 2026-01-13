@@ -3052,7 +3052,7 @@ pub(super) fn tab_strip_ui(
               ui.add_space(end_spacer_x);
             }
           });
-        });
+      });
       let mut scroll_state = scroll_output.state;
       scroll_offset_x = scroll_state.offset.x;
       unpinned_max_scroll_x =

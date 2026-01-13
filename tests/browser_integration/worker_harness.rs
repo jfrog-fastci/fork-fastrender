@@ -108,6 +108,7 @@ pub enum WorkerToUiEvent {
     tab_id: TabId,
     pos_css: (f32, f32),
     link_url: Option<String>,
+    image_url: Option<String>,
   },
   HoverChanged {
     tab_id: TabId,
@@ -331,12 +332,14 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       tab_id,
       pos_css,
       link_url,
+      image_url,
       ..
     } => (
       WorkerToUiEvent::ContextMenu {
         tab_id,
         pos_css,
         link_url,
+        image_url,
       },
       None,
     ),

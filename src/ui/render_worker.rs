@@ -27,6 +27,7 @@ use crate::style::computed::Visibility;
 use crate::style::types::OrientationTransform;
 use crate::style::types::UserSelect;
 use crate::text::font_db::FontConfig;
+use crate::tree::box_tree::{BoxNode, BoxType, ImageSelectionContext, ReplacedType};
 use crate::ui::about_pages;
 use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
@@ -525,6 +526,31 @@ fn base_url_for_links(tab: &TabState) -> &str {
     .as_deref()
     .or(tab.last_committed_url.as_deref())
     .unwrap_or(about_pages::ABOUT_BASE_URL)
+}
+
+fn find_replaced_image_for_styled_node<'a>(
+  root: &'a BoxNode,
+  styled_node_id: usize,
+) -> Option<&'a ReplacedType> {
+  let mut stack: Vec<&BoxNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if node.styled_node_id == Some(styled_node_id) {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if matches!(&replaced.replaced_type, ReplacedType::Image { .. }) {
+          return Some(&replaced.replaced_type);
+        }
+      }
+    }
+
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  None
 }
 
 fn document_wants_ticks(doc: &BrowserDocument) -> bool {
@@ -3813,6 +3839,8 @@ impl BrowserRuntime {
     };
 
     let base_url = base_url_for_links(tab).to_string();
+    let dpr = tab.dpr;
+    let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
     let page_point = viewport_point.translate(scroll.viewport);
@@ -3836,49 +3864,67 @@ impl BrowserRuntime {
       href: Option<String>,
       target_id: Option<usize>,
       target_element_id: Option<String>,
-      image_src: Option<String>,
+      image_url: Option<String>,
       text_control_target: Option<usize>,
       text_control_disabled: bool,
       text_control_readonly: bool,
     }
 
     let engine = &mut tab.interaction;
-    let (changed, hit_info) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scrolled =
-        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-      let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-      let hit = hit_test_dom(dom, box_tree, hit_tree, page_point);
-      let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
-      let target_element_id = target_id.and_then(|target_id| {
-        crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-          .and_then(|node| node.get_attribute_ref("id"))
-          .map(|id| id.to_string())
-      });
-      let href = hit
-        .as_ref()
-        .and_then(|hit| (hit.kind == HitTestKind::Link).then(|| hit.href.as_deref()))
-        .flatten()
-        .map(|href| href.to_string());
+    let (changed, hit_info) =
+      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let scrolled =
+          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+        let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let hit = hit_test_dom(dom, box_tree, hit_tree, page_point);
+        let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
+        let target_element_id = target_id.and_then(|target_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
+        let href = hit
+          .as_ref()
+          .and_then(|hit| (hit.kind == HitTestKind::Link).then(|| hit.href.as_deref()))
+          .flatten()
+          .map(|href| href.to_string());
 
-      let image_src = hit.as_ref().and_then(|hit| {
-        let styled_id = hit.styled_node_id;
-        let node = crate::dom::find_node_mut_by_preorder_id(dom, styled_id)?;
-        // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
-        if node
-          .tag_name()
-          .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
-        {
-          node.get_attribute_ref("src").map(|src| src.to_string())
-        } else if node
-          .tag_name()
-          .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-          && dom_input_type(node).eq_ignore_ascii_case("image")
-        {
-          node.get_attribute_ref("src").map(|src| src.to_string())
-        } else {
-          None
-        }
-      });
+        let image_url = hit.as_ref().and_then(|hit| {
+          let styled_id = hit.styled_node_id;
+          if let Some(img) = find_replaced_image_for_styled_node(&box_tree.root, styled_id) {
+            let selected = img.selected_image_source_for_context(ImageSelectionContext {
+              device_pixel_ratio: dpr,
+              slot_width: None,
+              viewport: Some(viewport),
+              media_context: None,
+              font_size: None,
+              root_font_size: None,
+              base_url: Some(&base_url),
+            });
+            resolve_link_url(&base_url, selected.url)
+          } else {
+            let node = crate::dom::find_node_mut_by_preorder_id(dom, styled_id)?;
+            // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
+            if node
+              .tag_name()
+              .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
+            {
+              node
+                .get_attribute_ref("src")
+                .and_then(|src| resolve_link_url(&base_url, src))
+            } else if node
+              .tag_name()
+              .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+              && dom_input_type(node).eq_ignore_ascii_case("image")
+            {
+              node
+                .get_attribute_ref("src")
+                .and_then(|src| resolve_link_url(&base_url, src))
+            } else {
+              None
+            }
+          }
+        });
 
       // Windowed UIs send `ContextMenuRequest` on right-click without a preceding `PointerDown`.
       // When a text control is clicked, mirror native browser behavior by focusing it and placing
@@ -3927,7 +3973,7 @@ impl BrowserRuntime {
             href,
             target_id,
             target_element_id,
-            image_src,
+            image_url,
             text_control_target,
             text_control_disabled,
             text_control_readonly,
@@ -3942,7 +3988,7 @@ impl BrowserRuntime {
           href: None,
           target_id: None,
           target_element_id: None,
-          image_src: None,
+          image_url: None,
           text_control_target: None,
           text_control_disabled: false,
           text_control_readonly: false,
@@ -3954,10 +4000,7 @@ impl BrowserRuntime {
       .href
       .as_deref()
       .and_then(|href| resolve_link_url(&base_url, href));
-    let image_url = hit_info
-      .image_src
-      .as_deref()
-      .and_then(|src| resolve_link_url(&base_url, src));
+    let image_url = hit_info.image_url.clone();
 
     if changed {
       tab.cancel.bump_paint();

@@ -1,12 +1,12 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::api::FastRenderFactory;
+use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
 use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::text::font_db::FontConfig;
 use fastrender::ui::browser_limits::BrowserLimits;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
-use fastrender::{FastRenderConfig, FastRenderPoolConfig, FontConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

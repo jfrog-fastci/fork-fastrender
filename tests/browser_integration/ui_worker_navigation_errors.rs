@@ -162,21 +162,62 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
   let mut found_retry_link = false;
   let mut seen_links = std::collections::BTreeSet::new();
   let max_y = viewport_css.1 as usize;
-  for y in (0..max_y).step_by(16) {
-    for x in (0..viewport_css.0 as usize).step_by(16) {
-      let pos = (x as f32 + 0.5, y as f32 + 0.5);
-      let link_url = context_menu_link_at(&ui_tx, &ui_rx, tab_id, pos, scan_deadline)
-        .unwrap_or(None);
-      if let Some(url) = link_url.as_deref() {
-        seen_links.insert(url.to_string());
+  let max_x = viewport_css.0 as usize;
+  // The error page places the Retry button below the header nav, which can put it very close to
+  // the bottom edge of small viewports. Include an extra scan row/column at the max extents so we
+  // don't accidentally miss edge-aligned links when stepping.
+  let mut y_positions: Vec<usize> = (0..max_y).step_by(16).collect();
+  let mut x_positions: Vec<usize> = (0..max_x).step_by(16).collect();
+  if max_y > 0 {
+    y_positions.push(max_y - 1);
+  }
+  if max_x > 0 {
+    x_positions.push(max_x - 1);
+  }
+  y_positions.sort_unstable();
+  y_positions.dedup();
+  x_positions.sort_unstable();
+  x_positions.dedup();
+
+  // The error page header nav can be tall enough on small viewports that the Retry button is
+  // initially below the fold. Scan the visible viewport first, then scroll down in a few steps
+  // and re-scan to find the link deterministically.
+  for _ in 0..8 {
+    for y in y_positions.iter().copied() {
+      for x in x_positions.iter().copied() {
+        let pos = (x as f32 + 0.5, y as f32 + 0.5);
+        let link_url = context_menu_link_at(&ui_tx, &ui_rx, tab_id, pos, scan_deadline)
+          .unwrap_or(None);
+        if let Some(url) = link_url.as_deref() {
+          seen_links.insert(url.to_string());
+        }
+        if link_url.as_deref() == Some(missing_url.as_str()) {
+          found_retry_link = true;
+          break;
+        }
       }
-      if link_url.as_deref() == Some(missing_url.as_str()) {
-        found_retry_link = true;
+      if found_retry_link {
         break;
       }
     }
     if found_retry_link {
       break;
+    }
+
+    ui_tx
+      .send(UiToWorker::Scroll {
+        tab_id,
+        delta_css: (0.0, 160.0),
+        pointer_css: None,
+      })
+      .expect("scroll error page");
+    loop {
+      let Some(msg) = recv_until_deadline(&ui_rx, scan_deadline) else {
+        break;
+      };
+      if matches!(msg, WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id) {
+        break;
+      }
     }
   }
   assert!(
