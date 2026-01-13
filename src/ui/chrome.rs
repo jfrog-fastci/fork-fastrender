@@ -31,7 +31,6 @@ use crate::ui::url::{http_fallback_url_for_failed_https, resolve_omnibox_search_
 use crate::ui::zoom;
 use crate::ui::ChromeAction;
 use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserIcon};
-use url::Url;
 
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
 const COMPACT_MODE_THRESHOLD_PX: f32 = 640.0;
@@ -2296,23 +2295,31 @@ pub fn chrome_ui_with_bookmarks(
             ui.close_menu();
           }
 
-          // Only parse the URL when the context menu is actually opened; keep the steady-state idle
-          // path allocation-free.
-          let copy_domain = can_copy_url
-            .then(|| {
-              Url::parse(active_url_trim)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-            })
-            .flatten();
+          // The address bar already maintains a cached parse of the active URL for display; reuse
+          // it here so opening the context menu doesn't re-run URL parsing every frame.
+          let can_copy_domain = can_copy_url
+            && matches!(
+              formatted_url.security_state,
+              AddressBarSecurityState::Http | AddressBarSecurityState::Https
+            )
+            && (!formatted_url.display_host_prefix.is_empty()
+              || !formatted_url.display_host_domain.is_empty());
           let copy_domain_btn =
-            ui.add_enabled(copy_domain.is_some(), egui::Button::new("Copy domain"));
+            ui.add_enabled(can_copy_domain, egui::Button::new("Copy domain"));
           copy_domain_btn
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy domain"));
           if copy_domain_btn.clicked() {
-            if let Some(domain) = copy_domain {
-              ui.ctx().output_mut(|o| o.copied_text = domain);
-            }
+            // Match `url::Url::host_str()` behaviour for IPv6 literals (omit brackets).
+            let host = formatted_url
+              .display_host_domain
+              .strip_prefix('[')
+              .and_then(|s| s.strip_suffix(']'))
+              .unwrap_or(formatted_url.display_host_domain.as_str());
+            let mut out =
+              String::with_capacity(formatted_url.display_host_prefix.len() + host.len());
+            out.push_str(&formatted_url.display_host_prefix);
+            out.push_str(host);
+            ui.ctx().output_mut(|o| o.copied_text = out);
             ui.close_menu();
           }
         });
