@@ -102,6 +102,10 @@ impl TimedAudioQueue {
 
   pub fn reset_cursor(&mut self, target_pts: Duration) {
     let target_frame = duration_to_frames(target_pts, self.sample_rate);
+    self.reset_cursor_frames(target_frame);
+  }
+
+  pub fn reset_cursor_frames(&mut self, target_frame: u64) {
     self.cursor_frame = Some(target_frame);
     self.prune_before_frame(target_frame);
   }
@@ -180,6 +184,29 @@ impl TimedAudioQueue {
   }
 
   pub fn read_into(&mut self, out: &mut [f32], target_pts: Duration, frames: usize) -> ReadResult {
+    let target_frame = duration_to_frames(target_pts, self.sample_rate);
+    self.read_into_frames_with_tolerance(out, target_frame, frames, Self::TARGET_PTS_TOLERANCE_FRAMES)
+  }
+
+  /// Reads samples aligned to an absolute frame index on the queue's timeline.
+  ///
+  /// This is a lower-level variant of [`Self::read_into`] that avoids `Duration` conversions. It is
+  /// useful when the caller already has a sample-accurate frame clock (e.g. an audio backend
+  /// playhead counter).
+  pub fn read_into_frames(&mut self, out: &mut [f32], target_frame: u64, frames: usize) -> ReadResult {
+    // When the caller supplies explicit frame counts, treat any mismatch as a real discontinuity.
+    // Frame clocks are expected to be sample-accurate, so we don't apply the `target_pts` tolerance
+    // here.
+    self.read_into_frames_with_tolerance(out, target_frame, frames, 0)
+  }
+
+  fn read_into_frames_with_tolerance(
+    &mut self,
+    out: &mut [f32],
+    target_frame: u64,
+    frames: usize,
+    tolerance_frames: u64,
+  ) -> ReadResult {
     let channels = self.channels as usize;
     let needed_samples = frames
       .checked_mul(channels)
@@ -190,15 +217,14 @@ impl TimedAudioQueue {
       out.len()
     );
 
-    let target_frame = duration_to_frames(target_pts, self.sample_rate);
     match self.cursor_frame {
       None => {
         self.cursor_frame = Some(target_frame);
       }
       Some(cursor) if cursor != target_frame => {
         let diff = cursor.abs_diff(target_frame);
-        if diff > Self::TARGET_PTS_TOLERANCE_FRAMES {
-          self.reset_cursor(target_pts);
+        if diff > tolerance_frames {
+          self.reset_cursor_frames(target_frame);
         }
       }
       _ => {}
