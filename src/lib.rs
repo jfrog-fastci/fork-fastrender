@@ -216,6 +216,7 @@ pub mod js;
 pub mod memory;
 pub mod pageset;
 pub mod process_limits;
+pub mod sandbox;
 pub(crate) mod rayon_global;
 pub mod resource;
 #[path = "ui/select_dropdown.rs"]
