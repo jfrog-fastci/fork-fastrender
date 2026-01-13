@@ -393,6 +393,11 @@ In repo reality today:
 - `crates/win-sandbox/src/spawn.rs` can apply it during process creation.
 - Mitigations are **opt-in per spawn** for `win_sandbox::spawn_sandboxed`: `SpawnConfig::mitigation_policy`
   is `None` by default (disabled) unless the caller sets it.
+- When `SpawnConfig::mitigation_policy` is set, both `win_sandbox::spawn_sandboxed` and
+  `win_sandbox::restricted_token::spawn_with_token` treat the mitigation attribute as
+  **best-effort**: if the OS rejects `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` with
+  `ERROR_INVALID_PARAMETER` / `ERROR_NOT_SUPPORTED`, they retry process creation without mitigations
+  instead of failing the spawn.
 - Escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1` disables **mitigation policies only** (useful for
   debugging/compatibility).
 
