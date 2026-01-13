@@ -53,6 +53,10 @@ impl<R: Read, W: Write> IpcConnection<R, W> {
   }
 
   pub fn recv_json<T: DeserializeOwned>(&mut self) -> Result<T, IpcError> {
+    // Security note: the JSON IPC boundary is treated as untrusted (e.g. renderer → browser or
+    // renderer → network-process). `serde` defaults to ignoring unknown struct fields, which can
+    // lead to forward-compat ambiguities at a security boundary. IPC protocol structs are annotated
+    // with `#[serde(deny_unknown_fields)]` so we fail closed if an unexpected field appears.
     let payload = read_frame(&mut self.reader)?;
     serde_json::from_slice(&payload).map_err(IpcError::Deserialize)
   }
@@ -149,6 +153,40 @@ mod tests {
       .recv_json::<serde_json::Value>()
       .expect_err("invalid JSON must error");
 
+    assert!(matches!(err, IpcError::Deserialize(_)));
+  }
+
+  #[test]
+  fn reject_unknown_fields_in_ipc_payloads() {
+    // Regression test: IPC protocol structs must deny unknown fields so an untrusted peer cannot
+    // smuggle future/ambiguous fields across the security boundary.
+    //
+    // Without `#[serde(deny_unknown_fields)]`, serde_json would silently ignore the `unexpected`
+    // field inside `WebSocketConnectParams`.
+    let payload = br#"{
+      "WebSocket": {
+        "conn_id": 1,
+        "cmd": {
+          "Connect": {
+            "params": {
+              "url": "ws://example.com",
+              "protocols": [],
+              "origin": null,
+              "document_url": null,
+              "unexpected": "boom"
+            }
+          }
+        }
+      }
+    }"#;
+
+    let mut framed = Vec::<u8>::new();
+    write_frame(&mut framed, payload).unwrap();
+
+    let mut receiver = IpcConnection::new(std::io::Cursor::new(framed), std::io::sink());
+    let err = receiver
+      .recv_json::<crate::ipc::RendererToNetwork>()
+      .expect_err("unknown fields must be rejected");
     assert!(matches!(err, IpcError::Deserialize(_)));
   }
 }

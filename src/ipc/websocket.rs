@@ -20,6 +20,7 @@ pub const MAX_WEBSOCKET_MESSAGE_BYTES: u32 = 4 * 1024 * 1024;
 pub const MAX_WEBSOCKET_CLOSE_REASON_BYTES: u32 = 123;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WebSocketConnectParams {
   pub url: String,
   /// Requested subprotocols (e.g. `["graphql-ws"]`).

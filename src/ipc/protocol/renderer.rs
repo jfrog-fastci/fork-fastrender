@@ -127,6 +127,7 @@ pub type UrlString = BoundedString<MAX_URL_BYTES>;
 /// whose contents are `byte_len` bytes of **premultiplied RGBA8** pixels laid out row-major with
 /// `stride_bytes` bytes per row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SharedFrameDescriptor {
   pub width_px: u32,
   pub height_px: u32,
@@ -151,6 +152,7 @@ impl SharedFrameDescriptor {
 
 /// Minimal scroll bounds information for the root scroll container (viewport).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollBoundsMinimal {
   pub min_x: f32,
   pub min_y: f32,
@@ -160,6 +162,7 @@ pub struct ScrollBoundsMinimal {
 
 /// Minimal scroll state information surfaced to the browser/UI process.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollStateMinimal {
   /// Current viewport scroll offset in CSS pixels.
   pub viewport_scroll_css: (f32, f32),

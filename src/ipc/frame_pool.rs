@@ -47,6 +47,7 @@ pub struct FrameBufferLayout {
 /// Note: The transport of these descriptors is out of scope for this module; it simply provides
 /// stable data that can be sent over an IPC channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FrameBufferDesc {
   pub index: u32,
   pub width_px: u32,
