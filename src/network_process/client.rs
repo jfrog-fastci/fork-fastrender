@@ -152,7 +152,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// This is a convenience wrapper that panics on failure (suitable for tests).
 /// Call [`try_spawn_network_process`] to handle errors explicitly.
 pub fn spawn_network_process(config: NetworkProcessConfig) -> NetworkProcessHandle {
-  try_spawn_network_process(config).expect("spawn network process")
+  try_spawn_network_process(config).expect("spawn network process") // fastrender-allow-unwrap
 }
 
 /// Fallible variant of [`spawn_network_process`].

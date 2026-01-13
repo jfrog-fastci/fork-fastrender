@@ -267,7 +267,7 @@ impl ExternalPixmap {
 
   #[inline]
   fn size(&self) -> IntSize {
-    IntSize::from_wh(self.width, self.height).expect("validated external pixmap size")
+    IntSize::from_wh(self.width, self.height).expect("validated external pixmap size") // fastrender-allow-unwrap
   }
 }
 
@@ -344,7 +344,7 @@ impl CanvasPixmap {
         // SAFETY: `ext.as_slice()` points to `ext.len` bytes of live memory. `size` and
         // dimensions were validated at construction.
         PixmapRef::from_bytes(unsafe { ext.as_slice() }, ext.width, ext.height)
-          .expect("validated external pixmap view")
+          .expect("validated external pixmap view") // fastrender-allow-unwrap
       }
     }
   }
@@ -359,7 +359,7 @@ impl CanvasPixmap {
         // SAFETY: `ext.as_slice_mut()` points to `ext.len` bytes of live memory. `size` and
         // dimensions were validated at construction.
         PixmapMut::from_bytes(unsafe { ext.as_slice_mut() }, width, height)
-          .expect("validated external pixmap view")
+          .expect("validated external pixmap view") // fastrender-allow-unwrap
       }
     }
   }
@@ -454,7 +454,7 @@ impl CanvasPixmap {
         );
         let pixels = (ext.width as usize)
           .checked_mul(ext.height as usize)
-          .expect("validated external pixmap size");
+          .expect("validated external pixmap size"); // fastrender-allow-unwrap
         // SAFETY: `PremultipliedColorU8` has 1-byte alignment, and the external buffer is a live
         // writable byte slice at least `width*height*4` bytes long (enforced by `ExternalPixmap::new`).
         unsafe { std::slice::from_raw_parts_mut(ext.ptr.as_ptr() as *mut PremultipliedColorU8, pixels) }
@@ -761,7 +761,7 @@ impl Canvas {
     self
       .pixmap
       .into_owned()
-      .expect("into_pixmap is only valid for owned canvases")
+      .expect("into_pixmap is only valid for owned canvases") // fastrender-allow-unwrap
   }
 
   /// Returns a reference to the underlying pixmap
@@ -770,7 +770,7 @@ impl Canvas {
     self
       .pixmap
       .as_owned()
-      .expect("pixmap() is only valid for owned canvases")
+      .expect("pixmap() is only valid for owned canvases") // fastrender-allow-unwrap
   }
 
   /// Returns a borrowed pixmap view (works for both owned and external canvases).
@@ -785,7 +785,7 @@ impl Canvas {
     self
       .pixmap
       .as_owned_mut()
-      .expect("pixmap_mut() is only valid for owned canvases")
+      .expect("pixmap_mut() is only valid for owned canvases") // fastrender-allow-unwrap
   }
 
   /// Runs a mutation against the active pixmap and (when present) the layer's source-alpha
@@ -842,7 +842,7 @@ impl Canvas {
       draw(self);
       let source_alpha = std::mem::replace(&mut self.pixmap, main)
         .into_owned()
-        .expect("source-alpha replay pixmap must be owned");
+        .expect("source-alpha replay pixmap must be owned"); // fastrender-allow-unwrap
       if let Some(record) = self.layer_stack.last_mut() {
         record.source_alpha = Some(source_alpha);
       }
@@ -885,7 +885,7 @@ impl Canvas {
       let replay = draw(self);
       let source_alpha = std::mem::replace(&mut self.pixmap, main)
         .into_owned()
-        .expect("source-alpha replay pixmap must be owned");
+        .expect("source-alpha replay pixmap must be owned"); // fastrender-allow-unwrap
       if let Some(record) = self.layer_stack.last_mut() {
         record.source_alpha = Some(source_alpha);
       }
@@ -985,7 +985,7 @@ impl Canvas {
       self
         .pixmap
         .as_owned_mut()
-        .expect("split_layer_stack_and_pixmap_mut requires an owned active pixmap"),
+        .expect("split_layer_stack_and_pixmap_mut requires an owned active pixmap"), // fastrender-allow-unwrap
     )
   }
 
@@ -1479,7 +1479,7 @@ impl Canvas {
 
     let mut layer_pixmap = std::mem::replace(&mut self.pixmap, record.pixmap)
       .into_owned()
-      .expect("layer pixmap must be owned");
+      .expect("layer pixmap must be owned"); // fastrender-allow-unwrap
     self.state_stack.truncate(record.saved_state_depth);
     self.current_state.opacity = record.parent_opacity;
     self.current_state.blend_mode = record.parent_blend_mode;

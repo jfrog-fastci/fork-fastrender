@@ -41,7 +41,7 @@ pub fn accesskit_id_for_dom2(node: dom2::NodeId) -> accesskit::NodeId {
   let raw = ((FASTR_ACCESSKIT_MARKER as u128) << 120)
     | ((FASTR_ACCESSKIT_NAMESPACE_DOM2 as u128) << 112)
     | (payload & PAYLOAD_MASK);
-  accesskit::NodeId(NonZeroU128::new(raw).expect("encoded AccessKit NodeId must be non-zero"))
+  accesskit::NodeId(NonZeroU128::new(raw).expect("encoded AccessKit NodeId must be non-zero")) // fastrender-allow-unwrap
 }
 
 /// Attempt to decode an AccessKit `NodeId` back into a stable `dom2::NodeId`.

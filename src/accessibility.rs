@@ -4685,7 +4685,7 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
   fn accesskit_node_id(node_id: usize) -> accesskit::NodeId {
     // Best-effort: `node_id` is 1-based in normal operation. If it is ever 0, fall back to 1.
     let raw = if node_id == 0 { 1 } else { node_id as u128 };
-    let raw = NonZeroU128::new(raw).unwrap_or_else(|| NonZeroU128::new(1).unwrap());
+    let raw = NonZeroU128::new(raw).unwrap_or_else(|| NonZeroU128::new(1).unwrap()); // fastrender-allow-unwrap
     accesskit::NodeId(raw)
   }
 
@@ -4779,7 +4779,7 @@ pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
       continue;
     }
 
-    let finished = stack.pop().expect("frame must exist");
+    let finished = stack.pop().expect("frame must exist"); // fastrender-allow-unwrap
     let node = finished.node;
     let id = accesskit_node_id(node.node_id);
 

@@ -468,7 +468,7 @@ fn require_range_receiver(
   if !matches!(slots, Some(slots) if slots.b == RANGE_HOST_TAG) {
     return Err(VmError::TypeError("Illegal invocation"));
   }
-  let range_id = RangeId::from_u64(slots.unwrap().a);
+  let range_id = RangeId::from_u64(slots.unwrap().a); // fastrender-allow-unwrap
 
   // Range wrappers store a back-reference to their owning Document wrapper so we can resolve the
   // correct `dom2::Document` arena and wrap returned Nodes.
@@ -503,7 +503,7 @@ fn require_node_iterator_receiver(
   if !matches!(slots, Some(slots) if slots.b == NODE_ITERATOR_HOST_TAG) {
     return Err(VmError::TypeError("Illegal invocation"));
   }
-  Ok((NodeIteratorId::from_u64(slots.unwrap().a), obj))
+  Ok((NodeIteratorId::from_u64(slots.unwrap().a), obj)) // fastrender-allow-unwrap
 }
 
 fn require_tree_walker_receiver(
@@ -5266,7 +5266,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             {
               return Ok(Value::Null);
             }
-            n = parent.unwrap();
+            n = parent.unwrap(); // fastrender-allow-unwrap
           }
         }
 

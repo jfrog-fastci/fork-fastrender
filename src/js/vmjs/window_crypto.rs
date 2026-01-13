@@ -1251,7 +1251,7 @@ fn subtle_import_key_native(
           16 => "A128GCM",
           24 => "A192GCM",
           32 => "A256GCM",
-          _ => unreachable!(),
+          _ => unreachable!(), // fastrender-allow-panic
         };
         if jwk_alg != expected {
           let err = create_dom_exception_like(&mut scope, "DataError", "JWK alg does not match AES-GCM key length")?;

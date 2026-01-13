@@ -11,15 +11,15 @@ use crate::ui::messages::ScrollMetrics;
 ///
 /// Note: `NodeId` wraps a `NonZeroU128` so `0` is reserved/invalid.
 pub fn root_node_id() -> NodeId {
-  NodeId(NonZeroU128::new(1).expect("nonzero"))
+  NodeId(NonZeroU128::new(1).expect("nonzero")) // fastrender-allow-unwrap
 }
 
 pub fn chrome_node_id() -> NodeId {
-  NodeId(NonZeroU128::new(2).expect("nonzero"))
+  NodeId(NonZeroU128::new(2).expect("nonzero")) // fastrender-allow-unwrap
 }
 
 pub fn page_node_id() -> NodeId {
-  NodeId(NonZeroU128::new(3).expect("nonzero"))
+  NodeId(NonZeroU128::new(3).expect("nonzero")) // fastrender-allow-unwrap
 }
 
 pub const DEFAULT_WINDOW_NAME: &str = "FastRender Browser";

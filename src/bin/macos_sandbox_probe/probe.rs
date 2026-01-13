@@ -574,7 +574,7 @@ mod macos {
         if flags == SANDBOX_NAMED && error_indicates_unknown_profile(&err) {
           // Fall back to applying a minimal embedded profile as raw SBPL source.
           let fallback = CString::new(PURE_COMPUTATION_FALLBACK_PROFILE)
-            .expect("embedded fallback contains no NUL bytes");
+            .expect("embedded fallback contains no NUL bytes"); // fastrender-allow-unwrap
           match sandbox_init_profile(&fallback, SANDBOX_PROFILE) {
             Ok(()) => Ok(()),
             Err(fallback_err) => Err(format!(
@@ -597,9 +597,9 @@ mod macos {
     // macOS's `shm_open` name length limit is commonly `PSHMNAMLEN=31` bytes, including the leading
     // `/`. Use the shared generator so probe runs match production behavior.
     let pre_name =
-      CString::new(format!("/{}", generate_shmem_id())).expect("generated shm name contains no NUL");
+      CString::new(format!("/{}", generate_shmem_id())).expect("generated shm name contains no NUL"); // fastrender-allow-unwrap
     let post_name =
-      CString::new(format!("/{}", generate_shmem_id())).expect("generated shm name contains no NUL");
+      CString::new(format!("/{}", generate_shmem_id())).expect("generated shm name contains no NUL"); // fastrender-allow-unwrap
 
     (create_posix_shm_object_pre_sandbox(&pre_name), post_name)
   }

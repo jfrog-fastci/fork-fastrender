@@ -286,8 +286,8 @@ fn read_top_level_box_bytes(
     reader.seek(SeekFrom::Start(pos))?;
     let mut header = [0_u8; 8];
     reader.read_exact(&mut header)?;
-    let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap());
-    let name: [u8; 4] = header[4..8].try_into().unwrap();
+    let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap()); // fastrender-allow-unwrap
+    let name: [u8; 4] = header[4..8].try_into().unwrap(); // fastrender-allow-unwrap
 
     let (size, header_len) = match size32 {
       0 => (file_len.saturating_sub(pos), 8_u64),

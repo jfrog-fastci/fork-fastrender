@@ -97,7 +97,7 @@ fn percentile(sorted: &[f64], percentile: f64) -> Option<f64> {
   let lower = rank.floor() as usize;
   let upper = rank.ceil() as usize;
   if lower >= n || upper >= n {
-    return Some(*sorted.last().expect("non-empty percentile input"));
+    return Some(*sorted.last().expect("non-empty percentile input")); // fastrender-allow-unwrap
   }
   if lower == upper {
     return Some(sorted[lower]);

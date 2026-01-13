@@ -11342,14 +11342,14 @@ impl DisplayListRenderer {
             root_record.origin,
             root_record.source_alpha().map(|alpha| (alpha, (0, 0))),
           )?;
-          root_uncomposited = Some(pixmap);
-          root_uncomposited
-            .as_ref()
-            .expect("just set root_uncomposited")
-            .as_ref()
-        } else {
-          record.pixmap.as_ref()
-        }
+           root_uncomposited = Some(pixmap);
+           root_uncomposited
+             .as_ref()
+             .expect("just set root_uncomposited") // fastrender-allow-unwrap
+             .as_ref()
+         } else {
+           record.pixmap.as_ref()
+         }
       };
 
       let mut current: Option<(BackdropCompositeCacheKey, u64, Pixmap)> = None;

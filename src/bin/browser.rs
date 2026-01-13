@@ -6816,7 +6816,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !dirty_bookmark_windows.is_empty() {
       let source_window_id = *dirty_bookmark_windows
         .last()
-        .expect("non-empty bookmark dirty list");
+        .expect("non-empty bookmark dirty list"); // fastrender-allow-unwrap
 
       let (deltas, flush) = match windows.get_mut(&source_window_id) {
         Some(win) => {
@@ -10248,7 +10248,7 @@ impl App {
     let update = platform_output
       .accesskit_update
       .as_mut()
-      .expect("accesskit_update must be present after synthesizing");
+      .expect("accesskit_update must be present after synthesizing"); // fastrender-allow-unwrap
 
     update.nodes.extend(page_subtree.nodes);
     if let Some(focus) = page_subtree.focus {
@@ -12823,7 +12823,7 @@ impl App {
       CursorKind::NotAllowed => CursorIcon::NotAllowed,
       CursorKind::Grab => CursorIcon::Grab,
       CursorKind::Grabbing => CursorIcon::Grabbing,
-      CursorKind::Hidden => unreachable!("handled above"),
+      CursorKind::Hidden => unreachable!("handled above"), // fastrender-allow-panic
     };
     self.window.set_cursor_icon(icon);
   }

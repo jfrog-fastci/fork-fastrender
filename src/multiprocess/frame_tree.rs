@@ -103,7 +103,7 @@ impl FrameTree {
     self.next_frame_id = self
       .next_frame_id
       .checked_add(1)
-      .expect("FrameId counter overflow");
+      .expect("FrameId counter overflow"); // fastrender-allow-unwrap
     FrameId::new(id)
   }
 
@@ -166,7 +166,7 @@ impl FrameTree {
 
     let parent_depth = self
       .depth(parent)
-      .unwrap_or_else(|| panic!("unknown parent frame id {parent:?}"));
+      .unwrap_or_else(|| panic!("unknown parent frame id {parent:?}")); // fastrender-allow-panic
     let requested_depth = parent_depth + 1;
 
     let status = if requested_depth > self.max_depth {
@@ -203,7 +203,7 @@ impl FrameTree {
     let parent_node = self
       .nodes
       .get_mut(&parent)
-      .unwrap_or_else(|| panic!("unknown parent frame id {parent:?}"));
+      .unwrap_or_else(|| panic!("unknown parent frame id {parent:?}")); // fastrender-allow-panic
     parent_node.children.push(id);
     id
   }

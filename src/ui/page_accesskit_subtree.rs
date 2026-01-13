@@ -16,7 +16,7 @@ fn node_id_for_tab(tab_id: TabId, local_id: u64) -> accesskit::NodeId {
   // This intentionally produces ids that are "large" (>= 2^64) so they are very unlikely to
   // collide with any UI/chrome node ids allocated by egui/accesskit_winit.
   let raw = ((tab_id.0 as u128) << 64) | (local_id as u128);
-  accesskit::NodeId(NonZeroU128::new(raw).expect("node id must be non-zero"))
+  accesskit::NodeId(NonZeroU128::new(raw).expect("node id must be non-zero")) // fastrender-allow-unwrap
 }
 
 fn role_from_fastr_role(role: &str) -> accesskit::Role {

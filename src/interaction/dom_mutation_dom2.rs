@@ -157,7 +157,7 @@ pub fn activate_radio(dom: &mut Document, radio: NodeId) -> bool {
       if owner.is_some() {
         continue;
       }
-      if tree_root_boundary(dom, id) != active_root.unwrap() {
+      if tree_root_boundary(dom, id) != active_root.unwrap() { // fastrender-allow-unwrap
         continue;
       }
     }

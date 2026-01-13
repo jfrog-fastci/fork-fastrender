@@ -8,12 +8,12 @@ use super::duration_to_frames_floor;
 /// Returned samples are `f32` in the `[-1.0, 1.0]` range (inclusive, modulo floating-point
 /// rounding), interleaved per-frame (i.e. `[L0, R0, L1, R1, ...]`).
 pub fn sine(freq_hz: f32, duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
-  assert!(sample_rate > 0, "sample_rate must be > 0");
-  assert!(channels > 0, "channels must be > 0");
-  assert!(freq_hz.is_finite(), "freq_hz must be finite");
+  assert!(sample_rate > 0, "sample_rate must be > 0"); // fastrender-allow-panic
+  assert!(channels > 0, "channels must be > 0"); // fastrender-allow-panic
+  assert!(freq_hz.is_finite(), "freq_hz must be finite"); // fastrender-allow-panic
 
   let frames =
-    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow");
+    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow"); // fastrender-allow-unwrap
   let channels_usize = channels as usize;
 
   let sr = sample_rate as f32;
@@ -31,11 +31,11 @@ pub fn sine(freq_hz: f32, duration: Duration, sample_rate: u32, channels: u16) -
 ///
 /// The first frame is `1.0` on every channel; all remaining frames are `0.0`.
 pub fn impulse(duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
-  assert!(sample_rate > 0, "sample_rate must be > 0");
-  assert!(channels > 0, "channels must be > 0");
+  assert!(sample_rate > 0, "sample_rate must be > 0"); // fastrender-allow-panic
+  assert!(channels > 0, "channels must be > 0"); // fastrender-allow-panic
 
   let frames =
-    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow");
+    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow"); // fastrender-allow-unwrap
   let channels_usize = channels as usize;
   let mut out = vec![0.0; frames * channels_usize];
   if frames > 0 {
@@ -53,11 +53,11 @@ pub fn impulse(duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> 
 /// For `0` frames this returns an empty buffer. For `1` frame this returns a single frame of
 /// silence (`0.0`) to avoid the ambiguous "start vs end" value.
 pub fn ramp(duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
-  assert!(sample_rate > 0, "sample_rate must be > 0");
-  assert!(channels > 0, "channels must be > 0");
+  assert!(sample_rate > 0, "sample_rate must be > 0"); // fastrender-allow-panic
+  assert!(channels > 0, "channels must be > 0"); // fastrender-allow-panic
 
   let frames =
-    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow");
+    usize::try_from(duration_to_frames_floor(sample_rate, duration)).expect("frame count overflow"); // fastrender-allow-unwrap
   let channels_usize = channels as usize;
 
   if frames == 0 {

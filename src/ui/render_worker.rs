@@ -1084,7 +1084,7 @@ fn mirror_dom1_radio_group_state_into_dom2(
     Some(mapping) => mapping,
     None => {
       owned_mapping = Some(js_tab.dom().build_renderer_preorder_mapping());
-      owned_mapping.as_ref().unwrap()
+      owned_mapping.as_ref().unwrap() // fastrender-allow-unwrap
     }
   };
 
@@ -4188,7 +4188,7 @@ impl BrowserRuntime {
 
     if should_crash {
       // See `CRASH_URL_TOGGLE` for safety/usage notes.
-      panic!("deliberate UI worker crash requested via crash://panic");
+      panic!("deliberate UI worker crash requested via crash://panic"); // fastrender-allow-panic
     }
   }
 

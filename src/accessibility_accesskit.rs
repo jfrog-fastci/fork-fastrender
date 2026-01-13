@@ -32,7 +32,7 @@ const ELEMENT_SCROLL_CONTAINER_ID_OFFSET: u128 = 1;
 pub fn node_id_for_scroll_box_id(box_id: usize) -> NodeId {
   // Box IDs are assigned from 1, but be defensive and still allow 0 by mapping it to `2`.
   let raw = u128::from(box_id as u64).saturating_add(ELEMENT_SCROLL_CONTAINER_ID_OFFSET);
-  NodeId(NonZeroU128::new(raw.max(2)).expect("offset ensures non-zero"))
+  NodeId(NonZeroU128::new(raw.max(2)).expect("offset ensures non-zero")) // fastrender-allow-unwrap
 }
 
 fn scroll_box_id_for_node_id(node_id: NodeId) -> Option<usize> {
@@ -337,7 +337,7 @@ pub fn build_scroll_container_tree_update(
     let info = element_scroll_containers
       .get(&box_id)
       .copied()
-      .expect("box_id came from keys");
+      .expect("box_id came from keys"); // fastrender-allow-unwrap
     let node_id = node_id_for_scroll_box_id(box_id);
     child_ids.push(node_id);
 

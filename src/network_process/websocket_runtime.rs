@@ -150,7 +150,7 @@ impl WebSocketNetworkProcess {
     let join = std::thread::Builder::new()
       .name("fastrender-network-websocket".to_string())
       .spawn(move || network_main(cmd_rx, event_tx))
-      .expect("spawn network websocket thread");
+      .expect("spawn network websocket thread"); // fastrender-allow-unwrap
 
     WebSocketNetworkProcessHandle {
       cmd_tx: Some(cmd_tx),
@@ -191,7 +191,7 @@ fn websocket_io_runtime() -> &'static tokio::runtime::Runtime {
         format!("fr-wsio-{n}")
       })
       .build()
-      .expect("build websocket tokio runtime")
+      .expect("build websocket tokio runtime") // fastrender-allow-unwrap
   })
 }
 

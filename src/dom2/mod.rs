@@ -998,12 +998,12 @@ impl Document {
 
     self
       .set_script_parser_document(node, false)
-      .expect("set_script_parser_document should succeed for <script>");
+      .expect("set_script_parser_document should succeed for <script>"); // fastrender-allow-unwrap
 
     if was_parser_inserted && !self.has_attribute(node, "async").unwrap_or(false) {
       self
         .set_script_force_async(node, true)
-        .expect("set_script_force_async should succeed for <script>");
+        .expect("set_script_force_async should succeed for <script>"); // fastrender-allow-unwrap
     }
   }
 

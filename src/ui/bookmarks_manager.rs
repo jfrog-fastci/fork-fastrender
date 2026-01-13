@@ -897,7 +897,7 @@ fn bookmarks_list(
         rows: build_visible_rows(ui.ctx(), store, query, prev_cache.as_ref()),
       }
     } else {
-      prev_cache.expect("list cache present when not rebuilding")
+      prev_cache.expect("list cache present when not rebuilding") // fastrender-allow-unwrap
     };
 
     if !query.is_empty() && cache.rows.is_empty() {

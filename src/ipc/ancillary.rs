@@ -296,7 +296,7 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     ));
   }
 
-  let owned = fds_out.pop().expect("checked len == 1");
+  let owned = fds_out.pop().expect("checked len == 1"); // fastrender-allow-unwrap
   // Check truncation after parsing so any received fds are reliably closed on error.
   if (msg.msg_flags & libc::MSG_CTRUNC) != 0 {
     drop(owned);

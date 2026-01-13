@@ -16,7 +16,9 @@ fn main() {
 
   let mut line = String::new();
   let mut stdin = io::stdin().lock();
-  stdin.read_line(&mut line).expect("read line from stdin");
+  stdin
+    .read_line(&mut line)
+    .expect("read line from stdin"); // fastrender-allow-unwrap
   let received = line.trim_end_matches(&['\r', '\n'][..]);
   if received != stdin_sentinel {
     eprintln!(
@@ -26,6 +28,6 @@ fn main() {
   }
 
   let mut stdout = io::stdout().lock();
-  writeln!(stdout, "{stdout_sentinel}").expect("write stdout sentinel");
-  stdout.flush().expect("flush stdout");
+  writeln!(stdout, "{stdout_sentinel}").expect("write stdout sentinel"); // fastrender-allow-unwrap
+  stdout.flush().expect("flush stdout"); // fastrender-allow-unwrap
 }

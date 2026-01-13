@@ -1664,7 +1664,7 @@ fn finish_spawn(
   let h_process = process.as_raw_handle() as HANDLE;
 
   let mut job = Some(job);
-  if let Err(err) = job.as_ref().unwrap().assign_process(h_process) {
+  if let Err(err) = job.as_ref().unwrap().assign_process(h_process) { // fastrender-allow-unwrap
     if allow_jobless {
       eprintln!(
         "warning: Windows sandbox failed to assign child process {pid} to JobObject ({err}); \

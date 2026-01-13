@@ -211,9 +211,9 @@ impl DriftResampler {
     dst_rate_hz: u32,
     controller_cfg: DriftControllerConfig,
   ) -> Self {
-    assert!(channels > 0, "channels must be > 0");
-    assert!(src_rate_hz > 0, "src_rate_hz must be > 0");
-    assert!(dst_rate_hz > 0, "dst_rate_hz must be > 0");
+    assert!(channels > 0, "channels must be > 0"); // fastrender-allow-panic
+    assert!(src_rate_hz > 0, "src_rate_hz must be > 0"); // fastrender-allow-panic
+    assert!(dst_rate_hz > 0, "dst_rate_hz must be > 0"); // fastrender-allow-panic
     let base_ratio = f64::from(src_rate_hz) / f64::from(dst_rate_hz);
     Self {
       channels,

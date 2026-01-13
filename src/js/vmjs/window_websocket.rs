@@ -1559,7 +1559,7 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
       let cmd = match cmd {
         WsCommand::SendText(text) => WebSocketCommand::SendText { text },
         WsCommand::SendBinary(data) => WebSocketCommand::SendBinary { data },
-        _ => unreachable!("websocket_send only queues SendText/SendBinary"),
+        _ => unreachable!("websocket_send only queues SendText/SendBinary"), // fastrender-allow-panic
       };
       let msg = WebSocketIpcCommand::WebSocket { conn_id: ws_id, cmd };
       match cmd_tx.try_send(msg) {

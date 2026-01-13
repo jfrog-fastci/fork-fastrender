@@ -112,11 +112,11 @@ fn push_omnibox_popup_html(out: &mut String, app: &BrowserAppState) {
       out,
       "        <a id=\"{row_id}\" class=\"{classes}\" role=\"option\" aria-selected=\"{aria_selected}\" href=\"{safe_href}\"><span class=\"omnibox-icon\" aria-hidden=\"true\"></span><span class=\"omnibox-text\"><span class=\"omnibox-title\">{safe_title}</span>"
     )
-    .expect("write omnibox suggestion row");
+    .expect("write omnibox suggestion row"); // fastrender-allow-unwrap
 
     if let Some(url) = secondary {
       let safe_url = escape_html(url);
-      write!(out, "<span class=\"omnibox-url\">{safe_url}</span>").expect("write omnibox url");
+      write!(out, "<span class=\"omnibox-url\">{safe_url}</span>").expect("write omnibox url"); // fastrender-allow-unwrap
     }
 
     out.push_str("</span></a>\n");

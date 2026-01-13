@@ -18,7 +18,7 @@ use std::num::NonZeroU128;
 
 fn node_id_from_u128(raw: u128) -> NodeId {
   // AccessKit requires non-zero node IDs.
-  NodeId(NonZeroU128::new(raw).expect("node id must be non-zero"))
+  NodeId(NonZeroU128::new(raw).expect("node id must be non-zero")) // fastrender-allow-unwrap
 }
 
 /// Namespaces used when composing multiple independently generated subtrees into a single AccessKit

@@ -419,7 +419,7 @@ impl Document {
       1 => (range_a.end, range_b.start),   // START_TO_END
       2 => (range_a.end, range_b.end),     // END_TO_END
       3 => (range_a.start, range_b.end),   // END_TO_START
-      _ => unreachable!("checked above"),
+      _ => unreachable!("checked above"), // fastrender-allow-panic
     };
 
     Ok(match self.boundary_point_position(this_point, other_point) {

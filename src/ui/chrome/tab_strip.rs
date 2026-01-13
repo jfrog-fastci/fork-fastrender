@@ -3213,7 +3213,7 @@ pub(super) fn tab_strip_ui(
                     let group = app
                       .tab_groups
                       .get(&group_id)
-                      .expect("tab_group is filtered to existing groups");
+                      .expect("tab_group is filtered to existing groups"); // fastrender-allow-unwrap
                     group_chip_width_cache.width(
                       ui,
                       group_id,

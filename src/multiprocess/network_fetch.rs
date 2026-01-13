@@ -106,7 +106,7 @@ impl NetworkService {
         let tx = tx.clone();
         move || service_main(rx, browser_tx, tx)
       })
-      .expect("spawn network service");
+      .expect("spawn network service"); // fastrender-allow-unwrap
 
     let client = NetworkClient {
       tx: tx.clone(),

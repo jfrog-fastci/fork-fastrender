@@ -37,10 +37,10 @@ pub const MAX_COOKIE_STRING_BYTES: usize = 4096;
 // Compile-time guard: protocol-level per-field caps must fit under the framing-layer limit.
 const _: () = {
   if MAX_URL_BYTES > crate::ipc::MAX_IPC_MESSAGE_BYTES {
-    panic!("MAX_URL_BYTES must be <= MAX_IPC_MESSAGE_BYTES");
+    panic!("MAX_URL_BYTES must be <= MAX_IPC_MESSAGE_BYTES"); // fastrender-allow-panic
   }
   if MAX_COOKIE_STRING_BYTES > crate::ipc::MAX_IPC_MESSAGE_BYTES {
-    panic!("MAX_COOKIE_STRING_BYTES must be <= MAX_IPC_MESSAGE_BYTES");
+    panic!("MAX_COOKIE_STRING_BYTES must be <= MAX_IPC_MESSAGE_BYTES"); // fastrender-allow-panic
   }
 };
 

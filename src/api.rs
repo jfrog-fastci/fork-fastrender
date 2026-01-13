@@ -22204,7 +22204,7 @@ fn build_container_scope(styled: &StyledNode, ctx: &ContainerQueryContext) -> Ha
     let mut push_next: Option<Frame<'_>> = None;
 
     {
-      let frame = stack.last_mut().expect("stack not empty");
+      let frame = stack.last_mut().expect("stack not empty"); // fastrender-allow-unwrap
       if frame.next_child < frame.node.children.len() {
         let child = &frame.node.children[frame.next_child];
         frame.next_child += 1;
@@ -22237,7 +22237,7 @@ fn build_container_scope(styled: &StyledNode, ctx: &ContainerQueryContext) -> Ha
       continue;
     }
 
-    let frame = stack.pop().expect("frame exists");
+    let frame = stack.pop().expect("frame exists"); // fastrender-allow-unwrap
 
     // Re-run cascade for:
     // - any node that is itself a container,

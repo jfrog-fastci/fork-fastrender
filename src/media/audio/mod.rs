@@ -704,7 +704,7 @@ impl PcmF32QueueProducer {
       }
       _ => {
         converted = Some(convert_to_f32_interleaved(&buffer)?);
-        converted.as_ref().unwrap()
+        converted.as_ref().unwrap() // fastrender-allow-unwrap
       }
     };
 

@@ -1245,7 +1245,7 @@ fn latency_metrics(prefix: &str, samples: &[f64]) -> BTreeMap<String, f64> {
   sorted.sort_by(|a, b| a.total_cmp(b));
   let p50 = percentile_sorted(&sorted, 0.50);
   let p95 = percentile_sorted(&sorted, 0.95);
-  let max = *sorted.last().unwrap();
+  let max = *sorted.last().unwrap(); // fastrender-allow-unwrap
   out.insert(format!("{prefix}_p50_ms"), round_ms(p50));
   out.insert(format!("{prefix}_p95_ms"), round_ms(p95));
   out.insert(format!("{prefix}_max_ms"), round_ms(max));

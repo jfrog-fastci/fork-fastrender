@@ -67,7 +67,7 @@ impl AudioMixer {
   pub fn mix_into(&mut self, out: &mut [f32], device_pts: Duration, frames: usize) {
     let channels = self.channels as usize;
     let needed = frames.saturating_mul(channels);
-    assert!(
+    assert!( // fastrender-allow-panic
       out.len() >= needed,
       "AudioMixer output buffer too small: need {needed} samples, got {}",
       out.len()
@@ -126,7 +126,7 @@ impl AudioMixer {
   pub fn mix_into_frames(&mut self, out: &mut [f32], device_frame: u64, frames: usize) {
     let channels = self.channels as usize;
     let needed = frames.saturating_mul(channels);
-    assert!(
+    assert!( // fastrender-allow-panic
       out.len() >= needed,
       "AudioMixer output buffer too small: need {needed} samples, got {}",
       out.len()

@@ -326,7 +326,7 @@ const _: () = {
   }
 
   if contains(SRC, &FORBIDDEN) {
-    panic!("websocket IPC module contains a forbidden integer token");
+    panic!("websocket IPC module contains a forbidden integer token"); // fastrender-allow-panic
   }
 };
 

@@ -99,7 +99,7 @@ mod imp {
     /// The returned memfd is always size-sealed with `F_SEAL_SHRINK | F_SEAL_GROW`.
     pub fn new(len: u64) -> Result<Self, SharedMemoryError> {
       // Use a constant C string so we don't allocate.
-      let name = CStr::from_bytes_with_nul(b"fastrender-shm\0").expect("nul-terminated");
+      let name = CStr::from_bytes_with_nul(b"fastrender-shm\0").expect("nul-terminated"); // fastrender-allow-unwrap
       // `MFD_ALLOW_SEALING` is required to later apply `F_SEAL_*` seals.
       let fd = unsafe {
         libc::memfd_create(

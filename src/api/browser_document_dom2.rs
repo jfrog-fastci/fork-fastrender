@@ -2265,7 +2265,7 @@ impl BrowserDocumentDom2 {
     let prepared = self
       .prepared
       .as_ref()
-      .expect("checked prepared is Some above");
+      .expect("checked prepared is Some above"); // fastrender-allow-unwrap
 
     // Prefer an explicitly provided deadline; otherwise fall back to the currently installed
     // deadline (if any) or this document's configured `RenderOptions::{timeout,cancel_callback}`.

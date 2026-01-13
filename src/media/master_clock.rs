@@ -68,7 +68,7 @@ impl MasterClock {
       match desired_source {
         ClockSource::Audio => {
           // Audio is present and started by construction of `desired_source`.
-          let audio_now_nanos = duration_to_nanos_i128(inner.audio.as_ref().unwrap().now());
+          let audio_now_nanos = duration_to_nanos_i128(inner.audio.as_ref().unwrap().now()); // fastrender-allow-unwrap
           inner.audio_offset_nanos = base_master_nanos.saturating_sub(audio_now_nanos);
         }
         ClockSource::System => {
@@ -111,7 +111,7 @@ impl MasterClock {
 
     match desired_source {
       ClockSource::Audio => {
-        let audio_now_nanos = duration_to_nanos_i128(inner.audio.as_ref().unwrap().now());
+        let audio_now_nanos = duration_to_nanos_i128(inner.audio.as_ref().unwrap().now()); // fastrender-allow-unwrap
         inner.audio_offset_nanos = base_master_nanos.saturating_sub(audio_now_nanos);
       }
       ClockSource::System => {
@@ -320,4 +320,3 @@ mod tests {
     assert_eq!(master.current_source(), ClockSource::Audio);
   }
 }
-

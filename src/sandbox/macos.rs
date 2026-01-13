@@ -606,7 +606,7 @@ pub(crate) fn apply_profile_source_with_home_param(
   let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
   let tmpdir = CString::new(tmpdir)
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "TMPDIR contains NUL"))?;
-  let tmpdir_key = CString::new("TMPDIR").expect("static cstr should not contain NUL");
+  let tmpdir_key = CString::new("TMPDIR").expect("static cstr should not contain NUL"); // fastrender-allow-unwrap
 
   // `sandbox_init_with_parameters` expects a NULL-terminated list: [key, value, key, value, NULL].
   let params: [*const libc::c_char; 5] = [

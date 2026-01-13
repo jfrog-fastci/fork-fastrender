@@ -139,7 +139,7 @@ fn apply_sbpl_impl(profile: &str) -> Result<(), MacosSandboxError> {
     fn sandbox_free_error(errorbuf: *mut std::os::raw::c_char);
   }
 
-  let profile_c = CString::new(profile).expect("SBPL profile contains interior NUL byte");
+  let profile_c = CString::new(profile).expect("SBPL profile contains interior NUL byte"); // fastrender-allow-unwrap
   let mut error_buf: *mut std::os::raw::c_char = ptr::null_mut();
 
   // Flags = 0 => profile is an SBPL string, not a named builtin profile.

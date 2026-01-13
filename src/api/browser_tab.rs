@@ -1907,11 +1907,11 @@ impl BrowserTabHost {
                     let parser_document = dom.node(script).script_parser_document;
                     dom
                       .set_script_parser_document(script, false)
-                      .expect("set_script_parser_document should succeed for <script>");
+                      .expect("set_script_parser_document should succeed for <script>"); // fastrender-allow-unwrap
                     if parser_document && !dom.has_attribute(script, "async").unwrap_or(false) {
                       dom
                         .set_script_force_async(script, true)
-                        .expect("set_script_force_async should succeed for <script>");
+                        .expect("set_script_force_async should succeed for <script>"); // fastrender-allow-unwrap
                     }
                   }
                 }
@@ -2982,7 +2982,7 @@ impl BrowserTabHost {
     self.mutate_dom(|dom| {
       dom
         .set_script_already_started(node_id, true)
-        .expect("set_script_already_started should succeed for <script>");
+        .expect("set_script_already_started should succeed for <script>"); // fastrender-allow-unwrap
       ((), false)
     });
     self.scripts.insert(
@@ -8037,7 +8037,7 @@ impl BrowserTab {
     &self
       .renderer_dom_mapping_cache
       .as_ref()
-      .expect("renderer dom mapping cache missing after rebuild")
+      .expect("renderer dom mapping cache missing after rebuild") // fastrender-allow-unwrap
       .mapping
   }
 

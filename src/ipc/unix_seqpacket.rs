@@ -365,7 +365,7 @@ fn cmsg_align(len: usize) -> Option<usize> {
 
 fn cmsg_header_len() -> usize {
   // `cmsghdr` is tiny; this cannot overflow.
-  cmsg_align(mem::size_of::<libc::cmsghdr>()).expect("cmsghdr align overflow")
+  cmsg_align(mem::size_of::<libc::cmsghdr>()).expect("cmsghdr align overflow") // fastrender-allow-unwrap
 }
 
 fn cmsg_len(data_len: usize) -> Option<usize> {

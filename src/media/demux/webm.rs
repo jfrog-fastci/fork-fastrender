@@ -262,7 +262,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       let q = self
         .packet_queues
         .get_mut(&pkt.track_id)
-        .expect("queue must exist for supported track");
+        .expect("queue must exist for supported track"); // fastrender-allow-unwrap
       if q.len() >= self.options.per_track_queue_capacity {
         return Err(MediaError::Demux(format!(
           "WebM inter-track reorder buffer overflow (track {}, cap {})",

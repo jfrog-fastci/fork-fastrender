@@ -25,7 +25,7 @@ struct AssignedNode<'a> {
 fn new_node_id(raw: u128) -> NodeId {
   // AccessKit uses a non-zero identifier type; use a monotonic counter so ids are stable for a
   // given traversal order.
-  NodeId(NonZeroU128::new(raw).expect("node id counter must never be zero"))
+  NodeId(NonZeroU128::new(raw).expect("node id counter must never be zero")) // fastrender-allow-unwrap
 }
 
 fn assign_ids<'a>(

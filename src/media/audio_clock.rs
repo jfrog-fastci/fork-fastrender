@@ -47,7 +47,7 @@ impl InterpolatedAudioClock {
   ///
   /// `sample_rate_hz` must match the configured audio output sample rate.
   pub fn new(sample_rate_hz: u32) -> Self {
-    assert!(sample_rate_hz != 0, "sample_rate_hz must be nonzero");
+    assert!(sample_rate_hz != 0, "sample_rate_hz must be nonzero"); // fastrender-allow-panic
     Self {
       sample_rate_hz,
       start: Instant::now(),

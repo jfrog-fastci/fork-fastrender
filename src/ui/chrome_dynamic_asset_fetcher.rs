@@ -256,9 +256,9 @@ impl ResourceFetcher for ChromeDynamicAssetFetcher {
 fn transparent_png_bytes() -> &'static Vec<u8> {
   static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
   BYTES.get_or_init(|| {
-    let pixmap = tiny_skia::Pixmap::new(1, 1).expect("1x1 pixmap");
+    let pixmap = tiny_skia::Pixmap::new(1, 1).expect("1x1 pixmap"); // fastrender-allow-unwrap
     crate::image_output::encode_image(&pixmap, crate::OutputFormat::Png)
-      .expect("encode 1x1 transparent png")
+      .expect("encode 1x1 transparent png") // fastrender-allow-unwrap
   })
 }
 

@@ -201,7 +201,7 @@ impl AudioEngine {
       groups
         .get(&group)
         .cloned()
-        .expect("AudioGroupId must be created by AudioEngine::create_group")
+        .expect("AudioGroupId must be created by AudioEngine::create_group") // fastrender-allow-unwrap
     };
 
     let backend_sink = self.backend.create_sink();
@@ -369,4 +369,3 @@ mod tests {
     assert!(all_near(&out1, 0.0));
   }
 }
-

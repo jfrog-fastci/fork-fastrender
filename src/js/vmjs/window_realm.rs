@@ -39298,7 +39298,7 @@ fn queue_dynamic_import_map_task_inline(
         .unwrap_or(host.document_url.as_str());
 
       let base_url =
-        Url::parse(base_str).unwrap_or_else(|_| Url::parse("about:blank").expect("about:blank"));
+        Url::parse(base_str).unwrap_or_else(|_| Url::parse("about:blank").expect("about:blank")); // fastrender-allow-unwrap
       host.register_import_map_from_script_text(&source_text, &base_url)?;
       Ok(())
     })

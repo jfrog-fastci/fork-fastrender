@@ -73,7 +73,7 @@ pub fn apply_omnibox_nav_key(app: &mut BrowserAppState, key: OmniboxNavKey) -> O
           None => len - 1,
           Some(i) => (i + len - 1) % len,
         },
-        _ => unreachable!(),
+        _ => unreachable!(), // fastrender-allow-panic
       };
 
       if app.chrome.omnibox.selected.is_none() && app.chrome.omnibox.original_input.is_none() {

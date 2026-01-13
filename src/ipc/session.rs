@@ -150,7 +150,7 @@ impl RendererSession {
         }))
       }
 
-      BrowserToRenderer::Shutdown { .. } => unreachable!("handled above"),
+      BrowserToRenderer::Shutdown { .. } => unreachable!("handled above"), // fastrender-allow-panic
     }
   }
 

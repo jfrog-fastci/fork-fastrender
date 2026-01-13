@@ -54,7 +54,7 @@ pub fn tree_update_from_accessibility_tree(
     const NAMESPACE_PREORDER: u128 = 0x02;
     let payload = (preorder as u128).saturating_add(1);
     let raw = (MARKER << 120) | (NAMESPACE_PREORDER << 112) | (payload & ((1u128 << 112) - 1));
-    NodeId(std::num::NonZeroU128::new(raw).expect("preorder-derived AccessKit NodeId must be non-zero"))
+    NodeId(std::num::NonZeroU128::new(raw).expect("preorder-derived AccessKit NodeId must be non-zero")) // fastrender-allow-unwrap
   }
 
   fn accesskit_id_for_node(node: &AccessibilityNode, mapping: Option<&RendererDomMapping>) -> NodeId {
@@ -103,7 +103,7 @@ pub fn tree_update_from_accessibility_tree(
   let root_id = root_ids
     .first()
     .copied()
-    .expect("accessibility tree must produce at least one AccessKit node");
+    .expect("accessibility tree must produce at least one AccessKit node"); // fastrender-allow-unwrap
 
   debug_assert!(
     root_ids.len() == 1,
