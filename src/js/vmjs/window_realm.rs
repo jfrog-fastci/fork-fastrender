@@ -22341,12 +22341,18 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
     let handler_key =
       alloc_key(&mut scope, &handler_name).map_err(|e| web_events::DomError::new(e.to_string()))?;
-    let Some(handler) = scope
+    let handler = match scope
       .heap()
       .object_get_own_data_property_value(target_obj, &handler_key)
-      .map_err(|e| web_events::DomError::new(e.to_string()))?
-    else {
-      return Ok(());
+    {
+      Ok(Some(handler)) => handler,
+      Ok(None) => return Ok(()),
+      // vm-js installs many `on{type}` EventHandler attributes (e.g. `onstorage`) as accessors on
+      // `window`/`document`. Those accessors register wrapper listeners in the shared event
+      // registry, so attempting to treat the property as a direct data slot is both incorrect and
+      // would abort host-driven dispatch.
+      Err(VmError::PropertyNotData) => return Ok(()),
+      Err(err) => return Err(web_events::DomError::new(err.to_string())),
     };
     if !scope
       .heap()
@@ -23580,12 +23586,16 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
     let handler_key =
       alloc_key(scope, &handler_name).map_err(|e| web_events::DomError::new(e.to_string()))?;
-    let Some(handler) = scope
+    let handler = match scope
       .heap()
       .object_get_own_data_property_value(target_obj, &handler_key)
-      .map_err(|e| web_events::DomError::new(e.to_string()))?
-    else {
-      return Ok(());
+    {
+      Ok(Some(handler)) => handler,
+      Ok(None) => return Ok(()),
+      // Treat accessor-based handler properties as absent: vm-js uses prototype accessors + wrapper
+      // listeners for most DOM nodes, and user-defined accessors should not abort dispatch.
+      Err(VmError::PropertyNotData) => return Ok(()),
+      Err(err) => return Err(web_events::DomError::new(err.to_string())),
     };
     if !scope
       .heap()

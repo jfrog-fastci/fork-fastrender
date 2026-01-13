@@ -470,6 +470,10 @@ impl Drop for VmJsBrowserTabExecutor {
   }
 }
 impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
+  fn supports_incremental_dynamic_script_discovery(&self) -> bool {
+    true
+  }
+
   fn on_document_referrer_policy_updated(&mut self, policy: ReferrerPolicy) {
     self.document_referrer_policy = policy;
   }

@@ -83,6 +83,16 @@ pub(crate) enum ModuleScriptEvaluationOutcome {
 }
 
 pub trait BrowserTabJsExecutor {
+  /// Returns `true` when this executor provides DOM bindings that already prepare dynamic `<script>`
+  /// elements via insertion/attribute mutation steps.
+  ///
+  /// When enabled, [`BrowserTabHost`] can avoid redundant full-DOM scans for dynamically inserted
+  /// scripts and instead rely on incremental notifications (for example: vm-js DOM shims calling
+  /// [`BrowserTabHost::register_and_schedule_dynamic_script`]).
+  fn supports_incremental_dynamic_script_discovery(&self) -> bool {
+    false
+  }
+
   /// Notify the executor that the document referrer policy has been set/updated for the current
   /// navigation.
   ///
@@ -527,7 +537,10 @@ pub struct BrowserTabHost {
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
   webidl_bindings_host: Box<VmJsWebIdlBindingsHostDispatch<BrowserTabHost>>,
+  pending_dynamic_script_candidates: VecDeque<NodeId>,
   last_dynamic_script_discovery_generation: u64,
+  #[cfg(test)]
+  dynamic_script_full_scan_count: u64,
   last_image_load_discovery_generation: Option<u64>,
   /// Whether we are currently running a streaming HTML parse (even if the parser state is
   /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
@@ -605,7 +618,10 @@ impl BrowserTabHost {
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
       webidl_bindings_host,
+      pending_dynamic_script_candidates: VecDeque::new(),
       last_dynamic_script_discovery_generation: 0,
+      #[cfg(test)]
+      dynamic_script_full_scan_count: 0,
       last_image_load_discovery_generation: None,
       streaming_parse_active: false,
       streaming_parse_in_progress: false,
@@ -949,7 +965,12 @@ impl BrowserTabHost {
     self.js_events = JsDomEvents::new()?;
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
+    self.pending_dynamic_script_candidates.clear();
     self.last_dynamic_script_discovery_generation = 0;
+    #[cfg(test)]
+    {
+      self.dynamic_script_full_scan_count = 0;
+    }
     self.last_image_load_discovery_generation = None;
     self.document_write_state.reset_for_navigation();
     self
@@ -1969,12 +1990,31 @@ impl BrowserTabHost {
   }
 
   fn discover_dynamic_scripts(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+    if self.executor.supports_incremental_dynamic_script_discovery() {
+      // vm-js DOM bindings already implement the dynamic-script insertion steps and forward
+      // discovered scripts to `register_and_schedule_dynamic_script`. Avoid redundant O(N) scans of
+      // the connected DOM after every JS-driven mutation.
+      self.pending_dynamic_script_candidates.clear();
+      // Dynamic script discovery is also used as the between-turn hook for image load discovery.
+      self.discover_and_start_image_loads(event_loop)?;
+      return Ok(());
+    }
+
+    self.discover_dynamic_scripts_full_scan(event_loop)
+  }
+
+  fn discover_dynamic_scripts_full_scan(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
     // Avoid O(N) scans on every hook call by gating discovery on the document's mutation counter.
     let generation = self.document.dom_mutation_generation();
     if generation == self.last_dynamic_script_discovery_generation {
       return Ok(());
     }
     self.last_dynamic_script_discovery_generation = generation;
+    #[cfg(test)]
+    {
+      self.dynamic_script_full_scan_count =
+        self.dynamic_script_full_scan_count.saturating_add(1);
+    }
 
     fn is_html_namespace(namespace: &str) -> bool {
       namespace.is_empty() || namespace == HTML_NAMESPACE
@@ -2672,6 +2712,9 @@ impl BrowserTabHost {
     base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<HtmlScriptId> {
+    if self.executor.supports_incremental_dynamic_script_discovery() {
+      self.pending_dynamic_script_candidates.push_back(node_id);
+    }
     let mut spec = spec;
     let spec_for_table = spec.clone();
     let integrity_invalid =
@@ -3963,6 +4006,11 @@ impl BrowserTabHost {
       resource.content_type.as_deref(),
       fallback_encoding,
     ))
+  }
+
+  #[cfg(test)]
+  fn dynamic_script_full_scan_count(&self) -> u64 {
+    self.dynamic_script_full_scan_count
   }
 }
 
@@ -7009,6 +7057,77 @@ mod tests {
       .expect("expected script to be registered");
     assert!(!entry.spec.parser_inserted);
     assert!(entry.spec.force_async);
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_discovery_skips_full_dom_scan_with_vmjs_insertion_steps() -> Result<()> {
+    #[derive(Clone)]
+    struct MapFetcher {
+      entries: Arc<HashMap<String, FetchedResource>>,
+    }
+ 
+    impl ResourceFetcher for MapFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self
+          .entries
+          .get(url)
+          .cloned()
+          .ok_or_else(|| Error::Other(format!("missing fetcher entry for {url}")))
+      }
+    }
+ 
+    let script_url = "https://example.invalid/dyn.js";
+    let mut entries: HashMap<String, FetchedResource> = HashMap::new();
+    entries.insert(
+      script_url.to_string(),
+      FetchedResource::new(
+        br#"document.documentElement.setAttribute('data-dyn', '1');"#.to_vec(),
+        Some("text/javascript".to_string()),
+      ),
+    );
+ 
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(MapFetcher {
+      entries: Arc::new(entries),
+    });
+ 
+    let mut body = String::new();
+    // Keep this large enough to make O(N) scans noticeable without slowing the test suite down.
+    for _ in 0..5000 {
+      body.push_str("<div></div>");
+    }
+ 
+    let html = format!(
+      r#"<!doctype html><html><head></head><body>{body}<script>
+        const s = document.createElement('script');
+        s.src = {script_url:?};
+        document.head.appendChild(s);
+      </script></body></html>"#
+    );
+ 
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+      &html,
+      "https://example.invalid/index.html",
+      RenderOptions::default(),
+      fetcher,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+ 
+    let dom = tab.dom();
+    let document_element = dom.document_element().expect("documentElement should exist");
+    assert_eq!(
+      dom.get_attribute(document_element, "data-dyn")
+        .expect("get_attribute should succeed"),
+      Some("1"),
+      "expected dynamically inserted script to execute",
+    );
+ 
+    assert_eq!(
+      tab.host.dynamic_script_full_scan_count(),
+      0,
+      "expected vm-js insertion steps to bypass full dynamic script discovery scans",
+    );
+ 
     Ok(())
   }
 
