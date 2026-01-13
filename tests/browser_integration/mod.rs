@@ -165,6 +165,7 @@ mod ui_worker_renderer_reuse;
 mod ui_worker_robustness;
 mod ui_worker_scroll;
 mod ui_worker_scroll_state_early;
+mod ui_worker_scroll_hover_coalescing;
 mod ui_worker_scroll_hit_test;
 mod ui_worker_pointer_hit_test_dedup;
 mod ui_worker_shutdown;

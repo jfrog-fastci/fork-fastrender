@@ -65,6 +65,14 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "browser_ui")]
 static UI_WORKER_RENDERER_BUILD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Global counter for how many scroll-induced hover syncs were executed by the UI worker.
+///
+/// A "scroll-induced hover sync" is when the worker re-runs pointer hover hit-testing after a
+/// scroll changes the scroll offset (so content moves under a stationary cursor). Scroll bursts
+/// should coalesce to a single sync per tab.
+#[cfg(feature = "browser_ui")]
+static UI_WORKER_SCROLL_HOVER_SYNC_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Returns the number of renderers built by the UI worker so far (test hook).
 #[cfg(feature = "browser_ui")]
 pub fn renderer_build_count_for_test() -> usize {
@@ -75,6 +83,18 @@ pub fn renderer_build_count_for_test() -> usize {
 #[cfg(feature = "browser_ui")]
 pub fn reset_renderer_build_count_for_test() {
   UI_WORKER_RENDERER_BUILD_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Returns the number of scroll-induced hover syncs executed so far (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn scroll_hover_sync_count_for_test() -> usize {
+  UI_WORKER_SCROLL_HOVER_SYNC_COUNT.load(Ordering::Relaxed)
+}
+
+/// Reset the per-process scroll-induced hover sync counter (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn reset_scroll_hover_sync_count_for_test() {
+  UI_WORKER_SCROLL_HOVER_SYNC_COUNT.store(0, Ordering::Relaxed);
 }
 
 /// Navigation URL that triggers the UI worker crash test when opted in.
@@ -399,6 +419,7 @@ struct TabState {
   visited_urls: VisitedUrlStore,
 
   last_pointer_pos_css: Option<(f32, f32)>,
+  pending_hover_sync_pos_css: Option<(f32, f32)>,
   last_pointer_click_count: u8,
   pointer_buttons: u16,
   last_hovered_dom_node_id: Option<usize>,
@@ -438,6 +459,7 @@ impl TabState {
       last_base_url: None,
       visited_urls: VisitedUrlStore::default(),
       last_pointer_pos_css: None,
+      pending_hover_sync_pos_css: None,
       last_pointer_click_count: 0,
       pointer_buttons: 0,
       last_hovered_dom_node_id: None,
@@ -1408,13 +1430,17 @@ impl BrowserRuntime {
         .values()
         .any(|tab| tab.pending_navigation.is_some())
         && self.tabs.values().any(|tab| tab.scroll_coalesce)
-      {
-        self.drain_scroll_burst();
-      }
+       {
+         self.drain_scroll_burst();
+       }
 
-      let Some(job) = self.next_job() else {
-        continue;
-      };
+       // Scrolling can move content under a stationary cursor. Queue a hover hit-test during scroll
+       // handling and flush it once per coalesced scroll burst (or before the next paint job).
+       self.flush_pending_hover_syncs();
+
+       let Some(job) = self.next_job() else {
+         continue;
+       };
 
       let output = self.run_job(job);
 
@@ -1613,6 +1639,27 @@ impl BrowserRuntime {
         button,
         modifiers,
       });
+    }
+  }
+
+  fn flush_pending_hover_syncs(&mut self) {
+    let mut pending = Vec::new();
+    for (&tab_id, tab) in self.tabs.iter_mut() {
+      if let Some(pos_css) = tab.pending_hover_sync_pos_css.take() {
+        pending.push((tab_id, pos_css));
+      }
+    }
+
+    for (tab_id, pos_css) in pending {
+      #[cfg(feature = "browser_ui")]
+      UI_WORKER_SCROLL_HOVER_SYNC_COUNT.fetch_add(1, Ordering::Relaxed);
+
+      self.handle_pointer_move(
+        tab_id,
+        pos_css,
+        PointerButton::None,
+        crate::ui::PointerModifiers::NONE,
+      );
     }
   }
 
@@ -1884,7 +1931,6 @@ impl BrowserRuntime {
         delta_css,
         pointer_css,
       } => {
-        let mut hover_update_pos_css: Option<(f32, f32)> = None;
         {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return;
@@ -1932,21 +1978,23 @@ impl BrowserRuntime {
             // gesture for numeric stepping (instead of scrolling the page).
             let scroll_snapshot = tab.scroll_state.clone();
             let engine = &mut tab.interaction;
-            if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-              let scrolled = (!scroll_snapshot.elements.is_empty())
-                .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
-              let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-              let step_result = engine.wheel_step_number_input(
-                dom,
-                box_tree,
-                hit_tree,
-                &scroll_snapshot,
-                Point::new(pointer_css.0, pointer_css.1),
-                delta_y,
-              );
-              let changed = step_result.unwrap_or(false);
-              (changed, step_result)
-            }) {
+            if let Ok(step_result) =
+              doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+                let scrolled = (!scroll_snapshot.elements.is_empty())
+                  .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
+                let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+                let step_result = engine.wheel_step_number_input(
+                  dom,
+                  box_tree,
+                  hit_tree,
+                  &scroll_snapshot,
+                  Point::new(pointer_css.0, pointer_css.1),
+                  delta_y,
+                );
+                let changed = step_result.unwrap_or(false);
+                (changed, step_result)
+              })
+            {
               if let Some(dom_changed) = step_result {
                 wheel_handled = true;
                 changed |= dom_changed;
@@ -1988,8 +2036,8 @@ impl BrowserRuntime {
 
           // If no pointer position was provided (or we couldn't apply wheel scrolling at all), treat
           // this as a basic viewport scroll and clamp to the content bounds when possible.
-            if !wheel_handled {
-              let mut next = current_scroll.clone();
+          if !wheel_handled {
+            let mut next = current_scroll.clone();
 
             // Apply the raw delta first. When cached layout artifacts are available, we'll
             // immediately derive the effective snapped/clamped scroll state (matching paint) below.
@@ -2042,17 +2090,10 @@ impl BrowserRuntime {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
-            hover_update_pos_css = pointer_pos_css.or(tab.last_pointer_pos_css);
+            if scroll_changed {
+              tab.pending_hover_sync_pos_css = pointer_pos_css.or(tab.last_pointer_pos_css);
+            }
           }
-        }
-
-        if let Some(pos_css) = hover_update_pos_css {
-          self.handle_pointer_move(
-            tab_id,
-            pos_css,
-            PointerButton::None,
-            crate::ui::PointerModifiers::NONE,
-          );
         }
       }
       UiToWorker::ScrollTo { tab_id, pos_css } => {
@@ -3414,6 +3455,9 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    // If a real pointer move arrives, it supersedes any pending scroll-induced hover sync. The
+    // pointer move will do a fresh hit-test using the latest scroll offset.
+    tab.pending_hover_sync_pos_css = None;
     let pointer_in_page =
       pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0;
     tab.last_pointer_pos_css = pointer_in_page.then_some(pos_css);
