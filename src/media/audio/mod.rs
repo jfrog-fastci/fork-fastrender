@@ -712,7 +712,7 @@ impl PcmF32QueueProducer {
 
     let expected_channels = self.channels();
     let expected_sample_rate_hz = self.sample_rate_hz();
-    if buffer.channels != expected_channels || buffer.sample_rate != expected_sample_rate_hz {
+    if buffer.channels != expected_channels {
       return Err(AudioError::StreamConfigMismatch {
         expected_channels,
         expected_sample_rate_hz,
@@ -721,19 +721,57 @@ impl PcmF32QueueProducer {
       });
     }
 
-    // Avoid an intermediate allocation for already-normalized data.
-    if let AudioSamples::InterleavedF32(samples) = buffer.data {
-      if samples.len() % expected_channels != 0 {
-        return Err(AudioError::InvalidInterleavedLength {
-          len_samples: samples.len(),
-          channels: expected_channels,
-        });
+    let mut converted: Option<Vec<f32>> = None;
+    let samples: &[f32] = match buffer.data {
+      AudioSamples::InterleavedF32(samples) => {
+        if samples.len() % expected_channels != 0 {
+          return Err(AudioError::InvalidInterleavedLength {
+            len_samples: samples.len(),
+            channels: expected_channels,
+          });
+        }
+        samples
       }
+      _ => {
+        converted = Some(convert_to_f32_interleaved(&buffer)?);
+        converted.as_ref().unwrap()
+      }
+    };
+
+    if buffer.sample_rate == expected_sample_rate_hz {
       return self.push_pcm_f32(samples, buffer.pts);
     }
 
-    let converted = convert_to_f32_interleaved(&buffer)?;
-    self.push_pcm_f32(&converted, buffer.pts)
+    // Resample decoded audio to the queue/device sample rate. This is a simple linear
+    // interpolation resampler (good enough for an MVP); higher-quality band-limited resampling can
+    // be layered later if needed.
+    let input_frames = samples.len() / expected_channels;
+    if input_frames == 0 {
+      return Ok(());
+    }
+
+    let out_frames_u128 =
+      (input_frames as u128).saturating_mul(expected_sample_rate_hz as u128);
+    let out_frames_u128 = out_frames_u128
+      .saturating_add((buffer.sample_rate as u128) / 2)
+      .checked_div(buffer.sample_rate as u128)
+      .unwrap_or(u128::MAX);
+    let out_frames = usize::try_from(out_frames_u128).unwrap_or(usize::MAX);
+    if out_frames > limits::MAX_FRAMES_PER_PUSH {
+      return Err(AudioError::invalid_buffer(format!(
+        "resampled buffer would have {out_frames} frames which exceeds MAX_FRAMES_PER_PUSH {}",
+        limits::MAX_FRAMES_PER_PUSH
+      )));
+    }
+
+    let resampled = resample::resample_interleaved_f32_linear(
+      samples,
+      expected_channels,
+      buffer.sample_rate,
+      expected_sample_rate_hz,
+      out_frames,
+    );
+    self.push_pcm_f32(&resampled, buffer.pts)
   }
 
   /// Convenience helper for pushing interleaved `f32` PCM into the queue.
