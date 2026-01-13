@@ -2150,7 +2150,6 @@ impl<'vm> HirEvaluator<'vm> {
         } else {
           // --- for..in ---
           let rhs_value = self.eval_for_in_of_rhs_with_tdz_env(scope, body, left, *right)?;
-
           // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
           // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw) and the
           // statement's completion value is `undefined` (not empty).
@@ -2271,7 +2270,6 @@ impl<'vm> HirEvaluator<'vm> {
               Flow::Return(v) => return Ok(Flow::Return(v)),
             }
           }
-
           Ok(Flow::Normal(Some(v)))
         }
       }

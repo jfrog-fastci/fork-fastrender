@@ -12023,6 +12023,51 @@ fn compiled_for_of_head_let_destructuring_default_observes_tdz() -> Result<(), V
 }
 
 #[test]
+fn compiled_for_of_head_let_shadows_rhs_in_tdz() -> Result<(), VmError> {
+  // For-in/of loops with lexical declarations create a TDZ binding for the loop variable *before*
+  // evaluating the RHS. This ensures `for (let x of x)` throws a ReferenceError rather than
+  // iterating an outer `x`.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let x = [1];
+        let threw = false;
+        try {
+          for (let x of x) {}
+        } catch (e) {
+          threw = true;
+        }
+        return threw;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_head_let_shadows_rhs_in_tdz() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let x = {a: 1};
+        let threw = false;
+        try {
+          for (let x in x) {}
+        } catch (e) {
+          threw = true;
+        }
+        return threw;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_for_loop_lexical_init_destructuring_default_observes_tdz() -> Result<(), VmError> {
   let result = compile_and_call0(
     r#"
