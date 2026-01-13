@@ -1,503 +1,404 @@
-# Browser ↔ Network fetch IPC protocol
+# Browser ↔ Network fetch IPC protocol (JSON, length-prefixed frames)
 
-This document specifies the **byte-stream IPC protocol** used between the trusted **Browser**
-process and the sandboxed **Network** process to perform HTTP(S) fetches.
+This document describes the **fetch IPC protocol** used by FastRender’s network service boundary.
 
-Primary goals:
+In-tree, this protocol is implemented by:
 
-1. **Implementability**: another agent can implement both ends (browser↔network) without reading
-   unrelated code.
-2. **Auditability**: the protocol has explicit framing, explicit limits, and predictable state
-   machines (multiplexing + cancellation).
-3. **Security**: the Network process must not be able to force unbounded allocations in the Browser,
-   and vice‑versa. Every decoding step has a hard limit.
+- Client: `crate::resource::ipc_fetcher::IpcResourceFetcher` (`src/resource/ipc_fetcher.rs`)
+- Server: `crate::ipc::network_service::IpcFetchServer` (`src/ipc/network_service.rs`)
+- Test network-process binary: `src/bin/network_process.rs`
 
-Non-goals:
+Terminology:
 
-* This is **not** the Renderer↔Browser protocol. Renderers never talk to the Network process
-  directly.
-* This is **not** a full WHATWG Fetch implementation (CORS, CSP, mixed content, redirect policy).
-  Those policy decisions are made by the Browser before sending a request to the Network process.
+- **Client**: the process asking for network operations (today this is typically the renderer; in a
+  split browser/renderer architecture this can also be the browser).
+- **Server / Network process**: the process that executes network I/O (HTTP fetch) and owns network
+  state.
+
+Threat model:
+
+- Treat both endpoints as potentially compromised; **every decode must be bounded** and must reject
+  malformed payloads **before allocating**.
+
+This doc is normative for the `ipc_fetcher` protocol. It is **not**:
+
+- the browser↔renderer IPC protocol (`src/ipc/protocol/renderer.rs`), or
+- the in-tree “planned” browser↔network schema (`src/ipc/protocol/network.rs`).
 
 ---
 
 ## Transport & framing
 
-The protocol runs over a **reliable ordered byte stream** (e.g. a Unix domain socket, a pipe, or a
-Windows named pipe).
+The protocol runs over a **reliable ordered byte stream** (today: `TcpStream`; long-term: Unix
+domain sockets / named pipes).
 
-### Frames
+### Frame format
 
-Each message is carried in a *frame*:
+Each message is a frame:
 
 ```
-u32_be length
-u8[length] payload
+u32_le length
+u8[length] json_payload
 ```
 
-* `length` is the number of payload bytes (not including the 4‑byte prefix).
-* `length` **MUST** be `<= MAX_FRAME_LEN` or the receiver **MUST** treat it as a protocol error and
-  close the connection.
-* The receiver must read exactly `length` bytes for the payload; partial reads are normal on a
-  stream transport.
+- `length` is the byte length of `json_payload` (not including the 4-byte prefix).
+- `length == 0` is invalid and must be treated as a protocol violation.
+- The receiver must reject oversized frames **before allocating**:
+  - inbound frames (client → server): `IPC_MAX_INBOUND_FRAME_BYTES`
+  - outbound frames (server → client): `IPC_MAX_OUTBOUND_FRAME_BYTES`
 
-### Payload encoding
+Constants (as implemented in `src/resource/ipc_fetcher.rs`):
 
-`payload` is a single encoded `NetworkFetchFrame` value (a Rust `enum` / tagged union).
+- `IPC_MAX_INBOUND_FRAME_BYTES = 8 MiB`
+- `IPC_MAX_OUTBOUND_FRAME_BYTES = 80 MiB`
 
-Encoding is currently specified as:
+### Payload encoding (JSON)
 
-* **bincode 1.x** encoding of the Rust enums/structs in this document
-* with a hard decode limit of `MAX_FRAME_LEN` bytes per frame (defense in depth).
+Each frame payload is a single UTF‑8 JSON value serialized via `serde_json`.
 
-Rationale:
+Important for implementers in other languages:
 
-* binary encoding supports `Vec<u8>` without base64 (important for body chunks),
-* the protocol is internal to FastRender (all participants are Rust),
-* frame length caps keep decoding bounded.
-
-If the project later moves to a different codec (e.g. `postcard`), the **frame format and state
-machine stay the same**, and version negotiation (below) handles the transition.
+- Rust `enum`s use serde’s **externally tagged** default representation:
+  - struct-like variants encode as `{"VariantName": {"field": ...}}`
+  - unit variants encode as `"VariantName"`
+- `IpcRequest` and `IpcResponse` are `#[serde(deny_unknown_fields)]` (unknown fields must fail
+  closed).
 
 ---
 
-## Version negotiation (Hello)
+## Connection setup (Hello handshake)
 
-Immediately after connecting, the Browser must send `Hello`. No other message is valid before
-`Hello` is processed.
-
-Negotiation is *range-based*:
-
-* Browser sends `[min_version, max_version]` it supports.
-* Network responds with a single selected `version`, or rejects.
-
-If negotiation fails, the connection must be closed (fail fast).
-
-### `Hello` schema
+Immediately after connecting, the client must send an **unenveloped** hello frame:
 
 ```rust
-/// Protocol version number.
-pub type ProtocolVersion = u32;
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Hello {
-  pub min_version: ProtocolVersion,
-  pub max_version: ProtocolVersion,
-
-  /// Sender's hard cap for a single frame payload.
-  pub max_frame_len: u32,
-
-  /// Sender's preferred max inline body size (bytes) for *Start* messages.
-  pub inline_body_max: u32,
-
-  /// Sender's preferred max chunk payload size (bytes).
-  pub body_chunk_max: u32,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct HelloAck {
-  pub version: ProtocolVersion,
-
-  /// Negotiated values (typically `min(browser, network)`).
-  pub max_frame_len: u32,
-  pub inline_body_max: u32,
-  pub body_chunk_max: u32,
+pub enum IpcRequest {
+  Hello { token: String },
+  /* ... other requests ... */
 }
 ```
 
-### Current constants (v1)
-
-These are the **v1** hard limits. Implementations must reject larger values during negotiation:
-
-* `PROTOCOL_VERSION = 1`
-* `MAX_FRAME_LEN = 2_097_152` (2 MiB)
-* `INLINE_BODY_MAX = 65_536` (64 KiB)
-* `BODY_CHUNK_MAX = 65_536` (64 KiB)
-
-Implementations may choose smaller negotiated values, but they must never exceed these caps.
-
----
-
-## Request IDs and multiplexing
-
-All fetches are multiplexed on a single connection using `RequestId`.
-
-### `RequestId` rules
+The server replies with an **unenveloped** hello acknowledgement:
 
 ```rust
-pub type RequestId = u64;
+pub enum IpcResponse {
+  HelloAck,
+  /* ... other responses ... */
+}
 ```
 
-Rules:
+### Auth token
 
-* **Browser allocates** request IDs.
-* `RequestId` is scoped to a single connection.
-* `RequestId` **MUST NOT** be reused within a connection. Use a monotonically increasing counter.
-  This avoids “stale message” ambiguity after cancellations/timeouts.
-* `RequestId = 0` is reserved (must not be used) to keep “default/zeroed struct” bugs loud.
+The token is an out-of-band secret (typically provided to both sides via
+`FASTR_NETWORK_AUTH_TOKEN` / `IPC_AUTH_TOKEN_ENV`). If the token is wrong, the server closes the
+connection without sending an error (minimize information leakage).
 
-### Multiplexing rules
+Hard cap: `IPC_MAX_AUTH_TOKEN_BYTES = 1024`.
 
-* Messages for different request IDs may be interleaved arbitrarily.
-* For a given `request_id`, the message order must form a valid per-request state machine (see
-  below). Because the transport is ordered, the receiver can validate this strictly.
+### Version negotiation (current status)
+
+The current implementation does **not** negotiate a protocol version; client and server must be
+deployed in lockstep.
+
+Future work: extend `Hello` to include a `protocol_version` or a supported version range so upgrades
+can be rolled out safely.
 
 ---
 
-## Message overview (v1)
+## Request IDs and (future) multiplexing
 
-The protocol uses two direction-specific enums. (This keeps parsing strict: the Network process must
-never accept Browser-only messages and vice versa.)
+After the hello handshake, every request is sent in an envelope:
 
 ```rust
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum BrowserToNetwork {
-  Hello(Hello),
-
-  /// Start a new request.
-  RequestStart(RequestStart),
-
-  /// Request body chunk (only when `RequestStart.body` is `BodyStart::Chunked`).
-  RequestBodyChunk(BodyChunk),
-
-  /// Marks the end of the request body stream.
-  RequestBodyEnd { request_id: RequestId },
-
-  /// Best-effort cancellation.
-  Cancel { request_id: RequestId },
+pub struct BrowserToNetwork {
+  pub id: u64,
+  pub request: IpcRequest,
 }
+```
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+Despite the name (`BrowserToNetwork`), this is the **client → server** request envelope.
+
+### Request ID rules
+
+- IDs are `u64`.
+- Client must allocate IDs; in-tree `IpcResourceFetcher` uses a monotonically increasing counter
+  starting at `1`.
+- IDs must not be reused on the same connection (avoids “stale response” confusion).
+- For correctness/safety, implementations should treat `id = 0` as reserved (even though this is not
+  currently enforced by `validate_ipc_request`).
+
+### Multiplexing
+
+The wire format is ID-addressed and therefore *can* support multiplexing, but the current client
+implementation serializes requests with a mutex around the connection and expects responses to be in
+order.
+
+If a future implementation allows concurrent in-flight requests on one connection, the invariant is:
+
+- Responses must carry the same `id` as the request they correspond to.
+- A client must ignore any response with an unexpected `id`.
+
+---
+
+## Message schemas (as implemented)
+
+### Client → server: `IpcRequest`
+
+Defined in `src/resource/ipc_fetcher.rs`:
+
+```rust
+pub enum IpcRequest {
+  Hello { token: String },
+
+  // Fetch primitives.
+  Fetch { url: String },
+  FetchWithRequest { req: IpcFetchRequest },
+  FetchWithRequestAndValidation { req: IpcFetchRequest, etag: Option<String>, last_modified: Option<String> },
+  FetchHttpRequest { req: IpcHttpRequest },
+  FetchPartialWithContext { kind: FetchContextKind, url: String, max_bytes: u64 },
+  FetchPartialWithRequest { req: IpcFetchRequest, max_bytes: u64 },
+
+  // Cookie access.
+  CookieHeaderValue { url: String },
+  StoreCookieFromDocument { url: String, cookie_string: String },
+
+  // Cache plumbing (disk cache / artifacts).
+  RequestHeaderValue { req: IpcFetchRequest, header_name: String },
+  ReadCacheArtifact { kind: FetchContextKind, url: String, artifact: CacheArtifactKind },
+  ReadCacheArtifactWithRequest { req: IpcFetchRequest, artifact: CacheArtifactKind },
+  WriteCacheArtifact { kind: FetchContextKind, url: String, artifact: CacheArtifactKind, bytes_b64: String, source: Option<IpcCacheSourceMetadata> },
+  WriteCacheArtifactWithRequest { req: IpcFetchRequest, artifact: CacheArtifactKind, bytes_b64: String, source: Option<IpcCacheSourceMetadata> },
+  RemoveCacheArtifact { kind: FetchContextKind, url: String, artifact: CacheArtifactKind },
+  RemoveCacheArtifactWithRequest { req: IpcFetchRequest, artifact: CacheArtifactKind },
+}
+```
+
+`IpcFetchRequest` captures the request context needed for browser-ish Fetch semantics:
+
+```rust
+pub struct IpcFetchRequest {
+  pub url: String,
+  pub destination: FetchDestination,
+  pub referrer_url: Option<String>,
+  pub client_origin: Option<DocumentOrigin>,
+  pub referrer_policy: ReferrerPolicy,
+  pub credentials_mode: FetchCredentialsMode,
+}
+```
+
+`IpcHttpRequest` is the “JS fetch/XHR shaped” request:
+
+```rust
+pub struct IpcHttpRequest {
+  pub fetch: IpcFetchRequest,
+  pub method: String,
+  pub redirect: web_fetch::RequestRedirect,
+  pub headers: Vec<(String, String)>,
+  pub body_b64: Option<String>,
+}
+```
+
+Request body note:
+
+- `body_b64` is base64-encoded and hard-limited: decoded bytes must be `<= IPC_MAX_REQUEST_BODY_BYTES`
+  (1 MiB). Larger uploads need a future chunked request-body extension.
+
+### Server → client: `NetworkToBrowser`
+
+The server replies with one of:
+
+```rust
 pub enum NetworkToBrowser {
-  HelloAck(HelloAck),
+  // Single-frame response (most RPCs and small fetch bodies).
+  Response { id: u64, response: IpcResponse },
 
-  /// Response headers/status are ready.
-  ResponseStart(ResponseStart),
+  // Chunked fetch response stream for large bodies.
+  FetchStart { id: u64, meta: IpcFetchedResourceMeta, total_len: usize },
+  FetchBodyChunk { id: u64, bytes_b64: String },
+  FetchEnd { id: u64 },
 
-  /// Response body chunk (only when `ResponseStart.body` is `BodyStart::Chunked`).
-  ResponseBodyChunk(BodyChunk),
-
-  /// Marks the end of the response body stream.
-  ResponseBodyEnd { request_id: RequestId },
-
-  /// Terminal error for the request (including cancellation).
-  ResponseError(ResponseError),
+  // Chunked fetch error (sent instead of FetchStart/FetchEnd).
+  FetchErr { id: u64, err: IpcError },
 }
 ```
 
-`NetworkFetchFrame` is the on-wire payload for each frame; it is one of the two enums above,
-depending on direction.
+Single-frame responses use:
+
+```rust
+pub enum IpcResponse {
+  HelloAck,
+  Fetched(IpcResult<IpcFetchedResource>),
+  MaybeFetched(IpcResult<Option<IpcFetchedResource>>),
+  MaybeString(IpcResult<Option<String>>),
+  Unit(IpcResult<()>),
+}
+
+pub enum IpcResult<T> {
+  Ok(T),
+  Err(IpcError),
+}
+```
 
 ---
 
-## Request / response schemas
+## Body transport strategy (inline vs chunked)
 
-### Headers representation
+Fetch responses can be returned in two ways:
 
-Headers are transported as an ordered list of `(name, value)` pairs. Duplicates are allowed.
+### 1) Inline body (single frame)
 
-* Header names must be ASCII, case-insensitive; on the wire they should be normalized to lowercase.
-* Header values are UTF‑8 strings (lossy conversion must not be performed silently; invalid UTF‑8 is
-  a protocol error).
-* `set-cookie` is allowed to appear multiple times and must **not** be combined.
+If `res.bytes.len() <= IPC_INLINE_LIMIT_BYTES` (1 MiB), the server sends:
 
-```rust
-pub type Header = (String, String);
-pub type Headers = Vec<Header>;
-```
+- `NetworkToBrowser::Response { id, response: IpcResponse::Fetched(IpcResult::Ok(IpcFetchedResource{ bytes_b64, ... })) }`
 
-### Body transport (`BodyStart`)
+Where:
 
-Bodies use one of two strategies:
+- `IpcFetchedResource.bytes_b64` is the base64 of the entire response body.
 
-1. **Inline**: small bodies are embedded in the `*_Start` message.
-2. **Chunked**: larger bodies are sent as a stream of `BodyChunk` frames terminated by `*_BodyEnd`.
+### 2) Chunked body stream (multiple frames)
 
-```rust
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum BodyStart {
-  /// No body.
-  Empty,
+If `res.bytes.len() > IPC_INLINE_LIMIT_BYTES`, the server sends:
 
-  /// Body bytes are carried inline in the *Start* message.
-  Inline(Vec<u8>),
-
-  /// Body bytes follow in `BodyChunk` messages until `*_BodyEnd`.
-  ///
-  /// `len` is the sender's best-effort known length (e.g. Content-Length). It can be `None` for
-  /// unknown-length streaming responses.
-  Chunked { len: Option<u64> },
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct BodyChunk {
-  pub request_id: RequestId,
-  pub data: Vec<u8>,
-}
-```
+1. `FetchStart { id, meta, total_len }`
+2. `0..N` `FetchBodyChunk { id, bytes_b64 }`
+3. `FetchEnd { id }`
 
 Constraints:
 
-* `Inline(Vec<u8>)` length must be `<= INLINE_BODY_MAX`.
-* `BodyChunk.data.len()` must be `<= BODY_CHUNK_MAX`.
+- `total_len` is the exact byte length of the response body.
+- Each chunk’s decoded length must be `<= IPC_CHUNK_MAX_BYTES` (64 KiB).
+- Client must enforce `total_len <= IPC_MAX_BODY_BYTES` (50 MiB) and reject overflow / extra bytes.
 
-### RequestStart
+### Shared-memory / FD-backed future work
 
-```rust
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RequestStart {
-  pub request_id: RequestId,
+This protocol currently base64-encodes bodies (simple but copy-heavy). Future work options:
 
-  /// Absolute URL string (no fragments). Only `http`/`https` are valid in v1.
-  pub url: String,
+- Transfer bodies out-of-band via FD passing (pipe/memfd) on Unix sockets.
+- Transfer bodies via shared memory (memfd/MapViewOfFile/etc) plus a small control message carrying
+  `{ id, len, mime_hint }`.
 
-  /// ASCII HTTP method (e.g. "GET", "POST"). Case-insensitive on the wire.
-  pub method: String,
+Both approaches keep per-message control frames small and avoid base64 overhead.
 
-  /// Request headers after Browser sanitization.
-  pub headers: Headers,
+---
 
-  /// Request body transport descriptor.
-  pub body: BodyStart,
-}
+## Flow: fetch with chunked response body (sequence diagram)
+
+Example: client issues an `IpcRequest::FetchHttpRequest` whose response body exceeds
+`IPC_INLINE_LIMIT_BYTES`, so the server streams it.
+
 ```
-
-### ResponseStart
-
-```rust
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ResponseStart {
-  pub request_id: RequestId,
-
-  /// Final URL that was fetched (after any internal normalization). In v1, Network must not follow
-  /// redirects automatically; Browser handles redirect policy explicitly.
-  pub final_url: String,
-
-  pub status: u16,
-  pub reason: String,
-  pub headers: Headers,
-
-  /// Response body transport descriptor.
-  pub body: BodyStart,
-}
-```
-
-### Errors
-
-Errors are terminal for a request ID.
-
-```rust
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum ResponseErrorKind {
-  /// DNS failure, connect error, TLS error, timeout, etc.
-  Network,
-  /// Protocol or HTTP parsing error inside Network process.
-  Http,
-  /// Browser canceled the request.
-  Canceled,
-  /// Network process rejected the request (e.g. unsupported scheme, exceeded limits).
-  Rejected,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ResponseError {
-  pub request_id: RequestId,
-  pub kind: ResponseErrorKind,
-
-  /// Human-readable error message for logs/debugging (not stable for programmatic parsing).
-  pub message: String,
-}
+Client (renderer/browser)                              Network process
+  |                                                      |
+  |  frame: IpcRequest::Hello { token }                  |
+  |----------------------------------------------------->|
+  |  frame: IpcResponse::HelloAck                        |
+  |<-----------------------------------------------------|
+  |                                                      |
+  |  frame: BrowserToNetwork {                            |
+  |           id: 42,                                     |
+  |           request: IpcRequest::FetchHttpRequest{...}  |
+  |         }                                             |
+  |----------------------------------------------------->|
+  |                                                      |
+  |  frame: NetworkToBrowser::FetchStart { id:42, total_len: 2000000, ... } |
+  |<-----------------------------------------------------|
+  |  frame: NetworkToBrowser::FetchBodyChunk { id:42, bytes_b64: \"...\" }  |
+  |<-----------------------------------------------------|
+  |  frame: NetworkToBrowser::FetchBodyChunk { id:42, bytes_b64: \"...\" }  |
+  |<-----------------------------------------------------|
+  |  frame: NetworkToBrowser::FetchEnd { id:42 }          |
+  |<-----------------------------------------------------|
 ```
 
 ---
 
-## Flow: a chunked fetch (sequence diagram)
+## Cancellation semantics (current)
 
-Example: a `POST` request with a chunked request body, returning a chunked response body.
+This protocol does **not** define an explicit `Cancel` message.
 
-```
-Browser                                                Network
-  |                                                      |
-  |  Hello{min=1,max=1,max_frame_len=2MiB,...}            |
-  |----------------------------------------------------->|
-  |                                                      |
-  |  HelloAck{version=1,max_frame_len=2MiB,...}           |
-  |<-----------------------------------------------------|
-  |                                                      |
-  |  RequestStart{id=42,url=...,method="POST",            |
-  |              body=Chunked{len=Some(120000)}}          |
-  |----------------------------------------------------->|
-  |  RequestBodyChunk{id=42,data=65536 bytes}             |
-  |----------------------------------------------------->|
-  |  RequestBodyChunk{id=42,data=54464 bytes}             |
-  |----------------------------------------------------->|
-  |  RequestBodyEnd{id=42}                                |
-  |----------------------------------------------------->|
-  |                                                      |
-  |  ResponseStart{id=42,status=200,                      |
-  |               body=Chunked{len=None}}                 |
-  |<-----------------------------------------------------|
-  |  ResponseBodyChunk{id=42,data=65536 bytes}            |
-  |<-----------------------------------------------------|
-  |  ResponseBodyChunk{id=42,data=1234 bytes}             |
-  |<-----------------------------------------------------|
-  |  ResponseBodyEnd{id=42}                               |
-  |<-----------------------------------------------------|
-  |                                                      |
-```
+Current best-effort cancellation behavior:
+
+- The client may drop/close the connection to abort waiting for a response.
+- The server will observe EOF and exit its request loop for that connection.
+- There is no guarantee that an in-flight HTTP request is aborted; the server uses a blocking fetcher.
+
+Future work:
+
+- Add `Cancel { id }` so the client can explicitly cancel an in-flight request on a long-lived
+  connection.
+- Add request-body streaming so uploads can be canceled mid-stream.
+
+---
+
+## Explicit size limits (auditable)
+
+All values below are **hard caps** in the current implementation.
+
+### Frame-level caps
+
+| Direction | Constant | Value |
+|---|---:|---:|
+| client → server | `IPC_MAX_INBOUND_FRAME_BYTES` | 8 MiB |
+| server → client | `IPC_MAX_OUTBOUND_FRAME_BYTES` | 80 MiB |
+
+### Request field caps
+
+| Field | Constant | Value |
+|---|---:|---:|
+| HTTP(S) URL length | `IPC_MAX_URL_BYTES` | 8 KiB |
+| non-HTTP(S) URL length (`data:`, `file:`, etc) | `IPC_MAX_NON_HTTP_URL_BYTES` | 1 MiB |
+| header count | `IPC_MAX_HEADER_COUNT` | 256 |
+| header name bytes | `IPC_MAX_HEADER_NAME_BYTES` | 1024 |
+| header value bytes | `IPC_MAX_HEADER_VALUE_BYTES` | 1024 |
+| method bytes | `IPC_MAX_METHOD_BYTES` | 64 |
+| decoded request body bytes (`IpcHttpRequest.body_b64`) | `IPC_MAX_REQUEST_BODY_BYTES` | 1 MiB |
+| `document.cookie` setter string bytes | `MAX_COOKIE_BYTES` | 4096 |
+| auth token bytes | `IPC_MAX_AUTH_TOKEN_BYTES` | 1024 |
+
+### Response body caps (defense in depth)
+
+| Purpose | Constant | Value |
+|---|---:|---:|
+| inline body threshold (switch to chunked) | `IPC_INLINE_LIMIT_BYTES` | 1 MiB |
+| max decoded bytes per chunk | `IPC_CHUNK_MAX_BYTES` | 64 KiB |
+| max total chunked body bytes (client-side) | `IPC_MAX_BODY_BYTES` | 50 MiB |
 
 Notes:
 
-* The Browser may pipeline multiple `RequestStart`s without waiting for responses.
-* The Network may start streaming `ResponseBodyChunk`s as soon as headers are known.
-* Both sides must validate the per-request state machine (e.g. no body chunks before `*_Start`).
+- The outbound frame cap is high because base64 expands bodies. Chunking keeps typical frames small
+  even when the cap is generous.
 
 ---
 
-## Cancellation semantics
+## Cookie jar model (assumptions)
 
-Cancellation is **best-effort** and may race with normal completion.
+Current model (as implemented by `IpcFetchServer` running an in-process `HttpFetcher`):
 
-### Browser behavior
+- The **network process owns the cookie jar** (it is inside `HttpFetcher`).
+- Cookies are persisted in-memory for the lifetime of the network process and are reused across
+  requests (and typically across connections, since `HttpFetcher` clones share the underlying jar).
 
-* Browser sends `Cancel { request_id }` once it no longer needs the result.
-* Browser must stop sending request body chunks for that `request_id` after `Cancel`.
-* Browser must be prepared to receive late `ResponseStart`/`ResponseBodyChunk` frames for a
-  canceled request (due to race); it must ignore them.
+### `Set-Cookie` handling
 
-### Network behavior
+- When `HttpFetcher` receives `Set-Cookie` headers, it updates the cookie jar.
+- The updated cookie jar affects future requests’ `Cookie` header synthesis (subject to
+  `FetchCredentialsMode` and request origin metadata).
 
-Upon receiving `Cancel { request_id }`:
+### `document.cookie` handling
 
-* If the request is still active, Network should abort the underlying HTTP request if possible.
-* Network must then send exactly one terminal message for that request:
-  * either `ResponseError { kind: Canceled, ... }`
-  * or (if it already completed) nothing additional.
+The renderer’s `document.cookie` plumbing uses two IPC calls:
 
-### Protocol invariants
+- **Getter**: `IpcRequest::CookieHeaderValue { url }` → `IpcResponse::MaybeString(Ok(Some(cookie_header)))`
+- **Setter**: `IpcRequest::StoreCookieFromDocument { url, cookie_string }` → `IpcResponse::Unit(...)`
 
-For a given `request_id`, exactly one of these must occur:
+Semantics:
 
-* Successful completion: `ResponseStart` + (optional chunks) + optional `ResponseBodyEnd`
-* Failure: `ResponseError`
+- `cookie_string` is treated as an RFC6265-style cookie string. The network process stores it in the
+  cookie jar (attributes are interpreted by the HTTP client; renderer-side `CookieJar` also applies
+  additional deterministic limits).
+- `cookie_string` is capped to 4096 bytes by `validate_ipc_request`.
 
-After a terminal message (`ResponseBodyEnd` or `ResponseError`), **no further messages** may be sent
-for that request ID.
+Security note:
 
----
-
-## Limits (explicit)
-
-All limits below are **hard caps** enforced at the protocol boundary. Implementations may apply
-stricter limits internally.
-
-### Framing
-
-* `MAX_FRAME_LEN = 2_097_152` bytes (2 MiB) payload limit per frame.
-* Any frame advertising a larger `length` must terminate the connection.
-
-### URL and method
-
-* `MAX_URL_BYTES = 1_048_576` (1 MiB) UTF‑8 bytes for `RequestStart.url`.
-* `MAX_METHOD_BYTES = 32` UTF‑8 bytes for `RequestStart.method`.
-* Only `http` and `https` URL schemes are permitted in v1.
-
-### Headers
-
-These match the Fetch core limits (`WebFetchLimits`) so URL/header handling stays consistent:
-
-* `MAX_HEADER_COUNT = 1024` (including duplicates).
-* `MAX_TOTAL_HEADER_BYTES = 262_144` (256 KiB), computed as:
-  `sum(name.len() + value.len())` for each header entry.
-
-### Body transport
-
-* `INLINE_BODY_MAX = 65_536` bytes.
-* `BODY_CHUNK_MAX = 65_536` bytes per chunk.
-
-### Total body size (defense in depth)
-
-Per-request total body size caps should be enforced by whichever side buffers:
-
-* `MAX_REQUEST_BODY_BYTES = 10 MiB`
-* `MAX_RESPONSE_BODY_BYTES = 50 MiB`
-
-If streaming is wired end-to-end (Browser does not buffer), then the receiver should still track a
-running total and abort on overflow to avoid unbounded memory/disk growth.
-
----
-
-## Cookie model assumptions
-
-This section is about how cookies interact with **Browser↔Network fetch**. It intentionally does not
-specify the Renderer↔Browser cookie API in detail.
-
-### Authority / ownership
-
-* The **Browser process** is the source of truth for cookie state.
-* The **Network process** is treated as *stateless with respect to cookies* in v1:
-  * it does **not** maintain a cookie jar,
-  * it does **not** synthesize `Cookie` headers,
-  * it does **not** persist cookie state across requests.
-
-This design limits cookie exposure: the Network process only sees cookies that the Browser elected
-to attach to the specific request being executed.
-
-### Sending cookies (`Cookie` request header)
-
-* When the Browser wants cookies attached (e.g. credentials mode includes cookies), it includes a
-  `cookie` header entry in `RequestStart.headers`.
-* When cookies should not be attached, the Browser must omit the `cookie` header entirely.
-* The Network process must forward headers exactly as provided (modulo transport-level normalization
-  like HTTP/2 pseudo headers).
-
-### Receiving cookies (`Set-Cookie` response headers)
-
-* The Network process must include any received `set-cookie` headers in `ResponseStart.headers`.
-* The Browser consumes `set-cookie` and updates its cookie jar.
-* When the Browser forwards response headers to untrusted renderer/JS surfaces, it should apply the
-  Fetch/Headers guard behavior (i.e. `Set-Cookie` is a forbidden response header and must not be
-  exposed to JS).
-
-### `document.cookie`
-
-`document.cookie` is implemented in the renderer, but it must be backed by Browser-owned cookie
-state:
-
-* `document.cookie` **getter**: Browser returns the cookie-string for the active document URL.
-  A simple implementation can reuse the same “cookie header value for URL” computation used to
-  generate outbound `Cookie` headers.
-* `document.cookie` **setter**: Browser treats the setter string as an RFC6265-style cookie-string
-  (same format as `Set-Cookie`) and updates the cookie jar for the active document URL.
-
-Current FastRender MVP cookie semantics (important for audits):
-
-* `document.cookie` stores only `name=value` pairs; cookie attributes are ignored.
-* Per-document limits are enforced (see `src/js/cookie_jar.rs`):
-  * max cookie pairs per document
-  * max total cookie-string bytes
-
-Future work (not in v1 protocol):
-
-* RFC6265 attribute semantics (`HttpOnly`, `Secure`, `SameSite`, path/domain scoping),
-* partitioned cookies / first-party sets,
-* persistent cookie storage managed by the Browser.
-
----
-
-## Body transport: shared-memory future work (outline)
-
-Chunked IPC is simple but copies bytes at least once per hop. For large responses (images, fonts,
-JS bundles), future versions may add a third `BodyStart` mode:
-
-* `SharedMemory { handle, len, mime_hint }`
-
-Where `handle` is an OS-specific transferable handle:
-
-* Linux: `memfd` file descriptor (SCM_RIGHTS)
-* Windows: duplicated handle
-* macOS: shared memory / mach port
-
-The negotiation `Hello` can advertise support for shared memory and negotiate a maximum segment
-size. Until then, v1 must use inline/chunked bodies only.
+- The client must **not** expose `Set-Cookie` response headers directly to untrusted JS; `Set-Cookie`
+  is a forbidden response header in Fetch.
 

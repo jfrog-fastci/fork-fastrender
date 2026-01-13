@@ -228,10 +228,10 @@ Additional (important) size limits that sit *on top* of framing:
 | File input / drag-and-drop max files per message (browser→renderer) | 16 | `FILE_INPUT_MAX_FILES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | File input / drag-and-drop file name bytes (browser→renderer) | 256 bytes | `FILE_INPUT_MAX_NAME_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | File input / drag-and-drop total file size metadata (browser→renderer) | 512 MiB | `FILE_INPUT_MAX_TOTAL_BYTES_META` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
-| Renderer↔network URL string max (`IpcResourceFetcher`) | 1 MiB | `IPC_MAX_URL_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
-| Renderer↔network header count max (`IpcResourceFetcher`) | 1024 | `IPC_MAX_HEADER_COUNT` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Renderer↔network URL string max (`IpcResourceFetcher`) | 8 KiB (http/https) / 1 MiB (non-http) | `IPC_MAX_URL_BYTES` / `IPC_MAX_NON_HTTP_URL_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Renderer↔network header count max (`IpcResourceFetcher`) | 256 | `IPC_MAX_HEADER_COUNT` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
 | Renderer↔network header name bytes (`IpcResourceFetcher`) | 1024 bytes | `IPC_MAX_HEADER_NAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
-| Renderer↔network header value bytes (`IpcResourceFetcher`) | 16 KiB | `IPC_MAX_HEADER_VALUE_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Renderer↔network header value bytes (`IpcResourceFetcher`) | 1024 bytes | `IPC_MAX_HEADER_VALUE_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
 | Renderer↔network auth token bytes (`IpcResourceFetcher`) | 1024 bytes | `IPC_MAX_AUTH_TOKEN_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
 | Browser↔network URL string max (network subprocess prototype) | 1 MiB | `MAX_URL_BYTES` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) |
 | Browser↔network auth token bytes (network subprocess prototype) | 1024 bytes | `MAX_AUTH_TOKEN_BYTES` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) |
