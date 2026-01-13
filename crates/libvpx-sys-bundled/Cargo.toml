@@ -1,0 +1,13 @@
+[package]
+name = "libvpx-sys-bundled"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+publish = false
+license = "BSD-3-Clause"
+links = "vpx"
+build = "build.rs"
+
+[dependencies]
+libc = "0.2"
+

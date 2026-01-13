@@ -13,6 +13,7 @@ members = [
   "crates/fastrender-ipc",
   "crates/fastrender-renderer",
   "crates/win-sandbox",
+  "crates/libvpx-sys-bundled",
 ]
 # NOTE: WebIDL/JS infrastructure should live in `vendor/ecma-rs/` per
 # instructions/ecma_rs_ownership.md and instructions/webidl_consolidation.md.

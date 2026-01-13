@@ -1873,15 +1873,15 @@ dependencies = [
  "url",
  "urlencoding",
  "usvg",
-  "vm-js",
-  "walkdir",
-  "webidl",
-  "webidl-js-runtime",
-  "webidl-vm-js",
-  "wgpu",
-  "windows-sys 0.52.0",
-  "winit",
-  "wuff",
+ "vm-js",
+ "walkdir",
+ "webidl",
+ "webidl-js-runtime",
+ "webidl-vm-js",
+ "wgpu",
+ "windows-sys 0.52.0",
+ "winit",
+ "wuff",
 ]
 
 [[package]]
@@ -3224,6 +3224,13 @@ dependencies = [
  "bitflags 2.10.0",
  "libc",
  "redox_syscall 0.7.0",
+]
+
+[[package]]
+name = "libvpx-sys-bundled"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
