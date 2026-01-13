@@ -750,6 +750,33 @@ static INLINE_RESHAPE_CACHE_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
 static INLINE_RESHAPE_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 static INLINE_RESHAPE_CACHE_STORES: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(test)]
+thread_local! {
+  static APPLY_SPACING_SORT_COUNT: Cell<usize> = const { Cell::new(0) };
+  static APPLY_SPACING_CLUSTER_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_apply_spacing_diagnostics() {
+  APPLY_SPACING_SORT_COUNT.with(|count| count.set(0));
+  APPLY_SPACING_CLUSTER_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn take_apply_spacing_diagnostics() -> (usize, usize) {
+  let sorts = APPLY_SPACING_SORT_COUNT.with(|count| {
+    let value = count.get();
+    count.set(0);
+    value
+  });
+  let clusters = APPLY_SPACING_CLUSTER_COUNT.with(|count| {
+    let value = count.get();
+    count.set(0);
+    value
+  });
+  (sorts, clusters)
+}
+
 pub(crate) fn enable_inline_reshape_cache_diagnostics() {
   INLINE_RESHAPE_CACHE_LOOKUPS.store(0, Ordering::Relaxed);
   INLINE_RESHAPE_CACHE_HITS.store(0, Ordering::Relaxed);
@@ -1437,6 +1464,8 @@ impl TextItem {
     }
 
     let mut clusters: Vec<ClusterRef> = Vec::new();
+    let mut last_offset: Option<usize> = None;
+    let mut needs_sort = false;
 
     for (run_idx, run) in runs.iter().enumerate() {
       if run.glyphs.is_empty() {
@@ -1455,6 +1484,13 @@ impl TextItem {
         let ch = text.get(offset..).and_then(|s| s.chars().next());
         let is_space = matches!(ch, Some(' ') | Some('\u{00A0}') | Some('\t'));
 
+        if let Some(prev) = last_offset {
+          if offset < prev {
+            needs_sort = true;
+          }
+        }
+        last_offset = Some(offset);
+
         clusters.push(ClusterRef {
           run_idx,
           glyph_end,
@@ -1464,60 +1500,61 @@ impl TextItem {
       }
     }
 
-    clusters.sort_by_key(|c| c.offset);
+    #[cfg(test)]
+    APPLY_SPACING_CLUSTER_COUNT.with(|count| {
+      count.set(count.get().saturating_add(clusters.len()));
+    });
 
-    if clusters.is_empty() {
+    if clusters.len() <= 1 {
       return;
     }
 
-    let mut run_cluster_extras: Vec<Vec<(usize, f32)>> = vec![Vec::new(); runs.len()];
+    if needs_sort {
+      clusters.sort_unstable_by_key(|c| c.offset);
+      #[cfg(test)]
+      APPLY_SPACING_SORT_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    }
 
-    for (i, cluster) in clusters.iter().enumerate() {
-      if i == clusters.len() - 1 {
-        break; // No spacing after the last cluster
-      }
+    // Cache each run's inline axis so we don't rescan glyphs per cluster.
+    let mut axes: Vec<Option<InlineAxis>> = vec![None; runs.len()];
 
+    // Apply spacing to the last glyph of each cluster (except the final cluster).
+    for cluster in clusters.iter().take(clusters.len().saturating_sub(1)) {
       let mut extra = letter_spacing;
       if cluster.is_space {
         extra += word_spacing;
       }
-
       if extra == 0.0 {
         continue;
       }
 
-      let last_glyph_idx = cluster.glyph_end.saturating_sub(1);
-      run_cluster_extras[cluster.run_idx].push((last_glyph_idx, extra));
-    }
-
-    for (run_idx, run) in runs.iter_mut().enumerate() {
+      let run_idx = cluster.run_idx;
+      let Some(run) = runs.get_mut(run_idx) else {
+        continue;
+      };
       if run.glyphs.is_empty() {
         continue;
       }
 
-      let axis = run_inline_axis(run);
-      let mut extra_by_glyph = vec![0.0; run.glyphs.len()];
-      for (glyph_idx, extra) in run_cluster_extras
-        .get(run_idx)
-        .map(|v| v.as_slice())
-        .unwrap_or(&[])
-      {
-        if *glyph_idx < extra_by_glyph.len() {
-          extra_by_glyph[*glyph_idx] += *extra;
-        }
-      }
+      let axis = axes[run_idx].unwrap_or_else(|| {
+        let axis = run_inline_axis(run);
+        axes[run_idx] = Some(axis);
+        axis
+      });
 
-      let mut new_advance = 0.0;
+      let last_glyph_idx = cluster.glyph_end.saturating_sub(1);
+      let Some(glyph) = run
+        .glyphs
+        .get_mut(last_glyph_idx)
+        .or_else(|| run.glyphs.last_mut())
+      else {
+        continue;
+      };
 
-      for (idx, glyph) in run.glyphs.iter_mut().enumerate() {
-        let extra = extra_by_glyph[idx];
-        if extra != 0.0 {
-          add_inline_advance(glyph, axis, extra);
-        }
-        new_advance += glyph_inline_advance(glyph, axis);
-      }
-
-      run.advance = new_advance;
+      let before = glyph_inline_advance(glyph, axis);
+      add_inline_advance(glyph, axis, extra);
+      let after = glyph_inline_advance(glyph, axis);
+      run.advance += after - before;
     }
   }
 
@@ -7034,6 +7071,50 @@ mod tests {
     }
   }
 
+  fn make_synthetic_run_with_byte_clusters(
+    text: &str,
+    start: usize,
+    advance_per_glyph: f32,
+    direction: PipelineDirection,
+  ) -> ShapedRun {
+    let glyph_count = text.chars().count();
+    let mut glyphs = Vec::with_capacity(glyph_count);
+    for (glyph_id, (cluster, _)) in text.char_indices().enumerate() {
+      glyphs.push(GlyphPosition {
+        glyph_id: glyph_id as u32,
+        cluster: cluster as u32,
+        x_offset: 0.0,
+        y_offset: 0.0,
+        x_advance: advance_per_glyph,
+        y_advance: 0.0,
+      });
+    }
+    let advance = advance_per_glyph * glyph_count as f32;
+
+    ShapedRun {
+      text: text.to_string(),
+      start,
+      end: start + text.len(),
+      glyphs,
+      direction,
+      level: 0,
+      advance,
+      font: make_synthetic_font(),
+      font_size: 16.0,
+      baseline_shift: 0.0,
+      language: None,
+      features: Arc::from(Vec::new()),
+      synthetic_bold: 0.0,
+      synthetic_oblique: 0.0,
+      rotation: RunRotation::None,
+      palette_index: 0,
+      palette_overrides: Arc::new(Vec::new()),
+      palette_override_hash: 0,
+      variations: Vec::new(),
+      scale: 1.0,
+    }
+  }
+
   fn glyph_x_positions(runs: &[ShapedRun]) -> Vec<f32> {
     let mut out = Vec::new();
     let mut run_origin = 0.0;
@@ -10924,6 +11005,85 @@ mod tests {
     let expected_extra = style.letter_spacing * char_gaps + style.word_spacing * space_count;
 
     assert!((spaced_width - base_width - expected_extra).abs() < 0.01);
+  }
+
+  #[test]
+  fn apply_spacing_long_ltr_paragraph_does_not_sort() {
+    let text = "The quick brown fox jumps over the lazy dog. "
+      .repeat(256)
+      .trim_end()
+      .to_string();
+    let letter_spacing = 1.25;
+    let word_spacing = 0.75;
+
+    let mut runs = vec![make_synthetic_run(&text, 10.0)];
+    let base_width: f32 = runs.iter().map(|r| r.advance).sum();
+
+    reset_apply_spacing_diagnostics();
+    TextItem::apply_spacing_to_runs(&mut runs, &text, letter_spacing, word_spacing);
+    let (sorts, clusters) = take_apply_spacing_diagnostics();
+
+    assert_eq!(sorts, 0, "expected monotonic LTR clusters to skip sorting");
+    assert_eq!(
+      clusters,
+      text.chars().count(),
+      "expected one synthetic cluster per char"
+    );
+
+    let spaced_width: f32 = runs.iter().map(|r| r.advance).sum();
+    let gap_count = text.chars().count().saturating_sub(1) as f32;
+    let space_count = text
+      .chars()
+      .filter(|c| matches!(c, ' ' | '\u{00A0}' | '\t'))
+      .count() as f32;
+    let expected_extra = letter_spacing * gap_count + word_spacing * space_count;
+    assert!(
+      (spaced_width - base_width - expected_extra).abs() < 0.1,
+      "expected total advance to increase by computed letter+word spacing"
+    );
+  }
+
+  #[test]
+  fn apply_spacing_mixed_direction_triggers_sort_and_updates_advance() {
+    // Force a non-monotonic cluster discovery order by providing runs out-of-order (RTL run first).
+    let text = "abc אבג";
+    let ltr_end = text.find('א').expect("has rtl char boundary");
+    let (ltr_text, rtl_text) = text.split_at(ltr_end);
+
+    let ltr_run = make_synthetic_run_with_byte_clusters(
+      ltr_text,
+      0,
+      10.0,
+      PipelineDirection::LeftToRight,
+    );
+    let rtl_run = make_synthetic_run_with_byte_clusters(
+      rtl_text,
+      ltr_end,
+      10.0,
+      PipelineDirection::RightToLeft,
+    );
+
+    let mut runs = vec![rtl_run, ltr_run];
+    let base_width: f32 = runs.iter().map(|r| r.advance).sum();
+
+    reset_apply_spacing_diagnostics();
+    TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 3.0);
+    let (sorts, clusters) = take_apply_spacing_diagnostics();
+
+    assert_eq!(sorts, 1, "expected mixed-direction / out-of-order runs to sort");
+    assert_eq!(clusters, text.chars().count());
+
+    let spaced_width: f32 = runs.iter().map(|r| r.advance).sum();
+    let gap_count = text.chars().count().saturating_sub(1) as f32;
+    let space_count = text
+      .chars()
+      .filter(|c| matches!(c, ' ' | '\u{00A0}' | '\t'))
+      .count() as f32;
+    let expected_extra = 2.0 * gap_count + 3.0 * space_count;
+    assert!(
+      (spaced_width - base_width - expected_extra).abs() < 0.1,
+      "expected spacing to apply in logical order across runs"
+    );
   }
 
   #[test]
