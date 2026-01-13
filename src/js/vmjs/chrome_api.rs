@@ -25,8 +25,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use vm_js::{
-  GcObject, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmHost, VmHostHooks,
+  GcObject, GcString, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope,
+  Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
 const MAX_SAFE_INTEGER_U64: u64 = (1u64 << 53) - 1;
@@ -34,6 +34,13 @@ const MAX_SAFE_INTEGER_U64: u64 = (1u64 << 53) - 1;
 // Brand chrome objects as platform objects.
 const CHROME_HOST_TAG: u64 = u64::from_be_bytes(*b"FRCHROME");
 const CHROME_TABS_HOST_TAG: u64 = u64::from_be_bytes(*b"FRCHTABS");
+const CHROME_NAVIGATION_HOST_TAG: u64 = u64::from_be_bytes(*b"FRCHNAVG");
+
+/// Max UTF-8 byte length for `chrome.navigation.navigate(...)` input.
+///
+/// This bounds host allocations for attacker-controlled strings and keeps bridge behaviour
+/// deterministic.
+const MAX_NAVIGATE_INPUT_UTF8_BYTES: usize = 8 * 1024;
 
 static NEXT_CHROME_ENV_ID: AtomicU64 = AtomicU64::new(1);
 static CHROME_ENVS: OnceLock<Mutex<HashMap<u64, ChromeEnvState>>> = OnceLock::new();
@@ -86,6 +93,13 @@ pub trait ChromeApiHandler: Send + Sync + 'static {
   fn close_tab(&self, id: u64);
   fn activate_tab(&self, id: u64);
   fn tabs_snapshot(&self) -> Vec<ChromeTabInfo>;
+
+  // Navigation actions for the active tab.
+  fn navigate(&self, input: String);
+  fn go_back(&self);
+  fn go_forward(&self);
+  fn reload(&self);
+  fn stop(&self);
 }
 
 #[derive(Clone)]
@@ -184,6 +198,84 @@ fn env_id_from_tabs_this(scope: &Scope<'_>, this: Value) -> Result<u64, VmError>
     return Err(VmError::TypeError("Illegal invocation"));
   }
   Ok(slots.b)
+}
+
+fn env_id_from_navigation_this(scope: &Scope<'_>, this: Value) -> Result<u64, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let slots = scope
+    .heap()
+    .object_host_slots(obj)?
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  if slots.a != CHROME_NAVIGATION_HOST_TAG {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  Ok(slots.b)
+}
+
+fn js_string_to_utf8_lossy_bounded(
+  scope: &Scope<'_>,
+  s: GcString,
+  max_bytes: usize,
+) -> Result<String, VmError> {
+  let js = scope.heap().get_string(s)?;
+  let units = js.as_code_units();
+
+  // Reserve a small initial chunk to avoid repeated allocations for common cases.
+  let mut out = String::new();
+  out
+    .try_reserve(max_bytes.min(256))
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let mut i = 0usize;
+  while i < units.len() {
+    let u = units[i];
+
+    // Decode UTF-16, replacing invalid surrogate sequences with U+FFFD.
+    let (code_point, consumed) = if (0xD800..=0xDBFF).contains(&u) {
+      // High surrogate.
+      if i + 1 < units.len() {
+        let u2 = units[i + 1];
+        if (0xDC00..=0xDFFF).contains(&u2) {
+          let high = (u as u32) - 0xD800;
+          let low = (u2 as u32) - 0xDC00;
+          (0x10000 + ((high << 10) | low), 2)
+        } else {
+          (0xFFFD, 1)
+        }
+      } else {
+        (0xFFFD, 1)
+      }
+    } else if (0xDC00..=0xDFFF).contains(&u) {
+      // Unpaired low surrogate.
+      (0xFFFD, 1)
+    } else {
+      (u as u32, 1)
+    };
+
+    i = i.saturating_add(consumed);
+
+    let ch = char::from_u32(code_point).unwrap_or('\u{FFFD}');
+    let mut buf = [0u8; 4];
+    let encoded = ch.encode_utf8(&mut buf);
+    let needed = encoded.len();
+
+    if out.len().saturating_add(needed) > max_bytes {
+      return Err(VmError::TypeError("navigate input is too long"));
+    }
+
+    if out.capacity().saturating_sub(out.len()) < needed {
+      // Reserve at most the remaining cap to avoid attempting huge allocations.
+      let remaining = max_bytes.saturating_sub(out.len());
+      let reserve = remaining.max(needed).min(8 * 1024);
+      out.try_reserve(reserve).map_err(|_| VmError::OutOfMemory)?;
+    }
+
+    out.push_str(encoded);
+  }
+
+  Ok(out)
 }
 
 /// Convert a JS tab id value into a `u64` without risking `Number` precision loss.
@@ -329,6 +421,104 @@ fn chrome_tabs_get_all_native(
   Ok(Value::Object(arr))
 }
 
+fn chrome_navigation_navigate_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_navigation_this(scope, this)?;
+  let url_v = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::String(s) = url_v else {
+    return Err(VmError::TypeError("url must be a string"));
+  };
+
+  let input = js_string_to_utf8_lossy_bounded(scope, s, MAX_NAVIGATE_INPUT_UTF8_BYTES)?;
+  with_env(env_id, |env| env.handler.navigate(input))?;
+  Ok(Value::Undefined)
+}
+
+fn chrome_navigation_go_back_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_navigation_this(scope, this)?;
+  with_env(env_id, |env| env.handler.go_back())?;
+  Ok(Value::Undefined)
+}
+
+fn chrome_navigation_go_forward_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_navigation_this(scope, this)?;
+  with_env(env_id, |env| env.handler.go_forward())?;
+  Ok(Value::Undefined)
+}
+
+fn chrome_navigation_reload_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_navigation_this(scope, this)?;
+  with_env(env_id, |env| env.handler.reload())?;
+  Ok(Value::Undefined)
+}
+
+fn chrome_navigation_stop_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_navigation_this(scope, this)?;
+  with_env(env_id, |env| env.handler.stop())?;
+  Ok(Value::Undefined)
+}
+
+fn install_method(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  obj: GcObject,
+  name: &str,
+  call: vm_js::NativeCall,
+  length: u32,
+) -> Result<(), VmError> {
+  let call_id = vm.register_native_call(call)?;
+  let name_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(name_s))?;
+  let func = scope.alloc_native_function(call_id, None, name_s, length)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(func))?;
+  let key = alloc_key(scope, name)?;
+  scope.define_property(obj, key, data_desc(Value::Object(func)))?;
+  Ok(())
+}
+
 fn install_tabs_object(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -347,28 +537,6 @@ fn install_tabs_object(
   scope
     .heap_mut()
     .object_set_prototype(tabs_obj, Some(realm.intrinsics().object_prototype()))?;
-
-  fn install_method(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    realm: &Realm,
-    obj: GcObject,
-    name: &str,
-    call: vm_js::NativeCall,
-    length: u32,
-  ) -> Result<(), VmError> {
-    let call_id = vm.register_native_call(call)?;
-    let name_s = scope.alloc_string(name)?;
-    scope.push_root(Value::String(name_s))?;
-    let func = scope.alloc_native_function(call_id, None, name_s, length)?;
-    scope
-      .heap_mut()
-      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
-    scope.push_root(Value::Object(func))?;
-    let key = alloc_key(scope, name)?;
-    scope.define_property(obj, key, data_desc(Value::Object(func)))?;
-    Ok(())
-  }
 
   install_method(
     vm,
@@ -407,6 +575,74 @@ fn install_tabs_object(
     0,
   )?;
   Ok(tabs_obj)
+}
+
+fn install_navigation_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  realm: &Realm,
+  env_id: u64,
+) -> Result<GcObject, VmError> {
+  let nav_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(nav_obj))?;
+  scope.heap_mut().object_set_host_slots(
+    nav_obj,
+    HostSlots {
+      a: CHROME_NAVIGATION_HOST_TAG,
+      b: env_id,
+    },
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(nav_obj, Some(realm.intrinsics().object_prototype()))?;
+
+  install_method(
+    vm,
+    scope,
+    realm,
+    nav_obj,
+    "navigate",
+    chrome_navigation_navigate_native,
+    1,
+  )?;
+  install_method(
+    vm,
+    scope,
+    realm,
+    nav_obj,
+    "goBack",
+    chrome_navigation_go_back_native,
+    0,
+  )?;
+  install_method(
+    vm,
+    scope,
+    realm,
+    nav_obj,
+    "goForward",
+    chrome_navigation_go_forward_native,
+    0,
+  )?;
+  install_method(
+    vm,
+    scope,
+    realm,
+    nav_obj,
+    "reload",
+    chrome_navigation_reload_native,
+    0,
+  )?;
+  install_method(
+    vm,
+    scope,
+    realm,
+    nav_obj,
+    "stop",
+    chrome_navigation_stop_native,
+    0,
+  )?;
+
+  Ok(nav_obj)
 }
 
 /// Installs `globalThis.chrome` into a `vm-js` realm.
@@ -458,6 +694,14 @@ pub fn install_chrome_api_bindings_vm_js(
     chrome_obj,
     tabs_key,
     readonly_data_desc(Value::Object(tabs_obj)),
+  )?;
+
+  let nav_obj = install_navigation_object(vm, &mut scope, realm, env_id)?;
+  let nav_key = alloc_key(&mut scope, "navigation")?;
+  scope.define_property(
+    chrome_obj,
+    nav_key,
+    readonly_data_desc(Value::Object(nav_obj)),
   )?;
 
   scope.define_property(global, chrome_key, data_desc(Value::Object(chrome_obj)))?;
