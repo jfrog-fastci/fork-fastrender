@@ -1752,6 +1752,14 @@ struct Node {
   kind: NodeKind,
   parent: Option<NodeId>,
   children: Vec<NodeId>,
+  /// Whether this node represents an inert HTML `<template>` element.
+  ///
+  /// HTML templates store their real children in `template_contents` during parsing, and the
+  /// template's contents are inert for DOM tree traversal APIs like `getElementsByTagName`.
+  ///
+  /// Non-HTML `<template>` elements (e.g. in the SVG namespace) are *not* inert and should not
+  /// suppress descendant traversal.
+  is_inert_template: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1824,6 +1832,7 @@ impl Dom {
       kind,
       parent,
       children: Vec::new(),
+      is_inert_template: false,
     });
     if let Some(parent) = parent {
       if parent.0 < self.nodes.len() {
@@ -1834,13 +1843,17 @@ impl Dom {
   }
 
   fn create_element(&mut self, tag_name: &str) -> NodeId {
-    self.push_node(
+    let id = self.push_node(
       NodeKind::Element {
         tag_name: tag_name.to_ascii_lowercase(),
         attributes: Vec::new(),
       },
       None,
-    )
+    );
+    if tag_name.eq_ignore_ascii_case("template") {
+      self.nodes[id.0].is_inert_template = true;
+    }
+    id
   }
 
   fn create_text(&mut self, content: &str, parent: Option<NodeId>) -> NodeId {
@@ -2413,8 +2426,8 @@ impl Dom {
         if matches(tag_name, attributes) {
           out.push(node_id);
         }
-        // Treat `<template>` contents as inert, mirroring real DOM tree traversal.
-        if tag_name.eq_ignore_ascii_case("template") {
+        // Treat inert HTML `<template>` contents as inert, mirroring real DOM tree traversal.
+        if node.is_inert_template {
           descend = false;
         }
       }
@@ -2645,15 +2658,22 @@ impl Dom {
           }
 
           let is_template = name.local.as_ref().eq_ignore_ascii_case("template");
-          let children = if is_template {
-            template_contents
-              .borrow()
-              .as_ref()
-              .map(handle_children)
-              .unwrap_or_else(|| handle_children(&item.handle))
+          let (inert_template, children) = if is_template {
+            let borrowed = template_contents.borrow();
+            let inert = borrowed.is_some();
+            (
+              inert,
+              borrowed
+                .as_ref()
+                .map(handle_children)
+                .unwrap_or_else(|| handle_children(&item.handle)),
+            )
           } else {
-            handle_children(&item.handle)
+            (false, handle_children(&item.handle))
           };
+          if inert_template {
+            self.nodes[id.0].is_inert_template = true;
+          }
 
           for child in children.into_iter().rev() {
             stack.push(WorkItem {
@@ -3372,6 +3392,33 @@ mod tests {
       assert_eq!(v["divIds"], "outside");
       assert_eq!(v["tmplLen"], 1);
       assert_eq!(v["tmplId"], "t");
+    });
+  }
+
+  #[test]
+  fn get_elements_by_tag_name_traverses_svg_template_contents() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+      let v = eval_json(
+        ctx.clone(),
+        r#"
+        (function () {
+          // `<template>` in SVG namespace is not an inert HTML template; traversal APIs should still
+          // walk its descendants.
+          document.body.innerHTML = "<svg><template><div id='inside'></div></template></svg><div id='outside'></div>";
+          var divs = document.getElementsByTagName("div");
+          return JSON.stringify({
+            len: divs.length,
+            ids: Array.from(divs).map(function (n) { return n.id; }).join(",")
+          });
+        })()
+        "#,
+      );
+
+      assert_eq!(v["len"], 2);
+      assert_eq!(v["ids"], "inside,outside");
     });
   }
 
