@@ -89,6 +89,16 @@ typeof chrome === "undefined"
 
 holds in untrusted content.
 
+### Where this should be wired up (vm-js embedding)
+
+In FastRender’s `vm-js` embedding, “environment installation” happens during realm construction.
+For example, `WindowRealm` installs deterministic browser shims (`navigator`, `screen`,
+`matchMedia`, etc) via `install_window_shims_vm_js` in
+[`src/js/vmjs/window_realm.rs`](../src/js/vmjs/window_realm.rs).
+
+The chrome bridge should be installed the same way, but **only** for the trusted chrome/UI realm.
+Do not install it in the normal content-page realm.
+
 ### Implementation note (in-tree browser)
 
 In the in-tree windowed browser, navigation and tab actions already exist as part of the UI↔worker
