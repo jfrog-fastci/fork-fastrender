@@ -16,6 +16,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use super::string_match::contains_ascii_case_insensitive;
 use crate::ui::url::validate_user_navigation_url_scheme;
 
 pub const BOOKMARK_STORE_VERSION: u32 = 1;
@@ -143,8 +144,17 @@ impl BookmarkStore {
   /// - `scan_limit` caps the number of bookmark entries examined (folders do not count toward this
   ///   limit). This is useful for UI surfaces that need to remain cheap (e.g. the omnibox).
   pub fn search(&self, query: &str, scan_limit: usize) -> Vec<BookmarkId> {
-    let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
-    if tokens.is_empty() || scan_limit == 0 {
+    if scan_limit == 0 {
+      return Vec::new();
+    }
+
+    // Lowercase once so we can use the fast ASCII-only matcher (non-ASCII bytes compare exactly).
+    let query_lower = query.to_ascii_lowercase();
+    let tokens: Vec<&str> = query_lower
+      .split_whitespace()
+      .filter(|t| !t.is_empty())
+      .collect();
+    if tokens.is_empty() {
       return Vec::new();
     }
 
@@ -178,9 +188,9 @@ impl BookmarkStore {
             .map(|t| t.trim())
             .filter(|t| !t.is_empty());
 
-          for token in &tokens {
-            if !contains_case_insensitive(url, token)
-              && !title.is_some_and(|t| contains_case_insensitive(t, token))
+          for token_lower in &tokens {
+            if !contains_ascii_case_insensitive(url, token_lower)
+              && !title.is_some_and(|t| contains_ascii_case_insensitive(t, token_lower))
             {
               continue 'nodes;
             }
@@ -903,34 +913,6 @@ impl BookmarkStore {
 
     Ok(())
   }
-}
-
-fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-  // ASCII-only case-insensitive substring search.
-  if needle.is_empty() {
-    return true;
-  }
-
-  let hay = haystack.as_bytes();
-  let needle = needle.as_bytes();
-  if needle.len() > hay.len() {
-    return false;
-  }
-
-  for i in 0..=(hay.len() - needle.len()) {
-    let mut ok = true;
-    for j in 0..needle.len() {
-      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
-        ok = false;
-        break;
-      }
-    }
-    if ok {
-      return true;
-    }
-  }
-
-  false
 }
 
 fn normalize_optional_string(value: Option<String>) -> Option<String> {

@@ -38,6 +38,8 @@ use std::ops::Range;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
+use super::string_match::contains_ascii_case_insensitive;
+
 /// Current on-disk schema version for [`GlobalHistoryStore`].
 pub const GLOBAL_HISTORY_SCHEMA_VERSION: u32 = 1;
 
@@ -250,7 +252,12 @@ impl GlobalHistoryStore {
       return Vec::new();
     }
 
-    let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
+    // Lowercase once so we can use the fast ASCII-only matcher (non-ASCII bytes compare exactly).
+    let query_lower = query.to_ascii_lowercase();
+    let tokens: Vec<&str> = query_lower
+      .split_whitespace()
+      .filter(|t| !t.is_empty())
+      .collect();
     if tokens.is_empty() {
       return self.iter_recent().take(limit).collect();
     }
@@ -258,11 +265,11 @@ impl GlobalHistoryStore {
     let mut out = Vec::with_capacity(limit.min(self.entries.len()));
     'entries: for (idx, entry) in self.iter_recent() {
       for token in &tokens {
-        let in_url = contains_case_insensitive(&entry.url, token);
+        let in_url = contains_ascii_case_insensitive(&entry.url, token);
         let in_title = entry
           .title
           .as_deref()
-          .is_some_and(|t| contains_case_insensitive(t, token));
+          .is_some_and(|t| contains_ascii_case_insensitive(t, token));
         if !in_url && !in_title {
           continue 'entries;
         }
@@ -530,35 +537,6 @@ where
   D: Deserializer<'de>,
 {
   Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or(0))
-}
-
-fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-  // For omnibox/history-panel usage we want lightweight, allocation-free matching. We use ASCII-only
-  // case-insensitivity: non-ASCII bytes are compared exactly.
-  if needle.is_empty() {
-    return true;
-  }
-
-  let hay = haystack.as_bytes();
-  let needle = needle.as_bytes();
-  if needle.len() > hay.len() {
-    return false;
-  }
-
-  for i in 0..=(hay.len() - needle.len()) {
-    let mut ok = true;
-    for j in 0..needle.len() {
-      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
-        ok = false;
-        break;
-      }
-    }
-    if ok {
-      return true;
-    }
-  }
-
-  false
 }
 
 #[cfg(test)]
