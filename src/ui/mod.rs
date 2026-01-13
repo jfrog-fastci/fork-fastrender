@@ -27,6 +27,7 @@ pub mod global_history;
 pub mod history;
 pub mod visited;
 pub mod omnibox;
+mod string_match;
 pub mod load_progress;
 pub mod search_suggest;
 pub mod messages;

@@ -1,0 +1,148 @@
+//! ASCII-only case-insensitive substring search helpers.
+//!
+//! These routines are used in hot UI paths (omnibox scoring, visited/history searching). They are:
+//! - allocation-free,
+//! - ASCII-only for case folding (non-ASCII bytes must match exactly),
+//! - optimized for repeated queries by requiring the needle be pre-lowercased with
+//!   `to_ascii_lowercase()`.
+//!
+//! The API explicitly takes `needle_lower_ascii` (already ASCII-lowercased) so callers can do the
+//! conversion once per query token, rather than once per `(haystack, needle)` comparison.
+
+use memchr::{memchr, memchr2};
+
+/// Find the first occurrence of `needle_lower_ascii` in `haystack` using ASCII-only
+/// case-insensitive matching.
+///
+/// - `needle_lower_ascii` **must** already be ASCII-lowercased (i.e. produced by
+///   `to_ascii_lowercase()`); non-ASCII bytes are unaffected by `to_ascii_lowercase` and therefore
+///   still compare exactly.
+/// - Returns the byte index of the first match (compatible with `str::find` semantics).
+pub(crate) fn find_ascii_case_insensitive(
+  haystack: &str,
+  needle_lower_ascii: &str,
+) -> Option<usize> {
+  if needle_lower_ascii.is_empty() {
+    return Some(0);
+  }
+
+  let hay = haystack.as_bytes();
+  let needle = needle_lower_ascii.as_bytes();
+  if needle.len() > hay.len() {
+    return None;
+  }
+
+  debug_assert!(
+    needle.iter().all(|b| !b.is_ascii_uppercase()),
+    "needle_lower_ascii must already be ASCII-lowercased"
+  );
+
+  let first = needle[0];
+  let first_upper = if first.is_ascii_lowercase() {
+    first.to_ascii_uppercase()
+  } else {
+    first
+  };
+
+  // 1-byte needle fast path: just scan for either `a` or `A`.
+  if needle.len() == 1 {
+    if first_upper != first {
+      return memchr2(first, first_upper, hay);
+    }
+    return memchr(first, hay);
+  }
+
+  let last_start = hay.len() - needle.len();
+  let mut offset = 0usize;
+  while offset <= last_start {
+    let rel = if first_upper != first {
+      memchr2(first, first_upper, &hay[offset..])?
+    } else {
+      memchr(first, &hay[offset..])?
+    };
+    let start = offset + rel;
+
+    // `memchr` searches the entire remainder of the slice, so it can return a match position that
+    // doesn't leave enough room for the full needle. In that case, we're done.
+    if start > last_start {
+      return None;
+    }
+
+    if matches_at(hay, start, needle) {
+      return Some(start);
+    }
+
+    offset = start + 1;
+  }
+
+  None
+}
+
+#[inline]
+fn matches_at(hay: &[u8], start: usize, needle_lower: &[u8]) -> bool {
+  let window = &hay[start..start + needle_lower.len()];
+  for (&h, &n) in window.iter().zip(needle_lower.iter()) {
+    if h == n {
+      continue;
+    }
+    if n.is_ascii_lowercase() {
+      // `n` is guaranteed to be `a..=z`, so `n - 32` is `A..=Z`.
+      if h == n - 32 {
+        continue;
+      }
+    }
+    return false;
+  }
+  true
+}
+
+/// Returns `true` if `haystack` contains `needle_lower_ascii` using ASCII-only case-insensitive
+/// matching.
+#[inline]
+pub(crate) fn contains_ascii_case_insensitive(haystack: &str, needle_lower_ascii: &str) -> bool {
+  find_ascii_case_insensitive(haystack, needle_lower_ascii).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn empty_needle_matches_everything() {
+    assert_eq!(find_ascii_case_insensitive("abc", ""), Some(0));
+    assert_eq!(find_ascii_case_insensitive("", ""), Some(0));
+    assert!(contains_ascii_case_insensitive("abc", ""));
+    assert!(contains_ascii_case_insensitive("", ""));
+  }
+
+  #[test]
+  fn ascii_mixed_case_matches() {
+    assert_eq!(find_ascii_case_insensitive("HelloWorld", "world"), Some(5));
+    assert!(contains_ascii_case_insensitive("HelloWorld", "world"));
+
+    assert_eq!(find_ascii_case_insensitive("HELLO", "hello"), Some(0));
+    assert_eq!(find_ascii_case_insensitive("heLLo", "ell"), Some(1));
+
+    assert_eq!(find_ascii_case_insensitive("abc", "d"), None);
+    assert!(!contains_ascii_case_insensitive("abc", "d"));
+  }
+
+  #[test]
+  fn non_ascii_bytes_compare_exactly() {
+    // ASCII case folding should still work for the ASCII prefix.
+    assert!(!contains_ascii_case_insensitive("CAFÉ", "café"));
+
+    // Exact byte match on non-ASCII.
+    assert!(contains_ascii_case_insensitive("café", "fé"));
+    assert!(contains_ascii_case_insensitive("É", "É"));
+    assert!(!contains_ascii_case_insensitive("É", "é"));
+  }
+
+  #[test]
+  fn does_not_assume_utf8_boundaries() {
+    // `€` is a 3-byte UTF-8 sequence. Matching against ASCII shouldn't panic even though the
+    // candidate window can end on a non-UTF8 boundary.
+    assert_eq!(find_ascii_case_insensitive("a€b", "ab"), None);
+    assert_eq!(find_ascii_case_insensitive("€Hello", "hello"), Some(3));
+  }
+}

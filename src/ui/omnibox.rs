@@ -1,9 +1,10 @@
-use crate::ui::browser_app::{BrowserTabState, ClosedTabState, RemoteSearchSuggestCache};
-use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
-use crate::ui::messages::TabId;
 use crate::ui::about_pages;
-use crate::ui::{BookmarkNode, BookmarkStore};
+use crate::ui::browser_app::{BrowserTabState, ClosedTabState, RemoteSearchSuggestCache};
+use crate::ui::messages::TabId;
+use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
+use crate::ui::{BookmarkNode, BookmarkStore};
+use super::string_match::find_ascii_case_insensitive;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -89,11 +90,7 @@ impl OmniboxSuggestion {
   fn dedup_key_owned(&self) -> String {
     match &self.action {
       OmniboxAction::NavigateToUrl(url) => url.to_ascii_lowercase(),
-      OmniboxAction::ActivateTab(_) => self
-        .url
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase(),
+      OmniboxAction::ActivateTab(_) => self.url.as_deref().unwrap_or_default().to_ascii_lowercase(),
       OmniboxAction::Search(query) => query.to_ascii_lowercase(),
     }
   }
@@ -351,10 +348,13 @@ impl OmniboxProvider for RemoteSearchSuggestProvider {
       }
 
       // Best-effort de-dupe (case-insensitive).
-      if out.iter().any(|existing: &OmniboxSuggestion| match &existing.action {
-        OmniboxAction::Search(existing_q) => existing_q.eq_ignore_ascii_case(trimmed),
-        _ => false,
-      }) {
+      if out
+        .iter()
+        .any(|existing: &OmniboxSuggestion| match &existing.action {
+          OmniboxAction::Search(existing_q) => existing_q.eq_ignore_ascii_case(trimmed),
+          _ => false,
+        })
+      {
         continue;
       }
 
@@ -382,7 +382,13 @@ pub fn build_omnibox_suggestions(
   input: &str,
   limit: usize,
 ) -> Vec<OmniboxSuggestion> {
-  build_omnibox_suggestions_with_providers_at_time(ctx, input, limit, default_providers(), SystemTime::now())
+  build_omnibox_suggestions_with_providers_at_time(
+    ctx,
+    input,
+    limit,
+    default_providers(),
+    SystemTime::now(),
+  )
 }
 
 /// Build omnibox suggestions using [`DEFAULT_OMNIBOX_LIMIT`].
@@ -496,10 +502,7 @@ fn score_suggestion(
   };
 
   let mut match_total = 0i64;
-  let parsed_url = suggestion
-    .url
-    .as_deref()
-    .and_then(|u| Url::parse(u).ok());
+  let parsed_url = suggestion.url.as_deref().and_then(|u| Url::parse(u).ok());
 
   for token_lower in tokens_lower {
     let mut best_token_match = None::<i64>;
@@ -524,7 +527,7 @@ fn score_suggestion(
 
 /// Returns a score for `needle` in `haystack`, where larger is better.
 fn match_score(haystack: &str, needle_lower: &str) -> Option<i64> {
-  let idx = find_case_insensitive(haystack, needle_lower)? as i64;
+  let idx = find_ascii_case_insensitive(haystack, needle_lower)? as i64;
 
   // Prefer prefix matches and earlier matches. Clamp so long strings don't overflow.
   let prefix_bonus = if idx == 0 { 1_000 } else { 0 };
@@ -550,14 +553,16 @@ fn match_score_url(parsed: Option<&Url>, raw: &str, needle_lower: &str) -> Optio
 
   // Score path + query, but keep it lower than host matches.
   let path_score = match_score_pathish(url.path(), needle_lower);
-  let query_score = url.query().and_then(|q| match_score_pathish(q, needle_lower));
+  let query_score = url
+    .query()
+    .and_then(|q| match_score_pathish(q, needle_lower));
   let path_query_score = path_score.max(query_score);
 
   raw_score.max(host_score).max(path_query_score)
 }
 
 fn match_score_http_host(host: &str, needle_lower: &str) -> Option<i64> {
-  let idx = find_case_insensitive(host, needle_lower)? as i64;
+  let idx = find_ascii_case_insensitive(host, needle_lower)? as i64;
 
   let domain_start = registrable_domain(host)
     .and_then(|domain| host.len().checked_sub(domain.len()))
@@ -578,12 +583,14 @@ fn match_score_http_host(host: &str, needle_lower: &str) -> Option<i64> {
 }
 
 fn match_score_pathish(haystack: &str, needle_lower: &str) -> Option<i64> {
-  let idx = find_case_insensitive(haystack, needle_lower)? as i64;
+  let idx = find_ascii_case_insensitive(haystack, needle_lower)? as i64;
   let boundary_bonus = if idx == 0 {
     200
   } else {
     match haystack.as_bytes().get(idx as usize - 1) {
-      Some(b'/') | Some(b'?') | Some(b'&') | Some(b'=') | Some(b'.') | Some(b'-') | Some(b'_') => 200,
+      Some(b'/') | Some(b'?') | Some(b'&') | Some(b'=') | Some(b'.') | Some(b'-') | Some(b'_') => {
+        200
+      }
       _ => 0,
     }
   };
@@ -591,36 +598,11 @@ fn match_score_pathish(haystack: &str, needle_lower: &str) -> Option<i64> {
   Some((boundary_bonus + position_bonus).min(600))
 }
 
-fn find_case_insensitive(haystack: &str, needle_lower: &str) -> Option<usize> {
-  // For omnibox usage we want lightweight, allocation-free matching. We use ASCII-only
-  // case-insensitivity: non-ASCII bytes are compared exactly.
-  if needle_lower.is_empty() {
-    return Some(0);
-  }
-
-  let hay = haystack.as_bytes();
-  let needle = needle_lower.as_bytes();
-  if needle.len() > hay.len() {
-    return None;
-  }
-
-  for i in 0..=(hay.len() - needle.len()) {
-    let mut ok = true;
-    for j in 0..needle.len() {
-      if hay[i + j].to_ascii_lowercase() != needle[j] {
-        ok = false;
-        break;
-      }
-    }
-    if ok {
-      return Some(i);
-    }
-  }
-
-  None
-}
-
-fn frecency_bonus(source: OmniboxSuggestionSource, record: &VisitedUrlRecord, now: SystemTime) -> i64 {
+fn frecency_bonus(
+  source: OmniboxSuggestionSource,
+  record: &VisitedUrlRecord,
+  now: SystemTime,
+) -> i64 {
   let age = now
     .duration_since(record.last_visited)
     .unwrap_or(Duration::ZERO);
@@ -667,7 +649,9 @@ fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ord
 
   // Secondary: source, consistent with base score
   // (Primary > RemoteSuggest > OpenTab > About > Bookmark > ClosedTab > Visited).
-  match suggestion_source_rank(b.suggestion.source).cmp(&suggestion_source_rank(a.suggestion.source)) {
+  match suggestion_source_rank(b.suggestion.source)
+    .cmp(&suggestion_source_rank(a.suggestion.source))
+  {
     Ordering::Equal => {}
     ord => return ord,
   }
@@ -1010,11 +994,17 @@ mod tests {
 
     let cats = build_omnibox_suggestions(&ctx, "cats", 10);
     assert!(
-      cats.first().is_some_and(|s| s.source == OmniboxSuggestionSource::Primary),
+      cats
+        .first()
+        .is_some_and(|s| s.source == OmniboxSuggestionSource::Primary),
       "expected a primary suggestion for non-empty input"
     );
     assert!(
-      cats.iter().filter(|s| s.source == OmniboxSuggestionSource::Primary).count() == 1,
+      cats
+        .iter()
+        .filter(|s| s.source == OmniboxSuggestionSource::Primary)
+        .count()
+        == 1,
       "expected exactly one primary suggestion"
     );
     assert!(
@@ -1053,16 +1043,18 @@ mod tests {
       about_pages::ABOUT_GPU,
     ] {
       assert!(
-        suggestions.iter().any(|s| matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == url)),
+        suggestions
+          .iter()
+          .any(|s| matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == url)),
         "expected suggestions for {url}"
       );
     }
 
     let suggestions = build_omnibox_suggestions(&ctx, "help", 10);
     assert!(
-      suggestions
-        .iter()
-        .any(|s| matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == about_pages::ABOUT_HELP)),
+      suggestions.iter().any(
+        |s| matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == about_pages::ABOUT_HELP)
+      ),
       "expected about:help suggestion for input `help`"
     );
   }
@@ -1255,7 +1247,10 @@ mod tests {
       .filter(|s| s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited))
       .filter_map(|s| s.url.as_deref())
       .collect();
-    assert_eq!(visited_urls, vec!["https://b.example.com/", "https://a.example.com/"]);
+    assert_eq!(
+      visited_urls,
+      vec!["https://b.example.com/", "https://a.example.com/"]
+    );
   }
 
   #[test]
@@ -1301,7 +1296,10 @@ mod tests {
       now,
     );
 
-    let urls: Vec<&str> = suggestions.iter().filter_map(|s| s.url.as_deref()).collect();
+    let urls: Vec<&str> = suggestions
+      .iter()
+      .filter_map(|s| s.url.as_deref())
+      .collect();
     assert_eq!(
       urls,
       vec![
@@ -1345,10 +1343,19 @@ mod tests {
       remote_search_suggest: None,
     };
 
-    let suggestions =
-      build_omnibox_suggestions_with_providers_at_time(&ctx, "Needle", 10, default_providers(), now);
+    let suggestions = build_omnibox_suggestions_with_providers_at_time(
+      &ctx,
+      "Needle",
+      10,
+      default_providers(),
+      now,
+    );
 
-    assert_eq!(suggestions.len(), 4, "unexpected suggestions: {suggestions:?}");
+    assert_eq!(
+      suggestions.len(),
+      4,
+      "unexpected suggestions: {suggestions:?}"
+    );
     assert_eq!(suggestions[0].source, OmniboxSuggestionSource::Primary);
     assert_eq!(
       suggestions[1].source,
@@ -1474,11 +1481,7 @@ mod tests {
       .add("https://www.rust-lang.org/learn".to_string(), None, None)
       .expect("add bookmark rust-lang");
     bookmarks
-      .add(
-        "https://example.com/only-one-token".to_string(),
-        None,
-        None,
-      )
+      .add("https://example.com/only-one-token".to_string(), None, None)
       .expect("add bookmark example");
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,

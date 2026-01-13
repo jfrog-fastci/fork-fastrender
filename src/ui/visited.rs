@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use std::time::SystemTime;
 
 use super::about_pages;
+use super::string_match::contains_ascii_case_insensitive;
 use super::GlobalHistoryStore;
 
 /// Default maximum number of unique visited URLs stored in-memory.
@@ -224,7 +225,12 @@ impl VisitedUrlStore {
       let visit_count = entry.visit_count.max(1);
       let visit_count = u32::try_from(visit_count).unwrap_or(u32::MAX);
 
-      self.record_visit_at_with_count(url.to_string(), entry.title.clone(), visited_at, visit_count);
+      self.record_visit_at_with_count(
+        url.to_string(),
+        entry.title.clone(),
+        visited_at,
+        visit_count,
+      );
     }
   }
 
@@ -241,19 +247,23 @@ impl VisitedUrlStore {
       return Vec::new();
     }
 
-    let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
-    if tokens.is_empty() {
+    let tokens_lower: Vec<String> = query
+      .split_whitespace()
+      .filter(|t| !t.is_empty())
+      .map(|t| t.to_ascii_lowercase())
+      .collect();
+    if tokens_lower.is_empty() {
       return self.iter_recent().take(limit).collect();
     }
 
     let mut out = Vec::with_capacity(limit.min(self.len()));
     'records: for record in self.iter_recent() {
-      for token in &tokens {
-        let in_url = contains_case_insensitive(&record.url, token);
+      for token_lower in &tokens_lower {
+        let in_url = contains_ascii_case_insensitive(&record.url, token_lower);
         let in_title = record
           .title
           .as_deref()
-          .is_some_and(|t| contains_case_insensitive(t, token));
+          .is_some_and(|t| contains_ascii_case_insensitive(t, token_lower));
         if !in_url && !in_title {
           continue 'records;
         }
@@ -279,39 +289,10 @@ impl Default for VisitedUrlStore {
   }
 }
 
-fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-  // For omnibox usage we want lightweight, allocation-free matching. We use ASCII-only
-  // case-insensitivity: non-ASCII bytes are compared exactly.
-  if needle.is_empty() {
-    return true;
-  }
-
-  let hay = haystack.as_bytes();
-  let needle = needle.as_bytes();
-  if needle.len() > hay.len() {
-    return false;
-  }
-
-  for i in 0..=(hay.len() - needle.len()) {
-    let mut ok = true;
-    for j in 0..needle.len() {
-      if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
-        ok = false;
-        break;
-      }
-    }
-    if ok {
-      return true;
-    }
-  }
-
-  false
-}
-
 #[cfg(test)]
-  mod tests {
-    use super::*;
-    use std::time::Duration;
+mod tests {
+  use super::*;
+  use std::time::Duration;
 
   #[test]
   fn dedup_refreshes_last_visited_and_preserves_title_when_none() {
@@ -334,7 +315,10 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     assert_eq!(a.url, "https://a.example/");
     assert_eq!(a.title.as_deref(), Some("A"));
     assert_eq!(a.last_visited, t3);
-    assert_eq!(a.visit_count, 2, "expected visit_count to increment on revisit");
+    assert_eq!(
+      a.visit_count, 2,
+      "expected visit_count to increment on revisit"
+    );
 
     let b = it.next().unwrap();
     assert_eq!(b.url, "https://b.example/");
@@ -367,31 +351,31 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     let mut history = GlobalHistoryStore::default();
     history.entries = vec![
       super::super::GlobalHistoryEntry {
-          url: "https://a.example/".to_string(),
-          title: Some("A".to_string()),
-          visited_at_ms: 2_000,
-          visit_count: 2,
-        },
-        // More recent, but missing title; should not clobber previous title for the same URL.
+        url: "https://a.example/".to_string(),
+        title: Some("A".to_string()),
+        visited_at_ms: 2_000,
+        visit_count: 2,
+      },
+      // More recent, but missing title; should not clobber previous title for the same URL.
       super::super::GlobalHistoryEntry {
-          url: "https://a.example/".to_string(),
-          title: None,
-          visited_at_ms: 6_000,
-          visit_count: 3,
-        },
-        // Out-of-order timestamp compared to file order: this should still be newer than `c`.
+        url: "https://a.example/".to_string(),
+        title: None,
+        visited_at_ms: 6_000,
+        visit_count: 3,
+      },
+      // Out-of-order timestamp compared to file order: this should still be newer than `c`.
       super::super::GlobalHistoryEntry {
-          url: "https://b.example/".to_string(),
-          title: Some("B".to_string()),
-          visited_at_ms: 5_000,
-          visit_count: 1,
-        },
+        url: "https://b.example/".to_string(),
+        title: Some("B".to_string()),
+        visited_at_ms: 5_000,
+        visit_count: 1,
+      },
       super::super::GlobalHistoryEntry {
-          url: "https://c.example/".to_string(),
-          title: Some("C".to_string()),
-          visited_at_ms: 3_000,
-          visit_count: 1,
-        },
+        url: "https://c.example/".to_string(),
+        title: Some("C".to_string()),
+        visited_at_ms: 3_000,
+        visit_count: 1,
+      },
     ];
 
     let mut store = VisitedUrlStore::new();
@@ -402,7 +386,11 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
     assert_eq!(
       urls,
-      vec!["https://a.example/", "https://b.example/", "https://c.example/"]
+      vec![
+        "https://a.example/",
+        "https://b.example/",
+        "https://c.example/"
+      ]
     );
 
     let a = store.iter_recent().next().unwrap();
@@ -422,17 +410,17 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     let mut history = GlobalHistoryStore::default();
     history.entries = vec![
       super::super::GlobalHistoryEntry {
-          url: "about:newtab".to_string(),
-          title: Some("New Tab".to_string()),
-          visited_at_ms: 10_000,
-          visit_count: 1,
-        },
+        url: "about:newtab".to_string(),
+        title: Some("New Tab".to_string()),
+        visited_at_ms: 10_000,
+        visit_count: 1,
+      },
       super::super::GlobalHistoryEntry {
-          url: "https://example.com/".to_string(),
-          title: Some("Example".to_string()),
-          visited_at_ms: 11_000,
-          visit_count: 1,
-        },
+        url: "https://example.com/".to_string(),
+        title: Some("Example".to_string()),
+        visited_at_ms: 11_000,
+        visit_count: 1,
+      },
     ];
 
     let mut store = VisitedUrlStore::new();
@@ -447,25 +435,25 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
   fn seed_from_global_history_populates_search_results() {
     let mut history = GlobalHistoryStore::default();
     history.entries = vec![
-        super::super::GlobalHistoryEntry {
-          url: "https://example.com/".to_string(),
-          title: Some("Example Domain".to_string()),
-          visited_at_ms: 1_000,
-          visit_count: 1,
-        },
-        super::super::GlobalHistoryEntry {
-          url: "https://www.rust-lang.org/".to_string(),
-          title: Some("Rust".to_string()),
-          visited_at_ms: 2_000,
-          visit_count: 1,
-        },
-        super::super::GlobalHistoryEntry {
-          url: "https://example.org/other".to_string(),
-          title: None,
-          visited_at_ms: 3_000,
-          visit_count: 1,
-        },
-      ];
+      super::super::GlobalHistoryEntry {
+        url: "https://example.com/".to_string(),
+        title: Some("Example Domain".to_string()),
+        visited_at_ms: 1_000,
+        visit_count: 1,
+      },
+      super::super::GlobalHistoryEntry {
+        url: "https://www.rust-lang.org/".to_string(),
+        title: Some("Rust".to_string()),
+        visited_at_ms: 2_000,
+        visit_count: 1,
+      },
+      super::super::GlobalHistoryEntry {
+        url: "https://example.org/other".to_string(),
+        title: None,
+        visited_at_ms: 3_000,
+        visit_count: 1,
+      },
+    ];
 
     let mut store = VisitedUrlStore::new();
     store.seed_from_global_history(&history);
@@ -503,63 +491,65 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
   fn seed_from_global_history_skips_empty_urls() {
     let mut history = GlobalHistoryStore::default();
     history.entries = vec![
-        super::super::GlobalHistoryEntry {
-          url: "   ".to_string(),
-          title: Some("Whitespace".to_string()),
-          visited_at_ms: 1_000,
-          visit_count: 1,
-        },
-        super::super::GlobalHistoryEntry {
-          url: "".to_string(),
-          title: Some("Empty".to_string()),
-          visited_at_ms: 2_000,
-          visit_count: 1,
-        },
-        super::super::GlobalHistoryEntry {
-          url: "https://example.com/".to_string(),
-          title: None,
-          visited_at_ms: 3_000,
-          visit_count: 1,
-        },
-      ];
+      super::super::GlobalHistoryEntry {
+        url: "   ".to_string(),
+        title: Some("Whitespace".to_string()),
+        visited_at_ms: 1_000,
+        visit_count: 1,
+      },
+      super::super::GlobalHistoryEntry {
+        url: "".to_string(),
+        title: Some("Empty".to_string()),
+        visited_at_ms: 2_000,
+        visit_count: 1,
+      },
+      super::super::GlobalHistoryEntry {
+        url: "https://example.com/".to_string(),
+        title: None,
+        visited_at_ms: 3_000,
+        visit_count: 1,
+      },
+    ];
 
     let mut store = VisitedUrlStore::new();
     store.seed_from_global_history(&history);
 
     assert_eq!(store.len(), 1);
-    assert_eq!(store.iter_recent().next().unwrap().url, "https://example.com/");
+    assert_eq!(
+      store.iter_recent().next().unwrap().url,
+      "https://example.com/"
+    );
   }
 
   #[test]
   fn seed_from_global_history_respects_capacity() {
     let mut history = GlobalHistoryStore::default();
     history.entries = vec![
-        super::super::GlobalHistoryEntry {
-          url: "https://a.example/".to_string(),
-          title: None,
-          visited_at_ms: 1_000,
-          visit_count: 1,
-        },
-        super::super::GlobalHistoryEntry {
-          url: "https://b.example/".to_string(),
-          title: None,
-          visited_at_ms: 2_000,
-          visit_count: 1,
-        },
-        super::super::GlobalHistoryEntry {
-          url: "https://c.example/".to_string(),
-          title: None,
-          visited_at_ms: 3_000,
-          visit_count: 1,
-        },
-      ];
+      super::super::GlobalHistoryEntry {
+        url: "https://a.example/".to_string(),
+        title: None,
+        visited_at_ms: 1_000,
+        visit_count: 1,
+      },
+      super::super::GlobalHistoryEntry {
+        url: "https://b.example/".to_string(),
+        title: None,
+        visited_at_ms: 2_000,
+        visit_count: 1,
+      },
+      super::super::GlobalHistoryEntry {
+        url: "https://c.example/".to_string(),
+        title: None,
+        visited_at_ms: 3_000,
+        visit_count: 1,
+      },
+    ];
 
     let mut store = VisitedUrlStore::with_capacity(2);
     store.seed_from_global_history(&history);
 
     let urls: Vec<&str> = store.iter_recent().map(|r| r.url.as_str()).collect();
     assert_eq!(urls, vec!["https://c.example/", "https://b.example/"]);
-
   }
 
   #[test]
