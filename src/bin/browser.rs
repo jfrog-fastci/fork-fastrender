@@ -1951,6 +1951,8 @@ use arboard::Clipboard;
 #[cfg(feature = "browser_ui")]
 use clap::Parser;
 #[cfg(feature = "browser_ui")]
+use fastrender::ui::compositor_accessibility as compositor_a11y;
+#[cfg(feature = "browser_ui")]
 use fastrender::ui::os_clipboard;
 
 #[cfg(feature = "browser_ui")]
@@ -6127,65 +6129,11 @@ struct ClosingTabFavicon {
 }
 
 #[cfg(feature = "browser_ui")]
-struct ChromeAccessKit {
-  adapter: accesskit_winit::Adapter,
-}
-
-#[cfg(feature = "browser_ui")]
-impl ChromeAccessKit {
-  fn new(
-    window: &winit::window::Window,
-    event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-  ) -> Self {
-    let adapter = accesskit_winit::Adapter::new(
-      window,
-      || {
-        use std::num::NonZeroU128;
-
-        // Initial tree shown when accessibility is first activated. The chrome tree is updated
-        // continuously during rendering via `Adapter::update_if_active`.
-        let mut classes = accesskit::NodeClassSet::new();
-        let root_id = accesskit::NodeId(NonZeroU128::new(1).unwrap());
-        let mut root = accesskit::NodeBuilder::new(accesskit::Role::Window);
-        root.set_name("FastRender".to_string());
-        accesskit::TreeUpdate {
-          nodes: vec![(root_id, root.build(&mut classes))],
-          tree: Some(accesskit::Tree::new(root_id)),
-          focus: Some(root_id),
-        }
-      },
-      event_loop_proxy,
-    );
-
-    Self { adapter }
-  }
-
-  fn process_window_event(
-    &mut self,
-    window: &winit::window::Window,
-    event: &winit::event::WindowEvent<'_>,
-  ) {
-    let _ = self.adapter.on_event(window, event);
-  }
-
-  fn is_active(&self) -> bool {
-    self.adapter.is_active()
-  }
-
-  fn update_if_active(&self, updater: impl FnOnce() -> accesskit::TreeUpdate) {
-    if !self.is_active() {
-      return;
-    }
-    self.adapter.update_if_active(updater);
-  }
-}
-
-#[cfg(feature = "browser_ui")]
 enum ChromeA11yBackend {
   /// Delegate accessibility to egui/egui-winit's AccessKit integration (current default).
   Egui,
   /// Provide an AccessKit tree driven by a FastRender-rendered HTML/CSS chrome document.
-  FastRender(ChromeAccessKit),
+  FastRender(compositor_a11y::CompositorAccessibility),
 }
 
 #[cfg(feature = "browser_ui")]
@@ -7143,7 +7091,22 @@ impl App {
     // - Default: egui-winit drives AccessKit for the egui-based chrome UI.
     // - Renderer-chrome: FastRender drives its own AccessKit adapter (separate tree, separate action routing).
     let chrome_a11y = if renderer_chrome_enabled_from_env() {
-      ChromeA11yBackend::FastRender(ChromeAccessKit::new(&window, event_loop_proxy.clone()))
+      // The compositor (renderer-chrome) backend does not use egui-winit's built-in AccessKit
+      // integration. Install our own `accesskit_winit::Adapter` with a minimal tree so screen
+      // readers can at least discover the chrome + page regions.
+      let initial_state = compositor_a11y::state_for_window(
+        &window,
+        80.0,
+        compositor_a11y::DEFAULT_WINDOW_NAME,
+        compositor_a11y::DEFAULT_CHROME_NAME,
+        compositor_a11y::DEFAULT_PAGE_NAME,
+        compositor_a11y::CompositorFocusTarget::Chrome,
+      );
+      ChromeA11yBackend::FastRender(compositor_a11y::CompositorAccessibility::new(
+        &window,
+        event_loop_proxy.clone(),
+        initial_state,
+      ))
     } else {
       ChromeA11yBackend::Egui
     };
@@ -12840,8 +12803,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
     let _span = self.trace.span("handle_winit_input_event", "ui.input");
 
-    if let ChromeA11yBackend::FastRender(a11y) = &mut self.chrome_a11y {
-      a11y.process_window_event(&self.window, event);
+    if let ChromeA11yBackend::FastRender(a11y) = &self.chrome_a11y {
+      let _ = a11y.on_window_event(&self.window, event);
     }
 
     match event {
@@ -13577,7 +13540,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           // Winit's `MouseInput` events do not contain cursor coordinates. On some platforms winit
           // can deliver a click without a preceding `CursorMoved` (e.g. first click after focusing
           // the window), leaving `last_cursor_pos_points` unset. Fall back to egui's tracked hover
-          // position, then to a direct window query.
+          // position.
           let egui_hover_pos = self.egui_ctx.input(|i| i.pointer.hover_pos());
           // Winit 0.28 does not expose a stable cross-platform cursor-position query API on
           // `Window`. Fall back to egui's tracked hover position; if it's not available we treat
@@ -15691,47 +15654,70 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
   }
 
   fn handle_accesskit_action_request(&mut self, request: accesskit::ActionRequest) {
-    // Renderer-chrome action routing lives outside egui. This is intentionally a no-op placeholder
-    // until the FastRender chrome document is wired into the windowed browser.
-    let _ = request;
-  }
+    // Egui-driven accessibility actions are handled internally by egui-winit; we only need to
+    // implement action routing for the compositor (renderer-chrome) backend.
+    if !matches!(&self.chrome_a11y, ChromeA11yBackend::FastRender(_)) {
+      return;
+    }
 
-  fn build_chrome_accesskit_tree_update(&self) -> accesskit::TreeUpdate {
-    use std::num::NonZeroU128;
+    if request.action != accesskit::Action::Focus {
+      return;
+    }
 
-    let mut classes = accesskit::NodeClassSet::new();
-
-    // Placeholder tree until renderer-chrome's real tree builder is integrated.
-    let root_id = accesskit::NodeId(NonZeroU128::new(1).unwrap());
-    let doc_id = accesskit::NodeId(NonZeroU128::new(2).unwrap());
-
-    let window_name = if self.window_title_cache.trim().is_empty() {
-      "FastRender".to_string()
-    } else {
-      self.window_title_cache.clone()
-    };
-
-    let mut root = accesskit::NodeBuilder::new(accesskit::Role::Window);
-    root.set_name(window_name);
-    root.set_children(vec![doc_id]);
-
-    let mut doc = accesskit::NodeBuilder::new(accesskit::Role::Document);
-    doc.set_name("Browser chrome".to_string());
-    doc.set_children(Vec::new());
-
-    accesskit::TreeUpdate {
-      nodes: vec![
-        (root_id, root.build(&mut classes)),
-        (doc_id, doc.build(&mut classes)),
-      ],
-      tree: Some(accesskit::Tree::new(root_id)),
-      focus: Some(doc_id),
+    if request.target == compositor_a11y::page_node_id() {
+      self.page_has_focus = true;
+      self.chrome_has_text_focus = false;
+      self.window.request_redraw();
+    } else if request.target == compositor_a11y::chrome_node_id() {
+      self.page_has_focus = false;
+      self.window.request_redraw();
     }
   }
 
   fn update_chrome_accesskit_tree(&mut self) {
     if let ChromeA11yBackend::FastRender(a11y) = &self.chrome_a11y {
-      a11y.update_if_active(|| self.build_chrome_accesskit_tree_update());
+      let chrome_height_px = self
+        .page_rect_points
+        .map(|rect| rect.min.y as f64 * self.pixels_per_point as f64)
+        .filter(|h| h.is_finite())
+        .unwrap_or(80.0);
+
+      let window_name = if self.window_title_cache.trim().is_empty() {
+        compositor_a11y::DEFAULT_WINDOW_NAME.to_string()
+      } else {
+        self.window_title_cache.clone()
+      };
+
+      let page_name = if let Some(tab) = self.browser_state.active_tab() {
+        let title = tab.title.as_deref().filter(|t| !t.trim().is_empty());
+        let url = tab.current_url().filter(|u| !u.trim().is_empty());
+        match (title, url) {
+          (Some(title), Some(url)) if title != url => {
+            format!("{}: {} ({})", compositor_a11y::DEFAULT_PAGE_NAME, title, url)
+          }
+          (Some(title), _) => format!("{}: {}", compositor_a11y::DEFAULT_PAGE_NAME, title),
+          (None, Some(url)) => format!("{}: {}", compositor_a11y::DEFAULT_PAGE_NAME, url),
+          _ => compositor_a11y::DEFAULT_PAGE_NAME.to_string(),
+        }
+      } else {
+        compositor_a11y::DEFAULT_PAGE_NAME.to_string()
+      };
+
+      let focus = if self.page_has_focus && !self.chrome_has_text_focus {
+        compositor_a11y::CompositorFocusTarget::Page
+      } else {
+        compositor_a11y::CompositorFocusTarget::Chrome
+      };
+
+      let state = compositor_a11y::state_for_window(
+        &self.window,
+        chrome_height_px,
+        window_name,
+        compositor_a11y::DEFAULT_CHROME_NAME,
+        page_name,
+        focus,
+      );
+      a11y.update_if_active(&state);
     }
   }
 
