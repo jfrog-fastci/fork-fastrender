@@ -7,6 +7,7 @@ use crate::ui::{BookmarkNode, BookmarkStore};
 use super::string_match::{
   contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
 };
+use rustc_hash::FxHashSet;
 use std::cmp::Ordering;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
