@@ -264,6 +264,18 @@ impl DownloadsState {
       .count()
   }
 
+  /// Remove downloads that have completed successfully.
+  ///
+  /// This keeps in-progress, cancelled, and failed downloads intact so the UI can continue to show
+  /// progress and allow retry.
+  pub fn clear_completed(&mut self) -> usize {
+    let before = self.downloads.len();
+    self
+      .downloads
+      .retain(|entry| !matches!(&entry.status, DownloadStatus::Completed));
+    before.saturating_sub(self.downloads.len())
+  }
+
   pub fn aggregate_progress(&self) -> DownloadProgressSummary {
     let mut active_count = 0usize;
     let mut received_bytes: u64 = 0;
@@ -3356,6 +3368,52 @@ mod browser_tab_tests {
       app.tabs.iter().any(|t| Some(t.id) == active),
       "active tab must exist (active={active:?}, tabs={:?})",
       app.tabs.iter().map(|t| t.id).collect::<Vec<_>>()
+    );
+  }
+
+  fn download_entry(download_id: u64, status: DownloadStatus) -> DownloadEntry {
+    DownloadEntry {
+      download_id: DownloadId(download_id),
+      tab_id: TabId(1),
+      url: format!("https://example.test/{download_id}"),
+      file_name: format!("file-{download_id}"),
+      path: std::path::PathBuf::from(format!("file-{download_id}")),
+      status,
+    }
+  }
+
+  #[test]
+  fn downloads_state_clear_completed_removes_only_completed_entries() {
+    let mut state = DownloadsState {
+      downloads: vec![
+        download_entry(
+          1,
+          DownloadStatus::InProgress {
+            received_bytes: 10,
+            total_bytes: Some(100),
+          },
+        ),
+        download_entry(2, DownloadStatus::Cancelled),
+        download_entry(3, DownloadStatus::Completed),
+        download_entry(
+          4,
+          DownloadStatus::Failed {
+            error: "network error".to_string(),
+          },
+        ),
+        download_entry(5, DownloadStatus::Completed),
+      ],
+    };
+
+    let removed = state.clear_completed();
+    assert_eq!(removed, 2);
+    assert_eq!(
+      state
+        .downloads
+        .iter()
+        .map(|d| d.download_id)
+        .collect::<Vec<_>>(),
+      vec![DownloadId(1), DownloadId(2), DownloadId(4)]
     );
   }
 

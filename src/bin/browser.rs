@@ -18169,6 +18169,13 @@ impl App {
       self.page_has_focus = self.should_restore_page_focus();
     }
 
+    if output.clear_completed_requested {
+      let removed = self.browser_state.downloads.clear_completed();
+      if removed > 0 {
+        self.window.request_redraw();
+      }
+    }
+
     for (tab_id, download_id) in output.cancel_requests {
       let _ = self.send_worker_msg(UiToWorker::CancelDownload {
         tab_id,

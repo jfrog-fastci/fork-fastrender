@@ -105,6 +105,7 @@ pub fn download_matches_query(entry: &DownloadEntry, query: &str) -> bool {
 #[derive(Debug, Default)]
 pub struct DownloadsPanelOutput {
   pub close_requested: bool,
+  pub clear_completed_requested: bool,
   pub cancel_requests: Vec<(TabId, DownloadId)>,
   pub retry_requests: Vec<(TabId, String)>,
   pub open_requests: Vec<PathBuf>,
@@ -162,6 +163,10 @@ pub fn downloads_panel_ui(
 
   let motion = UiMotion::from_ctx(ctx);
 
+  let has_completed_downloads = downloads
+    .iter()
+    .any(|entry| matches!(&entry.status, DownloadStatus::Completed));
+
   egui::SidePanel::right("downloads_panel")
     .resizable(true)
     .default_width(360.0)
@@ -171,6 +176,21 @@ pub fn downloads_panel_ui(
         BrowserIcon::Download,
         "Downloads",
         |ui| {
+          let clear_button = egui::Button::new(egui::RichText::new("Clear completed").small());
+          let clear_resp = ui.add_enabled(has_completed_downloads, clear_button);
+          clear_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear completed downloads")
+          });
+          #[cfg(test)]
+          store_test_id(
+            ui.ctx(),
+            "downloads_panel_clear_completed_button_id",
+            clear_resp.id,
+          );
+          if clear_resp.clicked() {
+            out.clear_completed_requested = true;
+          }
+
           let show_folder = ui.small_button("Show downloads folder");
           #[cfg(test)]
           store_test_id(ui.ctx(), "downloads_panel_show_folder_button_id", show_folder.id);
@@ -928,5 +948,79 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert_eq!(output.copy_requests, vec![entry.path.display().to_string()]);
+  }
+
+  #[test]
+  fn clear_completed_button_emits_request() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::dark(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let mut search_query = String::new();
+
+    let downloads = vec![
+      DownloadEntry {
+        download_id: DownloadId(1),
+        tab_id: TabId(1),
+        url: "https://example.com/file.bin".to_string(),
+        file_name: "file.bin".to_string(),
+        path: PathBuf::from("downloads/file.bin"),
+        status: DownloadStatus::InProgress {
+          received_bytes: 10,
+          total_bytes: Some(100),
+        },
+      },
+      DownloadEntry {
+        download_id: DownloadId(2),
+        tab_id: TabId(1),
+        url: "https://example.com/file.zip".to_string(),
+        file_name: "file.zip".to_string(),
+        path: PathBuf::from("downloads/file.zip"),
+        status: DownloadStatus::Completed,
+      },
+    ];
+
+    // Frame 0: render once to capture the clear-completed button id.
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &downloads,
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    let clear_id = expect_temp_id(&ctx, "downloads_panel_clear_completed_button_id");
+
+    // Frame 1: focus the clear-completed button.
+    ctx.memory_mut(|mem| mem.request_focus(clear_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &downloads,
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(clear_id)),
+      "expected focus on Clear completed button"
+    );
+
+    // Frame 2: activate via keyboard.
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
+    let output = downloads_panel_ui(
+      &ctx,
+      &downloads,
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+
+    assert!(output.clear_completed_requested);
   }
 }
