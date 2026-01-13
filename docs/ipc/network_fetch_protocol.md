@@ -390,6 +390,27 @@ Request body note:
 - `body_b64` is base64-encoded and hard-limited: decoded bytes must be `<= IPC_MAX_REQUEST_BODY_BYTES`
   (1 MiB). Larger uploads need a future chunked request-body extension.
 
+### Request → response mapping (what peers should accept)
+
+The protocol is “RPC-like”: each request results in exactly one logical response for the same
+request `id`, but fetch-like requests may stream the body over multiple frames.
+
+Notes:
+
+- Some response “error” shapes exist in the schema but are not emitted by the in-tree server today
+  (the server tends to treat non-fetch RPCs as infallible/best-effort).
+- For `Option<T>` fields, JSON uses `null` for `None`.
+
+| Request (`IpcRequest`) | Response shape(s) | Notes |
+|---|---|---|
+| `Fetch*` / `FetchHttpRequest` / `FetchPartial*` | **Either** `Response{id, IpcResponse::Fetched(Ok(IpcFetchedResource{bytes_b64,..}))}` **or** `FetchStart/FetchBodyChunk*/FetchEnd` **or** `FetchErr{id, IpcError}` | “Fetch-like”: may use chunked body when `bytes.len() > IPC_INLINE_LIMIT_BYTES`. For `FetchPartial*`, the in-tree client treats a `206 Partial Content` response as valid only when `Content-Range` starts at 0. |
+| `RequestHeaderValue{..}` | `Response{id, IpcResponse::MaybeString(Ok(<string-or-null>))}` | `Ok(null)` means “unknown / cannot determine header value”. Used for cache `Vary` keying. |
+| `CookieHeaderValue{..}` | `Response{id, IpcResponse::MaybeString(Ok(<string-or-null>))}` | `Ok("")` means “cookie support enabled, but no cookies”. `Ok(null)` means “cookie state not exposed/unsupported”. |
+| `StoreCookieFromDocument{..}` | `Response{id, IpcResponse::Unit(Ok(()))}` or `Response{id, IpcResponse::Unit(Err(IpcError))}` | In-tree server always returns `Ok(())` (best-effort). |
+| `ReadCacheArtifact*{..}` | `Response{id, IpcResponse::MaybeFetched(Ok(<resource-or-null>))}` | Returned body is always inline base64 (no chunked stream for cache artifacts). In-tree server always returns `Ok(...)`. |
+| `WriteCacheArtifact*{..}` | `Response{id, IpcResponse::Unit(Ok(()))}` or `Response{id, IpcResponse::Unit(Err(IpcError))}` | Base64 decode errors are surfaced as `Err(IpcError)` (in-tree server). |
+| `RemoveCacheArtifact*{..}` | `Response{id, IpcResponse::Unit(Ok(()))}` or `Response{id, IpcResponse::Unit(Err(IpcError))}` | In-tree server always returns `Ok(())` (best-effort). |
+
 ### Validation rules (server-side, hard failures)
 
 The server treats incoming requests as attacker-controlled input and validates before executing.
@@ -558,6 +579,10 @@ Constraints:
 - `total_len` is the exact byte length of the response body.
 - Each chunk’s decoded length must be `<= IPC_CHUNK_MAX_BYTES` (64 KiB).
 - Client must enforce `total_len <= IPC_MAX_BODY_BYTES` (50 MiB) and reject overflow / extra bytes.
+
+Note: this chunking is a **message framing** strategy only. The in-tree network process fetcher
+returns a fully-buffered `Vec<u8>` and then splits it into chunks for IPC; it does not stream bytes
+incrementally from the remote origin.
 
 ### Per-request state machine (server → client)
 
@@ -754,7 +779,10 @@ Current model (as implemented by `IpcFetchServer` running an in-process `HttpFet
 
 The renderer’s `document.cookie` plumbing uses two IPC calls:
 
-- **Getter**: `IpcRequest::CookieHeaderValue { url }` → `IpcResponse::MaybeString(Ok(Some(cookie_header)))`
+- **Getter**: `IpcRequest::CookieHeaderValue { url }` → `IpcResponse::MaybeString(Ok(Option<String>))`
+  - `Ok(Some("a=b; c=d"))` means cookies are supported and that cookie header value would be sent.
+  - `Ok(Some(""))` means cookies are supported but there are no matching cookies.
+  - `Ok(None)` (`null` in JSON) means the underlying fetcher does not expose cookie state.
 - **Setter**: `IpcRequest::StoreCookieFromDocument { url, cookie_string }` → `IpcResponse::Unit(...)`
 
 Semantics:
