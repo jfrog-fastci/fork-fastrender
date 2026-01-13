@@ -4411,6 +4411,120 @@ pub trait ResourceFetcher: Send + Sync {
   }
 }
 
+fn fetch_file_range_with_backend(
+  policy: &ResourcePolicy,
+  file_backend: &dyn FileBackend,
+  url: &str,
+  start: u64,
+  capped_end: u64,
+  max_bytes: usize,
+) -> Result<FetchedResource> {
+  let path_candidates = file_url_path_candidates(url);
+
+  let mut file: Option<Box<dyn Read + Send>> = None;
+  let mut chosen_path: Option<std::path::PathBuf> = None;
+  let mut chosen_meta_len: Option<u64> = None;
+  let mut last_err: Option<io::Error> = None;
+
+  for candidate in &path_candidates {
+    let meta_len = match file_backend.metadata_len(candidate) {
+      Ok(len) => len,
+      Err(_) => None,
+    };
+
+    match file_backend.open(candidate) {
+      Ok(handle) => {
+        file = Some(handle);
+        chosen_path = Some(candidate.clone());
+        chosen_meta_len = meta_len;
+        break;
+      }
+      Err(err) => last_err = Some(err),
+    }
+  }
+
+  let mut file = file.ok_or_else(|| {
+    let err = last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"));
+    Error::Resource(
+      ResourceError::new(url.to_string(), err.to_string())
+        .with_final_url(url.to_string())
+        .with_source(err),
+    )
+  })?;
+
+  let chosen_path_for_type = chosen_path
+    .as_ref()
+    .cloned()
+    .unwrap_or_else(|| std::path::PathBuf::from(url));
+  let content_type = guess_content_type_from_path(chosen_path_for_type.to_string_lossy().as_ref());
+
+  if max_bytes == 0 {
+    return Ok(FetchedResource::with_final_url(
+      Vec::new(),
+      content_type,
+      Some(url.to_string()),
+    ));
+  }
+
+  if let Some(len) = chosen_meta_len {
+    if len == 0 {
+      if start == 0 {
+        return Ok(FetchedResource::with_final_url(
+          Vec::new(),
+          content_type,
+          Some(url.to_string()),
+        ));
+      }
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        "byte range start is beyond end of empty file".to_string(),
+      )));
+    }
+    if start >= len {
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        format!("byte range start {start} is beyond end of file (len={len})"),
+      )));
+    }
+  }
+
+  if start > 0 {
+    let mut take = (&mut *file).take(start);
+    let skipped = io::copy(&mut take, &mut io::sink()).map_err(|err| {
+      Error::Resource(
+        ResourceError::new(url.to_string(), err.to_string())
+          .with_final_url(url.to_string())
+          .with_source(err),
+      )
+    })?;
+    if skipped < start {
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        format!("byte range start {start} is beyond end of file"),
+      )));
+    }
+  }
+
+  let max_len_u64 = capped_end.saturating_sub(start).saturating_add(1);
+  let read_limit = usize::try_from(max_len_u64).unwrap_or(max_bytes);
+  let read_limit = read_limit.min(max_bytes);
+  let bytes = read_response_prefix(&mut file, read_limit).map_err(|err| {
+    Error::Resource(
+      ResourceError::new(url.to_string(), err.to_string())
+        .with_final_url(url.to_string())
+        .with_source(err),
+    )
+  })?;
+
+  policy.reserve_budget(bytes.len())?;
+
+  Ok(FetchedResource::with_final_url(
+    bytes,
+    content_type,
+    Some(url.to_string()),
+  ))
+}
+
 // Allow Arc<dyn ResourceFetcher> to be used as ResourceFetcher
 impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
@@ -4681,6 +4795,120 @@ impl ResourceFetcher for HttpFetcher {
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
     self.fetch_with_context(kind, req.url)
+  }
+
+  fn fetch_range_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let start = *range.start();
+    let end = *range.end();
+    if start > end {
+      return Err(Error::Resource(ResourceError::new(
+        req.url,
+        format!("invalid byte range: start {start} is greater than end {end}"),
+      )));
+    }
+
+    let kind: FetchContextKind = req.destination.into();
+    let normalized = normalize_http_url_for_fetch(req.url);
+    let url = normalized.as_deref().unwrap_or(req.url);
+    let req = FetchRequest { url, ..req };
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
+
+    match self.policy.ensure_url_allowed(url)? {
+      ResourceScheme::Http | ResourceScheme::Https => Err(Error::Resource(ResourceError::new(
+        url,
+        "direct network is disabled (built without `direct_network`); inject a ResourceFetcher that proxies over IPC",
+      ))),
+      ResourceScheme::File | ResourceScheme::Relative => {
+        let limit = self.policy.allowed_response_limit()?;
+        let max_bytes = max_bytes.min(limit);
+
+        let capped_end = if max_bytes == 0 {
+          start
+        } else {
+          let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+          end.min(cap_end)
+        };
+
+        let url_owned;
+        let file_url = match classify_scheme(url) {
+          ResourceScheme::Relative => {
+            url_owned = format!("file://{}", url);
+            url_owned.as_str()
+          }
+          _ => url,
+        };
+
+        fetch_file_range_with_backend(
+          &self.policy,
+          self.file_backend.as_ref(),
+          file_url,
+          start,
+          capped_end,
+          max_bytes,
+        )
+      }
+      ResourceScheme::Data => {
+        let limit = self.policy.allowed_response_limit()?;
+        let max_bytes = max_bytes.min(limit);
+
+        let capped_end = if max_bytes == 0 {
+          start
+        } else {
+          let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+          end.min(cap_end)
+        };
+
+        if max_bytes == 0 {
+          return Ok(FetchedResource::new(Vec::new(), None));
+        }
+
+        let decode_len = capped_end
+          .saturating_add(1)
+          .try_into()
+          .map_err(|_| {
+            Error::Resource(ResourceError::new(
+              url,
+              format!("byte range end {capped_end} is too large to decode"),
+            ))
+          })?;
+        let mut res = data_url::decode_data_url_prefix(url, decode_len)?;
+        let start_idx = usize::try_from(start).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            url,
+            format!("byte range start {start} is too large to slice in memory"),
+          ))
+        })?;
+        if start_idx >= res.bytes.len() {
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!(
+              "byte range start {start} is beyond end of decoded data URL (len={})",
+              res.bytes.len()
+            ),
+          )));
+        }
+        let end_idx = usize::try_from(capped_end).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            url,
+            format!("byte range end {capped_end} is too large to slice in memory"),
+          ))
+        })?;
+        let available_end = res.bytes.len().saturating_sub(1);
+        let end_idx = end_idx.min(available_end);
+        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        self.policy.reserve_budget(res.bytes.len())?;
+        Ok(res)
+      }
+      ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
+    }
   }
 }
 
@@ -10073,6 +10301,229 @@ impl ResourceFetcher for HttpFetcher {
     }
   }
 
+  fn fetch_range_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let start = *range.start();
+    let end = *range.end();
+    if start > end {
+      return Err(Error::Resource(ResourceError::new(
+        req.url,
+        format!("invalid byte range: start {start} is greater than end {end}"),
+      )));
+    }
+
+    let kind: FetchContextKind = req.destination.into();
+    let normalized = normalize_http_url_for_fetch(req.url);
+    let url = normalized.as_deref().unwrap_or(req.url);
+    let req = FetchRequest { url, ..req };
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
+
+    let scheme = self.policy.ensure_url_allowed(url)?;
+    let limit = self.policy.allowed_response_limit()?;
+    let max_bytes = max_bytes.min(limit);
+
+    // Clamp the requested end so we never return more than `max_bytes`.
+    let capped_end = if max_bytes == 0 {
+      // Avoid underflow in `start + max_bytes - 1`. We still form a syntactically valid range and
+      // then clear the body at the end.
+      start
+    } else {
+      let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+      end.min(cap_end)
+    };
+
+    match scheme {
+      ResourceScheme::Http | ResourceScheme::Https => {
+        let mut headers = Vec::with_capacity(1);
+        headers.push((
+          "Range".to_string(),
+          format!("bytes={start}-{capped_end}"),
+        ));
+
+        let request = HttpRequest {
+          fetch: req,
+          method: "GET",
+          redirect: web_fetch::RequestRedirect::Follow,
+          headers: &headers,
+          body: None,
+        };
+
+        let mut res = self.fetch_http_request(request)?;
+        ensure_http_success(&res, url)?;
+
+        if max_bytes == 0 {
+          res.bytes.clear();
+          return Ok(res);
+        }
+
+        // If the server ignored the range and returned a full 200 response, slice when possible.
+        if res.status == Some(200) {
+          let start_idx = usize::try_from(start).map_err(|_| {
+            Error::Resource(ResourceError::new(
+              url,
+              format!("byte range start {start} is too large to slice in memory"),
+            ))
+          })?;
+          if start_idx >= res.bytes.len() {
+            return Err(Error::Resource(ResourceError::new(
+              url,
+              format!(
+                "byte range start {start} is beyond end of response body (len={})",
+                res.bytes.len()
+              ),
+            )));
+          }
+          let end_idx = usize::try_from(capped_end).map_err(|_| {
+            Error::Resource(ResourceError::new(
+              url,
+              format!("byte range end {capped_end} is too large to slice in memory"),
+            ))
+          })?;
+          let available_end = res.bytes.len().saturating_sub(1);
+          let end_idx = end_idx.min(available_end);
+          res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+          return Ok(res);
+        }
+
+        // For partial responses, validate the returned range so callers can rely on the bytes being
+        // from the requested offset (critical for media seek correctness and cache safety).
+        if res.status == Some(206) {
+          let Some(content_range) = res.header_get_joined("content-range") else {
+            return Err(Error::Resource(ResourceError::new(
+              url,
+              "received 206 Partial Content response without Content-Range header".to_string(),
+            )));
+          };
+          let parsed = parse_content_range(&content_range).ok_or_else(|| {
+            Error::Resource(ResourceError::new(
+              url,
+              format!("invalid Content-Range header: {content_range:?}"),
+            ))
+          })?;
+          match parsed {
+            ParsedContentRange::Range {
+              start: response_start,
+              end: response_end,
+              size: _,
+            } => {
+              if response_start != start {
+                return Err(Error::Resource(ResourceError::new(
+                  url,
+                  format!(
+                    "Content-Range start mismatch: requested {start} but received {response_start}"
+                  ),
+                )));
+              }
+
+              let desired_end = capped_end.min(response_end);
+              let desired_len = desired_end
+                .checked_sub(start)
+                .and_then(|delta| delta.checked_add(1))
+                .ok_or_else(|| Error::Resource(ResourceError::new(url, "byte range length overflow")))?;
+              let desired_len = usize::try_from(desired_len).map_err(|_| {
+                Error::Resource(ResourceError::new(
+                  url,
+                  format!("byte range length {desired_len} is too large to slice in memory"),
+                ))
+              })?;
+              if res.bytes.len() < desired_len {
+                return Err(Error::Resource(ResourceError::new(
+                  url,
+                  format!(
+                    "received truncated range body: expected at least {desired_len} bytes, got {}",
+                    res.bytes.len()
+                  ),
+                )));
+              }
+              res.bytes.truncate(desired_len);
+              return Ok(res);
+            }
+            ParsedContentRange::Unsatisfied { size } => {
+              return Err(Error::Resource(ResourceError::new(
+                url,
+                format!("received unsatisfied Content-Range for 206 response (size={size:?})"),
+              )));
+            }
+          }
+        }
+
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        Ok(res)
+      }
+      ResourceScheme::File | ResourceScheme::Relative => {
+        let url_owned;
+        let file_url = match scheme {
+          ResourceScheme::Relative => {
+            url_owned = format!("file://{}", url);
+            url_owned.as_str()
+          }
+          _ => url,
+        };
+
+        fetch_file_range_with_backend(
+          &self.policy,
+          self.file_backend.as_ref(),
+          file_url,
+          start,
+          capped_end,
+          max_bytes,
+        )
+      }
+      ResourceScheme::Data => {
+        if max_bytes == 0 {
+          return Ok(FetchedResource::new(Vec::new(), None));
+        }
+
+        let decode_len = capped_end
+          .saturating_add(1)
+          .try_into()
+          .map_err(|_| {
+            Error::Resource(ResourceError::new(
+              url,
+              format!("byte range end {capped_end} is too large to decode"),
+            ))
+          })?;
+        let mut res = data_url::decode_data_url_prefix(url, decode_len)?;
+        let start_idx = usize::try_from(start).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            url,
+            format!("byte range start {start} is too large to slice in memory"),
+          ))
+        })?;
+        if start_idx >= res.bytes.len() {
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!(
+              "byte range start {start} is beyond end of decoded data URL (len={})",
+              res.bytes.len()
+            ),
+          )));
+        }
+        let end_idx = usize::try_from(capped_end).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            url,
+            format!("byte range end {capped_end} is too large to slice in memory"),
+          ))
+        })?;
+        let available_end = res.bytes.len().saturating_sub(1);
+        let end_idx = end_idx.min(available_end);
+        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        self.policy.reserve_budget(res.bytes.len())?;
+        Ok(res)
+      }
+      ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
+    }
+  }
+
   fn fetch_with_validation(
     &self,
     url: &str,
@@ -14492,6 +14943,63 @@ mod tests {
       resource.message, "file backend disabled",
       "unexpected error: {resource:?}"
     );
+  }
+
+  #[test]
+  fn fetch_range_with_request_denied_backend_returns_deterministic_error() {
+    let file = NamedTempFile::new().expect("temp file");
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+
+    let fetcher = HttpFetcher::new().with_file_backend(Arc::new(NoFileBackend::default()));
+    let err = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 0..=3, 4)
+      .expect_err("expected file backend to deny access");
+
+    let Error::Resource(resource) = err else {
+      panic!("expected Resource error, got: {err:?}");
+    };
+    assert_eq!(
+      resource.message, "file backend disabled",
+      "unexpected error: {resource:?}"
+    );
+  }
+
+  #[test]
+  fn fetch_range_with_request_blocks_bare_file_paths_when_disabled() {
+    let policy = ResourcePolicy::new().allow_bare_file_paths(false);
+    let fetcher = HttpFetcher::new().with_policy(policy);
+    let err = fetcher
+      .fetch_range_with_request(
+        FetchRequest::new("./foo.html", FetchDestination::Fetch),
+        0..=3,
+        4,
+      )
+      .expect_err("expected bare filesystem path to be blocked");
+    assert!(
+      err
+        .to_string()
+        .contains("bare filesystem paths are not allowed"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn fetch_range_with_request_allows_file_urls_when_bare_paths_disabled() {
+    let mut file = NamedTempFile::new().expect("temp file");
+    file.write_all(b"0123456789").expect("write file");
+    file.flush().expect("flush");
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+
+    let policy = ResourcePolicy::new().allow_bare_file_paths(false);
+    let fetcher = HttpFetcher::new().with_policy(policy);
+    let res = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 5..=7, 10)
+      .expect("fetch file range");
+    assert_eq!(res.bytes, b"567");
   }
 
   #[test]
