@@ -1241,6 +1241,15 @@ fn validate_regex_pattern(
       if b == b'}' {
         return Ok(j + 1);
       }
+      if b == b'{' {
+        // `{` is a ClassSetSyntaxCharacter and may only appear as the opening delimiter for
+        // `\q{...}`. Inside the disjunction it must be escaped.
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + j,
+          len: 1,
+        });
+      }
       if b == b'\\' {
         // Allow escapes inside the disjunction; validate `\u`/`\x` shapes so we don't accept
         // obvious unterminated sequences.
@@ -2431,6 +2440,49 @@ fn regex_error_to_syntax(err: RegexError, token_start: usize) -> SyntaxError {
   let start = token_start + err.offset;
   let end = start + err.len;
   Loc(start, end).error(typ, Some(TT::LiteralRegex))
+}
+
+#[cfg(test)]
+mod regex_validation_tests {
+  use super::validate_regex_literal;
+
+  fn assert_valid(raw: &str) {
+    validate_regex_literal(raw).unwrap();
+  }
+
+  fn assert_invalid(raw: &str) {
+    assert!(
+      validate_regex_literal(raw).is_err(),
+      "expected regex to be rejected: {raw}",
+    );
+  }
+
+  #[test]
+  fn unicode_sets_mode_accepts_class_string_disjunction() {
+    assert_valid(r"/^[\q{0|2|4|9\uFE0F\u20E3}_]+$/v");
+    assert_valid(r"/^[[0-9]\q{0|2|4|9\uFE0F\u20E3}]+$/v");
+    assert_valid(r"/^[\p{ASCII_Hex_Digit}&&\q{0|2|4|9\uFE0F\u20E3}]+$/v");
+    assert_valid(r"/\p{Script=Han}/v");
+    assert_valid(r"/[\q{}]/v");
+    assert_valid(r"/[\q{|a}]/v");
+    assert_valid(r"/[\q{a\|b}]/v");
+    assert_valid(r"/[\q{a\}b}]/v");
+  }
+
+  #[test]
+  fn unicode_sets_mode_rejects_unescaped_class_set_syntax_characters() {
+    assert_invalid(r"/[{]/v");
+    assert_invalid(r"/[|]/v");
+    assert_valid(r"/[\{]/v");
+    assert_valid(r"/[\|]/v");
+  }
+
+  #[test]
+  fn unicode_sets_mode_rejects_malformed_class_string_disjunction() {
+    assert_invalid(r"/[\q]/v"); // missing `{`
+    assert_invalid(r"/[\q{a|b]/v"); // unterminated `}`
+    assert_invalid(r"/[\q{a{b}|c}]/v"); // raw `{` inside disjunction
+  }
 }
 
 pub fn normalise_literal_string_or_template_inner(raw: &str) -> Option<String> {
