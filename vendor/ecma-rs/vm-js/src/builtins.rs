@@ -9090,7 +9090,6 @@ fn regexp_exec_array(
       input_key,
       data_desc(Value::String(input), true, false, true),
     )?;
-
     let groups_value = if named_group_count == 0 {
       Value::Undefined
     } else {
@@ -9179,7 +9178,6 @@ fn regexp_exec_array(
 
       Value::Object(groups_obj)
     };
-
     let groups_key = string_key(&mut scope, "groups")?;
     scope.define_property(
       array,
@@ -9343,6 +9341,61 @@ fn regexp_exec_array(
     array,
     match_len,
   }))
+}
+
+// https://tc39.es/ecma262/#sec-regexpbuiltinexec
+fn regexp_builtin_exec(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  rx: GcObject,
+  input: GcString,
+) -> Result<Value, VmError> {
+  let res = regexp_exec_array(vm, scope, host, hooks, rx, input)?;
+  Ok(match res {
+    None => Value::Null,
+    Some(r) => Value::Object(r.array),
+  })
+}
+
+// https://tc39.es/ecma262/#sec-regexpexec
+fn regexp_exec(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  rx: GcObject,
+  input: GcString,
+) -> Result<Value, VmError> {
+  // 1. Let exec be ? Get(R, "exec").
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(rx), Value::String(input)])?;
+  let exec_key = string_key(&mut scope, "exec")?;
+  let exec = scope.get_with_host_and_hooks(vm, host, hooks, rx, exec_key, Value::Object(rx))?;
+
+  // 2. If IsCallable(exec) is true, then
+  if scope.heap().is_callable(exec)? {
+    scope.push_root(exec)?;
+    let result = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      exec,
+      Value::Object(rx),
+      &[Value::String(input)],
+    )?;
+
+    // 2.b. If result is not an Object and not null, throw a TypeError exception.
+    match result {
+      Value::Null => Ok(Value::Null),
+      Value::Object(_) => Ok(result),
+      _ => Err(VmError::TypeError("RegExp exec returned invalid result")),
+    }
+  } else {
+    // 3. Return ? RegExpBuiltinExec(R, S).
+    regexp_builtin_exec(vm, &mut scope, host, hooks, rx, input)
+  }
 }
 
 fn vec_try_push<T>(buf: &mut Vec<T>, value: T) -> Result<(), VmError> {
@@ -15221,6 +15274,7 @@ pub fn regexp_prototype_source_get(
     .iter()
     .copied()
     .any(|u| u == b'v' as u16);
+
   let (needs_escape, escaped_len) = {
     let units = scope.heap().get_string(source)?.as_code_units();
     let mut needs_escape = false;
@@ -15689,80 +15743,74 @@ pub fn regexp_prototype_symbol_match(
 
   let flags = scope.heap().regexp_flags(rx)?;
   if !flags.global {
-    let res = regexp_exec_array(vm, &mut scope, host, hooks, rx, s)?;
-    return Ok(match res {
-      None => Value::Null,
-      Some(r) => Value::Object(r.array),
-    });
+    // Spec: non-global @@match returns the result of `RegExpExec(rx, S)` directly, allowing
+    // user-overridden `exec` to return an arbitrary object.
+    return regexp_exec(vm, &mut scope, host, hooks, rx, s);
   }
 
   regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
 
-  // Collect match ranges (avoid holding GC handles in a Rust Vec across allocations/GC).
-  let mut ranges: Vec<(usize, usize)> = Vec::new();
+  // Spec: global @@match collects match strings into a new Array.
+  let zero_key = string_key(&mut scope, "0")?;
+  let array = create_array_object(vm, &mut scope, 0)?;
+  scope.push_root(Value::Object(array))?;
+
+  let mut n: usize = 0;
   loop {
-    let Some(raw) = regexp_exec_raw(vm, &mut scope, host, hooks, rx, s)? else {
-      break;
-    };
-    ranges
-      .try_reserve(1)
-      .map_err(|_| VmError::OutOfMemory)?;
-    let start = raw.index;
-    let end = raw.m.end;
-    ranges.push((start, end));
-    if end == start {
-      let li = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
-      let new_li = {
-        let js = scope.heap().get_string(s)?;
-        advance_string_index(js.as_code_units(), li, flags.has_either_unicode_flag())
-      };
-      regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(new_li as f64))?;
-    }
-  }
-
-  if ranges.is_empty() {
-    return Ok(Value::Null);
-  }
-
-  let s_len = scope.heap().get_string(s)?.len_code_units();
-  let array_len = u32::try_from(ranges.len()).map_err(|_| VmError::OutOfMemory)?;
-  let array = create_array_object(vm, &mut scope, array_len)?;
-  for (i, (from, to)) in ranges.into_iter().enumerate() {
-    if i % 64 == 0 {
+    if n % 1024 == 0 {
       vm.tick()?;
     }
-    let mut iter_scope = scope.reborrow();
-    iter_scope.push_root(Value::Object(array))?;
-    iter_scope.push_root(Value::String(s))?;
-    let part = if from == 0 && to == s_len {
-      s
-    } else if from == to {
-      iter_scope.alloc_string("")?
-    } else {
-      let part_len = to.saturating_sub(from);
-      iter_scope.ensure_can_alloc_string_units(part_len)?;
-      let units: Vec<u16> = {
-        let js = iter_scope.heap().get_string(s)?;
-        let slice = &js.as_code_units()[from..to];
-        let mut buf: Vec<u16> = Vec::new();
-        buf
-          .try_reserve_exact(slice.len())
-          .map_err(|_| VmError::OutOfMemory)?;
-        vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, slice)?;
-        buf
-      };
-      iter_scope.alloc_string_from_u16_vec(units)?
+    let result = regexp_exec(vm, &mut scope, host, hooks, rx, s)?;
+    let Value::Object(result_obj) = result else {
+      // `null` => done.
+      return Ok(if n == 0 {
+        Value::Null
+      } else {
+        Value::Object(array)
+      });
     };
-    iter_scope.push_root(Value::String(part))?;
-    let key_s = alloc_string_from_usize(&mut iter_scope, i)?;
-    iter_scope.push_root(Value::String(key_s))?;
+
+    // Root the result object while we perform observable property access (`Get`, `ToString`) and
+    // array writes.
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_roots(&[
+      Value::Object(rx),
+      Value::String(s),
+      Value::Object(array),
+      Value::Object(result_obj),
+    ])?;
+
+    let match_val = iter_scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      result_obj,
+      zero_key,
+      Value::Object(result_obj),
+    )?;
+    iter_scope.push_root(match_val)?;
+    let match_str = iter_scope.to_string(vm, host, hooks, match_val)?;
+    iter_scope.push_root(Value::String(match_str))?;
+
+    let idx_key_s = alloc_string_from_usize(&mut iter_scope, n)?;
+    iter_scope.push_root(Value::String(idx_key_s))?;
     iter_scope.define_property(
       array,
-      PropertyKey::from_string(key_s),
-      data_desc(Value::String(part), true, true, true),
+      PropertyKey::from_string(idx_key_s),
+      data_desc(Value::String(match_str), true, true, true),
     )?;
+
+    if iter_scope.heap().get_string(match_str)?.is_empty() {
+      let li = regexp_get_last_index(vm, &mut iter_scope, host, hooks, rx)?;
+      let new_li = {
+        let js = iter_scope.heap().get_string(s)?;
+        advance_string_index(js.as_code_units(), li, flags.has_either_unicode_flag())
+      };
+      regexp_set_last_index(vm, &mut iter_scope, host, hooks, rx, Value::Number(new_li as f64))?;
+    }
+
+    n = n.checked_add(1).ok_or(VmError::OutOfMemory)?;
   }
-  Ok(Value::Object(array))
 }
 
 /// `%RegExp.prototype%[@@search]` (ECMA-262) (partial).
@@ -15786,13 +15834,27 @@ pub fn regexp_prototype_symbol_search(
   scope.push_root(old_last_index)?;
 
   regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
-  let res = regexp_exec_raw(vm, &mut scope, host, hooks, rx, s)?;
+  let res = regexp_exec(vm, &mut scope, host, hooks, rx, s)?;
   regexp_set_last_index(vm, &mut scope, host, hooks, rx, old_last_index)?;
 
-  Ok(match res {
-    None => Value::Number(-1.0),
-    Some(r) => Value::Number(r.index as f64),
-  })
+  let Value::Object(result_obj) = res else {
+    return Ok(Value::Number(-1.0));
+  };
+
+  let mut idx_scope = scope.reborrow();
+  idx_scope.push_roots(&[Value::Object(result_obj), Value::String(s)])?;
+  let index_key = string_key(&mut idx_scope, "index")?;
+  let index_val = idx_scope.get_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    result_obj,
+    index_key,
+    Value::Object(result_obj),
+  )?;
+  idx_scope.push_root(index_val)?;
+  let idx = idx_scope.to_integer_or_infinity(vm, host, hooks, index_val)?;
+  Ok(Value::Number(idx))
 }
 
 fn get_substitution(
@@ -16102,6 +16164,196 @@ fn regexp_create_named_captures_object(
   Ok(groups_obj)
 }
 
+// https://tc39.es/ecma262/#sec-getsubstitution
+//
+// This is used by `RegExp.prototype[@@replace]` when the replacement is a string. Unlike the
+// legacy `get_substitution` helper above (used by `String.prototype.replace` string-search
+// fallbacks), this works over capture *values* (strings or `undefined`) and supports named captures
+// (`$<name>`) via observable `Get(namedCaptures, name)` lookups.
+fn get_substitution_regexp(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  matched: GcString,
+  input: GcString,
+  position: usize,
+  captures: &[Value],
+  named_captures: Value,
+  replacement: GcString,
+) -> Result<Vec<u16>, VmError> {
+  // Copy replacement units out of the GC heap so we can allocate (group-name strings) while
+  // scanning.
+  let replacement_units: Vec<u16> = {
+    let units = scope.heap().get_string(replacement)?.as_code_units();
+    let mut buf: Vec<u16> = Vec::new();
+    buf
+      .try_reserve_exact(units.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut buf, units, || vm.tick())?;
+    buf
+  };
+
+  let input_len = scope.heap().get_string(input)?.len_code_units();
+  let match_len = scope.heap().get_string(matched)?.len_code_units();
+
+  // Best-effort pre-reserve: replacement length + match length.
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve(replacement_units.len().saturating_add(match_len))
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  // Lazily computed `ToObject(namedCaptures)` for `$<name>` substitutions.
+  let mut named_obj: Option<GcObject> = None;
+
+  let mut i: usize = 0;
+  while i < replacement_units.len() {
+    if i % 128 == 0 {
+      vm.tick()?;
+    }
+
+    let u = replacement_units[i];
+    if u != (b'$' as u16) || i + 1 >= replacement_units.len() {
+      vec_try_push(&mut out, u)?;
+      i += 1;
+      continue;
+    }
+
+    let next = replacement_units[i + 1];
+    match next {
+      x if x == (b'$' as u16) => {
+        vec_try_push(&mut out, b'$' as u16)?;
+        i += 2;
+      }
+      x if x == (b'&' as u16) => {
+        let units = scope.heap().get_string(matched)?.as_code_units();
+        vec_try_extend_from_slice(&mut out, units, || vm.tick())?;
+        i += 2;
+      }
+      x if x == (b'`' as u16) => {
+        let prefix_end = position.min(input_len);
+        let input_units = scope.heap().get_string(input)?.as_code_units();
+        vec_try_extend_from_slice(&mut out, &input_units[..prefix_end], || vm.tick())?;
+        i += 2;
+      }
+      x if x == (b'\'' as u16) => {
+        let suffix_start = position
+          .saturating_add(match_len)
+          .min(input_len);
+        let input_units = scope.heap().get_string(input)?.as_code_units();
+        vec_try_extend_from_slice(&mut out, &input_units[suffix_start..], || vm.tick())?;
+        i += 2;
+      }
+      x if (b'0' as u16..=b'9' as u16).contains(&x) => {
+        // $n / $nn capture substitution (1-indexed).
+        let d1 = (x - (b'0' as u16)) as usize;
+        let mut n = d1;
+        let mut consumed = 2usize;
+
+        if i + 2 < replacement_units.len() {
+          let x2 = replacement_units[i + 2];
+          if (b'0' as u16..=b'9' as u16).contains(&x2) {
+            let d2 = (x2 - (b'0' as u16)) as usize;
+            let two = d1.saturating_mul(10).saturating_add(d2);
+            if two > 0 {
+              n = two;
+              consumed = 3;
+            }
+          }
+        }
+
+        if n == 0 || n > captures.len() {
+          // Not a valid capture reference: emit `$` literally.
+          vec_try_push(&mut out, b'$' as u16)?;
+          i += 1;
+          continue;
+        }
+
+        let capture = captures[n - 1];
+        if let Value::String(s) = capture {
+          let units = scope.heap().get_string(s)?.as_code_units();
+          vec_try_extend_from_slice(&mut out, units, || vm.tick())?;
+        }
+        i += consumed;
+      }
+      x if x == (b'<' as u16) => {
+        // `$<name>` named capture substitution.
+        let mut j = i + 2;
+        while j < replacement_units.len() {
+          if j % 128 == 0 {
+            vm.tick()?;
+          }
+          if replacement_units[j] == (b'>' as u16) {
+            break;
+          }
+          j += 1;
+        }
+
+        if j >= replacement_units.len() || replacement_units[j] != (b'>' as u16) {
+          // No closing `>`: treat `$` as a literal.
+          vec_try_push(&mut out, b'$' as u16)?;
+          i += 1;
+          continue;
+        }
+
+        // If `namedCaptures` is undefined, `$<...>` is treated literally (per spec).
+        if matches!(named_captures, Value::Undefined) {
+          vec_try_push(&mut out, b'$' as u16)?;
+          i += 1;
+          continue;
+        }
+
+        // `ToObject(namedCaptures)` (only when a named substitution is present).
+        let groups_obj = match named_obj {
+          Some(o) => o,
+          None => {
+            let obj = scope.to_object(vm, host, hooks, named_captures)?;
+            named_obj = Some(obj);
+            obj
+          }
+        };
+
+        // Allocate groupName string from the replacement substring between `<` and `>`.
+        let name_units = &replacement_units[i + 2..j];
+        let mut name_buf: Vec<u16> = Vec::new();
+        name_buf
+          .try_reserve_exact(name_units.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        name_buf.extend_from_slice(name_units);
+        let name_s = scope.alloc_string_from_u16_vec(name_buf)?;
+
+        // Root the allocated group-name string and the groups object across `Get` + coercions.
+        scope.push_roots(&[Value::String(name_s), Value::Object(groups_obj)])?;
+
+        let capture_val = scope.get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          groups_obj,
+          PropertyKey::from_string(name_s),
+          Value::Object(groups_obj),
+        )?;
+
+        if !matches!(capture_val, Value::Undefined) {
+          scope.push_root(capture_val)?;
+          let capture_str = scope.to_string(vm, host, hooks, capture_val)?;
+          let units = scope.heap().get_string(capture_str)?.as_code_units();
+          vec_try_extend_from_slice(&mut out, units, || vm.tick())?;
+        }
+
+        i = j + 1;
+      }
+      _ => {
+        // Treat `$` as a literal.
+        vec_try_push(&mut out, b'$' as u16)?;
+        i += 1;
+      }
+    }
+  }
+
+  Ok(out)
+}
+
 /// `%RegExp.prototype%[@@replace]` (ECMA-262) (partial).
 pub fn regexp_prototype_symbol_replace(
   vm: &mut Vm,
@@ -16112,7 +16364,9 @@ pub fn regexp_prototype_symbol_replace(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-regexp.prototype-@@replace
   let mut scope = scope.reborrow();
+
   let rx = require_regexp_object(&mut scope, this)?;
   scope.push_root(Value::Object(rx))?;
 
@@ -16123,20 +16377,8 @@ pub fn regexp_prototype_symbol_replace(
   let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(replace_value)?;
 
-  let flags = scope.heap().regexp_flags(rx)?;
-  let global = flags.global;
-
-  if global {
-    regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
-  }
-
-  let (capture_count, named_group_count) = {
-    let program = scope.heap().regexp_program(rx)?;
-    (program.capture_count, program.named_capture_groups.len())
-  };
-
-  let replace_is_callable = scope.heap().is_callable(replace_value)?;
-  let replace_s = if replace_is_callable {
+  let functional_replace = scope.heap().is_callable(replace_value)?;
+  let replace_string = if functional_replace {
     None
   } else {
     let s = scope.to_string(vm, host, hooks, replace_value)?;
@@ -16144,94 +16386,201 @@ pub fn regexp_prototype_symbol_replace(
     Some(s)
   };
 
-  let mut out_units: Vec<u16> = Vec::new();
-  let mut last_pos = 0usize;
+  let flags = scope.heap().regexp_flags(rx)?;
+  let global = flags.global;
 
+  if global {
+    regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
+  }
+
+  // Pre-allocate commonly-used property keys.
+  let zero_key = string_key(&mut scope, "0")?;
+  let index_key = string_key(&mut scope, "index")?;
+  let groups_key = string_key(&mut scope, "groups")?;
+
+  // 11-15. Collect results first (per spec), keeping them rooted until substitution is complete.
+  let mut results: Vec<GcObject> = Vec::new();
   loop {
-    let raw = regexp_exec_raw(vm, &mut scope, host, hooks, rx, input)?;
-    let Some(raw) = raw else {
+    if results.len() % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let exec_result = regexp_exec(vm, &mut scope, host, hooks, rx, input)?;
+    let Value::Object(result_obj) = exec_result else {
       break;
     };
-    let start = raw.index;
-    let end = raw.m.end;
-    if start < last_pos {
+
+    // Root the result so it is stable across subsequent allocations and until the end of the
+    // replace operation.
+    scope.push_root(Value::Object(result_obj))?;
+
+    results
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    results.push(result_obj);
+
+    if !global {
       break;
     }
 
-    // Append the prefix since the last match.
-    {
-      let js = scope.heap().get_string(input)?;
-      vec_try_extend_from_slice(&mut out_units, &js.as_code_units()[last_pos..start], || vm.tick())?;
+    // Empty-match lastIndex advancement (`AdvanceStringIndex`).
+    let mut adv_scope = scope.reborrow();
+    adv_scope.push_roots(&[
+      Value::Object(rx),
+      Value::String(input),
+      Value::Object(result_obj),
+    ])?;
+    let match_val = adv_scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      result_obj,
+      zero_key,
+      Value::Object(result_obj),
+    )?;
+    adv_scope.push_root(match_val)?;
+    let match_str = adv_scope.to_string(vm, host, hooks, match_val)?;
+    if adv_scope.heap().get_string(match_str)?.is_empty() {
+      let li = regexp_get_last_index(vm, &mut adv_scope, host, hooks, rx)?;
+      let new_li = {
+        let js = adv_scope.heap().get_string(input)?;
+        advance_string_index(js.as_code_units(), li, flags.has_either_unicode_flag())
+      };
+      regexp_set_last_index(vm, &mut adv_scope, host, hooks, rx, Value::Number(new_li as f64))?;
+    }
+  }
+
+  if results.is_empty() {
+    return Ok(Value::String(input));
+  }
+
+  let input_len = scope.heap().get_string(input)?.len_code_units();
+  let mut out_units: Vec<u16> = Vec::new();
+  let mut next_source_position: usize = 0;
+
+  for (i, result_obj) in results.iter().copied().enumerate() {
+    if i % 64 == 0 {
+      vm.tick()?;
     }
 
-    let replacement_units: Vec<u16> = if replace_is_callable {
-      // Call replacer function.
-      let mut match_scope = scope.reborrow();
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_roots(&[
+      Value::Object(rx),
+      Value::String(input),
+      Value::Object(result_obj),
+      replace_value,
+    ])?;
+    // `resultLength = LengthOfArrayLike(result)`
+    let result_length = length_of_array_like_usize(vm, &mut iter_scope, host, hooks, result_obj)?;
+    let n_captures = result_length.saturating_sub(1);
 
-      let mut args_vec: Vec<Value> = Vec::new();
-      let extra = if named_group_count == 0 { 2usize } else { 3usize };
-      args_vec
-        .try_reserve_exact(capture_count.saturating_add(extra))
-        .map_err(|_| VmError::OutOfMemory)?;
+    // `matched = ToString(Get(result, "0"))`
+    let matched_val = iter_scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      result_obj,
+      zero_key,
+      Value::Object(result_obj),
+    )?;
+    iter_scope.push_root(matched_val)?;
+    let matched = iter_scope.to_string(vm, host, hooks, matched_val)?;
+    iter_scope.push_root(Value::String(matched))?;
+    let match_len = iter_scope.heap().get_string(matched)?.len_code_units();
 
-      // match + captures as strings/undefined.
-      for i in 0..capture_count {
-        if i % 64 == 0 {
-          vm.tick()?;
-        }
-        let start_slot = i.saturating_mul(2);
-        let end_slot = start_slot.saturating_add(1);
-        let (cap_start, cap_end) = (
-          raw.m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
-          raw.m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
-        );
-        if cap_start == usize::MAX || cap_end == usize::MAX || cap_end < cap_start {
-          args_vec.push(Value::Undefined);
-        } else {
-          let cap_len = cap_end.saturating_sub(cap_start);
-          // Preflight heap limits before allocating the capture substring buffer.
-          match_scope.ensure_can_alloc_string_units(cap_len)?;
-          let units: Vec<u16> = {
-            let js = match_scope.heap().get_string(input)?;
-            let slice = &js.as_code_units()[cap_start..cap_end];
-            let mut buf: Vec<u16> = Vec::new();
-            buf
-              .try_reserve_exact(slice.len())
-              .map_err(|_| VmError::OutOfMemory)?;
-            vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, slice)?;
-            buf
-          };
-          let s = match_scope.alloc_string_from_u16_vec(units)?;
-          match_scope.push_root(Value::String(s))?;
-          args_vec.push(Value::String(s));
-        }
+    // `position = ToIntegerOrInfinity(Get(result, "index"))`
+    let position_val = iter_scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      result_obj,
+      index_key,
+      Value::Object(result_obj),
+    )?;
+    iter_scope.push_root(position_val)?;
+    let position_num = iter_scope.to_integer_or_infinity(vm, host, hooks, position_val)?;
+    if !position_num.is_finite() || position_num < 0.0 || position_num > (input_len as f64) {
+      return Err(VmError::TypeError("RegExp replace result index out of range"));
+    }
+    let position = position_num as usize;
+
+    // Per spec, ignore results that would overlap a previous replacement.
+    if position < next_source_position {
+      continue;
+    }
+
+    // `captures` list (strings/undefined).
+    let mut captures: Vec<Value> = Vec::new();
+    captures
+      .try_reserve_exact(n_captures)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    for cap_i in 1..=n_captures {
+      if cap_i % 64 == 0 {
+        vm.tick()?;
       }
-      args_vec.push(Value::Number(start as f64));
-      args_vec.push(Value::String(input));
 
-      if named_group_count != 0 {
-        let groups_obj = regexp_create_named_captures_object(
-          vm,
-          &mut match_scope,
-          rx,
-          input,
-          &raw.m.captures,
-          named_group_count,
-        )?;
-        args_vec.push(Value::Object(groups_obj));
+      let key_s = alloc_string_from_usize(&mut iter_scope, cap_i)?;
+      iter_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      let cap_val = iter_scope.get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        result_obj,
+        key,
+        Value::Object(result_obj),
+      )?;
+
+      if matches!(cap_val, Value::Undefined) {
+        captures.push(Value::Undefined);
+      } else {
+        iter_scope.push_root(cap_val)?;
+        let cap_str = iter_scope.to_string(vm, host, hooks, cap_val)?;
+        iter_scope.push_root(Value::String(cap_str))?;
+        captures.push(Value::String(cap_str));
+      }
+    }
+
+    // `namedCaptures = Get(result, "groups")` (observable, even when undefined).
+    let named_captures = iter_scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      result_obj,
+      groups_key,
+      Value::Object(result_obj),
+    )?;
+    iter_scope.push_root(named_captures)?;
+
+    let replacement_units = if functional_replace {
+      // Build replacer arguments: (matched, ...captures, position, input, [groups])
+      let mut args_vec: Vec<Value> = Vec::new();
+      let extra = if matches!(named_captures, Value::Undefined) { 0 } else { 1 };
+      args_vec
+        .try_reserve_exact(1 + captures.len() + 2 + extra)
+        .map_err(|_| VmError::OutOfMemory)?;
+      args_vec.push(Value::String(matched));
+      for v in &captures {
+        args_vec.push(*v);
+      }
+      args_vec.push(Value::Number(position as f64));
+      args_vec.push(Value::String(input));
+      if !matches!(named_captures, Value::Undefined) {
+        args_vec.push(named_captures);
       }
 
       let called = vm.call_with_host_and_hooks(
         host,
-        &mut match_scope,
+        &mut iter_scope,
         hooks,
         replace_value,
         Value::Undefined,
         &args_vec,
       )?;
-      match_scope.push_root(called)?;
-      let rep_s = match_scope.to_string(vm, host, hooks, called)?;
-      let units = match_scope.heap().get_string(rep_s)?.as_code_units();
+      iter_scope.push_root(called)?;
+      let rep_s = iter_scope.to_string(vm, host, hooks, called)?;
+      let units = iter_scope.heap().get_string(rep_s)?.as_code_units();
       let mut buf: Vec<u16> = Vec::new();
       buf
         .try_reserve_exact(units.len())
@@ -16239,61 +16588,43 @@ pub fn regexp_prototype_symbol_replace(
       vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
       buf
     } else {
-      let Some(replace_s) = replace_s else {
-        return Err(VmError::InvariantViolation("RegExp @@replace replace string missing"));
-      };
-      let mut match_scope = scope.reborrow();
-      let named_captures = if named_group_count == 0 {
-        None
-      } else {
-        Some(regexp_create_named_captures_object(
-          vm,
-          &mut match_scope,
-          rx,
-          input,
-          &raw.m.captures,
-          named_group_count,
-        )?)
-      };
-      get_substitution(
+      let replace_s = replace_string.expect("replacement string should be computed");
+      get_substitution_regexp(
         vm,
-        &mut match_scope,
+        &mut iter_scope,
         host,
         hooks,
+        matched,
         input,
-        replace_s,
-        (start, end),
-        &raw.m.captures,
-        capture_count,
+        position,
+        &captures,
         named_captures,
+        replace_s,
       )?
     };
 
+    // Append the prefix since the last replacement.
+    if next_source_position < position {
+      let js = iter_scope.heap().get_string(input)?;
+      vec_try_extend_from_slice(
+        &mut out_units,
+        &js.as_code_units()[next_source_position..position],
+        || vm.tick(),
+      )?;
+    }
+
     vec_try_extend_from_slice(&mut out_units, &replacement_units, || vm.tick())?;
 
-    last_pos = end;
-
-    if global && end == start {
-      let li = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
-      let new_li = {
-        let js = scope.heap().get_string(input)?;
-        advance_string_index(js.as_code_units(), li, flags.has_either_unicode_flag())
-      };
-      regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(new_li as f64))?;
-    }
-
-    if !global {
-      break;
-    }
+    next_source_position = position
+      .checked_add(match_len)
+      .ok_or(VmError::OutOfMemory)?
+      .min(input_len);
   }
 
   // Append remainder.
-  {
+  if next_source_position < input_len {
     let js = scope.heap().get_string(input)?;
-    let len = js.len_code_units();
-    if last_pos < len {
-      vec_try_extend_from_slice(&mut out_units, &js.as_code_units()[last_pos..], || vm.tick())?;
-    }
+    vec_try_extend_from_slice(&mut out_units, &js.as_code_units()[next_source_position..], || vm.tick())?;
   }
 
   let out_s = scope.alloc_string_from_u16_vec(out_units)?;
@@ -16310,7 +16641,10 @@ pub fn regexp_prototype_symbol_split(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-regexp.prototype-@@split
+  let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
+
   let rx = require_regexp_object(&mut scope, this)?;
   scope.push_root(Value::Object(rx))?;
 
@@ -16318,6 +16652,7 @@ pub fn regexp_prototype_symbol_split(
   let input = scope.to_string(vm, host, hooks, s_val)?;
   scope.push_root(Value::String(input))?;
 
+  // Per spec, `limit` is `ToUint32(limit)`. If it is not provided, the limit is `2^32 - 1`.
   let limit_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let limit: u32 = if matches!(limit_val, Value::Undefined) {
     u32::MAX
@@ -16331,24 +16666,37 @@ pub fn regexp_prototype_symbol_split(
       modulo as u32
     }
   };
+
   if limit == 0 {
     return Ok(Value::Object(create_array_object(vm, &mut scope, 0)?));
   }
 
+  // Create the splitter RegExp: same pattern/flags but with sticky (`y`) enabled.
   let flags = scope.heap().regexp_flags(rx)?;
-  let program = scope.heap().regexp_program(rx)?;
-  let capture_count = program.capture_count;
-  let group_count = capture_count.saturating_sub(1);
+  let mut splitter_flags = flags;
+  splitter_flags.sticky = true;
+  let flags_s = scope.alloc_string(&splitter_flags.to_canonical_string())?;
+  scope.push_root(Value::String(flags_s))?;
 
-  #[derive(Clone, Copy)]
-  enum Part {
-    Range(usize, usize),
-    Undefined,
-  }
+  let ctor = Value::Object(intr.regexp_constructor());
+  scope.push_root(ctor)?;
+  let created = vm.construct_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    ctor,
+    &[Value::Object(rx), Value::String(flags_s)],
+    ctor,
+  )?;
+  let Value::Object(splitter) = created else {
+    return Err(VmError::InvariantViolation("RegExp constructor returned non-object"));
+  };
+  scope.push_root(Value::Object(splitter))?;
 
+  // Copy input units so we can take slices without borrowing the GC heap across `RegExpExec` /
+  // user-code calls.
   let input_units: Vec<u16> = {
-    let js = scope.heap().get_string(input)?;
-    let units = js.as_code_units();
+    let units = scope.heap().get_string(input)?.as_code_units();
     let mut buf: Vec<u16> = Vec::new();
     buf
       .try_reserve_exact(units.len())
@@ -16359,142 +16707,175 @@ pub fn regexp_prototype_symbol_split(
   let len = input_units.len();
   let limit_usize = limit as usize;
 
-  // Spec: If `size == 0`, `@@split` performs a single `RegExpExec` and returns an empty list if it
-  // succeeds, otherwise it returns `[S]`.
+  let array = create_array_object(vm, &mut scope, 0)?;
+  scope.push_root(Value::Object(array))?;
+
+  // Special-case empty input string.
   if len == 0 {
-    let matched = {
-      let mut tick = || vm.tick();
-      let exec_mem = {
-        let heap = scope.heap();
-        let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
-        RegExpExecMemoryBudget::new(headroom)
-      };
-      program.exec_at(&input_units, 0, flags, &mut tick, &exec_mem, None)?
-    };
-    if matched.is_some() {
-      return Ok(Value::Object(create_array_object(vm, &mut scope, 0)?));
+    regexp_set_last_index(vm, &mut scope, host, hooks, splitter, Value::Number(0.0))?;
+    let z = regexp_exec(vm, &mut scope, host, hooks, splitter, input)?;
+    if matches!(z, Value::Null) {
+      let mut iter_scope = scope.reborrow();
+      iter_scope.push_roots(&[Value::Object(array), Value::String(input)])?;
+      let key_s = alloc_string_from_usize(&mut iter_scope, 0)?;
+      iter_scope.push_root(Value::String(key_s))?;
+      iter_scope.define_property(
+        array,
+        PropertyKey::from_string(key_s),
+        data_desc(Value::String(input), true, true, true),
+      )?;
     }
+    return Ok(Value::Object(array));
   }
 
-  let mut parts: Vec<Part> = Vec::new();
-  let mut p = 0usize;
-  let mut q = 0usize;
-  // Track whether the last accepted match was a zero-length match at the end of the input. In that
-  // case, the final "remainder" segment should not append an additional empty string element.
-  //
-  // This matches test262 expectations like `"x".split(/$/) === ["x"]`.
-  let mut last_match_was_empty_at_end = false;
+  let index_key = string_key(&mut scope, "index")?;
 
-  // Spec: `RegExp.prototype[@@split]` iterates while `q < size` (not `<=`), meaning it does not
-  // attempt a final match at `q == size`. This matters for zero-width separators like `/$/` and for
-  // patterns that can match empty strings: matching at `q == size` would introduce an extra empty
-  // trailing segment.
-  while q < len && parts.len() < limit_usize {
-    // Find next match at/after q.
-    let mut found: Option<(usize, crate::regexp::RegExpMatch)> = None;
-    let mut k = q;
-    while k < len {
-      if k % 1024 == 0 {
-        vm.tick()?;
-      }
-      let matched = {
-        let mut tick = || vm.tick();
-        let exec_mem = {
-          let heap = scope.heap();
-          let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
-          RegExpExecMemoryBudget::new(headroom)
-        };
-        program.exec_at(&input_units, k, flags, &mut tick, &exec_mem, None)?
-      };
-      if let Some(m) = matched {
-        found = Some((k, m));
-        break;
-      }
-      let next = advance_string_index(&input_units, k, flags.has_either_unicode_flag());
-      if next == k {
-        break;
-      }
-      k = next;
+  let mut p: usize = 0;
+  let mut q: usize = 0;
+  let mut out_i: usize = 0;
+
+  while q < len && out_i < limit_usize {
+    if q % 1024 == 0 {
+      vm.tick()?;
     }
 
-    let Some((match_start, m)) = found else { break };
-    let match_end = m.end;
+    regexp_set_last_index(vm, &mut scope, host, hooks, splitter, Value::Number(q as f64))?;
+
+    let z = regexp_exec(vm, &mut scope, host, hooks, splitter, input)?;
+    let Value::Object(z_obj) = z else {
+      q = advance_string_index(&input_units, q, flags.has_either_unicode_flag());
+      continue;
+    };
+
+    let mut match_scope = scope.reborrow();
+    match_scope.push_roots(&[
+      Value::Object(array),
+      Value::Object(splitter),
+      Value::String(input),
+      Value::Object(z_obj),
+    ])?;
+
+    // `matchStart = ToIntegerOrInfinity(Get(z, "index"))`
+    let start_val = match_scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      z_obj,
+      index_key,
+      Value::Object(z_obj),
+    )?;
+    match_scope.push_root(start_val)?;
+    let start_num = match_scope.to_integer_or_infinity(vm, host, hooks, start_val)?;
+    if !start_num.is_finite() || start_num < 0.0 || start_num > (len as f64) {
+      return Err(VmError::TypeError("RegExp split match index out of range"));
+    }
+    let match_start = (start_num as usize).clamp(p, len);
+
+    // `matchEnd = ToLength(Get(splitter, "lastIndex"))`
+    let match_end = regexp_get_last_index(vm, &mut match_scope, host, hooks, splitter)?.min(len);
 
     // Avoid infinite loops on empty matches at the same position.
-    if match_start == match_end && match_start == p {
+    if match_end == p {
       q = advance_string_index(&input_units, q, flags.has_either_unicode_flag());
       continue;
     }
 
-    vec_try_push(&mut parts, Part::Range(p, match_start))?;
-    if parts.len() >= limit_usize {
-      break;
+    // Push the substring between `p` and the match start.
+    {
+      let value = if p == 0 && match_start == len {
+        Value::String(input)
+      } else if p == match_start {
+        Value::String(match_scope.alloc_string("")?)
+      } else {
+        let units = &input_units[p..match_start];
+        let mut buf: Vec<u16> = Vec::new();
+        buf
+          .try_reserve_exact(units.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        buf.extend_from_slice(units);
+        let s = match_scope.alloc_string_from_u16_vec(buf)?;
+        match_scope.push_root(Value::String(s))?;
+        Value::String(s)
+      };
+
+      match_scope.push_root(value)?;
+      let key_s = alloc_string_from_usize(&mut match_scope, out_i)?;
+      match_scope.push_root(Value::String(key_s))?;
+      match_scope.define_property(
+        array,
+        PropertyKey::from_string(key_s),
+        data_desc(value, true, true, true),
+      )?;
+      out_i = out_i.checked_add(1).ok_or(VmError::OutOfMemory)?;
+      if out_i >= limit_usize {
+        return Ok(Value::Object(array));
+      }
     }
 
-    // Per test262 expectations, capture groups are not appended for zero-length matches (e.g.
-    // `"x".split(/()/) === ["x"]`).
-    if match_start != match_end {
-      for gi in 1..=group_count {
-        if parts.len() >= limit_usize {
-          break;
-        }
-        let start_slot = gi.saturating_mul(2);
-        let end_slot = start_slot.saturating_add(1);
-        let (cs, ce) = (
-          m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
-          m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
-        );
-        if cs == usize::MAX || ce == usize::MAX || ce < cs {
-          vec_try_push(&mut parts, Part::Undefined)?;
-        } else {
-          vec_try_push(&mut parts, Part::Range(cs, ce))?;
-        }
+    // Append captures from the exec result.
+    let result_length = length_of_array_like_usize(vm, &mut match_scope, host, hooks, z_obj)?;
+    let n_captures = result_length.saturating_sub(1);
+    for cap_i in 1..=n_captures {
+      if out_i >= limit_usize {
+        break;
       }
+
+      let key_s = alloc_string_from_usize(&mut match_scope, cap_i)?;
+      match_scope.push_root(Value::String(key_s))?;
+      let cap_val = match_scope.get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        z_obj,
+        PropertyKey::from_string(key_s),
+        Value::Object(z_obj),
+      )?;
+
+      // Root `cap_val` across index-key allocation + property definition.
+      match_scope.push_root(cap_val)?;
+      let out_key_s = alloc_string_from_usize(&mut match_scope, out_i)?;
+      match_scope.push_root(Value::String(out_key_s))?;
+      match_scope.define_property(
+        array,
+        PropertyKey::from_string(out_key_s),
+        data_desc(cap_val, true, true, true),
+      )?;
+      out_i = out_i.checked_add(1).ok_or(VmError::OutOfMemory)?;
     }
 
     p = match_end;
     q = match_end;
-    last_match_was_empty_at_end = match_start == match_end && match_end == len;
   }
 
-  if parts.len() < limit_usize && !last_match_was_empty_at_end {
-    vec_try_push(&mut parts, Part::Range(p, len))?;
-  }
-
-  let out_len_u32 = u32::try_from(parts.len()).map_err(|_| VmError::OutOfMemory)?;
-  let array = create_array_object(vm, &mut scope, out_len_u32)?;
-
-  for (i, part) in parts.into_iter().enumerate() {
-    if i % 128 == 0 {
-      vm.tick()?;
-    }
-    let mut iter_scope = scope.reborrow();
-    iter_scope.push_root(Value::Object(array))?;
-    iter_scope.push_root(Value::String(input))?;
-    let value = match part {
-      Part::Undefined => Value::Undefined,
-      Part::Range(from, to) => {
-        if from == 0 && to == len {
-          Value::String(input)
-        } else if from == to {
-          Value::String(iter_scope.alloc_string("")?)
-        } else {
-          let units = &input_units[from..to];
-          iter_scope.ensure_can_alloc_string_units(units.len())?;
-          let mut buf: Vec<u16> = Vec::new();
-          buf
-            .try_reserve_exact(units.len())
-            .map_err(|_| VmError::OutOfMemory)?;
-          vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
-          let s = iter_scope.alloc_string_from_u16_vec(buf)?;
-          iter_scope.push_root(Value::String(s))?;
-          Value::String(s)
-        }
-      }
+  // Final substring after the last match.
+  if out_i < limit_usize {
+    let mut final_scope = scope.reborrow();
+    final_scope.push_roots(&[Value::Object(array), Value::String(input)])?;
+ 
+    let value = if p == 0 {
+      Value::String(input)
+    } else if p == len {
+      Value::String(final_scope.alloc_string("")?)
+    } else {
+      let units = &input_units[p..len];
+      let mut buf: Vec<u16> = Vec::new();
+      buf
+        .try_reserve_exact(units.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      buf.extend_from_slice(units);
+      let s = final_scope.alloc_string_from_u16_vec(buf)?;
+      final_scope.push_root(Value::String(s))?;
+      Value::String(s)
     };
-    let key_s = alloc_string_from_usize(&mut iter_scope, i)?;
-    iter_scope.push_root(Value::String(key_s))?;
-    iter_scope.define_property(array, PropertyKey::from_string(key_s), data_desc(value, true, true, true))?;
+
+    final_scope.push_root(value)?;
+    let key_s = alloc_string_from_usize(&mut final_scope, out_i)?;
+    final_scope.push_root(Value::String(key_s))?;
+    final_scope.define_property(
+      array,
+      PropertyKey::from_string(key_s),
+      data_desc(value, true, true, true),
+    )?;
   }
 
   Ok(Value::Object(array))
@@ -16791,8 +17172,8 @@ pub fn regexp_string_iterator_next(
     _ => return Err(missing_slots_err()),
   };
 
-  let res = regexp_exec_array(vm, scope, host, hooks, matcher, iterated)?;
-  let Some(res) = res else {
+  let res = regexp_exec(vm, scope, host, hooks, matcher, iterated)?;
+  let Value::Object(res_obj) = res else {
     // Mark done and clear the iterated string to allow GC.
     scope.define_property(iter, done_key, data_desc(Value::Bool(true), true, false, false))?;
     scope.define_property(iter, iterated_key, data_desc(Value::Undefined, true, false, false))?;
@@ -16802,19 +17183,39 @@ pub fn regexp_string_iterator_next(
   if !global {
     scope.define_property(iter, done_key, data_desc(Value::Bool(true), true, false, false))?;
     scope.define_property(iter, iterated_key, data_desc(Value::Undefined, true, false, false))?;
-  } else if res.match_len == 0 {
-    let li = regexp_get_last_index(vm, scope, host, hooks, matcher)?;
-    let new_li = {
-      let js = scope.heap().get_string(iterated)?;
-      advance_string_index(js.as_code_units(), li, unicode)
-    };
-    regexp_set_last_index(vm, scope, host, hooks, matcher, Value::Number(new_li as f64))?;
+  } else {
+    // `matchStr = ToString(Get(res, "0"))` (observable) to detect empty matches.
+    let mut check_scope = scope.reborrow();
+    check_scope.push_roots(&[
+      Value::Object(matcher),
+      Value::String(iterated),
+      Value::Object(res_obj),
+    ])?;
+    let zero_key = string_key(&mut check_scope, "0")?;
+    let match_val = check_scope.get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      res_obj,
+      zero_key,
+      Value::Object(res_obj),
+    )?;
+    check_scope.push_root(match_val)?;
+    let match_str = check_scope.to_string(vm, host, hooks, match_val)?;
+    if check_scope.heap().get_string(match_str)?.is_empty() {
+      let li = regexp_get_last_index(vm, &mut check_scope, host, hooks, matcher)?;
+      let new_li = {
+        let js = check_scope.heap().get_string(iterated)?;
+        advance_string_index(js.as_code_units(), li, unicode)
+      };
+      regexp_set_last_index(vm, &mut check_scope, host, hooks, matcher, Value::Number(new_li as f64))?;
+    }
   }
 
   Ok(Value::Object(iterator_result_object(
     scope,
     intr.object_prototype(),
-    Value::Object(res.array),
+    Value::Object(res_obj),
     false,
   )?))
 }
@@ -28956,7 +29357,6 @@ mod regexp_prototype_tests {
     assert_eq!(v, Value::Bool(true));
     Ok(())
   }
-
   #[test]
   fn regexp_source_preserves_slash_inside_character_class() -> Result<(), VmError> {
     let mut rt = new_runtime();
@@ -28981,6 +29381,77 @@ mod regexp_prototype_tests {
           const parts = /(?:)/[Symbol.split]("");
           return Array.isArray(parts) && parts.length === 0;
         })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_replace_observes_result_groups_getter() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const r = /a/;
+        r.exec = function () {
+          return {
+            0: "a",
+            length: 1,
+            index: 0,
+            get groups() { throw "boom"; }
+          };
+        };
+        let ok = false;
+        try {
+          r[Symbol.replace]("a", "x");
+        } catch (e) {
+          ok = (e === "boom");
+        }
+        ok
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_replace_named_groups_are_used_by_get_substitution() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const r = /a/;
+        r.exec = function () {
+          return {
+            0: "a",
+            length: 1,
+            index: 0,
+            groups: { x: "b" }
+          };
+        };
+        r[Symbol.replace]("a", "$<x>") === "b"
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_replace_functional_replace_passes_groups_arg() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const r = /a/;
+        r.exec = function () {
+          return {
+            0: "a",
+            length: 1,
+            index: 0,
+            groups: { x: "b" }
+          };
+        };
+        let got;
+        r[Symbol.replace]("a", function () { got = arguments[arguments.length - 1]; return "x"; });
+        got && got.x === "b"
       "#,
     )?;
     assert_eq!(v, Value::Bool(true));
