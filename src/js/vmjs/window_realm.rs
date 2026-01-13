@@ -1745,7 +1745,7 @@ impl WindowRealm {
       }
 
       let mut first_err: Option<VmError> = None;
-      let mut termination_err: Option<VmError> = None;
+      let mut hard_stop_err: Option<VmError> = None;
 
       loop {
         let Some((realm, job)) = rt.vm.microtask_queue_mut().pop_front() else {
@@ -1769,8 +1769,8 @@ impl WindowRealm {
 
         match job_result {
           Ok(()) => {}
-          Err(e @ VmError::Termination(_)) => {
-            termination_err = Some(e);
+          Err(e @ (VmError::Termination(_) | VmError::OutOfMemory)) => {
+            hard_stop_err = Some(e);
             break;
           }
           Err(e) => {
@@ -1781,12 +1781,15 @@ impl WindowRealm {
         }
       }
 
-      if let Some(err) = termination_err {
-        // Termination is a hard stop: discard any remaining queued jobs (and any jobs enqueued by
-        // the failing job) so we don't leak persistent roots.
+      if let Some(err) = hard_stop_err {
+        // Hard stop: discard any remaining queued jobs (and any jobs enqueued by the failing job)
+        // so we don't leak persistent roots.
         let mut ctx = TeardownCtx { heap: &mut rt.heap };
         rt.vm.microtask_queue_mut().teardown(&mut ctx);
         rt.vm.microtask_queue_mut().end_checkpoint();
+        // Ensure the locally-created fallback bindings host outlives the microtask checkpoint: the
+        // hooks payload stores a raw pointer to it.
+        let _ = &mut fallback_webidl_bindings_host;
         return Err(err);
       }
 
@@ -45803,6 +45806,132 @@ mod tests {
 
     realm.perform_microtask_checkpoint()?;
     assert_eq!(realm.exec_script("globalThis.__x")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_perform_microtask_checkpoint_treats_oom_as_hard_stop() -> Result<(), VmError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use vm_js::{Job, JobKind, VmJobContext, WeakGcObject};
+
+    struct JobCtx<'a> {
+      heap: &'a mut Heap,
+    }
+
+    impl VmJobContext for JobCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("JobCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("JobCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let job2_runs = Arc::new(AtomicUsize::new(0));
+    let job3_runs = Arc::new(AtomicUsize::new(0));
+    let job_after_runs = Arc::new(AtomicUsize::new(0));
+
+    // Create a GC object that's kept alive by a persistent root owned by a queued job.
+    let obj = {
+      let mut scope = realm.runtime.heap.scope();
+      scope.alloc_object()?
+    };
+    let weak = WeakGcObject::from(obj);
+
+    let job2_runs_clone = Arc::clone(&job2_runs);
+    let mut job2 = Job::new(JobKind::Promise, move |_ctx, _hooks| {
+      job2_runs_clone.fetch_add(1, Ordering::Relaxed);
+      Ok(())
+    })?;
+    {
+      let mut ctx = JobCtx {
+        heap: &mut realm.runtime.heap,
+      };
+      job2.add_root(&mut ctx, Value::Object(obj))?;
+    }
+
+    let job3_runs_clone = Arc::clone(&job3_runs);
+    let job3 = Job::new(JobKind::Promise, move |_ctx, _hooks| {
+      job3_runs_clone.fetch_add(1, Ordering::Relaxed);
+      Ok(())
+    })?;
+
+    let job_after_runs_clone = Arc::clone(&job_after_runs);
+    let job_after = Job::new(JobKind::Promise, move |_ctx, _hooks| {
+      job_after_runs_clone.fetch_add(1, Ordering::Relaxed);
+      Ok(())
+    })?;
+
+    // The rooted job should keep the object alive.
+    realm.runtime.heap.collect_garbage();
+    assert_eq!(weak.upgrade(&realm.runtime.heap), Some(obj));
+
+    // First job: enqueue additional jobs and then OOM. OOM should be treated as a hard stop and
+    // trigger teardown of the remaining queue (including the jobs enqueued by this failing job).
+    let oom_job = Job::new(JobKind::Promise, move |_ctx, hooks| {
+      hooks.host_enqueue_promise_job(job2, None);
+      hooks.host_enqueue_promise_job(job3, None);
+      Err(VmError::OutOfMemory)
+    })?;
+
+    let realm_id = realm.realm_id;
+    realm
+      .runtime
+      .vm
+      .microtask_queue_mut()
+      .enqueue_promise_job(oom_job, Some(realm_id));
+    // Also enqueue a job behind the failing one to ensure we stop draining immediately.
+    realm
+      .runtime
+      .vm
+      .microtask_queue_mut()
+      .enqueue_promise_job(job_after, Some(realm_id));
+
+    let err = realm.perform_microtask_checkpoint().unwrap_err();
+    assert!(
+      matches!(err, VmError::OutOfMemory),
+      "expected OOM hard stop, got {err:?}"
+    );
+
+    assert_eq!(job2_runs.load(Ordering::Relaxed), 0);
+    assert_eq!(job3_runs.load(Ordering::Relaxed), 0);
+    assert_eq!(job_after_runs.load(Ordering::Relaxed), 0);
+    assert!(
+      realm.runtime.vm.microtask_queue_mut().is_empty(),
+      "expected microtask queue to be torn down on OOM"
+    );
+
+    // The teardown must remove persistent roots held by abandoned jobs.
+    realm.runtime.heap.collect_garbage();
+    assert_eq!(weak.upgrade(&realm.runtime.heap), None);
+
+    // The checkpoint reentrancy flag should be reset even on hard-stop errors.
+    assert!(realm.runtime.vm.microtask_queue_mut().begin_checkpoint());
+    realm.runtime.vm.microtask_queue_mut().end_checkpoint();
     Ok(())
   }
 
