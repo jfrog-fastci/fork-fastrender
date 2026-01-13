@@ -13,6 +13,87 @@ use memchr::{memchr, memchr2};
 use std::hash::{Hash, Hasher};
 
 /// Find the first occurrence of `needle_lower_ascii` in `haystack` using ASCII-only
+/// case-insensitive matching, starting at `start`.
+///
+/// - `needle_lower_ascii` **must** already be ASCII-lowercased (i.e. produced by
+///   `to_ascii_lowercase()`); non-ASCII bytes are unaffected by `to_ascii_lowercase` and therefore
+///   still compare exactly.
+/// - Returns the byte index of the first match (compatible with `str::find` semantics when
+///   `start == 0`).
+pub(crate) fn find_ascii_case_insensitive_bytes_from(
+  haystack: &[u8],
+  needle_lower_ascii: &[u8],
+  start: usize,
+) -> Option<usize> {
+  if needle_lower_ascii.is_empty() {
+    return (start <= haystack.len()).then_some(start);
+  }
+  if start >= haystack.len() {
+    return None;
+  }
+
+  if needle_lower_ascii.len() > haystack.len() - start {
+    return None;
+  }
+
+  debug_assert!(
+    needle_lower_ascii.iter().all(|b| !b.is_ascii_uppercase()),
+    "needle_lower_ascii must already be ASCII-lowercased"
+  );
+
+  let first = needle_lower_ascii[0];
+  let first_upper = if first.is_ascii_lowercase() {
+    first.to_ascii_uppercase()
+  } else {
+    first
+  };
+
+  // 1-byte needle fast path: just scan for either `a` or `A`.
+  if needle_lower_ascii.len() == 1 {
+    let rel = if first_upper != first {
+      memchr2(first, first_upper, &haystack[start..])
+    } else {
+      memchr(first, &haystack[start..])
+    }?;
+    return Some(start + rel);
+  }
+
+  let last_start = haystack.len() - needle_lower_ascii.len();
+  let mut offset = start;
+  while offset <= last_start {
+    let rel = if first_upper != first {
+      memchr2(first, first_upper, &haystack[offset..])?
+    } else {
+      memchr(first, &haystack[offset..])?
+    };
+    let start = offset + rel;
+
+    // `memchr` searches the entire remainder of the slice, so it can return a match position that
+    // doesn't leave enough room for the full needle. In that case, we're done.
+    if start > last_start {
+      return None;
+    }
+
+    if matches_at(haystack, start, needle_lower_ascii) {
+      return Some(start);
+    }
+
+    offset = start + 1;
+  }
+
+  None
+}
+
+/// Find the first occurrence of `needle_lower_ascii` in `haystack` using ASCII-only
+/// case-insensitive matching.
+pub(crate) fn find_ascii_case_insensitive_bytes(
+  haystack: &[u8],
+  needle_lower_ascii: &[u8],
+) -> Option<usize> {
+  find_ascii_case_insensitive_bytes_from(haystack, needle_lower_ascii, 0)
+}
+
+/// Find the first occurrence of `needle_lower_ascii` in `haystack` using ASCII-only
 /// case-insensitive matching.
 ///
 /// - `needle_lower_ascii` **must** already be ASCII-lowercased (i.e. produced by
@@ -23,60 +104,7 @@ pub(crate) fn find_ascii_case_insensitive(
   haystack: &str,
   needle_lower_ascii: &str,
 ) -> Option<usize> {
-  if needle_lower_ascii.is_empty() {
-    return Some(0);
-  }
-
-  let hay = haystack.as_bytes();
-  let needle = needle_lower_ascii.as_bytes();
-  if needle.len() > hay.len() {
-    return None;
-  }
-
-  debug_assert!(
-    needle.iter().all(|b| !b.is_ascii_uppercase()),
-    "needle_lower_ascii must already be ASCII-lowercased"
-  );
-
-  let first = needle[0];
-  let first_upper = if first.is_ascii_lowercase() {
-    first.to_ascii_uppercase()
-  } else {
-    first
-  };
-
-  // 1-byte needle fast path: just scan for either `a` or `A`.
-  if needle.len() == 1 {
-    if first_upper != first {
-      return memchr2(first, first_upper, hay);
-    }
-    return memchr(first, hay);
-  }
-
-  let last_start = hay.len() - needle.len();
-  let mut offset = 0usize;
-  while offset <= last_start {
-    let rel = if first_upper != first {
-      memchr2(first, first_upper, &hay[offset..])?
-    } else {
-      memchr(first, &hay[offset..])?
-    };
-    let start = offset + rel;
-
-    // `memchr` searches the entire remainder of the slice, so it can return a match position that
-    // doesn't leave enough room for the full needle. In that case, we're done.
-    if start > last_start {
-      return None;
-    }
-
-    if matches_at(hay, start, needle) {
-      return Some(start);
-    }
-
-    offset = start + 1;
-  }
-
-  None
+  find_ascii_case_insensitive_bytes(haystack.as_bytes(), needle_lower_ascii.as_bytes())
 }
 
 #[inline]
@@ -206,5 +234,28 @@ mod tests {
       contains_ascii_case_insensitive(url, t)
         || title_wrong.is_some_and(|title| contains_ascii_case_insensitive(title, t))
     }));
+  }
+
+  #[test]
+  fn bytes_from_start_offset_respects_start() {
+    let hay = b"HelloHello";
+    let needle = b"hello";
+
+    assert_eq!(
+      find_ascii_case_insensitive_bytes_from(hay, needle, 0),
+      Some(0)
+    );
+    assert_eq!(
+      find_ascii_case_insensitive_bytes_from(hay, needle, 1),
+      Some(5)
+    );
+    assert_eq!(find_ascii_case_insensitive_bytes_from(hay, needle, 6), None);
+
+    // Empty needle matches at the provided start index.
+    assert_eq!(find_ascii_case_insensitive_bytes_from(hay, b"", 3), Some(3));
+    assert_eq!(
+      find_ascii_case_insensitive_bytes_from(hay, b"", hay.len()),
+      Some(hay.len())
+    );
   }
 }

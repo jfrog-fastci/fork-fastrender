@@ -4,7 +4,6 @@
 //! callers can follow scriptless redirects commonly used as `<noscript>` fallbacks.
 
 use memchr::memchr;
-use memchr::memchr2;
 use std::ops::ControlFlow;
 
 const MAX_META_REFRESH_SCAN_BYTES: usize = 256 * 1024;
@@ -307,37 +306,7 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
       .map(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
       .unwrap_or(false)
   }
-
-  fn find_case_insensitive(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
-    if start >= haystack.len() || needle.is_empty() {
-      return None;
-    }
-
-    let needle_len = needle.len();
-    if needle_len > haystack.len() - start {
-      return None;
-    }
-
-    let first = needle[0];
-    let first_lower = first.to_ascii_lowercase();
-    let first_upper = first_lower.to_ascii_uppercase();
-    let mut offset = start;
-    while offset + needle_len <= haystack.len() {
-      let Some(pos) = memchr2(first_lower, first_upper, &haystack[offset..]) else {
-        return None;
-      };
-      let idx = offset + pos;
-      if idx + needle_len > haystack.len() {
-        return None;
-      }
-      if haystack[idx..idx + needle_len].eq_ignore_ascii_case(needle) {
-        return Some(idx);
-      }
-      offset = idx + 1;
-    }
-
-    None
-  }
+  use crate::ui::string_match::find_ascii_case_insensitive_bytes_from;
 
   #[derive(Clone, Copy)]
   enum PatternKind {
@@ -380,7 +349,7 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
   for (pat, kind) in patterns.iter() {
     let mut search_start = 0usize;
     let needle = pat.as_bytes();
-    while let Some(idx) = find_case_insensitive(bytes, needle, search_start) {
+    while let Some(idx) = find_ascii_case_insensitive_bytes_from(bytes, needle, search_start) {
       search_start = idx + needle.len();
 
       // Require the match to start on a non-identifier boundary to avoid picking up attributes

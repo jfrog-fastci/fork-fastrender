@@ -43,7 +43,7 @@ pub mod history_timestamp;
 pub mod visited;
 pub mod omnibox;
 pub mod omnibox_nav;
-mod string_match;
+pub(crate) mod string_match;
 pub mod tab_search;
 pub mod load_progress;
 pub mod search_suggest;
