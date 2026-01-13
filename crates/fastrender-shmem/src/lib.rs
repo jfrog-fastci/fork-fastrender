@@ -545,11 +545,17 @@ fn map_file_mut(file: &File, len: usize) -> io::Result<MmapMut> {
 fn dup_fd_cloexec(fd: RawFd) -> io::Result<RawFd> {
   // SAFETY: `fcntl` duplicates the file descriptor. We set CLOEXEC on the duplicate so it won't
   // leak into unrelated execs.
-  let rc = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-  if rc < 0 {
-    return Err(io::Error::last_os_error());
+  loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if rc >= 0 {
+      return Ok(rc);
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
   }
-  Ok(rc)
 }
 
 #[cfg(unix)]
@@ -772,27 +778,37 @@ fn lock_linux_memfd_seals(fd: RawFd) -> io::Result<()> {
   // Apply the required size-stability seals first so they still take effect on kernels that can't
   // lock the seal set (`F_SEAL_SEAL`).
   let required: libc::c_int = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
-  // SAFETY: `fcntl(F_ADD_SEALS)` takes the fd and an int seal mask.
-  let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, required) };
-  if rc != 0 {
+  loop {
+    // SAFETY: `fcntl(F_ADD_SEALS)` takes the fd and an int seal mask.
+    let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, required) };
+    if rc == 0 {
+      break;
+    }
     let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
     match err.raw_os_error() {
-      Some(code) if code == libc::EPERM || code == libc::EINVAL || code == libc::ENOSYS => Ok(()),
-      _ => Err(err),
-    }?;
-    return Ok(());
+      Some(code) if code == libc::EPERM || code == libc::EINVAL || code == libc::ENOSYS => return Ok(()),
+      _ => return Err(err),
+    }
   }
 
   // Best-effort: lock the seal set so an untrusted peer cannot persistently add restrictive seals
   // like `F_SEAL_WRITE` (persistent DoS when buffers are pooled).
-  let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
-  if rc == 0 {
-    return Ok(());
-  }
-  let err = io::Error::last_os_error();
-  match err.raw_os_error() {
-    Some(code) if code == libc::EPERM || code == libc::EINVAL || code == libc::ENOSYS => Ok(()),
-    _ => Err(err),
+  loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+    if rc == 0 {
+      return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return match err.raw_os_error() {
+      Some(code) if code == libc::EPERM || code == libc::EINVAL || code == libc::ENOSYS => Ok(()),
+      _ => Err(err),
+    };
   }
 }
 
@@ -830,16 +846,30 @@ fn create_otmpfile_fd() -> io::Result<RawFd> {
 
 #[cfg(target_os = "linux")]
 fn clear_fd_cloexec(fd: RawFd) -> io::Result<()> {
-  // SAFETY: `fcntl` reads per-fd flags.
-  let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-  if flags < 0 {
-    return Err(io::Error::last_os_error());
-  }
+  let flags = loop {
+    // SAFETY: `fcntl` reads per-fd flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags >= 0 {
+      break flags;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
   let new_flags = flags & !libc::FD_CLOEXEC;
-  // SAFETY: `fcntl` sets per-fd flags.
-  let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, new_flags) };
-  if rc < 0 {
-    return Err(io::Error::last_os_error());
+  loop {
+    // SAFETY: `fcntl` sets per-fd flags.
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, new_flags) };
+    if rc >= 0 {
+      break;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
   }
   Ok(())
 }
