@@ -868,12 +868,16 @@ Do not “cargo update” these casually: newer `egui`/`winit`/`wgpu` releases t
 Building `--features browser_ui` pulls in `winit` (X11 backend) and `wgpu`. On a minimal Linux
 install you will likely need additional system development packages.
 
+Note: `browser_ui` also enables the optional `cpal` audio backend on Linux, which requires the ALSA
+development headers (`libasound2-dev`).
+
 On CI we rely on the `ubuntu-latest` runner image having these available; to reproduce locally:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
   pkg-config \
+  libasound2-dev \
   libx11-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
   libxrandr-dev libxi-dev libxcursor-dev \
   libxkbcommon-dev libxkbcommon-x11-dev \
