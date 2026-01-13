@@ -115,7 +115,7 @@ impl ChromeFrameDocument {
     let loading = active.map(|t| t.loading).unwrap_or(false);
     let title = active
       .map(|t| t.display_title())
-      .unwrap_or_else(|| "New Tab".to_string());
+      .unwrap_or("New Tab");
 
     self.document.mutate_dom(|dom: &mut DomNode| {
       let mut changed = false;
@@ -150,7 +150,7 @@ impl ChromeFrameDocument {
       }
 
       if let Some(tab_title) = dom_mutation::find_element_by_id_mut(dom, "tab-title") {
-        changed |= dom_mutation::set_text_content(tab_title, &title);
+        changed |= dom_mutation::set_text_content(tab_title, title);
       }
 
       changed

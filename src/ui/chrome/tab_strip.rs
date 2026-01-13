@@ -2481,8 +2481,11 @@ pub(super) fn tab_strip_ui(
   #[cfg(test)]
   let mut tab_rects_for_test: Vec<Rect> = Vec::new();
 
-  let mut pinned_tab_rects_for_drag: Vec<(TabId, Rect)> = Vec::with_capacity(pinned_count);
-  let mut unpinned_tab_rects_for_drag: Vec<(TabId, Rect)> = Vec::with_capacity(unpinned_count);
+  // Drag-to-reorder needs the ordered list of visible tab rects. With hundreds of tabs, building
+  // and allocating these vectors every frame is expensive, so we only populate them when a drag is
+  // actually active.
+  let mut pinned_tab_rects_for_drag: Vec<(TabId, Rect)> = Vec::new();
+  let mut unpinned_tab_rects_for_drag: Vec<(TabId, Rect)> = Vec::new();
   let mut dragged_tab_rect: Option<Rect> = None;
 
   let mut active_tab_rect: Option<Rect> = None;
@@ -2715,9 +2718,7 @@ pub(super) fn tab_strip_ui(
               }
               #[cfg(test)]
               tab_rects_for_test.push(tab_rect);
-              if close_t.is_none() {
-                pinned_tab_rects_for_drag.push((tab_id, tab_rect));
-              }
+              // Drag rect lists are built lazily (only when dragging).
 
               let is_close_action = maybe_action
                 .as_ref()
@@ -3119,7 +3120,7 @@ pub(super) fn tab_strip_ui(
                 item_pos += 1;
 
                 if interactive {
-                  unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
+                  // Drag rect lists are built lazily (only when dragging).
                   let is_close_action = maybe_action
                     .as_ref()
                     .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
@@ -3245,9 +3246,7 @@ pub(super) fn tab_strip_ui(
               unpinned_items_for_snapshot.push(TabStripItemKey::Tab(tab_id));
               item_pos += 1;
 
-              if close_t.is_none() {
-                unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
-              }
+              // Drag rect lists are built lazily (only when dragging).
               let is_close_action = maybe_action
                 .as_ref()
                 .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
@@ -3480,6 +3479,33 @@ pub(super) fn tab_strip_ui(
       [Pos2::new(x0, y), Pos2::new(x1, y)],
       Stroke::new(ACTIVE_UNDERLINE_HEIGHT, ui.visuals().selection.stroke.color),
     );
+  }
+
+  // Drag-to-reorder uses ordered lists of the *visible* tab rects. When no drag is active, avoid
+  // allocating and populating these potentially-large vectors (hundreds of tabs) every frame.
+  if let Some(dragging_tab_id) = app.chrome.dragging_tab_id {
+    let dragging_is_pinned = app.tab(dragging_tab_id).map(|t| t.pinned).unwrap_or(false);
+    if dragging_is_pinned {
+      pinned_tab_rects_for_drag.reserve(pinned_count);
+      for tab in app.tabs.iter().take(pinned_count) {
+        if close_progress.contains_key(&tab.id) {
+          continue;
+        }
+        if let Some(rect) = layout_rects.get(&tab.id).copied() {
+          pinned_tab_rects_for_drag.push((tab.id, rect));
+        }
+      }
+    } else {
+      unpinned_tab_rects_for_drag.reserve(unpinned_count);
+      for tab in app.tabs.iter().skip(pinned_len) {
+        if close_progress.contains_key(&tab.id) {
+          continue;
+        }
+        if let Some(rect) = layout_rects.get(&tab.id).copied() {
+          unpinned_tab_rects_for_drag.push((tab.id, rect));
+        }
+      }
+    }
   }
 
   // Persist the layout snapshot for pin/unpin animations (and reuse it as per-frame scratch).
