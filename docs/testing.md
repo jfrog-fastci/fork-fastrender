@@ -93,6 +93,14 @@ deterministic across platforms. Set `FASTR_USE_BUNDLED_FONTS=1` locally to match
 - The public API exposes `FastRenderConfig::with_font_sources(FontConfig::...)` to pin renders
   to bundled fonts or add additional font directories when needed.
 
+## Media fixtures (video/audio)
+
+Deterministic video/audio assets used by tests and offline fixtures live under
+`tests/pages/fixtures/assets/media/`.
+
+For provenance, licensing, size budgets, and regeneration commands, see:
+[`tests/pages/fixtures/assets/media/README.md`](../tests/pages/fixtures/assets/media/README.md).
+
 ## Style regression tests
 
 Most style/cascade regressions are unit tests in `src/`. Run them with a filter:

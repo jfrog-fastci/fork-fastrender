@@ -171,6 +171,10 @@ build constraints.
 
 ### Test videos
 
+Deterministic, license-clean media fixtures live under
+[`tests/pages/fixtures/assets/media/`](../tests/pages/fixtures/assets/media/) — see
+[`README.md`](../tests/pages/fixtures/assets/media/README.md) for provenance and regeneration.
+
 Create/collect test videos in various formats:
 - `test_h264_aac.mp4` - Common web video
 - `test_vp9_opus.webm` - Open format
