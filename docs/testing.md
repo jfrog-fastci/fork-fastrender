@@ -359,11 +359,13 @@ Use `bundle_page` to capture a page once, then convert that bundle into a determ
         - If a page crashes or times out during capture, add `--no-render` to crawl HTML + CSS for subresources without doing a full render.
    - Offline (from warmed pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features disk_cache --bin bundle_page -- cache <stem> --out /tmp/capture.tar`
         - Reads HTML from `fetches/html/<stem>.html` and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` / `--cache-dir`).
-2. Import: `bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/capture.tar <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`
+2. Import: `bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/capture.tar <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`
 3. Validate the imported fixture is fully offline (no fetchable `http(s)` URLs left behind): `bash scripts/cargo_agent.sh xtask validate-page-fixtures --only <fixture_name>`
 4. Add the new fixture to `tests/regression/pages.rs` and generate a golden if you want it covered by the suite.
 
 The importer rewrites all HTML/CSS references to hashed files under `assets/` and refuses to leave `http(s)` URLs behind, so the resulting directory is fully offline. A synthetic bundle for testing lives under `tests/fixtures/bundle_page/simple`, and `tests/pages/fixtures/bundle_import_example/` shows the expected output produced by the importer.
+
+Note: media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty placeholder files by default so fixtures stay small. Use `--include-media` to vendor playable media, subject to size budgets (`--media-max-bytes`, `--media-max-file-bytes`; set to `0` to disable).
 
 Tip: if you already have a warmed pageset disk cache, `bash scripts/cargo_agent.sh xtask pageset --capture-missing-failure-fixtures` can automatically capture/import missing fixtures for pages that currently fail in `progress/pages/*.json` (it uses `bundle_page cache` + `bash scripts/cargo_agent.sh xtask import-page-fixture` under the hood).
 

@@ -48,6 +48,27 @@ fn help_lists_commands() {
 }
 
 #[test]
+fn import_page_fixture_help_mentions_media_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["import-page-fixture", "--help"])
+    .output()
+    .expect("run xtask import-page-fixture --help");
+
+  assert!(
+    output.status.success(),
+    "import-page-fixture help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--include-media")
+      && stdout.contains("--media-max-bytes")
+      && stdout.contains("--media-max-file-bytes"),
+    "import-page-fixture help should mention media vendoring flags; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn update_goldens_help_lists_pages_suite() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["update-goldens", "--help"])

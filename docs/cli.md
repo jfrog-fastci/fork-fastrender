@@ -141,8 +141,11 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
       - Worst accuracy pages: `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --from-progress progress/pages --top-worst-accuracy 10`
     - FastRender writes `<out>/fastrender/<fixture>.json` alongside each PNG with render settings, fixture input fingerprints, and status/timing.
     - When reusing an existing FastRender output directory (`--no-fastrender` / `--diff-only`), xtask validates the metadata matches the requested `--viewport/--dpr/--media/--fit-canvas-to-content/--timeout`, font config, and fixture input fingerprints. Missing/incomplete metadata warns by default; pass `--require-fastrender-metadata` to fail instead. Use `--allow-stale-fastrender-renders` to downgrade fingerprint mismatches to warnings.
-  - Import a bundled capture into a `pages_regression` fixture: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle_dir|.tar> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`
+  - Import a bundled capture into a `pages_regression` fixture: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle_dir|.tar> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`
     - Relative `<bundle>` and `--output-root` paths are resolved relative to the repository root so the command behaves consistently even when invoked from subdirectories (pass absolute paths to override).
+    - Media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty placeholder files by default (fixtures stay small and safe to commit).
+      - Opt in to vendoring playable media with `--include-media`.
+      - When enabled, media bytes are capped by `--media-max-bytes` (total) and `--media-max-file-bytes` (per file). Set either to `0` to disable the limit (see `xtask import-page-fixture --help` for current defaults).
   - Recapture and (re)import offline page fixtures from a manifest (pageset guardrails by default): `bash scripts/cargo_agent.sh xtask recapture-page-fixtures [--capture-mode cache|crawl|render] [--only stripe.com] [--overwrite]`
   - Validate that offline page fixtures do not reference network resources: `bash scripts/cargo_agent.sh xtask validate-page-fixtures [--only stripe.com]`
 - Update `tests/pages/pageset_guardrails.json` from the pageset scoreboard: `bash scripts/cargo_agent.sh xtask update-pageset-guardrails`

@@ -15,6 +15,8 @@ use url::Url;
 const DEFAULT_FIXTURE_ROOT: &str = "tests/pages/fixtures";
 const ASSETS_DIR: &str = "assets";
 const HASH_PREFIX_BYTES: usize = 16;
+pub(crate) const DEFAULT_MEDIA_MAX_BYTES: u64 = 5 * 1024 * 1024;
+pub(crate) const DEFAULT_MEDIA_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Args, Debug)]
 pub struct ImportPageFixtureArgs {
@@ -31,6 +33,26 @@ pub struct ImportPageFixtureArgs {
   /// Allow replacing an existing fixture directory
   #[arg(long)]
   pub overwrite: bool,
+
+  /// Vendor media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) into the
+  /// fixture assets.
+  ///
+  /// By default, media sources are rewritten to deterministic empty placeholder files so imported
+  /// fixtures stay small and can be committed safely. Use this flag when you need the offline
+  /// fixture to contain **playable** media (for example when testing the browser UI).
+  ///
+  /// Safety: media vendoring is subject to size budgets (see `--media-max-bytes` and
+  /// `--media-max-file-bytes`) to avoid accidentally committing huge blobs.
+  #[arg(long)]
+  pub include_media: bool,
+
+  /// Maximum total bytes of vendored media assets when `--include-media` is set (0 = unlimited).
+  #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MEDIA_MAX_BYTES)]
+  pub media_max_bytes: u64,
+
+  /// Maximum bytes per vendored media asset when `--include-media` is set (0 = unlimited).
+  #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MEDIA_MAX_FILE_BYTES)]
+  pub media_max_file_bytes: u64,
 
   /// Replace missing resources with empty placeholder assets instead of failing the import
   #[arg(long)]
@@ -101,6 +123,8 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
   let effective_base = find_base_url(&document_html, &document_base_url);
 
   let mut catalog = AssetCatalog::new(args.allow_missing);
+  let mut media_bytes_total: u64 = 0;
+  let mut media_asset_names: HashSet<String> = HashSet::new();
   for (url, info) in &manifest.resources {
     // Bundle manifests can include synthetic keys for internal bookkeeping, such as:
     // - `@@fastr:bundle:vary_v1@@...` for `Vary`-partitioned resources
@@ -115,6 +139,42 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
     let resource = bundle
       .fetch_manifest_entry(url)
       .with_context(|| format!("failed to read bundled resource for {}", url))?;
+
+    if is_media_resource(info, &resource) {
+      if !args.include_media {
+        // Default: do not import media blobs into offline fixtures. Media elements are rewritten to
+        // deterministic placeholder files so fixtures remain small and offline-safe.
+        continue;
+      }
+
+      // When media vendoring is enabled, apply conservative size budgets to avoid accidentally
+      // committing huge files.
+      let size_bytes = u64::try_from(resource.bytes.len()).unwrap_or(u64::MAX);
+      if args.media_max_file_bytes != 0 && size_bytes > args.media_max_file_bytes {
+        bail!(
+          "media resource {} is {} bytes, exceeding the per-file limit of {} bytes; \
+           pass --media-max-file-bytes to override (or omit --include-media to use placeholders)",
+          url,
+          size_bytes,
+          args.media_max_file_bytes
+        );
+      }
+
+      // Media assets use a content-hash filename, so dedupe budget accounting by the final filename.
+      let ext = extension_from_resource(&info.path, resource.content_type.as_deref());
+      let filename = format!("{}.{}", hash_bytes(&resource.bytes), ext);
+      if media_asset_names.insert(filename) {
+        media_bytes_total = media_bytes_total.saturating_add(size_bytes);
+        if args.media_max_bytes != 0 && media_bytes_total > args.media_max_bytes {
+          bail!(
+            "vendored media exceeds the total budget ({} bytes > {} bytes); \
+             pass --media-max-bytes to override (or omit --include-media to use placeholders)",
+            media_bytes_total,
+            args.media_max_bytes
+          );
+        }
+      }
+    }
     catalog.add_resource(url, info, &resource)?;
   }
 
@@ -194,6 +254,50 @@ fn should_skip_synthetic_bundle_key(
     return manifest.contains_key(base);
   }
   false
+}
+
+fn is_media_resource(info: &BundledResourceInfo, res: &FetchedResource) -> bool {
+  if let Some(content_type) = res.content_type.as_deref().or(info.content_type.as_deref()) {
+    let mime = content_type
+      .split(';')
+      .next()
+      .unwrap_or(content_type)
+      .trim()
+      .to_ascii_lowercase();
+    if mime.starts_with("video/")
+      || mime.starts_with("audio/")
+      || mime == "text/vtt"
+      || mime == "application/vnd.apple.mpegurl"
+      || mime == "application/dash+xml"
+    {
+      return true;
+    }
+  }
+
+  // Fall back to extension detection because media content is often served as
+  // `application/octet-stream` or with a missing/incorrect Content-Type.
+  let ext = extension_from_resource(&info.path, res.content_type.as_deref());
+  matches!(
+    ext.as_str(),
+    "mp4"
+      | "m4v"
+      | "mov"
+      | "webm"
+      | "mkv"
+      | "mp3"
+      | "m4a"
+      | "aac"
+      | "wav"
+      | "ogg"
+      | "oga"
+      | "ogv"
+      | "opus"
+      | "flac"
+      | "vtt"
+      | "srt"
+      | "m3u8"
+      | "mpd"
+  )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2840,6 +2944,9 @@ body{background:url("/bg.png");}
       fixture_name: fixture_name.to_string(),
       output_root: output_root.clone(),
       overwrite: true,
+      include_media: false,
+      media_max_bytes: DEFAULT_MEDIA_MAX_BYTES,
+      media_max_file_bytes: DEFAULT_MEDIA_MAX_FILE_BYTES,
       allow_missing: false,
       allow_http_references: false,
       legacy_rewrite: false,
@@ -2936,6 +3043,9 @@ body{background:url("/bg.png");}
       fixture_name: fixture_name.to_string(),
       output_root: output_root.clone(),
       overwrite: true,
+      include_media: false,
+      media_max_bytes: DEFAULT_MEDIA_MAX_BYTES,
+      media_max_file_bytes: DEFAULT_MEDIA_MAX_FILE_BYTES,
       allow_missing: false,
       allow_http_references: false,
       legacy_rewrite: false,
@@ -2998,6 +3108,9 @@ body{background:url("/bg.png");}
       fixture_name: fixture_name.to_string(),
       output_root: output_root.clone(),
       overwrite: true,
+      include_media: false,
+      media_max_bytes: DEFAULT_MEDIA_MAX_BYTES,
+      media_max_file_bytes: DEFAULT_MEDIA_MAX_FILE_BYTES,
       allow_missing: false,
       allow_http_references: false,
       legacy_rewrite: false,
@@ -3029,6 +3142,9 @@ body{background:url("/bg.png");}
       fixture_name: fixture_name.to_string(),
       output_root: output_root.clone(),
       overwrite: true,
+      include_media: false,
+      media_max_bytes: DEFAULT_MEDIA_MAX_BYTES,
+      media_max_file_bytes: DEFAULT_MEDIA_MAX_FILE_BYTES,
       allow_missing: false,
       allow_http_references: false,
       legacy_rewrite: false,
@@ -3098,6 +3214,9 @@ body{background:url("/bg.png");}
       fixture_name: "example_test".to_string(),
       output_root,
       overwrite: true,
+      include_media: false,
+      media_max_bytes: DEFAULT_MEDIA_MAX_BYTES,
+      media_max_file_bytes: DEFAULT_MEDIA_MAX_FILE_BYTES,
       allow_missing: false,
       allow_http_references: false,
       legacy_rewrite: false,
