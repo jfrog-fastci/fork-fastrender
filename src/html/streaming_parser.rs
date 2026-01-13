@@ -7,8 +7,7 @@
 //! - supports `document.write`-style input injection (`push_front_str`),
 //! - and maintains the parse-time document base URL (`<base href>`).
 
-use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{Document, Dom2TreeSink, NodeId, NodeKind};
+use crate::dom2::{Document, Dom2TreeSink, NodeId};
 use crate::error::Result;
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
@@ -126,37 +125,7 @@ impl StreamingHtmlParser {
               doc.attach_shadow_roots();
               true
             } else {
-              // Even though we are not going to yield (and therefore will not run the full "prepare
-              // the script element" algorithm), we still need to mirror its internal-slot side
-              // effects:
-              // - clear the element's "parser document" slot, and
-              // - if it was non-null and `async` is missing, set the "force async" flag.
-              //
-              // This is required even when the script does *not* execute because it is disconnected
-              // (e.g. inside `<template>`). Otherwise a later DOM mutation that moves the same
-              // element into the document would incorrectly treat it as a parser-inserted (potentially
-              // parser-blocking) script rather than a dynamic/async one.
-              // https://html.spec.whatwg.org/multipage/scripting.html#prepare-a-script
-              if let NodeKind::Element {
-                tag_name,
-                namespace,
-                ..
-              } = &doc.node(script).kind
-              {
-                if tag_name.eq_ignore_ascii_case("script")
-                  && (namespace.is_empty() || namespace == HTML_NAMESPACE)
-                {
-                  let parser_document = doc.node(script).script_parser_document;
-                  doc
-                    .set_script_parser_document(script, false)
-                    .expect("set_script_parser_document should succeed for <script>");
-                  if parser_document && !doc.has_attribute(script, "async").unwrap_or(false) {
-                    doc
-                      .set_script_force_async(script, true)
-                      .expect("set_script_force_async should succeed for <script>");
-                  }
-                }
-              }
+              doc.reset_parser_inserted_script_internal_slots(script);
               false
             }
           } else {
@@ -353,8 +322,14 @@ mod tests {
   #[test]
   fn scripts_inside_inert_templates_do_not_yield_pause_points() {
     let mut parser = StreamingHtmlParser::new(None);
-    parser
-      .push_str("<!doctype html><template><script>inert</script></template><script>live</script>");
+    parser.push_str(
+      "<!doctype html>\
+       <template>\
+         <script>inert</script>\
+         <script async>inert_async</script>\
+       </template>\
+       <script>live</script>",
+    );
 
     match parser.pump().unwrap() {
       StreamingParserYield::Script { script, .. } => {
@@ -367,23 +342,36 @@ mod tests {
           "yielded script should be connected for scripting"
         );
 
-        let mut saw_inert_script = false;
-        for node_id in doc.subtree_preorder(doc.root()) {
-          let NodeKind::Element { tag_name, .. } = &doc.node(node_id).kind else {
-            continue;
-          };
-          if !tag_name.eq_ignore_ascii_case("script") {
-            continue;
-          }
-          if !doc.is_connected_for_scripting(node_id) {
-            saw_inert_script = true;
-            break;
+        let inert_scripts: Vec<_> = doc
+          .subtree_preorder(doc.root())
+          .filter(|&node_id| {
+            matches!(&doc.node(node_id).kind, NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("script"))
+              && !doc.is_connected_for_scripting(node_id)
+          })
+          .collect();
+        assert_eq!(
+          inert_scripts.len(),
+          2,
+          "expected two parsed <script> elements inside inert <template> contents"
+        );
+        for node_id in inert_scripts {
+          assert!(
+            !doc.node(node_id).script_parser_document,
+            "expected parser-document internal slot to be cleared for inert scripts"
+          );
+          let has_async_attr = doc.has_attribute(node_id, "async").unwrap_or(false);
+          if has_async_attr {
+            assert!(
+              !doc.node(node_id).script_force_async,
+              "expected force-async to remain cleared when the async attribute is present"
+            );
+          } else {
+            assert!(
+              doc.node(node_id).script_force_async,
+              "expected force-async to be set when async attribute is absent"
+            );
           }
         }
-        assert!(
-          saw_inert_script,
-          "expected a parsed <script> element inside inert <template> contents"
-        );
       }
       other => panic!("expected Script yield, got {other:?}"),
     }

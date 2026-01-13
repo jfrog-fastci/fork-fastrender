@@ -927,28 +927,7 @@ pub(crate) fn prepare_script_element_dom2(
     return false;
   }
 
-  // WHATWG HTML "prepare the script element":
-  // https://html.spec.whatwg.org/multipage/scripting.html#prepare-a-script
-  //
-  // The algorithm snapshots the element's "parser document" internal slot and then *clears* it.
-  // If the slot was non-null and the element does not have an `async` attribute, it also sets the
-  // element's "force async" flag.
-  //
-  // Non-obvious but important: these internal-slot updates happen even if the algorithm later
-  // returns early and the script never executes (unsupported type, empty inline script, etc).
-  // Clearing `script_parser_document` ensures future DOM mutations/re-insertion re-run preparation
-  // as a *dynamic* script (so DOM insertion code doesn't treat it as still parser-inserted), and
-  // setting `script_force_async` ensures those later preparations are async-like rather than
-  // parser-blocking.
-  let was_parser_inserted = doc.node(script).script_parser_document;
-  doc
-    .set_script_parser_document(script, false)
-    .expect("set_script_parser_document should succeed for <script>");
-  if was_parser_inserted && !spec.async_attr {
-    doc
-      .set_script_force_async(script, true)
-      .expect("set_script_force_async should succeed for <script>");
-  }
+  doc.reset_parser_inserted_script_internal_slots(script);
 
   // Whether the caller should hand this script off to the scheduler / execution pipeline.
   //
@@ -976,7 +955,10 @@ pub(crate) fn prepare_script_element_dom2(
 }
 #[cfg(test)]
 mod tests {
-  use super::{determine_script_type, determine_script_type_dom2, ScriptType};
+  use super::{
+    determine_script_type, determine_script_type_dom2, prepare_script_element_dom2, ScriptElementSpec,
+    ScriptType,
+  };
   use crate::dom::{DomNode, DomNodeType};
   use crate::dom2::Document as Dom2Document;
   use selectors::context::QuirksMode;
@@ -1007,6 +989,27 @@ mod tests {
       .append_child(doc.root(), script)
       .expect("append_child should succeed");
     (doc, script)
+  }
+
+  fn classic_script_spec(node_id: crate::dom2::NodeId, async_attr: bool, inline_text: &str) -> ScriptElementSpec {
+    ScriptElementSpec {
+      base_url: None,
+      src: None,
+      src_attr_present: false,
+      inline_text: inline_text.to_string(),
+      async_attr,
+      force_async: false,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: true,
+      node_id: Some(node_id),
+      script_type: ScriptType::Classic,
+    }
   }
 
   #[test]
@@ -1121,5 +1124,38 @@ mod tests {
         "attrs={attrs:?}"
       );
     }
+  }
+
+  #[test]
+  fn prepare_script_clears_parser_document_and_sets_force_async_when_async_attr_absent() {
+    let (mut doc, script) = dom2_script(&[]);
+    // Simulate a parser-inserted script element (as produced by html5ever parsing).
+    doc.node_mut(script).script_parser_document = true;
+    doc.node_mut(script).script_force_async = false;
+
+    let spec = classic_script_spec(script, /* async_attr */ false, "console.log(1)");
+    assert!(prepare_script_element_dom2(&mut doc, script, &spec));
+
+    let node = doc.node(script);
+    assert!(!node.script_parser_document);
+    assert!(node.script_force_async);
+  }
+
+  #[test]
+  fn prepare_script_clears_parser_document_but_does_not_force_async_when_async_attr_present() {
+    let (mut doc, script) = dom2_script(&[("async", "")]);
+    // Simulate a parser-inserted script element (as produced by html5ever parsing).
+    doc.node_mut(script).script_parser_document = true;
+    doc.node_mut(script).script_force_async = false;
+
+    let spec = classic_script_spec(script, /* async_attr */ true, "console.log(1)");
+    assert!(prepare_script_element_dom2(&mut doc, script, &spec));
+
+    let node = doc.node(script);
+    assert!(!node.script_parser_document);
+    assert!(
+      !node.script_force_async,
+      "force-async must remain cleared when the async attribute is present"
+    );
   }
 }

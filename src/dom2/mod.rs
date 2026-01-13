@@ -902,6 +902,28 @@ impl Document {
     Ok(())
   }
 
+  /// HTML: "prepare a script" steps 2–4 (internal-slot reset).
+  ///
+  /// These steps must run even when the element is not eligible for execution (e.g. scripts inside
+  /// inert `<template>` contents), because they transition the element out of the parser-inserted
+  /// state so later DOM mutations/insertion treat it like a dynamic script element.
+  pub(crate) fn reset_parser_inserted_script_internal_slots(&mut self, node: NodeId) {
+    let was_parser_inserted = match self.script_parser_document(node) {
+      Ok(value) => value,
+      Err(_) => return,
+    };
+
+    self
+      .set_script_parser_document(node, false)
+      .expect("set_script_parser_document should succeed for <script>");
+
+    if was_parser_inserted && !self.has_attribute(node, "async").unwrap_or(false) {
+      self
+        .set_script_force_async(node, true)
+        .expect("set_script_force_async should succeed for <script>");
+    }
+  }
+
   pub fn nodes(&self) -> &[Node] {
     &self.nodes
   }
