@@ -1581,6 +1581,16 @@ pub fn apply_viewport_scroll_cancel(tree: &mut FragmentTree, scroll: &ScrollStat
 /// position.
 pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
   fn scan(node: &FragmentNode, has_fixed_cb_ancestor: bool) -> bool {
+    match &node.content {
+      FragmentContent::RunningAnchor { snapshot, .. }
+      | FragmentContent::FootnoteAnchor { snapshot, .. } => {
+        if !scan(snapshot, has_fixed_cb_ancestor) {
+          return false;
+        }
+      }
+      _ => {}
+    }
+
     let Some(style) = node.style.as_deref() else {
       for child in node.children.iter() {
         if !scan(child, has_fixed_cb_ancestor) {
@@ -1589,6 +1599,15 @@ pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
       }
       return true;
     };
+
+    if crate::paint::scroll_blit::style_uses_scroll_linked_timelines(style)
+      || node
+        .starting_style
+        .as_deref()
+        .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines)
+    {
+      return false;
+    }
 
     // Sticky positioning is scroll-dependent; treat any sticky as unsupported for now.
     if matches!(style.position, Position::Sticky) {

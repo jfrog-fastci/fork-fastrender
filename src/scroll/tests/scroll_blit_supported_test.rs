@@ -1,6 +1,7 @@
 use crate::css::types::Transform;
 use crate::geometry::{Rect, Size};
 use crate::style::position::Position;
+use crate::style::types::AnimationTimeline;
 use crate::style::values::Length;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 use crate::ComputedStyle;
@@ -71,5 +72,39 @@ fn sticky_element_disables_scroll_blit() {
   assert!(
     !crate::scroll::scroll_blit_supported(&tree),
     "expected sticky element to disable scroll blit"
+  );
+}
+
+#[test]
+fn scroll_timeline_animation_disables_scroll_blit() {
+  let style = Arc::new(ComputedStyle {
+    animation_names: vec![Some("a".into())],
+    animation_timelines: vec![AnimationTimeline::Scroll(Default::default())],
+    ..ComputedStyle::default()
+  });
+
+  let root = FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![], style);
+  let tree = FragmentTree::with_viewport(root, Size::new(10.0, 10.0));
+
+  assert!(
+    !crate::scroll::scroll_blit_supported(&tree),
+    "expected scroll() animation timeline to disable scroll blit"
+  );
+}
+
+#[test]
+fn named_timeline_animation_disables_scroll_blit() {
+  let style = Arc::new(ComputedStyle {
+    animation_names: vec![Some("a".into())],
+    animation_timelines: vec![AnimationTimeline::Named("foo".into())],
+    ..ComputedStyle::default()
+  });
+
+  let root = FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![], style);
+  let tree = FragmentTree::with_viewport(root, Size::new(10.0, 10.0));
+
+  assert!(
+    !crate::scroll::scroll_blit_supported(&tree),
+    "expected named animation timelines to conservatively disable scroll blit"
   );
 }
