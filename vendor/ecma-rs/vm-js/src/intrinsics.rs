@@ -2024,6 +2024,28 @@ impl Intrinsics {
       data_desc(Value::Object(array_constructor), true, false, true),
     )?;
 
+    // Array[@@species]
+    {
+      let species_name = scope.alloc_string("get [Symbol.species]")?;
+      let species_getter =
+        alloc_rooted_native_function(scope, roots, promise_species_get_call, None, species_name, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(species_getter, Some(function_prototype))?;
+      scope.define_property(
+        array_constructor,
+        PropertyKey::Symbol(well_known_symbols.species),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(species_getter),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
     // Array.isArray
     {
       let is_array_s = scope.alloc_string("isArray")?;
@@ -3424,6 +3446,28 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(regexp_constructor), true, false, true),
     )?;
+
+    // RegExp[@@species]
+    {
+      let species_name = scope.alloc_string("get [Symbol.species]")?;
+      let species_getter =
+        alloc_rooted_native_function(scope, roots, promise_species_get_call, None, species_name, 0)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(species_getter, Some(function_prototype))?;
+      scope.define_property(
+        regexp_constructor,
+        PropertyKey::Symbol(well_known_symbols.species),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(species_getter),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
 
     // RegExp.prototype.exec
     {
