@@ -50,3 +50,47 @@ fn invalid_template_escape_reports_error() {
 fn tagged_templates_allow_invalid_escapes() {
   assert!(parse("tag`\\u{110000}`").is_ok());
 }
+
+#[test]
+fn regex_unicode_braced_escape_is_checked_in_unicode_mode() {
+  let err = parse("/\\u{110000}/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
+fn regex_unicode_braced_escape_is_not_treated_as_unicode_escape_without_u_flag() {
+  // In non-UnicodeMode, `\\u{...}` is an identity escape (`u`) followed by `{...}` which is parsed
+  // as a quantifier/literal depending on context; it must not be rejected during parsing.
+  assert!(parse("/\\u{41}/").is_ok());
+}
+
+#[test]
+fn regex_unicode_braced_escape_is_checked_inside_character_classes() {
+  let err = parse("/[\\u{110000}]/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
+fn regex_unicode_braced_escape_is_checked_inside_named_group_names() {
+  let err = parse("/(?<a\\u{110000}>.)/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
+fn regex_x_escape_is_identity_in_non_unicode_mode() {
+  assert!(parse("/\\x/").is_ok());
+  let err = parse("/\\x/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
