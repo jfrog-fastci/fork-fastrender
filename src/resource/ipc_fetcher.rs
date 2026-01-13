@@ -1336,7 +1336,14 @@ impl IpcResourceFetcher {
           .last_response_chunked
           .store(true, Ordering::Relaxed);
 
-        let mut body = Vec::with_capacity(total_len);
+        let mut body = Vec::new();
+        body.try_reserve_exact(total_len).map_err(|err| {
+          let _ = guard.shutdown(std::net::Shutdown::Both);
+          Error::Resource(ResourceError::new(
+            url,
+            format!("IPC body allocation failed (len={total_len}): {err:?}"),
+          ))
+        })?;
         loop {
           let frame = match read_ipc_frame(&mut *guard, IPC_MAX_OUTBOUND_FRAME_BYTES) {
             Ok(frame) => frame,
