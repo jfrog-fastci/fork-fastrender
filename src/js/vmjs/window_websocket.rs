@@ -2331,7 +2331,7 @@ mod tests {
   #[test]
   fn websocket_ctor_rejects_empty_protocol_string() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
     let err = host
       .exec_script(r#"new WebSocket("ws://example.invalid/", "");"#)
       .expect_err("expected invalid protocols argument to throw");
