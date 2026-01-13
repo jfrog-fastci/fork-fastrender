@@ -1,49 +1,23 @@
-use fastrender::js::{WindowRealm, WindowRealmConfig};
-use vm_js::Value;
+use fastrender::js::chrome_api::{
+  validate_chrome_navigation_url, ChromeApiError, MAX_CHROME_NAVIGATION_URL_CODE_UNITS,
+};
 
 #[test]
-fn chrome_navigation_navigate_rejects_javascript_scheme_and_does_not_dispatch() {
-  let mut realm =
-    WindowRealm::new(WindowRealmConfig::new("https://example.com/")).expect("WindowRealm::new");
-
-  let ok = realm
-    .exec_script(
-      r#"(() => {
-        try { chrome.navigation.navigate('javascript:alert(1)'); return false; }
-        catch (e) {
-          return e instanceof TypeError && String(e).toLowerCase().includes('javascript');
-        }
-      })()"#,
-    )
-    .expect("script should catch the TypeError and return a boolean");
-
-  assert_eq!(ok, Value::Bool(true));
+fn validate_chrome_navigation_url_rejects_javascript_scheme() {
+  let err = validate_chrome_navigation_url("javascript:alert(1)")
+    .expect_err("javascript: scheme should be rejected");
   assert!(
-    realm.take_pending_navigation_request().is_none(),
-    "rejected scheme should not dispatch navigation"
+    matches!(err, ChromeApiError::RejectedScheme(ref scheme) if scheme == "javascript"),
+    "expected RejectedScheme(javascript), got {err:?}"
   );
 }
 
 #[test]
-fn chrome_navigation_navigate_rejects_overlong_url_and_does_not_dispatch() {
-  let mut realm =
-    WindowRealm::new(WindowRealmConfig::new("https://example.com/")).expect("WindowRealm::new");
-
-  let ok = realm
-    .exec_script(
-      r#"(() => {
-        const url = 'https://example.com/' + 'a'.repeat(9000);
-        try { chrome.navigation.navigate(url); return false; }
-        catch (e) {
-          return e instanceof TypeError && String(e).toLowerCase().includes('too long');
-        }
-      })()"#,
-    )
-    .expect("script should catch the TypeError and return a boolean");
-
-  assert_eq!(ok, Value::Bool(true));
+fn validate_chrome_navigation_url_rejects_overlong_url() {
+  let overlong = "a".repeat(MAX_CHROME_NAVIGATION_URL_CODE_UNITS + 1);
+  let err = validate_chrome_navigation_url(&overlong).expect_err("overlong url should be rejected");
   assert!(
-    realm.take_pending_navigation_request().is_none(),
-    "overlong URL should not dispatch navigation"
+    matches!(err, ChromeApiError::UrlTooLong),
+    "expected UrlTooLong, got {err:?}"
   );
 }

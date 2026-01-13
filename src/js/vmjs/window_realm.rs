@@ -3,7 +3,6 @@ use crate::dom2::{self, NodeId, NodeKind};
 use crate::geometry::Rect;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
-use crate::js::chrome_api::{validate_chrome_navigation_url, MAX_CHROME_NAVIGATION_URL_CODE_UNITS};
 use crate::clock::{Clock, RealClock};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::document_write::{
@@ -5847,71 +5846,6 @@ fn request_location_navigation(
   // `InterruptHandle` is only observed at `Vm::tick()` boundaries; force a tick now so the
   // termination propagates out of this native call immediately.
   vm.tick()?;
-  Ok(Value::Undefined)
-}
-
-fn chrome_navigation_navigate_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::String(url_s) = url_value else {
-    return Err(throw_type_error(
-      vm,
-      scope,
-      host,
-      hooks,
-      "chrome.navigation.navigate: URL must be a string",
-    ));
-  };
-  scope.push_root(Value::String(url_s))?;
-
-  // Enforce a UTF-16 code unit limit *before* converting into a Rust `String` to avoid unbounded
-  // allocations outside the VM heap.
-  let js_s = scope.heap().get_string(url_s)?;
-  if js_s.as_code_units().len() > MAX_CHROME_NAVIGATION_URL_CODE_UNITS {
-    return Err(throw_type_error(
-      vm,
-      scope,
-      host,
-      hooks,
-      &format!(
-        "Navigation URL is too long (max {} UTF-16 code units)",
-        MAX_CHROME_NAVIGATION_URL_CODE_UNITS
-      ),
-    ));
-  }
-
-  let url_raw = js_s.to_utf8_lossy();
-  let url_trimmed = crate::js::trim_ascii_whitespace(&url_raw);
-  if url_trimmed.is_empty() {
-    return Err(throw_type_error(
-      vm,
-      scope,
-      host,
-      hooks,
-      "Navigation URL cannot be empty",
-    ));
-  }
-
-  validate_chrome_navigation_url(url_trimmed)
-    .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
-
-  {
-    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-      return Err(VmError::InvariantViolation("window realm missing user data"));
-    };
-    data.pending_navigation = Some(LocationNavigationRequest {
-      url: url_trimmed.to_string(),
-      replace: false,
-    });
-  }
-
   Ok(Value::Undefined)
 }
 
@@ -48543,41 +48477,6 @@ fn init_window_globals(
       data_desc(Value::Object(get_selection_func)),
     )?;
   }
-
-  // chrome.navigation.navigate(url)
-  //
-  // This is a small bridge for renderer chrome UI scripts to request navigations from the
-  // embedding. Treat inputs as hostile even if chrome JS is accidentally exposed to web content.
-  let chrome_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(chrome_obj))?;
-  let chrome_key = alloc_key(&mut scope, "chrome")?;
-  scope.define_property(global, chrome_key, data_desc(Value::Object(chrome_obj)))?;
-
-  let chrome_navigation_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(chrome_navigation_obj))?;
-  let chrome_navigation_key = alloc_key(&mut scope, "navigation")?;
-  scope.define_property(
-    chrome_obj,
-    chrome_navigation_key,
-    data_desc(Value::Object(chrome_navigation_obj)),
-  )?;
-
-  let chrome_navigate_call_id = vm.register_native_call(chrome_navigation_navigate_native)?;
-  let chrome_navigate_name = scope.alloc_string("navigate")?;
-  scope.push_root(Value::String(chrome_navigate_name))?;
-  let chrome_navigate_func =
-    scope.alloc_native_function(chrome_navigate_call_id, None, chrome_navigate_name, 1)?;
-  scope.heap_mut().object_set_prototype(
-    chrome_navigate_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(chrome_navigate_func))?;
-  let chrome_navigate_key = alloc_key(&mut scope, "navigate")?;
-  scope.define_property(
-    chrome_navigation_obj,
-    chrome_navigate_key,
-    data_desc(Value::Object(chrome_navigate_func)),
-  )?;
 
   // --- Deterministic browser environment shims ---------------------------------
   //
