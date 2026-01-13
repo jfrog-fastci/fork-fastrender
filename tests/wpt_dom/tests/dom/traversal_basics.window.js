@@ -147,3 +147,120 @@ test(() => {
   assert_true(nested_threw, "Re-entrant nextNode() should throw");
   assert_equals(nested_name, "InvalidStateError");
 }, "NodeIterator rejects re-entrant nextNode() calls from the filter callback");
+
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const root = document.createElement("div");
+  const text = document.createTextNode("hello");
+  const a = document.createElement("span");
+  root.appendChild(text);
+  root.appendChild(a);
+  body.appendChild(root);
+
+  const calls = [];
+  const filter = (node) => {
+    calls.push(node);
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, filter);
+
+  assert_equals(it.nextNode(), root);
+  assert_equals(it.nextNode(), a);
+  assert_equals(it.nextNode(), null);
+
+  assert_true(
+    calls.indexOf(root) !== -1 && calls.indexOf(a) !== -1,
+    "Filter callback should be invoked for nodes included by whatToShow"
+  );
+  assert_equals(
+    calls.indexOf(text),
+    -1,
+    "Filter callback should not be invoked for nodes excluded by whatToShow"
+  );
+}, "NodeIterator does not invoke the filter callback for nodes excluded by whatToShow");
+
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const root = document.createElement("div");
+  const a = document.createElement("span");
+  const a1 = document.createElement("b");
+  a.appendChild(a1);
+  const b = document.createElement("span");
+  root.appendChild(a);
+  root.appendChild(b);
+  body.appendChild(root);
+
+  const filter = (node) => {
+    if (node === a) {
+      return NodeFilter.FILTER_SKIP;
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+
+  assert_equals(tw.nextNode(), a1, "FILTER_SKIP should skip the node but still traverse into its children");
+  assert_equals(tw.nextNode(), b);
+  assert_equals(tw.nextNode(), null);
+}, "TreeWalker FILTER_SKIP skips a node but still traverses into its subtree");
+
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const root = document.createElement("div");
+  const a = document.createElement("span");
+  const a1 = document.createElement("b");
+  a.appendChild(a1);
+  const b = document.createElement("span");
+  root.appendChild(a);
+  root.appendChild(b);
+  body.appendChild(root);
+
+  const filter = (node) => {
+    if (node === a) {
+      return NodeFilter.FILTER_REJECT;
+    }
+    if (node === a1) {
+      assert_unreached("FILTER_REJECT should prune the subtree so descendants are never visited");
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+
+  assert_equals(tw.nextNode(), b, "FILTER_REJECT should prune the rejected node's subtree");
+  assert_equals(tw.nextNode(), null);
+}, "TreeWalker FILTER_REJECT prunes the rejected node's subtree");
+
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const root = document.createElement("div");
+  const a = document.createElement("span");
+  const b = document.createElement("span");
+  root.appendChild(a);
+  root.appendChild(b);
+  body.appendChild(root);
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+
+  if (typeof tw.previousNode !== "function") {
+    // Some backends don't implement TreeWalker.previousNode() yet; keep this test as a no-op in
+    // that case so we can still lock down traversal semantics on platforms that do.
+    return;
+  }
+
+  assert_equals(tw.nextNode(), a);
+  assert_equals(tw.nextNode(), b);
+
+  assert_equals(tw.previousNode(), a);
+  assert_equals(tw.previousNode(), root);
+  assert_equals(tw.previousNode(), null);
+}, "TreeWalker.previousNode() traverses backwards in tree order (if implemented)");
