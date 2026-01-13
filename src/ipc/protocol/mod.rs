@@ -40,6 +40,7 @@ pub const MAX_DPR: f32 = 16.0;
 /// Description of a single shared memory buffer, created by the browser and mapped by the
 /// renderer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FrameBufferDesc {
   /// Stable index used by the renderer when referring to this buffer.
   pub buffer_index: u32,
@@ -113,6 +114,7 @@ impl FrameBufferDesc {
 
 /// Shared scroll state reported alongside rendered frames.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollMetrics {
   pub scroll_x_px: u32,
   pub scroll_y_px: u32,
@@ -122,6 +124,7 @@ pub struct ScrollMetrics {
 
 /// Messages sent from the **trusted browser** to the **untrusted renderer**.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub enum BrowserToRenderer {
   Hello { protocol_version: u32 },
 
@@ -141,6 +144,7 @@ pub enum BrowserToRenderer {
 ///
 /// These messages must be validated before use.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub enum RendererToBrowser {
   HelloAck { protocol_version: u32 },
 

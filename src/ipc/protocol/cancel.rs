@@ -13,6 +13,7 @@ pub struct CancelGensSnapshot {
 /// - `Nav` cancels both prepare and paint work (navigation changes).
 /// - `Paint` cancels paint work only (viewport/input changes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum CancelScope {
   Nav,
   Paint,
