@@ -47,6 +47,87 @@ use pat::is_valid_pattern_identifier;
 use pat::ParsePatternRules;
 use util::lhs_expr_to_assign_target_with_recover;
 
+fn raw_identifier_equals_ascii_keyword(raw: &str, keyword: &str) -> bool {
+  // Fast-path: if there are no escape sequences, the raw string must match exactly.
+  //
+  // Note: this is used as a best-effort check for keyword-like identifier tokens that contain
+  // escape sequences (e.g. `im\u0070ort`). Lexing intentionally does not classify escaped
+  // keywords as keyword tokens, so we need to decode Unicode escapes here in the parser when
+  // rejecting syntactic forms like `import.meta` / `import()` that require a literal terminal
+  // symbol.
+  if !raw.contains('\\') {
+    return raw == keyword;
+  }
+
+  let mut expected = keyword.chars();
+  let mut rest = raw;
+  while !rest.is_empty() {
+    let next_char = if rest.as_bytes().first() == Some(&b'\\') {
+      let bytes = rest.as_bytes();
+      if bytes.get(1) != Some(&b'u') {
+        return false;
+      }
+      if bytes.get(2) == Some(&b'{') {
+        // \u{X..X}
+        let mut i = 3;
+        let mut value: u32 = 0;
+        let mut digits = 0;
+        while i < bytes.len() && bytes[i] != b'}' {
+          let d = match bytes[i] {
+            b'0'..=b'9' => (bytes[i] - b'0') as u32,
+            b'a'..=b'f' => (bytes[i] - b'a' + 10) as u32,
+            b'A'..=b'F' => (bytes[i] - b'A' + 10) as u32,
+            _ => return false,
+          };
+          value = value.saturating_mul(16).saturating_add(d);
+          digits += 1;
+          i += 1;
+        }
+        if digits == 0 || i >= bytes.len() || bytes[i] != b'}' {
+          return false;
+        }
+        let Some(ch) = char::from_u32(value) else {
+          return false;
+        };
+        rest = &rest[i + 1..];
+        ch
+      } else {
+        // \uXXXX
+        if bytes.len() < 6 {
+          return false;
+        }
+        let mut value: u32 = 0;
+        for &b in &bytes[2..6] {
+          let d = match b {
+            b'0'..=b'9' => (b - b'0') as u32,
+            b'a'..=b'f' => (b - b'a' + 10) as u32,
+            b'A'..=b'F' => (b - b'A' + 10) as u32,
+            _ => return false,
+          };
+          value = value.saturating_mul(16).saturating_add(d);
+        }
+        let Some(ch) = char::from_u32(value) else {
+          return false;
+        };
+        rest = &rest[6..];
+        ch
+      }
+    } else {
+      let Some(ch) = rest.chars().next() else {
+        return false;
+      };
+      rest = &rest[ch.len_utf8()..];
+      ch
+    };
+
+    if expected.next() != Some(next_char) {
+      return false;
+    }
+  }
+
+  expected.next().is_none()
+}
+
 pub struct Asi {
   pub can_end_with_asi: bool,
   pub did_end_with_asi: bool,
@@ -1410,6 +1491,16 @@ impl<'a> Parser<'a> {
         _ => self.id_expr(ctx)?.into_wrapped(),
       });
     };
+
+    // `import.meta` and dynamic `import()` must use the literal `import` terminal symbol; escape
+    // sequences are not permitted (e.g. `im\u0070ort.meta` must be a SyntaxError, not a member
+    // access on an `import` identifier).
+    if t0.typ == TT::Identifier && matches!(t1.typ, TT::Dot | TT::ParenthesisOpen) {
+      let raw = self.str(t0.loc);
+      if raw_identifier_equals_ascii_keyword(raw, "import") {
+        return Err(t0.error(SyntaxErrorType::ExpectedSyntax("import expression")));
+      }
+    }
 
     // Check for other valid pattern identifiers.
     if is_valid_pattern_identifier(t0.typ, ctx.rules) {

@@ -8108,6 +8108,58 @@ impl<'a> Scope<'a> {
     Ok(obj)
   }
 
+  /// Replaces the `[[Exports]]` list for an existing Module Namespace Exotic Object.
+  ///
+  /// This is used by `ModuleGraph::get_module_namespace` to support cyclic namespace graphs, such
+  /// as `export * as ns from './self.js'`, without infinite recursion: the namespace object can be
+  /// allocated (and cached) before its exports are computed, then populated afterwards.
+  pub(crate) fn set_module_namespace_exports(
+    &mut self,
+    obj: GcObject,
+    exports: Box<[ModuleNamespaceExport]>,
+  ) -> Result<(), VmError> {
+    // Root all values stored in `exports` during allocation in case `ensure_can_allocate` triggers a
+    // GC. Also root `obj` across the exports heap allocation since the `ModuleNamespaceExports`
+    // object is not itself a `Value` root.
+    let mut scope = self.reborrow();
+    let mut roots: Vec<Value> = Vec::new();
+    roots
+      .try_reserve_exact(exports.len().saturating_mul(3).saturating_add(1))
+      .map_err(|_| VmError::OutOfMemory)?;
+    roots.push(Value::Object(obj));
+    for export in exports.iter() {
+      roots.push(Value::String(export.name));
+      roots.push(Value::Object(export.getter));
+      match export.value {
+        ModuleNamespaceExportValue::Binding { name, .. } => {
+          roots.push(Value::String(name));
+        }
+        ModuleNamespaceExportValue::Namespace { namespace } => {
+          roots.push(Value::Object(namespace));
+        }
+      }
+    }
+    scope.push_roots(&roots)?;
+
+    let exports_bytes = exports
+      .len()
+      .checked_mul(mem::size_of::<ModuleNamespaceExport>())
+      .unwrap_or(usize::MAX);
+    scope.heap.ensure_can_allocate(exports_bytes)?;
+    let exports = GcModuleNamespaceExports(scope.heap.alloc_unchecked(
+      HeapObject::ModuleNamespaceExports(ModuleNamespaceExportsData { exports }),
+      exports_bytes,
+    )?);
+
+    let base = scope.heap.get_object_base_mut(obj)?;
+    // Ensure the object keeps the required invariants for Module Namespace Exotic Objects.
+    base.prototype = None;
+    base.extensible = false;
+    base.kind = ObjectKind::ModuleNamespace(ModuleNamespaceObject { exports });
+
+    Ok(())
+  }
+
   /// Allocates a JavaScript array exotic object on the heap.
   ///
   /// The array's `length` internal slot is initialised to `len`.

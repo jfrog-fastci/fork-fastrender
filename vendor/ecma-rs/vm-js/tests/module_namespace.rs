@@ -146,6 +146,49 @@ fn module_namespace_import_star_is_non_extensible() -> Result<(), VmError> {
 }
 
 #[test]
+fn module_namespace_can_export_itself_as_namespace() -> Result<(), VmError> {
+  // Regression test for self-referential namespace exports:
+  //
+  //   export * as ns2 from "./self.js";
+  //
+  // `GetModuleNamespace` / `ModuleNamespaceCreate` must not recurse infinitely when the resolved
+  // namespace points back at the same module.
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut graph = ModuleGraph::new();
+  let module = graph.add_module_with_specifier(
+    "self.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        export * as ns2 from "self.js";
+        export default null;
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+  graph.link(&mut vm, &mut heap, realm.global_object(), module)?;
+
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let mut scope = heap.scope();
+
+  let ns = graph.get_module_namespace(module, &mut vm, &mut scope)?;
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "ns2")?,
+    Value::Object(ns),
+    "exported namespace should refer to the module's own namespace object",
+  );
+
+  drop(scope);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn module_namespace_rejects_adding_new_properties_in_strict_mode() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

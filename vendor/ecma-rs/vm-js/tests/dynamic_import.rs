@@ -1069,3 +1069,12 @@ fn dynamic_import_attributes_proxy_traps_are_observed() -> Result<(), VmError> {
   host.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn dynamic_import_rejects_escape_sequences_in_import_keyword() -> Result<(), VmError> {
+  // test262: language/expressions/dynamic-import/escape-sequence-import.js
+  let mut rt = new_runtime()?;
+  let err = rt.exec_script(r"im\u0070ort('./empty_FIXTURE.js');").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+  Ok(())
+}

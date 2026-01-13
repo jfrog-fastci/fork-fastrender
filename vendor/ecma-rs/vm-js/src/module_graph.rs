@@ -15,8 +15,8 @@ use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
 use crate::{
-  cmp_utf16, GcEnv, GcObject, LoadedModuleRequest, ModuleRequest, RealmId, RootId, Scope, StackFrame,
-  Value, Vm, VmError,
+  cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleRequest, RealmId, RootId,
+  Scope, ScriptOrModule, StackFrame, Value, Vm, VmError,
 };
 use crate::{Heap, VmHost, VmHostHooks};
 use core::mem;
@@ -993,9 +993,31 @@ impl ModuleGraph {
       }
     }
 
-    // namespace = ModuleNamespaceCreate(module, unambiguousNames)
-    let (namespace_obj, exports_sorted) =
-      self.module_namespace_create(vm, scope, module, &unambiguous_names)?;
+    // Allocate and cache a placeholder namespace object *before* computing its exports list.
+    //
+    // `ModuleNamespaceCreate` may need to resolve namespace exports (`export * as ns from ...`),
+    // which in turn calls `GetModuleNamespace` for the target module. Self-referential namespaces
+    // (or cycles across multiple modules) would otherwise recurse infinitely if we only populated
+    // `module.[[Namespace]]` after the exports list was fully constructed.
+    let namespace_obj = scope.alloc_module_namespace_object(Vec::new().into_boxed_slice())?;
+    let root = scope.heap_mut().add_root(Value::Object(namespace_obj))?;
+    self.modules[idx].namespace = Some(ModuleNamespaceCache {
+      object: root,
+      exports: Vec::new(),
+      external_memory: None,
+    });
+    self.torn_down = false;
+
+    // Populate the namespace's `[[Exports]]` list and %Symbol.toStringTag%.
+    let exports_sorted = match self.module_namespace_create(vm, scope, module, namespace_obj, &unambiguous_names) {
+      Ok(exports_sorted) => exports_sorted,
+      Err(err) => {
+        // Roll back the placeholder cache so subsequent calls don't observe an incomplete namespace.
+        scope.heap_mut().remove_root(root);
+        self.modules[idx].namespace = None;
+        return Err(err);
+      }
+    };
 
     // Charge external bytes for the cached `[[Exports]]` list. This can be large for modules with
     // many exports.
@@ -1008,21 +1030,31 @@ impl ModuleGraph {
     let exports_total_bytes = exports_vec_bytes.saturating_add(exports_string_bytes);
 
     // Root the namespace object while charging: `charge_external` can trigger GC.
-    let token = {
+    let token_res = {
       let mut tmp = scope.reborrow();
-      tmp.push_root(Value::Object(namespace_obj))?;
-      tmp.heap_mut().charge_external(exports_total_bytes)?
+      match tmp.push_root(Value::Object(namespace_obj)) {
+        Ok(_) => tmp.heap_mut().charge_external(exports_total_bytes),
+        Err(err) => Err(err),
+      }
+    };
+    let token = match token_res {
+      Ok(token) => token,
+      Err(err) => {
+        // Avoid leaving the graph in a partially-cached state.
+        scope.heap_mut().remove_root(root);
+        self.modules[idx].namespace = None;
+        return Err(err);
+      }
     };
 
-    // Cache the namespace object via a persistent root so it remains live across GC.
-    let root = scope.heap_mut().add_root(Value::Object(namespace_obj))?;
-
-    self.modules[idx].namespace = Some(ModuleNamespaceCache {
-      object: root,
-      exports: exports_sorted,
-      external_memory: Some(Arc::new(token)),
-    });
-    self.torn_down = false;
+    // Update the cached export list and keep the external memory charge token alive.
+    let Some(cache) = self.modules[idx].namespace.as_mut() else {
+      return Err(VmError::InvariantViolation(
+        "module namespace placeholder cache was unexpectedly cleared",
+      ));
+    };
+    cache.exports = exports_sorted;
+    cache.external_memory = Some(Arc::new(token));
 
     Ok(namespace_obj)
   }
@@ -1153,8 +1185,9 @@ impl ModuleGraph {
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     module: ModuleId,
+    obj: GcObject,
     exports: &[String],
-  ) -> Result<(GcObject, Vec<String>), VmError> {
+  ) -> Result<Vec<String>, VmError> {
     // 1. Let exports be a List whose elements are the String values representing the exports of module.
     // 2. Let sortedExports be a List containing the same values as exports in ascending order.
     let mut sorted_exports = exports.to_vec();
@@ -1238,11 +1271,11 @@ impl ModuleGraph {
 
     let exports_boxed = export_entries.into_boxed_slice();
 
-    // Allocate the namespace object.
+    // Attach the exports list to the (already-allocated) namespace object.
     //
-    // Root it before any further allocations (e.g. the `toStringTag` value string) in case those
-    // allocations trigger a GC.
-    let obj = inner.alloc_module_namespace_object(exports_boxed)?;
+    // The namespace object may have been cached before this call (to break cycles), so update it in
+    // place rather than allocating a new object.
+    inner.set_module_namespace_exports(obj, exports_boxed)?;
     inner.push_root(Value::Object(obj))?;
 
     // Define %Symbol.toStringTag% = "Module" (non-writable, non-enumerable, non-configurable).
@@ -1260,7 +1293,7 @@ impl ModuleGraph {
       PropertyKey::Symbol(intr.well_known_symbols().to_string_tag),
       desc,
     )?;
-    Ok((obj, sorted_exports))
+    Ok(sorted_exports)
   }
 
   fn cache_module_error_value(
@@ -1592,7 +1625,14 @@ impl ModuleGraph {
         script_or_module: Some(ScriptOrModule::Module(module)),
       };
       let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
-      instantiate_module_decls(&mut *vm_ctx, scope, global_object, module_env, source, &ast.stx.body)?;
+      instantiate_module_decls(
+        &mut *vm_ctx,
+        scope,
+        global_object,
+        module_env,
+        source,
+        &ast.stx.body,
+      )?;
       Ok(())
     })();
 
@@ -1666,8 +1706,17 @@ impl ModuleGraph {
     let result = (|| -> Result<Value, VmError> {
       let mut eval_scope = scope.reborrow();
 
+      // Ensure module linking runs with a defined Realm so hoisted function objects capture
+      // `[[JobRealm]]` metadata. This context is intentionally `script_or_module: None` so nested
+      // per-module contexts (pushed during instantiation) can set the active module precisely.
+      let link_ctx = ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      };
+      let mut vm_ctx = vm.execution_context_guard(link_ctx)?;
+
       // Cache SCC structure (cycle roots, dependency edges) before starting evaluation.
-      self.ensure_scc_info(vm)?;
+      self.ensure_scc_info(&mut *vm_ctx)?;
 
       // Determine the SCC (cycle) root for this module.
       let idx = module_index(module);
@@ -1679,25 +1728,41 @@ impl ModuleGraph {
         .unwrap_or(module);
 
       // Ensure an evaluation promise exists for the SCC root and return it to the host.
-      let promise = self.ensure_scc_promise(vm, &mut eval_scope, host, hooks, scc_root)?;
+      let promise = self.ensure_scc_promise(&mut *vm_ctx, &mut eval_scope, host, hooks, scc_root)?;
 
       // Link before evaluating. If linking fails (including the module already being in an errored
       // state), reject the evaluation promise with the thrown/cached value.
-      if let Err(err) = self.link_with_scope(vm, &mut eval_scope, global_object, realm_id, module) {
+      if let Err(err) = self.link_with_scope(&mut *vm_ctx, &mut eval_scope, global_object, realm_id, module) {
         let reason = if let Some(thrown) = err.thrown_value() {
           thrown
         } else {
           // Best-effort: ensure we have a cached thrown value for deterministic subsequent
           // operations.
-          self.cache_module_error_from_err(vm, &mut eval_scope, idx, &err)?;
-          self.module_errored_value(vm, &mut eval_scope, idx)?
+          self.cache_module_error_from_err(&mut *vm_ctx, &mut eval_scope, idx, &err)?;
+          self.module_errored_value(&mut *vm_ctx, &mut eval_scope, idx)?
         };
-        self.reject_scc_promise(vm, &mut eval_scope, host, hooks, scc_root, reason, Some(&err))?;
+        self.reject_scc_promise(
+          &mut *vm_ctx,
+          &mut eval_scope,
+          host,
+          hooks,
+          scc_root,
+          reason,
+          Some(&err),
+        )?;
         return Ok(promise);
       }
 
       // Start (or continue) evaluating the SCC rooted at `scc_root`.
-      self.start_scc_evaluation(vm, &mut eval_scope, global_object, realm_id, scc_root, host, hooks)?;
+      self.start_scc_evaluation(
+        &mut *vm_ctx,
+        &mut eval_scope,
+        global_object,
+        realm_id,
+        scc_root,
+        host,
+        hooks,
+      )?;
 
       Ok(promise)
     })();

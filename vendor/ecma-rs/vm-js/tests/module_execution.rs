@@ -551,3 +551,123 @@ fn module_evaluate_supports_import_meta_and_caches_it_per_module() -> Result<(),
   realm.teardown(&mut heap);
   Ok(())
 }
+
+#[test]
+fn import_meta_is_scoped_to_defining_module_across_function_calls() -> Result<(), VmError> {
+  // `import.meta` is evaluated using `GetActiveScriptOrModule()`. When calling a function imported
+  // from another module, that function's `[[ScriptOrModule]]` must be observed (not the caller
+  // module).
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  graph.add_module_with_specifier(
+    "b.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        export const meta = import.meta;
+        export function getMeta() { return import.meta; }
+      "#,
+    )?,
+  );
+  let a = graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        import { meta as metaB, getMeta } from "b.js";
+        export const metaA = import.meta;
+        export const metaB_from_import = metaB;
+        export const metaB_from_call = getMeta();
+        export const import_binding_distinct = metaA !== metaB;
+        export const call_distinct = metaA !== metaB_from_call;
+        export const import_equals_call = metaB === metaB_from_call;
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  let promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    a,
+    &mut host,
+    &mut hooks,
+  )?;
+
+  let mut scope = heap.scope();
+  scope.push_root(promise)?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("ModuleGraph::evaluate should return a Promise object");
+  };
+  assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let ns = graph.get_module_namespace(a, &mut vm, &mut scope)?;
+
+  let Value::Object(meta_a) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "metaA")? else {
+    panic!("expected metaA to be an object");
+  };
+  let Value::Object(meta_b_import) =
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "metaB_from_import")?
+  else {
+    panic!("expected metaB_from_import to be an object");
+  };
+  let Value::Object(meta_b_call) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "metaB_from_call")?
+  else {
+    panic!("expected metaB_from_call to be an object");
+  };
+
+  assert_ne!(
+    meta_a, meta_b_import,
+    "import.meta objects must be distinct across modules"
+  );
+  assert_eq!(
+    meta_b_import, meta_b_call,
+    "import.meta accessed via import binding should match the one returned from the exporting module's function"
+  );
+
+  assert_eq!(
+    ns_get(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      ns,
+      "import_binding_distinct"
+    )?,
+    Value::Bool(true),
+  );
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "call_distinct")?,
+    Value::Bool(true),
+  );
+  assert_eq!(
+    ns_get(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      ns,
+      "import_equals_call"
+    )?,
+    Value::Bool(true),
+  );
+
+  drop(scope);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn import_meta_rejects_escape_sequences_in_import_keyword() -> Result<(), VmError> {
+  // test262: language/expressions/import.meta/syntax/escape-sequence-import.js
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let err = SourceTextModuleRecord::parse(&mut heap, r"im\u0070ort.meta;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+  Ok(())
+}
