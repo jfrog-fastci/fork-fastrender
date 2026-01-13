@@ -62,6 +62,10 @@ schemes (no navigation, no fetch, no side effects).
 Likewise, **do not** add `chrome-action` to navigation allowlists. `chrome-action:` is not a
 fetchable scheme and must be intercepted/handled only inside the trusted chrome renderer context.
 
+This also includes **subresource fetching** allowlists/policies (e.g. `ResourcePolicy::allowed_schemes`
+in [`src/resource.rs`](../src/resource.rs)): `chrome://` support should be implemented as a
+trusted-only fetch path, not as a globally-allowed URL scheme.
+
 ---
 
 ## `chrome://` — trusted chrome assets
@@ -131,6 +135,12 @@ The vm-js `Window` realm also uses a chrome-aware origin serializer for `documen
 (`serialized_origin_for_document_url`). It treats trusted `chrome://<host>` documents as a tuple
 origin so internal pages can safely use same-document APIs like `history.pushState` without
 collapsing all internal pages into the opaque `"null"` origin bucket.
+
+Secure-context note (JS): the current `isSecureContext` computation in
+[`src/js/vmjs/window_realm.rs`](../src/js/vmjs/window_realm.rs) (`is_secure_context_for_document_url`)
+treats only HTTPS (and HTTP localhost) as secure, so `chrome://` pages are currently *not* secure
+contexts. If renderer-chrome pages need secure-context-only APIs in the future, this policy should
+be revisited (but only for **trusted** chrome pages).
 
 ---
 
