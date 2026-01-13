@@ -575,9 +575,13 @@ jobs:
         run: |
           set -euo pipefail
           # Keep this job lightweight: do not enable browser_ui / GUI features.
-          # AppContainer smoke: spawns the test harness inside an AppContainer and ensures the
-          # renderer can initialize + render a minimal document.
+          # AppContainer spawn smoke: spawn a sandboxed child using the production launcher and
+          # exercise sandbox opt-out toggles.
           bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test windows_sandbox_appcontainer_spawn -- --nocapture
+
+          # Security regression: ensure a sandboxed child cannot access the filesystem or make
+          # network connections (AppContainer), and that the JobObject kill-on-close limit works.
+          bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test windows_renderer_sandbox_test -- --nocapture
 
           # Security regression: ensure a sandboxed child cannot OpenProcess() the parent with
           # high-privilege access rights (PROCESS_VM_READ / PROCESS_DUP_HANDLE).
