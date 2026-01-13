@@ -217,6 +217,25 @@ bash scripts/run_limited.sh --as 64G -- \
 
 Use this when you’re debugging what screen readers actually see for the **browser chrome** (widget names/roles, focus target, expanded state/actions, etc).
 
+Common invocations:
+
+```bash
+# Dump only named nodes (noise-reduced).
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- \
+    --named-only
+
+# Include the in-window menu bar (useful for menu role/name checks).
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- \
+    --show-menu-bar --named-only
+
+# Force the address bar into “editing” mode so it appears as a text field.
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- \
+    --focus-address-bar --named-only
+```
+
 ### Unit tests (headless AccessKit snapshots)
 
 Many chrome widgets have unit tests that force-enable AccessKit (`ctx.enable_accesskit()`) and assert on the emitted `TreeUpdate`.
