@@ -10,7 +10,7 @@ use std::fmt::Write;
 use super::theme::chrome_theme_css;
 
 fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
-  match suggestion.action {
+  match &suggestion.action {
     OmniboxAction::NavigateToUrl => "omnibox-type-url",
     OmniboxAction::Search(_) => "omnibox-type-search",
     OmniboxAction::ActivateTab(_) => "omnibox-type-tab",
