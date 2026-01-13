@@ -665,6 +665,13 @@ fn tab_ui(
     chrome.tab_context_menu_rect = None;
     return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
   }
+  if response.double_clicked() {
+    if can_close_tabs {
+      chrome.open_tab_context_menu = None;
+      chrome.tab_context_menu_rect = None;
+      return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
+    }
+  }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
       chrome.open_tab_context_menu = None;
@@ -817,6 +824,13 @@ fn pinned_tab_ui(
       chrome.tab_context_menu_rect = None;
     }
     return (tab_rect, response, None);
+  }
+  if response.double_clicked() {
+    if can_close_tabs {
+      chrome.open_tab_context_menu = None;
+      chrome.tab_context_menu_rect = None;
+      return (tab_rect, response, Some(ChromeAction::CloseTab(tab.id)));
+    }
   }
   if response.clicked_by(egui::PointerButton::Middle) {
     if can_close_tabs {
@@ -985,7 +999,10 @@ pub(super) fn tab_strip_ui(
           #[cfg(test)]
           tab_rects_for_test.push(tab_rect);
           pinned_tab_rects_for_drag.push((tab_id, tab_rect));
-          if tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
+          let is_close_action = maybe_action
+            .as_ref()
+            .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
+          if !is_close_action && tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
             chrome.dragging_tab_id = Some(tab_id);
             chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
           }
@@ -1092,7 +1109,13 @@ pub(super) fn tab_strip_ui(
               tab_rects_for_test.push(tab_rect);
 
               unpinned_tab_rects_for_drag.push((tab_id, tab_rect));
-              if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
+              let is_close_action = maybe_action
+                .as_ref()
+                .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
+              if !is_close_action
+                && tab_response.drag_started()
+                && app.chrome.dragging_tab_id.is_none()
+              {
                 app.chrome.dragging_tab_id = Some(tab_id);
                 app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
               }
