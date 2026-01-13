@@ -461,6 +461,11 @@ pub(crate) fn hit_test_dom_with_indices<D: DomIdLookupExt + ?Sized>(
   fragment_tree: &FragmentTree,
   point: Point,
 ) -> Option<HitTestResult> {
+  #[cfg(feature = "browser_ui")]
+  if HIT_TEST_DOM_COUNTING_ENABLED.load(Ordering::Relaxed) {
+    HIT_TEST_DOM_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+  }
+
   for fragment in fragment_tree.hit_test(point) {
     let Some(box_id) = fragment.box_id() else {
       continue;
@@ -550,11 +555,6 @@ pub fn hit_test_dom(
   fragment_tree: &FragmentTree,
   point: Point,
 ) -> Option<HitTestResult> {
-  #[cfg(feature = "browser_ui")]
-  if HIT_TEST_DOM_COUNTING_ENABLED.load(Ordering::Relaxed) {
-    HIT_TEST_DOM_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-  }
-
   let box_index = BoxIndex::new(box_tree);
   let dom_index = DomIndex::new(dom);
   hit_test_dom_with_indices(dom, &dom_index, &box_index, fragment_tree, point)
@@ -582,6 +582,11 @@ pub(crate) fn hit_test_dom_all_with_indices<D: DomIdLookupExt + ?Sized>(
   fragment_tree: &FragmentTree,
   point: Point,
 ) -> Vec<HitTestResult> {
+  #[cfg(feature = "browser_ui")]
+  if HIT_TEST_DOM_COUNTING_ENABLED.load(Ordering::Relaxed) {
+    HIT_TEST_DOM_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+  }
+
   let mut results: Vec<HitTestResult> = Vec::new();
   let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
