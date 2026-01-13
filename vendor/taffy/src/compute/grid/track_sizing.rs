@@ -291,20 +291,36 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
   rows: &[GridTrack],
 ) {
   #[inline(always)]
-  fn build_prefix_counts(
-    tracks: &[GridTrack],
-    mut predicate: impl FnMut(&GridTrack) -> bool,
-  ) -> Vec<u32> {
-    let mut prefix = Vec::with_capacity(tracks.len() + 1);
-    prefix.push(0);
-    let mut count = 0u32;
+  fn build_prefix_counts(tracks: &[GridTrack]) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    // Building each prefix array in separate passes would require scanning the full track list
+    // 3x per axis. We compute all three in one pass to reduce CPU time for large grids.
+    let mut flexible_prefix: Vec<u32> = Vec::with_capacity(tracks.len() + 1);
+    let mut intrinsic_prefix: Vec<u32> = Vec::with_capacity(tracks.len() + 1);
+    let mut percentage_prefix: Vec<u32> = Vec::with_capacity(tracks.len() + 1);
+    flexible_prefix.push(0);
+    intrinsic_prefix.push(0);
+    percentage_prefix.push(0);
+
+    let mut flexible_count = 0u32;
+    let mut intrinsic_count = 0u32;
+    let mut percentage_count = 0u32;
     for track in tracks {
-      if predicate(track) {
-        count += 1;
+      if track.is_flexible() {
+        flexible_count += 1;
       }
-      prefix.push(count);
+      if track.has_intrinsic_sizing_function() {
+        intrinsic_count += 1;
+      }
+      if track.kind == GridTrackKind::Track && track.uses_percentage() {
+        percentage_count += 1;
+      }
+
+      flexible_prefix.push(flexible_count);
+      intrinsic_prefix.push(intrinsic_count);
+      percentage_prefix.push(percentage_count);
     }
-    prefix
+
+    (flexible_prefix, intrinsic_prefix, percentage_prefix)
   }
 
   #[inline(always)]
@@ -314,18 +330,10 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
     start < end && (prefix[end] - prefix[start]) > 0
   }
 
-  let column_flexible_prefix = build_prefix_counts(columns, |track| track.is_flexible());
-  let column_intrinsic_prefix =
-    build_prefix_counts(columns, |track| track.has_intrinsic_sizing_function());
-  let column_percentage_prefix = build_prefix_counts(columns, |track| {
-    track.kind == GridTrackKind::Track && track.uses_percentage()
-  });
-  let row_flexible_prefix = build_prefix_counts(rows, |track| track.is_flexible());
-  let row_intrinsic_prefix =
-    build_prefix_counts(rows, |track| track.has_intrinsic_sizing_function());
-  let row_percentage_prefix = build_prefix_counts(rows, |track| {
-    track.kind == GridTrackKind::Track && track.uses_percentage()
-  });
+  let (column_flexible_prefix, column_intrinsic_prefix, column_percentage_prefix) =
+    build_prefix_counts(columns);
+  let (row_flexible_prefix, row_intrinsic_prefix, row_percentage_prefix) =
+    build_prefix_counts(rows);
 
   for item in items {
     let col_range = item.track_range_excluding_lines(AbstractAxis::Inline);
