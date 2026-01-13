@@ -678,17 +678,23 @@ impl BrowserDocumentDom2 {
   /// - style/layout dirty flags and per-node dirty sets are cleared, and
   /// - `paint_dirty` remains (or becomes) true so a subsequent `render_if_needed()` will repaint.
   pub fn ensure_layout_for_dom_queries(&mut self) -> Result<()> {
+    // DOM query APIs need `dom2`⇄renderer mapping for node/style resolution.
+    self.ensure_layout_internal(true)
+  }
+
+  /// Ensure this document has up-to-date layout artifacts, without painting.
+  ///
+  /// This function centralizes the common layout-flush behaviour shared by:
+  /// - DOM/layout query APIs (CSSOM View, `getComputedStyle`, etc)
+  /// - Hit testing (`elementFromPoint` / `elementsFromPoint`)
+  ///
+  /// It runs at most cascade+layout and intentionally does **not** paint.
+  fn ensure_layout_internal(&mut self, require_mapping: bool) -> Result<()> {
     let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
     if interaction_hash != self.interaction_state_hash {
       // Interaction state affects pseudo-class matching and form-control paint hints, so we must
       // re-run style/layout when it changes.
       self.invalidate_all();
-    }
-
-    // Layout queries should not force a re-layout when we already have an up-to-date prepared cache.
-    if self.prepared.is_some() && !self.needs_layout() {
-      self.dom.clear_mutations();
-      return Ok(());
     }
 
     // Match `render_frame_with_deadlines`: if we haven't prepared before, force a full pipeline run
@@ -699,7 +705,10 @@ impl BrowserDocumentDom2 {
 
     let needs_layout = self.style_dirty
       || self.layout_dirty
-      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
+      || interaction_hash != self.interaction_state_hash
+      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
+      || self.prepared.is_none()
+      || (require_mapping && self.last_dom_mapping.is_none());
     if !needs_layout {
       self.dom.clear_mutations();
       return Ok(());
@@ -707,6 +716,9 @@ impl BrowserDocumentDom2 {
 
     // Layout without style changes can often avoid a full cascade by patching the existing box tree
     // and rerunning only layout (e.g. text content changes).
+    //
+    // Future incremental paths (e.g. form state changes) should be hooked up here so all layout
+    // flush call sites stay in sync.
     let can_incremental_relayout = !self.style_dirty
       && self.layout_dirty
       && !self.dirty_text_nodes.is_empty()
@@ -723,6 +735,7 @@ impl BrowserDocumentDom2 {
         .expect("prepared exists when can_incremental_relayout=true");
       let prev_fragment_tree = prepared.fragment_tree.clone();
 
+      // Capture the box-tree text we are about to patch so we can restore on incremental failure.
       let mapping = self
         .last_dom_mapping
         .as_ref()
@@ -748,8 +761,7 @@ impl BrowserDocumentDom2 {
             .saturating_add(1);
           // Incremental relayout does not take a new renderer-DOM snapshot, but it *does* satisfy
           // the outstanding layout invalidation for the current DOM generation. Record the live DOM
-          // generation so subsequent `ensure_layout_for_dom_queries()` calls do not force an extra
-          // full pipeline run.
+          // generation so subsequent layout flushes do not force an extra full pipeline run.
           self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
           self.prepared = Some(prepared);
           did_incremental_layout = true;
@@ -773,15 +785,11 @@ impl BrowserDocumentDom2 {
 
     if !did_incremental_layout {
       let prev_prepared = self.prepared.take();
-      let prev_mapping = self.last_dom_mapping.take();
-      let prev_seen_generation = self.last_seen_dom_mutation_generation;
 
       let mut prepared = match self.prepare_dom_with_options() {
         Ok(prepared) => prepared,
         Err(err) => {
           self.prepared = prev_prepared;
-          self.last_dom_mapping = prev_mapping;
-          self.last_seen_dom_mutation_generation = prev_seen_generation;
           return Err(err);
         }
       };
@@ -1893,120 +1901,8 @@ impl BrowserDocumentDom2 {
   /// Callers can use this to satisfy CSSOM View properties (e.g. `Element.clientTop/clientLeft`)
   /// that need computed border widths while avoiding the cost/side-effects of a paint.
   pub(crate) fn ensure_layout_for_dom_query(&mut self) -> Result<()> {
-    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
-    if interaction_hash != self.interaction_state_hash {
-      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
-      // re-run style/layout when it changes.
-      self.invalidate_all();
-    }
-
-    // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
-    if self.prepared.is_none() {
-      self.invalidate_all();
-    }
-
-    let needs_layout = self.style_dirty
-      || self.layout_dirty
-      || interaction_hash != self.interaction_state_hash
-      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
-    if !needs_layout {
-      self.dom.clear_mutations();
-      return Ok(());
-    }
-
-    // Layout without style changes can often avoid a full cascade by patching the existing box tree
-    // and rerunning only layout (e.g. text content changes).
-    let can_incremental_relayout = !self.style_dirty
-      && self.layout_dirty
-      && !self.dirty_text_nodes.is_empty()
-      && self.dirty_style_nodes.is_empty()
-      && self.dirty_structure_nodes.is_empty()
-      && self.prepared.is_some()
-      && self.last_dom_mapping.is_some();
-
-    let mut did_incremental_layout = false;
-    if can_incremental_relayout {
-      let mut prepared = self
-        .prepared
-        .take()
-        .expect("prepared exists when can_incremental_relayout=true");
-      match self.incremental_relayout_for_text_changes(&mut prepared) {
-        Ok(true) => {
-          self.invalidation_counters.incremental_relayouts = self
-            .invalidation_counters
-            .incremental_relayouts
-            .saturating_add(1);
-          // Incremental relayout produces fresh cached layout artifacts without taking a full
-          // renderer-DOM snapshot, so we still need to record that we've now "seen" the live DOM
-          // mutation generation. Without this, generation-based dirty detection would force an
-          // extra full pipeline run on the next layout/paint attempt.
-          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
-          self.prepared = Some(prepared);
-          did_incremental_layout = true;
-        }
-        Ok(false) => {
-          // Could not safely apply incremental relayout; fall back to a full pipeline run.
-          self.prepared = Some(prepared);
-        }
-        Err(err) => {
-          // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
-          self.prepared = Some(prepared);
-          return Err(err);
-        }
-      }
-    }
-
-    if !did_incremental_layout {
-      let prev_prepared = self.prepared.take();
-      let mut prepared = match self.prepare_dom_with_options() {
-        Ok(prepared) => prepared,
-        Err(err) => {
-          self.prepared = prev_prepared;
-          return Err(err);
-        }
-      };
-
-      self.invalidation_counters.full_restyles =
-        self.invalidation_counters.full_restyles.saturating_add(1);
-      self.invalidation_counters.full_relayouts =
-        self.invalidation_counters.full_relayouts.saturating_add(1);
-
-      let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
-      match now_ms {
-        None => {
-          prepared.fragment_tree.transition_state = None;
-        }
-        Some(now_ms) => {
-          let prev_state = prev_prepared
-            .as_ref()
-            .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
-          let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
-          let mut transition_state = TransitionState::update_for_style_change(
-            prev_state,
-            prev_box_tree,
-            prepared.box_tree(),
-            now_ms,
-          );
-          transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
-          prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
-        }
-      }
-
-      self.prepared = Some(prepared);
-    }
-
-    // We now have fresh style/layout artifacts stored in `self.prepared`. Mark paint as dirty so
-    // callers that want pixels can repaint from cache, but clear style/layout dirtiness so we don't
-    // rerun expensive pipeline stages on subsequent queries.
-    self.style_dirty = false;
-    self.layout_dirty = false;
-    self.dirty_style_nodes.clear();
-    self.dirty_text_nodes.clear();
-    self.dirty_structure_nodes.clear();
-    self.paint_dirty = true;
-    self.interaction_state_hash = interaction_hash;
-    self.dom.clear_mutations();
-    Ok(())
+    // DOM query APIs need `dom2`⇄renderer mapping for node/style resolution.
+    self.ensure_layout_internal(true)
   }
 
   /// Compute CSSOM View `clientTop`/`clientLeft` values for a DOM element.
@@ -2237,118 +2133,7 @@ impl BrowserDocumentDom2 {
   ///
   /// This is a "layout flush" that runs at most cascade+layout. It intentionally does **not** paint.
   fn ensure_layout_for_hit_testing(&mut self) -> Result<()> {
-    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
-    if interaction_hash != self.interaction_state_hash {
-      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
-      // re-run style/layout when it changes.
-      self.invalidate_all();
-    }
-
-    // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
-    if self.prepared.is_none() {
-      self.invalidate_all();
-    }
-
-    // Missing mapping implies we can't translate renderer preorder IDs back to dom2 node IDs.
-    let needs_layout = self.style_dirty
-      || self.layout_dirty
-      || self.prepared.is_none()
-      || self.last_dom_mapping.is_none()
-      || interaction_hash != self.interaction_state_hash
-      || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
-
-    if !needs_layout {
-      self.dom.clear_mutations();
-      return Ok(());
-    }
-
-    // Layout without style changes can often avoid a full cascade by patching the existing box tree
-    // and rerunning only layout (e.g. text content changes).
-    let can_incremental_relayout = !self.style_dirty
-      && self.layout_dirty
-      && !self.dirty_text_nodes.is_empty()
-      && self.dirty_style_nodes.is_empty()
-      && self.dirty_structure_nodes.is_empty()
-      && self.prepared.is_some()
-      && self.last_dom_mapping.is_some();
-
-    let mut did_incremental_layout = false;
-    if can_incremental_relayout {
-      let mut prepared = self
-        .prepared
-        .take()
-        .expect("prepared exists when can_incremental_relayout=true");
-      match self.incremental_relayout_for_text_changes(&mut prepared) {
-        Ok(true) => {
-          self.invalidation_counters.incremental_relayouts =
-            self.invalidation_counters.incremental_relayouts.saturating_add(1);
-          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
-          self.prepared = Some(prepared);
-          did_incremental_layout = true;
-        }
-        Ok(false) => {
-          // Could not safely apply incremental relayout; fall back to a full pipeline run.
-          self.prepared = Some(prepared);
-        }
-        Err(err) => {
-          // Preserve the (possibly partially updated) prepared artifacts so callers can retry.
-          self.prepared = Some(prepared);
-          return Err(err);
-        }
-      }
-    }
-
-    if !did_incremental_layout {
-      let prev_prepared = self.prepared.take();
-      let mut prepared = match self.prepare_dom_with_options() {
-        Ok(prepared) => prepared,
-        Err(err) => {
-          self.prepared = prev_prepared;
-          return Err(err);
-        }
-      };
-
-      self.invalidation_counters.full_restyles =
-        self.invalidation_counters.full_restyles.saturating_add(1);
-      self.invalidation_counters.full_relayouts =
-        self.invalidation_counters.full_relayouts.saturating_add(1);
-
-      let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
-      match now_ms {
-        None => {
-          prepared.fragment_tree.transition_state = None;
-        }
-        Some(now_ms) => {
-          let prev_state = prev_prepared
-            .as_ref()
-            .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
-          let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
-          let mut transition_state = TransitionState::update_for_style_change(
-            prev_state,
-            prev_box_tree,
-            prepared.box_tree(),
-            now_ms,
-          );
-          transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
-          prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
-        }
-      }
-
-      self.prepared = Some(prepared);
-    }
-
-    // We now have fresh style/layout artifacts stored in `self.prepared`. Clear the layout
-    // dirtiness so callers can rely on the cached layout, while leaving paint marked dirty.
-    self.style_dirty = false;
-    self.layout_dirty = false;
-    self.dirty_style_nodes.clear();
-    self.dirty_text_nodes.clear();
-    self.dirty_structure_nodes.clear();
-    self.paint_dirty = true;
-    self.interaction_state_hash = interaction_hash;
-
-    self.dom.clear_mutations();
-    Ok(())
+    self.ensure_layout_internal(true)
   }
 
   #[inline]
