@@ -20,6 +20,10 @@ fn is_async_generator_syntax_unsupported(
   intr: &Intrinsics,
   err: &VmError,
 ) -> Result<bool, VmError> {
+  if let VmError::Unimplemented(msg) = err {
+    return Ok(msg.contains("async generator functions"));
+  }
+
   let thrown = match err {
     VmError::Throw(v) => *v,
     VmError::ThrowWithStack { value, .. } => *value,
@@ -74,6 +78,8 @@ fn yield_star_throw_delegates_to_delegate_throw_and_continues() -> Result<(), Vm
         var log = "";
         var ok = false;
         var err = "";
+        var throwArgsLen = null;
+        var returnGetterCalled = false;
 
         var delegate = {
           i: 0,
@@ -84,13 +90,17 @@ fn yield_star_throw_delegates_to_delegate_throw_and_continues() -> Result<(), Vm
           },
           throw: function (e) {
             log += "t" + e;
+            throwArgsLen = arguments.length;
             return Promise.resolve({ value: 99, done: true });
           },
           // A return method should NOT be used when `throw` exists. Log if it is invoked so this
           // test catches incorrect AsyncIteratorClose behavior.
-          return: function (v) {
-            log += "r" + v;
-            return Promise.resolve({ value: 77, done: true });
+          get return() {
+            returnGetterCalled = true;
+            return function (v) {
+              log += "r" + v;
+              return Promise.resolve({ value: 77, done: true });
+            };
           },
           [Symbol.asyncIterator]: function () {
             log += "i";
@@ -114,7 +124,9 @@ fn yield_star_throw_delegates_to_delegate_throw_and_continues() -> Result<(), Vm
               r1.value === 1 && r1.done === false &&
               r2.value === "r:99" && r2.done === false &&
               r3.value === undefined && r3.done === true &&
-              log === "inundefinedtX";
+              log === "inundefinedtX" &&
+              throwArgsLen === 1 &&
+              returnGetterCalled === false;
           } catch (e) {
             err = "" + e;
           }
@@ -158,6 +170,7 @@ fn yield_star_throw_without_delegate_throw_closes_then_throws_into_generator() -
         var err = "";
         var closed = false;
         var returnCalls = 0;
+        var returnArgsLen = null;
 
         var delegate = {
           i: 0,
@@ -168,6 +181,7 @@ fn yield_star_throw_without_delegate_throw_closes_then_throws_into_generator() -
           // No `throw` method.
           return: function () {
             returnCalls++;
+            returnArgsLen = arguments.length;
             // Make the close async so the test asserts that AsyncIteratorClose is awaited before the
             // generator's catch block runs.
             return Promise.resolve().then(() => {
@@ -197,7 +211,8 @@ fn yield_star_throw_without_delegate_throw_closes_then_throws_into_generator() -
               r1.value === 1 && r1.done === false &&
               r2.value === "caught:boom:true" && r2.done === false &&
               r3.value === undefined && r3.done === true &&
-              returnCalls === 1;
+              returnCalls === 1 &&
+              returnArgsLen === 0;
           } catch (e) {
             err = "" + e;
           }
