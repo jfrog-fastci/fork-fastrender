@@ -393,6 +393,25 @@ fn accepts_unicode_sets_escaped_reserved_punctuators() {
 }
 
 #[test]
+fn may_contain_strings_rules_for_q_escape() {
+  let opts = ecma_script_opts();
+  // A `\q{...}` alternative that is exactly one code point does not count as "containing strings".
+  assert!(parse_with_options("let r = /[^\\q{a}]/v;", opts).is_ok());
+  // Empty and multi-code-point alternatives do.
+  assert!(parse_with_options("let r = /[^\\q{}]/v;", opts).is_err());
+  assert!(parse_with_options("let r = /[^\\q{ab}]/v;", opts).is_err());
+}
+
+#[test]
+fn may_contain_strings_respects_set_operators() {
+  let opts = ecma_script_opts();
+  // Subtraction and intersection can remove strings from the overall set, so they are permitted in
+  // negated classes even if one operand might contain strings.
+  assert!(parse_with_options("let r = /[^a--\\q{ab}]/v;", opts).is_ok());
+  assert!(parse_with_options("let r = /[^\\p{RGI_Emoji}&&a]/v;", opts).is_ok());
+}
+
+#[test]
 fn parses_other_test262_regexp_v_flag_files() {
   // Remaining `regexp-v-flag` tests that live outside the `unicodeSets` and `property-escapes`
   // directories should also parse (they exercise basic `/v` usage like dot and property escapes).

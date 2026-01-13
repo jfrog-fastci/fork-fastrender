@@ -1177,8 +1177,7 @@ fn validate_regex_pattern(
     escape_start: usize,
     p_index: usize,
     unicode_sets_mode: bool,
-    in_negated_class: bool,
-  ) -> Result<usize, RegexError> {
+  ) -> Result<(usize, bool), RegexError> {
     debug_assert_eq!(pattern.as_bytes()[escape_start], b'\\');
     let esc = pattern[p_index..].chars().next().unwrap();
     debug_assert!(esc == 'p' || esc == 'P');
@@ -1255,16 +1254,10 @@ fn validate_regex_pattern(
           len: j + 1 - escape_start,
         });
       }
-      if in_negated_class {
-        return Err(RegexError {
-          kind: RegexErrorKind::InvalidPattern,
-          offset: base_offset + escape_start,
-          len: j + 1 - escape_start,
-        });
-      }
+      return Ok((j + 1, true));
     }
 
-    Ok(j + 1)
+    Ok((j + 1, false))
   }
 
   fn validate_class_string_disjunction_escape(
@@ -1272,8 +1265,7 @@ fn validate_regex_pattern(
     base_offset: usize,
     escape_start: usize,
     q_index: usize,
-    in_negated_class: bool,
-  ) -> Result<usize, RegexError> {
+  ) -> Result<(usize, bool), RegexError> {
     let esc = pattern[q_index..].chars().next().unwrap();
     debug_assert_eq!(esc, 'q');
     let esc_len = esc.len_utf8();
@@ -1286,13 +1278,9 @@ fn validate_regex_pattern(
         len: brace_start.saturating_sub(escape_start),
       });
     }
-    // In UnicodeSetsMode, `\q{...}` yields a disjunction of `ClassString`s. Negated classes (`[^...]`)
-    // are only allowed to contain operands that cannot match strings longer (or shorter) than a single
-    // character. This corresponds to `MayContainStrings` in the spec.
-    //
-    // We approximate this check by counting the number of `ClassSetCharacter`s between `|` separators.
-    // If any alternative contains anything other than exactly one `ClassSetCharacter` (including the
-    // empty string), then it "may contain strings" and is invalid inside a negated class.
+    // In UnicodeSetsMode, `\q{...}` yields a disjunction of `ClassString`s. Track whether any
+    // alternative contains something other than exactly one `ClassSetCharacter` (including the empty
+    // string), which corresponds to `MayContainStrings` in the spec.
     let mut j = brace_start + 1;
     let mut segment_characters: usize = 0;
     let mut may_contain_strings = false;
@@ -1302,14 +1290,7 @@ fn validate_regex_pattern(
         if segment_characters != 1 {
           may_contain_strings = true;
         }
-        if in_negated_class && may_contain_strings {
-          return Err(RegexError {
-            kind: RegexErrorKind::InvalidPattern,
-            offset: base_offset + escape_start,
-            len: j + 1 - escape_start,
-          });
-        }
-        return Ok(j + 1);
+        return Ok((j + 1, may_contain_strings));
       }
       if b == b'|' {
         if segment_characters != 1 {
@@ -1580,8 +1561,7 @@ fn validate_regex_pattern(
     start: usize,
     unicode_mode: bool,
     unicode_sets_mode: bool,
-    enclosing_negated: bool,
-  ) -> Result<usize, RegexError> {
+  ) -> Result<(usize, bool), RegexError> {
     debug_assert_eq!(pattern.as_bytes()[start], b'[');
     let bytes = pattern.as_bytes();
     let mut i = start + 1;
@@ -1590,7 +1570,6 @@ fn validate_regex_pattern(
       this_negated = true;
       i += 1;
     }
-    let in_negated_class = enclosing_negated || this_negated;
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum PrevToken {
@@ -1629,8 +1608,7 @@ fn validate_regex_pattern(
       mut i: usize,
       unicode_mode: bool,
       unicode_sets_mode: bool,
-      in_negated_class: bool,
-    ) -> Result<(usize, Option<u32>), RegexError> {
+    ) -> Result<(usize, Option<u32>, bool), RegexError> {
       let ch = pattern[i..].chars().next().unwrap();
       if ch == '\\' {
         let escape_start = i;
@@ -1645,25 +1623,23 @@ fn validate_regex_pattern(
         let esc = pattern[i..].chars().next().unwrap();
         let esc_len = esc.len_utf8();
         if unicode_mode && matches!(esc, 'p' | 'P') {
-          let end = validate_unicode_property_escape(
+          let (end, may_contain_strings) = validate_unicode_property_escape(
             pattern,
             base_offset,
             escape_start,
             i,
             unicode_sets_mode,
-            in_negated_class,
           )?;
-          return Ok((end, None));
+          return Ok((end, None, may_contain_strings));
         }
         if unicode_sets_mode && esc == 'q' {
-          let end = validate_class_string_disjunction_escape(
+          let (end, may_contain_strings) = validate_class_string_disjunction_escape(
             pattern,
             base_offset,
             escape_start,
             i,
-            in_negated_class,
           )?;
-          return Ok((end, None));
+          return Ok((end, None, may_contain_strings));
         }
         if esc == 'u' {
           let after_u = i + esc_len;
@@ -1736,7 +1712,7 @@ fn validate_regex_pattern(
                 len: j.saturating_sub(escape_start),
               });
             }
-            return Ok((j + 1, Some(value)));
+            return Ok((j + 1, Some(value), false));
           }
           // `\uXXXX`
           let mut j = after_u;
@@ -1752,7 +1728,7 @@ fn validate_regex_pattern(
             value = (value << 4) + regex_hex_value(bytes[j]).unwrap();
             j += 1;
           }
-          return Ok((j, Some(value)));
+          return Ok((j, Some(value), false));
         }
         if esc == 'x' {
           let after_x = i + esc_len;
@@ -1770,7 +1746,7 @@ fn validate_regex_pattern(
             value = (value << 4) + regex_hex_value(bytes[j]).unwrap();
             j += 1;
           }
-          return Ok((j, Some(value)));
+          return Ok((j, Some(value), false));
         }
         if unicode_mode {
           // UnicodeMode (`/v`) uses the strict escape grammar.
@@ -1791,7 +1767,7 @@ fn validate_regex_pattern(
                   len: 2 + esc_len,
                 });
               }
-              return Ok((i + esc_len, Some(0)));
+              return Ok((i + esc_len, Some(0), false));
             }
             // Decimal escapes/backreferences are not valid inside character classes.
             return Err(RegexError {
@@ -1811,7 +1787,7 @@ fn validate_regex_pattern(
               'v' => 0x0B,
               _ => unreachable!(),
             };
-            return Ok((i + esc_len, Some(value)));
+            return Ok((i + esc_len, Some(value), false));
           }
 
           // `\c` AsciiLetter
@@ -1833,12 +1809,12 @@ fn validate_regex_pattern(
               });
             }
             let value = (ctrl.to_ascii_uppercase() as u8 & 0x1F) as u32;
-            return Ok((after_c + ctrl.len_utf8(), Some(value)));
+            return Ok((after_c + ctrl.len_utf8(), Some(value), false));
           }
 
           // `\b` is backspace inside character classes.
           if esc == 'b' {
-            return Ok((i + esc_len, Some(0x08)));
+            return Ok((i + esc_len, Some(0x08), false));
           }
 
           // `\B` and `\k<name>` are not valid inside character classes.
@@ -1852,12 +1828,12 @@ fn validate_regex_pattern(
 
           // `\-` is a ClassEscape in UnicodeMode.
           if esc == '-' {
-            return Ok((i + esc_len, Some('-' as u32)));
+            return Ok((i + esc_len, Some('-' as u32), false));
           }
 
           // CharacterClassEscape (not valid as range endpoint).
           if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
-            return Ok((i + esc_len, None));
+            return Ok((i + esc_len, None, false));
           }
 
           // In UnicodeSets mode, additional punctuators can be escaped within class set
@@ -1868,7 +1844,7 @@ fn validate_regex_pattern(
               '&' | '!' | '#' | '%' | ',' | ':' | ';' | '<' | '=' | '>' | '@' | '`' | '~'
             )
           {
-            return Ok((i + esc_len, Some(esc as u32)));
+            return Ok((i + esc_len, Some(esc as u32), false));
           }
 
           // IdentityEscape[+UnicodeMode] is limited to SyntaxCharacter or `/`.
@@ -1879,24 +1855,23 @@ fn validate_regex_pattern(
               len: 1 + esc_len,
             });
           }
-          return Ok((i + esc_len, Some(esc as u32)));
+          return Ok((i + esc_len, Some(esc as u32), false));
         }
 
         // Non-UnicodeMode: Escapes that represent character classes are not valid range endpoints.
         if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
-          return Ok((i + esc_len, None));
+          return Ok((i + esc_len, None, false));
         }
-        Ok((i + esc_len, Some(esc as u32)))
+        Ok((i + esc_len, Some(esc as u32), false))
       } else if ch == '[' {
-        let end = validate_unicode_sets_class(
+        let (end, may_contain_strings) = validate_unicode_sets_class(
           pattern,
           base_offset,
           i,
           unicode_mode,
           unicode_sets_mode,
-          in_negated_class,
         )?;
-        Ok((end, None))
+        Ok((end, None, may_contain_strings))
       } else {
         // Disallowed syntax characters in UnicodeSets mode when unescaped.
         match ch {
@@ -1917,7 +1892,7 @@ fn validate_regex_pattern(
           }
           _ => {}
         }
-        Ok((i + ch.len_utf8(), Some(ch as u32)))
+        Ok((i + ch.len_utf8(), Some(ch as u32), false))
       }
     }
 
@@ -1927,9 +1902,8 @@ fn validate_regex_pattern(
       mut i: usize,
       unicode_mode: bool,
       unicode_sets_mode: bool,
-      in_negated_class: bool,
       terminator: char,
-    ) -> Result<(usize, bool), RegexError> {
+    ) -> Result<(usize, bool, bool), RegexError> {
       let mut prev = PrevToken::None;
       #[derive(Clone, Copy, PartialEq, Eq)]
       enum Mode {
@@ -1940,6 +1914,12 @@ fn validate_regex_pattern(
       }
       let mut mode = Mode::Unknown;
       let mut saw_operand = false;
+      // Compute `MayContainStrings` for the leftmost disjunction operand. Subtraction (`--`) cannot
+      // introduce strings, so once we encounter `--` we can stop updating the result.
+      let mut computing_may = true;
+      let mut union_may = false;
+      let mut intersection_may = true;
+      let mut may_result: Option<bool> = None;
       while i < pattern.len() {
         let rest = &pattern[i..];
         let ch = rest.chars().next().unwrap();
@@ -1951,7 +1931,18 @@ fn validate_regex_pattern(
               len: 1,
             });
           }
-          return Ok((i + ch.len_utf8(), saw_operand));
+          let may_contain_strings = if saw_operand {
+            if may_result.is_none() {
+              if computing_may {
+                intersection_may &= union_may;
+              }
+              may_result = Some(intersection_may);
+            }
+            may_result.unwrap_or(false)
+          } else {
+            false
+          };
+          return Ok((i + ch.len_utf8(), saw_operand, may_contain_strings));
         }
 
         if rest.starts_with("&&") {
@@ -1982,6 +1973,10 @@ fn validate_regex_pattern(
               len: 2,
             });
           }
+          if computing_may {
+            intersection_may &= union_may;
+            union_may = false;
+          }
           prev = PrevToken::Operator;
           i += 2;
           continue;
@@ -2005,6 +2000,14 @@ fn validate_regex_pattern(
               offset: base_offset + i,
               len: 2,
             });
+          }
+          if computing_may {
+            intersection_may &= union_may;
+            union_may = false;
+            if may_result.is_none() {
+              may_result = Some(intersection_may);
+              computing_may = false;
+            }
           }
           prev = PrevToken::Operator;
           i += 2;
@@ -2039,8 +2042,8 @@ fn validate_regex_pattern(
               len: 1,
             });
           };
-          let (end, rhs_value) =
-            parse_operand(pattern, base_offset, i + 1, unicode_mode, unicode_sets_mode, in_negated_class)?;
+          let (end, rhs_value, rhs_may) =
+            parse_operand(pattern, base_offset, i + 1, unicode_mode, unicode_sets_mode)?;
           let Some(rhs_value) = rhs_value else {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
@@ -2054,6 +2057,10 @@ fn validate_regex_pattern(
               offset: base_offset + i,
               len: 1,
             });
+          }
+          if computing_may {
+            // Range endpoints must be ClassSetCharacters (i.e., they cannot contain strings).
+            union_may |= rhs_may;
           }
           i = end;
           prev = PrevToken::Operand { range_value: None };
@@ -2078,8 +2085,11 @@ fn validate_regex_pattern(
             }
           }
         }
-        let (end, range_value) =
-          parse_operand(pattern, base_offset, i, unicode_mode, unicode_sets_mode, in_negated_class)?;
+        let (end, range_value, operand_may) =
+          parse_operand(pattern, base_offset, i, unicode_mode, unicode_sets_mode)?;
+        if computing_may {
+          union_may |= operand_may;
+        }
         i = end;
         prev = PrevToken::Operand { range_value };
         saw_operand = true;
@@ -2092,17 +2102,31 @@ fn validate_regex_pattern(
       })
     }
 
-    let (end, _saw_operand) = validate_unicode_sets_expression(
+    let (end, _saw_operand, may_contain_strings) = validate_unicode_sets_expression(
       pattern,
       base_offset,
       i,
       unicode_mode,
       unicode_sets_mode,
-      in_negated_class,
       ']',
     )?;
 
-    Ok(end)
+    // Early Error: a negated class may not contain strings.
+    if this_negated && may_contain_strings {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: base_offset + start,
+        len: 1,
+      });
+    }
+
+    let class_may_contain_strings = if this_negated {
+      false
+    } else {
+      may_contain_strings
+    };
+
+    Ok((end, class_may_contain_strings))
   }
 
   fn parse_legacy_class_atom(
@@ -2112,7 +2136,7 @@ fn validate_regex_pattern(
     unicode_mode: bool,
     unicode_sets_mode: bool,
     has_named_groups: bool,
-    in_negated_class: bool,
+    _in_negated_class: bool,
   ) -> Result<(usize, RegexClassAtom), RegexError> {
     let ch = pattern[start..].chars().next().unwrap();
     if ch != '\\' {
@@ -2134,13 +2158,12 @@ fn validate_regex_pattern(
     let bytes = pattern.as_bytes();
 
     if unicode_mode && matches!(esc, 'p' | 'P') {
-      let end = validate_unicode_property_escape(
+      let (end, _) = validate_unicode_property_escape(
         pattern,
         base_offset,
         escape_start,
         after_backslash,
         unicode_sets_mode,
-        in_negated_class,
       )?;
       return Ok((end, RegexClassAtom::NotSingle));
     }
@@ -2444,8 +2467,7 @@ fn validate_regex_pattern(
     }
 
     if unicode_sets_mode && !in_charset && ch == '[' {
-      let end =
-        validate_unicode_sets_class(pattern, base_offset, i, unicode_mode, unicode_sets_mode, false)?;
+      let (end, _) = validate_unicode_sets_class(pattern, base_offset, i, unicode_mode, unicode_sets_mode)?;
       prev_can_be_quantified = true;
       quantifier_allows_lazy = false;
       i = end;
@@ -2465,13 +2487,12 @@ fn validate_regex_pattern(
       let esc = pattern[i..].chars().next().unwrap();
       let esc_len = esc.len_utf8();
       if unicode_mode && matches!(esc, 'p' | 'P') {
-        let end = validate_unicode_property_escape(
+        let (end, _) = validate_unicode_property_escape(
           pattern,
           base_offset,
           escape_start,
           i,
           unicode_sets_mode,
-          false,
         )?;
         if !in_charset {
           prev_can_be_quantified = true;
