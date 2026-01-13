@@ -1646,10 +1646,6 @@ impl ModuleGraph {
         self.torn_down = false;
       }
 
-      // If this module was loaded in a compiled-only form, it may not retain an AST by default.
-      // Ensure we have one before proceeding with interpreter-based linking/instantiation.
-      self.ensure_module_ast(vm, scope.heap_mut(), module)?;
-
       // Avoid cloning attacker-controlled strings during linking: infallible `String::clone` can
       // abort the process under allocator OOM (see `oom_regressions` / `oom_harness` moduleLink).
       //
@@ -1878,7 +1874,14 @@ impl ModuleGraph {
       } else if let Some(compiled) = compiled {
         instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, compiled)?;
       } else {
-        return Err(VmError::Unimplemented("module AST missing"));
+        // No compiled HIR is available, and we don't retain an AST by default. Parse/charge the AST
+        // on demand so the interpreter instantiation path can run.
+        self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+        let ast = self.modules[idx]
+          .ast
+          .clone()
+          .ok_or(VmError::Unimplemented("module AST missing"))?;
+        instantiate_module_decls(vm, scope, global_object, module, module_env, source, &ast.stx.body)?;
       }
       Ok(())
     })();

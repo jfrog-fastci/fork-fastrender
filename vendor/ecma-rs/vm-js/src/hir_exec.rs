@@ -9295,8 +9295,21 @@ pub(crate) fn instantiate_compiled_module_decls(
       script_or_module: Some(ScriptOrModule::Module(module_id)),
     };
     let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
-    let vm = &mut *vm_ctx;
-    return instantiate_compiled_module_decls_inner(vm, scope, global_object, module_env, script);
+    let prev_state = vm_ctx.load_realm_state(scope.heap_mut(), realm_id)?;
+
+    let result = {
+      let vm_inner = &mut *vm_ctx;
+      instantiate_compiled_module_decls_inner(vm_inner, scope, global_object, module_env, script)
+    };
+
+    drop(vm_ctx);
+    let restore_res = vm.restore_realm_state(scope.heap_mut(), prev_state);
+    return match (result, restore_res) {
+      (Ok(()), Ok(())) => Ok(()),
+      (Err(err), Ok(())) => Err(err),
+      (Ok(_), Err(err)) => Err(err),
+      (Err(err), Err(_)) => Err(err),
+    };
   }
 
   // Best-effort fallback: allow module instantiation to proceed even when no realm has been

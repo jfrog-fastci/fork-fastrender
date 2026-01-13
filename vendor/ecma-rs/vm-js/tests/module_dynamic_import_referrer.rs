@@ -327,10 +327,10 @@ fn dynamic_import_inside_imported_function_uses_callee_module_as_referrer_for_co
 
   let mut modules = ModuleGraph::new();
 
-  // Module A: store its AST for evaluation, but force linking/instantiation to use compiled HIR.
+  // Module A: drop its retained AST and ensure linking/instantiation can proceed using only
+  // compiled HIR.
   let src_a = "export function doImport() { return import('dep.js'); }";
   let mut rec_a = SourceTextModuleRecord::parse(&mut heap, src_a)?;
-  let ast_a = rec_a.ast.clone().expect("parse should store module AST");
   rec_a.compiled = Some(CompiledScript::compile_module(&mut heap, "a.js", src_a)?);
   rec_a.ast = None;
   let a = modules.add_module_with_specifier("a.js", rec_a)?;
@@ -353,9 +353,12 @@ fn dynamic_import_inside_imported_function_uses_callee_module_as_referrer_for_co
 
   let mut dummy_host = ();
 
-  // Link first (compiled HIR instantiation runs here), then restore the AST for evaluation.
+  // Link first (compiled HIR instantiation runs here).
   modules.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
-  modules.module_mut(a).ast = Some(ast_a);
+  assert!(
+    modules.module(a).ast.is_none(),
+    "linking should not parse/retain an AST when compiled HIR is available"
+  );
 
   let result: Result<(), VmError> = (|| {
     let _eval_promise = modules.evaluate(

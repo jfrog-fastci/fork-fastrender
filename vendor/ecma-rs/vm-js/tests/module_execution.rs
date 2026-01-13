@@ -122,9 +122,9 @@ fn compiled_module_instantiation_supports_anonymous_default_export_function() ->
 
   let mut graph = ModuleGraph::new();
 
-  // Module A: keep its AST aside for evaluation, but force linking/instantiation to use compiled HIR.
+  // Module A: drop its retained AST and ensure linking/instantiation can proceed using only
+  // compiled HIR.
   let mut rec_a = SourceTextModuleRecord::parse(&mut heap, src_a)?;
-  let ast_a = rec_a.ast.clone().expect("parse should store module AST");
   rec_a.compiled = Some(CompiledScript::compile_module(&mut heap, "a.js", src_a)?);
   rec_a.ast = None;
   let a = graph.add_module_with_specifier("a.js", rec_a)?;
@@ -136,7 +136,10 @@ fn compiled_module_instantiation_supports_anonymous_default_export_function() ->
 
   // Link first (compiled HIR instantiation runs here), then restore the AST for evaluation.
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
-  graph.module_mut(a).ast = Some(ast_a);
+  assert!(
+    graph.module(a).ast.is_none(),
+    "linking should not parse/retain an AST when compiled HIR is available"
+  );
 
   let promise = graph.evaluate(
     &mut vm,
