@@ -464,6 +464,14 @@ impl<Host: 'static> EventLoop<Host> {
     Self::default()
   }
 
+  /// Set the microtask checkpoint hook list to contain only `hook`.
+  ///
+  /// This is a legacy single-hook API. It **clears all** previously registered microtask checkpoint
+  /// hooks, which can be surprising when multiple subsystems depend on microtask checkpoints
+  /// (promise rejection tracking, executor post-checkpoint notifications, etc).
+  ///
+  /// Prefer [`Self::register_microtask_checkpoint_hook`] / [`Self::add_microtask_checkpoint_hook`]
+  /// to compose multiple hooks without clobbering existing registrations.
   pub fn set_microtask_checkpoint_hook(&mut self, hook: Option<MicrotaskCheckpointHook<Host>>) {
     self.microtask_checkpoint_hooks.clear();
     if let Some(hook) = hook {
