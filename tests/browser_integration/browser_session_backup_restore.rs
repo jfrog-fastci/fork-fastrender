@@ -108,7 +108,18 @@ fn browser_restores_session_from_backup_when_primary_file_is_corrupted() {
     stdout.contains("HEADLESS_SESSION source=restored "),
     "expected restored session source marker, got stdout:\n{stdout}\nstderr:\n{stderr}"
   );
+  assert!(
+    stderr.contains("recovered from backup"),
+    "expected stderr to mention backup recovery, got stderr:\n{stderr}\nstdout:\n{stdout}"
+  );
   let (source, session) = parse_headless_session(&stdout);
   assert_eq!(source, "restored");
   assert_eq!(session, expected_session);
+
+  // Backup recovery should also rewrite the primary session file so subsequent launches don't keep
+  // tripping over a corrupted session.json.
+  let disk_json = std::fs::read_to_string(&session_path).expect("read rewritten session.json");
+  let disk_session =
+    fastrender::ui::session::parse_session_json(&disk_json).expect("parse rewritten session JSON");
+  assert_eq!(disk_session, expected_session);
 }
