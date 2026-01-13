@@ -42,6 +42,7 @@ use vm_js::{
 };
 use crate::web::dom::DomException;
 use webidl_vm_js::bindings_runtime::BindingValue;
+use webidl_vm_js::bindings_runtime::to_uint32_f64;
 use webidl_vm_js::{IterableKind, VmJsHostHooksPayload, WebIdlBindingsHost};
 
 const URL_INVALID_ERROR: &str = "Invalid URL";
@@ -3356,6 +3357,181 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             Ok(()) => Ok(Value::Undefined),
             Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
           }
+        }
+      }
+
+      ("CharacterData", "data", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+
+        if args.is_empty() {
+          let data = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let Some(node) = dom.nodes().get(node_id.index()) else {
+                return Err(DomError::NotFoundError);
+              };
+              match &node.kind {
+                NodeKind::Text { content } => Ok(content.clone()),
+                NodeKind::Comment { content } => Ok(content.clone()),
+                NodeKind::ProcessingInstruction { data, .. } => Ok(data.clone()),
+                _ => Err(DomError::InvalidNodeTypeError),
+              }
+            }))
+          })?;
+          match data {
+            Ok(data) => Ok(Value::String(scope.alloc_string(&data)?)),
+            Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+          }
+        } else {
+          let value = args.get(0).copied().unwrap_or(Value::Undefined);
+          let value = {
+            let s = scope.heap_mut().to_string(value)?;
+            scope
+              .heap()
+              .get_string(s)
+              .map(|s| s.to_utf8_lossy())
+              .unwrap_or_default()
+          };
+
+          let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            Ok(host.mutate_dom(|dom| {
+              let is_text_node = match dom.nodes().get(node_id.index()) {
+                Some(node) => matches!(&node.kind, NodeKind::Text { .. }),
+                None => return (Err(DomError::NotFoundError), false),
+              };
+              match dom.replace_data(node_id, 0, usize::MAX, &value) {
+                Ok(changed) => (Ok(()), changed && is_text_node),
+                Err(err) => (Err(err), false),
+              }
+            }))
+          })?;
+          match result {
+            Ok(()) => Ok(Value::Undefined),
+            Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+          }
+        }
+      }
+
+      ("CharacterData", "length", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let len = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let Some(node) = dom.nodes().get(node_id.index()) else {
+              return Err(DomError::NotFoundError);
+            };
+            let data = match &node.kind {
+              NodeKind::Text { content } => content.as_str(),
+              NodeKind::Comment { content } => content.as_str(),
+              NodeKind::ProcessingInstruction { data, .. } => data.as_str(),
+              _ => return Err(DomError::InvalidNodeTypeError),
+            };
+            Ok(data.encode_utf16().count())
+          }))
+        })?;
+        match len {
+          Ok(len) => Ok(Value::Number(len as f64)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("CharacterData", "substringData", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+
+        let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let count_value = args.get(1).copied().unwrap_or(Value::Undefined);
+        let offset = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
+        let count = to_uint32_f64(scope.heap_mut().to_number(count_value)?) as usize;
+
+        let units = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let Some(node) = dom.nodes().get(node_id.index()) else {
+              return Err(DomError::NotFoundError);
+            };
+            let data = match &node.kind {
+              NodeKind::Text { content } => content.as_str(),
+              NodeKind::Comment { content } => content.as_str(),
+              NodeKind::ProcessingInstruction { data, .. } => data.as_str(),
+              _ => return Err(DomError::InvalidNodeTypeError),
+            };
+
+            let units: Vec<u16> = data.encode_utf16().collect();
+            if offset > units.len() {
+              return Err(DomError::IndexSizeError);
+            }
+            let end = offset.saturating_add(count).min(units.len());
+            Ok(units[offset..end].to_vec())
+          }))
+        })?;
+
+        match units {
+          Ok(units) => Ok(Value::String(scope.alloc_string_from_u16_vec(units)?)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("CharacterData", "deleteData", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+
+        let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let count_value = args.get(1).copied().unwrap_or(Value::Undefined);
+        let offset = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
+        let count = to_uint32_f64(scope.heap_mut().to_number(count_value)?) as usize;
+
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let is_text_node = match dom.nodes().get(node_id.index()) {
+              Some(node) => matches!(&node.kind, NodeKind::Text { .. }),
+              None => return (Err(DomError::NotFoundError), false),
+            };
+            match dom.replace_data(node_id, offset, count, "") {
+              Ok(changed) => (Ok(()), changed && is_text_node),
+              Err(err) => (Err(err), false),
+            }
+          }))
+        })?;
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("CharacterData", "replaceData", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+
+        let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let count_value = args.get(1).copied().unwrap_or(Value::Undefined);
+        let data_value = args.get(2).copied().unwrap_or(Value::Undefined);
+
+        let offset = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
+        let count = to_uint32_f64(scope.heap_mut().to_number(count_value)?) as usize;
+        let data = {
+          let s = scope.heap_mut().to_string(data_value)?;
+          scope
+            .heap()
+            .get_string(s)
+            .map(|s| s.to_utf8_lossy())
+            .unwrap_or_default()
+        };
+
+        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let is_text_node = match dom.nodes().get(node_id.index()) {
+              Some(node) => matches!(&node.kind, NodeKind::Text { .. }),
+              None => return (Err(DomError::NotFoundError), false),
+            };
+            match dom.replace_data(node_id, offset, count, &data) {
+              Ok(changed) => (Ok(()), changed && is_text_node),
+              Err(err) => (Err(err), false),
+            }
+          }))
+        })?;
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       }
 

@@ -32936,6 +32936,51 @@ fn character_data_insert_data_native(
   Ok(Value::Undefined)
 }
 
+fn character_data_substring_data_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+
+  let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
+
+  let count_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let count = webidl_to_uint32(vm, scope, host, hooks, count_value)? as usize;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  if handle.node_id.index() >= dom.nodes_len() {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let data = match &dom.node(handle.node_id).kind {
+    NodeKind::Text { content } => content.as_str(),
+    NodeKind::Comment { content } => content.as_str(),
+    NodeKind::ProcessingInstruction { data, .. } => data.as_str(),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  // DOM `CharacterData.substringData` offsets/counts are defined in UTF-16 code units.
+  let units: Vec<u16> = data.encode_utf16().collect();
+  if offset > units.len() {
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?));
+  }
+  let end = offset.saturating_add(count).min(units.len());
+  let out = scope.alloc_string_from_u16_vec(units[offset..end].to_vec())?;
+  Ok(Value::String(out))
+}
+
 fn character_data_delete_data_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -48399,7 +48444,7 @@ fn init_window_globals(
       },
     )?;
 
-    // --- CharacterData: length / appendData / insertData / deleteData / replaceData -------------
+    // --- CharacterData: length / substringData / appendData / insertData / deleteData / replaceData -------------
 
     let character_data_length_get_call_id = vm.register_native_call(character_data_length_get_native)?;
     let character_data_length_get_name = scope.alloc_string("get length")?;
@@ -48467,6 +48512,30 @@ fn init_window_globals(
         proto,
         character_data_insert_data_key,
         data_desc(Value::Object(character_data_insert_data_func)),
+      )?;
+    }
+
+    let character_data_substring_data_call_id =
+      vm.register_native_call(character_data_substring_data_native)?;
+    let character_data_substring_data_name = scope.alloc_string("substringData")?;
+    scope.push_root(Value::String(character_data_substring_data_name))?;
+    let character_data_substring_data_func = scope.alloc_native_function(
+      character_data_substring_data_call_id,
+      None,
+      character_data_substring_data_name,
+      2,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      character_data_substring_data_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(character_data_substring_data_func))?;
+    let character_data_substring_data_key = alloc_key(&mut scope, "substringData")?;
+    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+      scope.define_property(
+        proto,
+        character_data_substring_data_key,
+        data_desc(Value::Object(character_data_substring_data_func)),
       )?;
     }
 
