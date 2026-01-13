@@ -84,7 +84,7 @@ impl DiscoveredSubframe {
   ///
   /// Returns `None` for "no navigation" cases (empty/whitespace-only/fragment-only/javascript:...).
   pub fn from_raw_src(
-    id: SubframeId,
+    subframe_token: SubframeToken,
     raw_src: Option<&str>,
     base_url: &str,
     force_opaque_origin: bool,
@@ -95,7 +95,7 @@ impl DiscoveredSubframe {
     match iframe_navigation_from_src(raw_src, base_url) {
       IframeNavigation::None => None,
       IframeNavigation::AboutBlank => Some(Self {
-        id,
+        subframe_token,
         url: "about:blank".to_string(),
         force_opaque_origin,
         rect,
@@ -103,7 +103,7 @@ impl DiscoveredSubframe {
         hit_testable,
       }),
       IframeNavigation::Url(url) => Some(Self {
-        id,
+        subframe_token,
         url,
         force_opaque_origin,
         rect,
@@ -405,7 +405,7 @@ where
   /// This is used when a frame navigates: per browser semantics, a navigation replaces the document
   /// and therefore tears down any existing descendant browsing contexts.
   fn destroy_frame_children(&mut self, frame_id: FrameId) {
-    let children: Vec<(SubframeId, FrameId)> = self
+    let children: Vec<(SubframeToken, FrameId)> = self
       .frame_tree
       .frame(frame_id)
       .map(|node| {
@@ -494,7 +494,20 @@ where
       .map(|node| node.children_by_subframe.clone())
       .unwrap_or_default();
 
-    let mut reported_ids: HashSet<SubframeToken> = HashSet::new();
+    // Renderer messages are untrusted: keep the work per update bounded so a hostile page cannot
+    // force the browser to build arbitrarily large `HashSet`s or spend unbounded time iterating a
+    // huge `subframes` vector.
+    //
+    // `max_subframes_per_parent` is the authoritative cap for how many child frames we will track.
+    // We allow a small multiple when scanning updates so existing children that happen to appear
+    // later in the list still have a chance to be recognized.
+    let mut subframes = subframes;
+    let max_reports = self.max_subframes_per_parent.saturating_mul(4).max(self.max_subframes_per_parent);
+    if subframes.len() > max_reports {
+      subframes.truncate(max_reports);
+    }
+
+    let mut reported_ids: HashSet<SubframeToken> = HashSet::with_capacity(subframes.len());
     for subframe in &subframes {
       reported_ids.insert(subframe.subframe_token);
     }
@@ -753,7 +766,7 @@ mod tests {
     let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
     assert_eq!(
       DiscoveredSubframe::from_raw_src(
-        SubframeId::new(1),
+        SubframeToken::new(1),
         Some("   "),
         "https://example.com/",
         false,
@@ -770,7 +783,7 @@ mod tests {
     let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
     assert_eq!(
       DiscoveredSubframe::from_raw_src(
-        SubframeId::new(1),
+        SubframeToken::new(1),
         Some("#"),
         "https://example.com/",
         false,
@@ -787,7 +800,7 @@ mod tests {
     let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
     assert_eq!(
       DiscoveredSubframe::from_raw_src(
-        SubframeId::new(1),
+        SubframeToken::new(1),
         Some("javascript:alert(1)"),
         "https://example.com/",
         false,
@@ -803,7 +816,7 @@ mod tests {
   fn discovered_subframe_from_raw_src_missing_defaults_to_about_blank() {
     let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
     let sub = DiscoveredSubframe::from_raw_src(
-      SubframeId::new(1),
+      SubframeToken::new(1),
       None,
       "https://example.com/",
       false,
@@ -819,7 +832,7 @@ mod tests {
   fn discovered_subframe_from_raw_src_trims_ascii_whitespace() {
     let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
     let sub = DiscoveredSubframe::from_raw_src(
-      SubframeId::new(1),
+      SubframeToken::new(1),
       Some(" \t  https://example.com"),
       "https://bad.example/",
       false,
@@ -837,7 +850,7 @@ mod tests {
     let nbsp = "\u{00A0}";
     let src = format!("foo{nbsp}");
     let sub = DiscoveredSubframe::from_raw_src(
-      SubframeId::new(1),
+      SubframeToken::new(1),
       Some(&src),
       "https://example.com/",
       false,
@@ -1503,7 +1516,7 @@ mod tests {
     let child_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(1)))
       .expect("child frame exists");
     assert_eq!(
       browser
@@ -1529,7 +1542,7 @@ mod tests {
     let child_frame_after = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(1)))
       .expect("child still exists");
     assert_eq!(child_frame_after, child_frame, "expected FrameId stability across updates");
 
@@ -1595,7 +1608,7 @@ mod tests {
     let child_frame = browser
       .frame_tree
       .frame(root)
-      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(1)))
       .expect("child frame exists");
 
     // Now have the child frame report its own cross-origin iframe.
@@ -1608,7 +1621,7 @@ mod tests {
     let grandchild_frame = browser
       .frame_tree
       .frame(child_frame)
-      .and_then(|n| n.child_frame_id(SubframeId::new(2)))
+      .and_then(|n| n.child_frame_id(SubframeToken::new(2)))
       .expect("grandchild frame exists");
     let grandchild_process = browser
       .frame_tree

@@ -135,7 +135,7 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
 
   // SAFETY: `recvmsg` writes into the provided iov/control buffers which are valid for the call.
   let mut need_manual_cloexec = false;
-  let read_len = loop {
+  let read_len = 'recvmsg: loop {
     // `recvmsg` mutates `msg_controllen` on success. Ensure retries start with the full buffer.
     msg.msg_controllen = CONTROL_LEN;
     msg.msg_flags = 0;
@@ -156,7 +156,7 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
         msg.msg_flags = 0;
         let rc2 = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags & !libc::MSG_CMSG_CLOEXEC) };
         if rc2 >= 0 {
-          break rc2 as usize;
+          break 'recvmsg rc2 as usize;
         }
         let err2 = io::Error::last_os_error();
         if err2.kind() == io::ErrorKind::Interrupted {
