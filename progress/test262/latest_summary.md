@@ -60,8 +60,11 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
   so the `../../...` paths above are relative to that directory.
 - Note: `CARGO_TARGET_DIR=../../target` keeps build artifacts under the repo-root `target/` (avoids
   creating `vendor/ecma-rs/target/`).
-- Note: If you hit an OS-level stack overflow while running the full suite, try increasing the
-  process stack limit via `LIMIT_STACK=64M` (consumed by `scripts/run_limited.sh`).
+- Note: `test262-semantic` runs each case on a fresh large-stack thread (see
+  `vendor/ecma-rs/test262-semantic/src/vm_js_executor.rs`) so deep-recursion tests should fail
+  cleanly with `execution terminated: stack overflow` rather than aborting the host process.
+  `LIMIT_STACK=64M` (consumed by `scripts/run_limited.sh`) is still available as a safety net for
+  other deeply recursive workloads.
 
 ## Overall
 
