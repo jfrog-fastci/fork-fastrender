@@ -596,9 +596,6 @@ mod windows {
   }
 
   fn grant_read_execute_acl(path: &Path, sid: PSID) -> io::Result<()> {
-    // `NO_INHERITANCE` from `winnt.h` (not currently exported by windows-sys).
-    const NO_INHERITANCE: u32 = 0;
-
     let mut name = wide_from_os(path.as_os_str());
 
     let mut dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
