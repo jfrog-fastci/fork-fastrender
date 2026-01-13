@@ -413,102 +413,6 @@ function assert_throws_js(constructor, func, message) {
   return thrown;
 }
 //
-// Mapping for legacy DOMException names (e.g. "HIERARCHY_REQUEST_ERR") used by
-// older WPT tests. Modern engines throw camel-case names (e.g.
-// "HierarchyRequestError"), while `.code` preserves the historical numeric
-// values.
-var __dom_exception_legacy_name_map = {
-  INDEX_SIZE_ERR: "IndexSizeError",
-  DOMSTRING_SIZE_ERR: "DOMStringSizeError",
-  HIERARCHY_REQUEST_ERR: "HierarchyRequestError",
-  WRONG_DOCUMENT_ERR: "WrongDocumentError",
-  INVALID_CHARACTER_ERR: "InvalidCharacterError",
-  NO_DATA_ALLOWED_ERR: "NoDataAllowedError",
-  NO_MODIFICATION_ALLOWED_ERR: "NoModificationAllowedError",
-  NOT_FOUND_ERR: "NotFoundError",
-  NOT_SUPPORTED_ERR: "NotSupportedError",
-  INUSE_ATTRIBUTE_ERR: "InUseAttributeError",
-  INVALID_STATE_ERR: "InvalidStateError",
-  SYNTAX_ERR: "SyntaxError",
-  INVALID_MODIFICATION_ERR: "InvalidModificationError",
-  NAMESPACE_ERR: "NamespaceError",
-  INVALID_ACCESS_ERR: "InvalidAccessError",
-  VALIDATION_ERR: "ValidationError",
-  TYPE_MISMATCH_ERR: "TypeMismatchError",
-  SECURITY_ERR: "SecurityError",
-  NETWORK_ERR: "NetworkError",
-  ABORT_ERR: "AbortError",
-  URL_MISMATCH_ERR: "URLMismatchError",
-  QUOTA_EXCEEDED_ERR: "QuotaExceededError",
-  TIMEOUT_ERR: "TimeoutError",
-  INVALID_NODE_TYPE_ERR: "InvalidNodeTypeError",
-  DATA_CLONE_ERR: "DataCloneError",
-};
-//
-var __dom_exception_legacy_code_map = {
-  INDEX_SIZE_ERR: 1,
-  DOMSTRING_SIZE_ERR: 2,
-  HIERARCHY_REQUEST_ERR: 3,
-  WRONG_DOCUMENT_ERR: 4,
-  INVALID_CHARACTER_ERR: 5,
-  NO_DATA_ALLOWED_ERR: 6,
-  NO_MODIFICATION_ALLOWED_ERR: 7,
-  NOT_FOUND_ERR: 8,
-  NOT_SUPPORTED_ERR: 9,
-  INUSE_ATTRIBUTE_ERR: 10,
-  INVALID_STATE_ERR: 11,
-  SYNTAX_ERR: 12,
-  INVALID_MODIFICATION_ERR: 13,
-  NAMESPACE_ERR: 14,
-  INVALID_ACCESS_ERR: 15,
-  VALIDATION_ERR: 16,
-  TYPE_MISMATCH_ERR: 17,
-  SECURITY_ERR: 18,
-  NETWORK_ERR: 19,
-  ABORT_ERR: 20,
-  URL_MISMATCH_ERR: 21,
-  QUOTA_EXCEEDED_ERR: 22,
-  TIMEOUT_ERR: 23,
-  INVALID_NODE_TYPE_ERR: 24,
-  DATA_CLONE_ERR: 25,
-};
-//
-function __dom_exception_legacy_to_modern(name) {
-  if (typeof name !== "string") return null;
-  try {
-    if (/^[A-Z_]+_ERR$/.test(name) !== true) return null;
-  } catch (_e) {
-    return null;
-  }
-  //
-  var modern = null;
-  try {
-    modern = __dom_exception_legacy_name_map[name];
-  } catch (_e2) {
-    modern = null;
-  }
-  if (typeof modern === "string" && modern !== "") return modern;
-  return null;
-}
-//
-function __dom_exception_legacy_to_code(name) {
-  if (typeof name !== "string") return null;
-  try {
-    if (/^[A-Z_]+_ERR$/.test(name) !== true) return null;
-  } catch (_e) {
-    return null;
-  }
-  //
-  var code = null;
-  try {
-    code = __dom_exception_legacy_code_map[name];
-  } catch (_e2) {
-    code = null;
-  }
-  if (typeof code === "number") return code;
-  return null;
-}
-//
 function assert_throws_dom(name, target, func, message) {
   // Support upstream call patterns:
   //   assert_throws_dom("InvalidStateError", () => { ... }, "optional message")
@@ -536,12 +440,90 @@ function assert_throws_dom(name, target, func, message) {
     throw Error(resolved_message || "assert_throws_dom: function is not callable");
   }
   //
-  var expected_legacy_code = __dom_exception_legacy_to_code(name);
-  var expected_modern_name = __dom_exception_legacy_to_modern(name);
+  // Legacy DOMException code names (e.g. "HIERARCHY_REQUEST_ERR") are still used in many WPT tests,
+  // especially Range tests. Modern DOMException instances use camel-case names (e.g.
+  // "HierarchyRequestError"), while `.code` preserves the historical numeric values.
+  //
+  // Keep this mapping *inside* `assert_throws_dom` so we don't leak helper globals into the test
+  // realm.
+  var __dom_exception_legacy_name_map = {
+    INDEX_SIZE_ERR: "IndexSizeError",
+    DOMSTRING_SIZE_ERR: "DOMStringSizeError",
+    HIERARCHY_REQUEST_ERR: "HierarchyRequestError",
+    WRONG_DOCUMENT_ERR: "WrongDocumentError",
+    INVALID_CHARACTER_ERR: "InvalidCharacterError",
+    NO_DATA_ALLOWED_ERR: "NoDataAllowedError",
+    NO_MODIFICATION_ALLOWED_ERR: "NoModificationAllowedError",
+    NOT_FOUND_ERR: "NotFoundError",
+    NOT_SUPPORTED_ERR: "NotSupportedError",
+    INUSE_ATTRIBUTE_ERR: "InUseAttributeError",
+    INVALID_STATE_ERR: "InvalidStateError",
+    SYNTAX_ERR: "SyntaxError",
+    INVALID_MODIFICATION_ERR: "InvalidModificationError",
+    NAMESPACE_ERR: "NamespaceError",
+    INVALID_ACCESS_ERR: "InvalidAccessError",
+    VALIDATION_ERR: "ValidationError",
+    TYPE_MISMATCH_ERR: "TypeMismatchError",
+    SECURITY_ERR: "SecurityError",
+    NETWORK_ERR: "NetworkError",
+    ABORT_ERR: "AbortError",
+    URL_MISMATCH_ERR: "URLMismatchError",
+    QUOTA_EXCEEDED_ERR: "QuotaExceededError",
+    TIMEOUT_ERR: "TimeoutError",
+    INVALID_NODE_TYPE_ERR: "InvalidNodeTypeError",
+    DATA_CLONE_ERR: "DataCloneError",
+  };
+  //
+  var __dom_exception_legacy_code_map = {
+    INDEX_SIZE_ERR: 1,
+    DOMSTRING_SIZE_ERR: 2,
+    HIERARCHY_REQUEST_ERR: 3,
+    WRONG_DOCUMENT_ERR: 4,
+    INVALID_CHARACTER_ERR: 5,
+    NO_DATA_ALLOWED_ERR: 6,
+    NO_MODIFICATION_ALLOWED_ERR: 7,
+    NOT_FOUND_ERR: 8,
+    NOT_SUPPORTED_ERR: 9,
+    INUSE_ATTRIBUTE_ERR: 10,
+    INVALID_STATE_ERR: 11,
+    SYNTAX_ERR: 12,
+    INVALID_MODIFICATION_ERR: 13,
+    NAMESPACE_ERR: 14,
+    INVALID_ACCESS_ERR: 15,
+    VALIDATION_ERR: 16,
+    TYPE_MISMATCH_ERR: 17,
+    SECURITY_ERR: 18,
+    NETWORK_ERR: 19,
+    ABORT_ERR: 20,
+    URL_MISMATCH_ERR: 21,
+    QUOTA_EXCEEDED_ERR: 22,
+    TIMEOUT_ERR: 23,
+    INVALID_NODE_TYPE_ERR: 24,
+    DATA_CLONE_ERR: 25,
+  };
+  //
+  var expected_legacy_code = null;
+  var expected_modern_name = null;
   var expected_for_message = name;
-  if (expected_modern_name !== null && expected_modern_name !== name) {
-    expected_for_message = [name, " (", expected_modern_name, ")"].join("");
-  }
+  try {
+    var is_legacy_expected_name = false;
+    if (typeof name.endsWith === "function") {
+      is_legacy_expected_name = name.endsWith("_ERR");
+    } else {
+      is_legacy_expected_name = /_ERR$/.test(name);
+    }
+    if (is_legacy_expected_name === true) {
+      var mapped_name = __dom_exception_legacy_name_map[name];
+      if (typeof mapped_name === "string" && mapped_name !== "") {
+        expected_modern_name = mapped_name;
+        expected_for_message = [name, " (", mapped_name, ")"].join("");
+      }
+      var mapped_code = __dom_exception_legacy_code_map[name];
+      if (typeof mapped_code === "number") {
+        expected_legacy_code = mapped_code;
+      }
+    }
+  } catch (_e0) {}
   //
   var threw = false;
   var thrown = null;
@@ -583,7 +565,25 @@ function assert_throws_dom(name, target, func, message) {
     match = true;
   } else {
     // Also accept engines that throw the legacy name when tests expect the modern name.
-    var thrown_modern_name = __dom_exception_legacy_to_modern(thrown_name);
+    var thrown_modern_name = null;
+    try {
+      if (typeof thrown_name === "string") {
+        var is_legacy_thrown_name = false;
+        if (typeof thrown_name.endsWith === "function") {
+          is_legacy_thrown_name = thrown_name.endsWith("_ERR");
+        } else {
+          is_legacy_thrown_name = /_ERR$/.test(thrown_name);
+        }
+        if (is_legacy_thrown_name === true) {
+          var mapped_thrown = __dom_exception_legacy_name_map[thrown_name];
+          if (typeof mapped_thrown === "string" && mapped_thrown !== "") {
+            thrown_modern_name = mapped_thrown;
+          }
+        }
+      }
+    } catch (_e3) {
+      thrown_modern_name = null;
+    }
     if (thrown_modern_name !== null) {
       if (thrown_modern_name === name) {
         match = true;
