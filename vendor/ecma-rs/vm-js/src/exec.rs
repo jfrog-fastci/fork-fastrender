@@ -2340,9 +2340,7 @@ impl JsRuntime {
                 this_initialized: true,
                 this_root_idx: None,
               };
-
               evaluator.instantiate_script(&mut scope, &top.stx.body)?;
-
               let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
               return match completion {
                 Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
@@ -6972,10 +6970,7 @@ impl<'a> Evaluator<'a> {
         continue;
       };
       if ctor_method.is_some() {
-        return Err(syntax_error(
-          member.loc,
-          "A class may only have one constructor",
-        ));
+        return Err(syntax_error(member.loc, "A class may only have one constructor"));
       }
       ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
     }
@@ -17571,10 +17566,7 @@ fn async_eval_class_after_super(
   let mut ctor_length: u32 = 0;
   let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
     if func_node.stx.generator {
-      return Err(syntax_error(
-        loc,
-        "Class constructor may not be a generator",
-      ));
+      return Err(syntax_error(loc, "Class constructor may not be a generator"));
     }
 
     ctor_length = evaluator.function_length(&func_node.stx)?;
@@ -17724,18 +17716,6 @@ fn async_eval_class_after_super(
       }
     };
 
-  // Class constructor bodies use the prototype object as their `[[HomeObject]]` so `super.prop`
-  // can resolve against `super.prototype`.
-  if let Some(body_func) = ctor_body_func {
-    if let Err(err) = class_scope
-      .heap_mut()
-      .set_function_home_object(body_func, Some(prototype_obj))
-    {
-      class_scope.heap_mut().remove_root(func_root);
-      return Err(err);
-    }
-  }
-
   // Per ECMAScript, class constructors have a non-writable `prototype` property.
   let patch_res = (|| -> Result<(), VmError> {
     let mut patch_scope = class_scope.reborrow();
@@ -17820,6 +17800,18 @@ fn async_eval_class_after_super(
   if let Err(err) = proto_set_res {
     class_scope.heap_mut().remove_root(func_root);
     return Err(err);
+  }
+
+  // Class constructor bodies use the prototype object as their `[[HomeObject]]` so `super.prop`
+  // can resolve against `super.prototype`.
+  if let Some(body_func) = ctor_body_func {
+    if let Err(err) = class_scope
+      .heap_mut()
+      .set_function_home_object(body_func, Some(prototype_obj))
+    {
+      class_scope.heap_mut().remove_root(func_root);
+      return Err(err);
+    }
   }
 
   // Define prototype and static methods.
@@ -25325,9 +25317,7 @@ fn async_resume_from_frames(
               frames: suspend.frames,
             });
           }
-          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-            state = AsyncState::Expr(Err(err))
-          }
+          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => state = AsyncState::Expr(Err(err)),
           Err(err) => return Err(err),
         },
         AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
