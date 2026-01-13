@@ -1,7 +1,7 @@
 //! Implements placing items in the grid and resolving the implicit grid.
 //! <https://www.w3.org/TR/css-grid-1/#placement>
 use super::types::{CellOccupancyMatrix, CellOccupancyState, GridItem};
-use super::limits::clamp_grid_area_to_implicit_grid_limit;
+use super::limits::{clamp_grid_area_to_implicit_grid_limit, max_implicit_tracks_per_side};
 use super::{NamedLineResolver, OriginZeroLine};
 use crate::geometry::Line;
 use crate::geometry::{AbsoluteAxis, InBothAbsAxis};
@@ -382,6 +382,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
           .track_counts(primary_axis.other_axis())
           .explicit,
       );
+      let mut last_secondary_span: Option<Line<OriginZeroLine>> = None;
       loop {
         check_layout_abort();
         let secondary_span = resolve_indefinite_grid_lines(
@@ -400,6 +401,13 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
         ) {
           break (primary_placement, secondary_span);
         }
+        // If the resolved span stops changing, we've hit the UA-defined implicit-grid clamp
+        // and further searching cannot produce a new placement. Return the clamped placement even
+        // if it overlaps, rather than spinning indefinitely.
+        if last_secondary_span == Some(secondary_span) {
+          break (primary_placement, secondary_span);
+        }
+        last_secondary_span = Some(secondary_span);
         sec_idx += 1;
       }
     };
@@ -536,6 +544,7 @@ fn place_definite_secondary_axis_item<I: crate::CheapCloneStr>(
     starting_position,
     cell_occupancy_matrix.track_counts(primary_axis).explicit,
   );
+  let mut last_primary_span: Option<Line<OriginZeroLine>> = None;
   loop {
     check_layout_abort();
     let primary_axis_placement = resolve_indefinite_grid_lines(
@@ -555,6 +564,11 @@ fn place_definite_secondary_axis_item<I: crate::CheapCloneStr>(
     if does_fit {
       return (primary_axis_placement, secondary_axis_placement);
     } else {
+      if last_primary_span == Some(primary_axis_placement) {
+        // Clamped to the UA limit and unable to find a free cell: fall back to the clamped span.
+        return (primary_axis_placement, secondary_axis_placement);
+      }
+      last_primary_span = Some(primary_axis_placement);
       position += 1;
     }
   }
@@ -631,6 +645,7 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
 
     // Item has fixed primary axis position: so we simply increment the secondary axis position
     // until we find a space that the item fits in
+    let mut last_secondary_span: Option<Line<OriginZeroLine>> = None;
     loop {
       check_layout_abort();
       let secondary_span = resolve_indefinite_grid_lines(
@@ -645,6 +660,11 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
 
       // If area is occupied, increment the index and try again
       if line_area_is_occupied(primary_span, secondary_span) {
+        if last_secondary_span == Some(secondary_span) {
+          // Clamped to the UA limit and unable to find a free cell: fall back to the clamped span.
+          return (primary_span, secondary_span);
+        }
+        last_secondary_span = Some(secondary_span);
         secondary_idx += 1;
         continue;
       }
@@ -656,6 +676,21 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
     // Item does not have any fixed axis, so we search along the primary axis until we hit the end of the already
     // existent tracks, and then we reset the primary axis back to zero and increment the secondary axis index.
     // We continue in this vein until we find a space that the item fits in.
+    let implicit_track_limit = max_implicit_tracks_per_side() as usize;
+    let max_primary_tracks = (cell_occupancy_matrix.track_counts(primary_axis).explicit as usize)
+      .saturating_add(implicit_track_limit.saturating_mul(2));
+    let max_secondary_tracks = (cell_occupancy_matrix
+      .track_counts(primary_axis.other_axis())
+      .explicit as usize)
+      .saturating_add(implicit_track_limit.saturating_mul(2));
+    // Upper bound on the number of distinct cell placements within the UA-limited grid.
+    //
+    // If we exceed this while still failing to find an unoccupied area, then clamping has prevented
+    // further progress and we should stop searching to avoid an infinite loop.
+    let max_attempts = max_primary_tracks
+      .saturating_mul(max_secondary_tracks)
+      .max(1);
+    let mut attempts = 0usize;
     loop {
       check_layout_abort();
       let primary_span = resolve_indefinite_grid_lines(
@@ -690,6 +725,12 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
 
       // If area is occupied, increment the primary index and try again
       if line_area_is_occupied(primary_span, secondary_span) {
+        attempts = attempts.saturating_add(1);
+        if attempts >= max_attempts {
+          // The placement algorithm is cycling due to clamping at the UA-defined implicit-grid
+          // limit. Return the clamped placement (even if it overlaps) rather than looping forever.
+          return (primary_span, secondary_span);
+        }
         primary_idx += 1;
         continue;
       }
@@ -1504,6 +1545,47 @@ mod tests {
         negative_implicit: 0,
         explicit: 2,
         positive_implicit: 0,
+      };
+      placement_test_runner(
+        explicit_col_count,
+        explicit_row_count,
+        children,
+        expected_cols,
+        expected_rows,
+        flow,
+      );
+    }
+
+    #[test]
+    fn test_overlarge_grid_does_not_spin_forever_when_limited_grid_is_full() {
+      // When the UA-defined implicit grid clamp is reached and the remaining cells are occupied,
+      // the placement algorithm must not loop forever trying to find new implicit tracks. Instead,
+      // it should fall back to placing into the clamped area (even if that overlaps).
+      //
+      // This is important for hostile inputs that might otherwise hang when cancellation is not
+      // installed (or when the cancellation stride is large).
+      let flow = GridAutoFlow::Row;
+      let explicit_col_count = 1;
+      let explicit_row_count = 1;
+
+      let auto_child = (auto(), auto(), auto(), auto()).into_grid_child();
+      let mut children = Vec::new();
+      // With the unit test UA limit (32 positive implicit tracks), the limited grid can fit
+      // `explicit_row_count + limit` = 33 rows. Add one extra item to force overflow.
+      for idx in 0..34i16 {
+        let row = if idx < 33 { idx } else { 32 };
+        children.push((idx as usize + 1, auto_child.clone(), (0, 1, row, row + 1)));
+      }
+
+      let expected_cols = TrackCounts {
+        negative_implicit: 0,
+        explicit: 1,
+        positive_implicit: 0,
+      };
+      let expected_rows = TrackCounts {
+        negative_implicit: 0,
+        explicit: 1,
+        positive_implicit: 32,
       };
       placement_test_runner(
         explicit_col_count,
