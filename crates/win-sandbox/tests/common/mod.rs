@@ -30,12 +30,19 @@ fn should_skip_appcontainer_error(err: &WinSandboxError) -> bool {
     ERROR_ACCESS_DENIED, ERROR_NOT_SUPPORTED, ERROR_PROC_NOT_FOUND,
   };
 
+  // Returned when software restriction policies / group policy blocks an operation.
+  // This is environment policy, not a win-sandbox regression.
+  const ERROR_ACCESS_DISABLED_BY_POLICY: u32 = 1260;
   const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
 
   match win32_code_from_error(err) {
     Some(code) => matches!(
       code,
-      ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD | ERROR_NOT_SUPPORTED | ERROR_PROC_NOT_FOUND
+      ERROR_ACCESS_DENIED
+        | ERROR_ACCESS_DISABLED_BY_POLICY
+        | ERROR_PRIVILEGE_NOT_HELD
+        | ERROR_NOT_SUPPORTED
+        | ERROR_PROC_NOT_FOUND
     ),
     None => false,
   }
@@ -86,4 +93,3 @@ pub(crate) fn require_full_sandbox_support(test_name: &str) -> bool {
 
   require_appcontainer_profile(test_name)
 }
-

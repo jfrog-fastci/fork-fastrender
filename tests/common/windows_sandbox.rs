@@ -27,6 +27,9 @@ fn win32_code_from_error(err: &WinSandboxError) -> Option<u32> {
 
 fn should_skip_appcontainer_error(err: &WinSandboxError) -> bool {
   const ERROR_ACCESS_DENIED: u32 = 5;
+  // Returned when software restriction policies / group policy blocks an operation.
+  // This is environment policy, not a FastRender regression.
+  const ERROR_ACCESS_DISABLED_BY_POLICY: u32 = 1260;
   const ERROR_PROC_NOT_FOUND: u32 = 127;
   const ERROR_NOT_SUPPORTED: u32 = 50;
   const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
@@ -34,7 +37,11 @@ fn should_skip_appcontainer_error(err: &WinSandboxError) -> bool {
   match win32_code_from_error(err) {
     Some(code) => matches!(
       code,
-      ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD | ERROR_NOT_SUPPORTED | ERROR_PROC_NOT_FOUND
+      ERROR_ACCESS_DENIED
+        | ERROR_ACCESS_DISABLED_BY_POLICY
+        | ERROR_PRIVILEGE_NOT_HELD
+        | ERROR_NOT_SUPPORTED
+        | ERROR_PROC_NOT_FOUND
     ),
     None => false,
   }
