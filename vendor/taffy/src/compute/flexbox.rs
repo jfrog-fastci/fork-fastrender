@@ -50,6 +50,12 @@ struct FlexItem {
   /// takes into account content based automatic minimum sizes
   resolved_minimum_main_size: f32,
 
+  /// Cache of the raw min-content measurement result for the main axis (when available).
+  ///
+  /// This is used to deduplicate identical min-content measurements that can occur when a flex
+  /// container itself is being sized under a min-content constraint.
+  measured_min_content_main: Option<f32>,
+
   /// The final offset of this item
   inset: Rect<Option<f32>>,
   /// The margin of this item
@@ -681,6 +687,7 @@ fn generate_anonymous_flex_items(
         frozen: false,
 
         resolved_minimum_main_size: 0.0,
+        measured_min_content_main: None,
         hypothetical_inner_size: Size::zero(),
         hypothetical_outer_size: Size::zero(),
         target_size: Size::zero(),
@@ -774,6 +781,10 @@ fn determine_flex_base_size(
   let dir = constants.dir;
 
   for child in flex_items.iter_mut() {
+    // Clear any stale cached measurements (should generally be `None` on first use, but this keeps
+    // the behaviour robust if the algorithm ever restarts).
+    child.measured_min_content_main = None;
+
     let child_style = tree.get_flexbox_child_style(child.node);
 
     // Parent size for child sizing
@@ -881,7 +892,7 @@ fn determine_flex_base_size(
         .with_cross(dir, cross_axis_available_space);
 
       debug_log!("COMPUTE CHILD BASE SIZE:");
-      break 'flex_basis tree.measure_child_size(
+      let measured = tree.measure_child_size(
         child.node,
         child_known_dimensions,
         child_parent_size,
@@ -890,6 +901,15 @@ fn determine_flex_base_size(
         dir.main_axis(),
         Line::FALSE,
       );
+
+      // When the flex container is itself being sized under a min-content constraint, the flex-basis
+      // "size into available space" measurement becomes a min-content main-axis measurement. The
+      // automatic minimum size computation below would otherwise repeat an identical measurement.
+      if available_space.main(dir) == AvailableSpace::MinContent {
+        child.measured_min_content_main = Some(measured);
+      }
+
+      break 'flex_basis measured;
     };
 
     // Floor flex-basis by the padding_border_sum (floors inner_flex_basis at zero)
@@ -929,7 +949,7 @@ fn determine_flex_base_size(
       .main(dir);
 
     child.resolved_minimum_main_size = style_min_main_size.unwrap_or({
-      let min_content_main_size = {
+      let min_content_main_size = child.measured_min_content_main.unwrap_or_else(|| {
         let child_available_space = Size::MIN_CONTENT.with_cross(dir, cross_axis_available_space);
 
         debug_log!("COMPUTE CHILD MIN SIZE:");
@@ -942,7 +962,7 @@ fn determine_flex_base_size(
           dir.main_axis(),
           Line::FALSE,
         )
-      };
+      });
 
       // 4.5. Automatic Minimum Size of Flex Items
       // https://www.w3.org/TR/css-flexbox-1/#min-size-auto
@@ -2895,6 +2915,7 @@ mod tests {
   use crate::tree::MeasureOutput;
 
   use crate::geometry::Point;
+  use crate::style_helpers::{auto, length};
 
   fn build_row_wrap_reverse_tree(
     align_content: AlignContent,
@@ -3372,5 +3393,199 @@ mod tests {
     // Therefore main-size (border-box) = 10 + 20 + 20 = 50.
     let layout = taffy.layout(child).unwrap();
     assert_eq!(layout.size.height, 50.0);
+  }
+
+  #[test]
+  fn flexbox_min_content_constraint_does_not_double_measure_min_content_main() {
+    use crate::compute::{compute_leaf_layout, compute_root_layout};
+    use crate::tree::{LayoutInput, LayoutOutput, RunMode};
+    use crate::util::sys::Vec;
+
+    #[derive(Clone)]
+    struct TestNode {
+      style: Style,
+      children: Vec<NodeId>,
+      layout: Layout,
+    }
+
+    struct TestTree {
+      nodes: Vec<TestNode>,
+      measure_call_count: usize,
+    }
+
+    impl TestTree {
+      fn new() -> Self {
+        Self {
+          nodes: Vec::new(),
+          measure_call_count: 0,
+        }
+      }
+
+      fn push_node(&mut self, style: Style, children: Vec<NodeId>) -> NodeId {
+        let node_id = NodeId::from(self.nodes.len());
+        self.nodes.push(TestNode {
+          style,
+          children,
+          layout: Layout::new(),
+        });
+        node_id
+      }
+
+      fn new_leaf(&mut self, style: Style) -> NodeId {
+        self.push_node(style, Vec::new())
+      }
+
+      fn new_with_children(&mut self, style: Style, children: &[NodeId]) -> NodeId {
+        self.push_node(style, children.to_vec())
+      }
+    }
+
+    impl TraversePartialTree for TestTree {
+      type ChildIter<'a>
+        = core::iter::Copied<core::slice::Iter<'a, NodeId>>
+      where
+        Self: 'a;
+
+      fn child_ids(&self, parent_node_id: NodeId) -> Self::ChildIter<'_> {
+        let idx: usize = parent_node_id.into();
+        self.nodes[idx].children.iter().copied()
+      }
+
+      fn child_count(&self, parent_node_id: NodeId) -> usize {
+        let idx: usize = parent_node_id.into();
+        self.nodes[idx].children.len()
+      }
+
+      fn get_child_id(&self, parent_node_id: NodeId, child_index: usize) -> NodeId {
+        let idx: usize = parent_node_id.into();
+        self.nodes[idx].children[child_index]
+      }
+    }
+
+    impl LayoutPartialTree for TestTree {
+      type CoreContainerStyle<'a>
+        = &'a Style
+      where
+        Self: 'a;
+
+      type CustomIdent = crate::sys::DefaultCheapStr;
+
+      fn get_core_container_style(&self, node_id: NodeId) -> Self::CoreContainerStyle<'_> {
+        let idx: usize = node_id.into();
+        &self.nodes[idx].style
+      }
+
+      fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
+        let idx: usize = node_id.into();
+        self.nodes[idx].layout = *layout;
+      }
+
+      fn compute_child_layout(&mut self, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
+        let idx: usize = node.into();
+        let display_mode = self.nodes[idx].style.display;
+        let has_children = !self.nodes[idx].children.is_empty();
+
+        match (display_mode, has_children) {
+          (Display::None, _) => crate::compute::compute_hidden_layout(self, node),
+          (Display::Flex, true) => super::compute_flexbox_layout(self, node, inputs),
+          (_, false) => {
+            let style = self.nodes[idx].style.clone();
+            compute_leaf_layout(inputs, &style, |_, _| 0.0, |known_dimensions, _available_space| {
+              self.measure_call_count += 1;
+              MeasureOutput::from_size(Size {
+                width: known_dimensions.width.unwrap_or(10.0),
+                height: known_dimensions.height.unwrap_or(10.0),
+              })
+            })
+          }
+          // For the purposes of this test, all container nodes are flex containers.
+          _ => super::compute_flexbox_layout(self, node, inputs),
+        }
+      }
+    }
+
+    // Implement CacheTree with a no-op cache to emulate integrators that don't provide
+    // caching in their `compute_child_layout` implementation.
+    impl crate::CacheTree for TestTree {
+      fn cache_get(
+        &self,
+        _node_id: NodeId,
+        _known_dimensions: Size<Option<f32>>,
+        _available_space: Size<AvailableSpace>,
+        _run_mode: RunMode,
+      ) -> Option<LayoutOutput> {
+        None
+      }
+
+      fn cache_store(
+        &mut self,
+        _node_id: NodeId,
+        _known_dimensions: Size<Option<f32>>,
+        _available_space: Size<AvailableSpace>,
+        _run_mode: RunMode,
+        _layout_output: LayoutOutput,
+      ) {
+      }
+
+      fn cache_clear(&mut self, _node_id: NodeId) {}
+    }
+
+    impl crate::LayoutFlexboxContainer for TestTree {
+      type FlexboxContainerStyle<'a>
+        = &'a Style
+      where
+        Self: 'a;
+      type FlexboxItemStyle<'a>
+        = &'a Style
+      where
+        Self: 'a;
+
+      fn get_flexbox_container_style(&self, node_id: NodeId) -> Self::FlexboxContainerStyle<'_> {
+        self.get_core_container_style(node_id)
+      }
+
+      fn get_flexbox_child_style(&self, child_node_id: NodeId) -> Self::FlexboxItemStyle<'_> {
+        self.get_core_container_style(child_node_id)
+      }
+    }
+
+    let mut tree = TestTree::new();
+
+    let leaf_style = Style {
+      size: Size {
+        width: auto(),
+        height: length(10.0),
+      },
+      ..Default::default()
+    };
+
+    let children: Vec<NodeId> = (0..4).map(|_| tree.new_leaf(leaf_style.clone())).collect();
+    let root = tree.new_with_children(
+      Style {
+        display: Display::Flex,
+        flex_direction: FlexDirection::Row,
+        ..Default::default()
+      },
+      &children,
+    );
+
+    // Mirror `TaffyTree::compute_layout_with_measure` by calling into the root layout function,
+    // but *without* using any caching. This ensures identical min-content queries are observable
+    // as multiple measure callbacks.
+    compute_root_layout(&mut tree, root, Size::MIN_CONTENT);
+
+    // Each leaf is measured:
+    //  - once for flex-basis under min-content,
+    //  - once for the final PerformLayout pass.
+    //
+    // The automatic minimum size computation should reuse the flex-basis min-content measurement,
+    // rather than triggering an identical extra measure.
+    let expected_max_calls = children.len() * 2;
+    assert!(
+      tree.measure_call_count <= expected_max_calls,
+      "expected at most {expected_max_calls} measure calls for {} items, got {}",
+      children.len(),
+      tree.measure_call_count
+    );
   }
 }
