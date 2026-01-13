@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use vm_js::{
-  Budget, CompiledFunctionRef, CompiledScript, Heap, HeapLimits, TerminationReason, Value, Vm,
-  VmError, VmHost, VmHostHooks, VmOptions,
+  Budget, CompiledFunctionRef, CompiledScript, Heap, HeapLimits, JsRuntime, TerminationReason,
+  Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 fn find_function_body(script: &Arc<CompiledScript>, name: &str) -> hir_js::BodyId {
@@ -207,6 +207,38 @@ fn compiled_execution_is_gc_safe_under_stress() -> Result<(), VmError> {
     "expected at least one GC cycle to run"
   );
 
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_inherits_from_object_prototype() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(&mut rt.heap, "test.js", "({}).hasOwnProperty('x')")?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(false));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_object_spread_copies_properties() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let a = { x: 1 };
+      let b = { ...a, y: 2 };
+      b.x + b.y
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
   Ok(())
 }
 

@@ -1247,6 +1247,15 @@ impl<'vm> HirEvaluator<'vm> {
     obj: &hir_js::ObjectLiteral,
   ) -> Result<Value, VmError> {
     let obj_val = scope.alloc_object()?;
+    // Object literals inherit from %Object.prototype% (when intrinsics are available).
+    //
+    // The heap can be used without an initialized realm in some low-level unit tests; in that case
+    // `vm.intrinsics()` is `None` and the object remains null-prototype shaped.
+    if let Some(intr) = self.vm.intrinsics() {
+      scope
+        .heap_mut()
+        .object_set_prototype(obj_val, Some(intr.object_prototype()))?;
+    }
     let mut scope = scope.reborrow();
     scope.push_root(Value::Object(obj_val))?;
 
@@ -1259,8 +1268,20 @@ impl<'vm> HirEvaluator<'vm> {
           let v = self.eval_expr(&mut scope, body, *value)?;
           let _ = scope.create_data_property(obj_val, key, v)?;
         }
-        hir_js::ObjectProperty::Spread(_) => {
-          return Err(VmError::Unimplemented("object spread (hir-js compiled path)"));
+        hir_js::ObjectProperty::Spread(expr_id) => {
+          let src_value = self.eval_expr(&mut scope, body, *expr_id)?;
+          // Root the spread source across `CopyDataProperties` (which can allocate and invoke user
+          // code via Proxy traps and accessors).
+          scope.push_root(src_value)?;
+          crate::spec_ops::copy_data_properties_with_host_and_hooks(
+            self.vm,
+            &mut scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            obj_val,
+            src_value,
+            &[],
+          )?;
         }
         hir_js::ObjectProperty::Getter { .. } | hir_js::ObjectProperty::Setter { .. } => {
           return Err(VmError::Unimplemented(
