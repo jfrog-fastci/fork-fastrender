@@ -44,6 +44,17 @@ pub fn get_elements_by_tag_name<Host: DomHost + ?Sized>(
   host.with_dom(|dom| dom.get_elements_by_tag_name_from(root, qualified_name))
 }
 
+/// `Document.getElementsByTagNameNS(namespace, localName)` /
+/// `Element.getElementsByTagNameNS(namespace, localName)`.
+pub fn get_elements_by_tag_name_ns<Host: DomHost + ?Sized>(
+  host: &Host,
+  root: NodeId,
+  namespace: Option<&str>,
+  local_name: &str,
+) -> Vec<NodeId> {
+  host.with_dom(|dom| dom.get_elements_by_tag_name_ns_from(root, namespace, local_name))
+}
+
 /// `Document.getElementsByClassName(classNames)` / `Element.getElementsByClassName(classNames)`.
 pub fn get_elements_by_class_name<Host: DomHost + ?Sized>(
   host: &Host,
@@ -51,6 +62,11 @@ pub fn get_elements_by_class_name<Host: DomHost + ?Sized>(
   class_names: &str,
 ) -> Vec<NodeId> {
   host.with_dom(|dom| dom.get_elements_by_class_name_from(root, class_names))
+}
+
+/// `Document.getElementsByName(elementName)`.
+pub fn get_elements_by_name<Host: DomHost + ?Sized>(host: &Host, root: NodeId, name: &str) -> Vec<NodeId> {
+  host.with_dom(|dom| dom.get_elements_by_name_from(root, name))
 }
 
 // -----------------------------------------------------------------------------------------------

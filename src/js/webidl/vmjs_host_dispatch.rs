@@ -147,6 +147,26 @@ struct EventTargetState {
   listeners: Vec<EventListenerEntry>,
 }
 
+#[derive(Debug, Clone)]
+enum LiveHtmlCollectionKind {
+  ChildrenElements,
+  TagName { qualified_name: String },
+  TagNameNS {
+    namespace: Option<String>,
+    local_name: String,
+  },
+  ClassName { class_names: String },
+  Name { name: String },
+}
+
+#[derive(Debug, Clone)]
+struct LiveHtmlCollection {
+  weak_obj: WeakGcObject,
+  document_id: DocumentId,
+  root: NodeId,
+  kind: LiveHtmlCollectionKind,
+}
+
 enum DomHostAdapter<'a, Host: DomHost + 'static> {
   Embedder(&'a mut Host),
   DocumentHost(&'a mut DocumentHostState),
@@ -1234,6 +1254,7 @@ pub struct VmJsWebIdlBindingsHostDispatch<Host: WindowRealmHost + 'static> {
   urls: HashMap<WeakGcObject, Url>,
   params: HashMap<WeakGcObject, UrlSearchParams>,
   event_targets: HashMap<WeakGcObject, EventTargetState>,
+  live_html_collections: Vec<LiveHtmlCollection>,
   abort_signal_listener_cleanup_call: Option<NativeFunctionId>,
   timer_registry: Rc<RefCell<HashMap<TimerId, TimerEntry>>>,
   urlsp_iterator_next_call: Option<NativeFunctionId>,
@@ -1250,6 +1271,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       urls: HashMap::new(),
       params: HashMap::new(),
       event_targets: HashMap::new(),
+      live_html_collections: Vec::new(),
       abort_signal_listener_cleanup_call: None,
       timer_registry: Rc::new(RefCell::new(HashMap::new())),
       urlsp_iterator_next_call: None,
@@ -1266,6 +1288,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       urls: HashMap::new(),
       params: HashMap::new(),
       event_targets: HashMap::new(),
+      live_html_collections: Vec::new(),
       abort_signal_listener_cleanup_call: None,
       timer_registry: Rc::new(RefCell::new(HashMap::new())),
       urlsp_iterator_next_call: None,
@@ -1281,6 +1304,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     self.urls.clear();
     self.params.clear();
     self.event_targets.clear();
+    self.live_html_collections.clear();
     self.timer_registry.borrow_mut().clear();
     self.urlsp_iterator_next_call = None;
     self.urlsp_iterator_iterator_call = None;
@@ -1355,6 +1379,9 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
 
     self.urls.retain(|k, _| k.upgrade(heap).is_some());
     self.params.retain(|k, _| k.upgrade(heap).is_some());
+    self
+      .live_html_collections
+      .retain(|coll| coll.weak_obj.upgrade(heap).is_some());
 
     // When an EventTarget wrapper dies, drop its listener roots.
     self.event_targets.retain(|k, state| {
@@ -1539,6 +1566,176 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
         f(&mut adapter)
       }
     }
+  }
+
+  fn create_live_html_collection(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    document_obj: GcObject,
+    root_wrapper_obj: GcObject,
+    document_id: DocumentId,
+    root: NodeId,
+    kind: LiveHtmlCollectionKind,
+  ) -> Result<GcObject, VmError>
+  where
+    Host: DomHost,
+  {
+    scope.push_root(Value::Object(document_obj))?;
+    scope.push_root(Value::Object(root_wrapper_obj))?;
+
+    let collection = scope.alloc_object()?;
+    scope.push_root(Value::Object(collection))?;
+
+    let proto_key = key_from_str(scope, HTML_COLLECTION_PROTOTYPE_KEY)?;
+    let proto = match scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &proto_key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "missing HTMLCollection prototype for DOM collection getter",
+        ))
+      }
+    };
+    scope
+      .heap_mut()
+      .object_set_prototype(collection, Some(proto))?;
+
+    // Keep the root wrapper alive even if the caller only holds the collection object.
+    let root_key = key_from_str(scope, HTML_COLLECTION_ROOT_KEY)?;
+    scope.define_property(
+      collection,
+      root_key,
+      data_property(Value::Object(root_wrapper_obj), false, false, false),
+    )?;
+
+    let coll = LiveHtmlCollection {
+      weak_obj: WeakGcObject::from(collection),
+      document_id,
+      root,
+      kind,
+    };
+    self.sync_one_html_collection(vm, scope, collection, &coll)?;
+    self.live_html_collections.push(coll);
+    Ok(collection)
+  }
+
+  fn sync_live_html_collections(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+  ) -> Result<(), VmError>
+  where
+    Host: DomHost,
+  {
+    if self.live_html_collections.is_empty() {
+      return Ok(());
+    }
+
+    let mut collections = std::mem::take(&mut self.live_html_collections);
+    let mut out: Vec<LiveHtmlCollection> = Vec::with_capacity(collections.len());
+
+    for coll in collections.drain(..) {
+      let Some(obj) = coll.weak_obj.upgrade(scope.heap()) else {
+        continue;
+      };
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(obj))?;
+      self.sync_one_html_collection(vm, &mut scope, obj, &coll)?;
+      out.push(coll);
+    }
+
+    self.live_html_collections = out;
+    Ok(())
+  }
+
+  fn sync_one_html_collection(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    collection_obj: GcObject,
+    coll: &LiveHtmlCollection,
+  ) -> Result<(), VmError>
+  where
+    Host: DomHost,
+  {
+    let items: Vec<(NodeId, DomInterface)> = self.with_dom_host(vm, |host| {
+      Ok(host.with_dom(|dom| {
+        let ids: Vec<NodeId> = match &coll.kind {
+          LiveHtmlCollectionKind::ChildrenElements => dom.children_elements(coll.root),
+          LiveHtmlCollectionKind::TagName { qualified_name } => {
+            dom.get_elements_by_tag_name_from(coll.root, qualified_name)
+          }
+          LiveHtmlCollectionKind::TagNameNS {
+            namespace,
+            local_name,
+          } => dom.get_elements_by_tag_name_ns_from(
+            coll.root,
+            namespace.as_deref(),
+            local_name,
+          ),
+          LiveHtmlCollectionKind::ClassName { class_names } => {
+            dom.get_elements_by_class_name_from(coll.root, class_names)
+          }
+          LiveHtmlCollectionKind::Name { name } => dom.get_elements_by_name_from(coll.root, name),
+        };
+
+        ids
+          .into_iter()
+          .map(|node_id| {
+            let primary = if node_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+            };
+            (node_id, primary)
+          })
+          .collect()
+      }))
+    })?;
+
+    let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
+    let old_len = match scope
+      .heap()
+      .object_get_own_data_property_value(collection_obj, &length_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+      _ => 0,
+    };
+
+    for (idx, (node_id, primary)) in items.iter().copied().enumerate() {
+      let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+        scope,
+        coll.document_id,
+        node_id,
+        primary,
+      )?;
+      scope.push_root(Value::Object(wrapper))?;
+
+      let idx_key = key_from_str(scope, &idx.to_string())?;
+      scope.define_property(
+        collection_obj,
+        idx_key,
+        data_property(Value::Object(wrapper), true, true, true),
+      )?;
+    }
+
+    for idx in items.len()..old_len {
+      let idx_key = key_from_str(scope, &idx.to_string())?;
+      scope.heap_mut().delete_property_or_throw(collection_obj, idx_key)?;
+    }
+
+    // Update internal length storage. Public `length` is exposed as a readonly accessor on
+    // `HTMLCollection.prototype`.
+    scope.define_property(
+      collection_obj,
+      length_key,
+      data_property(Value::Number(items.len() as f64), true, false, false),
+    )?;
+
+    Ok(())
   }
 
   fn require_params(&self, receiver: Option<Value>) -> Result<UrlSearchParams, VmError> {
@@ -2354,6 +2551,106 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           scope.alloc_object()?
         };
         Ok(Value::Object(wrapper))
+      }
+      ("Document", "getElementsByTagName", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(document_obj))?;
+
+        let handle =
+          require_dom_platform_mut(vm)?.require_document_handle(scope.heap(), Value::Object(document_obj))?;
+        let document_id = handle.document_id;
+        let root = handle.node_id;
+
+        let qualified_name =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let collection = self.create_live_html_collection(
+          vm,
+          scope,
+          document_obj,
+          document_obj,
+          document_id,
+          root,
+          LiveHtmlCollectionKind::TagName { qualified_name },
+        )?;
+        Ok(Value::Object(collection))
+      }
+      ("Document", "getElementsByTagNameNS", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(document_obj))?;
+
+        let handle =
+          require_dom_platform_mut(vm)?.require_document_handle(scope.heap(), Value::Object(document_obj))?;
+        let document_id = handle.document_id;
+        let root = handle.node_id;
+
+        let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let namespace = match namespace_value {
+          Value::Null | Value::Undefined => None,
+          Value::String(_) => Some(js_string_to_rust_string(scope, namespace_value)?),
+          _ => return Err(VmError::TypeError("expected namespace to be a string or null")),
+        };
+        let local_name =
+          js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
+
+        let collection = self.create_live_html_collection(
+          vm,
+          scope,
+          document_obj,
+          document_obj,
+          document_id,
+          root,
+          LiveHtmlCollectionKind::TagNameNS {
+            namespace,
+            local_name,
+          },
+        )?;
+        Ok(Value::Object(collection))
+      }
+      ("Document", "getElementsByClassName", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(document_obj))?;
+
+        let handle =
+          require_dom_platform_mut(vm)?.require_document_handle(scope.heap(), Value::Object(document_obj))?;
+        let document_id = handle.document_id;
+        let root = handle.node_id;
+
+        let class_names =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let collection = self.create_live_html_collection(
+          vm,
+          scope,
+          document_obj,
+          document_obj,
+          document_id,
+          root,
+          LiveHtmlCollectionKind::ClassName { class_names },
+        )?;
+        Ok(Value::Object(collection))
+      }
+      ("Document", "getElementsByName", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(document_obj))?;
+
+        let handle =
+          require_dom_platform_mut(vm)?.require_document_handle(scope.heap(), Value::Object(document_obj))?;
+        let document_id = handle.document_id;
+        let root = handle.node_id;
+
+        let name = js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let collection = self.create_live_html_collection(
+          vm,
+          scope,
+          document_obj,
+          document_obj,
+          document_id,
+          root,
+          LiveHtmlCollectionKind::Name { name },
+        )?;
+        Ok(Value::Object(collection))
       }
       ("Document", "querySelector", 0) => {
         let document_obj = Self::require_receiver_object(receiver)?;
@@ -4355,6 +4652,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }
             }
 
+            self.sync_live_html_collections(vm, scope)?;
             let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
@@ -4452,6 +4750,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }
             }
 
+            self.sync_live_html_collections(vm, scope)?;
             let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
@@ -4506,6 +4805,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               parent_id,
               document_id,
             )?;
+            self.sync_live_html_collections(vm, scope)?;
             let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
@@ -4601,6 +4901,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }
             }
 
+            self.sync_live_html_collections(vm, scope)?;
             let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if old_child_id.index() >= dom.nodes_len() {
@@ -6952,7 +7253,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
           })?;
           match result {
-            Ok(()) => Ok(Value::Undefined),
+            Ok(()) => {
+              self.sync_live_html_collections(vm, scope)?;
+              Ok(Value::Undefined)
+            }
             Err(err) => {
               let class = self.dom_exception_class_for_realm(vm, scope)?;
               Err(throw_dom_error(scope, class, err))
@@ -6996,7 +7300,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
           })?;
           match result {
-            Ok(()) => Ok(Value::Undefined),
+            Ok(()) => {
+              self.sync_live_html_collections(vm, scope)?;
+              Ok(Value::Undefined)
+            }
             Err(err) => {
               let class = self.dom_exception_class_for_realm(vm, scope)?;
               Err(throw_dom_error(scope, class, err))
@@ -7071,6 +7378,123 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
+      ("Element", "getElementsByTagName", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        scope.push_root(Value::Object(wrapper_obj))?;
+
+        let handle =
+          require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), Value::Object(wrapper_obj))?;
+        let element_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let document_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => return Err(VmError::TypeError("Illegal invocation")),
+        };
+        scope.push_root(Value::Object(document_obj))?;
+
+        let qualified_name =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let collection = self.create_live_html_collection(
+          vm,
+          scope,
+          document_obj,
+          wrapper_obj,
+          document_id,
+          element_id,
+          LiveHtmlCollectionKind::TagName { qualified_name },
+        )?;
+        Ok(Value::Object(collection))
+      }
+      ("Element", "getElementsByTagNameNS", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        scope.push_root(Value::Object(wrapper_obj))?;
+
+        let handle =
+          require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), Value::Object(wrapper_obj))?;
+        let element_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let document_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => return Err(VmError::TypeError("Illegal invocation")),
+        };
+        scope.push_root(Value::Object(document_obj))?;
+
+        let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let namespace = match namespace_value {
+          Value::Null | Value::Undefined => None,
+          Value::String(_) => Some(js_string_to_rust_string(scope, namespace_value)?),
+          _ => return Err(VmError::TypeError("expected namespace to be a string or null")),
+        };
+        let local_name =
+          js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
+
+        let collection = self.create_live_html_collection(
+          vm,
+          scope,
+          document_obj,
+          wrapper_obj,
+          document_id,
+          element_id,
+          LiveHtmlCollectionKind::TagNameNS {
+            namespace,
+            local_name,
+          },
+        )?;
+        Ok(Value::Object(collection))
+      }
+      ("Element", "getElementsByClassName", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        scope.push_root(Value::Object(wrapper_obj))?;
+
+        let handle =
+          require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), Value::Object(wrapper_obj))?;
+        let element_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
+        let document_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => return Err(VmError::TypeError("Illegal invocation")),
+        };
+        scope.push_root(Value::Object(document_obj))?;
+
+        let class_names =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let collection = self.create_live_html_collection(
+          vm,
+          scope,
+          document_obj,
+          wrapper_obj,
+          document_id,
+          element_id,
+          LiveHtmlCollectionKind::ClassName { class_names },
+        )?;
+        Ok(Value::Object(collection))
+      }
       ("Element", "children", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
         let Value::Object(wrapper_obj) = receiver else {
@@ -7134,6 +7558,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               children_key,
               data_property(Value::Object(collection), false, false, false),
             )?;
+
+            // Register as a live HTMLCollection so mutations (appendChild/removeChild/etc) update the
+            // cached object even when callers retain the collection reference.
+            self.live_html_collections.push(LiveHtmlCollection {
+              weak_obj: WeakGcObject::from(collection),
+              document_id,
+              root: node_id,
+              kind: LiveHtmlCollectionKind::ChildrenElements,
+            });
 
             collection
           }
@@ -7367,6 +7800,100 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
         Ok(Value::Number(len))
       }
+      ("HTMLCollection", "item", 0) => {
+        // HTMLCollection.item(index): return own numeric property if present and not undefined; else null.
+        let Some(Value::Object(collection_obj)) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        scope.push_root(Value::Object(collection_obj))?;
+
+        let idx = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
+          Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => n as u32,
+          _ => 0,
+        };
+
+        let key = key_from_str(scope, &idx.to_string())?;
+        Ok(
+          scope
+            .heap()
+            .object_get_own_data_property_value(collection_obj, &key)?
+            .filter(|v| !matches!(v, Value::Undefined))
+            .unwrap_or(Value::Null),
+        )
+      }
+      ("HTMLCollection", "length", 0) => {
+        let Some(Value::Object(collection_obj)) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        scope.push_root(Value::Object(collection_obj))?;
+
+        let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
+        let len = match scope
+          .heap()
+          .object_get_own_data_property_value(collection_obj, &length_key)?
+        {
+          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n,
+          _ => 0.0,
+        };
+        Ok(Value::Number(len))
+      }
+      ("HTMLCollection", "namedItem", 0) => {
+        let Some(Value::Object(collection_obj)) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        scope.push_root(Value::Object(collection_obj))?;
+
+        let query =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
+        let len = match scope
+          .heap()
+          .object_get_own_data_property_value(collection_obj, &length_key)?
+        {
+          Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+          _ => 0,
+        };
+
+        // Snapshot element IDs first so we can borrow the DOM once.
+        let mut candidates: Vec<(GcObject, NodeId)> = Vec::new();
+        candidates
+          .try_reserve(len)
+          .map_err(|_| VmError::OutOfMemory)?;
+        for idx in 0..len {
+          let idx_key = key_from_str(scope, &idx.to_string())?;
+          let value = scope
+            .heap()
+            .object_get_own_data_property_value(collection_obj, &idx_key)?
+            .unwrap_or(Value::Undefined);
+          let Value::Object(wrapper_obj) = value else {
+            continue;
+          };
+          scope.push_root(Value::Object(wrapper_obj))?;
+          let element_id =
+            match require_dom_platform_mut(vm)?.require_element_id(scope.heap(), value) {
+              Ok(id) => id,
+              Err(VmError::TypeError(_)) => continue,
+              Err(err) => return Err(err),
+            };
+          candidates.push((wrapper_obj, element_id));
+        }
+
+        let found: Option<GcObject> = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            for (wrapper_obj, element_id) in &candidates {
+              let id_attr = dom.get_attribute(*element_id, "id").ok().flatten();
+              let name_attr = dom.get_attribute(*element_id, "name").ok().flatten();
+              if id_attr == Some(query.as_str()) || name_attr == Some(query.as_str()) {
+                return Some(*wrapper_obj);
+              }
+            }
+            None
+          }))
+        })?;
+
+        Ok(found.map(Value::Object).unwrap_or(Value::Null))
+      }
       ("DOMTokenList", "add", 0) => {
         let (element_id, _obj) = require_dom_token_list_receiver(scope, receiver)?;
 
@@ -7382,7 +7909,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let result: Result<bool, DomError> =
           self.with_dom_host(vm, |host| Ok(host.class_list_add(element_id, &token_refs)))?;
         match result {
-          Ok(_) => Ok(Value::Undefined),
+          Ok(_) => {
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -7404,7 +7934,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let result: Result<bool, DomError> =
           self.with_dom_host(vm, |host| Ok(host.class_list_remove(element_id, &token_refs)))?;
         match result {
-          Ok(_) => Ok(Value::Undefined),
+          Ok(_) => {
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -7438,7 +7971,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let result: Result<bool, DomError> =
           self.with_dom_host(vm, |host| Ok(host.class_list_toggle(element_id, &token, force)))?;
         match result {
-          Ok(b) => Ok(Value::Bool(b)),
+          Ok(b) => {
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Bool(b))
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -7455,7 +7991,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Ok(host.class_list_replace(element_id, &token, &new_token))
         })?;
         match result {
-          Ok(b) => Ok(Value::Bool(b)),
+          Ok(b) => {
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Bool(b))
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -7507,7 +8046,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           let result: Result<bool, DomError> =
             self.with_dom_host(vm, |host| Ok(host.set_element_class_name(element_id, &value)))?;
           match result {
-            Ok(_) => Ok(Value::Undefined),
+            Ok(_) => {
+              self.sync_live_html_collections(vm, scope)?;
+              Ok(Value::Undefined)
+            }
             Err(err) => {
               let class = self.dom_exception_class_for_realm(vm, scope)?;
               Err(throw_dom_error(scope, class, err))
@@ -7835,6 +8377,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             Ok(()) => {
               // `innerHTML` replaces children; keep cached `childNodes` live NodeLists updated.
               self.sync_cached_child_nodes_for_wrapper(vm, scope, obj, element_id, document_id)?;
+              self.sync_live_html_collections(vm, scope)?;
               Ok(Value::Undefined)
             }
             Err(err) => {
@@ -7969,7 +8512,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(_) => Ok(Value::Undefined),
+          Ok(_) => {
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -7992,7 +8538,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(_) => Ok(Value::Undefined),
+          Ok(_) => {
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -8093,7 +8642,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(Some(())) | Ok(None) => Ok(Value::Undefined),
+          Ok(Some(())) | Ok(None) => {
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -8157,6 +8709,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }
               _ => {}
             }
+            self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
           Err(err) => {
@@ -8212,6 +8765,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }
               _ => {}
             }
+            self.sync_live_html_collections(vm, scope)?;
             Ok(new_element_val)
           }
           Ok(None) => Ok(Value::Null),
@@ -8266,6 +8820,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }
               _ => {}
             }
+            self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
           Err(err) => {
@@ -8421,6 +8976,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }))
             })?;
             sync_result?;
+            self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
@@ -8447,7 +9003,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(()) => Ok(Value::Undefined),
+          Ok(()) => {
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       }
@@ -9159,6 +9718,48 @@ mod window_document_tests {
           if (coll1.length !== 1) return false;
           if (coll1[0] !== b) return false;
           if (node.children !== coll1) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_get_elements_by_tag_name_returns_live_html_collection() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        try {
+          const root = document.createElement('div');
+          const span = document.createElement('span');
+          const coll = root.getElementsByTagName('span');
+          if (!(coll instanceof HTMLCollection)) return false;
+          if (Array.isArray(coll)) return false;
+          if (coll.length !== 0) return false;
+          if (coll.item(0) !== null) return false;
+
+          root.appendChild(span);
+          if (coll.length !== 1) return false;
+          if (coll.item(0) !== span) return false;
+          if (coll[0] !== span) return false;
+
+          root.removeChild(span);
+          if (coll.length !== 0) return false;
+          if (coll.item(0) !== null) return false;
           return true;
         } catch (e) {
           return false;
