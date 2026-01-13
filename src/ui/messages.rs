@@ -1335,8 +1335,8 @@ mod tests {
       UiToWorker::A11ySetTextSelectionRange {
         tab_id,
         node_id: 42,
-        start: 0,
-        end: 5,
+        anchor: 0,
+        focus: 5,
       },
     ];
 
