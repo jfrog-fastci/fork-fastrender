@@ -1206,3 +1206,69 @@ fn textarea_maxlength_clamps_paste() -> Result<()> {
 
   Ok(())
 }
+
+#[test]
+fn text_input_auto_scrolls_horizontally_to_keep_caret_visible() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let value = "0123456789".repeat(10);
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body {{ margin: 0; padding: 0; }}
+            #txt {{ position: absolute; left: 0; top: 0; width: 140px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }}
+          </style>
+        </head>
+        <body>
+          <input id="txt" value="{value}">
+        </body>
+      </html>
+    "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input and move the caret to the end of the value.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+
+  assert!(
+    controller
+      .scroll_state()
+      .elements
+      .values()
+      .any(|offset| offset.x > 0.0),
+    "expected text input to auto-scroll horizontally after moving caret to end; got {:?}",
+    controller.scroll_state().elements
+  );
+
+  // Move caret back to the start and ensure the horizontal scroll offset returns to 0.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  assert!(
+    !controller
+      .scroll_state()
+      .elements
+      .values()
+      .any(|offset| offset.x > 0.0),
+    "expected horizontal scroll offset to return to 0 after moving caret to start; got {:?}",
+    controller.scroll_state().elements
+  );
+
+  Ok(())
+}

@@ -6405,18 +6405,25 @@ fn paint_fragment_tree_with_state(
 
       let mut is_focused_textarea = false;
       let mut textarea_value: Option<&str> = None;
+      let mut is_focused_text_input = false;
       if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
         if let crate::tree::box_tree::ReplacedType::FormControl(control) = replaced_type {
           if let crate::tree::box_tree::FormControlKind::TextArea { value, .. } = &control.control {
             textarea_value = Some(value);
             is_focused_textarea = control.focused && !control.disabled;
           }
+          if let crate::tree::box_tree::FormControlKind::Text { .. } = &control.control {
+            is_focused_text_input = control.focused && !control.disabled;
+          }
         }
       }
 
       // Only pay the cost of computing scroll bounds if we have scroll state to clamp or if we may
-      // need to auto-scroll a focused textarea to keep the caret visible.
-      if has_stored_offset || textarea_value.is_some() && is_focused_textarea {
+      // need to auto-scroll a focused textarea/text input to keep the caret visible.
+      if has_stored_offset
+        || textarea_value.is_some() && is_focused_textarea
+        || is_focused_text_input
+      {
         let existing = scroll_state.elements.get(&box_id).copied().unwrap_or(Point::ZERO);
         let mut offset = Point::new(
           if existing.x.is_finite() { existing.x } else { 0.0 },
@@ -6456,6 +6463,191 @@ fn paint_fragment_tree_with_state(
                         bounds.min_y = 0.0;
                         bounds.max_y = (content_height - viewport_height).max(0.0);
                       }
+                    }
+                  }
+                }
+              }
+
+              if let crate::tree::box_tree::FormControlKind::Text {
+                value,
+                caret,
+                caret_affinity,
+                kind,
+                ..
+              } = &control.control
+              {
+                // Single-line text inputs paint their value without real fragment children, so the
+                // normal `scroll_overflow`-based bounds computation doesn't capture horizontal
+                // overflow. Mirror the painter's text-viewport geometry and compute a synthetic
+                // horizontal scroll range from the shaped text advance.
+                //
+                // Avoid doing shaping work unless we already have scroll state to clamp or we may
+                // need to auto-scroll a focused input.
+                if has_stored_offset || (control.focused && !control.disabled) {
+                  let border_rect =
+                    Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
+                  let content_rect = crate::interaction::content_rect_for_border_rect(
+                    border_rect,
+                    style,
+                    viewport_size,
+                  );
+                  let mut text_rect = Rect::from_xywh(
+                    content_rect.x() + 2.0,
+                    content_rect.y() + 2.0,
+                    (content_rect.width() - 4.0).max(0.0),
+                    (content_rect.height() - 4.0).max(0.0),
+                  );
+                  if !matches!(style.appearance, crate::style::types::Appearance::None) {
+                    let affordance_space: f32 = match kind {
+                      crate::tree::box_tree::TextControlKind::Number => 14.0,
+                      crate::tree::box_tree::TextControlKind::Date => 12.0,
+                      _ => 0.0,
+                    };
+                    if affordance_space.is_finite() && affordance_space > 0.0 {
+                      text_rect = Rect::from_xywh(
+                        text_rect.x(),
+                        text_rect.y(),
+                        (text_rect.width() - affordance_space).max(0.0),
+                        text_rect.height(),
+                      );
+                    }
+                  }
+
+                  let viewport_width = text_rect.width().max(0.0);
+                  let viewport_width = if viewport_width.is_finite() {
+                    viewport_width
+                  } else {
+                    0.0
+                  };
+
+                  let preedit = control.ime_preedit.as_deref().filter(|t| !t.is_empty());
+                  let committed_is_empty = value.is_empty();
+                  let display_is_empty = committed_is_empty && preedit.is_none();
+                  let mut display_text_owned: Option<String> = None;
+                  let mut display_text: &str = "";
+
+                  match kind {
+                    crate::tree::box_tree::TextControlKind::Password => {
+                      if !display_is_empty {
+                        let committed_len = value.chars().count();
+                        let preedit_len =
+                          preedit.map(|t| t.chars().count()).unwrap_or(0);
+                        let mask_len =
+                          committed_len.saturating_add(preedit_len).clamp(3, 50);
+                        display_text_owned = Some("•".repeat(mask_len));
+                        display_text = display_text_owned.as_deref().unwrap_or("");
+                      }
+                    }
+                    crate::tree::box_tree::TextControlKind::Number
+                    | crate::tree::box_tree::TextControlKind::Date
+                    | crate::tree::box_tree::TextControlKind::Plain => {
+                      if let Some(preedit) = preedit {
+                        if committed_is_empty {
+                          display_text = preedit;
+                        } else {
+                          let mut combined = value.clone();
+                          combined.push_str(preedit);
+                          display_text_owned = Some(combined);
+                          display_text = display_text_owned.as_deref().unwrap_or("");
+                        }
+                      } else {
+                        display_text = value.as_str();
+                      }
+                    }
+                  }
+
+                  let char_count = display_text.chars().count();
+                  let font_size = if style.font_size.is_finite() {
+                    style.font_size.max(0.0)
+                  } else {
+                    0.0
+                  };
+                  let mut fallback_advance = char_count as f32 * font_size * 0.6;
+                  if !fallback_advance.is_finite() {
+                    fallback_advance = 0.0;
+                  }
+
+                  let mut shaped_runs: Option<Vec<crate::text::pipeline::ShapedRun>> = None;
+                  let mut total_advance = fallback_advance;
+                  if !display_text.is_empty() {
+                    if let Ok(mut runs) = crate::interaction::shaping_pipeline_for_interaction()
+                      .shape(display_text, style, font_context)
+                    {
+                      if !runs.is_empty() {
+                        TextItem::apply_spacing_to_runs(
+                          &mut runs,
+                          display_text,
+                          style.letter_spacing,
+                          style.word_spacing,
+                        );
+                        let adv: f32 = runs.iter().map(|run| run.advance).sum();
+                        if adv.is_finite() {
+                          total_advance = adv.max(0.0);
+                        }
+                        shaped_runs = Some(runs);
+                      }
+                    }
+                  }
+                  if !total_advance.is_finite() {
+                    total_advance = 0.0;
+                  }
+
+                  let mut max_scroll_x = (total_advance - viewport_width).max(0.0);
+                  if !max_scroll_x.is_finite() {
+                    max_scroll_x = 0.0;
+                  }
+                  bounds.min_x = 0.0;
+                  bounds.max_x = max_scroll_x;
+
+                  if control.focused && !control.disabled && viewport_width > 0.0 {
+                    let max_chars = char_count;
+                    let caret_idx = if preedit.is_some() {
+                      max_chars
+                    } else {
+                      (*caret).min(max_chars)
+                    };
+                    let caret_affinity_for_paint = if preedit.is_some() {
+                      crate::text::caret::CaretAffinity::Downstream
+                    } else {
+                      *caret_affinity
+                    };
+
+                    let caret_x = if let Some(runs) = shaped_runs.as_deref() {
+                      let caret_stops = crate::text::caret::caret_stops_for_runs(
+                        display_text,
+                        runs,
+                        total_advance,
+                      );
+                      crate::text::caret::caret_x_for_position(
+                        &caret_stops,
+                        caret_idx,
+                        caret_affinity_for_paint,
+                      )
+                      .unwrap_or(0.0)
+                    } else if max_chars > 0 {
+                      let avg_char_advance = (fallback_advance / max_chars as f32).max(0.0);
+                      avg_char_advance * caret_idx as f32
+                    } else {
+                      0.0
+                    };
+                    let caret_x = if caret_x.is_finite() { caret_x.max(0.0) } else { 0.0 };
+
+                    let mut next_scroll_x = if offset.x.is_finite() { offset.x } else { 0.0 };
+                    next_scroll_x = next_scroll_x.max(0.0);
+
+                    let visible_left = next_scroll_x;
+                    let viewport_right_edge = (viewport_width - 1.0).max(0.0);
+                    let visible_right = visible_left + viewport_right_edge;
+                    if caret_x < visible_left {
+                      next_scroll_x = caret_x;
+                    } else if caret_x > visible_right {
+                      next_scroll_x = caret_x - viewport_right_edge;
+                    }
+
+                    if next_scroll_x.is_finite() {
+                      offset.x = next_scroll_x;
+                    } else {
+                      offset.x = 0.0;
                     }
                   }
                 }
