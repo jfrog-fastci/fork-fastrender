@@ -1104,7 +1104,12 @@ fn alloc_performance_entries_array(
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-  let match_count = entries
+  // Performance Timeline spec: `getEntries*` must return entries in chronological order (increasing
+  // `startTime`). Our internal store is insertion-ordered, but the host clock can be manipulated by
+  // tests/embedders, so defensively sort the matches here.
+  //
+  // Use a stable sort so ties preserve insertion order (deterministic).
+  let mut matching: Vec<&PerformanceEntry> = entries
     .iter()
     .filter(|e| {
       let name_ok = match name_filter {
@@ -1117,9 +1122,11 @@ fn alloc_performance_entries_array(
       };
       name_ok && type_ok
     })
-    .count();
+    .collect();
 
-  let arr = scope.alloc_array(match_count)?;
+  matching.sort_by(|a, b| a.start_time.total_cmp(&b.start_time));
+
+  let arr = scope.alloc_array(matching.len())?;
   scope.push_root(Value::Object(arr))?;
   scope
     .heap_mut()
@@ -1149,18 +1156,7 @@ fn alloc_performance_entries_array(
   scope.push_root(Value::String(measure_type_s))?;
 
   let mut out_index: u32 = 0;
-  for entry in entries.iter() {
-    if let Some(name) = name_filter {
-      if entry.name.as_ref() != name {
-        continue;
-      }
-    }
-    if let Some(ty) = type_filter {
-      if entry.entry_type != ty {
-        continue;
-      }
-    }
-
+  for entry in matching {
     let mut scope2 = scope.reborrow();
 
     let entry_obj = scope2.alloc_object()?;
@@ -2324,6 +2320,91 @@ mod tests {
       (dom_interactive - 123.0).abs() < 1e-9,
       "unexpected domInteractive offset {dom_interactive}"
     );
+
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn performance_get_entries_by_type_is_sorted_by_start_time() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings =
+      install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, WebTime::default())
+        .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    let perf_mark = get_object_property(&mut heap, performance_obj, "mark");
+    let perf_get_by_type = get_object_property(&mut heap, performance_obj, "getEntriesByType");
+
+    // Create marks out of insertion order by moving the clock backwards.
+    clock.set_now(Duration::from_millis(50));
+    let arg_late = alloc_string_value(&mut heap, "late");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_late],
+    );
+
+    clock.set_now(Duration::from_millis(10));
+    let arg_early = alloc_string_value(&mut heap, "early");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_early],
+    );
+
+    let arg_mark = alloc_string_value(&mut heap, "mark");
+    let marks = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_type,
+      Value::Object(performance_obj),
+      &[arg_mark],
+    );
+    let Value::Object(marks_arr) = marks else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, marks_arr), 2);
+
+    let entry0 = get_array_elem(&mut heap, marks_arr, 0);
+    let entry1 = get_array_elem(&mut heap, marks_arr, 1);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected entry object");
+    };
+    let Value::Object(entry1_obj) = entry1 else {
+      panic!("expected entry object");
+    };
+
+    let name0 = get_object_property(&mut heap, entry0_obj, "name");
+    let name1 = get_object_property(&mut heap, entry1_obj, "name");
+    assert_eq!(string_value_to_utf8_lossy(&heap, name0), "early");
+    assert_eq!(string_value_to_utf8_lossy(&heap, name1), "late");
+
+    let start0 = get_object_property(&mut heap, entry0_obj, "startTime");
+    let start1 = get_object_property(&mut heap, entry1_obj, "startTime");
+    let Value::Number(start0) = start0 else {
+      panic!("expected startTime number");
+    };
+    let Value::Number(start1) = start1 else {
+      panic!("expected startTime number");
+    };
+    assert!((start0 - 10.0).abs() < 1e-9, "unexpected startTime {start0}");
+    assert!((start1 - 50.0).abs() < 1e-9, "unexpected startTime {start1}");
+    assert!(start0 <= start1, "expected chronological ordering");
 
     realm.teardown(&mut heap);
   }
