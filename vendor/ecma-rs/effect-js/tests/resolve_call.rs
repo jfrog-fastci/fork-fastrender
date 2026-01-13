@@ -47,7 +47,7 @@ fn find_call_expr(body: &hir_js::Body, span: TextRange) -> ExprId {
 
 #[test]
 fn resolves_static_known_calls() {
-  let source = "const a = JSON.parse(\"x\");\nconst b = Promise.all([]);\nconst c = Promise.race([]);\nconst d = JSON[\"parse\"](\"x\");\nconst e = globalThis[\"fetch\"](\"x\");";
+  let source = "const a = JSON.parse(\"x\");\nconst b = Promise.all([]);\nconst c = Promise.race([]);\nconst d = JSON[\"parse\"](\"x\");\nconst e = globalThis[\"fetch\"](\"x\");\nconst f = crypto.subtle.encrypt(algo, key, data);\nconst g = crypto.subtle.decrypt(algo, key, data);\nconst h = globalThis.crypto.subtle.sign(algo, key, data);\nconst i = crypto.subtle[\"verify\"](algo, key, sig, data);";
   let lower = hir_js::lower_from_source_with_kind(FileKind::Ts, source).unwrap();
   let body_id = lower.root_body();
   let body = lower.body(body_id).unwrap();
@@ -91,6 +91,38 @@ fn resolves_static_known_calls() {
   assert_eq!(resolved.api, "fetch");
   assert_eq!(resolved.api_id, ApiId::from_name("fetch"));
   assert_eq!(resolved.args.len(), 1);
+
+  let encrypt_span = range_of(source, "crypto.subtle.encrypt(algo, key, data)");
+  let encrypt_call = find_call_expr(body, encrypt_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, encrypt_call, &db, None).expect("resolve crypto.subtle.encrypt");
+  assert_eq!(resolved.api, "crypto.subtle.encrypt");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.encrypt"));
+  assert_eq!(resolved.args.len(), 3);
+
+  let decrypt_span = range_of(source, "crypto.subtle.decrypt(algo, key, data)");
+  let decrypt_call = find_call_expr(body, decrypt_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, decrypt_call, &db, None).expect("resolve crypto.subtle.decrypt");
+  assert_eq!(resolved.api, "crypto.subtle.decrypt");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.decrypt"));
+  assert_eq!(resolved.args.len(), 3);
+
+  let sign_span = range_of(source, "globalThis.crypto.subtle.sign(algo, key, data)");
+  let sign_call = find_call_expr(body, sign_span);
+  let resolved = resolve_call(&lower, body_id, body, sign_call, &db, None)
+    .expect("resolve globalThis.crypto.subtle.sign");
+  assert_eq!(resolved.api, "crypto.subtle.sign");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.sign"));
+  assert_eq!(resolved.args.len(), 3);
+
+  let verify_span = range_of(source, "crypto.subtle[\"verify\"](algo, key, sig, data)");
+  let verify_call = find_call_expr(body, verify_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, verify_call, &db, None).expect("resolve crypto.subtle.verify");
+  assert_eq!(resolved.api, "crypto.subtle.verify");
+  assert_eq!(resolved.api_id, ApiId::from_name("crypto.subtle.verify"));
+  assert_eq!(resolved.args.len(), 4);
 }
 
 #[cfg(feature = "hir-semantic-ops")]
