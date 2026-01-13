@@ -126,6 +126,9 @@ fn maybe_assert_syscall_fails_with_eperm(
 
 fn is_seccomp_unsupported_error(err: &fastrender::sandbox::SandboxError) -> bool {
   let errno = match err {
+    fastrender::sandbox::SandboxError::SetParentDeathSignalFailed { source }
+    | fastrender::sandbox::SandboxError::SetDumpableFailed { source }
+    | fastrender::sandbox::SandboxError::DisableCoreDumpsFailed { source }
     fastrender::sandbox::SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
     fastrender::sandbox::SandboxError::SeccompInstallRejected { errno, .. } => Some(*errno),
     fastrender::sandbox::SandboxError::SeccompInstallFailed { errno, .. } => Some(*errno),
@@ -145,7 +148,9 @@ fn linux_seccomp_blocks_ptrace_and_unshare() {
   if std::env::var_os(CHILD_ENV).is_some() {
     match fastrender::sandbox::apply_renderer_seccomp_denylist() {
       Ok(fastrender::sandbox::SandboxStatus::Applied) => {}
-      Ok(fastrender::sandbox::SandboxStatus::Unsupported) => return,
+      Ok(
+        fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported,
+      ) => return,
       Err(err) => {
         if is_seccomp_unsupported_error(&err) {
           return;
