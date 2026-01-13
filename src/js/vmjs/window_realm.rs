@@ -291,6 +291,12 @@ pub(crate) struct WindowRealmUserData {
   pub(crate) session_storage_area: Arc<Mutex<web_storage::StorageArea>>,
   document_url: String,
   pub(crate) base_url: Option<String>,
+  /// Host-controlled flag that indicates this realm is a privileged `chrome://` realm.
+  ///
+  /// When set, `window.location` navigations are restricted to internal schemes to prevent
+  /// privileged chrome pages (where `window.chrome` bindings may be installed) from navigating to
+  /// untrusted network content via `location.assign` / `location.href = ...` / etc.
+  privileged_chrome_realm: bool,
   session_history: SessionHistory,
   fallback_scroll_x: f64,
   fallback_scroll_y: f64,
@@ -460,6 +466,7 @@ impl WindowRealmUserData {
       fallback_scroll_y: 0.0,
       pending_navigation: None,
       document_url,
+      privileged_chrome_realm: false,
       cookie_fetcher: None,
       cookie_jar: CookieJar::new(),
       module_loader,
@@ -920,6 +927,17 @@ impl WindowRealm {
 
   pub fn module_loader_handle(&self) -> ModuleLoaderHandle {
     Rc::clone(&self.module_loader)
+  }
+
+  /// Mark this realm as a privileged chrome realm.
+  ///
+  /// When enabled, `window.location` navigations are restricted to internal schemes (`chrome:` and
+  /// `about:`) as a defense-in-depth measure: privileged chrome pages must not be able to navigate
+  /// themselves to untrusted network content via `window.location`.
+  pub fn set_privileged_chrome_realm(&mut self, privileged: bool) {
+    if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      data.privileged_chrome_realm = privileged;
+    }
   }
 
   /// Returns and clears any `window.location` navigation request emitted by scripts.
@@ -5141,7 +5159,7 @@ fn request_location_navigation(
   url_value: Value,
   replace: bool,
 ) -> Result<Value, VmError> {
-  let (base_url, current_document_url, document_obj, window_obj) = {
+  let (base_url, current_document_url, document_obj, window_obj, privileged_chrome_realm) = {
     let Some(data) = vm.user_data::<WindowRealmUserData>() else {
       return Err(VmError::InvariantViolation("window realm missing user data"));
     };
@@ -5154,6 +5172,7 @@ fn request_location_navigation(
       data.document_url.clone(),
       data.document_obj,
       data.window_obj,
+      data.privileged_chrome_realm,
     )
   };
 
@@ -5169,17 +5188,25 @@ fn request_location_navigation(
 
   let parsed = Url::parse(&resolved)
     .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
-  match parsed.scheme() {
-    "http" | "https" | "file" | "data" | "about" => {}
-    other => {
-      return Err(throw_type_error(
-        vm,
-        scope,
-        host,
-        hooks,
-        &format!("Navigation to {other}: URLs is not supported"),
-      ));
-    }
+  let scheme = parsed.scheme();
+  let scheme_allowed = if privileged_chrome_realm {
+    // Privileged chrome realms should never be able to navigate to untrusted content via
+    // `window.location`. Restrict them to internal-only schemes.
+    //
+    // We allow `about:` to keep internal flows like `about:blank` usable.
+    matches!(scheme, "chrome" | "about")
+  } else {
+    // Normal realms follow the existing navigation allowlist. Notably, they must not be able to
+    // navigate into `chrome:` from web content.
+    matches!(scheme, "http" | "https" | "file" | "data" | "about")
+  };
+  if !scheme_allowed {
+    let message = if privileged_chrome_realm {
+      format!("Navigation to {scheme}: URLs is not allowed from a privileged chrome realm")
+    } else {
+      format!("Navigation to {scheme}: URLs is not supported")
+    };
+    return Err(throw_type_error(vm, scope, host, hooks, &message));
   }
 
   // Same-document fragment navigation fast path.
@@ -53025,6 +53052,73 @@ mod tests {
     let after_v = realm.exec_script("location.href")?;
     let after = get_string(realm.heap(), after_v);
     assert_eq!(after, before);
+    Ok(())
+  }
+
+  #[test]
+  fn unprivileged_realm_rejects_chrome_scheme_location_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let caught = realm.exec_script(
+      "let caught = false;\n\
+       try { location.assign('chrome://settings/'); } catch (e) { caught = true; }\n\
+       caught",
+    )?;
+    assert_eq!(caught, Value::Bool(true));
+    assert!(realm.take_pending_navigation_request().is_none());
+    Ok(())
+  }
+
+  #[test]
+  fn privileged_chrome_realm_allows_chrome_scheme_location_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://newtab/"))?;
+    realm.set_privileged_chrome_realm(true);
+
+    assert!(realm
+      .exec_script("location.assign('chrome://settings/'); 1 + 2")
+      .is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req, LocationNavigationRequest {
+      url: "chrome://settings/".to_string(),
+      replace: false,
+    });
+    Ok(())
+  }
+
+  #[test]
+  fn privileged_chrome_realm_rejects_untrusted_schemes_for_location_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://newtab/"))?;
+    realm.set_privileged_chrome_realm(true);
+
+    let caught = realm.exec_script(
+      "let caught = false;\n\
+       try { location.assign('https://example.com/'); } catch (e) { caught = true; }\n\
+       caught",
+    )?;
+    assert_eq!(caught, Value::Bool(true));
+    assert!(realm.take_pending_navigation_request().is_none());
+    Ok(())
+  }
+
+  #[test]
+  fn privileged_chrome_realm_fragment_navigation_is_same_document() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://newtab/"))?;
+    realm.set_privileged_chrome_realm(true);
+
+    realm.exec_script(
+      "location.href = '#a';\n\
+       globalThis.__href = location.href;\n\
+       globalThis.__url = document.URL;\n\
+       globalThis.__hist_len = history.length;",
+    )?;
+
+    assert_eq!(realm.exec_script("__hist_len")?, Value::Number(2.0));
+    assert!(realm.take_pending_navigation_request().is_none());
+    let href_v = realm.exec_script("__href")?;
+    let url_v = realm.exec_script("__url")?;
+    assert_eq!(get_string(realm.heap(), href_v), "chrome://newtab/#a");
+    assert_eq!(get_string(realm.heap(), url_v), "chrome://newtab/#a");
     Ok(())
   }
 
