@@ -148,25 +148,34 @@ mod tests {
   use super::*;
 
   use crate::test_alloc::FailAllocsGuard;
+  use crate::GcObject;
   use crate::Heap;
   use crate::HeapLimits;
   use crate::Job;
   use crate::JobKind;
+  use crate::Realm;
   use crate::RootId;
+  use crate::Scope;
+  use crate::TypedArrayKind;
   use crate::Value;
+  use crate::Vm;
   use crate::VmError;
+  use crate::VmHost;
   use crate::VmHostHooks;
   use crate::VmJobContext;
+  use crate::VmOptions;
   use crate::WeakGcObject;
 
   struct TestContext {
     heap: Heap,
+    vm: Vm,
   }
 
   impl TestContext {
     fn new() -> Self {
       Self {
         heap: Heap::new(HeapLimits::new(1024 * 1024, 512 * 1024)),
+        vm: Vm::new(VmOptions::default()),
       }
     }
   }
@@ -174,22 +183,29 @@ mod tests {
   impl VmJobContext for TestContext {
     fn call(
       &mut self,
-      _host: &mut dyn VmHostHooks,
-      _callee: Value,
-      _this: Value,
-      _args: &[Value],
+      host: &mut dyn VmHostHooks,
+      callee: Value,
+      this: Value,
+      args: &[Value],
     ) -> Result<Value, VmError> {
-      Err(VmError::Unimplemented("TestContext::call"))
+      // Borrow-split `vm` + `heap` so we can hold a `Scope` while calling into the VM.
+      let vm = &mut self.vm;
+      let heap = &mut self.heap;
+      let mut scope = heap.scope();
+      vm.call_with_host(&mut scope, host, callee, this, args)
     }
 
     fn construct(
       &mut self,
-      _host: &mut dyn VmHostHooks,
-      _callee: Value,
-      _args: &[Value],
-      _new_target: Value,
+      host: &mut dyn VmHostHooks,
+      callee: Value,
+      args: &[Value],
+      new_target: Value,
     ) -> Result<Value, VmError> {
-      Err(VmError::Unimplemented("TestContext::construct"))
+      let vm = &mut self.vm;
+      let heap = &mut self.heap;
+      let mut scope = heap.scope();
+      vm.construct_with_host(&mut scope, host, callee, args, new_target)
     }
 
     fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
@@ -241,6 +257,167 @@ mod tests {
     // collectible.
     ctx.heap.collect_garbage();
     assert_eq!(weak.upgrade(&ctx.heap), None);
+    Ok(())
+  }
+
+  fn assert_typed_array_and_data_view_are_live(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    const EXPECTED_BYTES: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    let Some(Value::Object(ta)) = args.get(0).copied() else {
+      return Err(VmError::TypeError("expected Uint8Array argument"));
+    };
+    let Some(Value::Object(dv)) = args.get(1).copied() else {
+      return Err(VmError::TypeError("expected DataView argument"));
+    };
+    let Some(Value::Object(ab)) = args.get(2).copied() else {
+      return Err(VmError::TypeError("expected ArrayBuffer argument"));
+    };
+
+    // Validate the ArrayBuffer handle and contents.
+    let data = scope.heap().array_buffer_data(ab)?;
+    if data != EXPECTED_BYTES {
+      return Err(VmError::InvariantViolation("ArrayBuffer contents mismatch"));
+    }
+
+    // Validate the typed array view and its link to the backing buffer.
+    if scope.heap().typed_array_kind(ta)? != TypedArrayKind::Uint8 {
+      return Err(VmError::InvariantViolation("expected Uint8Array kind"));
+    }
+    let (ta_buf, ta_off, ta_len) = scope.heap().typed_array_view_bytes(ta)?;
+    if ta_buf != ab || ta_off != 0 || ta_len != EXPECTED_BYTES.len() {
+      return Err(VmError::InvariantViolation(
+        "Uint8Array view does not match backing ArrayBuffer",
+      ));
+    }
+
+    // Validate the DataView view and its link to the backing buffer.
+    if scope.heap().data_view_byte_length(dv)? != EXPECTED_BYTES.len() {
+      return Err(VmError::InvariantViolation("DataView byteLength mismatch"));
+    }
+    if scope.heap().data_view_byte_offset(dv)? != 0 {
+      return Err(VmError::InvariantViolation("DataView byteOffset mismatch"));
+    }
+    let dv_buf = scope.heap().data_view_buffer(dv)?;
+    if dv_buf != ab {
+      return Err(VmError::InvariantViolation(
+        "DataView buffer does not match expected ArrayBuffer",
+      ));
+    }
+
+    Ok(Value::Undefined)
+  }
+
+  #[test]
+  fn promise_jobs_keep_typed_array_and_data_view_alive_across_gc_until_run() -> Result<(), VmError> {
+    let mut ctx = TestContext::new();
+    let mut realm = Realm::new(&mut ctx.vm, &mut ctx.heap)?;
+    let intr = *realm.intrinsics();
+
+    // Allocate an ArrayBuffer + views that will only be kept alive by the queued job.
+    let (checker, array_buffer, typed_array, data_view) = {
+      let vm = &mut ctx.vm;
+      let heap = &mut ctx.heap;
+      let mut scope = heap.scope();
+
+      let check_id = vm.register_native_call(assert_typed_array_and_data_view_are_live)?;
+      let name = scope.alloc_string("")?;
+      let checker = scope.alloc_native_function(check_id, None, name, 0)?;
+      scope.push_root(Value::Object(checker))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(checker, Some(intr.function_prototype()))?;
+
+      let ab = scope.alloc_array_buffer(8)?;
+      scope.push_root(Value::Object(ab))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+      scope
+        .heap_mut()
+        .array_buffer_write(ab, 0, &[1, 2, 3, 4, 5, 6, 7, 8])?;
+
+      let ta = scope.alloc_uint8_array(ab, 0, 8)?;
+      scope.push_root(Value::Object(ta))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(ta, Some(intr.uint8_array_prototype()))?;
+
+      let dv = scope.alloc_data_view(ab, 0, 8)?;
+      scope.push_root(Value::Object(dv))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(dv, Some(intr.data_view_prototype()))?;
+
+      (checker, ab, ta, dv)
+    };
+
+    let weak_ab = WeakGcObject::from(array_buffer);
+    let weak_ta = WeakGcObject::from(typed_array);
+    let weak_dv = WeakGcObject::from(data_view);
+
+    let root_count_before = ctx.heap.persistent_root_count();
+
+    let mut queue = MicrotaskQueue::new();
+    let checker_val = Value::Object(checker);
+    let typed_array_val = Value::Object(typed_array);
+    let data_view_val = Value::Object(data_view);
+    let array_buffer_val = Value::Object(array_buffer);
+
+    let mut job = Job::new(JobKind::Promise, move |ctx, host| {
+      ctx.call(
+        host,
+        checker_val,
+        Value::Undefined,
+        &[typed_array_val, data_view_val, array_buffer_val],
+      )?;
+      Ok(())
+    })?;
+
+    // Jobs are opaque closures; explicitly root captured handles until the job runs.
+    //
+    // Root all values on the stack while creating persistent roots so a GC triggered by one root
+    // allocation cannot collect the other yet-to-be-rooted values.
+    let values = [checker_val, typed_array_val, data_view_val, array_buffer_val];
+    let stack_len = ctx.heap.stack_root_len();
+    ctx.heap.push_stack_roots(&values)?;
+    let root_result: Result<(), VmError> = (|| {
+      job.add_root(&mut ctx, checker_val)?;
+      job.add_root(&mut ctx, typed_array_val)?;
+      job.add_root(&mut ctx, data_view_val)?;
+      job.add_root(&mut ctx, array_buffer_val)?;
+      Ok(())
+    })();
+    ctx.heap.truncate_stack_roots(stack_len);
+    root_result?;
+
+    queue.enqueue_promise_job(job, None);
+    assert_eq!(ctx.heap.persistent_root_count(), root_count_before + 4);
+
+    // A GC between enqueue and execution must not invalidate the captured handles.
+    ctx.heap.collect_garbage();
+    assert_eq!(weak_ab.upgrade(&ctx.heap), Some(array_buffer));
+    assert_eq!(weak_ta.upgrade(&ctx.heap), Some(typed_array));
+    assert_eq!(weak_dv.upgrade(&ctx.heap), Some(data_view));
+
+    let errors = queue.perform_microtask_checkpoint(&mut ctx);
+    assert!(errors.is_empty(), "unexpected microtask errors: {errors:?}");
+    assert_eq!(ctx.heap.persistent_root_count(), root_count_before);
+
+    // After the job runs and roots are removed, the views/buffer should be collectible.
+    ctx.heap.collect_garbage();
+    assert_eq!(weak_ab.upgrade(&ctx.heap), None);
+    assert_eq!(weak_ta.upgrade(&ctx.heap), None);
+    assert_eq!(weak_dv.upgrade(&ctx.heap), None);
+
+    realm.teardown(&mut ctx.heap);
     Ok(())
   }
 }
