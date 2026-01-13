@@ -114,6 +114,8 @@ ci = [
 [dependencies]
 fastrender-ipc = { path = "crates/fastrender-ipc" }
 base64 = "0.22"
+aes-gcm = "0.10"
+aes = "0.8"
 getrandom = "0.2"
 fastrender-shmem = { path = "crates/fastrender-shmem" }
 avif-decode = { version = "1.0", default-features = false, optional = true }

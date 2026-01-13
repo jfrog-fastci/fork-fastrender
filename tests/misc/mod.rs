@@ -46,5 +46,6 @@ mod transform_stream_controller_error_symbol;
 mod text_decoder_stream;
 mod transition_behavior_property_test;
 mod vm_js_crypto_subtle_digest;
+mod vm_js_crypto_subtle_jwk_oct;
 mod vm_js_dynamic_script_crossorigin_cors;
 mod vm_js_window_host_import_maps_dynamic_import;
