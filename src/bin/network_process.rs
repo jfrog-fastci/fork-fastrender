@@ -6,7 +6,7 @@
 //! response bytes.
 
 use fastrender::resource::ipc_fetcher::{
-  validate_ipc_request, IpcRequest, IpcResponse, IpcResult, IPC_AUTH_TOKEN_ENV,
+  validate_ipc_request, BrowserToNetwork, IpcRequest, IpcResponse, NetworkService, IPC_AUTH_TOKEN_ENV,
   IPC_MAX_AUTH_TOKEN_BYTES, IPC_MAX_INBOUND_FRAME_BYTES, IPC_MAX_OUTBOUND_FRAME_BYTES,
 };
 use fastrender::resource::{HttpFetcher, HttpRequest, ResourceFetcher};
@@ -94,33 +94,42 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) 
       Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
       Err(err) => return Err(err),
     };
-    let req: IpcRequest = serde_json::from_slice(&req_bytes)
+    let env: BrowserToNetwork = serde_json::from_slice(&req_bytes)
       .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     // Treat validation errors as protocol violations and close the connection.
-    validate_ipc_request(&req).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    validate_ipc_request(&env.request).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
-    let response = match req {
+    let mut service = NetworkService::new(&mut stream);
+    match env.request {
       IpcRequest::Hello { .. } => break,
-      IpcRequest::Fetch { url } => match fetcher.fetch(&url) {
-        Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
-        Err(err) => IpcResponse::Fetched(IpcResult::Err(err.into())),
-      },
+      IpcRequest::Fetch { url } => {
+        service.send_fetch_result(env.id, fetcher.fetch(&url))?;
+      }
       IpcRequest::FetchWithRequest { req } => {
         let fetch_req = req.as_fetch_request();
-        match fetcher.fetch_with_request(fetch_req) {
-          Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
-          Err(err) => IpcResponse::Fetched(IpcResult::Err(err.into())),
-        }
+        service.send_fetch_result(env.id, fetcher.fetch_with_request(fetch_req))?;
+      }
+      IpcRequest::FetchWithRequestAndValidation {
+        req,
+        etag,
+        last_modified,
+      } => {
+        let fetch_req = req.as_fetch_request();
+        service.send_fetch_result(
+          env.id,
+          fetcher.fetch_with_request_and_validation(
+            fetch_req,
+            etag.as_deref(),
+            last_modified.as_deref(),
+          ),
+        )?;
       }
       IpcRequest::FetchHttpRequest { req } => {
         let body = match req.decode_body() {
           Ok(body) => body,
           Err(msg) => {
-            let err = fastrender::error::Error::Other(msg);
-            let resp = IpcResponse::Fetched(IpcResult::Err(err.into()));
-            let payload = serde_json::to_vec(&resp)
-              .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-            write_frame(&mut stream, &payload, IPC_MAX_OUTBOUND_FRAME_BYTES)?;
+            let err = fastrender::Error::Other(msg);
+            service.send_fetch_result(env.id, Err(err))?;
             continue;
           }
         };
@@ -132,23 +141,27 @@ fn handle_client(mut stream: TcpStream, fetcher: HttpFetcher, auth_token: &str) 
           headers: &req.headers,
           body: body.as_deref(),
         };
-        match fetcher.fetch_http_request(http_req) {
-          Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
-          Err(err) => IpcResponse::Fetched(IpcResult::Err(err.into())),
-        }
+        service.send_fetch_result(env.id, fetcher.fetch_http_request(http_req))?;
+      }
+      IpcRequest::FetchPartialWithContext { kind, url, max_bytes } => {
+        let max_bytes = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+        service.send_fetch_result(env.id, fetcher.fetch_partial_with_context(kind, &url, max_bytes))?;
+      }
+      IpcRequest::FetchPartialWithRequest { req, max_bytes } => {
+        let fetch_req = req.as_fetch_request();
+        let max_bytes = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+        service.send_fetch_result(env.id, fetcher.fetch_partial_with_request(fetch_req, max_bytes))?;
       }
       // Only the subset needed by our integration tests is implemented.
       other => {
-        let err = fastrender::error::Error::Other(format!(
-          "unimplemented IPC request in network_process: {other:?}"
+        let response = IpcResponse::Unit(fastrender::resource::ipc_fetcher::IpcResult::Err(
+          fastrender::resource::ipc_fetcher::IpcError::from(fastrender::Error::Other(format!(
+            "unimplemented IPC request in network_process: {other:?}"
+          ))),
         ));
-        IpcResponse::Unit(IpcResult::Err(err.into()))
+        service.send_response(env.id, response)?;
       }
-    };
-
-    let payload = serde_json::to_vec(&response)
-      .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    write_frame(&mut stream, &payload, IPC_MAX_OUTBOUND_FRAME_BYTES)?;
+    }
   }
 
   Ok(())
