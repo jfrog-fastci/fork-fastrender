@@ -105,6 +105,12 @@ impl DomInterface {
         if tag_name.eq_ignore_ascii_case("input") {
           return Self::HTMLInputElement;
         }
+        if tag_name.eq_ignore_ascii_case("video") {
+          return Self::HTMLVideoElement;
+        }
+        if tag_name.eq_ignore_ascii_case("audio") {
+          return Self::HTMLAudioElement;
+        }
         if tag_name.eq_ignore_ascii_case("select") {
           return Self::HTMLSelectElement;
         }
@@ -346,6 +352,21 @@ impl DomPlatform {
       prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto))?);
     }
 
+    // Ensure the media-element prototype chain matches WebIDL (in case the prototypes were
+    // allocated by a caller that did not wire up inheritance).
+    //
+    // Do this *after* rooting so a tight heap limit can't collect prototypes if `object_set_prototype`
+    // allocates internally.
+    scope
+      .heap_mut()
+      .object_set_prototype(prototypes.html_media_element, Some(prototypes.html_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(prototypes.html_video_element, Some(prototypes.html_media_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(prototypes.html_audio_element, Some(prototypes.html_media_element))?;
+
     Ok(Self {
       realm_id,
       prototypes,
@@ -413,6 +434,18 @@ impl DomPlatform {
     let proto_document = lookup_proto!("Document");
     let proto_document_fragment = lookup_proto!("DocumentFragment");
     let proto_shadow_root = lookup_proto!("ShadowRoot");
+
+    // Ensure media-element inheritance chain matches WebIDL (in case prototypes were installed
+    // out-of-order).
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_media_element, Some(proto_html_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_video_element, Some(proto_html_media_element))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_html_audio_element, Some(proto_html_media_element))?;
 
     Ok(Self {
       realm_id,
@@ -532,6 +565,9 @@ impl DomPlatform {
     //   ProcessingInstruction -> Node
     //   Element -> Node
     //   HTMLElement -> Element
+    //   HTMLMediaElement -> HTMLElement
+    //   HTMLVideoElement -> HTMLMediaElement
+    //   HTMLAudioElement -> HTMLMediaElement
     //   HTML*Element -> HTMLElement
     //   Document -> Node
     //   DocumentFragment -> Node
@@ -1852,7 +1888,6 @@ mod tests {
       install_stub_interface(scope, global, "HTMLMediaElement", html_element_proto)?;
     let _ = install_stub_interface(scope, global, "HTMLVideoElement", html_media_element_proto)?;
     let _ = install_stub_interface(scope, global, "HTMLAudioElement", html_media_element_proto)?;
-
     for name in [
       "HTMLInputElement",
       "HTMLSelectElement",
@@ -2426,12 +2461,27 @@ mod tests {
 
     let element_proto = platform.prototype_for(DomInterface::Element);
     let html_element_proto = platform.prototype_for(DomInterface::HTMLElement);
+    let html_media_proto = platform.prototype_for(DomInterface::HTMLMediaElement);
+    let html_video_proto = platform.prototype_for(DomInterface::HTMLVideoElement);
+    let html_audio_proto = platform.prototype_for(DomInterface::HTMLAudioElement);
     let html_input_proto = platform.prototype_for(DomInterface::HTMLInputElement);
     let html_script_proto = platform.prototype_for(DomInterface::HTMLScriptElement);
 
     assert_eq!(
       scope.heap().object_prototype(html_element_proto)?,
       Some(element_proto)
+    );
+    assert_eq!(
+      scope.heap().object_prototype(html_media_proto)?,
+      Some(html_element_proto)
+    );
+    assert_eq!(
+      scope.heap().object_prototype(html_video_proto)?,
+      Some(html_media_proto)
+    );
+    assert_eq!(
+      scope.heap().object_prototype(html_audio_proto)?,
+      Some(html_media_proto)
     );
     assert_eq!(
       scope.heap().object_prototype(html_input_proto)?,
@@ -2667,6 +2717,10 @@ mod tests {
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::Node));
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::EventTarget));
 
+    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::HTMLMediaElement));
+    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::HTMLElement));
+    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::Element));
+
     assert!(!DomInterface::HTMLElement.implements(DomInterface::HTMLInputElement));
     assert!(!DomInterface::Element.implements(DomInterface::HTMLElement));
     assert!(!DomInterface::HTMLMediaElement.implements(DomInterface::HTMLVideoElement));
@@ -2683,6 +2737,28 @@ mod tests {
     assert_eq!(
       DomInterface::primary_for_node_kind(&kind),
       DomInterface::HTMLInputElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "video".into(),
+      namespace: "".into(),
+      prefix: None,
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLVideoElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "AUDIO".into(),
+      namespace: HTML_NAMESPACE.into(),
+      prefix: None,
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLAudioElement
     );
 
     let kind = NodeKind::Element {
