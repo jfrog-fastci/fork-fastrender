@@ -200,6 +200,51 @@ fn accessibility_section_form_landmark_role_requires_resolved_author_name() {
 }
 
 #[test]
+fn accessibility_named_form_only_scopes_other_landmarks_when_resolved_name_is_non_empty() {
+  let html = r##"
+    <html><body>
+      <form id="form-missing" aria-labelledby="missing">
+        <header id="hdr-missing">Site</header>
+        <footer id="ftr-missing">Footer</footer>
+        <main id="main-missing">Main</main>
+      </form>
+
+      <span id="label">Named</span>
+      <form id="form-named" aria-labelledby="label">
+        <header id="hdr-named">Site</header>
+        <footer id="ftr-named">Footer</footer>
+        <main id="main-named">Main</main>
+      </form>
+    </body></html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+
+  let hdr_missing = find_json_node(&tree, "hdr-missing").expect("hdr-missing");
+  assert_eq!(hdr_missing.get("role").and_then(|v| v.as_str()), Some("banner"));
+  let ftr_missing = find_json_node(&tree, "ftr-missing").expect("ftr-missing");
+  assert_eq!(
+    ftr_missing.get("role").and_then(|v| v.as_str()),
+    Some("contentinfo")
+  );
+  let main_missing = find_json_node(&tree, "main-missing").expect("main-missing");
+  assert_eq!(
+    main_missing.get("role").and_then(|v| v.as_str()),
+    Some("main")
+  );
+
+  let hdr_named = find_json_node(&tree, "hdr-named").expect("hdr-named");
+  assert_eq!(hdr_named.get("role").and_then(|v| v.as_str()), Some("generic"));
+  let ftr_named = find_json_node(&tree, "ftr-named").expect("ftr-named");
+  assert_eq!(ftr_named.get("role").and_then(|v| v.as_str()), Some("generic"));
+  let main_named = find_json_node(&tree, "main-named").expect("main-named");
+  assert_eq!(
+    main_named.get("role").and_then(|v| v.as_str()),
+    Some("generic")
+  );
+}
+
+#[test]
 fn accessibility_roles_and_states_basic() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"

@@ -231,6 +231,12 @@ pub fn build_accessibility_tree(
   let needs_validation_dom = needs_validation_dom || has_form_overrides;
   let validation_dom = needs_validation_dom.then(|| ValidationDomIndex::build(root, interaction_state));
 
+  let mut dom_ptr_lookup: HashMap<*const DomNode, &StyledNode> = HashMap::new();
+  for styled in lookup.values() {
+    let styled = *styled;
+    dom_ptr_lookup.insert(&styled.node as *const DomNode, styled);
+  }
+
   let ctx = BuildContext {
     hidden,
     aria_hidden,
@@ -238,6 +244,7 @@ pub fn build_accessibility_tree(
     ids_by_scope,
     labels,
     lookup,
+    dom_ptr_lookup,
     validation_dom,
     interaction_state,
     aria_owned_children,
@@ -475,6 +482,10 @@ struct BuildContext<'a, 'state> {
   ids_by_scope: HashMap<usize, HashMap<String, usize>>,
   labels: HashMap<usize, Vec<usize>>,
   lookup: HashMap<usize, &'a StyledNode>,
+  /// Fast lookup from `DomNode` pointers (as stored in `StyledNode.node`) to their owning
+  /// `StyledNode`. This enables resolving relationships (e.g. landmark scoping) when only a DOM
+  /// ancestor reference is available.
+  dom_ptr_lookup: HashMap<*const DomNode, &'a StyledNode>,
   validation_dom: Option<ValidationDomIndex>,
   interaction_state: Option<&'state InteractionState>,
   aria_owned_children: HashMap<usize, Vec<usize>>,
@@ -600,6 +611,10 @@ impl<'a, 'state> BuildContext<'a, 'state> {
 
   fn node_by_id(&self, id: usize) -> Option<&'a StyledNode> {
     self.lookup.get(&id).copied()
+  }
+
+  fn styled_for_dom_node(&self, node: &DomNode) -> Option<&'a StyledNode> {
+    self.dom_ptr_lookup.get(&(node as *const DomNode)).copied()
   }
 
   fn composed_children(&self, node: &'a StyledNode) -> Vec<&'a StyledNode> {
@@ -860,7 +875,7 @@ impl<'a, 'state> BuildContext<'a, 'state> {
               }
               DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
                 frame.tag = frame.node.node.tag_name().map(|t| t.to_ascii_lowercase());
-                let (role, presentational, _) = compute_role(frame.node, &[], None);
+                let (role, presentational, _) = compute_role(frame.node, &[], None, Some(self));
                 frame.role = role;
                 frame.presentational = presentational;
 
@@ -1417,7 +1432,7 @@ impl<'a, 'state> BuildContext<'a, 'state> {
   ) -> bool {
     let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
     let Some(allow) = allow_name_from_content else {
-      let (computed_role, _, _) = compute_role(node, &[], None);
+      let (computed_role, _, _) = compute_role(node, &[], None, Some(self));
       return role_allows_name_from_content(computed_role.as_deref(), tag.as_deref());
     };
     allow && role_allows_name_from_content(role, tag.as_deref())
@@ -1706,6 +1721,7 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
           node,
           dom_ancestors.as_slice(),
           styled_ancestors.last().copied(),
+          Some(ctx),
         );
 
         // `<legend>` content is used to compute the accessible name for its owning `<fieldset>`; do
@@ -2284,7 +2300,7 @@ fn is_html_element(node: &DomNode) -> bool {
 // HTML-AAM: banner/contentinfo (and other landmarks like main) only apply when the element is not
 // scoped within other landmarks or sectioning contexts. Sectioning roots also bound these scopes,
 // and forms only become landmarks when they are explicitly named.
-fn has_landmark_ancestor(ancestors: &[&DomNode]) -> bool {
+fn has_landmark_ancestor(ancestors: &[&DomNode], ctx: Option<&BuildContext<'_, '_>>) -> bool {
   for (idx, ancestor) in ancestors.iter().enumerate() {
     if matches!(ancestor.node_type, DomNodeType::ShadowRoot { .. }) {
       return true;
@@ -2320,8 +2336,27 @@ fn has_landmark_ancestor(ancestors: &[&DomNode]) -> bool {
       return true;
     }
 
-    if tag == "form" && has_accessible_name_attr(ancestor) {
-      return true;
+    if tag == "form" {
+      // Forms only become landmark scopes when they are explicitly named. Mirror the `build_nodes`
+      // gating behavior by requiring a non-empty author-provided accessible name (resolved).
+      //
+      // Fall back to the attribute-presence heuristic when no `BuildContext` is available.
+      let is_named = if let Some(ctx) = ctx {
+        if let Some(styled) = ctx.styled_for_dom_node(ancestor) {
+          compute_name(styled, ctx, /*allow_name_from_content=*/ false)
+            .is_some_and(|name| !name.is_empty())
+        } else {
+          // Defensive fallback: if the ancestor isn't part of the styled lookup for some reason,
+          // preserve the old attribute-based behavior.
+          has_accessible_name_attr(ancestor)
+        }
+      } else {
+        has_accessible_name_attr(ancestor)
+      };
+
+      if is_named {
+        return true;
+      }
     }
 
   }
@@ -2595,6 +2630,7 @@ fn compute_role(
   node: &StyledNode,
   ancestors: &[&DomNode],
   styled_parent: Option<&StyledNode>,
+  ctx: Option<&BuildContext<'_, '_>>,
 ) -> (Option<String>, bool, bool) {
   let dom_node = &node.node;
 
@@ -2697,7 +2733,7 @@ fn compute_role(
     "details" => Some("group".to_string()),
     "fieldset" => Some("group".to_string()),
     "main" => {
-      if has_landmark_ancestor(ancestors) {
+      if has_landmark_ancestor(ancestors, ctx) {
         None
       } else {
         Some("main".to_string())
@@ -2706,14 +2742,14 @@ fn compute_role(
     "nav" => Some("navigation".to_string()),
     "search" => Some("search".to_string()),
     "header" => {
-      if has_landmark_ancestor(ancestors) {
+      if has_landmark_ancestor(ancestors, ctx) {
         None
       } else {
         Some("banner".to_string())
       }
     }
     "footer" => {
-      if has_landmark_ancestor(ancestors) {
+      if has_landmark_ancestor(ancestors, ctx) {
         None
       } else {
         Some("contentinfo".to_string())
