@@ -43479,6 +43479,38 @@ mod tests {
   }
 
   #[test]
+  fn async_class_extends_await_constructor_super_prop_works() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var out;
+      async function f() {
+        class B { m() { return this; } }
+        class D extends (await Promise.resolve(B)) {
+          constructor() {
+            super();
+            this.v = super.m();
+          }
+        }
+        const d = new D();
+        return d.v === d;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+    )?;
+    assert_eq!(value, Value::Undefined);
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn logical_assignment_with_await_short_circuiting() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     // The async evaluator can allocate more than a simple sync script; use a larger heap to avoid
