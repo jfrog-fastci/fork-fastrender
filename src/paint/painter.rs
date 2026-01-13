@@ -32,7 +32,6 @@ use crate::error::Error;
 use crate::error::RenderError;
 use crate::error::RenderStage;
 use crate::error::Result;
-use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
@@ -160,7 +159,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::fs;
-use std::io::{Read, Write};
 use std::ops::Range;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
@@ -15970,24 +15968,27 @@ fn decode_data_url_to_string(data_url: &str) -> Result<String> {
   Ok(String::from_utf8_lossy(&decoded).into_owned())
 }
 
-fn read_css_import_bytes<R: Read>(reader: &mut R, context: &'static str) -> Result<Vec<u8>> {
-  let mut buf = [0u8; 8 * 1024];
-  let mut out = FallibleVecWriter::new(MAX_IMPORTED_CSS_BYTES, context);
-  loop {
-    let read = reader.read(&mut buf)?;
-    if read == 0 {
-      break;
-    }
-    out.write_all(&buf[..read])?;
-  }
-  Ok(out.into_inner())
-}
-
 struct EmbeddedImportFetcher {
   base_url: Option<String>,
+  fetcher: Arc<dyn crate::resource::ResourceFetcher>,
+  referrer_policy: crate::resource::ReferrerPolicy,
+  imported_stylesheet_policies: RefCell<HashMap<String, crate::resource::ReferrerPolicy>>,
 }
 
 impl EmbeddedImportFetcher {
+  fn new(
+    base_url: Option<String>,
+    fetcher: Arc<dyn crate::resource::ResourceFetcher>,
+    referrer_policy: crate::resource::ReferrerPolicy,
+  ) -> Self {
+    Self {
+      base_url,
+      fetcher,
+      referrer_policy,
+      imported_stylesheet_policies: RefCell::new(HashMap::new()),
+    }
+  }
+
   fn resolve_url(&self, href: &str) -> Option<Url> {
     if crate::resource::is_data_url(href) {
       return None;
@@ -16013,12 +16014,45 @@ impl EmbeddedImportFetcher {
       .ok()
       .and_then(|base_url| base_url.join(href).ok())
   }
+
+  fn referrer_policy_for_importer(
+    &self,
+    importer_url: Option<&str>,
+  ) -> crate::resource::ReferrerPolicy {
+    if let Some(importer_url) = importer_url {
+      if let Some(policy) = self
+        .imported_stylesheet_policies
+        .borrow()
+        .get(importer_url)
+        .copied()
+      {
+        return policy;
+      }
+    }
+
+    self.referrer_policy
+  }
 }
 
 impl css::types::CssImportLoader for EmbeddedImportFetcher {
   fn load(&self, url: &str) -> Result<String> {
+    Ok(self.load_with_importer(url, self.base_url.as_deref())?.css)
+  }
+
+  fn referrer_policy_for_stylesheet(&self, url: &str) -> Option<crate::resource::ReferrerPolicy> {
+    self.imported_stylesheet_policies.borrow().get(url).copied()
+  }
+
+  fn load_with_importer(
+    &self,
+    url: &str,
+    importer_url: Option<&str>,
+  ) -> Result<crate::css::loader::FetchedStylesheet> {
     if crate::resource::is_data_url(url) {
-      return decode_data_url_to_string(url);
+      return Ok(crate::css::loader::FetchedStylesheet::new(
+        decode_data_url_to_string(url)?,
+        None,
+      ));
     }
 
     let resolved = self
@@ -16029,86 +16063,65 @@ impl css::types::CssImportLoader for EmbeddedImportFetcher {
       })?;
 
     match resolved.scheme() {
-      "file" => {
-        let path = resolved
-          .to_file_path()
-          .map_err(|()| RenderError::InvalidParameters {
-            message: format!("Invalid file URL for @import: {}", resolved),
-          })?;
-        let mut file = std::fs::File::open(&path)?;
-        if let Ok(meta) = file.metadata() {
-          if meta.len() > MAX_IMPORTED_CSS_BYTES as u64 {
-            return Err(
-              RenderError::InvalidParameters {
-                message: format!(
-                  "@import stylesheet exceeds {} bytes: {}",
-                  MAX_IMPORTED_CSS_BYTES, resolved
-                ),
-              }
-              .into(),
-            );
+      "file" | "http" | "https" => {}
+      _ => {
+        return Err(
+          RenderError::InvalidParameters {
+            message: format!("Unsupported URL scheme for @import: {}", resolved),
           }
-        }
-        let bytes = read_css_import_bytes(&mut file, "css @import file")?;
-        Ok(css::encoding::decode_css_bytes(&bytes, None))
+          .into(),
+        );
       }
-      #[cfg(feature = "direct_network")]
-      "http" | "https" => {
-        let agent = ureq::Agent::config_builder()
-          .timeout_global(Some(std::time::Duration::from_secs(30)))
-          .build();
-        let agent: ureq::Agent = agent.into();
-        let response = agent
-          .get(resolved.as_str())
-          .call()
-          .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-        let content_type = response
-          .headers()
-          .get("content-type")
-          .and_then(|h| h.to_str().ok())
-          .map(|s| s.to_string());
-        if let Some(content_len) = response
-          .headers()
-          .get("content-length")
-          .and_then(|h| h.to_str().ok())
-          .and_then(|s| s.parse::<u64>().ok())
-        {
-          if content_len > MAX_IMPORTED_CSS_BYTES as u64 {
-            return Err(
-              RenderError::InvalidParameters {
-                message: format!(
-                  "@import stylesheet exceeds {} bytes: {}",
-                  MAX_IMPORTED_CSS_BYTES, resolved
-                ),
-              }
-              .into(),
-            );
-          }
-        }
-        let mut reader = response.into_body().into_reader();
-        let body = read_css_import_bytes(&mut reader, "css @import http body")?;
-        Ok(css::encoding::decode_css_bytes(
-          &body,
-          content_type.as_deref(),
-        ))
-      }
-      #[cfg(not(feature = "direct_network"))]
-      "http" | "https" => Err(
+    };
+
+    let referrer_policy = self.referrer_policy_for_importer(importer_url);
+    let mut req =
+      crate::resource::FetchRequest::new(resolved.as_str(), crate::resource::FetchDestination::Style)
+        .with_referrer_policy(referrer_policy);
+    if let Some(importer_url) = importer_url {
+      req = req.with_referrer_url(importer_url);
+    }
+
+    let resource = self.fetcher.fetch_partial_with_request(
+      req,
+      MAX_IMPORTED_CSS_BYTES.saturating_add(1),
+    )?;
+    if resource.bytes.len() > MAX_IMPORTED_CSS_BYTES {
+      return Err(
         RenderError::InvalidParameters {
           message: format!(
-            "@import over HTTP(S) is disabled in this build (missing `direct_network` feature): {}",
-            resolved
+            "@import stylesheet exceeds {} bytes: {}",
+            MAX_IMPORTED_CSS_BYTES, resolved
           ),
         }
         .into(),
-      ),
-      _ => Err(
-        RenderError::InvalidParameters {
-          message: format!("Unsupported URL scheme for @import: {}", resolved),
-        }
-        .into(),
-      ),
+      );
     }
+
+    let decoded = css::encoding::decode_css_bytes(&resource.bytes, resource.content_type.as_deref());
+    let sheet_base = resource
+      .final_url
+      .clone()
+      .unwrap_or_else(|| resolved.to_string());
+
+    let effective_policy = resource.response_referrer_policy.unwrap_or(referrer_policy);
+    {
+      let mut policies = self.imported_stylesheet_policies.borrow_mut();
+      policies.insert(sheet_base.clone(), effective_policy);
+      if sheet_base != resolved.as_str() {
+        policies.insert(resolved.to_string(), effective_policy);
+      }
+    }
+
+    let rewritten = match css::loader::absolutize_css_urls_cow(&decoded, &sheet_base)? {
+      Cow::Borrowed(_) => decoded,
+      Cow::Owned(rewritten) => rewritten,
+    };
+
+    Ok(crate::css::loader::FetchedStylesheet::new(
+      rewritten,
+      resource.final_url.clone(),
+    ))
   }
 }
 
@@ -21128,7 +21141,19 @@ mod tests {
   fn embedded_import_fetcher_decodes_unpadded_base64_data_url() {
     use crate::css::types::CssImportLoader;
 
-    let fetcher = EmbeddedImportFetcher { base_url: None };
+    #[derive(Clone)]
+    struct PanicFetcher;
+    impl crate::resource::ResourceFetcher for PanicFetcher {
+      fn fetch(&self, url: &str) -> crate::error::Result<crate::resource::FetchedResource> {
+        panic!("unexpected fetch attempt for {url}");
+      }
+    }
+
+    let fetcher = EmbeddedImportFetcher::new(
+      None,
+      Arc::new(PanicFetcher),
+      crate::resource::ReferrerPolicy::default(),
+    );
     let url = "data:text/css;base64,Ym9k eXtjb2xv\ncjpyZWQ7fQ";
     let css = fetcher.load(url).expect("load data url");
     assert_eq!(css, "body{color:red;}");
@@ -21138,16 +21163,76 @@ mod tests {
   fn embedded_import_fetcher_rejects_oversized_file_urls() {
     use crate::css::types::CssImportLoader;
 
-    let temp = tempfile::tempdir().expect("temp dir");
-    let path = temp.path().join("large.css");
-    let file = std::fs::File::create(&path).expect("create css file");
-    file
-      .set_len((MAX_IMPORTED_CSS_BYTES as u64) + 1)
-      .expect("set file length");
+    #[derive(Clone)]
+    struct LargeCssFetcher;
+    impl crate::resource::ResourceFetcher for LargeCssFetcher {
+      fn fetch(&self, _url: &str) -> crate::error::Result<crate::resource::FetchedResource> {
+        Ok(crate::resource::FetchedResource::new(
+          vec![b'a'; MAX_IMPORTED_CSS_BYTES + 1],
+          Some("text/css".to_string()),
+        ))
+      }
+    }
 
-    let url = Url::from_file_path(&path).expect("file url");
-    let fetcher = EmbeddedImportFetcher { base_url: None };
-    assert!(fetcher.load(url.as_str()).is_err());
+    let fetcher = EmbeddedImportFetcher::new(
+      None,
+      Arc::new(LargeCssFetcher),
+      crate::resource::ReferrerPolicy::default(),
+    );
+    assert!(fetcher.load("file:///tmp/large.css").is_err());
+  }
+
+  #[test]
+  fn embedded_import_fetcher_imports_go_through_resource_fetcher() {
+    #[derive(Clone)]
+    struct RecordingFetcher {
+      requests: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    }
+
+    impl crate::resource::ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, url: &str) -> crate::error::Result<crate::resource::FetchedResource> {
+        self.fetch_with_request(crate::resource::FetchRequest::new(
+          url,
+          crate::resource::FetchDestination::Style,
+        ))
+      }
+
+      fn fetch_with_request(
+        &self,
+        req: crate::resource::FetchRequest<'_>,
+      ) -> crate::error::Result<crate::resource::FetchedResource> {
+        self
+          .requests
+          .lock()
+          .unwrap()
+          .push((req.url.to_string(), req.referrer_url.map(|s| s.to_string())));
+        Ok(crate::resource::FetchedResource::new(
+          b"p { color: blue; }".to_vec(),
+          Some("text/css".to_string()),
+        ))
+      }
+    }
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let loader = EmbeddedImportFetcher::new(
+      None,
+      Arc::new(RecordingFetcher {
+        requests: Arc::clone(&requests),
+      }),
+      crate::resource::ReferrerPolicy::default(),
+    );
+
+    let sheet = crate::css::parser::parse_stylesheet("@import \"imported.css\";")
+      .expect("parse stylesheet");
+    let media = crate::style::media::MediaContext::screen(800.0, 600.0);
+    let _resolved = sheet
+      .resolve_imports(&loader, Some("https://example.com/base.css"), &media)
+      .expect("resolve imports");
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "https://example.com/imported.css");
+    assert_eq!(requests[0].1.as_deref(), Some("https://example.com/base.css"));
   }
 
   #[test]
