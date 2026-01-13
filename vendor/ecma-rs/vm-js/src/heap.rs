@@ -702,6 +702,82 @@ impl Heap {
     );
   }
 
+  /// Debug-only GC invariant checks for internal strong references stored in heap objects.
+  ///
+  /// These checks complement `Tracer::validate`:
+  /// - `Tracer::validate` only checks slot bounds + generation and does not validate reference kinds.
+  /// - If a heap object holds an internal `GcObject` pointing at the wrong kind of allocation (e.g.
+  ///   a TypedArray whose `viewed_array_buffer` points at a non-ArrayBuffer object), the VM can
+  ///   surface `VmError::InvalidHandle` at unrelated call sites.
+  ///
+  /// Running this after GC helps catch corruption early and with useful context.
+  #[cfg(debug_assertions)]
+  fn debug_validate_no_stale_internal_handles(&self) {
+    for (owner_idx, owner_slot) in self.slots.iter().enumerate() {
+      let Some(owner_obj) = owner_slot.value.as_ref() else {
+        continue;
+      };
+      match owner_obj {
+        HeapObject::TypedArray(arr) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          self.debug_validate_viewed_array_buffer(
+            format_args!("TypedArray(kind={:?})", arr.kind),
+            owner_id,
+            arr.viewed_array_buffer,
+          );
+        }
+        HeapObject::DataView(view) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          self.debug_validate_viewed_array_buffer(
+            format_args!("DataView"),
+            owner_id,
+            view.viewed_array_buffer,
+          );
+        }
+        _ => {}
+      }
+    }
+  }
+
+  #[cfg(debug_assertions)]
+  fn debug_validate_viewed_array_buffer(
+    &self,
+    owner_kind: core::fmt::Arguments<'_>,
+    owner_id: HeapId,
+    viewed_array_buffer: GcObject,
+  ) {
+    let buf_id = viewed_array_buffer.id();
+    let buf_idx = buf_id.index() as usize;
+
+    let Some(buf_slot) = self.slots.get(buf_idx) else {
+      panic!(
+        "GC invariant violated: {owner_kind} {owner_id:?} has invalid viewed_array_buffer={buf_id:?}; \
+referenced index {buf_idx} is out of bounds (heap slots len={})",
+        self.slots.len()
+      );
+    };
+
+    // `viewed_array_buffer` must be a live `ArrayBuffer` allocation, and the handle's generation
+    // must match the current slot generation.
+    let generation_matches = buf_slot.generation == buf_id.generation();
+    let is_array_buffer = matches!(buf_slot.value.as_ref(), Some(HeapObject::ArrayBuffer(_)));
+    if generation_matches && is_array_buffer {
+      return;
+    }
+
+    let current_kind = buf_slot
+      .value
+      .as_ref()
+      .map(|obj| obj.debug_kind())
+      .unwrap_or("Free");
+
+    panic!(
+      "GC invariant violated: {owner_kind} {owner_id:?} has invalid viewed_array_buffer={buf_id:?}; \
+referenced slot currently has generation={} and kind={current_kind} (expected live ArrayBuffer with matching generation)",
+      buf_slot.generation
+    );
+  }
+
   /// Total number of GC cycles that have run.
   pub fn gc_runs(&self) -> u64 {
     self.gc_runs
@@ -1005,7 +1081,10 @@ impl Heap {
     self.finalization_registry_cleanup_jobs_pending = any_pending_cleanup;
 
     #[cfg(debug_assertions)]
-    self.debug_assert_used_bytes_is_correct();
+    {
+      self.debug_assert_used_bytes_is_correct();
+      self.debug_validate_no_stale_internal_handles();
+    }
   }
 
   /// Enqueues `FinalizationRegistry` cleanup jobs into a host job queue.
@@ -10137,6 +10216,33 @@ impl Trace for HeapObject {
 }
 
 impl HeapObject {
+  #[cfg(debug_assertions)]
+  fn debug_kind(&self) -> &'static str {
+    match self {
+      HeapObject::String(_) => "String",
+      HeapObject::Symbol(_) => "Symbol",
+      HeapObject::BigInt(_) => "BigInt",
+      HeapObject::Object(_) => "Object",
+      HeapObject::ModuleNamespaceExports(_) => "ModuleNamespaceExports",
+      HeapObject::ArrayBuffer(_) => "ArrayBuffer",
+      HeapObject::TypedArray(_) => "TypedArray",
+      HeapObject::DataView(_) => "DataView",
+      HeapObject::Function(_) => "Function",
+      HeapObject::Proxy(_) => "Proxy",
+      HeapObject::RegExp(_) => "RegExp",
+      HeapObject::Env(_) => "Env",
+      HeapObject::Promise(_) => "Promise",
+      HeapObject::Map(_) => "Map",
+      HeapObject::Set(_) => "Set",
+      HeapObject::WeakRef(_) => "WeakRef",
+      HeapObject::WeakMap(_) => "WeakMap",
+      HeapObject::WeakSet(_) => "WeakSet",
+      HeapObject::FinalizationRegistry(_) => "FinalizationRegistry",
+      HeapObject::Generator(_) => "Generator",
+      HeapObject::AsyncGenerator(_) => "AsyncGenerator",
+    }
+  }
+
   fn finalize(&mut self, external_bytes: &mut usize) {
     let freed = match self {
       HeapObject::ArrayBuffer(buf) => buf.finalize(),
@@ -12150,6 +12256,80 @@ mod typed_array_helper_tests {
     assert_eq!(scope.heap().data_view_byte_length(view)?, 16);
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod gc_invariant_arraybuffer_view_tests {
+  use super::*;
+
+  #[test]
+  fn gc_invariant_accepts_valid_arraybuffer_views() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(16)?;
+    let ta = scope.alloc_uint8_array(ab, 0, 16)?;
+    let dv = scope.alloc_data_view(ab, 0, 16)?;
+
+    scope.push_root(Value::Object(ab))?;
+    scope.push_root(Value::Object(ta))?;
+    scope.push_root(Value::Object(dv))?;
+
+    // Should not panic in debug builds: typed array/DataView internal slots should point at a live
+    // ArrayBuffer allocation.
+    scope.heap_mut().collect_garbage();
+    Ok(())
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "TypedArray(kind=")]
+  fn gc_invariant_panics_on_typed_array_with_non_arraybuffer_viewed_array_buffer() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(8).unwrap();
+    scope.push_root(Value::Object(ab)).unwrap();
+
+    let ta = scope.alloc_uint8_array(ab, 0, 8).unwrap();
+    scope.push_root(Value::Object(ta)).unwrap();
+
+    let not_ab = scope.alloc_object().unwrap();
+
+    // Corrupt the internal `viewed_array_buffer` slot. This is intentionally invalid (points at a
+    // live object that is not an ArrayBuffer) and should be detected by debug GC invariant checks.
+    match scope.heap_mut().get_heap_object_mut(ta.0).unwrap() {
+      HeapObject::TypedArray(arr) => arr.viewed_array_buffer = not_ab,
+      _ => panic!("expected TypedArray allocation"),
+    }
+
+    scope.heap_mut().collect_garbage();
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "DataView")]
+  fn gc_invariant_panics_on_dataview_with_non_arraybuffer_viewed_array_buffer() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let ab = scope.alloc_array_buffer(8).unwrap();
+    scope.push_root(Value::Object(ab)).unwrap();
+
+    let dv = scope.alloc_data_view(ab, 0, 8).unwrap();
+    scope.push_root(Value::Object(dv)).unwrap();
+
+    let not_ab = scope.alloc_object().unwrap();
+
+    // Corrupt the internal `viewed_array_buffer` slot. This is intentionally invalid (points at a
+    // live object that is not an ArrayBuffer) and should be detected by debug GC invariant checks.
+    match scope.heap_mut().get_heap_object_mut(dv.0).unwrap() {
+      HeapObject::DataView(view) => view.viewed_array_buffer = not_ab,
+      _ => panic!("expected DataView allocation"),
+    }
+
+    scope.heap_mut().collect_garbage();
   }
 }
 
