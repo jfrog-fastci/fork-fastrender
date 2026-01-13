@@ -1399,6 +1399,63 @@ fn transform_interpolation_preserves_matching_prefix_and_matrix_interpolates_rem
 }
 
 #[test]
+fn transform_interpolation_converts_translate_primitives() {
+  let sheet = parse_stylesheet(
+    "@keyframes move { from { transform: translateX(100px); } to { transform: translateY(100px); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(120.0, 80.0),
+  );
+  let transform = match sampled.get("transform") {
+    Some(AnimatedValue::Transform(t)) => t,
+    other => panic!("unexpected value {other:?}"),
+  };
+
+  assert_eq!(transform.len(), 1);
+  match &transform[0] {
+    CssTransform::Translate(x, y) => {
+      assert!((x.to_px() - 50.0).abs() < 1e-3);
+      assert!((y.to_px() - 50.0).abs() < 1e-3);
+    }
+    other => panic!("expected translate() primitive, got {other:?}"),
+  }
+}
+
+#[test]
+fn transform_interpolation_rotate3d_axis_mismatch_uses_matrix_interpolation() {
+  let sheet = parse_stylesheet(
+    "@keyframes rot { from { transform: rotate3d(1, 0, 0, 90deg); } to { transform: rotate3d(0, 1, 0, 90deg); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(120.0, 80.0),
+  );
+  let transform = match sampled.get("transform") {
+    Some(AnimatedValue::Transform(t)) => t,
+    other => panic!("unexpected value {other:?}"),
+  };
+
+  assert_eq!(transform.len(), 1);
+  match &transform[0] {
+    CssTransform::Matrix3d(_) => {}
+    other => panic!("expected matrix3d() fallback, got {other:?}"),
+  }
+}
+
+#[test]
 fn keyframes_interpolate_filters() {
   let sheet =
     parse_stylesheet("@keyframes blur { from { filter: blur(0px); } to { filter: blur(10px); } }")

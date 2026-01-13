@@ -4986,6 +4986,326 @@ fn identity_transform_matching(t: &crate::css::types::Transform) -> crate::css::
   }
 }
 
+fn interpolate_transform_pair(
+  a: &crate::css::types::Transform,
+  b: &crate::css::types::Transform,
+  t: f32,
+) -> Option<crate::css::types::Transform> {
+  use crate::css::types::Transform;
+
+  // Fast path: identical function types (same name/arity).
+  if discriminant(a) == discriminant(b) {
+    return Some(match (a, b) {
+      (Transform::Translate(ax, ay), Transform::Translate(bx, by)) => Transform::Translate(
+        Length::px(lerp(ax.to_px(), bx.to_px(), t)),
+        Length::px(lerp(ay.to_px(), by.to_px(), t)),
+      ),
+      (Transform::TranslateX(ax), Transform::TranslateX(bx)) => {
+        Transform::TranslateX(Length::px(lerp(ax.to_px(), bx.to_px(), t)))
+      }
+      (Transform::TranslateY(ay), Transform::TranslateY(by)) => {
+        Transform::TranslateY(Length::px(lerp(ay.to_px(), by.to_px(), t)))
+      }
+      (Transform::TranslateZ(az), Transform::TranslateZ(bz)) => {
+        Transform::TranslateZ(Length::px(lerp(az.to_px(), bz.to_px(), t)))
+      }
+      (Transform::Translate3d(ax, ay, az), Transform::Translate3d(bx, by, bz)) => {
+        Transform::Translate3d(
+          Length::px(lerp(ax.to_px(), bx.to_px(), t)),
+          Length::px(lerp(ay.to_px(), by.to_px(), t)),
+          Length::px(lerp(az.to_px(), bz.to_px(), t)),
+        )
+      }
+      (Transform::Scale(ax, ay), Transform::Scale(bx, by)) => {
+        Transform::Scale(lerp(*ax, *bx, t), lerp(*ay, *by, t))
+      }
+      (Transform::ScaleX(ax), Transform::ScaleX(bx)) => Transform::ScaleX(lerp(*ax, *bx, t)),
+      (Transform::ScaleY(ay), Transform::ScaleY(by)) => Transform::ScaleY(lerp(*ay, *by, t)),
+      (Transform::ScaleZ(az), Transform::ScaleZ(bz)) => Transform::ScaleZ(lerp(*az, *bz, t)),
+      (Transform::Scale3d(ax, ay, az), Transform::Scale3d(bx, by, bz)) => {
+        Transform::Scale3d(lerp(*ax, *bx, t), lerp(*ay, *by, t), lerp(*az, *bz, t))
+      }
+      (Transform::Rotate(ax), Transform::Rotate(bx)) => Transform::Rotate(lerp(*ax, *bx, t)),
+      (Transform::RotateX(ax), Transform::RotateX(bx)) => Transform::RotateX(lerp(*ax, *bx, t)),
+      (Transform::RotateY(ay), Transform::RotateY(by)) => Transform::RotateY(lerp(*ay, *by, t)),
+      // `rotateZ()` and `rotate()` are equivalent after `resolve_transform_list` canonicalization,
+      // but we keep the arm for completeness.
+      (Transform::RotateZ(ax), Transform::RotateZ(bx)) => Transform::Rotate(lerp(*ax, *bx, t)),
+      // rotate3d() has special rules (vector normalization + possible matrix fallback), handled
+      // below in the generic rotate family path.
+      (Transform::Rotate3d(..), Transform::Rotate3d(..)) => {
+        // Fall through to the rotate family handler.
+        return interpolate_transform_pair_rotation_family(a, b, t);
+      }
+      (Transform::SkewX(ax), Transform::SkewX(bx)) => Transform::SkewX(lerp(*ax, *bx, t)),
+      (Transform::SkewY(ay), Transform::SkewY(by)) => Transform::SkewY(lerp(*ay, *by, t)),
+      (Transform::Skew(ax, ay), Transform::Skew(bx, by)) => {
+        Transform::Skew(lerp(*ax, *bx, t), lerp(*ay, *by, t))
+      }
+      // `matrix()` / `matrix3d()` / `perspective()` interpolate via matrix decomposition per spec.
+      (Transform::Perspective(pa), Transform::Perspective(pb)) => {
+        let ma = Transform3D::perspective(pa.to_px());
+        let mb = Transform3D::perspective(pb.to_px());
+        let m =
+          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+        Transform::Matrix3d(m.m)
+      }
+      (Transform::Matrix(a, b, c, d, e, f), Transform::Matrix(aa, bb, cc, dd, ee, ff)) => {
+        let ma = Transform3D::from_2d(&Transform2D {
+          a: *a,
+          b: *b,
+          c: *c,
+          d: *d,
+          e: *e,
+          f: *f,
+        });
+        let mb = Transform3D::from_2d(&Transform2D {
+          a: *aa,
+          b: *bb,
+          c: *cc,
+          d: *dd,
+          e: *ee,
+          f: *ff,
+        });
+        let m =
+          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+        Transform::Matrix3d(m.m)
+      }
+      (Transform::Matrix3d(values), Transform::Matrix3d(values_b)) => {
+        let ma = Transform3D { m: *values };
+        let mb = Transform3D { m: *values_b };
+        let m =
+          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+        Transform::Matrix3d(m.m)
+      }
+      // New enum variants should fall back to list-level matrix interpolation.
+      _ => return None,
+    });
+  }
+
+  // Translate family: convert to translate()/translate3d() primitive when needed.
+  let is_translate = |t: &Transform| {
+    matches!(
+      t,
+      Transform::Translate(..)
+        | Transform::TranslateX(..)
+        | Transform::TranslateY(..)
+        | Transform::TranslateZ(..)
+        | Transform::Translate3d(..)
+    )
+  };
+  if is_translate(a) && is_translate(b) {
+    let is_3d = |t: &Transform| matches!(t, Transform::TranslateZ(..) | Transform::Translate3d(..));
+    let use_3d = is_3d(a) || is_3d(b);
+
+    let to_3d = |t: &Transform| -> Option<(f32, f32, f32)> {
+      match t {
+        Transform::Translate(x, y) => Some((x.to_px(), y.to_px(), 0.0)),
+        Transform::TranslateX(x) => Some((x.to_px(), 0.0, 0.0)),
+        Transform::TranslateY(y) => Some((0.0, y.to_px(), 0.0)),
+        Transform::TranslateZ(z) => Some((0.0, 0.0, z.to_px())),
+        Transform::Translate3d(x, y, z) => Some((x.to_px(), y.to_px(), z.to_px())),
+        _ => None,
+      }
+    };
+    let to_2d = |t: &Transform| -> Option<(f32, f32)> {
+      match t {
+        Transform::Translate(x, y) => Some((x.to_px(), y.to_px())),
+        Transform::TranslateX(x) => Some((x.to_px(), 0.0)),
+        Transform::TranslateY(y) => Some((0.0, y.to_px())),
+        _ => None,
+      }
+    };
+
+    if use_3d {
+      let (ax, ay, az) = to_3d(a)?;
+      let (bx, by, bz) = to_3d(b)?;
+      return Some(Transform::Translate3d(
+        Length::px(lerp(ax, bx, t)),
+        Length::px(lerp(ay, by, t)),
+        Length::px(lerp(az, bz, t)),
+      ));
+    }
+
+    let (ax, ay) = to_2d(a)?;
+    let (bx, by) = to_2d(b)?;
+    return Some(Transform::Translate(
+      Length::px(lerp(ax, bx, t)),
+      Length::px(lerp(ay, by, t)),
+    ));
+  }
+
+  // Scale family: convert to scale()/scale3d() primitive when needed.
+  let is_scale = |t: &Transform| {
+    matches!(
+      t,
+      Transform::Scale(..)
+        | Transform::ScaleX(..)
+        | Transform::ScaleY(..)
+        | Transform::ScaleZ(..)
+        | Transform::Scale3d(..)
+    )
+  };
+  if is_scale(a) && is_scale(b) {
+    let is_3d = |t: &Transform| matches!(t, Transform::ScaleZ(..) | Transform::Scale3d(..));
+    let use_3d = is_3d(a) || is_3d(b);
+
+    let to_3d = |t: &Transform| -> Option<(f32, f32, f32)> {
+      match t {
+        Transform::Scale(x, y) => Some((*x, *y, 1.0)),
+        Transform::ScaleX(x) => Some((*x, 1.0, 1.0)),
+        Transform::ScaleY(y) => Some((1.0, *y, 1.0)),
+        Transform::ScaleZ(z) => Some((1.0, 1.0, *z)),
+        Transform::Scale3d(x, y, z) => Some((*x, *y, *z)),
+        _ => None,
+      }
+    };
+    let to_2d = |t: &Transform| -> Option<(f32, f32)> {
+      match t {
+        Transform::Scale(x, y) => Some((*x, *y)),
+        Transform::ScaleX(x) => Some((*x, 1.0)),
+        Transform::ScaleY(y) => Some((1.0, *y)),
+        _ => None,
+      }
+    };
+
+    if use_3d {
+      let (ax, ay, az) = to_3d(a)?;
+      let (bx, by, bz) = to_3d(b)?;
+      return Some(Transform::Scale3d(
+        lerp(ax, bx, t),
+        lerp(ay, by, t),
+        lerp(az, bz, t),
+      ));
+    }
+
+    let (ax, ay) = to_2d(a)?;
+    let (bx, by) = to_2d(b)?;
+    return Some(Transform::Scale(lerp(ax, bx, t), lerp(ay, by, t)));
+  }
+
+  // Skew family: convert to skew() primitive.
+  let is_skew = |t: &Transform| {
+    matches!(
+      t,
+      Transform::Skew(..) | Transform::SkewX(..) | Transform::SkewY(..)
+    )
+  };
+  if is_skew(a) && is_skew(b) {
+    let to_2d = |t: &Transform| -> Option<(f32, f32)> {
+      match t {
+        Transform::Skew(ax, ay) => Some((*ax, *ay)),
+        Transform::SkewX(ax) => Some((*ax, 0.0)),
+        Transform::SkewY(ay) => Some((0.0, *ay)),
+        _ => None,
+      }
+    };
+    let (ax, ay) = to_2d(a)?;
+    let (bx, by) = to_2d(b)?;
+    return Some(Transform::Skew(lerp(ax, bx, t), lerp(ay, by, t)));
+  }
+
+  // Rotate family: interpolate using rotate3d() rules (normalize vectors; matrix fallback).
+  if interpolate_transform_pair_is_rotation_family(a)
+    && interpolate_transform_pair_is_rotation_family(b)
+  {
+    return interpolate_transform_pair_rotation_family(a, b, t);
+  }
+
+  // matrix()/matrix3d() can be interpolated by converting both to 4x4 matrices.
+  let is_matrix = |t: &Transform| matches!(t, Transform::Matrix(..) | Transform::Matrix3d(..));
+  if is_matrix(a) && is_matrix(b) {
+    let ma = compose_transform_list(std::slice::from_ref(a));
+    let mb = compose_transform_list(std::slice::from_ref(b));
+    let m =
+      interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+    return Some(Transform::Matrix3d(m.m));
+  }
+
+  None
+}
+
+fn interpolate_transform_pair_is_rotation_family(t: &crate::css::types::Transform) -> bool {
+  use crate::css::types::Transform;
+  matches!(
+    t,
+    Transform::Rotate(..)
+      | Transform::RotateZ(..)
+      | Transform::RotateX(..)
+      | Transform::RotateY(..)
+      | Transform::Rotate3d(..)
+  )
+}
+
+fn interpolate_transform_pair_rotation_family(
+  a: &crate::css::types::Transform,
+  b: &crate::css::types::Transform,
+  t: f32,
+) -> Option<crate::css::types::Transform> {
+  use crate::css::types::Transform;
+  const AXIS_EPS: f32 = 1e-6;
+
+  let axis_angle = |t: &Transform| -> Option<([f32; 3], f32)> {
+    match t {
+      Transform::Rotate(deg) | Transform::RotateZ(deg) => Some(([0.0, 0.0, 1.0], *deg)),
+      Transform::RotateX(deg) => Some(([1.0, 0.0, 0.0], *deg)),
+      Transform::RotateY(deg) => Some(([0.0, 1.0, 0.0], *deg)),
+      Transform::Rotate3d(x, y, z, deg) => Some(([*x, *y, *z], *deg)),
+      _ => None,
+    }
+  };
+
+  let (mut axis_a, mut angle_a) = axis_angle(a)?;
+  let (mut axis_b, mut angle_b) = axis_angle(b)?;
+
+  let normalize_or_identity = |axis: &mut [f32; 3], angle: &mut f32| {
+    let len = vec3_len(*axis);
+    if !len.is_finite() || len.abs() <= 1e-12 {
+      // Un-normalizable axis => rotation is not applied.
+      *axis = [0.0, 0.0, 1.0];
+      *angle = 0.0;
+      return;
+    }
+    axis[0] /= len;
+    axis[1] /= len;
+    axis[2] /= len;
+  };
+
+  normalize_or_identity(&mut axis_a, &mut angle_a);
+  normalize_or_identity(&mut axis_b, &mut angle_b);
+
+  let non_zero_a = angle_a.abs() > f32::EPSILON;
+  let non_zero_b = angle_b.abs() > f32::EPSILON;
+  let axes_equal = (axis_a[0] - axis_b[0]).abs() <= AXIS_EPS
+    && (axis_a[1] - axis_b[1]).abs() <= AXIS_EPS
+    && (axis_a[2] - axis_b[2]).abs() <= AXIS_EPS;
+
+  if non_zero_a && non_zero_b && !axes_equal {
+    // Per spec: mismatched axes with non-zero angles => matrix interpolation.
+    let ma = compose_transform_list(std::slice::from_ref(a));
+    let mb = compose_transform_list(std::slice::from_ref(b));
+    let m =
+      interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+    return Some(Transform::Matrix3d(m.m));
+  }
+
+  let axis_out = if !non_zero_a && !non_zero_b {
+    [0.0, 0.0, 1.0]
+  } else if !non_zero_a {
+    axis_b
+  } else {
+    axis_a
+  };
+
+  let angle_out = lerp(angle_a, angle_b, t);
+  Some(Transform::Rotate3d(
+    axis_out[0],
+    axis_out[1],
+    axis_out[2],
+    angle_out,
+  ))
+}
+
 fn interpolate_transform_lists(
   a: &[crate::css::types::Transform],
   b: &[crate::css::types::Transform],
@@ -5012,145 +5332,17 @@ fn interpolate_transform_lists(
     let ta = &a[idx];
     let tb = &b[idx];
 
-    if discriminant(ta) != discriminant(tb) {
-      let ma = compose_transform_list(&a[idx..]);
-      let mb = compose_transform_list(&b[idx..]);
-      let m =
-        interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
-      out.push(crate::css::types::Transform::Matrix3d(m.m));
-      break;
+    match interpolate_transform_pair(ta, tb, t) {
+      Some(next) => out.push(next),
+      None => {
+        let ma = compose_transform_list(&a[idx..]);
+        let mb = compose_transform_list(&b[idx..]);
+        let m =
+          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
+        out.push(crate::css::types::Transform::Matrix3d(m.m));
+        break;
+      }
     }
-
-    let next = match (ta, tb) {
-      (
-        crate::css::types::Transform::Translate(ax, ay),
-        crate::css::types::Transform::Translate(bx, by),
-      ) => {
-        let x = lerp(ax.to_px(), bx.to_px(), t);
-        let y = lerp(ay.to_px(), by.to_px(), t);
-        crate::css::types::Transform::Translate(Length::px(x), Length::px(y))
-      }
-      (
-        crate::css::types::Transform::TranslateX(ax),
-        crate::css::types::Transform::TranslateX(bx),
-      ) => crate::css::types::Transform::TranslateX(Length::px(lerp(ax.to_px(), bx.to_px(), t))),
-      (
-        crate::css::types::Transform::TranslateY(ay),
-        crate::css::types::Transform::TranslateY(by),
-      ) => crate::css::types::Transform::TranslateY(Length::px(lerp(ay.to_px(), by.to_px(), t))),
-      (
-        crate::css::types::Transform::TranslateZ(az),
-        crate::css::types::Transform::TranslateZ(bz),
-      ) => crate::css::types::Transform::TranslateZ(Length::px(lerp(az.to_px(), bz.to_px(), t))),
-      (
-        crate::css::types::Transform::Translate3d(ax, ay, az),
-        crate::css::types::Transform::Translate3d(bx, by, bz),
-      ) => crate::css::types::Transform::Translate3d(
-        Length::px(lerp(ax.to_px(), bx.to_px(), t)),
-        Length::px(lerp(ay.to_px(), by.to_px(), t)),
-        Length::px(lerp(az.to_px(), bz.to_px(), t)),
-      ),
-      (
-        crate::css::types::Transform::Scale(ax, ay),
-        crate::css::types::Transform::Scale(bx, by),
-      ) => crate::css::types::Transform::Scale(lerp(*ax, *bx, t), lerp(*ay, *by, t)),
-      (crate::css::types::Transform::ScaleX(ax), crate::css::types::Transform::ScaleX(bx)) => {
-        crate::css::types::Transform::ScaleX(lerp(*ax, *bx, t))
-      }
-      (crate::css::types::Transform::ScaleY(ay), crate::css::types::Transform::ScaleY(by)) => {
-        crate::css::types::Transform::ScaleY(lerp(*ay, *by, t))
-      }
-      (crate::css::types::Transform::ScaleZ(az), crate::css::types::Transform::ScaleZ(bz)) => {
-        crate::css::types::Transform::ScaleZ(lerp(*az, *bz, t))
-      }
-      (
-        crate::css::types::Transform::Scale3d(ax, ay, az),
-        crate::css::types::Transform::Scale3d(bx, by, bz),
-      ) => crate::css::types::Transform::Scale3d(
-        lerp(*ax, *bx, t),
-        lerp(*ay, *by, t),
-        lerp(*az, *bz, t),
-      ),
-      (crate::css::types::Transform::Rotate(ax), crate::css::types::Transform::Rotate(bx))
-      | (crate::css::types::Transform::RotateZ(ax), crate::css::types::Transform::RotateZ(bx)) => {
-        crate::css::types::Transform::Rotate(lerp(*ax, *bx, t))
-      }
-      (crate::css::types::Transform::RotateX(ax), crate::css::types::Transform::RotateX(bx)) => {
-        crate::css::types::Transform::RotateX(lerp(*ax, *bx, t))
-      }
-      (crate::css::types::Transform::RotateY(ay), crate::css::types::Transform::RotateY(by)) => {
-        crate::css::types::Transform::RotateY(lerp(*ay, *by, t))
-      }
-      (
-        crate::css::types::Transform::Rotate3d(ax, ay, az, aa),
-        crate::css::types::Transform::Rotate3d(bx, by, bz, ba),
-      ) => crate::css::types::Transform::Rotate3d(
-        lerp(*ax, *bx, t),
-        lerp(*ay, *by, t),
-        lerp(*az, *bz, t),
-        lerp(*aa, *ba, t),
-      ),
-      (crate::css::types::Transform::SkewX(ax), crate::css::types::Transform::SkewX(bx)) => {
-        crate::css::types::Transform::SkewX(lerp(*ax, *bx, t))
-      }
-      (crate::css::types::Transform::SkewY(ay), crate::css::types::Transform::SkewY(by)) => {
-        crate::css::types::Transform::SkewY(lerp(*ay, *by, t))
-      }
-      (crate::css::types::Transform::Skew(ax, ay), crate::css::types::Transform::Skew(bx, by)) => {
-        crate::css::types::Transform::Skew(lerp(*ax, *bx, t), lerp(*ay, *by, t))
-      }
-      (
-        crate::css::types::Transform::Perspective(pa),
-        crate::css::types::Transform::Perspective(pb),
-      ) => {
-        let ma = Transform3D::perspective(pa.to_px());
-        let mb = Transform3D::perspective(pb.to_px());
-        let m =
-          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
-        crate::css::types::Transform::Matrix3d(m.m)
-      }
-      (
-        crate::css::types::Transform::Matrix(a, b, c, d, e, f),
-        crate::css::types::Transform::Matrix(aa, bb, cc, dd, ee, ff),
-      ) => {
-        let ma = Transform3D::from_2d(&Transform2D {
-          a: *a,
-          b: *b,
-          c: *c,
-          d: *d,
-          e: *e,
-          f: *f,
-        });
-        let mb = Transform3D::from_2d(&Transform2D {
-          a: *aa,
-          b: *bb,
-          c: *cc,
-          d: *dd,
-          e: *ee,
-          f: *ff,
-        });
-        let m =
-          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
-        crate::css::types::Transform::Matrix3d(m.m)
-      }
-      (
-        crate::css::types::Transform::Matrix3d(values),
-        crate::css::types::Transform::Matrix3d(values_b),
-      ) => {
-        let ma = Transform3D { m: *values };
-        let mb = Transform3D { m: *values_b };
-        let m =
-          interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
-        crate::css::types::Transform::Matrix3d(m.m)
-      }
-      _ => {
-        // Should be unreachable due to the discriminant check above, but keep the Option-based API
-        // robust against future enum variants.
-        return None;
-      }
-    };
-
-    out.push(next);
   }
 
   Some(out)
