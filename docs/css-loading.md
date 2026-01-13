@@ -33,8 +33,8 @@ When collecting and resolving stylesheet URLs, FastRender:
 - Preserves scheme-relative URLs (`//example.com/...`) by resolving them against the base scheme.
 - Relative `url()` references inside imported stylesheets are rewritten against the imported sheet's
   own URL before inlining.
-- Recursive `@import` inlining is capped to avoid unbounded fetches; cycles are reported via render
-  diagnostics.
+- Recursive `@import` inlining is capped to avoid unbounded fetches. Import cycles and the cutoff
+  are treated like failed imports and are silently skipped (no render diagnostics are emitted).
 
 See unit tests in `src/css/loader.rs` for edge-case coverage.
 
