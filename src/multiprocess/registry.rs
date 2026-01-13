@@ -18,18 +18,7 @@ impl RendererProcessId {
 }
 
 /// Stable identifier for a frame hosted in a renderer process.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct FrameId(u64);
-
-impl FrameId {
-  pub const fn new(raw: u64) -> Self {
-    Self(raw)
-  }
-
-  pub const fn raw(self) -> u64 {
-    self.0
-  }
-}
+pub use fastrender_ipc::FrameId;
 
 /// Site isolation key used to map frames to renderer processes.
 ///

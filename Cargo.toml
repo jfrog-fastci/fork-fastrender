@@ -80,6 +80,7 @@ browser_ui_wayland = [
 ]
 
 [dependencies]
+fastrender-ipc = { path = "crates/fastrender-ipc" }
 base64 = "0.22"
 avif-decode = { version = "1.0", default-features = false, optional = true }
 avif-parse = { version = "1.4", optional = true }

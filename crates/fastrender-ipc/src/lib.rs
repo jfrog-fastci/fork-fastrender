@@ -25,6 +25,18 @@ pub use security::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FrameId(pub u64);
 
+impl FrameId {
+  #[inline]
+  pub const fn new(raw: u64) -> Self {
+    Self(raw)
+  }
+
+  #[inline]
+  pub const fn raw(self) -> u64 {
+    self.0
+  }
+}
+
 /// Referrer policy applied when generating the `Referer` header for navigation/subresource requests.
 ///
 /// This is intentionally aligned with FastRender's in-process [`crate::resource::ReferrerPolicy`]
