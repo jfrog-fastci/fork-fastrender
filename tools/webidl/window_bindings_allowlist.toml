@@ -82,6 +82,8 @@ attributes = [
   "classList",
   "tagName",
   "children",
+  "innerHTML",
+  "outerHTML",
   "firstElementChild",
   "lastElementChild",
   "childElementCount",

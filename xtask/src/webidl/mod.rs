@@ -35,7 +35,7 @@ pub use semantic::{SemanticDiagnostic, SemanticWorld};
 /// splitting for subsequent blocks.
 const WEBIDL_BLOCK_SEPARATOR: &str = "\n//__FASTR_WEBIDL_BLOCK_SEPARATOR__\n";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExtendedAttribute {
   pub name: String,
   pub value: Option<String>,

@@ -5039,6 +5039,96 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         )?;
         Ok(Value::Object(style_obj))
       }
+      ("Element", "innerHTML", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        if args.is_empty() {
+          let result: Result<String, DomError> =
+            self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.inner_html(element_id))))?;
+          match result {
+            Ok(html) => {
+              let js = scope.alloc_string(&html)?;
+              scope.push_root(Value::String(js))?;
+              Ok(Value::String(js))
+            }
+            Err(err) => {
+              let class = self.dom_exception_class_for_realm(vm, scope)?;
+              Err(throw_dom_error(scope, class, err))
+            }
+          }
+        } else {
+          // `[LegacyNullToEmptyString]`: treat null/undefined as the empty string.
+          let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+          let html = match html_value {
+            Value::Null | Value::Undefined => String::new(),
+            other => {
+              // Use vm-js's minimal `ToString` (avoids invoking user code).
+              let html_s = scope.heap_mut().to_string(other)?;
+              scope.heap().get_string(html_s)?.to_utf8_lossy()
+            }
+          };
+
+          let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| {
+              let before = dom.mutation_generation();
+              let res = dom.set_inner_html(element_id, &html);
+              let changed = dom.mutation_generation() != before;
+              (res, changed)
+            }))
+          })?;
+          match result {
+            Ok(()) => Ok(Value::Undefined),
+            Err(err) => {
+              let class = self.dom_exception_class_for_realm(vm, scope)?;
+              Err(throw_dom_error(scope, class, err))
+            }
+          }
+        }
+      }
+      ("Element", "outerHTML", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        if args.is_empty() {
+          let result: Result<String, DomError> =
+            self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.outer_html(element_id))))?;
+          match result {
+            Ok(html) => {
+              let js = scope.alloc_string(&html)?;
+              scope.push_root(Value::String(js))?;
+              Ok(Value::String(js))
+            }
+            Err(err) => {
+              let class = self.dom_exception_class_for_realm(vm, scope)?;
+              Err(throw_dom_error(scope, class, err))
+            }
+          }
+        } else {
+          // `[LegacyNullToEmptyString]`: treat null/undefined as the empty string.
+          let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+          let html = match html_value {
+            Value::Null | Value::Undefined => String::new(),
+            other => {
+              // Use vm-js's minimal `ToString` (avoids invoking user code).
+              let html_s = scope.heap_mut().to_string(other)?;
+              scope.heap().get_string(html_s)?.to_utf8_lossy()
+            }
+          };
+
+          let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| {
+              let before = dom.mutation_generation();
+              let res = dom.set_outer_html(element_id, &html);
+              let changed = dom.mutation_generation() != before;
+              (res, changed)
+            }))
+          })?;
+          match result {
+            Ok(()) => Ok(Value::Undefined),
+            Err(err) => {
+              let class = self.dom_exception_class_for_realm(vm, scope)?;
+              Err(throw_dom_error(scope, class, err))
+            }
+          }
+        }
+      }
       ("Element", "getAttribute", 0) => {
         let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
         let name =
@@ -7719,6 +7809,60 @@ mod element_dispatch_tests {
       assert!(dom.get_element_by_id("a").is_none());
     });
 
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod element_html_accessors_webidl_tests {
+  use super::*;
+  use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
+  use crate::js::window_timers::VmJsEventLoopHooks;
+  use vm_js::{Scope, Value, VmError};
+
+  #[test]
+  fn element_inner_html_and_outer_html_work_via_webidl_dispatch() -> Result<(), VmError> {
+    let dom =
+      crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch =
+      VmJsWebIdlBindingsHostDispatch::<crate::js::WindowHostState>::new(global);
+    let mut hooks =
+      VmJsEventLoopHooks::<crate::js::WindowHostState>::new_with_vm_host_and_window_realm(
+        &mut doc_host,
+        &mut realm,
+        Some(&mut host_dispatch),
+      );
+
+    let script = r#"(() => {
+      document.body.innerHTML = '<div id="a"></div>';
+      const el = document.getElementById('a');
+      if (!el) return 'missing';
+      if (el.tagName !== 'DIV') return 'tagName:' + el.tagName;
+      if (document.body.innerHTML !== '<div id="a"></div>') return 'inner:' + document.body.innerHTML;
+      if (el.outerHTML !== '<div id="a"></div>') return 'outer:' + el.outerHTML;
+      if (Object.prototype.hasOwnProperty.call(el, 'innerHTML')) return 'own-innerHTML';
+      if (Object.prototype.hasOwnProperty.call(el, 'outerHTML')) return 'own-outerHTML';
+      document.body.innerHTML = null;
+      if (document.body.innerHTML !== '') return 'null:' + document.body.innerHTML;
+      return 'ok';
+    })()"#;
+
+    let out = realm.exec_script_with_host_and_hooks(&mut doc_host, &mut hooks, script)?;
+    let Value::String(s) = out else {
+      panic!("expected string result, got {out:?}");
+    };
+
+    let mut scope: Scope<'_> = realm.heap_mut().scope();
+    let got = scope.heap().get_string(s)?.to_utf8_lossy();
+    assert_eq!(got, "ok");
     Ok(())
   }
 }

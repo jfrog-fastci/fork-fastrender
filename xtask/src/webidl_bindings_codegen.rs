@@ -3106,6 +3106,7 @@ fn render_idl_type(ty: &IdlType) -> String {
   match ty {
     IdlType::Builtin(b) => b.to_string(),
     IdlType::Named(name) => name.clone(),
+    IdlType::Annotated { inner, .. } => render_idl_type(inner),
     IdlType::Nullable(inner) => format!("{}?", render_idl_type(inner)),
     IdlType::Union(members) => {
       let mut out = String::new();
@@ -3300,6 +3301,7 @@ fn collect_named_types(ty: &IdlType, out: &mut BTreeSet<String>) {
     IdlType::Named(name) => {
       out.insert(name.clone());
     }
+    IdlType::Annotated { inner, .. } => collect_named_types(inner, out),
     IdlType::Nullable(inner)
     | IdlType::Sequence(inner)
     | IdlType::FrozenArray(inner)
@@ -4298,6 +4300,23 @@ fn ast_idl_type_to_webidl_ir_src(ty: &IdlType) -> String {
   match ty {
     IdlType::Builtin(b) => b.to_string(),
     IdlType::Named(name) => name.clone(),
+    IdlType::Annotated { ext_attrs, inner } => {
+      let mut out = String::new();
+      out.push('[');
+      for (idx, attr) in ext_attrs.iter().enumerate() {
+        if idx != 0 {
+          out.push_str(", ");
+        }
+        out.push_str(&attr.name);
+        if let Some(v) = &attr.value {
+          out.push_str(" = ");
+          out.push_str(v);
+        }
+      }
+      out.push_str("] ");
+      out.push_str(&ast_idl_type_to_webidl_ir_src(inner));
+      out
+    }
     IdlType::Nullable(inner) => format!("{}?", ast_idl_type_to_webidl_ir_src(inner)),
     IdlType::Union(members) => format!(
       "({})",
@@ -5636,6 +5655,7 @@ fn type_contains_callback(resolved: &ResolvedWebIdlWorld, ty: &IdlType) -> bool 
       resolved.callbacks.contains_key(name)
         || resolved.interfaces.get(name).is_some_and(|i| i.callback)
     }
+    IdlType::Annotated { inner, .. } => type_contains_callback(resolved, inner),
     IdlType::Nullable(inner) => type_contains_callback(resolved, inner),
     _ => false,
   }
@@ -5802,16 +5822,33 @@ fn emit_conversion_expr(
   value_ident: &str,
 ) -> String {
   match ty {
+    IdlType::Annotated {
+      ext_attrs: ty_ext_attrs,
+      inner,
+    } => {
+      let mut merged = ty_ext_attrs.clone();
+      merged.extend_from_slice(ext_attrs);
+      emit_conversion_expr(resolved, inner, &merged, value_ident)
+    }
     IdlType::Builtin(b) => match b {
       BuiltinType::Undefined => "BindingValue::Undefined".to_string(),
       BuiltinType::Any => format!("BindingValue::Object({value_ident})"),
       BuiltinType::Boolean => format!("BindingValue::Bool(rt.to_boolean({value_ident})?)"),
       BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString => {
+        let legacy_null_to_empty =
+          ext_attrs.iter().any(|a| a.name.as_str() == "LegacyNullToEmptyString");
         // Avoid nested mutable borrows of `rt` by splitting `ToString` + `js_string_to_rust_string`
         // into two distinct steps.
-        format!(
-          "{{ let s = rt.to_string(host, {value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}"
-        )
+        if legacy_null_to_empty {
+          format!(
+            "if rt.is_null({value_ident}) || rt.is_undefined({value_ident}) {{ BindingValue::String(String::new()) }} else {{ let s = rt.to_string(host, {value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}",
+            value_ident = value_ident
+          )
+        } else {
+          format!(
+            "{{ let s = rt.to_string(host, {value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}"
+          )
+        }
       }
       BuiltinType::Object => format!("BindingValue::Object({value_ident})"),
       BuiltinType::Byte => format!(
@@ -5953,13 +5990,22 @@ fn emit_union_conversion_expr(
   let mut string_member: Option<&IdlType> = None;
 
   for member in members {
-    let mut inner = member;
-    if let IdlType::Nullable(t) = member {
-      has_nullable = true;
-      inner = t;
+    // Unwrap leading annotations for discrimination; keep `member` intact so conversion sees the
+    // full type (including any annotations).
+    let mut kind: &IdlType = member;
+    while let IdlType::Annotated { inner, .. } = kind {
+      kind = inner;
     }
 
-    match inner {
+    if let IdlType::Nullable(t) = kind {
+      has_nullable = true;
+      kind = t;
+      while let IdlType::Annotated { inner, .. } = kind {
+        kind = inner;
+      }
+    }
+
+    match kind {
       IdlType::Builtin(BuiltinType::Undefined) => has_undefined = true,
       IdlType::Builtin(BuiltinType::Any) => has_any = true,
       IdlType::Builtin(BuiltinType::Object) => has_object = true,
@@ -6007,7 +6053,7 @@ fn emit_union_conversion_expr(
       IdlType::Record { .. } => {
         let _ = record_member.get_or_insert(member);
       }
-      IdlType::Union(_) | IdlType::Promise(_) | IdlType::Nullable(_) => {}
+      IdlType::Union(_) | IdlType::Promise(_) | IdlType::Nullable(_) | IdlType::Annotated { .. } => {}
     }
   }
 
@@ -6269,6 +6315,7 @@ fn max_arg_count(args: &[Argument]) -> Option<usize> {
 
 fn emit_type_predicate(resolved: &ResolvedWebIdlWorld, ty: &IdlType, value_expr: &str) -> String {
   match ty {
+    IdlType::Annotated { inner, .. } => emit_type_predicate(resolved, inner, value_expr),
     IdlType::Builtin(b) => match b {
       BuiltinType::Boolean => format!("rt.is_boolean({value_expr})"),
       BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString => {
@@ -7239,6 +7286,7 @@ fn emit_overload_call_vmjs(
 
 fn type_needs_host_vmjs(resolved: &ResolvedWebIdlWorld, ty: &IdlType) -> bool {
   match ty {
+    IdlType::Annotated { inner, .. } => type_needs_host_vmjs(resolved, inner),
     IdlType::Builtin(b) => match b {
       BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString => true,
       BuiltinType::Long
@@ -7573,6 +7621,30 @@ fn emit_conversion_expr_vmjs(
   rt_is_ref: bool,
 ) -> String {
   match ty {
+    IdlType::Annotated { ext_attrs, inner } => {
+      let inner_expr = emit_conversion_expr_vmjs(resolved, inner, value_ident, rt_is_ref);
+      let legacy_null_to_empty = ext_attrs
+        .iter()
+        .any(|attr| attr.name == "LegacyNullToEmptyString");
+      if legacy_null_to_empty
+        && matches!(
+          inner.as_ref(),
+          IdlType::Builtin(BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString)
+        )
+      {
+        // WebIDL `[LegacyNullToEmptyString]` conversion: treat `null` and `undefined` as "" before
+        // running the usual string conversion.
+        //
+        // Important: in `vm-js`-style bindings we do this before host dispatch so the embedder sees
+        // the correct value even when the generated setter eagerly converts arguments.
+        return format!(
+          "if matches!({value_ident}, Value::Null | Value::Undefined) {{ Value::String(rt.alloc_string(\"\")?) }} else {{ {inner_expr} }}",
+          value_ident = value_ident,
+          inner_expr = inner_expr
+        );
+      }
+      inner_expr
+    }
     IdlType::Builtin(b) => match b {
       BuiltinType::Undefined => "Value::Undefined".to_string(),
       BuiltinType::Any | BuiltinType::Object => value_ident.to_string(),
@@ -7732,13 +7804,22 @@ fn emit_union_conversion_expr_vmjs(
   let mut string_member: Option<&IdlType> = None;
 
   for member in &expanded_members {
-    let mut inner = member;
-    if let IdlType::Nullable(t) = member {
-      has_nullable = true;
-      inner = t;
+    // Unwrap any leading annotations for type discrimination; keep `member` intact so conversion
+    // expressions can still see the annotations.
+    let mut kind: &IdlType = member;
+    while let IdlType::Annotated { inner, .. } = kind {
+      kind = inner;
     }
 
-    match inner {
+    if let IdlType::Nullable(t) = kind {
+      has_nullable = true;
+      kind = t;
+      while let IdlType::Annotated { inner, .. } = kind {
+        kind = inner;
+      }
+    }
+
+    match kind {
       IdlType::Builtin(BuiltinType::Undefined) => has_undefined = true,
       IdlType::Builtin(BuiltinType::Any) => has_any = true,
       IdlType::Builtin(BuiltinType::Object) => has_object = true,
@@ -7790,7 +7871,7 @@ fn emit_union_conversion_expr_vmjs(
       IdlType::Record { .. } => {
         let _ = record_member.get_or_insert(member);
       }
-      IdlType::Union(_) | IdlType::Promise(_) | IdlType::Nullable(_) => {}
+      IdlType::Union(_) | IdlType::Promise(_) | IdlType::Nullable(_) | IdlType::Annotated { .. } => {}
     }
   }
 
@@ -7979,6 +8060,7 @@ fn emit_record_conversion_expr_vmjs(
 
 fn emit_type_predicate_vmjs(ty: &IdlType, value_expr: &str) -> String {
   match ty {
+    IdlType::Annotated { inner, .. } => emit_type_predicate_vmjs(inner, value_expr),
     IdlType::Builtin(b) => match b {
       BuiltinType::Boolean => format!("matches!({value_expr}, Value::Bool(_))"),
       BuiltinType::DOMString | BuiltinType::USVString | BuiltinType::ByteString => {

@@ -16,6 +16,18 @@ pub enum IdlType {
   Builtin(BuiltinType),
   /// A reference to an interface/dictionary/enum/typedef/callback name.
   Named(String),
+  /// A type expression annotated with extended attributes.
+  ///
+  /// WebIDL allows union member types to start with extended attributes, e.g.
+  /// `(TrustedHTML or [LegacyNullToEmptyString] DOMString)`.
+  ///
+  /// The bindings/codegen pipeline only understands a small subset of annotations today, but we
+  /// retain the raw attributes so generators can implement special-cases like
+  /// `[LegacyNullToEmptyString]`.
+  Annotated {
+    ext_attrs: Vec<ExtendedAttribute>,
+    inner: Box<IdlType>,
+  },
   Nullable(Box<IdlType>),
   Union(Vec<IdlType>),
   Sequence(Box<IdlType>),
@@ -46,6 +58,10 @@ impl IdlType {
     Ok(match self {
       IdlType::Builtin(b) => IdlType::Builtin(*b),
       IdlType::Named(name) => resolve_named(name)?.unwrap_or_else(|| IdlType::Named(name.clone())),
+      IdlType::Annotated { ext_attrs, inner } => IdlType::Annotated {
+        ext_attrs: ext_attrs.clone(),
+        inner: Box::new(inner.canonicalize_with(resolve_named)?),
+      },
       IdlType::Nullable(inner) => {
         IdlType::Nullable(Box::new(inner.canonicalize_with(resolve_named)?))
       }

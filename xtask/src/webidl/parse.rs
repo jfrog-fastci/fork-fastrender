@@ -256,26 +256,6 @@ impl<'a> Parser<'a> {
     bail!(self.error_here("unexpected trailing tokens"));
   }
 
-  fn skip_bracket_block(&mut self) -> Result<()> {
-    if !self.eat_punct('[') {
-      return Ok(());
-    }
-    let mut depth = 1u32;
-    loop {
-      let tok = self.next().clone();
-      match tok.kind {
-        TokenKind::Punct('[') => depth += 1,
-        TokenKind::Punct(']') => {
-          depth -= 1;
-          if depth == 0 {
-            return Ok(());
-          }
-        }
-        TokenKind::Eof => bail!(self.error_here("unterminated extended attribute block")),
-        _ => {}
-      }
-    }
-  }
 }
 
 pub fn parse_idl_type(input: &str) -> Result<IdlType> {
@@ -286,6 +266,16 @@ pub fn parse_idl_type(input: &str) -> Result<IdlType> {
 }
 
 fn parse_type(p: &mut Parser<'_>) -> Result<IdlType> {
+  // Union member types can start with an extended-attributes list, e.g.
+  // `(TrustedHTML or [LegacyNullToEmptyString] DOMString)`.
+  //
+  // Most places in the pipeline ignore these attributes, but some (notably
+  // `LegacyNullToEmptyString`) affect runtime conversion semantics, so we retain them in the AST.
+  let mut ext_attrs = Vec::<ExtendedAttribute>::new();
+  while matches!(&p.peek().kind, TokenKind::Punct('[')) {
+    ext_attrs.extend(parse_ext_attr_block(p)?);
+  }
+
   let mut base = if p.eat_punct('(') {
     let mut members = Vec::new();
     members.push(parse_type(p)?);
@@ -308,6 +298,14 @@ fn parse_type(p: &mut Parser<'_>) -> Result<IdlType> {
   if p.eat_punct('?') {
     base = IdlType::Nullable(Box::new(base));
   }
+
+  if !ext_attrs.is_empty() {
+    base = IdlType::Annotated {
+      ext_attrs,
+      inner: Box::new(base),
+    };
+  }
+
   Ok(base)
 }
 

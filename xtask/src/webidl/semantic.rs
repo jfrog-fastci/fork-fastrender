@@ -632,6 +632,10 @@ fn convert_type(
       name: name.clone(),
       kind: classify_named_type(name, resolved, unknown_named_types, diagnostics, context),
     }),
+    AstIdlType::Annotated { ext_attrs, inner } => {
+      let inner = convert_type(inner, resolved, unknown_named_types, diagnostics, context);
+      type_resolution::merge_extra_annotations(inner, ext_attrs)
+    }
     AstIdlType::Nullable(inner) => IdlType::Nullable(Box::new(convert_type(
       inner,
       resolved,

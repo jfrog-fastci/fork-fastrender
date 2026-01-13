@@ -2603,6 +2603,89 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_get_attribute_inner_h_t_m_l(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "innerHTML",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute_inner_h_t_m_l(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = {
+        let v = v0;
+        if false {
+          Value::Undefined
+        } else if let Value::Object(_) = v {
+          v
+        } else if matches!(v, Value::String(_)) {
+          if matches!(v, Value::Null | Value::Undefined) {
+            Value::String(rt.alloc_string("")?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        } else {
+          if matches!(v, Value::Null | Value::Undefined) {
+            Value::String(rt.alloc_string("")?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        }
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "innerHTML",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
+  }
+
+  #[allow(dead_code)]
   fn element_get_attribute_last_element_child(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -2756,6 +2839,89 @@ pub mod window {
       0,
       &[],
     )
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_outer_h_t_m_l(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "outerHTML",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute_outer_h_t_m_l(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = {
+        let v = v0;
+        if false {
+          Value::Undefined
+        } else if let Value::Object(_) = v {
+          v
+        } else if matches!(v, Value::String(_)) {
+          if matches!(v, Value::Null | Value::Undefined) {
+            Value::String(rt.alloc_string("")?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        } else {
+          if matches!(v, Value::Null | Value::Undefined) {
+            Value::String(rt.alloc_string("")?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        }
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "outerHTML",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Undefined)
+    }
   }
 
   #[allow(dead_code)]
@@ -7269,6 +7435,35 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("innerHTML")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          element_get_attribute_inner_h_t_m_l,
+          None,
+          "get innerHTML",
+          0,
+        )?;
+        let set = Value::Object(rt.alloc_native_function(
+          element_set_attribute_inner_h_t_m_l,
+          None,
+          "set innerHTML",
+          1,
+        )?);
+        rt.define_accessor_property_str(
+          proto_element,
+          "innerHTML",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("lastElementChild")?;
       if rt
         .scope
@@ -7398,6 +7593,35 @@ pub mod window {
         rt.define_accessor_property_str(
           proto_element,
           "offsetWidth",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("outerHTML")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          element_get_attribute_outer_h_t_m_l,
+          None,
+          "get outerHTML",
+          0,
+        )?;
+        let set = Value::Object(rt.alloc_native_function(
+          element_set_attribute_outer_h_t_m_l,
+          None,
+          "set outerHTML",
+          1,
+        )?);
+        rt.define_accessor_property_str(
+          proto_element,
+          "outerHTML",
           Value::Object(get),
           set,
           AccessorPropertyAttributes::ATTRIBUTE,
