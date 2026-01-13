@@ -36,7 +36,12 @@ fn is_valid_attribute_local_name(name: &str) -> bool {
     return false;
   }
   !name.bytes().any(|b| {
-    is_dom_ascii_whitespace(b) || b == b'\0' || b == b'<' || b == b'/' || b == b'=' || b == b'>'
+    is_dom_ascii_whitespace(b)
+      || b == b'\0'
+      || b == b'<'
+      || b == b'/'
+      || b == b'='
+      || b == b'>'
   })
 }
 
@@ -49,7 +54,11 @@ fn is_valid_element_local_name(name: &str) -> bool {
   // https://dom.spec.whatwg.org/#valid-element-local-name
   if first.is_ascii_alphabetic() {
     return !name.bytes().any(|b| {
-      is_dom_ascii_whitespace(b) || b == b'\0' || b == b'<' || b == b'/' || b == b'>'
+      is_dom_ascii_whitespace(b)
+        || b == b'\0'
+        || b == b'<'
+        || b == b'/'
+        || b == b'>'
     });
   }
 
@@ -201,4 +210,41 @@ pub fn validate_element_qualified_name(qualified_name: &str) -> Result<(), DomEr
 /// Validate a qualified name for an attribute in non-namespace DOM APIs (e.g. `Element.setAttribute`).
 pub fn validate_attribute_qualified_name(qualified_name: &str) -> Result<(), DomError> {
   validate_qualified_name_with_context(qualified_name, NameContext::Attribute)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn rejects_less_than_in_element_context() {
+    assert_eq!(
+      validate_element_qualified_name("a<b").unwrap_err(),
+      DomError::InvalidCharacterError
+    );
+  }
+
+  #[test]
+  fn rejects_less_than_in_attribute_context() {
+    assert_eq!(
+      validate_attribute_qualified_name("a<b").unwrap_err(),
+      DomError::InvalidCharacterError
+    );
+  }
+
+  #[test]
+  fn rejects_less_than_in_namespace_prefix() {
+    assert_eq!(
+      validate_element_qualified_name("a<:b").unwrap_err(),
+      DomError::InvalidCharacterError
+    );
+  }
+
+  #[test]
+  fn rejects_less_than_in_prefixed_local_name_for_attributes() {
+    assert_eq!(
+      validate_attribute_qualified_name("a:b<").unwrap_err(),
+      DomError::InvalidCharacterError
+    );
+  }
 }
