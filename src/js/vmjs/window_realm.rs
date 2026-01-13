@@ -3184,6 +3184,7 @@ const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_GET_ATTRIBUTE_NODE_KEY: &str = "__fastrender_element_get_attribute_node";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_REMOVE_ATTRIBUTE_KEY: &str = "__fastrender_element_remove_attribute";
+const ELEMENT_APPEND_KEY: &str = "__fastrender_element_append";
 const ELEMENT_HAS_ATTRIBUTE_KEY: &str = "__fastrender_element_has_attribute";
 const ELEMENT_TOGGLE_ATTRIBUTE_KEY: &str = "__fastrender_element_toggle_attribute";
 const ELEMENT_GET_ATTRIBUTE_NAMES_KEY: &str = "__fastrender_element_get_attribute_names";
@@ -3250,6 +3251,7 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   ELEMENT_GET_ATTRIBUTE_NODE_KEY,
   ELEMENT_SET_ATTRIBUTE_KEY,
   ELEMENT_REMOVE_ATTRIBUTE_KEY,
+  ELEMENT_APPEND_KEY,
   ELEMENT_HAS_ATTRIBUTE_KEY,
   ELEMENT_TOGGLE_ATTRIBUTE_KEY,
   ELEMENT_GET_ATTRIBUTE_NAMES_KEY,
@@ -8512,6 +8514,10 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_CLOSEST_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
+  let element_append = {
+    let key = alloc_key(scope, ELEMENT_APPEND_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
 
   let slot_assigned_nodes = {
     let key = alloc_key(scope, SLOT_ASSIGNED_NODES_KEY)?;
@@ -9166,6 +9172,13 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = element_closest {
     let key = alloc_key(scope, "closest")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = element_append {
+    let key = alloc_key(scope, "append")?;
     if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
       scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
     }
@@ -28730,6 +28743,129 @@ fn node_append_child_native(
   }
 
   Ok(child_value)
+}
+
+fn element_append_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let base = scope.heap().stack_root_len();
+  let Value::Object(parent_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.append must be called on an element object",
+    ));
+  };
+
+  // Root `this` across any allocations performed while converting arguments.
+  scope.push_root(Value::Object(parent_obj))?;
+
+  let parent_handle =
+    element_handle_from_wrapper_obj(vm, scope, parent_obj, "Element.append must be called on an element object")?;
+
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, parent_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Element.append requires a DOM-backed document",
+    ))?;
+
+  if args.is_empty() {
+    scope.heap_mut().truncate_stack_roots(base);
+    return Ok(Value::Undefined);
+  }
+
+  // Convert a single `ParentNode.append` item into a Node wrapper value:
+  // - If the value is a DOM node wrapper, use it as-is.
+  // - Otherwise, `ToString` and create a Text node in the element's ownerDocument.
+  fn convert_arg_to_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    dom_ptr: &mut NonNull<dom2::Document>,
+    document_obj: GcObject,
+    value: Value,
+  ) -> Result<Value, VmError> {
+    if let Value::Object(obj) = value {
+      // Treat any DOM-backed node wrapper as a node, otherwise fall through to string conversion.
+      if dom_platform_mut(vm)
+        .is_some_and(|platform| platform.require_node_handle(scope.heap(), Value::Object(obj)).is_ok())
+      {
+        return Ok(value);
+      }
+    }
+
+    // Coerce to string and create a Text node.
+    let s = scope.heap_mut().to_string(value)?;
+    let text = scope.heap().get_string(s)?.to_utf8_lossy();
+    let text_id = unsafe { dom_ptr.as_mut() }.create_text(&text);
+
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), text_id)
+  }
+
+  // ParentNode.append uses the "convert nodes into a node" shape: when given multiple items, it
+  // creates a DocumentFragment and appends each converted node to it, then inserts the fragment.
+  if args.len() == 1 {
+    let node_value =
+      convert_arg_to_node(vm, scope, &mut dom_ptr, parent_handle.document_obj, args[0])?;
+    let node_value = scope.push_root(node_value)?;
+    let _ = node_append_child_native(vm, scope, host, hooks, callee, Value::Object(parent_obj), &[node_value])?;
+    scope.heap_mut().truncate_stack_roots(base);
+    return Ok(Value::Undefined);
+  }
+
+  // Multiple args: build a DocumentFragment, then append it.
+  let fragment_id = unsafe { dom_ptr.as_mut() }.create_document_fragment();
+  let fragment_value = {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    get_or_create_node_wrapper(vm, scope, parent_handle.document_obj, Some(dom), fragment_id)?
+  };
+  let Value::Object(fragment_obj) = fragment_value else {
+    return Err(VmError::InvariantViolation(
+      "DocumentFragment wrapper was not an object",
+    ));
+  };
+
+  scope.push_root(Value::Object(fragment_obj))?;
+
+  // Root stack layout:
+  // - `base` (prior roots)
+  // - `parent_obj`
+  // - `fragment_obj`
+  // - `node_value` (temporary; truncated each loop iteration)
+  let keep_len = base + 2;
+  for &arg in args {
+    let node_value = convert_arg_to_node(vm, scope, &mut dom_ptr, parent_handle.document_obj, arg)?;
+    let node_value = scope.push_root(node_value)?;
+    let _ = node_append_child_native(
+      vm,
+      scope,
+      host,
+      hooks,
+      callee,
+      Value::Object(fragment_obj),
+      &[node_value],
+    )?;
+    scope.heap_mut().truncate_stack_roots(keep_len);
+  }
+
+  let _ = node_append_child_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(parent_obj),
+    &[Value::Object(fragment_obj)],
+  )?;
+
+  scope.heap_mut().truncate_stack_roots(base);
+  Ok(Value::Undefined)
 }
 
 fn node_insert_before_native(
@@ -53229,6 +53365,27 @@ fn init_window_globals(
     data_desc(Value::Object(element_scroll_left_set_func)),
   )?;
 
+  // Store shared Element.append function on `document` so wrappers can reuse it.
+  //
+  // `Element.append` is a variadic ParentNode helper (length 0) used by WPT harnesses (e.g. Range
+  // tests in `tests/wpt_dom/tests/dom/common.js`).
+  let element_append_call_id = vm.register_native_call(element_append_native)?;
+  let element_append_name = scope.alloc_string("append")?;
+  scope.push_root(Value::String(element_append_name))?;
+  let element_append_func =
+    scope.alloc_native_function(element_append_call_id, None, element_append_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    element_append_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(element_append_func))?;
+  let element_append_key = alloc_key(&mut scope, ELEMENT_APPEND_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_append_key,
+    data_desc(Value::Object(element_append_func)),
+  )?;
+
   // Store shared Element.getAttribute/setAttribute functions on `document` so wrappers can reuse them.
   let get_attribute_call_id = vm.register_native_call(element_get_attribute_native)?;
   let get_attribute_name = scope.alloc_string("getAttribute")?;
@@ -53344,6 +53501,7 @@ fn init_window_globals(
     define_method_if_missing("querySelectorAll", element_query_selector_all_func)?;
     define_method_if_missing("matches", element_matches_func)?;
     define_method_if_missing("closest", element_closest_func)?;
+    define_method_if_missing("append", element_append_func)?;
     define_method_if_missing("getBoundingClientRect", element_get_bounding_client_rect_func)?;
     define_method_if_missing("getAttribute", get_attribute_func)?;
     define_method_if_missing("getAttributeNode", get_attribute_node_func)?;
@@ -56826,6 +56984,61 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_append_string_appends_text_and_updates_text_content() -> Result<(), VmError> {
+    let script = r#"(() => {
+      const el = document.createElement('div');
+      el.append('x');
+      return el.textContent === 'x';
+    })()"#;
+    for backend in [DomBindingsBackend::Handwritten, DomBindingsBackend::WebIdl] {
+      if backend == DomBindingsBackend::Handwritten {
+        let mut host = new_host_document_state();
+        let mut realm =
+          new_realm(WindowRealmConfig::new("https://example.com/").with_dom_bindings_backend(backend))?;
+        let result = exec_script_with_dom_host(&mut realm, &mut host, script)?;
+        assert_eq!(result, Value::Bool(true));
+      } else {
+        let document = new_host_document_state();
+        let window =
+          new_realm(WindowRealmConfig::new("https://example.com/").with_dom_bindings_backend(backend))?;
+        let mut host = WebIdlTestHost::new(document, window);
+        let result = host.exec_script(script)?;
+        assert_eq!(result, Value::Bool(true));
+      }
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn element_append_moves_existing_node() -> Result<(), VmError> {
+    let script = r#"(() => {
+      const a = document.createElement('div');
+      const b = document.createElement('div');
+      const child = document.createElement('span');
+      a.append(child);
+      b.append(child);
+      return a.firstChild === null && b.firstChild === child;
+    })()"#;
+    for backend in [DomBindingsBackend::Handwritten, DomBindingsBackend::WebIdl] {
+      if backend == DomBindingsBackend::Handwritten {
+        let mut host = new_host_document_state();
+        let mut realm =
+          new_realm(WindowRealmConfig::new("https://example.com/").with_dom_bindings_backend(backend))?;
+        let result = exec_script_with_dom_host(&mut realm, &mut host, script)?;
+        assert_eq!(result, Value::Bool(true));
+      } else {
+        let document = new_host_document_state();
+        let window =
+          new_realm(WindowRealmConfig::new("https://example.com/").with_dom_bindings_backend(backend))?;
+        let mut host = WebIdlTestHost::new(document, window);
+        let result = host.exec_script(script)?;
+        assert_eq!(result, Value::Bool(true));
+      }
+    }
     Ok(())
   }
 
