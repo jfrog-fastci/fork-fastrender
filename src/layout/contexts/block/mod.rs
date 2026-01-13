@@ -3544,6 +3544,35 @@ impl BlockFormattingContext {
       return Ok(fragment);
     }
 
+    // FastRender models scrollbars as overlay by default: scrollbars do not affect layout unless the
+    // author opts into reserving space via `scrollbar-gutter: stable`.
+    //
+    // Historically, `layout_block_child` implemented a multi-pass "convergence" loop for
+    // `overflow:auto` children to detect overflow and then relayout with forced scrollbars. Under
+    // the overlay scrollbar model this is unnecessary (no gutter is reserved when
+    // `scrollbar-gutter: auto`), and is extremely expensive for float-heavy layouts because each
+    // pass clones and replays the float context.
+    //
+    // Keep the legacy behavior behind a runtime toggle for experimenting with classic
+    // (layout-affecting) scrollbars, but default to a single layout pass.
+    if !crate::debug::runtime::runtime_toggles().truthy("FASTR_CLASSIC_SCROLLBARS") {
+      return crate::layout::auto_scrollbars::with_bypass(child, || {
+        self.layout_block_child(
+          parent,
+          child,
+          containing_width,
+          constraints,
+          box_y,
+          nearest_positioned_cb,
+          nearest_fixed_cb,
+          external_float_ctx,
+          external_float_base_x,
+          external_float_base_y,
+          paint_viewport,
+        )
+      });
+    }
+
     let style_override = crate::layout::style_override::style_override_for(child.id);
     let base_style = style_override.unwrap_or_else(|| child.style.clone());
     let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
@@ -14181,7 +14210,7 @@ mod tests {
   }
 
   #[test]
-  fn overflow_auto_child_skips_final_pass_when_scrollbars_not_needed() {
+  fn overflow_auto_child_does_not_enter_convergence_loop_under_overlay_scrollbars() {
     reset_overflow_auto_child_layout_passes();
 
     let mut parent_style = ComputedStyle::default();
@@ -14214,8 +14243,48 @@ mod tests {
 
     assert_eq!(
       overflow_auto_child_layout_passes(),
-      1,
-      "expected a single convergence layout pass for overflow:auto blocks with no overflow"
+      0,
+      "expected overflow:auto blocks to skip the convergence reflow loop under the default overlay scrollbar model"
+    );
+  }
+
+  #[test]
+  fn overflow_auto_child_skips_convergence_loop_even_when_overflowing() {
+    reset_overflow_auto_child_layout_passes();
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.overflow_y = Overflow::Auto;
+    child_style.height = Some(Length::px(50.0));
+
+    // Force vertical overflow so the legacy convergence loop would attempt multiple passes.
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    inner_style.height = Some(Length::px(200.0));
+
+    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+    let child = BoxNode::new_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![inner],
+    );
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![child],
+    );
+
+    let fc = BlockFormattingContext::new();
+    let constraints = LayoutConstraints::definite_width(200.0);
+    fc.layout(&parent, &constraints).unwrap();
+
+    assert_eq!(
+      overflow_auto_child_layout_passes(),
+      0,
+      "expected overflow:auto blocks to skip the convergence reflow loop under the default overlay scrollbar model, even when content overflows"
     );
   }
 
