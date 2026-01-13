@@ -130,6 +130,14 @@ timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke \
   -- --only ttfp_newtab
 ```
 
+Scenario fixtures (current default):
+
+- `scroll_fixture` / `resize_fixture` run against the built-in offline page
+  [`about:test-layout-stress`](../src/ui/about_pages.rs) so scroll/resize latency includes
+  meaningful width-sensitive layout/reflow work.
+- `input_text` runs on the file fixture `tests/pages/fixtures/ui_perf_smoke/index.html` (keeps an
+  `<input>` at a stable coordinate for deterministic pointer+text input).
+
 How to map the harness output back to the metrics table in
 `instructions/browser_responsiveness.md`:
 
