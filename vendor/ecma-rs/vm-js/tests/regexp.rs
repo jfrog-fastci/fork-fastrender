@@ -151,6 +151,13 @@ fn regexp_quantifier_iterations_reset_inner_captures() {
     .unwrap();
   assert_eq!(value, Value::Undefined);
 
+  // Same scenario but with a *lazy* quantifier; the engine must still clear capture slots for the
+  // states that enter a new iteration body.
+  let value = rt
+    .exec_script(r#""ab".match(/^(?:(a)|b)+?$/)[1]"#)
+    .unwrap();
+  assert_eq!(value, Value::Undefined);
+
   // Nested quantifier: the inner optional `(b)?` capture must also be cleared between `{2}`
   // iterations.
   let value = rt
