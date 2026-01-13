@@ -60,6 +60,7 @@ mod select_dropdown_hidden_option_arrow_key;
 mod select_dropdown_pick;
 mod select_listbox_click_scrolled;
 mod select_listbox_hidden_option_click;
+mod select_listbox_multi_select_modifiers;
 mod select_listbox_multi_select_shift_skips_disabled;
 mod select_listbox_multiple_selection;
 mod select_listbox_wheel_scroll;
