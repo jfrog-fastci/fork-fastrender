@@ -1822,6 +1822,48 @@ fn column_rule_is_segmented_around_spanners() {
   assert_eq!(sample_pixel(&pixmap, 100, 160), (255, 0, 0, 255));
 }
 
+#[test]
+fn column_rule_is_not_painted_next_to_empty_columns() {
+  // Regression for rule drawing: `column-rule` should only paint between adjacent columns that both
+  // have content. If a trailing column is empty (or omitted), the rule must not be painted in that
+  // gap.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; background: rgb(255, 0, 255); }
+      #multi {
+        width: 340px;
+        height: 100px;
+        column-count: 3;
+        column-gap: 20px;
+        column-rule: 10px solid rgb(255, 0, 0);
+        column-fill: auto;
+        background: rgb(255, 255, 255);
+      }
+      .col { height: 100px; margin: 0; }
+      #one { break-after: column; background: rgb(0, 255, 0); }
+      /* Force a third, empty column by breaking after the second block. */
+      #two { break-after: column; background: rgb(0, 0, 255); }
+    </style>
+    <div id="multi">
+      <div id="one" class="col"></div>
+      <div id="two" class="col"></div>
+    </div>
+  "#;
+
+  let pixmap = render_html_to_pixmap(html, 360, 120);
+
+  // Gap 1 (between col 1 + col 2) should have a rule segment.
+  assert_eq!(sample_pixel(&pixmap, 110, 50), (255, 0, 0, 255));
+
+  // Gap 2 (between col 2 + empty col 3) should not have a rule segment.
+  assert_eq!(sample_pixel(&pixmap, 230, 50), (255, 255, 255, 255));
+
+  // Sanity: content columns are present, and the trailing empty column is background.
+  assert_eq!(sample_pixel(&pixmap, 10, 50), (0, 255, 0, 255));
+  assert_eq!(sample_pixel(&pixmap, 150, 50), (0, 0, 255, 255));
+  assert_eq!(sample_pixel(&pixmap, 290, 50), (255, 255, 255, 255));
+}
+
 fn find_first_multicol_container<'a>(fragment: &'a FragmentNode) -> Option<&'a FragmentNode> {
   if fragment.fragmentation.is_some() {
     return Some(fragment);
