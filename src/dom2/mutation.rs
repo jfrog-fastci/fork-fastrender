@@ -1295,6 +1295,55 @@ impl Document {
     self.insert_before(parent, child, None)
   }
 
+  /// Validate that `node` can be inserted into `parent` before `child` without mutating the tree.
+  ///
+  /// This implements WHATWG DOM "ensure pre-insert validity" and mirrors `insert_before`'s
+  /// validation pipeline so Range algorithms can perform checks without side effects.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#concept-node-ensure-pre-insertion-validity
+  pub(super) fn ensure_pre_insert_validity(
+    &self,
+    parent: NodeId,
+    node: NodeId,
+    child: Option<NodeId>,
+  ) -> Result<(), DomError> {
+    self.node_checked(parent)?;
+    self.node_checked(node)?;
+    if let Some(child) = child {
+      self.node_checked(child)?;
+      if self.nodes[child.index()].parent != Some(parent) {
+        return Err(DomError::NotFoundError);
+      }
+    }
+
+    self.validate_insert_hierarchy(parent, node)?;
+    self.validate_no_cycles(parent, node)?;
+
+    let insertion_idx = match child {
+      Some(child) => self
+        .index_of_child_internal(parent, child)?
+        .ok_or(DomError::NotFoundError)?,
+      None => self.nodes[parent.index()].children.len(),
+    };
+
+    if matches!(self.nodes[node.index()].kind, NodeKind::DocumentFragment) {
+      // DocumentFragment insertion is transparent. Validate children up-front for atomicity.
+      for &frag_child in self.nodes[node.index()].children.as_slice() {
+        self.validate_insert_hierarchy(parent, frag_child)?;
+        self.validate_no_cycles(parent, frag_child)?;
+      }
+      self.validate_document_fragment_insertion(
+        parent,
+        insertion_idx,
+        self.nodes[node.index()].children.as_slice(),
+      )?;
+      return Ok(());
+    }
+
+    self.validate_document_insertion(parent, node, child, insertion_idx)?;
+    Ok(())
+  }
+
   pub fn insert_before(
     &mut self,
     parent: NodeId,

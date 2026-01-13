@@ -1256,6 +1256,361 @@ impl Document {
     Ok(fragment)
   }
 
+  fn tree_child_at_for_range(&self, parent: NodeId, index: usize) -> Option<NodeId> {
+    let parent_node = self.nodes.get(parent.index())?;
+    let parent_is_element_like = self.parent_is_element_like_for_range(parent);
+    let mut idx = 0usize;
+    for &child in parent_node.children.iter() {
+      let child_node = self.nodes.get(child.index())?;
+      if child_node.parent != Some(parent) {
+        continue;
+      }
+      if parent_is_element_like && self.is_shadow_root_node(child) {
+        continue;
+      }
+      if idx == index {
+        return Some(child);
+      }
+      idx += 1;
+    }
+    None
+  }
+
+  fn range_next_sibling(&self, node: NodeId) -> Option<NodeId> {
+    let parent = self.range_parent(node)?;
+    let parent_node = self.nodes.get(parent.index())?;
+    let parent_is_element_like = self.parent_is_element_like_for_range(parent);
+    let mut found = false;
+    for &child in parent_node.children.iter() {
+      let child_node = self.nodes.get(child.index())?;
+      if child_node.parent != Some(parent) {
+        continue;
+      }
+      if parent_is_element_like && self.is_shadow_root_node(child) {
+        continue;
+      }
+      if found {
+        return Some(child);
+      }
+      if child == node {
+        found = true;
+      }
+    }
+    None
+  }
+
+  /// Delete the contents of a live range.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-deletecontents
+  pub fn range_delete_contents(&mut self, range: RangeId) -> DomResult<()> {
+    let (start, end) = {
+      let r = self.range(range)?;
+      (r.start, r.end)
+    };
+    if start == end {
+      return Ok(());
+    }
+
+    let (original_start_node, original_start_offset) = (start.node, start.offset);
+    let (original_end_node, original_end_offset) = (end.node, end.offset);
+
+    // Fast path: CharacterData-only.
+    if original_start_node == original_end_node && self.node_is_character_data_for_range(original_start_node)
+    {
+      let _ = self.replace_data(
+        original_start_node,
+        original_start_offset,
+        original_end_offset.saturating_sub(original_start_offset),
+        "",
+      )?;
+      // `replace_data` collapses/updates range endpoints via live range maintenance.
+      return Ok(());
+    }
+
+    // Collect contained nodes whose parent is not also contained.
+    let range_root = self.tree_root_for_range(original_start_node);
+    let mut nodes_to_remove: Vec<NodeId> = Vec::new();
+    let mut stack: Vec<(NodeId, bool)> = vec![(range_root, false)];
+    while let Some((node, ancestor_contained)) = stack.pop() {
+      let contained = self.is_node_contained_in_range(node, start, end)?;
+      if contained {
+        if !ancestor_contained {
+          nodes_to_remove.push(node);
+        }
+        // Descendants of a contained node are also contained.
+        continue;
+      }
+
+      let Some(node_ref) = self.nodes.get(node.index()) else {
+        continue;
+      };
+      let parent_is_element_like = self.parent_is_element_like_for_range(node);
+      for &child in node_ref.children.iter().rev() {
+        let Some(child_ref) = self.nodes.get(child.index()) else {
+          continue;
+        };
+        if child_ref.parent != Some(node) {
+          continue;
+        }
+        if parent_is_element_like && self.is_shadow_root_node(child) {
+          continue;
+        }
+        stack.push((child, ancestor_contained));
+      }
+    }
+
+    // Compute where to collapse the range after deletion.
+    let collapse_point = if self.is_inclusive_descendant_for_range(original_end_node, original_start_node) {
+      BoundaryPoint {
+        node: original_start_node,
+        offset: original_start_offset,
+      }
+    } else {
+      let mut reference_node = original_start_node;
+      let mut remaining = self.nodes.len() + 1;
+      while remaining > 0 {
+        remaining -= 1;
+        let Some(parent) = self.range_parent(reference_node) else {
+          break;
+        };
+        if self.is_inclusive_descendant_for_range(original_end_node, parent) {
+          break;
+        }
+        reference_node = parent;
+      }
+
+      if let Some(new_node) = self.range_parent(reference_node) {
+        let idx = self.node_index(reference_node).unwrap_or(0);
+        BoundaryPoint {
+          node: new_node,
+          offset: idx.saturating_add(1),
+        }
+      } else {
+        BoundaryPoint {
+          node: original_start_node,
+          offset: original_start_offset,
+        }
+      }
+    };
+
+    // Mutate the tree.
+    if self.node_is_character_data_for_range(original_start_node) {
+      let start_len = self.node_length(original_start_node)?;
+      let _ = self.replace_data(
+        original_start_node,
+        original_start_offset,
+        start_len.saturating_sub(original_start_offset),
+        "",
+      )?;
+    }
+
+    for node in nodes_to_remove {
+      let Some(parent) = self.nodes.get(node.index()).and_then(|n| n.parent) else {
+        continue;
+      };
+      let _ = self.remove_child(parent, node)?;
+    }
+
+    if self.node_is_character_data_for_range(original_end_node) {
+      let _ = self.replace_data(original_end_node, 0, original_end_offset, "")?;
+    }
+
+    let r = self.range_mut(range)?;
+    r.start = collapse_point;
+    r.end = collapse_point;
+    Ok(())
+  }
+
+  /// Insert a node into a live range.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-insertnode
+  pub fn range_insert_node(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    self.node_checked(node)?;
+    let start = self.range_start(range)?;
+    let start_node = start.node;
+
+    // Track the initial collapsed state (step 13).
+    let was_collapsed = start == self.range_end(range)?;
+
+    // Step 1.
+    match &self.node_checked(start_node)?.kind {
+      NodeKind::ProcessingInstruction { .. } | NodeKind::Comment { .. } => {
+        return Err(DomError::HierarchyRequestError);
+      }
+      NodeKind::Text { .. } => {
+        if self.nodes[start_node.index()].parent.is_none() {
+          return Err(DomError::HierarchyRequestError);
+        }
+      }
+      _ => {}
+    }
+    if start_node == node {
+      return Err(DomError::HierarchyRequestError);
+    }
+
+    // Steps 2–5.
+    let mut reference_node = if matches!(&self.node_checked(start_node)?.kind, NodeKind::Text { .. }) {
+      Some(start_node)
+    } else {
+      self.tree_child_at_for_range(start_node, start.offset)
+    };
+
+    let parent = match reference_node {
+      None => start_node,
+      Some(reference_node) => self.range_parent(reference_node).unwrap_or(start_node),
+    };
+
+    // Step 6.
+    self.ensure_pre_insert_validity(parent, node, reference_node)?;
+
+    // Step 7.
+    if matches!(&self.node_checked(start_node)?.kind, NodeKind::Text { .. }) {
+      reference_node = Some(self.split_text(start_node, start.offset)?);
+    }
+
+    // Step 8.
+    if reference_node == Some(node) {
+      reference_node = self.range_next_sibling(node);
+    }
+
+    // Step 9.
+    if let Some(old_parent) = self.nodes.get(node.index()).and_then(|n| n.parent) {
+      let _ = self.remove_child(old_parent, node)?;
+    }
+
+    // Steps 10–11.
+    let mut new_offset = match reference_node {
+      None => self.node_length(parent)?,
+      Some(reference_node) => self.node_index(reference_node).unwrap_or(self.node_length(parent)?),
+    };
+    if matches!(
+      self.nodes.get(node.index()).map(|n| &n.kind),
+      Some(NodeKind::DocumentFragment)
+    ) {
+      new_offset = new_offset.saturating_add(self.node_length(node)?);
+    } else {
+      new_offset = new_offset.saturating_add(1);
+    }
+
+    // Step 12.
+    let _ = self.insert_before(parent, node, reference_node)?;
+
+    // Step 13.
+    if was_collapsed {
+      let r = self.range_mut(range)?;
+      r.end = BoundaryPoint {
+        node: parent,
+        offset: new_offset,
+      };
+    }
+
+    Ok(())
+  }
+
+  fn range_select_node(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    let parent = self.range_parent(node).ok_or(DomError::InvalidNodeTypeError)?;
+    let index = self.node_index(node).ok_or(DomError::InvalidNodeTypeError)?;
+    let r = self.range_mut(range)?;
+    r.start = BoundaryPoint { node: parent, offset: index };
+    r.end = BoundaryPoint {
+      node: parent,
+      offset: index + 1,
+    };
+    Ok(())
+  }
+
+  /// Surround the contents of a live range.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-surroundcontents
+  pub fn range_surround_contents(&mut self, range: RangeId, new_parent: NodeId) -> DomResult<()> {
+    self.node_checked(new_parent)?;
+    let (start, end) = {
+      let r = self.range(range)?;
+      (r.start, r.end)
+    };
+
+    // Step 1: throw if any partially contained node is not Text.
+    if start.node != end.node {
+      let common_ancestor = self.range_common_ancestor_container(range)?;
+
+      let mut n = start.node;
+      while n != common_ancestor {
+        if !matches!(self.node_checked(n)?.kind, NodeKind::Text { .. }) {
+          return Err(DomError::InvalidStateError);
+        }
+        n = self.range_parent(n).unwrap_or(common_ancestor);
+      }
+
+      let mut n = end.node;
+      while n != common_ancestor {
+        if !matches!(self.node_checked(n)?.kind, NodeKind::Text { .. }) {
+          return Err(DomError::InvalidStateError);
+        }
+        n = self.range_parent(n).unwrap_or(common_ancestor);
+      }
+    }
+
+    // Step 2.
+    match &self.node_checked(new_parent)?.kind {
+      NodeKind::Document { .. }
+      | NodeKind::Doctype { .. }
+      | NodeKind::DocumentFragment
+      | NodeKind::ShadowRoot { .. } => return Err(DomError::InvalidNodeTypeError),
+      _ => {}
+    }
+
+    // Step 3.
+    let fragment = self.range_extract_contents(range)?;
+
+    // Step 4: remove all tree children of newParent.
+    let mut children: Vec<NodeId> = Vec::new();
+    let parent_is_element_like = self.parent_is_element_like_for_range(new_parent);
+    let node = self.node_checked(new_parent)?;
+    for &child in node.children.iter() {
+      let Some(child_node) = self.nodes.get(child.index()) else {
+        continue;
+      };
+      if child_node.parent != Some(new_parent) {
+        continue;
+      }
+      if parent_is_element_like && self.is_shadow_root_node(child) {
+        continue;
+      }
+      children.push(child);
+    }
+    for child in children {
+      let _ = self.remove_child(new_parent, child)?;
+    }
+
+    // Step 5.
+    self.range_insert_node(range, new_parent)?;
+
+    // Step 6.
+    let _ = self.append_child(new_parent, fragment)?;
+
+    // Step 7.
+    self.range_select_node(range, new_parent)?;
+
+    Ok(())
+  }
+
+  /// Live range pre-insert steps.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-insert
+  pub(super) fn live_range_pre_insert_steps(&mut self, parent: NodeId, index: usize, count: usize) {
+    if count == 0 || self.ranges.is_empty() {
+      return;
+    }
+
+    for range in self.ranges.values_mut() {
+      if range.start.node == parent && range.start.offset > index {
+        range.start.offset = range.start.offset.saturating_add(count);
+      }
+      if range.end.node == parent && range.end.offset > index {
+        range.end.offset = range.end.offset.saturating_add(count);
+      }
+    }
+  }
   /// Live range pre-remove steps.
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-remove

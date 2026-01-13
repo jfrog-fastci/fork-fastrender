@@ -936,7 +936,6 @@ fn range_remap_node_ids_updates_boundary_points_for_cross_document_adopted_detac
     "remapped endpoint should refer to the cloned text node in the destination document"
   );
 }
-
 #[test]
 fn range_to_string_matches_dom_stringifier_expectations() {
   // Mirrors `tests/wpt_dom/tests/dom/ranges/Range-stringifier.html`.
@@ -976,6 +975,183 @@ fn range_to_string_matches_dom_stringifier_expectations() {
   doc.range_set_start(range, text_node, 5).unwrap();
   doc.range_set_end(range, last_text, 4).unwrap();
   assert_eq!(doc.range_to_string(range).unwrap(), "div\nAnother div\nLast");
+}
+
+#[test]
+fn range_delete_contents_character_data_respects_utf16_offsets_and_collapses() {
+  let mut doc: Document = parse_html("<!doctype html><html></html>").unwrap();
+
+  // 😀 is a single Unicode scalar value but encoded as a surrogate pair in UTF-16.
+  let text = doc.create_text("x😀y");
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 3).unwrap();
+
+  doc.range_delete_contents(range).unwrap();
+
+  assert_eq!(doc.text_data(text).unwrap(), "xy");
+  assert_range_collapsed(&doc, range, text, 1);
+}
+
+#[test]
+fn range_delete_contents_across_nodes_removes_contained_nodes_and_collapses_to_parent() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>hello<span id=mid>mid</span>world</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").unwrap();
+  let mid = doc.get_element_by_id("mid").unwrap();
+  let start_text = doc.node(host).children[0];
+  let end_text = doc.node(host).children[2];
+  assert!(matches!(doc.node(start_text).kind, NodeKind::Text { .. }));
+  assert!(matches!(doc.node(end_text).kind, NodeKind::Text { .. }));
+
+  let range = doc.create_range();
+  doc.range_set_start(range, start_text, 2).unwrap(); // he|llo
+  doc.range_set_end(range, end_text, 3).unwrap(); // wor|ld
+
+  doc.range_delete_contents(range).unwrap();
+
+  assert_eq!(doc.text_data(start_text).unwrap(), "he");
+  assert_eq!(doc.text_data(end_text).unwrap(), "ld");
+  assert!(doc.node(mid).parent.is_none(), "expected contained <span> to be removed");
+  assert_eq!(super::serialization::serialize_children(&doc, host), "held");
+
+  // The deleteContents collapse point is the boundary point after the original start node in its
+  // parent.
+  assert_range_collapsed(&doc, range, host, 1);
+}
+
+#[test]
+fn range_insert_node_splits_text_and_updates_end_when_collapsed() {
+  let html = "<!doctype html><html><body><div id=host>hello</div></body></html>";
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").unwrap();
+  let text = doc.node(host).children[0];
+  assert!(matches!(doc.node(text).kind, NodeKind::Text { .. }));
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 2).unwrap();
+  doc.range_set_end(range, text, 2).unwrap();
+
+  let inserted = doc.create_element("span", "");
+  doc.range_insert_node(range, inserted).unwrap();
+
+  assert_eq!(
+    super::serialization::serialize_children(&doc, host),
+    "he<span></span>llo"
+  );
+
+  assert_eq!(doc.range_start_container(range).unwrap(), text);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
+fn range_insert_node_document_fragment_moves_children_and_updates_end_offset() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host><span id=a></span><span id=b></span></div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  // Insert at the boundary between #a and #b (tree-child offset 1).
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 1).unwrap();
+  doc.range_set_end(range, host, 1).unwrap();
+
+  let frag = doc.create_document_fragment();
+  let x = doc.create_element("i", "");
+  let y = doc.create_element("i", "");
+  assert!(doc.append_child(frag, x).unwrap());
+  assert!(doc.append_child(frag, y).unwrap());
+
+  doc.range_insert_node(range, frag).unwrap();
+
+  assert!(
+    doc.node(frag).children.is_empty(),
+    "expected DocumentFragment to be emptied after insertion"
+  );
+
+  let children = doc.node(host).children.clone();
+  assert_eq!(children, vec![a, x, y, b]);
+
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 3);
+}
+
+#[test]
+fn range_surround_contents_wraps_and_selects_new_parent() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host><span id=a></span><span id=b></span></div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, host, 0).unwrap();
+  doc.range_set_end(range, host, 2).unwrap();
+
+  let wrapper = doc.create_element("em", "");
+  doc.range_surround_contents(range, wrapper).unwrap();
+
+  assert_eq!(
+    super::serialization::serialize_children(&doc, host),
+    "<em><span id=\"a\"></span><span id=\"b\"></span></em>"
+  );
+  assert_eq!(doc.node(wrapper).parent, Some(host));
+  assert_eq!(doc.node(a).parent, Some(wrapper));
+  assert_eq!(doc.node(b).parent, Some(wrapper));
+
+  // The final step selects the wrapper node.
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
+fn range_surround_contents_throws_for_partially_contained_non_text_node() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host><p id=p><b id=b>hello</b></p><span id=s>world</span></div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let b = doc.get_element_by_id("b").unwrap();
+  let s = doc.get_element_by_id("s").unwrap();
+  let b_text = doc.node(b).children[0];
+  let s_text = doc.node(s).children[0];
+
+  let range = doc.create_range();
+  doc.range_set_start(range, b_text, 1).unwrap();
+  doc.range_set_end(range, s_text, 1).unwrap();
+
+  let wrapper = doc.create_element("em", "");
+  let err = doc.range_surround_contents(range, wrapper).unwrap_err();
+  assert_eq!(err, DomError::InvalidStateError);
 }
 
 #[test]
