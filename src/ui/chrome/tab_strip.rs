@@ -2782,6 +2782,35 @@ mod tests {
   }
 
   #[test]
+  fn sizing_scaled_tabs_matches_formula_without_clamp() {
+    // Choose parameters that keep the computed width comfortably within [TAB_MIN_WIDTH, TAB_MAX_WIDTH]
+    // so we can assert the exact algebraic result.
+    let available = 600.0;
+    let tab_units = 2.5;
+    let extra = 120.0;
+    let gaps = TAB_GAP * 3.0;
+
+    let sizing = compute_tab_strip_sizing_with_scaled_tabs(available, tab_units, extra, gaps);
+    let expected_tab_width = (available - extra - gaps) / tab_units;
+    assert!((sizing.tab_width - expected_tab_width).abs() < 0.01);
+    assert!(!sizing.overflow);
+    assert!((sizing.total_content_width - available).abs() < 0.01);
+  }
+
+  #[test]
+  fn sizing_scaled_tabs_clamps_and_overflows_like_min_width() {
+    // Force a case where the ideal width would go below TAB_MIN_WIDTH and the strip should overflow.
+    let available = 400.0;
+    let tab_units = 2.0;
+    let extra = 160.0;
+    let gaps = TAB_GAP * 2.0;
+
+    let sizing = compute_tab_strip_sizing_with_scaled_tabs(available, tab_units, extra, gaps);
+    assert!(sizing.overflow);
+    assert!((sizing.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
+  }
+
+  #[test]
   fn pinned_viewport_never_exceeds_total() {
     for total in [0.0_f32, 10.0, 200.0, 400.0] {
       let (pinned, unpinned) = compute_pinned_viewport_width(total, 10_000.0, true);
