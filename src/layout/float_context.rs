@@ -1086,6 +1086,12 @@ pub struct FloatContext {
   /// cloning and re-advancing heaps per call.
   range_cache: RefCell<FloatRangeCache>,
 
+  /// Cached maximum bottom edge across **all** floats in this context.
+  ///
+  /// This powers `floats_bottom()` which is used by BFC layout to ensure floats do not overflow
+  /// their containers. Keeping this cached avoids repeatedly scanning the float lists.
+  max_float_bottom: f32,
+
   /// Cached maximum bottom edge of all left floats in this context.
   ///
   /// This is used to implement CSS2.1 §9.5.2 `clear`, which requires clearing below *any* earlier
@@ -1121,6 +1127,7 @@ impl Clone for FloatContext {
       // purely derived from `events`/`float_map`.
       sweep_state: RefCell::new(FloatSweepState::new(self.float_map.len(), &self.events)),
       range_cache: RefCell::new(FloatRangeCache::new()),
+      max_float_bottom: self.max_float_bottom,
       clearance_left_max_bottom: self.clearance_left_max_bottom,
       clearance_right_max_bottom: self.clearance_right_max_bottom,
       timeout_elapsed: Cell::new(self.timeout_elapsed.get()),
@@ -1143,6 +1150,7 @@ impl Clone for FloatContext {
       .reset(self.float_map.len(), &self.events);
     self.range_cache.get_mut().reset();
 
+    self.max_float_bottom = source.max_float_bottom;
     self.clearance_left_max_bottom = source.clearance_left_max_bottom;
     self.clearance_right_max_bottom = source.clearance_right_max_bottom;
     self.timeout_elapsed.set(source.timeout_elapsed.get());
@@ -1174,6 +1182,7 @@ impl FloatContext {
       events: Vec::new(),
       sweep_state: RefCell::new(FloatSweepState::new(0, &[])),
       range_cache: RefCell::new(FloatRangeCache::new()),
+      max_float_bottom: 0.0,
       // Use a finite sentinel so non-finite float geometry cannot permanently poison clearance.
       // `f32::MIN` behaves like `-∞` for all practical layout coordinates while remaining finite.
       clearance_left_max_bottom: f32::MIN,
@@ -2147,6 +2156,9 @@ impl FloatContext {
     if !self.current_y.is_finite() {
       self.current_y = 0.0;
     }
+    if !self.max_float_bottom.is_finite() {
+      self.max_float_bottom = 0.0;
+    }
     if !self.clearance_left_max_bottom.is_finite() {
       self.clearance_left_max_bottom = f32::MIN;
     }
@@ -2203,6 +2215,11 @@ impl FloatContext {
       start_y = self.current_y;
       end_y = self.current_y;
       float_info.rect = Rect::from_xywh(x, self.current_y, width, 0.0);
+    }
+
+    let float_bottom = float_info.bottom();
+    if float_bottom.is_finite() {
+      self.max_float_bottom = self.max_float_bottom.max(float_bottom);
     }
     // CSS 2.1 §9.5.1: a float's outer top may not be higher than the outer top of any earlier
     // float. Track a monotonic "ceiling" so even if callers accidentally pass a smaller `min_y`
@@ -2696,11 +2713,7 @@ impl FloatContext {
   ///
   /// The maximum bottom edge of all floats, or 0 if there are no floats.
   pub fn floats_bottom(&self) -> f32 {
-    let mut bottom = 0.0f32;
-    for id in 0..self.float_map.len() {
-      bottom = bottom.max(self.float_info(id).bottom());
-    }
-    bottom
+    self.max_float_bottom.max(0.0)
   }
 
   /// Check if a box would fit at the given position
@@ -2754,6 +2767,7 @@ impl FloatContext {
     self.float_map.clear();
     self.events.clear();
     self.reset_sweep_state();
+    self.max_float_bottom = 0.0;
     self.clearance_left_max_bottom = f32::MIN;
     self.clearance_right_max_bottom = f32::MIN;
     self.timeout_elapsed.set(None);
@@ -3206,6 +3220,39 @@ mod tests {
 
     ctx.add_float_at(FloatSide::Right, 600.0, 50.0, 200.0, 150.0);
     assert_eq!(ctx.floats_bottom(), 200.0); // 50 + 150
+  }
+
+  #[test]
+  fn floats_bottom_cache_matches_naive_scan_and_resets_on_clear() {
+    fn naive_floats_bottom(ctx: &FloatContext) -> f32 {
+      let mut bottom = 0.0f32;
+      for id in 0..ctx.float_map.len() {
+        let b = ctx.float_info(id).bottom();
+        let b = if b.is_finite() { b } else { 0.0 };
+        bottom = bottom.max(b);
+      }
+      bottom.max(0.0)
+    }
+
+    let mut ctx = FloatContext::new(800.0);
+    assert_eq!(ctx.floats_bottom(), naive_floats_bottom(&ctx));
+
+    // Mixed left/right floats with different bottoms (including one above the origin).
+    ctx.add_float_at(FloatSide::Left, 0.0, 10.0, 100.0, 10.0); // bottom 20
+    assert_eq!(ctx.floats_bottom(), naive_floats_bottom(&ctx));
+
+    ctx.add_float_at(FloatSide::Right, 700.0, -50.0, 50.0, 10.0); // bottom -40 (should not affect)
+    assert_eq!(ctx.floats_bottom(), naive_floats_bottom(&ctx));
+
+    ctx.add_float_at(FloatSide::Left, 0.0, 5.0, 200.0, 50.0); // bottom 55
+    assert_eq!(ctx.floats_bottom(), naive_floats_bottom(&ctx));
+
+    ctx.add_float_at(FloatSide::Right, 600.0, 100.0, 200.0, 1.0); // bottom 101
+    assert_eq!(ctx.floats_bottom(), naive_floats_bottom(&ctx));
+
+    ctx.clear_all();
+    assert_eq!(ctx.floats_bottom(), 0.0);
+    assert_eq!(ctx.floats_bottom(), naive_floats_bottom(&ctx));
   }
 
   #[test]
