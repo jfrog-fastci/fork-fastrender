@@ -60,7 +60,7 @@ For large runs, both `fetch_pages` and `render_pages` accept `--shard <index>/<t
 
 Cache layout:
 - `fetches/html/` – cached HTML
-- `fetches/assets/` – cached subresources (images/CSS/etc.; used by `prefetch_assets`, `render_pages`, `fetch_and_render`, and `pageset_progress`; override with `--cache-dir <dir>`)
+- `fetches/assets/` – cached subresources (CSS/images/fonts/media/etc.; used by `prefetch_assets`, `render_pages`, `fetch_and_render`, and `pageset_progress`; override with `--cache-dir <dir>`)
 - `fetches/renders/` – output PNGs and logs
 
 ## Render a single page
@@ -77,12 +77,13 @@ Cache layout:
   crawling HTML + CSS for subresources (no layout/paint):  
   `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir --no-render`
   - Optional: bound per-request fetch time with `--fetch-timeout-secs <secs>`.
+  - Note: crawl discovery is also what picks up media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`). Render-mode capture may not fetch media sources yet.
 - Render strictly from the bundle without touching the network:  
   `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render capture_dir --out output.png`
 
 Bundles are deterministic directories or `.tar` archives containing:
 - Raw document bytes with content-type and final URL
-- All fetched CSS/image/font resources with bytes and HTTP metadata
+- All fetched CSS/image/font resources with bytes and HTTP metadata (plus crawl-discovered assets like media, and scripts when `--bundle-scripts` is used)
 - A manifest mapping the original URLs to bundle paths plus the render settings (viewport/dpr/scroll/full-page) used during capture
 
 ## Responsive captures and `<meta name="viewport">`

@@ -187,7 +187,7 @@ Check `timeout_stage` in the progress JSON. If null, the timeout happened before
 ```bash
 FASTR_LOG_LAYOUT=1 timeout -k 10 30 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- \
-  --url "https://example.com" --timeout-secs 30
+  https://example.com out.png --timeout 30
 ```
 
 ### 3. Look for loops
@@ -201,9 +201,13 @@ Common timeout causes:
 ### 4. Create minimal repro
 
 ```bash
-# Bundle the page to isolate it
-timeout -k 10 300 bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
-  --url "https://example.com" --output tests/pages/fixtures/timeout_repro/
+# Capture a deterministic offline bundle (crawl mode avoids renderer crashes/timeouts)
+timeout -k 10 300 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
+  fetch --no-render https://example.com --out /tmp/timeout_repro_bundle.tar
+
+# Import it as an offline fixture for minimization/regression work:
+timeout -k 10 300 bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/timeout_repro_bundle.tar timeout_repro --overwrite
 ```
 
 Then minimize the fixture until you find the smallest case that triggers the timeout.
@@ -217,7 +221,7 @@ When a page panics:
 ```bash
 RUST_BACKTRACE=1 timeout -k 10 60 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- \
-  --url "https://example.com"
+  https://example.com out.png
 ```
 
 ### 2. Identify the panic location
