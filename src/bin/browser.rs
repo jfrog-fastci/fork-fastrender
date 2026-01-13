@@ -5911,7 +5911,27 @@ impl App {
                   if focus_day == Some(day) {
                     response.request_focus();
                   }
-                  if response.clicked() {
+
+                  // `SelectableLabel` doesn't reliably trigger `clicked()` for keyboard activation
+                  // (Enter/Space), so explicitly wire it up for keyboard-only workflows.
+                  let mut choose_requested = response.clicked();
+                  if response.has_focus() {
+                    choose_requested |= ui.input_mut(|i| {
+                      i.consume_key(Default::default(), egui::Key::Enter)
+                        || i.consume_key(Default::default(), egui::Key::Space)
+                    });
+
+                    // Ensure focus is visible even when the day isn't selected (so there's no
+                    // built-in selection highlight).
+                    let focus_stroke = ui.visuals().selection.stroke;
+                    let expand = 1.0 + focus_stroke.width * 0.5;
+                    let focus_rect = response.rect.expand(expand);
+                    let rounding = ui.visuals().widgets.inactive.rounding;
+                    let focus_rounding = egui::Rounding::same(rounding.nw + expand);
+                    ui.painter().rect_stroke(focus_rect, focus_rounding, focus_stroke);
+                  }
+
+                  if choose_requested {
                     *selected_day = Some(day);
                     action = Some(Action::Choose(format!(
                       "{:04}-{:02}-{:02}",
