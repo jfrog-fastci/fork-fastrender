@@ -467,13 +467,10 @@ function assert_throws_dom(name, target, func, message) {
   var expected_name = name;
   var expected_for_message = name;
   try {
-    var expected_len = name.length;
-    if (expected_len >= 4 && name.substring(expected_len - 4, expected_len) === "_ERR") {
-      var mapped_name = __dom_exception_legacy_name_map[name];
-      if (typeof mapped_name === "string") {
-        expected_name = mapped_name;
-        expected_for_message = [name, " (", mapped_name, ")"].join("");
-      }
+    var mapped_name = __dom_exception_legacy_name_map[name];
+    if (typeof mapped_name === "string") {
+      expected_name = mapped_name;
+      expected_for_message = [name, " (", mapped_name, ")"].join("");
     }
   } catch (_e0) {}
   //
@@ -517,15 +514,9 @@ function assert_throws_dom(name, target, func, message) {
   var canonical_thrown_name = thrown_name;
   try {
     if (typeof canonical_thrown_name === "string") {
-      var thrown_len = canonical_thrown_name.length;
-      if (
-        thrown_len >= 4 &&
-        canonical_thrown_name.substring(thrown_len - 4, thrown_len) === "_ERR"
-      ) {
-        var mapped_thrown_name = __dom_exception_legacy_name_map[canonical_thrown_name];
-        if (typeof mapped_thrown_name === "string") {
-          canonical_thrown_name = mapped_thrown_name;
-        }
+      var mapped_thrown_name = __dom_exception_legacy_name_map[canonical_thrown_name];
+      if (typeof mapped_thrown_name === "string") {
+        canonical_thrown_name = mapped_thrown_name;
       }
     }
   } catch (_e3) {}
