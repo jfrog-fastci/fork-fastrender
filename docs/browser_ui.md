@@ -553,9 +553,15 @@ FastRender’s experimental desktop browser UI supports **bookmarks** and a basi
 The browser chrome UI is built with **egui** and, when compiled with `--features browser_ui`, enables
 egui’s **AccessKit** integration so screen readers can traverse the chrome widget tree.
 
-Scope note: the rendered page is currently an image; full document accessibility is a separate
-future project. Today, screen reader support is intended for chrome-only UI: tabs, toolbar buttons,
-address bar, and popups/menus.
+In addition to the chrome widgets, the windowed UI can expose a **page accessibility tree**:
+
+- The UI receives a `PageA11ySnapshot` from the worker and injects it into egui’s AccessKit tree,
+  allowing assistive technology to traverse page content nodes (for example headings, links,
+  buttons, and form controls) even though the page is still rendered visually as a pixel buffer.
+- Basic actions are supported: **focus** and **activate** requests coming from AccessKit are routed
+  back to the worker as DOM interactions.
+- Limitations: some properties are still best-effort/partial (for example node bounds and text
+  selection/value reporting).
 
 For the current page accessibility semantics workflow (`dump_a11y`, bounds mapping, and how this will
 eventually feed into OS accessibility), see [page_accessibility.md](page_accessibility.md).
@@ -577,8 +583,14 @@ Manual verification checklist:
   announces their labels.
 - macOS: focusing the address bar (e.g. Cmd+L) is announced as “Address bar” and selection changes
   (select-all) are announced.
+- macOS: VoiceOver can traverse page content nodes (e.g. headings/links/buttons).
+- macOS: VoiceOver focus/activate actions work on at least one page control.
 - Windows: Narrator can traverse toolbar controls and announces their labels.
+- Windows: Narrator can traverse page content nodes (e.g. headings/links/buttons).
+- Windows: Narrator focus/activate actions work on at least one page control.
 - Linux: Orca can traverse toolbar controls (when using X11/Wayland backend supported by your build).
+- Linux: Orca can traverse page content nodes (e.g. headings/links/buttons).
+- Linux: Orca focus/activate actions work on at least one page control.
 
 ## Code layout
 
