@@ -504,7 +504,6 @@ impl<'vm> HirEvaluator<'vm> {
         break;
       }
       if s.lossy == "use strict" {
-        // Treat as strict.
         return Ok(true);
       }
     }
@@ -6566,6 +6565,16 @@ impl<'vm> HirEvaluator<'vm> {
     expr_id: hir_js::ExprId,
   ) -> Result<OptionalChainEval, VmError> {
     let expr = self.get_expr(body, expr_id)?;
+    // Parenthesized expressions break optional-chain propagation:
+    // `(a?.b).c` should not short-circuit `.c` when `a` is nullish.
+    //
+    // HIR does not preserve parse-js's `ParenthesizedExpr` metadata, so detect this by scanning the
+    // original source for a `)` immediately following the expression span.
+    let parenthesized = self.next_non_trivia_byte_from_source(expr.span.start)? == Some(b'(')
+      || self.next_non_trivia_byte_from_source(expr.span.end)? == Some(b')');
+    if parenthesized {
+      return Ok(OptionalChainEval::Value(self.eval_expr(scope, body, expr_id)?));
+    }
     match &expr.kind {
       hir_js::ExprKind::Member(member) => {
         // Budget once per expression evaluation.
@@ -6955,199 +6964,33 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(Value::Object(obj_val))
   }
 
-  fn eval_call(
+  fn eval_call_arguments(
     &mut self,
     scope: &mut Scope<'_>,
     body: &hir_js::Body,
-    call: &hir_js::CallExpr,
-  ) -> Result<Value, VmError> {
-    Ok(self.eval_call_chain(scope, body, call)?.into_value())
-  }
-
-  fn eval_call_chain(
-    &mut self,
-    scope: &mut Scope<'_>,
-    body: &hir_js::Body,
-    call: &hir_js::CallExpr,
-  ) -> Result<OptionalChainEval, VmError> {
-    // Track whether this call is *syntactically* a direct eval candidate (`eval(...)`).
-    //
-    // A call is only a direct eval if:
-    // - it is syntactically `eval(...)`, and
-    // - `eval` resolves to the original `%eval%` intrinsic function object.
-    //
-    // HIR does not preserve parenthesization metadata, so this is best-effort.
-    let callee_expr = self.get_expr(body, call.callee)?;
-    let direct_eval_syntax = !call.optional
-      && matches!(
-        &callee_expr.kind,
-        hir_js::ExprKind::Ident(name_id)
-          if self.hir().names.resolve(*name_id) == Some("eval")
-      )
-      && !self.expr_is_parenthesized(callee_expr)?;
-
-    let mut scope = scope.reborrow();
-
-    if call.is_new {
-      // `new callee(...args)` evaluates the callee as a value (no method-call `this` binding) and
-      // invokes `[[Construct]]` with `newTarget = callee` (best-effort; `Reflect.construct` sets
-      // `newTarget` explicitly).
-      let callee_value = match self.eval_chain_base(&mut scope, body, call.callee)? {
-        OptionalChainEval::Value(v) => v,
-        OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
-      };
-      if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
-        return Ok(OptionalChainEval::ShortCircuit);
-      }
-
-      // Root callee while evaluating args.
-      scope.push_root(callee_value)?;
-
-      let mut args: Vec<Value> = Vec::new();
-      args
-        .try_reserve_exact(call.args.len())
-        .map_err(|_| VmError::OutOfMemory)?;
-      for arg in &call.args {
-        if arg.spread {
-          let spread_value = self.eval_expr(&mut scope, body, arg.expr)?;
-          scope.push_root(spread_value)?;
-
-          let mut iter = crate::iterator::get_iterator(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            &mut scope,
-            spread_value,
-          )?;
-          scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-          if let Err(err) = scope.push_root(iter.next_method) {
-            // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform `IteratorClose`
-            // on abrupt completions (including when `next` throws).
-            return Err(err);
-          }
-
-          loop {
-            let next_value = match crate::iterator::iterator_step_value(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              &mut scope,
-              &mut iter,
-            ) {
-              Ok(v) => v,
-              // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
-              // while stepping the iterator (`next`/`done`/`value`).
-              Err(err) => return Err(err),
-            };
-            let Some(value) = next_value else {
-              break;
-            };
-
-            let step_res: Result<(), VmError> = (|| {
-              // Per-spread-element tick: spreading large iterators should be budgeted even when the
-              // iterator's `next()` is native/cheap.
-              self.vm.tick()?;
-              scope.push_root(value)?;
-              args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-              args.push(value);
-              Ok(())
-            })();
-            if let Err(err) = step_res {
-              return Err(err);
-            }
-          }
-        } else {
-          let v = self.eval_expr(&mut scope, body, arg.expr)?;
-          scope.push_root(v)?;
-          args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-          args.push(v);
-        }
-      }
-
-      // For `new F(...)`, the `newTarget` is `F` itself.
-      return Ok(OptionalChainEval::Value(self.vm.construct_with_host_and_hooks(
-        &mut *self.host,
-        &mut scope,
-        &mut *self.hooks,
-        callee_value,
-        args.as_slice(),
-        callee_value,
-      )?));
-    }
-
-    // Method call detection: `obj.prop(...)` uses `this = obj`.
-    let (callee_value, this_value) = match &callee_expr.kind {
-      hir_js::ExprKind::Member(member) => {
-        let base = match self.eval_chain_base(&mut scope, body, member.object)? {
-          OptionalChainEval::Value(v) => v,
-          OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
-        };
-        if member.optional && matches!(base, Value::Null | Value::Undefined) {
-          return Ok(OptionalChainEval::ShortCircuit);
-        }
-        // Root base across `ToObject` + key evaluation + `[[Get]]` in case any step allocates /
-        // triggers GC.
-        scope.push_root(base)?;
-
-        let key = self.eval_object_key(&mut scope, body, &member.property)?;
-        root_property_key(&mut scope, key)?;
-
-        let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
-          Ok(obj) => obj,
-          Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
-          Err(err) => return Err(err),
-        };
-        scope.push_root(Value::Object(obj))?;
-
-        let func =
-          scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, base)?;
-        (func, base)
-      }
-      _ => {
-        let callee_value = match self.eval_chain_base(&mut scope, body, call.callee)? {
-          OptionalChainEval::Value(v) => v,
-          OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
-        };
-        (callee_value, Value::Undefined)
-      }
-    };
-
-    if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
-      return Ok(OptionalChainEval::ShortCircuit);
-    }
-
-    // Root callee/this while evaluating args.
-    scope.push_roots(&[callee_value, this_value])?;
-
+    call_args: &[hir_js::CallArg],
+  ) -> Result<Vec<Value>, VmError> {
     let mut args: Vec<Value> = Vec::new();
+    // Best-effort lower bound: spread args can expand beyond this.
     args
-      .try_reserve_exact(call.args.len())
+      .try_reserve_exact(call_args.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    for arg in &call.args {
+
+    for arg in call_args {
       if arg.spread {
-        let spread_value = self.eval_expr(&mut scope, body, arg.expr)?;
+        let spread_value = self.eval_expr(scope, body, arg.expr)?;
         scope.push_root(spread_value)?;
 
-        let mut iter = crate::iterator::get_iterator(
-          self.vm,
-          &mut *self.host,
-          &mut *self.hooks,
-          &mut scope,
-          spread_value,
-        )?;
-        scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
-        if let Err(err) = scope.push_root(iter.next_method) {
-          // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform `IteratorClose` on
-          // abrupt completions (including when `next` throws).
-          return Err(err);
-        }
+        let mut iter =
+          iterator::get_iterator(self.vm, &mut *self.host, &mut *self.hooks, scope, spread_value)?;
+        scope.push_roots(&[iter.iterator, iter.next_method])?;
 
         loop {
-          let next_value = match crate::iterator::iterator_step_value(
+          let next_value = match iterator::iterator_step_value(
             self.vm,
             &mut *self.host,
             &mut *self.hooks,
-            &mut scope,
+            scope,
             &mut iter,
           ) {
             Ok(v) => v,
@@ -7169,16 +7012,133 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(())
           })();
           if let Err(err) = step_res {
-            return Err(err);
+            return Err(self.iterator_close_on_error(scope, &iter, err));
           }
         }
       } else {
-        let v = self.eval_expr(&mut scope, body, arg.expr)?;
-        scope.push_root(v)?;
+        let value = self.eval_expr(scope, body, arg.expr)?;
+        scope.push_root(value)?;
         args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-        args.push(v);
+        args.push(value);
       }
     }
+
+    Ok(args)
+  }
+
+  fn eval_call(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    call: &hir_js::CallExpr,
+  ) -> Result<Value, VmError> {
+    Ok(self.eval_call_chain(scope, body, call)?.into_value())
+  }
+
+  fn eval_call_chain(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    call: &hir_js::CallExpr,
+  ) -> Result<OptionalChainEval, VmError> {
+    // Track whether this call is *syntactically* a direct eval candidate (`eval(...)`).
+    //
+    // A call is only a direct eval if:
+    // - it is syntactically `eval(...)`, and
+    // - `eval` resolves to the original `%eval%` intrinsic function object.
+    let callee_expr = self.get_expr(body, call.callee)?;
+    let callee_is_parenthesized = self.expr_is_parenthesized(callee_expr)?;
+    let direct_eval_syntax = !call.is_new
+      && !call.optional
+      && matches!(
+        &callee_expr.kind,
+        hir_js::ExprKind::Ident(name_id)
+          if self.hir().names.resolve(*name_id) == Some("eval")
+      )
+      && !callee_is_parenthesized;
+
+    let mut scope = scope.reborrow();
+
+    if call.is_new {
+      // `new callee(...args)` evaluates the callee as a value (no method-call `this` binding) and
+      // invokes `[[Construct]]` with `newTarget = callee` (best-effort; `Reflect.construct` sets
+      // `newTarget` explicitly).
+      let callee_value = match self.eval_chain_base(&mut scope, body, call.callee)? {
+        OptionalChainEval::Value(v) => v,
+        OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+      };
+      if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
+        return Ok(OptionalChainEval::ShortCircuit);
+      }
+
+      // Root callee while evaluating args.
+      scope.push_root(callee_value)?;
+
+      let args = self.eval_call_arguments(&mut scope, body, call.args.as_slice())?;
+
+      // For `new F(...)`, the `newTarget` is `F` itself.
+      return Ok(OptionalChainEval::Value(self.vm.construct_with_host_and_hooks(
+        &mut *self.host,
+        &mut scope,
+        &mut *self.hooks,
+        callee_value,
+        args.as_slice(),
+        callee_value,
+      )?));
+    }
+
+    // Method call detection: `obj.prop(...)` uses `this = obj`.
+    let (callee_value, this_value) = match &callee_expr.kind {
+      hir_js::ExprKind::Member(member) => {
+        match self.eval_chain_base(&mut scope, body, member.object)? {
+          OptionalChainEval::Value(base) => {
+            if member.optional && matches!(base, Value::Null | Value::Undefined) {
+              return Ok(OptionalChainEval::ShortCircuit);
+            }
+            // Root base across `ToObject` + key evaluation + `[[Get]]` in case any step allocates /
+            // triggers GC.
+            scope.push_root(base)?;
+
+            let key = self.eval_object_key(&mut scope, body, &member.property)?;
+            root_property_key(&mut scope, key)?;
+
+            let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+              Ok(obj) => obj,
+              Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+              Err(err) => return Err(err),
+            };
+            scope.push_root(Value::Object(obj))?;
+
+            let func =
+              scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, base)?;
+            (func, base)
+          }
+          OptionalChainEval::ShortCircuit => {
+            if callee_is_parenthesized {
+              (Value::Undefined, Value::Undefined)
+            } else {
+              return Ok(OptionalChainEval::ShortCircuit);
+            }
+          }
+        }
+      }
+      _ => {
+        let callee_value = match self.eval_chain_base(&mut scope, body, call.callee)? {
+          OptionalChainEval::Value(v) => v,
+          OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
+        };
+        (callee_value, Value::Undefined)
+      }
+    };
+
+    if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
+      return Ok(OptionalChainEval::ShortCircuit);
+    }
+
+    // Root callee/this while evaluating args.
+    scope.push_roots(&[callee_value, this_value])?;
+
+    let args = self.eval_call_arguments(&mut scope, body, call.args.as_slice())?;
 
     if direct_eval_syntax {
       let intr = self

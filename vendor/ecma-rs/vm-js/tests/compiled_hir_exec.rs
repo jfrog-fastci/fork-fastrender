@@ -2883,6 +2883,122 @@ fn compiled_optional_chaining_computed_member_call_short_circuits_without_evalua
 }
 
 #[test]
+fn compiled_optional_chain_propagates_to_following_member_access() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let o = null;
+        return o?.x.y;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_optional_chain_propagates_to_following_computed_member_access_and_skips_key() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let side = 0;
+        let o = null;
+        try { o?.x[(side = 1, 'y')]; } catch (e) {}
+        return side;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_parenthesized_optional_chain_does_not_propagate_to_following_computed_member_access() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let side = 0;
+        let o = null;
+        try { (o?.x)[(side = 1, 'y')]; } catch (e) {}
+        return side;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_optional_chain_propagates_through_member_call() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let o = null;
+        let ok = true;
+        try { o?.m.n(); } catch (e) { ok = false; }
+        return ok;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_parenthesized_optional_chain_callee_does_not_short_circuit_call() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let side = 0;
+        function arg() { side = side + 1; }
+        let o = null;
+        try { (o?.m.n)(arg()); } catch (e) {}
+        return side;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_delete_optional_chain_continuation_short_circuits_to_true() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let o = null;
+        return delete o?.x.y;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_delete_parenthesized_optional_chain_continuation_does_not_short_circuit() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let o = null;
+        let threw = false;
+        try { delete (o?.x).y; } catch (e) { threw = true; }
+        return threw;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_member_assignment_to_nullish_base_does_not_evaluate_rhs() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
