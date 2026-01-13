@@ -32,6 +32,9 @@
 //! FASTR_MACOS_USE_SANDBOX_EXEC=1
 //! ```
 //!
+//! Note: this is ignored when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
+//! `FASTR_MACOS_RENDERER_SANDBOX=off` (debug escape hatch; insecure).
+//!
 //! And then call [`maybe_wrap_command_with_sandbox_exec`] (or
 //! [`wrap_command_with_sandbox_exec`]) when spawning a renderer.
 
