@@ -490,7 +490,7 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
     for decl in url_decls.iter() {
       let mut search_start = 0usize;
       let needle = decl.as_bytes();
-      while let Some(idx) = find_case_insensitive(bytes, needle, search_start) {
+      while let Some(idx) = find_ascii_case_insensitive_bytes_from(bytes, needle, search_start) {
         search_start = idx + needle.len();
 
         if idx > 0 {
