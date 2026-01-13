@@ -401,3 +401,130 @@ fn for_body_restores_lex_env_on_throw() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_for_body_restores_env_on_continue_after_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var log = [];
+      async function f(x) {
+        for (var i = 0; i < 2; ++i) {
+          let x = "inner" + i;
+          await 0;
+          log.push(x);
+          continue;
+        }
+        out = x;
+      }
+      f("outer").catch(e => { out = "err:" + (e && e.name); });
+      out === "" && log.length === 0
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value =
+    rt.exec_script(r#"out === "outer" && log.length === 2 && log[0] === "inner0" && log[1] === "inner1""#)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_for_body_restores_env_on_continue_after_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      function* gen(x) {
+        // Use for-of because the generator evaluator supports yield-containing for-of, but not all
+        // yield-containing for-triple forms.
+        var out = [];
+        for (var i of [0, 1]) {
+          let x = "inner" + i;
+          yield x;
+          out.push(x);
+          continue;
+        }
+        out.push(x);
+        return out.join(",");
+      }
+      var g = gen("outer");
+      var a = g.next().value;
+      var b = g.next().value;
+      var c = g.next().value;
+      a === "inner0" && b === "inner1" && c === "inner0,inner1,outer"
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_for_await_of_body_preserves_inner_let_across_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = [];
+      var err = "";
+      async function f(x) {
+        for await (var v of [0, 1]) {
+          let x = "inner" + v;
+          await 0;
+          out.push(x);
+        }
+        out.push(x);
+      }
+      f("outer").catch(e => { err = e && e.name; });
+      out.length === 0 && err === ""
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script(
+    r#"
+      out.length === 3
+        && out[0] === "inner0"
+        && out[1] === "inner1"
+        && out[2] === "outer"
+        && err === ""
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_for_await_of_body_let_closure_captures_per_iteration() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = [];
+      var err = "";
+      async function f() {
+        var fns = [];
+        for await (var v of [0, 1, 2]) {
+          let x = v;
+          fns.push(function() { return x; });
+        }
+        out = [fns[0](), fns[1](), fns[2]()];
+      }
+      f().catch(e => { err = e && e.name; });
+      out.length === 0 && err === ""
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script(r#"out.length === 3 && out[0] === 0 && out[1] === 1 && out[2] === 2 && err === "" "#)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
