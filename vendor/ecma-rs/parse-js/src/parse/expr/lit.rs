@@ -3453,6 +3453,8 @@ mod regex_validation_tests {
     // character classes via ClassSetReservedPunctuator.
     assert_valid(r"/[\!!]/v");
     assert_valid(r"/[\&\&]/v");
+    assert_valid(r"/[^\!]/v");
+    assert_valid(r"/[^\&]/v");
   }
 
   #[test]
