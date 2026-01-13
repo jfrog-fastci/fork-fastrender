@@ -13,6 +13,12 @@ If you change IPC code, **re-read this doc** and make sure you are not weakening
 > by web content, bugs, or deliberate fuzzing). The browser process is the security boundary and must
 > treat IPC bytes + FDs as hostile inputs.
 
+Related:
+- Linux FD-passing + shared-memory checklist: [`ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
+- Multiprocess threat model (trust boundary statement): [`multiprocess_threat_model.md`](multiprocess_threat_model.md)
+- Network process overview + IPC surface: [`network_process.md`](network_process.md)
+- Renderer sandboxing overview (platform notes, seccomp/AppContainer/etc): [`sandboxing.md`](sandboxing.md)
+
 ---
 
 ## Process model
