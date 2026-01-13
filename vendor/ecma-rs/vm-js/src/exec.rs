@@ -6800,7 +6800,11 @@ impl<'a> Evaluator<'a> {
     stmt: &ForInStmt,
     label_set: &[String],
   ) -> Result<Completion, VmError> {
-    let rhs_value = self.eval_expr(scope, &stmt.rhs)?;
+    // ECMA-262 `ForIn/OfHeadEvaluation`:
+    // If the loop uses a `ForDeclaration` with lexical bindings (`let` / `const`), create a TDZ
+    // lexical environment for the bound names while evaluating the RHS. Closures created during
+    // RHS evaluation must capture this TDZ environment (not the loop body envs).
+    let rhs_value = self.eval_for_in_of_rhs_with_tdz_env(scope, &stmt.lhs, &stmt.rhs)?;
     // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
     // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw).
     if matches!(rhs_value, Value::Null | Value::Undefined) {
@@ -6946,7 +6950,11 @@ impl<'a> Evaluator<'a> {
       return Err(VmError::Unimplemented("for await..of"));
     }
 
-    let iterable = self.eval_expr(scope, &stmt.rhs)?;
+    // ECMA-262 `ForIn/OfHeadEvaluation`:
+    // If the loop uses a `ForDeclaration` with lexical bindings (`let` / `const`), create a TDZ
+    // lexical environment for the bound names while evaluating the RHS. Closures created during
+    // RHS evaluation must capture this TDZ environment (not the loop body envs).
+    let iterable = self.eval_for_in_of_rhs_with_tdz_env(scope, &stmt.lhs, &stmt.rhs)?;
 
     // Root the iterable + iterator record while evaluating the loop body, which may allocate and
     // trigger GC.
@@ -7074,6 +7082,63 @@ impl<'a> Evaluator<'a> {
       if let Some(value) = body_completion.value() {
         v = value;
         iter_scope.heap_mut().root_stack[v_root_idx] = value;
+      }
+    }
+  }
+
+  fn eval_for_in_of_rhs_with_tdz_env(
+    &mut self,
+    scope: &mut Scope<'_>,
+    lhs: &ForInOfLhs,
+    rhs: &Node<Expr>,
+  ) -> Result<Value, VmError> {
+    let ForInOfLhs::Decl((mode, pat_decl)) = lhs else {
+      return self.eval_expr(scope, rhs);
+    };
+    if !matches!(*mode, VarDeclMode::Let | VarDeclMode::Const) {
+      return self.eval_expr(scope, rhs);
+    }
+
+    let old_env = self.env.lexical_env;
+    let tdz_env = scope.env_create(Some(old_env))?;
+    Self::create_for_in_of_head_tdz_bindings(scope, tdz_env, &pat_decl.stx.pat)?;
+
+    self.env.set_lexical_env(scope.heap_mut(), tdz_env);
+    let rhs_res = self.eval_expr(scope, rhs);
+    // Always restore the caller's lexical environment, even on abrupt completion.
+    self.env.set_lexical_env(scope.heap_mut(), old_env);
+    rhs_res
+  }
+
+  fn create_for_in_of_head_tdz_bindings(
+    scope: &mut Scope<'_>,
+    env: GcEnv,
+    pat: &Node<Pat>,
+  ) -> Result<(), VmError> {
+    match &*pat.stx {
+      Pat::Id(id) => scope.env_create_mutable_binding(env, &id.stx.name),
+      Pat::Arr(arr) => {
+        for elem in &arr.stx.elements {
+          let Some(elem) = elem else { continue };
+          Self::create_for_in_of_head_tdz_bindings(scope, env, &elem.target)?;
+        }
+        if let Some(rest) = &arr.stx.rest {
+          Self::create_for_in_of_head_tdz_bindings(scope, env, rest)?;
+        }
+        Ok(())
+      }
+      Pat::Obj(obj) => {
+        for prop in &obj.stx.properties {
+          Self::create_for_in_of_head_tdz_bindings(scope, env, &prop.stx.target)?;
+        }
+        if let Some(rest) = &obj.stx.rest {
+          Self::create_for_in_of_head_tdz_bindings(scope, env, rest)?;
+        }
+        Ok(())
+      }
+      Pat::AssignTarget(_) => {
+        // Assignment targets are not binding patterns; ignore.
+        Ok(())
       }
     }
   }
