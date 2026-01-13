@@ -5107,21 +5107,38 @@ mod regexp_unicode_sets_tests {
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    // Unicode Space_Separator examples.
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2000"))"#)?);
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u3000"))"#)?);
+    // WhiteSpace (ECMA-262):
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u0009"))"#)?); // Tab
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u000B"))"#)?); // VT
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u000C"))"#)?); // FF
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u0020"))"#)?); // Space
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u00A0"))"#)?); // No-break space
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u1680"))"#)?); // Ogham space mark
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2000"))"#)?); // En quad
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u200A"))"#)?); // Hair space
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u202F"))"#)?); // Narrow no-break space
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u205F"))"#)?); // Medium mathematical space
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u3000"))"#)?); // Ideographic space
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\uFEFF"))"#)?); // BOM
 
     // Line terminators.
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u000A"))"#)?); // LF
+    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u000D"))"#)?); // CR
     assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2028"))"#)?);
     assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2029"))"#)?);
 
     // Negation (\S) is the complement of the `\s` set.
     assert!(eval_bool(&mut rt, r#"(/\S/.test("a"))"#)?);
-    assert!(!eval_bool(&mut rt, r#"(/\S/.test("\u2000"))"#)?);
+    assert!(!eval_bool(&mut rt, r#"(/\S/.test("\u2000"))"#)?); // En quad
+    assert!(!eval_bool(&mut rt, r#"(/\S/.test("\u000A"))"#)?); // LF
 
     // A common "Unicode whitespace" code point that is *not* in the ECMAScript `\s` set.
     assert!(!eval_bool(&mut rt, r#"(/\s/.test("\u200B"))"#)?);
     assert!(eval_bool(&mut rt, r#"(/\S/.test("\u200B"))"#)?);
+    // Mongolian vowel separator: historically treated as whitespace in some contexts, but **not**
+    // in the ECMAScript `\s` set.
+    assert!(!eval_bool(&mut rt, r#"(/\s/.test("\u180E"))"#)?);
+    assert!(eval_bool(&mut rt, r#"(/\S/.test("\u180E"))"#)?);
 
     Ok(())
   }
