@@ -705,9 +705,7 @@ struct BrowserArgs {
 
   /// Optional output path for responsiveness/perf logging (sets `FASTR_PERF_LOG_OUT=<path>`).
   ///
-  /// Note: if the browser build does not support `FASTR_PERF_LOG_OUT` yet, tee stdout/stderr
-  /// instead:
-  /// `bash scripts/cargo_agent.sh xtask browser --release --perf-log about:test-layout-stress 2>&1 | tee target/perf.log`
+  /// When unset, perf-log output defaults to stdout so it can be piped/tee'd.
   #[arg(long, value_name = "PATH")]
   perf_log_out: Option<PathBuf>,
 

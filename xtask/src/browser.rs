@@ -11,14 +11,11 @@ pub const FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV: &str = "FASTR_TEST_BROWSER_HEAD
 pub const FASTR_BROWSER_HUD_ENV: &str = "FASTR_BROWSER_HUD";
 
 /// Environment variable used to enable lightweight responsiveness/perf logging in the browser UI.
-///
-/// Note: the browser may ignore this unless the corresponding instrumentation is implemented.
 pub const FASTR_PERF_LOG_ENV: &str = "FASTR_PERF_LOG";
 
 /// Optional output path for `FASTR_PERF_LOG` logs, when supported.
 ///
-/// When unsupported, prefer teeing stdout/stderr instead:
-/// `bash scripts/cargo_agent.sh xtask browser --perf-log ... 2>&1 | tee target/perf.log`
+/// When unset/empty, logs are written to stdout so they can be piped/tee'd.
 pub const FASTR_PERF_LOG_OUT_ENV: &str = "FASTR_PERF_LOG_OUT";
 
 /// Environment variable used to write a Chrome trace of the windowed browser event loop.

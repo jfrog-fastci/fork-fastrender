@@ -35,6 +35,15 @@ The easiest entry point is the wrapper-safe `xtask browser` command, which alrea
 bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress
 ```
 
+To save the JSONL perf log and/or a browser UI trace to disk:
+
+```bash
+bash scripts/cargo_agent.sh xtask browser --release \
+  --perf-log --perf-log-out target/browser_perf.jsonl \
+  --trace-out target/browser_trace.json \
+  about:test-layout-stress
+```
+
 ```bash
 # Debug build:
 bash scripts/run_limited.sh --as 64G -- \
