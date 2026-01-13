@@ -41,7 +41,7 @@ fn find_in_page_caps_match_count_and_worker_remains_responsive() {
   let harness = WorkerHarness::spawn();
 
   // Keep the viewport tiny so the test doesn't spend time allocating/painting large pixmaps.
-  let tab_id = TabId(1);
+  let tab_id = TabId::new();
   harness.send(support::create_tab_msg(tab_id, None));
   harness.send(support::viewport_changed_msg(tab_id, (64, 64), 1.0));
 
@@ -54,6 +54,18 @@ fn find_in_page_caps_match_count_and_worker_remains_responsive() {
     url,
     NavigationReason::TypedUrl,
   ));
+
+  // Wait for navigation to finish so the DOM contains the full pathological payload (some pages
+  // stream initial frames while loading, which could otherwise make this test flaky).
+  harness.wait_for_event(support::DEFAULT_TIMEOUT, |ev| {
+    matches!(
+      ev,
+      WorkerToUiEvent::LoadingState {
+        tab_id: msg_tab,
+        loading: false,
+      } if *msg_tab == tab_id
+    )
+  });
 
   // Ensure the document has been rendered at least once so `doc.prepared()` is available for the
   // find index builder.
@@ -115,4 +127,3 @@ fn find_in_page_caps_match_count_and_worker_remains_responsive() {
   harness.send(support::request_repaint(tab_id, RepaintReason::Explicit));
   let _ = harness.wait_for_frame(tab_id, Duration::from_secs(10));
 }
-
