@@ -395,13 +395,13 @@ fn dynamic_import_works_inside_module_evaluation_without_attached_graph() -> Res
 
   let mut modules = ModuleGraph::new();
   let dep =
-    modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const y = 1;")?);
+    modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const y = 1;")?)?;
   let m = modules.add_module(SourceTextModuleRecord::parse(
     &mut heap,
     "export { y } from './dep.js'; export const x = 1;",
-  )?);
+  )?)?;
   let consumer =
-    modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const p = import('./m.js');")?);
+    modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const p = import('./m.js');")?)?;
 
   let mut host_hooks = TestHostHooks::new();
   host_hooks.register_module("./m.js", m);
@@ -516,9 +516,9 @@ fn dynamic_import_tla_module_works_with_sync_host_completion_without_attached_gr
   let tla = modules.add_module(SourceTextModuleRecord::parse(
     &mut heap,
     "await Promise.resolve(); export const x = 1;",
-  )?);
+  )?)?;
   let consumer =
-    modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const p = import('./tla.js');")?);
+    modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const p = import('./tla.js');")?)?;
 
   // Evaluate without pre-attaching the module graph pointer to the VM.
   assert!(vm.module_graph_ptr().is_none());
@@ -621,11 +621,11 @@ fn dynamic_import_uses_callback_module_as_referrer_in_promise_job() -> Result<()
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut modules = ModuleGraph::new();
-  let dep = modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?);
+  let dep = modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?)?;
   let m = modules.add_module(SourceTextModuleRecord::parse(
     &mut heap,
     "export const p = Promise.resolve().then(() => import('./dep.js'));",
-  )?);
+  )?)?;
 
   let mut host_hooks = TestHostHooks::new();
   host_hooks.register_module("./dep.js", dep);
@@ -740,15 +740,15 @@ fn dynamic_import_works_after_tla_resumption_without_attached_graph() -> Result<
 
   let mut modules = ModuleGraph::new();
   let dep =
-    modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const y = 1;")?);
+    modules.add_module(SourceTextModuleRecord::parse(&mut heap, "export const y = 1;")?)?;
   let m = modules.add_module(SourceTextModuleRecord::parse(
     &mut heap,
     "export { y } from './dep.js'; export const x = 1;",
-  )?);
+  )?)?;
   let consumer = modules.add_module(SourceTextModuleRecord::parse(
     &mut heap,
     "await 0; export const p = import('./m.js');",
-  )?);
+  )?)?;
 
   let mut host_hooks = TestHostHooks::new();
   host_hooks.register_module("./m.js", m);
@@ -911,7 +911,7 @@ fn abort_tla_evaluation_restores_module_graph_ptr() -> Result<(), VmError> {
   let m = modules.add_module(SourceTextModuleRecord::parse(
     &mut heap,
     "await new Promise(() => {}); export const x = 1;",
-  )?);
+  )?)?;
 
   let mut host_hooks = TestHostHooks::new();
   let mut dummy_host = ();

@@ -120,3 +120,12 @@ fn module_linking_error_strings_do_not_abort_on_oom() {
   // formatting so allocator OOM does not abort the process.
   run_oom_harness("moduleLink", 18_000_000);
 }
+
+#[test]
+fn module_graph_growth_does_not_abort_on_oom() {
+  // ModuleGraph growth is attacker-driven via host module loading / dynamic `import()`. Ensure
+  // graph insertion uses fallible pre-reservation and does not abort under RLIMIT_AS pressure.
+  //
+  // The oom harness interprets `len_code_units` as the specifier length for this scenario.
+  run_oom_harness("moduleGraph", 8 * 1024);
+}

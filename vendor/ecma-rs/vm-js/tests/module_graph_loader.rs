@@ -194,9 +194,11 @@ impl VmJobContext for JobCtx<'_> {
 #[test]
 fn simple_graph_resolves() {
   let mut modules = ModuleGraph::new();
-  let b = modules.add_module(record(Vec::new()));
-  let c = modules.add_module(record(Vec::new()));
-  let a = modules.add_module(record(vec![req("B"), req("C")]));
+  let b = modules.add_module(record(Vec::new())).expect("add module");
+  let c = modules.add_module(record(Vec::new())).expect("add module");
+  let a = modules
+    .add_module(record(vec![req("B"), req("C")]))
+    .expect("add module");
 
   let (mut vm, mut heap, mut realm) = new_vm_and_heap();
 
@@ -244,8 +246,8 @@ fn simple_graph_resolves() {
 #[test]
 fn graph_loading_routes_promise_jobs_through_host_hooks() {
   let mut modules = ModuleGraph::new();
-  let b = modules.add_module(record(Vec::new()));
-  let a = modules.add_module(record(vec![req("B")]));
+  let b = modules.add_module(record(Vec::new())).expect("add module");
+  let a = modules.add_module(record(vec![req("B")])).expect("add module");
 
   let (mut vm, mut heap, mut realm) = new_vm_and_heap();
 
@@ -317,8 +319,8 @@ fn graph_loading_routes_promise_jobs_through_host_hooks() {
 #[test]
 fn cycle_does_not_infinite_loop() {
   let mut modules = ModuleGraph::new();
-  let a = modules.add_module(record(vec![req("B")]));
-  let b = modules.add_module(record(vec![req("A")]));
+  let a = modules.add_module(record(vec![req("B")])).expect("add module");
+  let b = modules.add_module(record(vec![req("A")])).expect("add module");
 
   let (mut vm, mut heap, mut realm) = new_vm_and_heap();
 
@@ -352,9 +354,11 @@ fn cycle_does_not_infinite_loop() {
 #[test]
 fn load_failure_rejects_and_freezes_state() {
   let mut modules = ModuleGraph::new();
-  let b = modules.add_module(record(Vec::new()));
-  let c = modules.add_module(record(Vec::new()));
-  let a = modules.add_module(record(vec![req("B"), req("C")]));
+  let b = modules.add_module(record(Vec::new())).expect("add module");
+  let c = modules.add_module(record(Vec::new())).expect("add module");
+  let a = modules
+    .add_module(record(vec![req("B"), req("C")]))
+    .expect("add module");
 
   let (mut vm, mut heap, mut realm) = new_vm_and_heap();
 
@@ -396,8 +400,10 @@ fn load_failure_rejects_and_freezes_state() {
 #[test]
 fn unsupported_import_attributes_reject_with_syntax_error() {
   let mut modules = ModuleGraph::new();
-  let b = modules.add_module(record(Vec::new()));
-  let a = modules.add_module(record(vec![req_with_attr("B", "type", "json")]));
+  let b = modules.add_module(record(Vec::new())).expect("add module");
+  let a = modules
+    .add_module(record(vec![req_with_attr("B", "type", "json")]))
+    .expect("add module");
 
   let (mut vm, mut heap, mut realm) = new_vm_and_heap();
   let mut host = FakeHost::default();
@@ -500,8 +506,10 @@ impl VmHostHooks for HostSupportingType {
 #[test]
 fn supported_import_attributes_allow_module_loading() {
   let mut modules = ModuleGraph::new();
-  let b = modules.add_module(record(Vec::new()));
-  let a = modules.add_module(record(vec![req_with_attr("B", "type", "json")]));
+  let b = modules.add_module(record(Vec::new())).expect("add module");
+  let a = modules
+    .add_module(record(vec![req_with_attr("B", "type", "json")]))
+    .expect("add module");
 
   let (mut vm, mut heap, mut realm) = new_vm_and_heap();
 

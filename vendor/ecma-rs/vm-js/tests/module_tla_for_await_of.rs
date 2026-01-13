@@ -86,7 +86,7 @@ fn module_top_level_for_await_of_suspends_and_resumes() -> Result<(), VmError> {
       export let sum = 0;
       for await (const x of [Promise.resolve(1), Promise.resolve(2)]) { sum = sum + x; }
     "#,
-  )?);
+  )?)?;
   graph.link_all_by_specifier();
 
   let promise = graph.evaluate(

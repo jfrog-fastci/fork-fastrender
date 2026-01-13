@@ -28,7 +28,7 @@ fn module_graph_link_respects_fuel_budget_even_for_empty_modules() -> Result<(),
   let record = SourceTextModuleRecord::parse_source(Arc::new(SourceText::new_charged(
     &mut heap, "m", "",
   )?))?;
-  let module = graph.add_module(record);
+  let module = graph.add_module(record)?;
 
   let err = graph
     .link(&mut vm, &mut heap, realm.global_object(), realm.id(), module)
@@ -58,7 +58,7 @@ fn module_graph_namespace_creation_respects_fuel_budget() -> Result<(), VmError>
     "m",
     "export const x = 1;",
   )?))?;
-  let module = graph.add_module(record);
+  let module = graph.add_module(record)?;
 
   {
     let mut scope = heap.scope();

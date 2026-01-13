@@ -33,7 +33,7 @@ fn module_namespace_is_cached_and_spec_shaped() -> Result<(), VmError> {
       export const a = 2;
     "#,
   )?;
-  let module = graph.add_module(record);
+  let module = graph.add_module(record)?;
 
   // Module namespaces are backed by module environments; link before requesting the namespace.
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), module)?;
@@ -87,7 +87,7 @@ fn module_namespace_import_star_is_non_extensible() -> Result<(), VmError> {
   graph.add_module_with_specifier(
     "a.js",
     SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
-  );
+  )?;
   let consumer = graph.add_module_with_specifier(
     "consumer.js",
     SourceTextModuleRecord::parse(
@@ -98,7 +98,7 @@ fn module_namespace_import_star_is_non_extensible() -> Result<(), VmError> {
         export const tag = Object.prototype.toString.call(ns);
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let mut hooks = MicrotaskQueue::new();
@@ -155,7 +155,7 @@ fn module_namespace_rejects_adding_new_properties_in_strict_mode() -> Result<(),
   graph.add_module_with_specifier(
     "a.js",
     SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
-  );
+  )?;
   let consumer = graph.add_module_with_specifier(
     "consumer.js",
     SourceTextModuleRecord::parse(
@@ -165,7 +165,7 @@ fn module_namespace_rejects_adding_new_properties_in_strict_mode() -> Result<(),
         ns.newProp = 1;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let mut hooks = MicrotaskQueue::new();

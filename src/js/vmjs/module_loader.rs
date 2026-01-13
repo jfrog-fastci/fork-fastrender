@@ -827,7 +827,7 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       }
       Err(err) => return Err(err),
     };
-    let id = modules.add_module(record);
+    let id = modules.add_module(record)?;
 
     self.module_id_by_url.insert(url.to_string(), id);
     self.module_url_by_id.insert(id, url.to_string());
@@ -990,7 +990,7 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       }
       Err(err) => return Err(err),
     };
-    let id = modules.add_module(record);
+    let id = modules.add_module(record)?;
 
     self.module_id_by_url.insert(url.to_string(), id);
     self

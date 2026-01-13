@@ -87,7 +87,7 @@ fn module_tla_does_not_invoke_species_constructor() -> Result<(), VmError> {
         out = "ok";
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let promise = graph.evaluate(

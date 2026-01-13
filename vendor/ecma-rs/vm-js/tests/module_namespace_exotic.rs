@@ -35,7 +35,7 @@ fn module_namespace_is_exotic_and_spec_shaped() -> Result<(), VmError> {
         export let x = 1;
       "#,
     )?,
-  );
+  )?;
   let consumer = graph.add_module_with_specifier(
     "consumer.js",
     SourceTextModuleRecord::parse(
@@ -86,7 +86,7 @@ fn module_namespace_is_exotic_and_spec_shaped() -> Result<(), VmError> {
         })();
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let mut hooks = MicrotaskQueue::new();

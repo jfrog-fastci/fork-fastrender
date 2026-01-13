@@ -298,7 +298,7 @@ fn import_meta_works_after_top_level_await() -> Result<(), VmError> {
         export const after = import.meta.url;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(
@@ -381,7 +381,7 @@ fn export_default_await_initializes_default_binding() -> Result<(), VmError> {
         export const ok = 2;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(
@@ -458,7 +458,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
         export {};
       "#,
     )?,
-  );
+  )?;
   let b = graph.add_module_with_specifier(
     "b.js",
     SourceTextModuleRecord::parse(
@@ -469,7 +469,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
         export {};
       "#,
     )?,
-  );
+  )?;
   let c = graph.add_module_with_specifier(
     "c.js",
     SourceTextModuleRecord::parse(
@@ -480,7 +480,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
         export {};
       "#,
     )?,
-  );
+  )?;
   let d = graph.add_module_with_specifier(
     "d.js",
     SourceTextModuleRecord::parse(
@@ -491,7 +491,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
         export {};
       "#,
     )?,
-  );
+  )?;
   let e = graph.add_module_with_specifier(
     "e.js",
     SourceTextModuleRecord::parse(
@@ -501,7 +501,7 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
         export {};
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   graph.inner_module_evaluation(&mut vm, a)?;
@@ -612,7 +612,7 @@ fn throw_await_rejects_module_evaluation_promise() -> Result<(), VmError> {
         export const unreachable = 1;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(
@@ -681,7 +681,7 @@ fn throw_await_error_object_attaches_throw_site_stack() -> Result<(), VmError> {
       &mut heap,
       "const err = new Error('boom');\nawait Promise.resolve();\nthrow await Promise.resolve(err);\nexport const unreachable = 1;",
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(
@@ -763,7 +763,7 @@ fn dynamic_import_after_top_level_await_starts_and_resolves() -> Result<(), VmEr
   let dep = graph.add_module_with_specifier(
     "./dep.js",
     SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
-  );
+  )?;
   let m = graph.add_module_with_specifier(
     "m.js",
     SourceTextModuleRecord::parse(
@@ -773,7 +773,7 @@ fn dynamic_import_after_top_level_await_starts_and_resolves() -> Result<(), VmEr
         export const p = import('./dep.js');
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   hooks.register_module("./dep.js", dep);
@@ -874,7 +874,7 @@ fn for_await_of_and_await_in_initializer_work_in_modules() -> Result<(), VmError
         for await (const x of [Promise.resolve(1)]) { out = x; }
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(
@@ -958,7 +958,7 @@ fn top_level_await_in_for_of_lhs_destructuring_default_value_executes() -> Resul
         for (const { x = await Promise.resolve("ok") } of [ {} ]) { out = x; }
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(
@@ -1031,7 +1031,7 @@ fn await_rejection_is_catchable_in_modules() -> Result<(), VmError> {
         }
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(
@@ -1106,7 +1106,7 @@ fn await_promise_resolve_constructor_getter_throw_is_catchable_in_modules() -> R
         }
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(
@@ -1179,7 +1179,7 @@ fn multiple_top_level_awaits_reuse_continuation_without_leaking() -> Result<(), 
         out = 2;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let eval_promise = graph.evaluate(

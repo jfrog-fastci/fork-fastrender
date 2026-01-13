@@ -412,7 +412,7 @@ fn await_in_import_specifier() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 'ok';")?;
-  let m = rt.modules_mut().add_module(record);
+  let m = rt.modules_mut().add_module(record)?;
 
   let mut host = SyncHostHooks::new();
   host.register_module("./m.js", m);

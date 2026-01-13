@@ -31,7 +31,8 @@ fn exported_names_and_resolve_export() {
       export * as ns from "c";
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   let b = graph.add_module_with_specifier(
     "b",
@@ -42,7 +43,8 @@ fn exported_names_and_resolve_export() {
       export { x };
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   let c = graph.add_module_with_specifier(
     "c",
@@ -54,7 +56,8 @@ fn exported_names_and_resolve_export() {
       export { c1, c2 as renamed, c1 as default };
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   graph.link_all_by_specifier();
 
@@ -113,7 +116,8 @@ fn circular_export_star_does_not_infinite_loop() {
       export * from "e";
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   let e = graph.add_module_with_specifier(
     "e",
@@ -125,7 +129,8 @@ fn circular_export_star_does_not_infinite_loop() {
       export { z };
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   graph.link_all_by_specifier();
 
@@ -157,7 +162,8 @@ fn ambiguous_star_exports() {
       export { x };
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   let m2 = graph.add_module_with_specifier(
     "m2",
@@ -168,7 +174,8 @@ fn ambiguous_star_exports() {
       export { x };
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   let star = graph.add_module_with_specifier(
     "star",
@@ -179,7 +186,8 @@ fn ambiguous_star_exports() {
       export * from "m2";
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   graph.link_all_by_specifier();
 
@@ -234,7 +242,8 @@ fn ambiguous_star_exports_when_binding_name_differs() {
       export { a, b };
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   let m1 = graph.add_module_with_specifier(
     "m1",
@@ -244,7 +253,8 @@ fn ambiguous_star_exports_when_binding_name_differs() {
       export { a as x } from "base";
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   let m2 = graph.add_module_with_specifier(
     "m2",
@@ -254,7 +264,8 @@ fn ambiguous_star_exports_when_binding_name_differs() {
       export { b as x } from "base";
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   let star = graph.add_module_with_specifier(
     "star",
@@ -265,7 +276,8 @@ fn ambiguous_star_exports_when_binding_name_differs() {
       export * from "m2";
     "#,
     ),
-  );
+  )
+  .expect("add module");
 
   graph.link_all_by_specifier();
 

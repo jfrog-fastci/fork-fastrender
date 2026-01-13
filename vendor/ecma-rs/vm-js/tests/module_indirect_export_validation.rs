@@ -17,7 +17,7 @@ fn module_link_throws_syntax_error_for_unresolvable_indirect_exports() -> Result
       export const y = 1;
     "#,
     )?,
-  );
+  )?;
 
   let reexport = graph.add_module_with_specifier(
     "reexport",
@@ -27,7 +27,7 @@ fn module_link_throws_syntax_error_for_unresolvable_indirect_exports() -> Result
       export { x } from "m";
     "#,
     )?,
-  );
+  )?;
 
   graph.link_all_by_specifier();
 

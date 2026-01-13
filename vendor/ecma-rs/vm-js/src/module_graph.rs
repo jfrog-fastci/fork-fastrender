@@ -427,7 +427,35 @@ impl ModuleGraph {
     Some((entry.state, entry.module))
   }
 
-  pub fn add_module(&mut self, record: SourceTextModuleRecord) -> ModuleId {
+  pub fn add_module(&mut self, record: SourceTextModuleRecord) -> Result<ModuleId, VmError> {
+    // Pre-reserve capacity on all per-module vectors before mutating lengths so allocator OOM
+    // reports `VmError::OutOfMemory` rather than aborting the process.
+    self.modules.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    self
+      .tla_states
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self
+      .scc_eval_states
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self
+      .scc_members
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self
+      .scc_deps
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self
+      .scc_parents
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self
+      .async_eval_states
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+
     let id = ModuleId::from_raw(self.modules.len() as u64);
     self.modules.push(record);
     self.tla_states.push(None);
@@ -437,7 +465,7 @@ impl ModuleGraph {
     self.scc_parents.push(Vec::new());
     self.scc_dirty = true;
     self.async_eval_states.push(AsyncModuleEvalState::default());
-    id
+    Ok(id)
   }
 
   /// Adds a module to the graph and registers it under `specifier` for later linking.
@@ -445,17 +473,35 @@ impl ModuleGraph {
     &mut self,
     specifier: impl AsRef<str>,
     record: SourceTextModuleRecord,
-  ) -> ModuleId {
-    let id = self.add_module(record);
-    self.register_specifier(specifier, id);
-    id
+  ) -> Result<ModuleId, VmError> {
+    // Ensure the host-resolve mapping can be installed before adding the module record so we don't
+    // leave the graph in a partially-mutated state on allocator OOM.
+    self
+      .host_resolve
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let request = module_request_from_specifier(specifier.as_ref())?;
+
+    let id = self.add_module(record)?;
+    // `host_resolve` capacity was reserved above, and `request` has already been allocated, so this
+    // push is now infallible.
+    self.host_resolve.push((request, id));
+    Ok(id)
   }
 
   /// Registers a host resolution mapping used by [`ModuleGraph::link_all_by_specifier`].
-  pub fn register_specifier(&mut self, specifier: impl AsRef<str>, module: ModuleId) {
+  pub fn register_specifier(
+    &mut self,
+    specifier: impl AsRef<str>,
+    module: ModuleId,
+  ) -> Result<(), VmError> {
     self
       .host_resolve
-      .push((module_request_from_specifier(specifier.as_ref()), module));
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let request = module_request_from_specifier(specifier.as_ref())?;
+    self.host_resolve.push((request, module));
+    Ok(())
   }
 
   pub fn module(&self, id: ModuleId) -> &SourceTextModuleRecord {
@@ -3091,8 +3137,15 @@ fn module_index(id: ModuleId) -> usize {
   id.to_raw() as usize
 }
 
-fn module_request_from_specifier(specifier: &str) -> ModuleRequest {
-  ModuleRequest::new(specifier, Vec::new())
+fn module_request_from_specifier(specifier: &str) -> Result<ModuleRequest, VmError> {
+  // Build an owned module specifier string using fallible allocation. The standard library's
+  // `String::from` / `ToString` paths allocate infallibly and abort the process on allocator OOM.
+  let mut specifier_owned = String::new();
+  specifier_owned
+    .try_reserve(specifier.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  specifier_owned.push_str(specifier);
+  Ok(ModuleRequest::new(specifier_owned, Vec::new()))
 }
 
 /// Accessor getter for Module Namespace export properties.

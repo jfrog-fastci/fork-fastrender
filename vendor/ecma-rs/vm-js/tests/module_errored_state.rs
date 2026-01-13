@@ -76,7 +76,7 @@ fn sync_evaluation_rethrows_cached_error_object() -> Result<(), VmError> {
   let realm_id = realm.id();
 
   let mut modules = ModuleGraph::new();
-  let module = modules.add_module(boom_module(&mut heap));
+  let module = modules.add_module(boom_module(&mut heap))?;
 
   let mut host = ();
   let mut hooks = Hooks::default();
@@ -147,7 +147,7 @@ fn evaluation_promise_rejects_with_cached_error_object() -> Result<(), VmError> 
   let realm_id = realm.id();
 
   let mut modules = ModuleGraph::new();
-  let module = modules.add_module(boom_module(&mut heap));
+  let module = modules.add_module(boom_module(&mut heap))?;
 
   let mut host = ();
   let mut hooks = Hooks::default();

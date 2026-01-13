@@ -53,7 +53,7 @@ fn module_graph_teardown_unregisters_persistent_roots() -> Result<(), VmError> {
       export const meta = import.meta;
       export const x = 1;
     "#,
-  )?);
+  )?)?;
 
   // Module namespaces are backed by module environments; link before requesting the namespace.
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), module)?;

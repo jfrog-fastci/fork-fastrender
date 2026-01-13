@@ -669,7 +669,7 @@ mod module_graph_loader_smoke {
       // Synchronously complete the host hook by creating a trivial cyclic module and reporting it as
       // loaded. This re-enters the loader via `finish_loading_imported_module`, matching the spec
       // allowance for synchronous completion.
-      let loaded = modules.add_module(SourceTextModuleRecord::default());
+      let loaded = modules.add_module(SourceTextModuleRecord::default())?;
       self.last_loaded = Some(loaded);
       vm.finish_loading_imported_module(
         scope,
@@ -693,7 +693,7 @@ mod module_graph_loader_smoke {
     let request = ModuleRequest::new("dep.js", vec![]);
     let mut referrer_record = SourceTextModuleRecord::default();
     referrer_record.requested_modules.push(request.clone());
-    let referrer = modules.add_module(referrer_record);
+    let referrer = modules.add_module(referrer_record)?;
 
     let promise = load_requested_modules(
       &mut rt.vm,
@@ -774,15 +774,15 @@ mod module_graph_loader_smoke {
     let mut rt = TestRealm::new()?;
     let mut scope = rt.heap.scope();
     let mut modules = ModuleGraph::default();
-    let module1 = modules.add_module(SourceTextModuleRecord::default());
-    let module2 = modules.add_module(SourceTextModuleRecord::default());
+    let module1 = modules.add_module(SourceTextModuleRecord::default())?;
+    let module2 = modules.add_module(SourceTextModuleRecord::default())?;
 
     let request_dup = ModuleRequest::new("dup.js", vec![]);
     let mut referrer_record = SourceTextModuleRecord::default();
     // Intentionally create duplicate entries in `[[RequestedModules]]` so the loader invokes the host
     // hook twice and exercises `finish_loading_imported_module`'s caching/mismatch logic.
     referrer_record.requested_modules = vec![request_dup.clone(), request_dup.clone()];
-    let referrer_module = modules.add_module(referrer_record);
+    let referrer_module = modules.add_module(referrer_record)?;
 
     let mut host = PendingHost::default();
 

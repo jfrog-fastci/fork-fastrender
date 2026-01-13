@@ -47,7 +47,7 @@ fn module_evaluate_supports_named_default_imports_and_live_bindings() -> Result<
         export function inc() { x = x + 1; }
       "#,
     )?,
-  );
+  )?;
   let b = graph.add_module_with_specifier(
     "b.js",
     SourceTextModuleRecord::parse(
@@ -60,7 +60,7 @@ fn module_evaluate_supports_named_default_imports_and_live_bindings() -> Result<
         export const sum = x + y;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let promise = graph.evaluate(
@@ -190,7 +190,7 @@ fn module_evaluate_supports_anonymous_default_export_function_decls() -> Result<
         export default function() { return 1; }
       "#,
     )?,
-  );
+  )?;
   let b = graph.add_module_with_specifier(
     "b",
     SourceTextModuleRecord::parse(
@@ -201,7 +201,7 @@ fn module_evaluate_supports_anonymous_default_export_function_decls() -> Result<
         export const n = f.name;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let promise = graph.evaluate(
@@ -254,7 +254,7 @@ fn module_evaluate_supports_reexports_and_export_star_as_namespace() -> Result<(
         export default 1;
       "#,
     )?,
-  );
+  )?;
   let reexport = graph.add_module_with_specifier(
     "reexport.js",
     SourceTextModuleRecord::parse(
@@ -265,7 +265,7 @@ fn module_evaluate_supports_reexports_and_export_star_as_namespace() -> Result<(
         export * as ns from "base.js";
       "#,
     )?,
-  );
+  )?;
   let consumer = graph.add_module_with_specifier(
     "consumer.js",
     SourceTextModuleRecord::parse(
@@ -275,7 +275,7 @@ fn module_evaluate_supports_reexports_and_export_star_as_namespace() -> Result<(
         export const sum = foo + bar + f + ns.foo;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let promise = graph.evaluate(
@@ -337,7 +337,7 @@ fn module_evaluate_handles_cycles_with_function_decls() -> Result<(), VmError> {
         export const alsoFromA = fromA;
       "#,
     )?,
-  );
+  )?;
   let b = graph.add_module_with_specifier(
     "b.js",
     SourceTextModuleRecord::parse(
@@ -348,7 +348,7 @@ fn module_evaluate_handles_cycles_with_function_decls() -> Result<(), VmError> {
         export const fromA = getA();
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let promise = graph.evaluate(
@@ -504,7 +504,7 @@ fn module_evaluate_supports_import_meta_and_caches_it_per_module() -> Result<(),
         export const url = import.meta.url;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let promise = graph.evaluate(

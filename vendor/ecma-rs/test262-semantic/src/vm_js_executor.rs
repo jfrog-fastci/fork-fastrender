@@ -666,7 +666,7 @@ impl VmHostHooks for Test262ModuleHooks {
       }
     };
 
-    let id = modules.add_module(record);
+    let id = modules.add_module(record)?;
     // Cache before finishing so cycles can resolve to the same module record.
     self.register_module_path(id, canonical.clone());
     self.register_module_cache(canonical, module_request.attributes.clone(), id);
@@ -1123,7 +1123,10 @@ fn execute_module(
     Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
   };
 
-  let module_id = runtime.modules_mut().add_module(record);
+  let module_id = match runtime.modules_mut().add_module(record) {
+    Ok(id) => id,
+    Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
+  };
 
   // Record path metadata for relative import resolution (and cache the root module for cycles).
   let root_path = match std::fs::canonicalize(&case.path) {

@@ -253,12 +253,12 @@ fn dynamic_import_resolves_to_module_namespace() -> Result<(), VmError> {
   // - ./m.js re-exports `y` from ./dep.js and exports `x`.
   // - ./dep.js exports `y`.
   let dep_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const y = 1;")?;
-  let dep = rt.modules_mut().add_module(dep_record);
+  let dep = rt.modules_mut().add_module(dep_record)?;
   let m_record = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "export { y } from './dep.js'; export const x = 1;",
   )?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut host = TestHostHooks::new();
   host.register_module("./m.js", m);
@@ -366,12 +366,12 @@ fn dynamic_import_sync_host_completion_fulfills_promise() -> Result<(), VmError>
 
   // Build a tiny module graph with a dependency.
   let dep_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const y = 1;")?;
-  let dep = rt.modules_mut().add_module(dep_record);
+  let dep = rt.modules_mut().add_module(dep_record)?;
   let m_record = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "export { y } from './dep.js'; export const x = 1;",
   )?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut host = SyncHostHooks::new();
   host.register_module("./m.js", m);
@@ -438,7 +438,7 @@ fn dynamic_import_rejects_when_module_evaluation_throws() -> Result<(), VmError>
   // A module that throws during evaluation should cause the dynamic import promise to reject with
   // the thrown value (via `PerformPromiseThen(evaluatePromise, ...)`).
   let err_record = SourceTextModuleRecord::parse(&mut rt.heap, "throw 1;")?;
-  let err = rt.modules_mut().add_module(err_record);
+  let err = rt.modules_mut().add_module(err_record)?;
 
   let mut host = SyncHostHooks::new();
   host.register_module("./err.js", err);
@@ -490,7 +490,7 @@ fn dynamic_import_waits_for_top_level_await() -> Result<(), VmError> {
     &mut rt.heap,
     "await Promise.resolve(); export const x = 1;",
   )?;
-  let tla = rt.modules_mut().add_module(tla_record);
+  let tla = rt.modules_mut().add_module(tla_record)?;
 
   let mut host = TestHostHooks::new();
   host.register_module("./tla.js", tla);
@@ -562,12 +562,12 @@ fn dynamic_import_from_function_body_works() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let dep_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const y = 1;")?;
-  let dep = rt.modules_mut().add_module(dep_record);
+  let dep = rt.modules_mut().add_module(dep_record)?;
   let m_record = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "export { y } from './dep.js'; export const x = 1;",
   )?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut host = TestHostHooks::new();
   host.register_module("./m.js", m);
@@ -632,12 +632,12 @@ fn dynamic_import_with_awaited_specifier_works() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let dep_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const y = 1;")?;
-  let dep = rt.modules_mut().add_module(dep_record);
+  let dep = rt.modules_mut().add_module(dep_record)?;
   let m_record = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "export { y } from './dep.js'; export const x = 1;",
   )?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut host = TestHostHooks::new();
   host.register_module("./m.js", m);
@@ -698,12 +698,12 @@ fn dynamic_import_from_promise_callback_works() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let dep_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const y = 1;")?;
-  let dep = rt.modules_mut().add_module(dep_record);
+  let dep = rt.modules_mut().add_module(dep_record)?;
   let m_record = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "export { y } from './dep.js'; export const x = 1;",
   )?;
-  let m = rt.modules_mut().add_module(m_record);
+  let m = rt.modules_mut().add_module(m_record)?;
 
   let mut host = TestHostHooks::new();
   host.register_module("./m.js", m);

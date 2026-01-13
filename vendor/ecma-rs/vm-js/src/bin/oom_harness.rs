@@ -8,7 +8,7 @@ use vm_js::{
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph"
   );
   process::exit(2);
 }
@@ -68,6 +68,47 @@ fn main() {
     filler.resize(filler_bytes, 0);
   }
 
+  if scenario == "moduleGraph" {
+    // Stress `ModuleGraph::{add_module,add_module_with_specifier}` under memory pressure. This is
+    // attacker-reachable via dynamic `import()` and host module loading; fallible graph growth must
+    // report `VmError::OutOfMemory` rather than aborting on allocator OOM.
+    let specifier_len = len_code_units;
+
+    // Build a reusable specifier string (each module registration clones it into an owned
+    // `ModuleRequest`).
+    let mut specifier = String::new();
+    if specifier_len != 0 {
+      if specifier.try_reserve_exact(specifier_len).is_err() {
+        eprintln!("oom_harness: failed to allocate module specifier string");
+        process::exit(1);
+      }
+      for _ in 0..specifier_len {
+        specifier.push('a');
+      }
+    }
+
+    let mut graph = ModuleGraph::new();
+    // Keep `filler` alive for the duration of the run.
+    let _keep = &filler;
+
+    // Add modules until we hit OOM. Bound the loop to avoid accidental infinite runtime if the
+    // address-space limit isn't enforced for some reason.
+    const MAX_MODULES: usize = 1_000_000;
+    for _ in 0..MAX_MODULES {
+      match graph.add_module_with_specifier(&specifier, SourceTextModuleRecord::default()) {
+        Ok(_id) => {}
+        Err(VmError::OutOfMemory) => process::exit(0),
+        Err(err) => {
+          eprintln!("oom_harness: unexpected error from ModuleGraph growth: {err:?}");
+          process::exit(1);
+        }
+      }
+    }
+
+    // If we somehow didn't OOM, treat that as success: the key invariant is that we didn't abort.
+    process::exit(0);
+  }
+
   let mut agent = match Agent::with_options(
     VmOptions::default(),
     // Use very large heap limits: this harness is intentionally driven by the OS address-space
@@ -123,7 +164,14 @@ fn main() {
         process::exit(1);
       }
     };
-    let imported_id = graph.add_module(imported);
+    let imported_id = match graph.add_module(imported) {
+      Ok(id) => id,
+      Err(VmError::OutOfMemory) => process::exit(0),
+      Err(err) => {
+        eprintln!("oom_harness: unexpected error adding imported module: {err:?}");
+        process::exit(1);
+      }
+    };
 
     let mut root = match SourceTextModuleRecord::parse(
       agent.heap_mut(),
@@ -156,7 +204,14 @@ fn main() {
       imported_id,
     )];
 
-    let root_id = graph.add_module(root);
+    let root_id = match graph.add_module(root) {
+      Ok(id) => id,
+      Err(VmError::OutOfMemory) => process::exit(0),
+      Err(err) => {
+        eprintln!("oom_harness: unexpected error adding root module: {err:?}");
+        process::exit(1);
+      }
+    };
 
     let (vm, realm, heap) = agent.vm_realm_and_heap_mut();
     let global = realm.global_object();

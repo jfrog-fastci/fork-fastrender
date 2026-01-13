@@ -114,7 +114,7 @@ fn import_meta_cache_is_scoped_to_module_graph() -> Result<(), VmError> {
       export const m = import.meta;
       export const url = import.meta.url ?? 1;
     "#,
-  )?);
+  )?)?;
   let promise1 = graph1.evaluate(
     &mut vm,
     &mut heap,
@@ -156,7 +156,7 @@ fn import_meta_cache_is_scoped_to_module_graph() -> Result<(), VmError> {
       export const m = import.meta;
       export const url = import.meta.url ?? 1;
     "#,
-  )?);
+  )?)?;
   let promise2 = graph2.evaluate(
     &mut vm,
     &mut heap,

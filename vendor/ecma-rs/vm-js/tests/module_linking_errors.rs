@@ -32,11 +32,11 @@ fn missing_export_throws_syntax_error_during_link() -> Result<(), VmError> {
   graph.add_module_with_specifier(
     "a",
     SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
-  );
+  )?;
   let b = graph.add_module_with_specifier(
     "b",
     SourceTextModuleRecord::parse(&mut heap, "import { y } from \"a\";")?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let err = graph
@@ -63,19 +63,19 @@ fn ambiguous_export_throws_syntax_error_during_link() -> Result<(), VmError> {
   graph.add_module_with_specifier(
     "a",
     SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
-  );
+  )?;
   graph.add_module_with_specifier(
     "b",
     SourceTextModuleRecord::parse(&mut heap, "export const x = 2;")?,
-  );
+  )?;
   graph.add_module_with_specifier(
     "c",
     SourceTextModuleRecord::parse(&mut heap, "export * from \"a\"; export * from \"b\";")?,
-  );
+  )?;
   let d = graph.add_module_with_specifier(
     "d",
     SourceTextModuleRecord::parse(&mut heap, "import { x } from \"c\";")?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let err = graph

@@ -400,7 +400,7 @@ impl ModuleLoader {
 
     let source = Arc::new(SourceText::new_charged(heap, key.url.clone(), source_text)?);
     let record = SourceTextModuleRecord::parse_source(source)?;
-    let module_id = modules.add_module(record);
+    let module_id = modules.add_module(record)?;
     self.register_module(key, module_id, 0, next_total)
   }
 
@@ -467,7 +467,7 @@ impl ModuleLoader {
       Arc::<str>::from(source_text),
     )?);
     let record = SourceTextModuleRecord::parse_source(source)?;
-    let module_id = modules.add_module(record);
+    let module_id = modules.add_module(record)?;
     self.register_module(key, module_id, 0, next_total)
   }
 
@@ -790,10 +790,7 @@ impl ModuleLoader {
       let source = Arc::new(SourceText::new_charged(heap, key.url.clone(), source)?);
       let record = SourceTextModuleRecord::parse_source(source)?;
 
-      // `ModuleGraph` currently uses `Vec` push for storage; allocation failure aborts. This loader
-      // still tries to keep its own host-side state fallible (`try_reserve`/`OutOfMemory`) so most
-      // allocation pressure is caught before reaching the `vm-js` layer.
-      let module_id = modules.add_module(record);
+      let module_id = modules.add_module(record)?;
       self.register_module(key, module_id, depth, next_total)
     })();
 
@@ -893,7 +890,7 @@ mod tests {
       let root_record = vm_js::SourceTextModuleRecord::parse(scope.heap_mut(), "import './dep.js';")
         .expect("parse root module");
       let mut modules = vm_js::ModuleGraph::new();
-      let root_id = modules.add_module(root_record);
+      let root_id = modules.add_module(root_record).expect("add module");
 
       let mut host = CaptureHost { captured: None };
       let _promise = vm_js::load_requested_modules(

@@ -75,7 +75,7 @@ fn abort_tla_evaluation_rejects_pending_module_evaluation_promise() -> Result<()
   let entry = graph.add_module(SourceTextModuleRecord::parse(
     &mut heap,
     "await new Promise(() => {}); export {};",
-  )?);
+  )?)?;
 
   let promise = graph.evaluate(
     &mut vm,
@@ -163,7 +163,7 @@ fn evaluate_returns_same_promise_while_tla_pending() -> Result<(), VmError> {
   let entry = graph.add_module(SourceTextModuleRecord::parse(
     &mut heap,
     "await new Promise(() => {}); export const x = 1;",
-  )?);
+  )?)?;
 
   let promise1 = graph.evaluate(
     &mut vm,

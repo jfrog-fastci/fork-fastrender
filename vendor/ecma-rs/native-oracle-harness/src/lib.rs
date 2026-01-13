@@ -2407,7 +2407,7 @@ impl VmHostHooks for FixtureModuleLoader {
       Err(other) => return Err(other),
     };
 
-    let id = modules.add_module(record);
+    let id = modules.add_module(record)?;
     self.register_module_path(id, canonical);
 
     finish_loading_imported_module(
@@ -2490,7 +2490,9 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     );
     let entry_record = SourceTextModuleRecord::parse_source_with_vm(vm, entry_source_text)
       .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
-    let entry_id = modules.add_module(entry_record);
+    let entry_id = modules
+      .add_module(entry_record)
+      .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
     loader.register_module_path(entry_id, entry_path.clone());
 
     // Load the static module graph.

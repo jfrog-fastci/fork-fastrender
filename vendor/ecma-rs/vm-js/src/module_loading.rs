@@ -2231,7 +2231,8 @@ mod tests {
         requested_modules: vec![ModuleRequest::new("dep", Vec::new())],
         status: ModuleStatus::New,
         ..Default::default()
-      });
+      })
+      .expect("add module");
 
       let err = continue_module_loading(
         &mut vm,
