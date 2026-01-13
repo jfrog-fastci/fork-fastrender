@@ -38,3 +38,20 @@ pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 64 * 1024; // 64 KiB
 
 /// Maximum bytes kept for a download file name reported by the worker.
 pub const MAX_DOWNLOAD_FILE_NAME_BYTES: usize = 8 * 1024; // 8 KiB
+
+/// Maximum number of flattened items allowed in a `<select>` control snapshot.
+///
+/// This includes both `<option>` entries and optgroup labels.
+pub const MAX_SELECT_ITEMS: usize = 2048;
+
+/// Maximum UTF-8 byte length allowed for `<select>` option labels/values surfaced to the UI.
+///
+/// UI code should truncate any longer strings on a character boundary.
+pub const MAX_SELECT_LABEL_BYTES: usize = 1024;
+
+/// Maximum UTF-8 byte length allowed for input picker `value` strings (date/time picker).
+pub const MAX_INPUT_VALUE_BYTES: usize = 1024;
+
+/// Maximum UTF-8 byte length allowed for `<input type=file accept>` attribute strings.
+pub const MAX_ACCEPT_ATTR_BYTES: usize = 1024;
+

@@ -302,6 +302,220 @@ fn open_typed_in_new_tab_state(
   ))
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn truncate_utf8_str_to_bytes(value: &str, max_bytes: usize) -> String {
+  if max_bytes == 0 {
+    return String::new();
+  }
+  if value.len() <= max_bytes {
+    return value.to_string();
+  }
+  let mut end = max_bytes.min(value.len());
+  while end > 0 && !value.is_char_boundary(end) {
+    end -= 1;
+  }
+  value.get(..end).unwrap_or("").to_string()
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn truncate_utf8_string_in_place(value: &mut String, max_bytes: usize) {
+  if value.len() <= max_bytes {
+    return;
+  }
+  if max_bytes == 0 {
+    value.clear();
+    return;
+  }
+  let mut end = max_bytes.min(value.len());
+  while end > 0 && !value.is_char_boundary(end) {
+    end -= 1;
+  }
+  value.truncate(end);
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_anchor_css_rect(rect: fastrender::geometry::Rect) -> fastrender::geometry::Rect {
+  const MAX_ABS_POS: f32 = 1_000_000.0;
+  const MAX_SIZE: f32 = 1_000_000.0;
+
+  fn clamp_finite(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+      value.clamp(min, max)
+    } else {
+      fallback
+    }
+  }
+
+  let x = clamp_finite(rect.origin.x, -MAX_ABS_POS, MAX_ABS_POS, 0.0);
+  let y = clamp_finite(rect.origin.y, -MAX_ABS_POS, MAX_ABS_POS, 0.0);
+  let w = clamp_finite(rect.size.width, 0.0, MAX_SIZE, 0.0);
+  let h = clamp_finite(rect.size.height, 0.0, MAX_SIZE, 0.0);
+  fastrender::geometry::Rect::from_xywh(x, y, w, h)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_select_control_for_windowed_ui(
+  mut control: fastrender::tree::box_tree::SelectControl,
+) -> Option<fastrender::tree::box_tree::SelectControl> {
+  use fastrender::tree::box_tree::SelectItem;
+  use fastrender::ui::protocol_limits::{MAX_SELECT_ITEMS, MAX_SELECT_LABEL_BYTES};
+
+  let items_len = control.items.len();
+  if items_len > MAX_SELECT_ITEMS {
+    return None;
+  }
+
+  // Ensure `selected` cannot contain out-of-range indices (which can cause overflow in keyboard
+  // selection code).
+  control.selected.retain(|idx| *idx < items_len);
+
+  let needs_truncation = control.items.iter().any(|item| match item {
+    SelectItem::OptGroupLabel { label, .. } => label.len() > MAX_SELECT_LABEL_BYTES,
+    SelectItem::Option { label, value, .. } => {
+      label.len() > MAX_SELECT_LABEL_BYTES || value.len() > MAX_SELECT_LABEL_BYTES
+    }
+  });
+
+  if !needs_truncation {
+    return Some(control);
+  }
+
+  let mut items = Vec::with_capacity(items_len);
+  for item in control.items.iter() {
+    match item {
+      SelectItem::OptGroupLabel { label, disabled } => {
+        let label = if label.len() <= MAX_SELECT_LABEL_BYTES {
+          label.clone()
+        } else {
+          truncate_utf8_str_to_bytes(label, MAX_SELECT_LABEL_BYTES)
+        };
+        items.push(SelectItem::OptGroupLabel {
+          label,
+          disabled: *disabled,
+        });
+      }
+      SelectItem::Option {
+        node_id,
+        label,
+        value,
+        selected,
+        disabled,
+        in_optgroup,
+      } => {
+        let label = if label.len() <= MAX_SELECT_LABEL_BYTES {
+          label.clone()
+        } else {
+          truncate_utf8_str_to_bytes(label, MAX_SELECT_LABEL_BYTES)
+        };
+        let value = if value.len() <= MAX_SELECT_LABEL_BYTES {
+          value.clone()
+        } else {
+          truncate_utf8_str_to_bytes(value, MAX_SELECT_LABEL_BYTES)
+        };
+        items.push(SelectItem::Option {
+          node_id: *node_id,
+          label,
+          value,
+          selected: *selected,
+          disabled: *disabled,
+          in_optgroup: *in_optgroup,
+        });
+      }
+    }
+  }
+
+  control.items = std::sync::Arc::new(items);
+  Some(control)
+}
+
+/// Sanitize untrusted renderer payloads before the windowed browser UI uses them.
+///
+/// This protects the egui overlay state from retaining enormous vectors/strings or propagating NaN
+/// coordinates.
+#[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_worker_to_ui_for_windowed_browser(
+  msg: fastrender::ui::WorkerToUi,
+) -> Option<fastrender::ui::WorkerToUi> {
+  use fastrender::ui::protocol_limits::{MAX_ACCEPT_ATTR_BYTES, MAX_INPUT_VALUE_BYTES};
+  use fastrender::ui::WorkerToUi;
+
+  const ABSURD_INPUT_VALUE_BYTES_MULTIPLIER: usize = 64;
+  let absurd_input_limit =
+    MAX_INPUT_VALUE_BYTES.saturating_mul(ABSURD_INPUT_VALUE_BYTES_MULTIPLIER);
+
+  match msg {
+    WorkerToUi::OpenSelectDropdown {
+      tab_id,
+      select_node_id,
+      control,
+    } => {
+      let control = sanitize_select_control_for_windowed_ui(control)?;
+      Some(WorkerToUi::OpenSelectDropdown {
+        tab_id,
+        select_node_id,
+        control,
+      })
+    }
+    WorkerToUi::SelectDropdownOpened {
+      tab_id,
+      select_node_id,
+      control,
+      anchor_css,
+    } => {
+      let control = sanitize_select_control_for_windowed_ui(control)?;
+      let anchor_css = sanitize_anchor_css_rect(anchor_css);
+      Some(WorkerToUi::SelectDropdownOpened {
+        tab_id,
+        select_node_id,
+        control,
+        anchor_css,
+      })
+    }
+    WorkerToUi::DateTimePickerOpened {
+      tab_id,
+      input_node_id,
+      kind,
+      mut value,
+      anchor_css,
+    } => {
+      // Date/time picker values are expected to be tiny; treat extremely large payloads as invalid so
+      // we never clone/parse them.
+      if value.len() > absurd_input_limit {
+        return None;
+      }
+      truncate_utf8_string_in_place(&mut value, MAX_INPUT_VALUE_BYTES);
+      let anchor_css = sanitize_anchor_css_rect(anchor_css);
+      Some(WorkerToUi::DateTimePickerOpened {
+        tab_id,
+        input_node_id,
+        kind,
+        value,
+        anchor_css,
+      })
+    }
+    WorkerToUi::FilePickerOpened {
+      tab_id,
+      input_node_id,
+      multiple,
+      mut accept,
+      anchor_css,
+    } => {
+      if let Some(accept) = accept.as_mut() {
+        truncate_utf8_string_in_place(accept, MAX_ACCEPT_ATTR_BYTES);
+      }
+      let anchor_css = sanitize_anchor_css_rect(anchor_css);
+      Some(WorkerToUi::FilePickerOpened {
+        tab_id,
+        input_node_id,
+        multiple,
+        accept,
+        anchor_css,
+      })
+    }
+    other => Some(other),
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 fn main() {
   if let Err(err) = run() {
@@ -755,6 +969,158 @@ mod drain_mpsc_receiver_with_budget_tests {
     assert_eq!(outcome.drained, 3);
     assert_eq!(outcome.stop_reason, DrainStopReason::Empty);
     assert_eq!(drained, vec![0, 1, 2]);
+  }
+}
+
+#[cfg(test)]
+mod protocol_payload_sanitization_tests {
+  use super::sanitize_worker_to_ui_for_windowed_browser;
+  use fastrender::geometry::Rect;
+  use fastrender::tree::box_tree::{SelectControl, SelectItem};
+  use fastrender::ui::messages::DateTimeInputKind;
+  use fastrender::ui::protocol_limits::{
+    MAX_ACCEPT_ATTR_BYTES, MAX_INPUT_VALUE_BYTES, MAX_SELECT_ITEMS, MAX_SELECT_LABEL_BYTES,
+  };
+  use fastrender::ui::{TabId, WorkerToUi};
+  use std::sync::Arc;
+
+  fn euro_string(bytes_over: usize) -> String {
+    // "€" is 3 bytes in UTF-8; this helps ensure truncation respects char boundaries.
+    let base_chars = (bytes_over / 3) + 16;
+    "€".repeat(base_chars)
+  }
+
+  #[test]
+  fn select_dropdown_open_with_too_many_items_is_dropped() {
+    let items = (0..(MAX_SELECT_ITEMS + 1))
+      .map(|idx| SelectItem::Option {
+        node_id: idx + 1,
+        label: format!("Item {idx}"),
+        value: format!("v{idx}"),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+      })
+      .collect::<Vec<_>>();
+    let control = SelectControl {
+      multiple: false,
+      size: 1,
+      items: Arc::new(items),
+      selected: Vec::new(),
+    };
+
+    let msg = WorkerToUi::SelectDropdownOpened {
+      tab_id: TabId(1),
+      select_node_id: 42,
+      control,
+      anchor_css: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    };
+
+    assert!(
+      sanitize_worker_to_ui_for_windowed_browser(msg).is_none(),
+      "expected oversized SelectDropdownOpened to be dropped"
+    );
+  }
+
+  #[test]
+  fn select_dropdown_item_labels_and_values_are_truncated() {
+    let label = euro_string(MAX_SELECT_LABEL_BYTES + 8);
+    let value = euro_string(MAX_SELECT_LABEL_BYTES + 32);
+    let items = vec![SelectItem::Option {
+      node_id: 1,
+      label,
+      value,
+      selected: false,
+      disabled: false,
+      in_optgroup: false,
+    }];
+    let control = SelectControl {
+      multiple: false,
+      size: 1,
+      items: Arc::new(items),
+      selected: vec![0],
+    };
+
+    let msg = WorkerToUi::OpenSelectDropdown {
+      tab_id: TabId(1),
+      select_node_id: 1,
+      control,
+    };
+
+    let msg = sanitize_worker_to_ui_for_windowed_browser(msg).expect("message should be kept");
+    let WorkerToUi::OpenSelectDropdown { control, .. } = msg else {
+      panic!("expected OpenSelectDropdown after sanitization");
+    };
+    assert_eq!(control.items.len(), 1);
+    let SelectItem::Option { label, value, .. } = &control.items[0] else {
+      panic!("expected option item");
+    };
+    assert!(
+      label.as_bytes().len() <= MAX_SELECT_LABEL_BYTES,
+      "label not truncated: {} bytes",
+      label.len()
+    );
+    assert!(
+      value.as_bytes().len() <= MAX_SELECT_LABEL_BYTES,
+      "value not truncated: {} bytes",
+      value.len()
+    );
+    // Ensure truncation didn't split the 3-byte "€" character.
+    assert_eq!(label.as_bytes().len() % 3, 0);
+    assert_eq!(value.as_bytes().len() % 3, 0);
+  }
+
+  #[test]
+  fn date_time_picker_value_is_truncated() {
+    let value = euro_string(MAX_INPUT_VALUE_BYTES + 64);
+    let msg = WorkerToUi::DateTimePickerOpened {
+      tab_id: TabId(1),
+      input_node_id: 99,
+      kind: DateTimeInputKind::DateTimeLocal,
+      value,
+      anchor_css: Rect::from_xywh(1.0, 2.0, 3.0, 4.0),
+    };
+
+    let msg = sanitize_worker_to_ui_for_windowed_browser(msg).expect("message should be kept");
+    let WorkerToUi::DateTimePickerOpened { value, .. } = msg else {
+      panic!("expected DateTimePickerOpened after sanitization");
+    };
+    assert!(value.as_bytes().len() <= MAX_INPUT_VALUE_BYTES);
+    assert_eq!(value.as_bytes().len() % 3, 0);
+  }
+
+  #[test]
+  fn file_picker_accept_is_truncated_and_anchor_css_is_sanitized() {
+    let accept = Some(euro_string(MAX_ACCEPT_ATTR_BYTES + 64));
+    let msg = WorkerToUi::FilePickerOpened {
+      tab_id: TabId(1),
+      input_node_id: 5,
+      multiple: true,
+      accept,
+      anchor_css: Rect::from_xywh(f32::NAN, f32::INFINITY, -f32::INFINITY, f32::NAN),
+    };
+
+    let msg = sanitize_worker_to_ui_for_windowed_browser(msg).expect("message should be kept");
+    let WorkerToUi::FilePickerOpened {
+      accept, anchor_css, ..
+    } = msg
+    else {
+      panic!("expected FilePickerOpened after sanitization");
+    };
+    let accept = accept.expect("accept should remain Some");
+    assert!(accept.as_bytes().len() <= MAX_ACCEPT_ATTR_BYTES);
+    assert_eq!(accept.as_bytes().len() % 3, 0);
+
+    assert!(anchor_css.origin.x.is_finite());
+    assert!(anchor_css.origin.y.is_finite());
+    assert!(anchor_css.size.width.is_finite());
+    assert!(anchor_css.size.height.is_finite());
+    assert!(anchor_css.size.width >= 0.0);
+    assert!(anchor_css.size.height >= 0.0);
+    assert!(anchor_css.origin.x.abs() <= 1_000_000.0);
+    assert!(anchor_css.origin.y.abs() <= 1_000_000.0);
+    assert!(anchor_css.size.width <= 1_000_000.0);
+    assert!(anchor_css.size.height <= 1_000_000.0);
   }
 }
 
@@ -5801,6 +6167,15 @@ impl App {
         };
       }
       msg => msg,
+    };
+
+    // The render worker can send large/hostile payloads for picker/dropdown overlays. Sanitize them
+    // before any UI code (including our own pre-reducer side effects) clones/uses the data.
+    let Some(msg) = sanitize_worker_to_ui_for_windowed_browser(msg) else {
+      return WorkerMessageResult {
+        request_redraw: false,
+        history_changed: false,
+      };
     };
 
     // UI-only side effects that depend on the raw message before the shared reducer consumes it.
