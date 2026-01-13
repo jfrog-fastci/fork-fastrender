@@ -2251,6 +2251,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let parent = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
+            // ShadowRoot tree-facing semantics: `ShadowRoot.parentElement` is always null.
+            //
+            // dom2 stores shadow roots as children of their host element, so `parent_node(..)` would
+            // otherwise return the host here.
+            if node_id.index() < dom.nodes_len()
+              && matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. })
+            {
+              return None;
+            }
             let Some(parent_id) = dom.parent_node(node_id) else {
               return None;
             };

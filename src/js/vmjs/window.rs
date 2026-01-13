@@ -1854,6 +1854,7 @@ mod tests {
         if (light.nextSibling !== null) return 'expected light.nextSibling === null';\n\
 \n\
         if (sr.parentNode !== null) return 'expected sr.parentNode === null';\n\
+        if (sr.parentElement !== null) return 'expected sr.parentElement === null';\n\
         if (sr.previousSibling !== null) return 'expected sr.previousSibling === null';\n\
         if (sr.nextSibling !== null) return 'expected sr.nextSibling === null';\n\
         return true;\n\
