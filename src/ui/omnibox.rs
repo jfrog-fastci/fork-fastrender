@@ -42,6 +42,14 @@ pub struct OmniboxContext<'a> {
 /// Providers should be pure functions of `ctx` + `input`: no side effects, no I/O, no blocking.
 pub trait OmniboxProvider {
   fn suggestions(&self, ctx: &OmniboxContext<'_>, input: &str) -> Vec<OmniboxSuggestion>;
+
+  /// Upper bound on the best score this provider can produce for the current token count.
+  ///
+  /// This enables the omnibox engine to skip expensive providers (visited/bookmarks) once it has
+  /// already found enough higher-scoring candidates to satisfy the output limit.
+  fn max_score_upper_bound(&self, _token_count: usize) -> i64 {
+    i64::MAX
+  }
 }
 
 static PRIMARY_ACTION_PROVIDER: PrimaryActionProvider = PrimaryActionProvider;
@@ -159,6 +167,10 @@ impl OmniboxProvider for PrimaryActionProvider {
 
     vec![suggestion]
   }
+
+  fn max_score_upper_bound(&self, token_count: usize) -> i64 {
+    1_000_000 + 1_200 * token_count as i64
+  }
 }
 
 pub struct AboutPagesProvider;
@@ -200,6 +212,10 @@ impl OmniboxProvider for AboutPagesProvider {
 
     out
   }
+
+  fn max_score_upper_bound(&self, token_count: usize) -> i64 {
+    3_700 + 1_200 * token_count as i64
+  }
 }
 
 pub struct OpenTabsProvider;
@@ -231,6 +247,10 @@ impl OmniboxProvider for OpenTabsProvider {
     }
     out
   }
+
+  fn max_score_upper_bound(&self, token_count: usize) -> i64 {
+    5_000 + 1_200 * token_count as i64
+  }
 }
 
 pub struct ClosedTabsProvider;
@@ -256,6 +276,10 @@ impl OmniboxProvider for ClosedTabsProvider {
       });
     }
     out
+  }
+
+  fn max_score_upper_bound(&self, token_count: usize) -> i64 {
+    2_000 + 1_200 * token_count as i64
   }
 }
 
@@ -285,6 +309,11 @@ impl OmniboxProvider for VisitedProvider {
       });
     }
     out
+  }
+
+  fn max_score_upper_bound(&self, token_count: usize) -> i64 {
+    // Score = base (visited) + match_total + frecency (capped at 150).
+    1_000 + 1_200 * token_count as i64 + 150
   }
 }
 
@@ -343,6 +372,11 @@ impl OmniboxProvider for BookmarksProvider {
 
     out
   }
+
+  fn max_score_upper_bound(&self, token_count: usize) -> i64 {
+    // Score = base (bookmark) + match_total + frecency (capped at 90).
+    2_400 + 1_200 * token_count as i64 + 90
+  }
 }
 
 /// Cached remote (network) search query suggestions.
@@ -390,6 +424,10 @@ impl OmniboxProvider for RemoteSearchSuggestProvider {
       });
     }
     out
+  }
+
+  fn max_score_upper_bound(&self, token_count: usize) -> i64 {
+    10_000 + 1_200 * token_count as i64
   }
 }
 
@@ -478,12 +516,23 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
   if tokens_lower.is_empty() {
     return Vec::new();
   }
+  let token_count = tokens_lower.len();
 
   // We only ever return the top `limit` suggestions. Keeping a bounded working set avoids the
   // `O(n log n)` sort of potentially large provider outputs (visited/history/bookmarks), reducing
   // per-keystroke omnibox overhead.
   let mut selected = Vec::<ScoredSuggestion>::new();
   for provider in providers {
+    // If we already have enough suggestions, and even the theoretical max score for this provider
+    // cannot beat our current worst score, skip it entirely.
+    if selected.len() == limit {
+      if let Some(min_score) = selected.iter().map(|s| s.score).min() {
+        if min_score > provider.max_score_upper_bound(token_count) {
+          continue;
+        }
+      }
+    }
+
     for suggestion in provider.suggestions(ctx, input) {
       let Some(score) = score_suggestion(ctx, now, &suggestion, &tokens_lower) else {
         continue;
