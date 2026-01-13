@@ -220,6 +220,7 @@ The session file format is versioned (currently v2) and includes:
 - Per-tab zoom
 - Best-effort per-tab scroll restoration
 - Pinned tabs and tab groups (when used)
+- Per-window menu bar visibility (`show_menu_bar`)
 - The configured home page URL
 - Best-effort window geometry (position/size/maximized) when available
 - A crash marker (`did_exit_cleanly`) for detecting unclean exits
