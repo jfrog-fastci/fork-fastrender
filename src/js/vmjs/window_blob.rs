@@ -549,6 +549,55 @@ pub(crate) fn blob_prototype_for_realm(realm_id: RealmId) -> Option<GcObject> {
   registry.realms.get(&realm_id).map(|s| s.blob_proto)
 }
 
+/// Create a `Blob` instance in the provided realm, storing its backing bytes in the host-side blob
+/// registry.
+///
+/// This helper is intended for native code paths (e.g. `WebSocket` binary message dispatch) that
+/// need to allocate a `Blob` without relying on an active VM execution context.
+pub(crate) fn create_blob_for_realm(
+  scope: &mut Scope<'_>,
+  realm_id: RealmId,
+  data: BlobData,
+) -> Result<GcObject, VmError> {
+  if data.bytes.len() > MAX_BLOB_BYTES {
+    return Err(VmError::TypeError("Blob size exceeds maximum length"));
+  }
+
+  // Look up the realm's `Blob.prototype` and opportunistically sweep dead entries. Avoid holding
+  // the registry lock while allocating on the JS heap.
+  let proto = {
+    let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
+    let state = registry
+      .realms
+      .get_mut(&realm_id)
+      .ok_or(VmError::Unimplemented("Blob bindings not installed"))?;
+
+    let gc_runs = scope.heap().gc_runs();
+    if gc_runs != state.last_gc_runs {
+      state.last_gc_runs = gc_runs;
+      let heap = scope.heap();
+      state.blobs.retain(|k, _| k.upgrade(heap).is_some());
+    }
+
+    state.blob_proto
+  };
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+
+  {
+    let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
+    let state = registry
+      .realms
+      .get_mut(&realm_id)
+      .ok_or(VmError::Unimplemented("Blob bindings not installed"))?;
+    state.blobs.insert(WeakGcObject::from(obj), data);
+  }
+
+  Ok(obj)
+}
+
 pub(crate) fn create_blob_with_proto(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

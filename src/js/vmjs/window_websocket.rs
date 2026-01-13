@@ -38,7 +38,8 @@ use tungstenite::protocol::{CloseFrame, Message};
 use vm_js::iterator::{self, CloseCompletionKind};
 use vm_js::{
   GcObject, GcString, Heap, HostSlots, NativeConstructId, NativeFunctionId, PropertyDescriptor,
-  PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  PropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  WeakGcObject,
 };
 
 const SLOT_ENV_ID: usize = 0;
@@ -164,26 +165,29 @@ impl ResourceFetcher for IpcNoopFetcher {
 struct EnvState {
   env: WindowWebSocketEnv,
   ipc: Option<IpcEnvState>,
+  realm_id: RealmId,
   next_id: u64,
   sockets: HashMap<u64, WebSocketState>,
   last_gc_runs: u64,
 }
 
 impl EnvState {
-  fn new(env: WindowWebSocketEnv) -> Self {
+  fn new(env: WindowWebSocketEnv, realm_id: RealmId) -> Self {
     Self {
       env,
       ipc: None,
+      realm_id,
       next_id: 1,
       sockets: HashMap::new(),
       last_gc_runs: 0,
     }
   }
 
-  fn new_ipc(env: WindowWebSocketEnv, ipc: IpcEnvState) -> Self {
+  fn new_ipc(env: WindowWebSocketEnv, realm_id: RealmId, ipc: IpcEnvState) -> Self {
     Self {
       env,
       ipc: Some(ipc),
+      realm_id,
       next_id: 1,
       sockets: HashMap::new(),
       last_gc_runs: 0,
@@ -203,6 +207,7 @@ struct WebSocketState {
   requested_protocols: Vec<String>,
   protocol: String,
   ready_state: u16,
+  binary_type: WebSocketBinaryType,
   buffered_amount: usize,
   pending_events: usize,
   pending_event_bytes: usize,
@@ -213,6 +218,36 @@ struct WebSocketState {
   // In-process backend (tungstenite) uses a per-socket command queue and thread.
   cmd_tx: Option<mpsc::SyncSender<WsCommand>>,
   thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebSocketBinaryType {
+  Blob,
+  ArrayBuffer,
+}
+
+impl Default for WebSocketBinaryType {
+  fn default() -> Self {
+    // Browser default: Blob.
+    Self::Blob
+  }
+}
+
+impl WebSocketBinaryType {
+  fn as_str(self) -> &'static str {
+    match self {
+      Self::Blob => "blob",
+      Self::ArrayBuffer => "arraybuffer",
+    }
+  }
+
+  fn parse(value: &str) -> Option<Self> {
+    match value {
+      "blob" => Some(Self::Blob),
+      "arraybuffer" => Some(Self::ArrayBuffer),
+      _ => None,
+    }
+  }
 }
 
 enum WsCommand {
@@ -1006,6 +1041,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
           requested_protocols: protocols.clone(),
           protocol: String::new(),
           ready_state: WS_CONNECTING,
+          binary_type: WebSocketBinaryType::default(),
           buffered_amount: 0,
           pending_events: 0,
           pending_event_bytes: 0,
@@ -1030,6 +1066,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
           requested_protocols: protocols.clone(),
           protocol: String::new(),
           ready_state: WS_CONNECTING,
+          binary_type: WebSocketBinaryType::default(),
           buffered_amount: 0,
           pending_events: 0,
           pending_event_bytes: 0,
@@ -1301,6 +1338,68 @@ fn websocket_buffered_amount_get(
     Value::Number(n) => Ok(Value::Number(n)),
     _ => Ok(Value::Number(0.0)),
   }
+}
+
+fn websocket_binary_type_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, ws_id, _obj) = parse_env_and_ws_id(scope, this)?;
+  with_env_state(env_id, |state| {
+    let ws = state
+      .sockets
+      .get(&ws_id)
+      .ok_or(VmError::TypeError("WebSocket is not initialized"))?;
+    let s = scope.alloc_string(ws.binary_type.as_str())?;
+    scope.push_root(Value::String(s))?;
+    Ok(Value::String(s))
+  })
+}
+
+fn websocket_binary_type_set(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, ws_id, _obj) = parse_env_and_ws_id(scope, this)?;
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // WebSocket.binaryType is a (limited) enum-like string; this binding uses the VM's minimal
+  // `ToString` implementation to stay deterministic (and thus rejects objects).
+  let s = scope.heap_mut().to_string(value)?;
+  let s = scope.heap().get_string(s)?.to_utf8_lossy();
+
+  let Some(kind) = WebSocketBinaryType::parse(&s) else {
+    let intr = vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("WebSocket.binaryType requires intrinsics"))?;
+    let value = vm_js::new_syntax_error_object(
+      scope,
+      &intr,
+      "WebSocket.binaryType must be either 'blob' or 'arraybuffer'",
+    )?;
+    return Err(VmError::Throw(value));
+  };
+
+  with_env_state_mut(env_id, |state| {
+    let ws = state
+      .sockets
+      .get_mut(&ws_id)
+      .ok_or(VmError::TypeError("WebSocket is not initialized"))?;
+    ws.binary_type = kind;
+    Ok(())
+  })?;
+
+  Ok(Value::Undefined)
 }
 
 fn websocket_send<Host: WindowRealmHost + 'static>(
@@ -2533,13 +2632,52 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
           ))?;
           let mut scope = heap.scope();
           let ev = make_simple_event(&mut scope, "message")?;
-          let ab = scope.alloc_array_buffer_from_u8_vec(data)?;
-          scope.push_root(Value::Object(ab))?;
-          scope
-            .heap_mut()
-            .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+
+          let (binary_type, realm_id) = with_env_state(env_id, |state| {
+            let kind = state
+              .sockets
+              .get(&ws_id)
+              .map(|ws| ws.binary_type)
+              .unwrap_or_default();
+            Ok((kind, state.realm_id))
+          })
+          .unwrap_or((WebSocketBinaryType::default(), RealmId::from_raw(0)));
+
+          let data_val: Value = match binary_type {
+            WebSocketBinaryType::ArrayBuffer => {
+              let ab = scope.alloc_array_buffer_from_u8_vec(data)?;
+              scope.push_root(Value::Object(ab))?;
+              scope
+                .heap_mut()
+                .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+              Value::Object(ab)
+            }
+            WebSocketBinaryType::Blob => {
+              if window_blob::blob_prototype_for_realm(realm_id).is_none() {
+                // Best-effort fallback for environments that install WebSocket without Blob.
+                let ab = scope.alloc_array_buffer_from_u8_vec(data)?;
+                scope.push_root(Value::Object(ab))?;
+                scope
+                  .heap_mut()
+                  .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+                Value::Object(ab)
+              } else {
+                let blob_obj = window_blob::create_blob_for_realm(
+                  &mut scope,
+                  realm_id,
+                  window_blob::BlobData {
+                    bytes: data,
+                    r#type: String::new(),
+                  },
+                )?;
+                Value::Object(blob_obj)
+              }
+            }
+          };
+
+          scope.push_root(data_val)?;
           let data_key = alloc_key(&mut scope, "data")?;
-          scope.define_property(ev, data_key, data_desc(Value::Object(ab), false))?;
+          scope.define_property(ev, data_key, data_desc(data_val, false))?;
           dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
           Ok(())
         },
@@ -3214,13 +3352,52 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           ))?;
           let mut scope = heap.scope();
           let ev = make_simple_event(&mut scope, "message")?;
-          let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
-          scope.push_root(Value::Object(ab))?;
-          scope
-            .heap_mut()
-            .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+
+          let (binary_type, realm_id) = with_env_state(env_id, |state| {
+            let kind = state
+              .sockets
+              .get(&ws_id)
+              .map(|ws| ws.binary_type)
+              .unwrap_or_default();
+            Ok((kind, state.realm_id))
+          })
+          .unwrap_or((WebSocketBinaryType::default(), RealmId::from_raw(0)));
+
+          let data_val: Value = match binary_type {
+            WebSocketBinaryType::ArrayBuffer => {
+              let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+              scope.push_root(Value::Object(ab))?;
+              scope
+                .heap_mut()
+                .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+              Value::Object(ab)
+            }
+            WebSocketBinaryType::Blob => {
+              if window_blob::blob_prototype_for_realm(realm_id).is_none() {
+                // Best-effort fallback for environments that install WebSocket without Blob.
+                let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+                scope.push_root(Value::Object(ab))?;
+                scope
+                  .heap_mut()
+                  .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+                Value::Object(ab)
+              } else {
+                let blob_obj = window_blob::create_blob_for_realm(
+                  &mut scope,
+                  realm_id,
+                  window_blob::BlobData {
+                    bytes,
+                    r#type: String::new(),
+                  },
+                )?;
+                Value::Object(blob_obj)
+              }
+            }
+          };
+
+          scope.push_root(data_val)?;
           let data_key = alloc_key(&mut scope, "data")?;
-          scope.define_property(ev, data_key, data_desc(Value::Object(ab), false))?;
+          scope.define_property(ev, data_key, data_desc(data_val, false))?;
           dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
           Ok(())
         },
@@ -3456,6 +3633,27 @@ fn install_window_websocket_bindings_for_env_id<Host: WindowRealmHost + 'static>
     accessor_desc(Value::Object(buffered_get_fn), Value::Undefined),
   )?;
 
+  let binary_get_id = vm.register_native_call(websocket_binary_type_get)?;
+  let binary_get_name = scope.alloc_string("get binaryType")?;
+  scope.push_root(Value::String(binary_get_name))?;
+  let binary_get_fn = scope.alloc_native_function(binary_get_id, None, binary_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(binary_get_fn, Some(func_proto))?;
+  let binary_set_id = vm.register_native_call(websocket_binary_type_set)?;
+  let binary_set_name = scope.alloc_string("set binaryType")?;
+  scope.push_root(Value::String(binary_set_name))?;
+  let binary_set_fn = scope.alloc_native_function(binary_set_id, None, binary_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(binary_set_fn, Some(func_proto))?;
+  let binary_key = alloc_key(&mut scope, "binaryType")?;
+  scope.define_property(
+    proto,
+    binary_key,
+    accessor_desc(Value::Object(binary_get_fn), Value::Object(binary_set_fn)),
+  )?;
+
   // Expose on global.
   let ctor_key = alloc_key(&mut scope, "WebSocket")?;
   scope.define_property(global, ctor_key, data_desc(Value::Object(ctor), true))?;
@@ -3488,7 +3686,7 @@ pub fn install_window_websocket_bindings_with_guard<Host: WindowRealmHost + 'sta
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
   {
     let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    lock.insert(env_id, EnvState::new(env));
+    lock.insert(env_id, EnvState::new(env, realm.id()));
   }
   let bindings = WindowWebSocketBindings::new(env_id);
   if let Err(err) = install_window_websocket_bindings_for_env_id::<Host>(vm, realm, heap, env_id) {
@@ -3539,7 +3737,7 @@ pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 
     let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.insert(
       env_id,
-      EnvState::new_ipc(WindowWebSocketEnv::for_document(fetcher, document_url), ipc_state),
+      EnvState::new_ipc(WindowWebSocketEnv::for_document(fetcher, document_url), realm.id(), ipc_state),
     );
   }
 
@@ -3723,6 +3921,182 @@ mod tests {
     assert_eq!(
       get_global_prop_utf8(&mut host, "__msg").as_deref(),
       Some("hello")
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_binary_type_controls_message_data_type() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_binary_type_controls_message_data_type") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).expect("accept websocket");
+
+            let read_one = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>| {
+              let read_deadline = Instant::now() + Duration::from_secs(5);
+              loop {
+                match ws.read_message() {
+                  Ok(msg) => break msg,
+                  Err(tungstenite::Error::Io(ref err))
+                    if matches!(
+                      err.kind(),
+                      std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                  {
+                    if Instant::now() >= read_deadline {
+                      panic!("server read timed out");
+                    }
+                  }
+                  Err(err) => panic!("server read failed: {err}"),
+                }
+              }
+            };
+
+            let msg1 = read_one(&mut ws);
+            ws.write_message(msg1).expect("echo 1");
+            let msg2 = read_one(&mut ws);
+            ws.write_message(msg2).expect("echo 2");
+            let _ = ws.close(None);
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "https://example.invalid/")?;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__done = false;
+      globalThis.__err = "";
+
+      globalThis.__defaultBinaryType = "";
+      globalThis.__invalidBinaryTypeErr = "";
+      globalThis.__binaryTypeAfterInvalid = "";
+      globalThis.__binaryTypeAfterSet = "";
+
+      globalThis.__firstIsBlob = false;
+      globalThis.__firstSize = -1;
+      globalThis.__secondIsArrayBuffer = false;
+      globalThis.__secondByteLength = -1;
+
+      globalThis.__ws = new WebSocket("ws://{addr}/");
+      const ws = globalThis.__ws;
+
+      globalThis.__defaultBinaryType = ws.binaryType;
+      try {{
+        ws.binaryType = "nope";
+      }} catch (e) {{
+        globalThis.__invalidBinaryTypeErr = (e && e.name) ? e.name : String(e);
+      }}
+      globalThis.__binaryTypeAfterInvalid = ws.binaryType;
+
+      let count = 0;
+      ws.onopen = function () {{
+        ws.send(new Uint8Array([1, 2]));
+      }};
+      ws.onmessage = function (e) {{
+        count++;
+        if (count === 1) {{
+          globalThis.__firstIsBlob = (typeof Blob === "function") && (e.data instanceof Blob);
+          globalThis.__firstSize = (e && e.data && typeof e.data.size === "number") ? e.data.size : -1;
+          ws.binaryType = "arraybuffer";
+          globalThis.__binaryTypeAfterSet = ws.binaryType;
+          ws.send(new Uint8Array([3, 4]));
+        }} else if (count === 2) {{
+          globalThis.__secondIsArrayBuffer = e && (e.data instanceof ArrayBuffer);
+          globalThis.__secondByteLength = (e && e.data && typeof e.data.byteLength === "number")
+            ? e.data.byteLength
+            : -1;
+          ws.close();
+        }}
+      }};
+      ws.onerror = function () {{
+        globalThis.__err = "error";
+        globalThis.__done = true;
+      }};
+      ws.onclose = function () {{
+        globalThis.__done = true;
+      }};
+      "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      "",
+      "unexpected websocket error: {:?}",
+      get_global_prop_utf8(&mut host, "__err")
+    );
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__defaultBinaryType").as_deref(),
+      Some("blob")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__invalidBinaryTypeErr").as_deref(),
+      Some("SyntaxError")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__binaryTypeAfterInvalid").as_deref(),
+      Some("blob")
+    );
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__firstIsBlob").as_deref(),
+      Some("true")
+    );
+    assert_eq!(get_global_prop_utf8(&mut host, "__firstSize").as_deref(), Some("2"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__binaryTypeAfterSet").as_deref(),
+      Some("arraybuffer")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__secondIsArrayBuffer").as_deref(),
+      Some("true")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__secondByteLength").as_deref(),
+      Some("2")
     );
 
     server.join().expect("server thread panicked");
@@ -5397,7 +5771,10 @@ mod tests {
     let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
     {
       let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-      lock.insert(env_id, EnvState::new(WindowWebSocketEnv::for_document(fetcher.clone(), None)));
+      lock.insert(
+        env_id,
+        EnvState::new(WindowWebSocketEnv::for_document(fetcher.clone(), None), RealmId::from_raw(0)),
+      );
     }
 
     let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WsCommand>(1);
@@ -5419,6 +5796,7 @@ mod tests {
           requested_protocols: Vec::new(),
           protocol: String::new(),
           ready_state: WS_CONNECTING,
+          binary_type: WebSocketBinaryType::default(),
           buffered_amount: 0,
           pending_events: 0,
           pending_event_bytes: 0,
@@ -5469,7 +5847,10 @@ mod tests {
     let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
     {
       let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-      lock.insert(env_id, EnvState::new(WindowWebSocketEnv::for_document(fetcher.clone(), None)));
+      lock.insert(
+        env_id,
+        EnvState::new(WindowWebSocketEnv::for_document(fetcher.clone(), None), RealmId::from_raw(0)),
+      );
     }
 
     let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WsCommand>(1);
@@ -5491,6 +5872,7 @@ mod tests {
           requested_protocols: Vec::new(),
           protocol: String::new(),
           ready_state: WS_CONNECTING,
+          binary_type: WebSocketBinaryType::default(),
           buffered_amount: 0,
           pending_events: 0,
           pending_event_bytes: 0,
