@@ -135,8 +135,8 @@ impl FrameUploadCoalescer {
     evicted
   }
 
-  /// Remove and return the pending upload for `tab_id`, if any.
-  pub fn take_for_tab(&mut self, tab_id: TabId) -> Option<FrameReadyUpdate> {
+  /// Takes and removes the latest pending upload for `tab_id`, if any.
+  pub fn take(&mut self, tab_id: TabId) -> Option<FrameReadyUpdate> {
     let frame = self.latest_by_tab.pop(&tab_id)?;
     self.total_estimated_bytes = self
       .total_estimated_bytes
@@ -210,7 +210,25 @@ mod tests {
   }
 
   #[test]
-  fn take_for_tab_removes_only_selected_tab() {
+  fn take_returns_latest_for_tab_and_removes_it() {
+    let tab = TabId(1);
+    let mut coalescer = FrameUploadCoalescer::new();
+
+    coalescer.push(make_frame(tab, (3, 4), (100, 80), 1.5));
+    assert!(coalescer.has_pending_for_tab(tab));
+
+    let frame = coalescer.take(tab).expect("expected pending frame");
+    assert_eq!(frame.tab_id, tab);
+    assert_eq!((frame.pixmap.width(), frame.pixmap.height()), (3, 4));
+    assert_eq!(frame.viewport_css, (100, 80));
+    assert!((frame.dpr - 1.5).abs() < f32::EPSILON);
+
+    assert!(!coalescer.has_pending_for_tab(tab));
+    assert!(coalescer.take(tab).is_none());
+  }
+
+  #[test]
+  fn take_only_affects_requested_tab() {
     let tab_a = TabId(1);
     let tab_b = TabId(2);
     let mut coalescer = FrameUploadCoalescer::new();
@@ -218,31 +236,27 @@ mod tests {
     coalescer.push(make_frame(tab_a, (1, 1), (10, 10), 1.0));
     coalescer.push(make_frame(tab_b, (2, 2), (20, 20), 1.0));
 
-    let taken = coalescer.take_for_tab(tab_a).expect("tab A should be pending");
-    assert_eq!(taken.tab_id, tab_a);
+    let _ = coalescer.take(tab_a).expect("expected tab_a frame");
     assert!(!coalescer.has_pending_for_tab(tab_a));
     assert!(coalescer.has_pending_for_tab(tab_b));
 
-    let drained: Vec<_> = coalescer.drain().collect();
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].tab_id, tab_b);
+    let frame_b = coalescer.take(tab_b).expect("expected tab_b frame");
+    assert_eq!(frame_b.tab_id, tab_b);
   }
 
   #[test]
-  fn take_for_tab_returns_latest_frame_for_that_tab() {
+  fn take_yields_only_newest_frame_for_tab() {
     let tab = TabId(1);
     let mut coalescer = FrameUploadCoalescer::new();
 
-    coalescer.push(make_frame(tab, (1, 1), (100, 100), 1.0));
-    coalescer.push(make_frame(tab, (3, 4), (200, 150), 2.0));
+    coalescer.push(make_frame(tab, (1, 1), (10, 10), 1.0));
+    coalescer.push(make_frame(tab, (9, 7), (90, 70), 2.0));
 
-    let taken = coalescer.take_for_tab(tab).expect("frame should be pending");
-    assert_eq!(taken.tab_id, tab);
-    assert_eq!((taken.pixmap.width(), taken.pixmap.height()), (3, 4));
-    assert_eq!(taken.viewport_css, (200, 150));
-    assert!((taken.dpr - 2.0).abs() < f32::EPSILON);
-
-    assert!(coalescer.is_empty());
+    let frame = coalescer.take(tab).expect("expected pending frame");
+    assert_eq!((frame.pixmap.width(), frame.pixmap.height()), (9, 7));
+    assert_eq!(frame.viewport_css, (90, 70));
+    assert!((frame.dpr - 2.0).abs() < f32::EPSILON);
+    assert!(coalescer.take(tab).is_none());
   }
 
   #[test]

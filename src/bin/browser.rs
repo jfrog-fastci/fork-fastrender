@@ -7426,7 +7426,7 @@ impl App {
     self.next_page_upload_redraw = None;
 
     let upload_start = self.hud.is_some().then(std::time::Instant::now);
-    let Some(frame_ready) = self.pending_frame_uploads.take_for_tab(tab_id) else {
+    let Some(frame_ready) = self.pending_frame_uploads.take(tab_id) else {
       return;
     };
 
