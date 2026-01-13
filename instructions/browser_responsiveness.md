@@ -68,6 +68,11 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 
+# Debug invalidation fast paths for hover/focus/caret interactions (stderr one-line logs):
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  env FASTR_LOG_INTERACTION_INVALIDATION=1 \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+
 # Headless smoke harness (`ui_perf_smoke`; JSON summary).
 # Measures navigation→first frame (TTFP proxy) for a few built-in about: scenarios.
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
