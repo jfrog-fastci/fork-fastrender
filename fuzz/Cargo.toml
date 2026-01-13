@@ -150,3 +150,24 @@ path = "fuzz_targets/ipc_decode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "media_timebase"
+path = "fuzz_targets/media_timebase.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_av_sync"
+path = "fuzz_targets/media_av_sync.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audio_ring_buffer"
+path = "fuzz_targets/audio_ring_buffer.rs"
+test = false
+doc = false
+bench = false

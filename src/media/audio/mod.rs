@@ -73,6 +73,7 @@ pub use latency::{
 pub use drift::{DriftController, DriftControllerConfig, DriftResampler};
 pub use engine::{AudioEngine, AudioEngineSink, AudioGroupId};
 pub use null_backend::NullAudioBackend;
+pub use ring_buffer::AudioRingBuffer;
 pub use queue::{pcm_f32_queue, PcmF32Queue, PcmF32QueueConsumer, PcmF32QueueProducer};
 pub use timed_queue::{PopResult, PushError, ReadResult, TimedAudioQueue, TimedAudioSegment};
 
