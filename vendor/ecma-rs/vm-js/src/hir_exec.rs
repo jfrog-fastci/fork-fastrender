@@ -1,6 +1,6 @@
 use crate::code::{CompiledFunctionRef, CompiledScript};
 use crate::conversion_ops::ToPrimitiveHint;
-use crate::exec::{perform_direct_eval_with_host_and_hooks, ResolvedBinding, RuntimeEnv};
+use crate::exec::{perform_direct_eval_with_host_and_hooks, ResolvedBinding, RuntimeEnv, VarEnv};
 use crate::fallible_format;
 use crate::function::ThisMode;
 use crate::for_in::ForInEnumerator;
@@ -7269,13 +7269,17 @@ impl<'vm> HirEvaluator<'vm> {
     let saved_strict = self.strict;
     self.strict = true;
 
-    let result = (|| {
-      let Some(class_meta) = class_body.class.as_ref() else {
-        return Err(VmError::InvariantViolation("class body missing class metadata"));
-      };
-      if class_meta.extends.is_some() {
-        return Err(VmError::Unimplemented("class inheritance"));
-      }
+     let result = (|| {
+       // Avoid borrowing the HIR through `self` across calls that mutably borrow `self` during class
+       // member evaluation (e.g. evaluating class static blocks).
+       let hir = self.script.hir.clone();
+
+       let Some(class_meta) = class_body.class.as_ref() else {
+         return Err(VmError::InvariantViolation("class body missing class metadata"));
+       };
+       if class_meta.extends.is_some() {
+         return Err(VmError::Unimplemented("class inheritance"));
+       }
 
       let class_env = self.env.lexical_env();
 
@@ -7417,26 +7421,29 @@ impl<'vm> HirEvaluator<'vm> {
         },
       )?;
 
-      // Define prototype and static methods/accessors.
-      for member in class_meta.members.iter() {
-        self.vm.tick()?;
+       // Define prototype and static methods/accessors.
+       let mut static_blocks: Vec<hir_js::BodyId> = Vec::new();
+       for member in class_meta.members.iter() {
+         self.vm.tick()?;
 
-        match &member.kind {
-          hir_js::ClassMemberKind::Constructor { .. } => {
+         match &member.kind {
+           hir_js::ClassMemberKind::Constructor { .. } => {
             // The actual `constructor(...) { ... }` body is represented by the class constructor
             // object itself (and its hidden body function).
             continue;
           }
-          hir_js::ClassMemberKind::Field { .. } => {
-            return Err(VmError::Unimplemented("class fields"));
-          }
-          hir_js::ClassMemberKind::StaticBlock { .. } => {
-            return Err(VmError::Unimplemented("class static blocks"));
-          }
-          hir_js::ClassMemberKind::Method {
-            body,
-            key,
-            kind,
+           hir_js::ClassMemberKind::Field { .. } => {
+             return Err(VmError::Unimplemented("class fields"));
+           }
+           hir_js::ClassMemberKind::StaticBlock { body, .. } => {
+             static_blocks.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+             static_blocks.push(*body);
+             continue;
+           }
+           hir_js::ClassMemberKind::Method {
+             body,
+             key,
+             kind,
             ..
           } => {
             let target_obj = if member.static_ { func_obj } else { prototype_obj };
@@ -7518,15 +7525,96 @@ impl<'vm> HirEvaluator<'vm> {
                 )?;
               }
             }
-          }
-        }
-      }
+           }
+         }
+       }
 
-      Ok(func_obj)
+       // Evaluate class static blocks after defining methods/accessors, in source order.
+       //
+       // This matches ECMA-262 `ClassDefinitionEvaluation`, where static initialization elements run
+       // in a second pass after the element definition pass.
+       for body_id in static_blocks {
+         self.vm.tick()?;
+         let block_body = hir
+           .body(body_id)
+           .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+         self.eval_class_static_block_hir(&mut class_scope, func_obj, block_body)?;
+       }
+
+       Ok(func_obj)
+     })();
+
+     self.strict = saved_strict;
+     result
+  }
+
+  fn eval_class_static_block_hir(
+    &mut self,
+    scope: &mut Scope<'_>,
+    receiver: GcObject,
+    block_body: &hir_js::Body,
+  ) -> Result<(), VmError> {
+    // Static blocks are evaluated as strict-mode "method" bodies with `this` bound to the class
+    // constructor object and `new.target` set to `undefined`.
+    //
+    // We implement this by:
+    // - creating a fresh var environment whose outer is the current class lexical environment,
+    // - creating a function-body lexical environment whose outer is that var environment,
+    // - instantiating the statement list, then evaluating it.
+    //
+    // This mirrors `exec.rs::eval_class_static_block` and prevents `var` declarations inside static
+    // blocks from leaking to the surrounding global/function VariableEnvironment.
+    let mut block_scope = scope.reborrow();
+    block_scope.push_root(Value::Object(receiver))?;
+
+    let saved_this = self.this;
+    let saved_new_target = self.new_target;
+    let saved_lex = self.env.lexical_env();
+    let saved_var_env = self.env.var_env();
+
+    let res: Result<Flow, VmError> = (|| {
+      self.this = Value::Object(receiver);
+      self.new_target = Value::Undefined;
+
+      let var_env = block_scope.env_create(Some(saved_lex))?;
+      let body_lex = block_scope.env_create(Some(var_env))?;
+      self.env.set_var_env(VarEnv::Env(var_env));
+      self.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+
+      // Some early errors are still checked at runtime during instantiation so invalid declarations
+      // do not partially pollute the static block environments.
+      self.early_error_missing_initializers_in_stmt_list(block_body, block_body.root_stmts.as_slice())?;
+
+      self.instantiate_var_decls(&mut block_scope, block_body, block_body.root_stmts.as_slice())?;
+      self.instantiate_function_decls(&mut block_scope, block_body, block_body.root_stmts.as_slice())?;
+      self.instantiate_lexical_decls(
+        &mut block_scope,
+        block_body,
+        block_body.root_stmts.as_slice(),
+        self.env.lexical_env(),
+      )?;
+
+      self.eval_stmt_list(&mut block_scope, block_body, block_body.root_stmts.as_slice())
     })();
 
-    self.strict = saved_strict;
-    result
+    // Restore the surrounding class evaluation context regardless of how the block completes.
+    self.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
+    self.env.set_var_env(saved_var_env);
+    self.this = saved_this;
+    self.new_target = saved_new_target;
+
+    match res? {
+      Flow::Normal(_) => Ok(()),
+      Flow::Return(_) => Err(VmError::InvariantViolation(
+        "class static block produced Return flow (early errors should prevent this)",
+      )),
+      Flow::Break(..) => Err(VmError::InvariantViolation(
+        "class static block produced Break flow (early errors should prevent this)",
+      )),
+      Flow::Continue(..) => Err(VmError::InvariantViolation(
+        "class static block produced Continue flow (early errors should prevent this)",
+      )),
+    }
   }
 
   fn eval_class_member_key(

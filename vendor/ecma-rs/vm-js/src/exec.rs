@@ -794,7 +794,7 @@ fn syntax_error(loc: parse_js::loc::Loc, message: impl Into<String>) -> VmError 
 }
 
 #[derive(Clone, Copy, Debug)]
-enum VarEnv {
+pub(crate) enum VarEnv {
   GlobalObject,
   Env(GcEnv),
 }
@@ -1158,11 +1158,11 @@ impl RuntimeEnv {
     }
   }
 
-  fn var_env(&self) -> VarEnv {
+  pub(crate) fn var_env(&self) -> VarEnv {
     self.var_env
   }
 
-  fn set_var_env(&mut self, var_env: VarEnv) {
+  pub(crate) fn set_var_env(&mut self, var_env: VarEnv) {
     self.var_env = var_env;
   }
 
