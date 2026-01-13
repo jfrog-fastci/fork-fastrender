@@ -1838,7 +1838,7 @@ fn validate_regex_pattern(
             esc,
             '&' | '!' | '#' | '%' | ',' | ':' | ';' | '<' | '=' | '>' | '@' | '`' | '~'
           ) {
-            return Ok((i + esc_len, Some(esc as u32)));
+            return Ok((i + esc_len, Some(esc as u32), false));
           }
 
           // CharacterClassEscape (not valid as range endpoint).
