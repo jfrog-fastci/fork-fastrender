@@ -13066,6 +13066,60 @@ impl App {
       || self.debug_log_overlay_pointer_capture
   }
 
+  /// Whether the cursor is over an egui overlay that should block page wheel scrolling.
+  ///
+  /// Media controls are intentionally excluded: scrolling the page while the media controls overlay
+  /// is visible should keep it attached to the media element (matching typical browser behaviour).
+  ///
+  /// Pointer capture *does* block scrolling: while the user is dragging a media control slider we
+  /// should not scroll the underlying page.
+  fn cursor_over_egui_overlay_blocks_page_wheel(&self, pos_points: egui::Pos2) -> bool {
+    if self.media_controls_overlay_pointer_capture {
+      return true;
+    }
+
+    self
+      .open_select_dropdown_rect
+      .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_date_time_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_color_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_file_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_page_export_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_context_menu_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .debug_log_overlay_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .warning_toast_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .error_infobar_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .crash_recovery_infobar_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .page_unresponsive_overlay_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .chrome_toast_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .session_autosave_warning_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self.debug_log_overlay_pointer_capture
+  }
+
   fn cursor_over_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
     let pos = fastrender::Point::new(pos_points.x, pos_points.y);
     self
@@ -21843,7 +21897,11 @@ impl App {
 
         // Treat egui overlay UI surfaces (context menus, debug log, etc.) as true overlays: wheel
         // scrolling over them should not scroll the underlying page.
-        if self.cursor_over_egui_overlay(pos_points) {
+        //
+        // Exception: media controls are page-scoped and should remain attached while scrolling, so
+        // wheel events should still reach the page even when the cursor is over the media controls
+        // overlay (unless the UI is actively capturing the pointer for slider drags).
+        if self.cursor_over_egui_overlay_blocks_page_wheel(pos_points) {
           return;
         }
 
