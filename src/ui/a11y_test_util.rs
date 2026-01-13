@@ -238,6 +238,29 @@ where
   accesskit_reachable_node_ids(root_id, &nodes_by_id)
 }
 
+/// Return a stable list of node ids that are present in `update.nodes` but not reachable from the
+/// update's root.
+///
+/// This is useful for detecting *orphan* nodes that were emitted by egui/AccessKit but never
+/// connected to the tree.
+pub fn accesskit_orphan_node_ids_from_update<'a, I>(
+  update: &'a accesskit::TreeUpdate,
+  root_id_fallback: Option<accesskit::NodeId>,
+  additional_nodes: I,
+) -> Vec<accesskit::NodeId>
+where
+  I: IntoIterator<Item = (accesskit::NodeId, &'a accesskit::Node)>,
+{
+  let reachable = accesskit_reachable_node_ids_from_update(update, root_id_fallback, additional_nodes);
+  let reachable_set: HashSet<accesskit::NodeId> = reachable.into_iter().collect();
+  update
+    .nodes
+    .iter()
+    .map(|(id, _node)| *id)
+    .filter(|id| !reachable_set.contains(id))
+    .collect()
+}
+
 /// Snapshot-friendly pre-order list of all nodes reachable from the update's root.
 pub fn accesskit_reachable_nodes_snapshot_from_update<'a, I>(
   update: &'a accesskit::TreeUpdate,
@@ -269,6 +292,17 @@ where
       }
     })
     .collect()
+}
+
+/// Snapshot-friendly pre-order list of all nodes reachable from the AccessKit update emitted by egui.
+///
+/// This is a convenience wrapper around [`accesskit_reachable_nodes_snapshot_from_update`] for tests
+/// that already have an `egui::PlatformOutput`.
+pub fn accesskit_reachable_nodes_snapshot_from_platform_output(
+  output: &egui::PlatformOutput,
+) -> Vec<AccessKitReachableNodeSnapshot> {
+  let update = accesskit_update_from_platform_output(output);
+  accesskit_reachable_nodes_snapshot_from_update(update, None, std::iter::empty())
 }
 
 #[cfg(test)]
@@ -329,6 +363,8 @@ mod tests {
     let reachable =
       accesskit_reachable_node_ids_from_update(&update, None, std::iter::empty());
     assert_eq!(reachable, vec![root_id, a_id, a1_id, b_id]);
+    let orphans = accesskit_orphan_node_ids_from_update(&update, None, std::iter::empty());
+    assert_eq!(orphans, vec![orphan_id]);
 
     let snapshot =
       accesskit_reachable_nodes_snapshot_from_update(&update, None, std::iter::empty());
@@ -378,5 +414,9 @@ mod tests {
     let reachable =
       accesskit_reachable_node_ids_from_update(&update, Some(root_id), additional_nodes);
     assert_eq!(reachable, vec![root_id, child_id, grandchild_id]);
+
+    let additional_nodes = vec![(root_id, &root)];
+    let orphans = accesskit_orphan_node_ids_from_update(&update, Some(root_id), additional_nodes);
+    assert!(orphans.is_empty());
   }
 }
