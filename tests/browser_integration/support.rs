@@ -53,6 +53,27 @@ pub(crate) fn allow_crash_urls_for_test() -> AllowCrashUrlsGuard {
   AllowCrashUrlsGuard { previous }
 }
 
+/// Minimal abstraction over `recv_timeout` so helper functions can work with both raw
+/// `std::sync::mpsc::Receiver<T>` channels and [`fastrender::ui::WorkerToUiInbox`], which flattens
+/// worker→UI message batches.
+pub trait RecvTimeout<T> {
+  fn recv_timeout(&self, timeout: Duration) -> std::result::Result<T, RecvTimeoutError>;
+}
+
+impl<T> RecvTimeout<T> for Receiver<T> {
+  fn recv_timeout(&self, timeout: Duration) -> std::result::Result<T, RecvTimeoutError> {
+    Receiver::recv_timeout(self, timeout)
+  }
+}
+
+impl RecvTimeout<fastrender::ui::messages::WorkerToUi> for fastrender::ui::WorkerToUiInbox {
+  fn recv_timeout(
+    &self,
+    timeout: Duration,
+  ) -> std::result::Result<fastrender::ui::messages::WorkerToUi, RecvTimeoutError> {
+    fastrender::ui::WorkerToUiInbox::recv_timeout(self, timeout)
+  }
+}
 pub(crate) struct ExecutorWithWindow<E> {
   inner: E,
   host_ctx: (),
@@ -288,7 +309,7 @@ pub fn spawn_browser_worker_named(
   name: impl Into<String>,
 ) -> (
   std::sync::mpsc::Sender<fastrender::ui::messages::UiToWorker>,
-  std::sync::mpsc::Receiver<fastrender::ui::messages::WorkerToUi>,
+  fastrender::ui::WorkerToUiInbox,
   std::thread::JoinHandle<()>,
 ) {
   ensure_bundled_fonts_loaded();
@@ -302,7 +323,7 @@ pub fn spawn_browser_worker_named(
 /// This repeatedly calls `recv_timeout` in small slices so tests are responsive and don't get stuck
 /// behind a single long `recv_timeout` call when we want to ignore unrelated messages.
 pub fn recv_until<T>(
-  rx: &Receiver<T>,
+  rx: &impl RecvTimeout<T>,
   timeout: Duration,
   mut pred: impl FnMut(&T) -> bool,
 ) -> Option<T> {
@@ -329,7 +350,7 @@ pub fn recv_until<T>(
 ///
 /// Useful for collecting follow-up messages after sending a command, while still keeping an upper
 /// bound on how long a test waits.
-pub fn drain_for<T>(rx: &Receiver<T>, duration: Duration) -> Vec<T> {
+pub fn drain_for<T>(rx: &impl RecvTimeout<T>, duration: Duration) -> Vec<T> {
   let start = Instant::now();
   let mut out = Vec::new();
   loop {
@@ -443,7 +464,7 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
 /// Messages for other tabs (and any messages without a `tab_id`) are ignored.
 #[cfg(feature = "browser_ui")]
 pub fn recv_for_tab(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   timeout: Duration,
   mut pred: impl FnMut(&WorkerToUi) -> bool,
@@ -461,7 +482,7 @@ pub fn recv_for_tab(
 /// tolerating unrelated/stale scroll updates from earlier frames.
 #[cfg(feature = "browser_ui")]
 pub fn wait_for_frame_and_scroll_state_updated(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   timeout: Duration,
 ) -> (

@@ -4,7 +4,6 @@ use fastrender::interaction::KeyAction;
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use fastrender::Point;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -14,7 +13,7 @@ use super::support::{
 };
 
 fn wait_for_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> fastrender::ui::messages::RenderedFrame {

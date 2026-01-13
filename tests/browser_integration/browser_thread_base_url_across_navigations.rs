@@ -3,13 +3,12 @@
 use super::support;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn wait_for_frame_for_committed_url(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   url: &str,
   timeout: Duration,

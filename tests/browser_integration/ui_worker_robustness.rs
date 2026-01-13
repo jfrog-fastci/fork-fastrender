@@ -66,31 +66,69 @@ fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
       tab_id: msg_tab, ..
     }
     | WorkerToUi::SelectDropdownClosed { tab_id: msg_tab }
-    | WorkerToUi::DateTimePickerOpened { tab_id: msg_tab, .. }
+    | WorkerToUi::DateTimePickerOpened {
+      tab_id: msg_tab, ..
+    }
     | WorkerToUi::DateTimePickerClosed { tab_id: msg_tab }
-    | WorkerToUi::FilePickerOpened { tab_id: msg_tab, .. }
+    | WorkerToUi::FilePickerOpened {
+      tab_id: msg_tab, ..
+    }
     | WorkerToUi::FilePickerClosed { tab_id: msg_tab }
-    | WorkerToUi::NavigationStarted { tab_id: msg_tab, .. }
-    | WorkerToUi::NavigationCommitted { tab_id: msg_tab, .. }
-    | WorkerToUi::NavigationFailed { tab_id: msg_tab, .. }
-    | WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. }
-    | WorkerToUi::LoadingState { tab_id: msg_tab, .. }
-    | WorkerToUi::Warning { tab_id: msg_tab, .. }
-    | WorkerToUi::ContextMenu { tab_id: msg_tab, .. }
-    | WorkerToUi::RequestOpenInNewTab { tab_id: msg_tab, .. }
-    | WorkerToUi::RequestOpenInNewTabRequest { tab_id: msg_tab, .. }
-    | WorkerToUi::HoverChanged { tab_id: msg_tab, .. }
-    | WorkerToUi::FindResult { tab_id: msg_tab, .. }
-    | WorkerToUi::SetClipboardText { tab_id: msg_tab, .. }
-    | WorkerToUi::DownloadStarted { tab_id: msg_tab, .. }
-    | WorkerToUi::DownloadProgress { tab_id: msg_tab, .. }
-    | WorkerToUi::DownloadFinished { tab_id: msg_tab, .. } => *msg_tab == tab_id,
+    | WorkerToUi::NavigationStarted {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::NavigationCommitted {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::NavigationFailed {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::ScrollStateUpdated {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::LoadingState {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::Warning {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::ContextMenu {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::RequestOpenInNewTab {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::RequestOpenInNewTabRequest {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::HoverChanged {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::FindResult {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::SetClipboardText {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::DownloadStarted {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::DownloadProgress {
+      tab_id: msg_tab, ..
+    }
+    | WorkerToUi::DownloadFinished {
+      tab_id: msg_tab, ..
+    } => *msg_tab == tab_id,
     WorkerToUi::DebugLog { .. } => false,
     _ => false,
   }
 }
 
-fn assert_no_effect_messages_for(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) {
+fn assert_no_effect_messages_for(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+  timeout: Duration,
+) {
   let start = Instant::now();
   let mut msgs = Vec::new();
 
@@ -122,7 +160,7 @@ fn assert_no_effect_messages_for(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeo
   }
 }
 
-fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) {
+fn wait_for_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId, timeout: Duration) {
   let deadline = Instant::now() + timeout;
   loop {
     let now = Instant::now();

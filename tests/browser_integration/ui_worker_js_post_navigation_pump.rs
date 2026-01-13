@@ -8,7 +8,11 @@ use std::time::Duration;
 // Real navigations + paints can be slow on contended CI hosts.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn wait_for_navigation_committed(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId, url: &str) {
+fn wait_for_navigation_committed(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+  url: &str,
+) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -29,7 +33,7 @@ fn wait_for_navigation_committed(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab
 }
 
 fn wait_for_frame_ready(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
@@ -102,4 +106,3 @@ fn ui_worker_pumps_js_after_navigation_commit_and_repaints_on_dom_changes() {
   drop(ui_tx);
   join.join().expect("join ui worker");
 }
-

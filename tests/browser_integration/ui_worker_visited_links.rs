@@ -10,7 +10,7 @@ use url::Url;
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn wait_for_navigation_committed(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   expected_url: &str,
 ) {
@@ -36,7 +36,7 @@ fn wait_for_navigation_committed(
 }
 
 fn wait_for_frame_ready(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {

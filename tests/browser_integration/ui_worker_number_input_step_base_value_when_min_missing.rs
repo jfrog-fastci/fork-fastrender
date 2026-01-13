@@ -5,7 +5,6 @@ use fastrender::ui::messages::{
   KeyAction, NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -16,7 +15,11 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
   support::rgba_at(&frame.pixmap, x_px, y_px)
 }
 
-fn recv_until_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, deadline: Instant) -> RenderedFrame {
+fn recv_until_frame_ready(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+  deadline: Instant,
+) -> RenderedFrame {
   loop {
     let now = Instant::now();
     if now >= deadline {
@@ -38,7 +41,7 @@ fn recv_until_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, deadline: In
 }
 
 fn recv_until_pixel(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   css_pos: (u32, u32),
   expected: [u8; 4],
@@ -138,4 +141,3 @@ fn number_input_step_base_uses_current_value_when_min_missing() {
   drop(ui_tx);
   join.join().expect("worker join");
 }
-

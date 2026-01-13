@@ -2,7 +2,6 @@
 
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{spawn_browser_worker, NavigationReason, TabId, WorkerToUi};
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use super::support::{
@@ -11,7 +10,7 @@ use super::support::{
 };
 
 fn wait_for_initial_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl super::support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
 ) -> fastrender::ui::RenderedFrame {
   super::support::recv_for_tab(rx, tab_id, DEFAULT_TIMEOUT * 2, |msg| {
@@ -25,7 +24,7 @@ fn wait_for_initial_frame(
 }
 
 fn wait_for_scroll_response_x(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl super::support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   timeout: Duration,
   mut pred: impl FnMut(f32) -> bool,

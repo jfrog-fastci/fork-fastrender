@@ -7,10 +7,7 @@ use std::time::Duration;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_navigation_committed(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
-  tab_id: TabId,
-) -> WorkerToUi {
+fn next_navigation_committed(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> WorkerToUi {
   support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -21,7 +18,7 @@ fn next_navigation_committed(
 }
 
 fn next_frame_ready(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {

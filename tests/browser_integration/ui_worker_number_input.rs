@@ -1,9 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{KeyAction, NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
+use fastrender::ui::messages::{
+  KeyAction, NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -14,7 +15,11 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
   support::rgba_at(&frame.pixmap, x_px, y_px)
 }
 
-fn recv_until_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, deadline: Instant) -> RenderedFrame {
+fn recv_until_frame_ready(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+  deadline: Instant,
+) -> RenderedFrame {
   loop {
     let now = Instant::now();
     if now >= deadline {
@@ -25,9 +30,12 @@ fn recv_until_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, deadline: In
       );
     }
     let remaining = deadline.saturating_duration_since(now);
-    if let Some(msg) = support::recv_for_tab(rx, tab_id, remaining.min(Duration::from_millis(200)), |msg| {
-      matches!(msg, WorkerToUi::FrameReady { .. })
-    }) {
+    if let Some(msg) = support::recv_for_tab(
+      rx,
+      tab_id,
+      remaining.min(Duration::from_millis(200)),
+      |msg| matches!(msg, WorkerToUi::FrameReady { .. }),
+    ) {
       if let WorkerToUi::FrameReady { frame, .. } = msg {
         return frame;
       }
@@ -36,7 +44,7 @@ fn recv_until_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, deadline: In
 }
 
 fn recv_until_pixel(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   css_pos: (u32, u32),
   expected: [u8; 4],
@@ -104,10 +112,18 @@ fn number_input_spinner_click_steps_value_and_repaints() {
 
   // Click the spinner upper half: near the right edge of the input.
   ui_tx
-    .send(support::pointer_down(tab_id, (110.0, 8.0), PointerButton::Primary))
+    .send(support::pointer_down(
+      tab_id,
+      (110.0, 8.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer down");
   ui_tx
-    .send(support::pointer_up(tab_id, (110.0, 8.0), PointerButton::Primary))
+    .send(support::pointer_up(
+      tab_id,
+      (110.0, 8.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer up");
 
   let deadline = Instant::now() + TIMEOUT;
@@ -171,10 +187,18 @@ fn number_input_arrow_keys_step_value_and_repaint() {
 
   // Click the input body (not the spinner) to focus it.
   ui_tx
-    .send(support::pointer_down(tab_id, (10.0, 10.0), PointerButton::Primary))
+    .send(support::pointer_down(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer down");
   ui_tx
-    .send(support::pointer_up(tab_id, (10.0, 10.0), PointerButton::Primary))
+    .send(support::pointer_up(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer up");
 
   // Step up.
@@ -331,8 +355,10 @@ fn number_input_step_affects_get_form_submission_value() {
     .expect("navigate");
 
   // Wait for the initial frame so hit testing works.
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
 
   // Drain any queued messages (navigation committed, loading state, etc) so assertions are scoped
   // to the submit click.
@@ -340,10 +366,18 @@ fn number_input_step_affects_get_form_submission_value() {
 
   // Focus the number input, then step it up.
   ui_tx
-    .send(support::pointer_down(tab_id, (10.0, 70.0), PointerButton::Primary))
+    .send(support::pointer_down(
+      tab_id,
+      (10.0, 70.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer down");
   ui_tx
-    .send(support::pointer_up(tab_id, (10.0, 70.0), PointerButton::Primary))
+    .send(support::pointer_up(
+      tab_id,
+      (10.0, 70.0),
+      PointerButton::Primary,
+    ))
     .expect("pointer up");
   ui_tx
     .send(support::key_action(tab_id, KeyAction::ArrowUp))
@@ -375,9 +409,12 @@ fn number_input_step_affects_get_form_submission_value() {
   expected.set_query(Some("n=1"));
   let expected_url = expected.to_string();
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(
@@ -386,9 +423,12 @@ fn number_input_step_affects_get_form_submission_value() {
     );
   });
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationCommitted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(

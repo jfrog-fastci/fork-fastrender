@@ -1,25 +1,30 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
     other => panic!("unexpected message while waiting for FrameReady: {other:?}"),
   }
 }
 
-fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::SetClipboardText { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for SetClipboardText for tab {tab_id:?}"));
+fn next_clipboard_text(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> String {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::SetClipboardText { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for SetClipboardText for tab {tab_id:?}"));
   match msg {
     WorkerToUi::SetClipboardText { text, .. } => text,
     other => panic!("unexpected message while waiting for SetClipboardText: {other:?}"),
@@ -37,7 +42,8 @@ fn ui_document_drag_drop_inserts_selection_into_text_control() {
     r#"<!doctype html><meta charset="utf-8"><style>html,body{margin:0;padding:0}#src{position:absolute;left:0;top:0;font:24px "Noto Sans Mono",monospace}#dst{position:absolute;left:200px;top:0;width:300px;height:40px;padding:0;border:0;outline:none;font:24px "Noto Sans Mono",monospace}</style><div id=src>hello</div><input id=dst>"#,
   );
 
-  let handle = spawn_ui_worker("fastr-ui-worker-document-selection-drag-drop").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-document-selection-drag-drop").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
@@ -124,4 +130,3 @@ fn ui_document_drag_drop_inserts_selection_into_text_control() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

@@ -39,7 +39,7 @@ use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, MediaCommand,
   MediaElementKind, NavigationReason, PageExportKind, PageExportOutcome, PointerButton, RenderedFrame,
-  ScrollMetrics, TabId, UiToWorker, WakeReason, WorkerToUi,
+  ScrollMetrics, TabId, UiToWorker, WakeReason, WorkerToUi, WorkerToUiInbox, WorkerToUiMsg,
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
@@ -197,7 +197,7 @@ pub const BROWSER_WORKER_CRASH_TEST_URL: &str = "crash://panic";
 /// `ui_rx`.
 pub struct UiThreadWorkerHandle {
   pub ui_tx: Sender<UiToWorker>,
-  pub ui_rx: Receiver<WorkerToUi>,
+  pub ui_rx: WorkerToUiInbox,
   pub join: std::thread::JoinHandle<()>,
 }
 
@@ -206,7 +206,7 @@ impl UiThreadWorkerHandle {
     self,
   ) -> (
     Sender<UiToWorker>,
-    Receiver<WorkerToUi>,
+    WorkerToUiInbox,
     std::thread::JoinHandle<()>,
   ) {
     (self.ui_tx, self.ui_rx, self.join)
@@ -335,7 +335,7 @@ mod media_controls_anchor_fallback_tests {
 /// `rx`.
 pub struct BrowserWorkerHandle {
   pub tx: Sender<UiToWorker>,
-  pub rx: Receiver<WorkerToUi>,
+  pub rx: WorkerToUiInbox,
   pub join: std::thread::JoinHandle<()>,
 }
 
@@ -965,7 +965,7 @@ impl TabState {
   }
 }
 
-fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>) {
+fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUiMsg>) {
   let Some(doc) = tab.document.as_mut() else {
     return;
   };
@@ -1008,10 +1008,10 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   })) {
     Ok(snapshot) => snapshot,
     Err(_) => {
-      let _ = ui_tx.send(WorkerToUi::DebugLog {
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
         tab_id,
         line: "panic while snapshotting JS DOM into renderer DOM".to_string(),
-      });
+      }));
       tab.js_dom_dirty = false;
       tab.js_dom_mutation_generation = generation;
       tab.js_dom_mapping_generation = 0;
@@ -1100,10 +1100,10 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   tab.pending_hover_sync_pos_css = tab.pending_hover_sync_pos_css.or(tab.last_pointer_pos_css);
 }
 
-fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUiMsg>) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     // Best-effort: UI might have dropped its receiver.
-    let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
+    let _ = sender.send(WorkerToUiMsg::Single(WorkerToUi::Stage { tab_id, stage }));
   });
   push_stage_listener(Some(listener))
 }
@@ -1387,7 +1387,7 @@ fn js_dom_node_for_preorder_id(
 }
 
 fn js_dom_node_for_preorder_id_with_log(
-  ui_tx: &Sender<WorkerToUi>,
+  ui_tx: &Sender<WorkerToUiMsg>,
   tab_id: TabId,
   js_tab: &mut BrowserTab,
   preorder_id: usize,
@@ -1413,13 +1413,13 @@ fn js_dom_node_for_preorder_id_with_log(
     };
     if should_emit {
       js_dom_mapping_miss_log_last.insert(event_name, now);
-      let _ = ui_tx.send(WorkerToUi::DebugLog {
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
         tab_id,
         line: format!(
           "js event target mapping failed: type={event_name} preorder_id={preorder_id} element_id_present={} mapping_cache_present={mapping_cache_existed}",
           element_id.is_some(),
         ),
-      });
+      }));
     }
   }
   node_id
@@ -1986,6 +1986,31 @@ fn compute_scroll_metrics(
   }
 }
 
+#[cfg(feature = "browser_ui")]
+fn build_page_accesskit_subtree_for_tab(
+  tab_id: TabId,
+  tab: &TabState,
+  cancel_callback: Arc<crate::render_control::CancelCallback>,
+) -> Option<crate::ui::messages::PageAccessKitSubtree> {
+  // Avoid doing any work if the current job was already cancelled.
+  if cancel_callback() {
+    return None;
+  }
+
+  let doc = tab.document.as_ref()?;
+  let prepared = doc.prepared()?;
+
+  // Reuse the worker's cooperative cancellation plumbing: building large accessibility trees should
+  // be interruptible by the UI bumping paint/nav generations.
+  let deadline = deadline_for(cancel_callback, None);
+  let _guard = DeadlineGuard::install(Some(&deadline));
+
+  let interaction_state = Some(tab.interaction.interaction_state());
+  let a11y_tree =
+    crate::accessibility::build_accessibility_tree(prepared.styled_tree(), interaction_state).ok()?;
+
+  Some(page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &a11y_tree))
+}
 fn base_url_for_links(tab: &TabState) -> &str {
   tab
     .last_base_url
@@ -2525,7 +2550,7 @@ struct ActiveDownload {
 
 struct BrowserRuntime {
   ui_rx: Receiver<UiToWorker>,
-  ui_tx: Sender<WorkerToUi>,
+  ui_tx: Sender<WorkerToUiMsg>,
   factory: FastRenderFactory,
   base_runtime_toggles: Arc<RuntimeToggles>,
   runtime_toggles: Arc<RuntimeToggles>,
@@ -2554,7 +2579,6 @@ struct BrowserRuntime {
   #[cfg(test)]
   request_repaint_viewport_snapshot_for_test: HashMap<TabId, ((u32, u32), f32)>,
 }
-
 
 impl BrowserRuntime {
   fn compute_effective_scroll_state_from_prepared(
@@ -2609,7 +2633,7 @@ impl BrowserRuntime {
 
   fn new(
     ui_rx: Receiver<UiToWorker>,
-    ui_tx: Sender<WorkerToUi>,
+    ui_tx: Sender<WorkerToUiMsg>,
     factory: FastRenderFactory,
     downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
   ) -> Self {
@@ -2740,40 +2764,49 @@ impl BrowserRuntime {
           if let Some(tab) = self.tabs.get_mut(&output.tab_id) {
             if tab.scroll_state != tab.last_reported_scroll_state {
               tab.last_reported_scroll_state = tab.scroll_state.clone();
-              let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-                tab_id: output.tab_id,
-                scroll: tab.scroll_state.clone(),
-              });
+              let _ = self
+                .ui_tx
+                .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+                  tab_id: output.tab_id,
+                  scroll: tab.scroll_state.clone(),
+                }));
             }
           }
         }
         continue;
       }
 
-      let painted_tick_time = output.painted_tick_time;
-      for msg in output.msgs {
-        // `DebugLog` traffic can be very high volume. When the UI has not opted in, suppress it
-        // entirely so we don't waste wakeups/channel traffic on messages that will never be shown.
-        if !self.debug_log_enabled && matches!(&msg, WorkerToUi::DebugLog { .. }) {
-          continue;
-        }
-        match &msg {
-          WorkerToUi::FrameReady { tab_id, frame } => {
-            if let Some(tab) = self.tabs.get_mut(tab_id) {
-              tab.last_reported_scroll_state = frame.scroll_state.clone();
-              if let Some(tick_time) = painted_tick_time {
-                tab.last_painted_tick_time = tick_time;
+      if !output.msgs.is_empty() {
+        let painted_tick_time = output.painted_tick_time;
+        let mut msgs = Vec::with_capacity(output.msgs.len());
+        for msg in output.msgs {
+          // `DebugLog` traffic can be very high volume. When the UI has not opted in, suppress it
+          // entirely so we don't waste wakeups/channel traffic on messages that will never be shown.
+          if !self.debug_log_enabled && matches!(&msg, WorkerToUi::DebugLog { .. }) {
+            continue;
+          }
+          match &msg {
+            WorkerToUi::FrameReady { tab_id, frame } => {
+              if let Some(tab) = self.tabs.get_mut(tab_id) {
+                tab.last_reported_scroll_state = frame.scroll_state.clone();
+                if let Some(tick_time) = painted_tick_time {
+                  tab.last_painted_tick_time = tick_time;
+                }
               }
             }
-          }
-          WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
-            if let Some(tab) = self.tabs.get_mut(tab_id) {
-              tab.last_reported_scroll_state = scroll.clone();
+            WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
+              if let Some(tab) = self.tabs.get_mut(tab_id) {
+                tab.last_reported_scroll_state = scroll.clone();
+              }
             }
+            _ => {}
           }
-          _ => {}
+          msgs.push(msg);
         }
-        let _ = self.ui_tx.send(msg);
+
+        if !msgs.is_empty() {
+          let _ = self.ui_tx.send(WorkerToUiMsg::Batch(msgs));
+        }
       }
     }
   }
@@ -3446,19 +3479,23 @@ impl BrowserRuntime {
         let can_go_back = tab.history.can_go_back();
         let can_go_forward = tab.history.can_go_forward();
 
-        let _ = self.ui_tx.send(WorkerToUi::LoadingState {
-          tab_id,
-          loading: false,
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::LoadingState {
+            tab_id,
+            loading: false,
+          }));
 
         if let Some(entry) = tab.history.current() {
-          let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
-            tab_id,
-            url: entry.url.clone(),
-            title: entry.title.clone(),
-            can_go_back,
-            can_go_forward,
-          });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::NavigationCommitted {
+              tab_id,
+              url: entry.url.clone(),
+              title: entry.title.clone(),
+              can_go_back,
+              can_go_forward,
+            }));
         }
       }
       UiToWorker::Tick { tab_id, delta } => {
@@ -3484,7 +3521,9 @@ impl BrowserRuntime {
         tab.viewport_css = clamp.viewport_css;
         tab.dpr = clamp.dpr;
         if let Some(text) = clamp.warning_text(&self.limits) {
-          let _ = self.ui_tx.send(WorkerToUi::Warning { tab_id, text });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::Warning { tab_id, text }));
         }
         // Viewport changes should cancel any in-flight paints, but do not attempt to paint before
         // the first navigation completes (no document/layout cache yet).
@@ -3545,6 +3584,8 @@ impl BrowserRuntime {
                   js_tab,
                   preorder_id,
                   tab.last_hovered_dom_element_id.as_deref(),
+                  &mut tab.js_dom_mapping_generation,
+                  &mut tab.js_dom_mapping,
                 )
               });
               let target = target_node
@@ -3744,14 +3785,16 @@ impl BrowserRuntime {
             }
           }
 
-          if changed {
+            if changed {
             if scroll_changed && emit_scroll_state_updated {
               // Emit an early scroll-state update so UIs can async-scroll the last painted texture
               // while waiting for the repaint.
-              let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-                tab_id,
-                scroll: tab.scroll_state.clone(),
-              });
+              let _ = self
+                .ui_tx
+                .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+                  tab_id,
+                  scroll: tab.scroll_state.clone(),
+                }));
               tab.last_reported_scroll_state = tab.scroll_state.clone();
             }
             tab.cancel.bump_paint();
@@ -3804,10 +3847,12 @@ impl BrowserRuntime {
               tab.scroll_state = effective;
               viewport_scrolled = tab.scroll_state.viewport != current.viewport;
               tab.sync_js_scroll_state();
-              let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-                tab_id,
-                scroll: tab.scroll_state.clone(),
-              });
+              let _ = self
+                .ui_tx
+                .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+                  tab_id,
+                  scroll: tab.scroll_state.clone(),
+                }));
               tab.last_reported_scroll_state = tab.scroll_state.clone();
               tab.cancel.bump_paint();
               tab.needs_repaint = true;
@@ -3881,7 +3926,11 @@ impl BrowserRuntime {
       } => {
         self.handle_pointer_up(tab_id, pos_css, button, modifiers);
       }
-      UiToWorker::DropFiles { tab_id, pos_css, paths } => {
+      UiToWorker::DropFiles {
+        tab_id,
+        pos_css,
+        paths,
+      } => {
         self.handle_drop_files(tab_id, pos_css, paths);
       }
       UiToWorker::ContextMenuRequest {
@@ -3905,7 +3954,11 @@ impl BrowserRuntime {
         // The browser UI typically owns the dropdown overlay state, so cancellation is a no-op on
         // the worker side. Emit `SelectDropdownClosed` anyway so front-ends that expect an explicit
         // close notification can dismiss the popup deterministically.
-        let _ = self.ui_tx.send(WorkerToUi::SelectDropdownClosed { tab_id });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::SelectDropdownClosed {
+            tab_id,
+          }));
       }
       UiToWorker::SelectDropdownPick {
         tab_id,
@@ -3927,7 +3980,9 @@ impl BrowserRuntime {
         if let Some(tab) = self.tabs.get_mut(&tab_id) {
           tab.datalist_open_input = None;
         }
-        let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
       }
       UiToWorker::DateTimePickerChoose {
         tab_id,
@@ -3940,7 +3995,11 @@ impl BrowserRuntime {
         // The browser UI typically owns the picker overlay state, so cancellation is a no-op on the
         // worker side. Emit `DateTimePickerClosed` anyway so front-ends that expect an explicit
         // close notification can dismiss the popup deterministically.
-        let _ = self.ui_tx.send(WorkerToUi::DateTimePickerClosed { tab_id });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::DateTimePickerClosed {
+            tab_id,
+          }));
       }
       UiToWorker::ColorPickerChoose {
         tab_id,
@@ -3953,7 +4012,11 @@ impl BrowserRuntime {
         // Front-ends typically own the picker overlay state, so cancellation is a no-op on the
         // worker side. Emit `ColorPickerClosed` anyway so front-ends that expect an explicit close
         // notification can dismiss the popup deterministically.
-        let _ = self.ui_tx.send(WorkerToUi::ColorPickerClosed { tab_id });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ColorPickerClosed {
+            tab_id,
+          }));
       }
       UiToWorker::FilePickerChoose {
         tab_id,
@@ -3966,7 +4029,11 @@ impl BrowserRuntime {
         // Front-ends typically own the picker overlay state, so cancellation is a no-op on the
         // worker side. Emit `FilePickerClosed` anyway so front-ends can dismiss the popup
         // deterministically.
-        let _ = self.ui_tx.send(WorkerToUi::FilePickerClosed { tab_id });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::FilePickerClosed {
+            tab_id,
+          }));
       }
       UiToWorker::TextInput { tab_id, text } => {
         self.handle_text_input(tab_id, &text);
@@ -4080,10 +4147,10 @@ impl BrowserRuntime {
         // Media playback is owned by the renderer/DOM subsystem; for now, treat this as an input
         // event and surface it via the debug log so front-ends can validate wiring.
         if self.debug_log_enabled {
-          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+          let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
             tab_id,
             line: format!("MediaCommand node_id={node_id} command={command:?}"),
-          });
+          }));
         }
 
         self.maybe_request_media_wakeup(tab_id);
@@ -4185,10 +4252,10 @@ impl BrowserRuntime {
       // to an existing tab if possible so front-ends can surface it.
       if self.debug_log_enabled {
         if let Some(tab_id) = self.active_tab.or_else(|| self.tabs.keys().next().copied()) {
-          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+          let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
             tab_id,
             line: format!("failed to create download dir {}: {err}", path.display()),
-          });
+          }));
         }
       }
       return;
@@ -4208,7 +4275,8 @@ impl BrowserRuntime {
       .unwrap_or_else(|| crate::ui::downloads::filename_from_url(&url));
 
     let download_dir = self.download_dir.clone();
-    let final_path = crate::ui::downloads::choose_unique_download_path(&download_dir, &requested_name);
+    let final_path =
+      crate::ui::downloads::choose_unique_download_path(&download_dir, &requested_name);
     let part_path = crate::ui::downloads::part_path_for_final(&final_path);
     let file_name = final_path
       .file_name()
@@ -4216,21 +4284,28 @@ impl BrowserRuntime {
       .unwrap_or_else(|| requested_name.clone());
 
     if let Err(err) = std::fs::create_dir_all(&download_dir) {
-      let _ = self.ui_tx.send(WorkerToUi::DownloadStarted {
-        tab_id,
-        download_id,
-        url: url.clone(),
-        file_name,
-        path: final_path,
-        total_bytes: None,
-      });
-      let _ = self.ui_tx.send(WorkerToUi::DownloadFinished {
-        tab_id,
-        download_id,
-        outcome: DownloadOutcome::Failed {
-          error: format!("failed to create download dir {}: {err}", download_dir.display()),
-        },
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::DownloadStarted {
+          tab_id,
+          download_id,
+          url: url.clone(),
+          file_name,
+          path: final_path,
+          total_bytes: None,
+        }));
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::DownloadFinished {
+          tab_id,
+          download_id,
+          outcome: DownloadOutcome::Failed {
+            error: format!(
+              "failed to create download dir {}: {err}",
+              download_dir.display()
+            ),
+          },
+        }));
       return;
     }
 
@@ -4247,14 +4322,16 @@ impl BrowserRuntime {
       );
     }
 
-    let _ = self.ui_tx.send(WorkerToUi::DownloadStarted {
-      tab_id,
-      download_id,
-      url: url.clone(),
-      file_name,
-      path: final_path.clone(),
-      total_bytes: None,
-    });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::DownloadStarted {
+        tab_id,
+        download_id,
+        url: url.clone(),
+        file_name,
+        path: final_path.clone(),
+        total_bytes: None,
+      }));
 
     let ui_tx = self.ui_tx.clone();
     let thread_name = format!("fastr-download-{}", download_id.0);
@@ -4270,11 +4347,11 @@ impl BrowserRuntime {
         let _done_guard = DoneGuard(done);
 
         let finish = |outcome: DownloadOutcome| {
-          let _ = ui_tx.send(WorkerToUi::DownloadFinished {
+          let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DownloadFinished {
             tab_id,
             download_id,
             outcome,
-          });
+          }));
         };
 
         // Best-effort cleanup helper (ignore errors: file may not exist / be already removed).
@@ -4299,95 +4376,94 @@ impl BrowserRuntime {
           }
         };
 
-        let (mut reader, total_bytes): (Box<dyn std::io::Read>, Option<u64>) =
-          match parsed.scheme() {
-            "file" => {
-              let path = match parsed.to_file_path() {
-                Ok(path) => path,
-                Err(()) => {
-                  cleanup_part();
-                  finish(DownloadOutcome::Failed {
-                    error: format!("failed to convert file:// URL to path: {url:?}"),
-                  });
-                  return;
-                }
-              };
-              let total = std::fs::metadata(&path).ok().map(|m| m.len());
-              let file = match std::fs::File::open(&path) {
-                Ok(file) => file,
-                Err(err) => {
-                  cleanup_part();
-                  finish(DownloadOutcome::Failed {
-                    error: format!("failed to open download source {}: {err}", path.display()),
-                  });
-                  return;
-                }
-              };
-              (Box::new(file), total)
-            }
-            #[cfg(feature = "direct_network")]
-            "http" | "https" => {
-              let client = match reqwest::blocking::Client::builder()
-                .redirect(reqwest::redirect::Policy::limited(10))
-                .build()
-              {
-                Ok(client) => client,
-                Err(err) => {
-                  cleanup_part();
-                  finish(DownloadOutcome::Failed {
-                    error: format!("failed to build HTTP client: {err}"),
-                  });
-                  return;
-                }
-              };
-
-              let resp = match client.get(&url).send() {
-                Ok(resp) => resp,
-                Err(err) => {
-                  cleanup_part();
-                  finish(DownloadOutcome::Failed {
-                    error: format!("HTTP request failed for {url}: {err}"),
-                  });
-                  return;
-                }
-              };
-
-              if !resp.status().is_success() {
+        let (mut reader, total_bytes): (Box<dyn std::io::Read>, Option<u64>) = match parsed.scheme() {
+          "file" => {
+            let path = match parsed.to_file_path() {
+              Ok(path) => path,
+              Err(()) => {
                 cleanup_part();
                 finish(DownloadOutcome::Failed {
-                  error: format!("HTTP status {} for {url}", resp.status()),
+                  error: format!("failed to convert file:// URL to path: {url:?}"),
                 });
                 return;
               }
+            };
+            let total = std::fs::metadata(&path).ok().map(|m| m.len());
+            let file = match std::fs::File::open(&path) {
+              Ok(file) => file,
+              Err(err) => {
+                cleanup_part();
+                finish(DownloadOutcome::Failed {
+                  error: format!("failed to open download source {}: {err}", path.display()),
+                });
+                return;
+              }
+            };
+            (Box::new(file), total)
+          }
+          #[cfg(feature = "direct_network")]
+          "http" | "https" => {
+            let client = match reqwest::blocking::Client::builder()
+              .redirect(reqwest::redirect::Policy::limited(10))
+              .build()
+            {
+              Ok(client) => client,
+              Err(err) => {
+                cleanup_part();
+                finish(DownloadOutcome::Failed {
+                  error: format!("failed to build HTTP client: {err}"),
+                });
+                return;
+              }
+            };
 
-              let total = resp.content_length();
-              (Box::new(resp), total)
-            }
-            #[cfg(not(feature = "direct_network"))]
-            "http" | "https" => {
+            let resp = match client.get(&url).send() {
+              Ok(resp) => resp,
+              Err(err) => {
+                cleanup_part();
+                finish(DownloadOutcome::Failed {
+                  error: format!("HTTP request failed for {url}: {err}"),
+                });
+                return;
+              }
+            };
+
+            if !resp.status().is_success() {
               cleanup_part();
               finish(DownloadOutcome::Failed {
-                error:
-                  "HTTP(S) downloads are disabled in this build (missing `direct_network` feature)"
-                    .to_string(),
+                error: format!("HTTP status {} for {url}", resp.status()),
               });
               return;
             }
-            other => {
-              cleanup_part();
-              finish(DownloadOutcome::Failed {
-                error: format!("unsupported download URL scheme: {other}"),
-              });
-              return;
-            }
-          };
 
-        let _ = ui_tx.send(WorkerToUi::DownloadProgress {
+            let total = resp.content_length();
+            (Box::new(resp), total)
+          }
+          #[cfg(not(feature = "direct_network"))]
+          "http" | "https" => {
+            cleanup_part();
+            finish(DownloadOutcome::Failed {
+              error:
+                "HTTP(S) downloads are disabled in this build (missing `direct_network` feature)"
+                  .to_string(),
+            });
+            return;
+          }
+          other => {
+            cleanup_part();
+            finish(DownloadOutcome::Failed {
+              error: format!("unsupported download URL scheme: {other}"),
+            });
+            return;
+          }
+        };
+
+        let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DownloadProgress {
           tab_id,
           download_id,
           received_bytes: 0,
           total_bytes,
-        });
+        }));
         let mut last_progress_sent_at = Instant::now();
         let mut last_progress_sent_bytes: u64 = 0;
 
@@ -4451,12 +4527,12 @@ impl BrowserRuntime {
           if should_emit_download_progress(received, last_progress_sent_bytes, elapsed, false) {
             last_progress_sent_at = now;
             last_progress_sent_bytes = received;
-            let _ = ui_tx.send(WorkerToUi::DownloadProgress {
+            let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DownloadProgress {
               tab_id,
               download_id,
               received_bytes: received,
               total_bytes,
-            });
+            }));
           }
 
           // Cooperate with cancellation/other threads even when downloading from fast local sources.
@@ -4497,12 +4573,12 @@ impl BrowserRuntime {
           Duration::ZERO,
           true,
         ) {
-          let _ = ui_tx.send(WorkerToUi::DownloadProgress {
+          let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DownloadProgress {
             tab_id,
             download_id,
             received_bytes: received,
             total_bytes,
-          });
+          }));
         }
 
         finish(DownloadOutcome::Completed);
@@ -4513,13 +4589,15 @@ impl BrowserRuntime {
         .downloads
         .lock()
         .map(|mut downloads| downloads.remove(&download_id));
-      let _ = self.ui_tx.send(WorkerToUi::DownloadFinished {
-        tab_id,
-        download_id,
-        outcome: DownloadOutcome::Failed {
-          error: format!("failed to spawn download thread: {err}"),
-        },
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::DownloadFinished {
+          tab_id,
+          download_id,
+          outcome: DownloadOutcome::Failed {
+            error: format!("failed to spawn download thread: {err}"),
+          },
+        }));
     }
   }
 
@@ -4831,10 +4909,10 @@ impl BrowserRuntime {
 
         let Some(nav_url) = nav_url else {
           if self.debug_log_enabled {
-            let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+            let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
               tab_id,
               line: format!("ignoring BackForward navigation to unknown URL: {requested_url}"),
-            });
+            }));
           }
           return;
         };
@@ -4973,10 +5051,10 @@ impl BrowserRuntime {
                 Ok(None) => Point::ZERO,
                 Err(err) => {
                   if self.debug_log_enabled {
-                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                       tab_id,
                       line: format!("fragment navigation scroll failed: {err}"),
-                    });
+                    }));
                   }
                   next_scroll_state.viewport
                 }
@@ -4998,13 +5076,15 @@ impl BrowserRuntime {
             }
             tab.history.mark_committed();
             tab.site_key = Some(site_key_for_navigation(&url_string, None));
-            let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
-              tab_id,
-              url: url_string,
-              title,
-              can_go_back: tab.history.can_go_back(),
-              can_go_forward: tab.history.can_go_forward(),
-            });
+            let _ = self
+              .ui_tx
+              .send(WorkerToUiMsg::Single(WorkerToUi::NavigationCommitted {
+                tab_id,
+                url: url_string,
+                title,
+                can_go_back: tab.history.can_go_back(),
+                can_go_forward: tab.history.can_go_forward(),
+              }));
 
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
@@ -5021,11 +5101,13 @@ impl BrowserRuntime {
       tab.media.playing = false;
       tab.media.next_deadline = None;
       tab.media.last_requested_deadline = None;
-      let _ = self.ui_tx.send(WorkerToUi::RequestWakeAfter {
-        tab_id,
-        after: Duration::MAX,
-        reason: WakeReason::Media,
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::RequestWakeAfter {
+          tab_id,
+          after: Duration::MAX,
+          reason: WakeReason::Media,
+        }));
     }
 
     // Full navigations replace the document; clear any active find-in-page results so the UI does
@@ -5036,13 +5118,15 @@ impl BrowserRuntime {
       || !tab.find.matches.is_empty()
     {
       tab.find = FindInPageWorkerState::default();
-      let _ = self.ui_tx.send(WorkerToUi::FindResult {
-        tab_id,
-        query: String::new(),
-        case_sensitive: false,
-        match_count: 0,
-        active_match_index: None,
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::FindResult {
+          tab_id,
+          query: String::new(),
+          case_sensitive: false,
+          match_count: 0,
+          active_match_index: None,
+        }));
     }
 
     // Scroll blit is only meaningful within a single document. Clear the last-painted scroll state
@@ -5098,11 +5182,16 @@ impl BrowserRuntime {
 
     let _ = self
       .ui_tx
-      .send(WorkerToUi::NavigationStarted { tab_id, url });
-    let _ = self.ui_tx.send(WorkerToUi::LoadingState {
-      tab_id,
-      loading: true,
-    });
+      .send(WorkerToUiMsg::Single(WorkerToUi::NavigationStarted {
+        tab_id,
+        url,
+      }));
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::LoadingState {
+        tab_id,
+        loading: true,
+      }));
 
     if should_crash {
       // See `CRASH_URL_TOGGLE` for safety/usage notes.
@@ -5156,10 +5245,12 @@ impl BrowserRuntime {
         if !cancel_callback() {
           if let Err(err) = js_tab.run_until_stable(/* max_frames */ 1) {
             if self.debug_log_enabled && !cancel_callback() {
-              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-                tab_id,
-                line: format!("js tick failed: {err}"),
-              });
+              let _ = self
+                .ui_tx
+                .send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
+                  tab_id,
+                  line: format!("js tick failed: {err}"),
+                }));
             }
           }
         }
@@ -5222,11 +5313,13 @@ impl BrowserRuntime {
 
     tab.media.last_requested_deadline = desired_deadline;
     let after = tab.media.next_media_wake_after(now);
-    let _ = self.ui_tx.send(WorkerToUi::RequestWakeAfter {
-      tab_id,
-      after,
-      reason: WakeReason::Media,
-    });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::RequestWakeAfter {
+        tab_id,
+        after,
+        reason: WakeReason::Media,
+      }));
   }
 
   fn handle_find_query(&mut self, tab_id: TabId, query: &str, case_sensitive: bool) {
@@ -5244,13 +5337,15 @@ impl BrowserRuntime {
     if tab.find.query.is_empty() {
       tab.find.matches.clear();
       tab.find.active_match_index = None;
-      let _ = self.ui_tx.send(WorkerToUi::FindResult {
-        tab_id,
-        query: String::new(),
-        case_sensitive,
-        match_count: 0,
-        active_match_index: None,
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::FindResult {
+          tab_id,
+          query: String::new(),
+          case_sensitive,
+          match_count: 0,
+          active_match_index: None,
+        }));
 
       // Force a repaint so any highlight overlays are cleared.
       if tab.document.is_some() {
@@ -5274,13 +5369,15 @@ impl BrowserRuntime {
       tab.find.active_match_index = Some(0);
     }
 
-    let _ = self.ui_tx.send(WorkerToUi::FindResult {
-      tab_id,
-      query: tab.find.query.clone(),
-      case_sensitive: tab.find.case_sensitive,
-      match_count: tab.find.matches.len(),
-      active_match_index: tab.find.active_match_index,
-    });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::FindResult {
+        tab_id,
+        query: tab.find.query.clone(),
+        case_sensitive: tab.find.case_sensitive,
+        match_count: tab.find.matches.len(),
+        active_match_index: tab.find.active_match_index,
+      }));
 
     Self::scroll_to_active_find_match(&self.ui_tx, tab_id, tab);
 
@@ -5309,13 +5406,15 @@ impl BrowserRuntime {
     }
 
     if tab.find.matches.is_empty() {
-      let _ = self.ui_tx.send(WorkerToUi::FindResult {
-        tab_id,
-        query: tab.find.query.clone(),
-        case_sensitive: tab.find.case_sensitive,
-        match_count: 0,
-        active_match_index: None,
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::FindResult {
+          tab_id,
+          query: tab.find.query.clone(),
+          case_sensitive: tab.find.case_sensitive,
+          match_count: 0,
+          active_match_index: None,
+        }));
       if tab.document.is_some() {
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
@@ -5328,13 +5427,15 @@ impl BrowserRuntime {
     let next = tab.find.active_match_index.unwrap_or(0).saturating_add(1) % count;
     tab.find.active_match_index = Some(next);
 
-    let _ = self.ui_tx.send(WorkerToUi::FindResult {
-      tab_id,
-      query: tab.find.query.clone(),
-      case_sensitive: tab.find.case_sensitive,
-      match_count: count,
-      active_match_index: tab.find.active_match_index,
-    });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::FindResult {
+        tab_id,
+        query: tab.find.query.clone(),
+        case_sensitive: tab.find.case_sensitive,
+        match_count: count,
+        active_match_index: tab.find.active_match_index,
+      }));
 
     Self::scroll_to_active_find_match(&self.ui_tx, tab_id, tab);
 
@@ -5363,13 +5464,15 @@ impl BrowserRuntime {
     }
 
     if tab.find.matches.is_empty() {
-      let _ = self.ui_tx.send(WorkerToUi::FindResult {
-        tab_id,
-        query: tab.find.query.clone(),
-        case_sensitive: tab.find.case_sensitive,
-        match_count: 0,
-        active_match_index: None,
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::FindResult {
+          tab_id,
+          query: tab.find.query.clone(),
+          case_sensitive: tab.find.case_sensitive,
+          match_count: 0,
+          active_match_index: None,
+        }));
       if tab.document.is_some() {
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
@@ -5383,13 +5486,15 @@ impl BrowserRuntime {
     let prev = if current == 0 { count - 1 } else { current - 1 };
     tab.find.active_match_index = Some(prev);
 
-    let _ = self.ui_tx.send(WorkerToUi::FindResult {
-      tab_id,
-      query: tab.find.query.clone(),
-      case_sensitive: tab.find.case_sensitive,
-      match_count: count,
-      active_match_index: tab.find.active_match_index,
-    });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::FindResult {
+        tab_id,
+        query: tab.find.query.clone(),
+        case_sensitive: tab.find.case_sensitive,
+        match_count: count,
+        active_match_index: tab.find.active_match_index,
+      }));
 
     Self::scroll_to_active_find_match(&self.ui_tx, tab_id, tab);
 
@@ -5407,13 +5512,15 @@ impl BrowserRuntime {
 
     tab.find = FindInPageWorkerState::default();
 
-    let _ = self.ui_tx.send(WorkerToUi::FindResult {
-      tab_id,
-      query: String::new(),
-      case_sensitive: false,
-      match_count: 0,
-      active_match_index: None,
-    });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::FindResult {
+        tab_id,
+        query: String::new(),
+        case_sensitive: false,
+        match_count: 0,
+        active_match_index: None,
+      }));
 
     if tab.document.is_some() {
       tab.cancel.bump_paint();
@@ -5451,7 +5558,7 @@ impl BrowserRuntime {
     }
   }
 
-  fn scroll_to_active_find_match(ui_tx: &Sender<WorkerToUi>, tab_id: TabId, tab: &mut TabState) {
+  fn scroll_to_active_find_match(ui_tx: &Sender<WorkerToUiMsg>, tab_id: TabId, tab: &mut TabState) {
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
@@ -5513,10 +5620,10 @@ impl BrowserRuntime {
       tab
         .history
         .update_scroll_state(&tab.scroll_state);
-      let _ = ui_tx.send(WorkerToUi::ScrollStateUpdated {
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
         tab_id,
         scroll: tab.scroll_state.clone(),
-      });
+      }));
       tab.last_reported_scroll_state = tab.scroll_state.clone();
     }
   }
@@ -5608,7 +5715,7 @@ impl BrowserRuntime {
   }
 
   fn maybe_emit_hover_changed(
-    ui_tx: &Sender<WorkerToUi>,
+    ui_tx: &Sender<WorkerToUiMsg>,
     tab_id: TabId,
     tab: &mut TabState,
     hovered_url: Option<String>,
@@ -5624,18 +5731,18 @@ impl BrowserRuntime {
     tab.last_cursor = cursor;
     tab.last_hovered_url = hovered_url.clone();
     tab.last_tooltip = tooltip.clone();
-    let _ = ui_tx.send(WorkerToUi::HoverChanged {
+    let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::HoverChanged {
       tab_id,
       hovered_url,
       tooltip,
       cursor,
-    });
+    }));
   }
 
   // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
   // borrowed from `self.tabs` without triggering borrow-checker errors (E0499/E0502).
   fn pump_js_event_loop_after_dom_event_dispatch_for_tab(
-    ui_tx: &Sender<WorkerToUi>,
+    ui_tx: &Sender<WorkerToUiMsg>,
     debug_log_enabled: bool,
     tab_id: TabId,
     tab: &mut TabState,
@@ -5658,10 +5765,10 @@ impl BrowserRuntime {
     let prev_generation = tab.js_dom_mutation_generation;
     if let Err(err) = js_tab.run_event_loop_until_idle(run_limits) {
       if debug_log_enabled && !cancel_callback() {
-        let _ = ui_tx.send(WorkerToUi::DebugLog {
+        let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
           tab_id,
           line: format!("js event-loop pump failed: {err}"),
-        });
+        }));
       }
     }
 
@@ -5894,10 +6001,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_scroll;
         tab.sync_js_scroll_state();
         tab.history.update_scroll_state(&tab.scroll_state);
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
         tab.last_reported_scroll_state = tab.scroll_state.clone();
         scroll_changed = true;
       }
@@ -6087,7 +6196,9 @@ impl BrowserRuntime {
 
         let dom = js_tab.dom();
         (
-          prev_target.map(|id| element_chain(dom, id)).unwrap_or_default(),
+          prev_target
+            .map(|id| element_chain(dom, id))
+            .unwrap_or_default(),
           current_target
             .map(|id| element_chain(dom, id))
             .unwrap_or_default(),
@@ -6396,10 +6507,10 @@ impl BrowserRuntime {
             mouse,
           ) {
             if self.debug_log_enabled && !cancel_callback() {
-              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+              let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                 tab_id,
                 line: format!("js mousedown event dispatch failed: {err}"),
-              });
+              }));
             }
           }
         }
@@ -6519,10 +6630,10 @@ impl BrowserRuntime {
               mouse,
             ) {
               if self.debug_log_enabled && !js_cancel_callback() {
-                let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                   tab_id,
                   line: format!("js mouseup event dispatch failed: {err}"),
-                });
+                }));
               }
             }
           }
@@ -6595,7 +6706,7 @@ impl BrowserRuntime {
         );
 
         let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
-        let mouseup_target_element_id = up_hit.as_ref().and_then(|hit| hit.dom_element_id.clone());
+        let mouseup_target_element_id = up_hit.as_ref().and_then(|hit| hit.element_id.clone());
 
         let click_target = engine.take_last_click_target();
         let click_target_element_id = if click_target.is_some() && click_target == mouseup_target {
@@ -6622,7 +6733,10 @@ impl BrowserRuntime {
         };
 
         let picker_value = match &action {
-          InteractionAction::OpenDateTimePicker { input_node_id, kind } => Some(
+          InteractionAction::OpenDateTimePicker {
+            input_node_id,
+            kind,
+          } => Some(
             crate::dom::find_node_mut_by_preorder_id(dom, *input_node_id)
               .map(|node| match *kind {
                 crate::interaction::DateTimeInputKind::Date => {
@@ -6699,10 +6813,12 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         tab.sync_js_scroll_state();
         scroll_changed = true;
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
         tab.last_reported_scroll_state = tab.scroll_state.clone();
       }
 
@@ -6806,10 +6922,10 @@ impl BrowserRuntime {
                 mouse,
               ) {
                 if self.debug_log_enabled && !js_cancel_callback() {
-                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                  let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                     tab_id,
                     line: format!("js mouseup event dispatch failed: {err}"),
-                  });
+                  }));
                 }
               }
               if js_cancel_callback() {
@@ -6868,10 +6984,10 @@ impl BrowserRuntime {
                     if js_cancel_callback() {
                       default_allowed = false;
                     } else if self.debug_log_enabled {
-                      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                      let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                         tab_id,
                         line: format!("js {click_type} event dispatch failed: {err}"),
-                      });
+                      }));
                     }
                   }
                 }
@@ -6927,10 +7043,10 @@ impl BrowserRuntime {
                   mouse,
                 ) {
                   if self.debug_log_enabled && !js_cancel_callback() {
-                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                       tab_id,
                       line: format!("js dblclick event dispatch failed: {err}"),
-                    });
+                    }));
                   }
                 }
                 if js_cancel_callback() {
@@ -6970,10 +7086,10 @@ impl BrowserRuntime {
                       if js_cancel_callback() {
                         default_allowed = false;
                       } else if self.debug_log_enabled {
-                        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                        let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                           tab_id,
                           line: format!("js submit event dispatch failed: {err}"),
-                        });
+                        }));
                       }
                     }
                   }
@@ -7104,10 +7220,10 @@ impl BrowserRuntime {
                   if js_cancel_callback() {
                     drop_default_allowed = false;
                   } else if self.debug_log_enabled {
-                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                       tab_id,
                       line: format!("js drop event dispatch failed: {err}"),
-                    });
+                    }));
                   }
                 }
               }
@@ -7187,11 +7303,13 @@ impl BrowserRuntime {
         control,
       } => {
         // Back-compat: older UIs listen for `OpenSelectDropdown`.
-        let _ = self.ui_tx.send(WorkerToUi::OpenSelectDropdown {
-          tab_id,
-          select_node_id,
-          control: control.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::OpenSelectDropdown {
+            tab_id,
+            select_node_id,
+            control: control.clone(),
+          }));
 
         // Prefer anchoring the dropdown to the `<select>` control's box, falling back to the cursor
         // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
@@ -7211,17 +7329,22 @@ impl BrowserRuntime {
           })
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
-        let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
-          tab_id,
-          select_node_id,
-          control,
-          anchor_css,
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::SelectDropdownOpened {
+            tab_id,
+            select_node_id,
+            control,
+            anchor_css,
+          }));
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
       }
-      InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
+      InteractionAction::OpenDateTimePicker {
+        input_node_id,
+        kind,
+      } => {
         // Prefer anchoring the popup to the `<input>` control's box, falling back to the cursor
         // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
         let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
@@ -7243,13 +7366,15 @@ impl BrowserRuntime {
 
         let value = picker_value.clone().unwrap_or_default();
 
-        let _ = self.ui_tx.send(WorkerToUi::DateTimePickerOpened {
-          tab_id,
-          input_node_id,
-          kind,
-          value,
-          anchor_css,
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::DateTimePickerOpened {
+            tab_id,
+            input_node_id,
+            kind,
+            value,
+            anchor_css,
+          }));
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
@@ -7276,12 +7401,14 @@ impl BrowserRuntime {
 
         let value = picker_value.clone().unwrap_or_default();
 
-        let _ = self.ui_tx.send(WorkerToUi::ColorPickerOpened {
-          tab_id,
-          input_node_id,
-          value,
-          anchor_css,
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ColorPickerOpened {
+            tab_id,
+            input_node_id,
+            value,
+            anchor_css,
+          }));
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
@@ -7310,13 +7437,15 @@ impl BrowserRuntime {
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
 
-        let _ = self.ui_tx.send(WorkerToUi::FilePickerOpened {
-          tab_id,
-          input_node_id,
-          multiple,
-          accept,
-          anchor_css,
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::FilePickerOpened {
+            tab_id,
+            input_node_id,
+            multiple,
+            accept,
+            anchor_css,
+          }));
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
@@ -7344,12 +7473,14 @@ impl BrowserRuntime {
           tab.last_pointer_pos_css,
         );
 
-        let _ = self.ui_tx.send(WorkerToUi::MediaControlsOpened {
-          tab_id,
-          node_id: media_node_id,
-          kind,
-          anchor_css,
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::MediaControlsOpened {
+            tab_id,
+            node_id: media_node_id,
+            kind,
+            anchor_css,
+          }));
 
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
@@ -7371,12 +7502,17 @@ impl BrowserRuntime {
       self.start_download(tab_id, href, file_name);
     }
     if let Some(url) = open_in_new_tab {
-      let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url });
-    }
-    if let Some(request) = open_in_new_tab_request {
       let _ = self
         .ui_tx
-        .send(WorkerToUi::RequestOpenInNewTabRequest { tab_id, request });
+        .send(WorkerToUiMsg::Single(WorkerToUi::RequestOpenInNewTab {
+          tab_id,
+          url,
+        }));
+    }
+    if let Some(request) = open_in_new_tab_request {
+      let _ = self.ui_tx.send(WorkerToUiMsg::Single(
+        WorkerToUi::RequestOpenInNewTabRequest { tab_id, request },
+      ));
     }
     if let Some(url) = navigate_to {
       self.schedule_navigation(tab_id, url, NavigationReason::LinkClick);
@@ -7457,10 +7593,10 @@ impl BrowserRuntime {
               if cancel_callback() {
                 return;
               }
-              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+              let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                 tab_id,
                 line: format!("js drop event dispatch failed: {err}"),
-              });
+              }));
             }
           }
         }
@@ -7544,17 +7680,19 @@ impl BrowserRuntime {
     let page_point = viewport_point.translate(scroll.viewport);
 
     let Some(doc) = tab.document.as_mut() else {
-      let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
-        tab_id,
-        pos_css,
-        default_prevented: false,
-        link_url: None,
-        image_url: None,
-        can_copy: false,
-        can_cut: false,
-        can_paste: false,
-        can_select_all: false,
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::ContextMenu {
+          tab_id,
+          pos_css,
+          default_prevented: false,
+          link_url: None,
+          image_url: None,
+          can_copy: false,
+          can_cut: false,
+          can_paste: false,
+          can_select_all: false,
+        }));
       return;
     };
 
@@ -7806,10 +7944,10 @@ impl BrowserRuntime {
                 if js_cancel_callback() {
                   default_prevented = true;
                 } else if self.debug_log_enabled {
-                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                  let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                     tab_id,
                     line: format!("js contextmenu event dispatch failed: {err}"),
-                  });
+                  }));
                 }
               }
             }
@@ -7863,7 +8001,7 @@ impl BrowserRuntime {
     } else {
       true
     };
-    let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
+    let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::ContextMenu {
       tab_id,
       pos_css,
       default_prevented,
@@ -7873,7 +8011,7 @@ impl BrowserRuntime {
       can_cut,
       can_paste,
       can_select_all,
-    });
+    }));
   }
 
   fn handle_a11y_show_context_menu(&mut self, tab_id: TabId, node_id: Option<usize>) {
@@ -7937,7 +8075,11 @@ impl BrowserRuntime {
     // Note: the browser egui UI also closes the popup locally, but emitting this message keeps the
     // worker protocol symmetric with `SelectDropdownCancel` and `SelectDropdownPick` and supports
     // other front-ends that rely on worker-driven close notifications.
-    let _ = self.ui_tx.send(WorkerToUi::SelectDropdownClosed { tab_id });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::SelectDropdownClosed {
+        tab_id,
+      }));
 
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
@@ -7977,7 +8119,9 @@ impl BrowserRuntime {
     // Close the datalist popup deterministically for any UI: `DatalistChoose` always corresponds to
     // a user selecting an option in the suggestion overlay, so the popup should be dismissed even
     // if the selection is rejected (disabled option) or a no-op.
-    let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
 
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
@@ -8040,7 +8184,11 @@ impl BrowserRuntime {
     });
 
     if should_close {
-      let _ = self.ui_tx.send(WorkerToUi::SelectDropdownClosed { tab_id });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::SelectDropdownClosed {
+          tab_id,
+        }));
     }
 
     if dom_changed {
@@ -8182,16 +8330,20 @@ impl BrowserRuntime {
         .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
         .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
 
-      let _ = self.ui_tx.send(WorkerToUi::DatalistOpened {
-        tab_id,
-        input_node_id,
-        options,
-        anchor_css,
-      });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::DatalistOpened {
+          tab_id,
+          input_node_id,
+          options,
+          anchor_css,
+        }));
       tab.datalist_open_input = Some(input_node_id);
     } else if prev_open.is_some() {
       // Close the popup deterministically when suggestions become empty.
-      let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
+      let _ = self
+        .ui_tx
+        .send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
       tab.datalist_open_input = None;
     }
 
@@ -8209,10 +8361,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
       }
     }
 
@@ -8243,7 +8397,11 @@ impl BrowserRuntime {
     // Close the picker popup deterministically for any UI: `DateTimePickerChoose` always
     // corresponds to a user choosing a value in the picker overlay, so the popup should be
     // dismissed even if the selection is a no-op (choosing the currently-set value).
-    let _ = self.ui_tx.send(WorkerToUi::DateTimePickerClosed { tab_id });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::DateTimePickerClosed {
+        tab_id,
+      }));
 
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
@@ -8253,7 +8411,8 @@ impl BrowserRuntime {
     };
 
     let engine = &mut tab.interaction;
-    let dom_changed = doc.mutate_dom(|dom| engine.set_date_time_input_value(dom, input_node_id, &value));
+    let dom_changed =
+      doc.mutate_dom(|dom| engine.set_date_time_input_value(dom, input_node_id, &value));
     if dom_changed {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let dom_snapshot = doc.dom();
@@ -8277,7 +8436,9 @@ impl BrowserRuntime {
     // Close the picker popup deterministically for any UI: `ColorPickerChoose` always corresponds
     // to a user choosing a value in the picker overlay, so the popup should be dismissed even if
     // the selection is a no-op (choosing the currently-set value).
-    let _ = self.ui_tx.send(WorkerToUi::ColorPickerClosed { tab_id });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::ColorPickerClosed { tab_id }));
 
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
@@ -8307,11 +8468,20 @@ impl BrowserRuntime {
     }
   }
 
-  fn handle_file_picker_choose(&mut self, tab_id: TabId, input_node_id: usize, paths: Vec<PathBuf>) {
+  fn handle_file_picker_choose(
+    &mut self,
+    tab_id: TabId,
+    input_node_id: usize,
+    paths: Vec<PathBuf>,
+  ) {
     // Close the picker popup deterministically for any UI: `FilePickerChoose` always corresponds to
     // a user choosing a path in the picker overlay, so the popup should be dismissed even if the
     // selection is a no-op.
-    let _ = self.ui_tx.send(WorkerToUi::FilePickerClosed { tab_id });
+    let _ = self
+      .ui_tx
+      .send(WorkerToUiMsg::Single(WorkerToUi::FilePickerClosed {
+        tab_id,
+      }));
 
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
@@ -8400,10 +8570,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
       }
     }
 
@@ -8490,10 +8662,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
       }
     }
 
@@ -8533,7 +8707,10 @@ impl BrowserRuntime {
       clipboard::clamp_clipboard_text_in_place(&mut text);
       let _ = self
         .ui_tx
-        .send(WorkerToUi::SetClipboardText { tab_id, text });
+        .send(WorkerToUiMsg::Single(WorkerToUi::SetClipboardText {
+          tab_id,
+          text,
+        }));
     }
   }
 
@@ -8576,7 +8753,10 @@ impl BrowserRuntime {
       clipboard::clamp_clipboard_text_in_place(&mut text);
       let _ = self
         .ui_tx
-        .send(WorkerToUi::SetClipboardText { tab_id, text });
+        .send(WorkerToUiMsg::Single(WorkerToUi::SetClipboardText {
+          tab_id,
+          text,
+        }));
     }
 
     let mut scroll_changed = false;
@@ -8593,10 +8773,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
       }
     }
 
@@ -8667,10 +8849,12 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
       }
     }
 
@@ -8752,10 +8936,12 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         tab.sync_js_scroll_state();
         scroll_changed = true;
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
         tab.last_reported_scroll_state = tab.scroll_state.clone();
       }
     }
@@ -8804,10 +8990,12 @@ impl BrowserRuntime {
         tab.scroll_state = next;
         doc.set_scroll_state(tab.scroll_state.clone());
         tab.sync_js_scroll_state();
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
         tab.last_reported_scroll_state = tab.scroll_state.clone();
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
@@ -9043,10 +9231,12 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         tab.sync_js_scroll_state();
         scroll_changed = true;
-        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          }));
         tab.last_reported_scroll_state = tab.scroll_state.clone();
       }
       if let Some((textarea_box_id, next_y)) = caret_scroll {
@@ -9062,16 +9252,20 @@ impl BrowserRuntime {
           tab.scroll_state = next_state;
           doc.set_scroll_state(tab.scroll_state.clone());
           scroll_changed = true;
-          let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+              tab_id,
+              scroll: tab.scroll_state.clone(),
+            }));
         }
       }
 
       // Datalist popup should close when the focused input loses focus (e.g. Tab traversal).
       if tab.datalist_open_input.is_some() && focused != tab.datalist_open_input {
-        let _ = self.ui_tx.send(WorkerToUi::DatalistClosed { tab_id });
+        let _ = self
+          .ui_tx
+          .send(WorkerToUiMsg::Single(WorkerToUi::DatalistClosed { tab_id }));
         tab.datalist_open_input = None;
       }
 
@@ -9207,10 +9401,10 @@ impl BrowserRuntime {
                     if cancel_callback() {
                       default_allowed = false;
                     } else if self.debug_log_enabled {
-                      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                      let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                         tab_id,
                         line: format!("js click event dispatch failed: {err}"),
-                      });
+                      }));
                     }
                   }
                 }
@@ -9246,10 +9440,10 @@ impl BrowserRuntime {
                         if cancel_callback() {
                           default_allowed = false;
                         } else if self.debug_log_enabled {
-                          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                          let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::DebugLog {
                             tab_id,
                             line: format!("js submit event dispatch failed: {err}"),
-                          });
+                          }));
                         }
                       }
                     }
@@ -9280,7 +9474,10 @@ impl BrowserRuntime {
           if default_allowed {
             let _ = self
               .ui_tx
-              .send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+              .send(WorkerToUiMsg::Single(WorkerToUi::RequestOpenInNewTab {
+                tab_id,
+                url: href,
+              }));
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
@@ -9289,9 +9486,9 @@ impl BrowserRuntime {
         }
         InteractionAction::OpenInNewTabRequest { request } => {
           if default_allowed {
-            let _ = self
-              .ui_tx
-              .send(WorkerToUi::RequestOpenInNewTabRequest { tab_id, request });
+            let _ = self.ui_tx.send(WorkerToUiMsg::Single(
+              WorkerToUi::RequestOpenInNewTabRequest { tab_id, request },
+            ));
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
@@ -9320,11 +9517,13 @@ impl BrowserRuntime {
           control,
         } => {
           // Back-compat: older UIs listen for `OpenSelectDropdown`.
-          let _ = self.ui_tx.send(WorkerToUi::OpenSelectDropdown {
-            tab_id,
-            select_node_id,
-            control: control.clone(),
-          });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::OpenSelectDropdown {
+              tab_id,
+              select_node_id,
+              control: control.clone(),
+            }));
 
           let anchor_css = doc
             .prepared()
@@ -9334,18 +9533,23 @@ impl BrowserRuntime {
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
-          let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
-            tab_id,
-            select_node_id,
-            control,
-            anchor_css,
-          });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::SelectDropdownOpened {
+              tab_id,
+              select_node_id,
+              control,
+              anchor_css,
+            }));
           if changed {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
           }
         }
-        InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
+        InteractionAction::OpenDateTimePicker {
+          input_node_id,
+          kind,
+        } => {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
@@ -9379,13 +9583,15 @@ impl BrowserRuntime {
             false
           });
 
-          let _ = self.ui_tx.send(WorkerToUi::DateTimePickerOpened {
-            tab_id,
-            input_node_id,
-            kind,
-            value,
-            anchor_css,
-          });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::DateTimePickerOpened {
+              tab_id,
+              input_node_id,
+              kind,
+              value,
+              anchor_css,
+            }));
 
           if changed {
             tab.cancel.bump_paint();
@@ -9410,12 +9616,14 @@ impl BrowserRuntime {
             false
           });
 
-          let _ = self.ui_tx.send(WorkerToUi::ColorPickerOpened {
-            tab_id,
-            input_node_id,
-            value,
-            anchor_css,
-          });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::ColorPickerOpened {
+              tab_id,
+              input_node_id,
+              value,
+              anchor_css,
+            }));
 
           if changed {
             tab.cancel.bump_paint();
@@ -9436,13 +9644,15 @@ impl BrowserRuntime {
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
 
-          let _ = self.ui_tx.send(WorkerToUi::FilePickerOpened {
-            tab_id,
-            input_node_id,
-            multiple,
-            accept,
-            anchor_css,
-          });
+          let _ = self
+            .ui_tx
+            .send(WorkerToUiMsg::Single(WorkerToUi::FilePickerOpened {
+              tab_id,
+              input_node_id,
+              multiple,
+              accept,
+              anchor_css,
+            }));
 
           if changed {
             tab.cancel.bump_paint();
@@ -12008,7 +12218,7 @@ fn spawn_worker_with_factory_inner(
   factory: FastRenderFactory,
 ) -> crate::Result<UiThreadWorkerHandle> {
   let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
-  let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+  let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
 
   let router_thread_name = format!("{name}-router");
   let join = std::thread::Builder::new()
@@ -12137,7 +12347,7 @@ fn spawn_worker_with_factory_inner(
 
   Ok(UiThreadWorkerHandle {
     ui_tx: ui_to_worker_tx,
-    ui_rx: worker_to_ui_rx,
+    ui_rx: WorkerToUiInbox::new(worker_to_ui_rx),
     join,
   })
 }
@@ -12201,7 +12411,7 @@ pub fn spawn_browser_ui_worker(
   name: impl Into<String>,
 ) -> std::io::Result<(
   std::sync::mpsc::Sender<UiToWorker>,
-  std::sync::mpsc::Receiver<WorkerToUi>,
+  std::sync::mpsc::Receiver<WorkerToUiMsg>,
   std::thread::JoinHandle<()>,
 )> {
   // Test hook used by the `browser --headless-smoke` integration harness to simulate the renderer
@@ -12218,7 +12428,7 @@ pub fn spawn_browser_ui_worker(
 
   let handle = spawn_browser_worker_with_name(name)
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-  Ok((handle.tx, handle.rx, handle.join))
+  Ok((handle.tx, handle.rx.into_inner(), handle.join))
 }
 
 /// Convenience wrapper for browser integration tests.

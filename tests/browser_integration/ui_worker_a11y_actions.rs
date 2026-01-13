@@ -4,14 +4,13 @@ use super::support;
 use fastrender::scroll::ScrollState;
 use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // These tests spawn a full UI worker (prepare + paint); keep the timeout generous to avoid flakes
 // on contended CI hosts.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn wait_for_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn wait_for_navigation_committed(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -28,7 +27,7 @@ fn wait_for_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> St
   }
 }
 
-fn wait_for_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn wait_for_frame(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
@@ -40,7 +39,7 @@ fn wait_for_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
 }
 
 fn wait_for_scroll_update(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   mut pred: impl FnMut(&ScrollState) -> bool,
 ) -> ScrollState {
@@ -55,7 +54,7 @@ fn wait_for_scroll_update(
   }
 }
 
-fn wait_for_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn wait_for_clipboard_text(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::SetClipboardText { .. })
   })

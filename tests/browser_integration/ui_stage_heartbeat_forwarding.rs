@@ -2,7 +2,7 @@
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi, WorkerToUiMsg,
 };
 use fastrender::ui::spawn_ui_worker;
 use fastrender::ui::RenderWorker;
@@ -56,7 +56,8 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
 
   let mut renderer = super::support::deterministic_renderer();
   renderer.set_base_url(base_url);
-  let (tx, rx) = std::sync::mpsc::channel::<WorkerToUi>();
+  let (tx, rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+  let rx = fastrender::ui::WorkerToUiInbox::new(rx);
   let mut worker = RenderWorker::new(renderer, tx);
 
   let options = RenderOptions::new().with_viewport(200, 120);

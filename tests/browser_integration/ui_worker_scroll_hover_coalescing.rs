@@ -6,13 +6,12 @@ use fastrender::ui::render_worker::{
   reset_scroll_hover_sync_count_for_test, scroll_hover_sync_count_for_test,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // This test triggers real navigations + paints; keep timeout generous for contended CI hosts.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn next_navigation_committed(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -30,7 +29,7 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
   }
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })

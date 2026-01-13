@@ -54,7 +54,7 @@ fn click_download_link(ui_tx: &std::sync::mpsc::Sender<UiToWorker>, tab_id: TabI
 }
 
 fn wait_for_download_success(
-  ui_rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  ui_rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   download_dir: &Path,
 ) -> PathBuf {
@@ -146,8 +146,10 @@ fn ui_worker_download_filename_collision_suffix() {
     ))
     .unwrap();
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
   click_download_link(&ui_tx, tab_id);

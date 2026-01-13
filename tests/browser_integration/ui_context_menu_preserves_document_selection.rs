@@ -3,19 +3,18 @@
 use super::support;
 use fastrender::ui::messages::{PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) {
   let _msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
   .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
 }
 
-fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_clipboard_text(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::SetClipboardText { .. })
   })

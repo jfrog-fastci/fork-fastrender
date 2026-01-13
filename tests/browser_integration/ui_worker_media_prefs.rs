@@ -7,7 +7,6 @@ use fastrender::ui::messages::{
 };
 use fastrender::ui::spawn_ui_worker;
 use fastrender::ui::spawn_ui_worker_with_factory;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // Keep this generous: these tests do real rendering work and can contend for CPU under CI.
@@ -42,7 +41,7 @@ fn media_fixture() -> (support::TempSite, String) {
 }
 
 fn wait_for_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| match msg {
@@ -69,7 +68,10 @@ fn wait_for_frame(
   }
 }
 
-fn wait_for_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> WorkerToUi {
+fn wait_for_navigation_committed(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+) -> WorkerToUi {
   support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,

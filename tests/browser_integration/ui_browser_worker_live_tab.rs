@@ -10,7 +10,7 @@ use std::time::Duration;
 // run in parallel on CI; keep this timeout generous to avoid flakiness.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })

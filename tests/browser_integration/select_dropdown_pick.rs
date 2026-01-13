@@ -6,7 +6,6 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // Worker startup + first render can take a few seconds under parallel load (CI).
@@ -18,7 +17,7 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
   support::rgba_at(&frame.pixmap, x_px, y_px)
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -49,7 +48,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
 }
 
 fn wait_for_rgb_at_css(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   css_pos: (u32, u32),
   expected: (u8, u8, u8),

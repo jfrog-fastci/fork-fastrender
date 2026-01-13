@@ -3,7 +3,6 @@
 use super::support;
 use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // Worker startup + the first navigation can take a few seconds under load when integration tests
@@ -33,7 +32,11 @@ fn scroll_fixture() -> (support::TempSite, String) {
   (site, url)
 }
 
-fn wait_for_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId, expected_url: &str) {
+fn wait_for_navigation_committed(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+  expected_url: &str,
+) {
   let start = Instant::now();
   let mut seen: Vec<WorkerToUi> = Vec::new();
   loop {
@@ -86,7 +89,7 @@ fn wait_for_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId, expec
 }
 
 fn wait_for_frame_with_meta(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   expected_viewport_css: (u32, u32),
   expected_dpr: f32,

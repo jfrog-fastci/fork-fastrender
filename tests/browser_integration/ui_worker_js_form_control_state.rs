@@ -4,12 +4,11 @@ use super::support;
 use fastrender::ui::messages::{RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
 use fastrender::RenderOptions;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })

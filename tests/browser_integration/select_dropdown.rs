@@ -6,7 +6,6 @@ use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
   PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // Worker startup + first render can take a while in debug builds (font init, cache warming, etc).
@@ -19,7 +18,7 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
   support::rgba_at(&frame.pixmap, x_px, y_px)
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -37,7 +36,10 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   }
 }
 
-fn next_select_dropdown_opened(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (usize, usize) {
+fn next_select_dropdown_opened(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> (usize, usize) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,

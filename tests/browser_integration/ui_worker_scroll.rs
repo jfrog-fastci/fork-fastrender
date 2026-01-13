@@ -2,7 +2,6 @@
 
 use fastrender::ui::messages::{NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -22,7 +21,7 @@ fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8,
 }
 
 fn recv_until<T>(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   timeout: Duration,
   mut f: impl FnMut(WorkerToUi) -> Option<T>,
 ) -> T {
@@ -47,7 +46,7 @@ fn recv_until<T>(
 }
 
 fn wait_for_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
@@ -55,8 +54,9 @@ fn wait_for_frame_ready(
     _ => None,
   })
 }
+
 fn wait_for_frame_with_pixel(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   css_pos: (u32, u32),
   expected: (u8, u8, u8, u8),

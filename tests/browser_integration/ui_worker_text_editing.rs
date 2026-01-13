@@ -3,14 +3,16 @@
 use fastrender::interaction::KeyAction;
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 
 use super::support::{
   create_tab_msg, key_action, navigate_msg, pointer_down, pointer_up, text_input,
   viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
 };
 
-fn recv_until_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::RenderedFrame {
+fn recv_until_frame(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> fastrender::ui::RenderedFrame {
   super::support::recv_for_tab(rx, tab_id, DEFAULT_TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })

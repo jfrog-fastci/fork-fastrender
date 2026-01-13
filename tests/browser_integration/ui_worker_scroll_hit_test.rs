@@ -15,7 +15,7 @@ use super::support::{
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 fn wait_for_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> RenderedFrame {
@@ -38,8 +38,9 @@ fn wait_for_frame_ready(
   }
 }
 
+
 fn wait_for_navigation_committed(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   expected_url: &str,
   timeout: Duration,
@@ -86,6 +87,7 @@ fn wait_for_navigation_committed(
   assert!(started, "expected NavigationStarted for {expected_url}");
   assert!(committed, "expected NavigationCommitted for {expected_url}");
 }
+
 
 #[test]
 fn click_after_scroll_hits_link() {

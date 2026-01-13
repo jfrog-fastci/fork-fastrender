@@ -1,6 +1,5 @@
 #![cfg(feature = "browser_ui")]
 
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use fastrender::scroll::ScrollState;
@@ -12,7 +11,7 @@ use super::support;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_navigation_committed(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -29,7 +28,7 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String
   }
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
@@ -41,7 +40,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
 }
 
 fn next_frame_and_scroll_state(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
 ) -> (RenderedFrame, ScrollState) {
   let (frame, scroll) = support::wait_for_frame_and_scroll_state_updated(rx, tab_id, TIMEOUT);

@@ -5,12 +5,11 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> WorkerToUi {
+fn next_navigation_committed(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> WorkerToUi {
   support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -21,7 +20,7 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Worker
 }
 
 fn next_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {

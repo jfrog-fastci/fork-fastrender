@@ -8,7 +8,7 @@ use tempfile::tempdir;
 use url::Url;
 
 fn recv_until_frame(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   deadline: Instant,
 ) -> fastrender::ui::messages::RenderedFrame {

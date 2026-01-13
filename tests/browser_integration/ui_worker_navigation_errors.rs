@@ -9,7 +9,10 @@ use url::Url;
 
 use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
-fn recv_until_deadline(rx: &Receiver<WorkerToUi>, deadline: Instant) -> Option<WorkerToUi> {
+fn recv_until_deadline(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  deadline: Instant,
+) -> Option<WorkerToUi> {
   loop {
     let now = Instant::now();
     if now >= deadline {
@@ -26,7 +29,7 @@ fn recv_until_deadline(rx: &Receiver<WorkerToUi>, deadline: Instant) -> Option<W
 
 fn context_menu_link_at(
   tx: &Sender<UiToWorker>,
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   pos_css: (f32, f32),
   deadline: Instant,
@@ -180,8 +183,8 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
     for y in y_positions.iter().copied() {
       for x in x_positions.iter().copied() {
         let pos = (x as f32 + 0.5, y as f32 + 0.5);
-        let link_url = context_menu_link_at(&ui_tx, &ui_rx, tab_id, pos, scan_deadline)
-          .unwrap_or(None);
+        let link_url =
+          context_menu_link_at(&ui_tx, &ui_rx, tab_id, pos, scan_deadline).unwrap_or(None);
         if let Some(url) = link_url.as_deref() {
           seen_links.insert(url.to_string());
         }
@@ -209,7 +212,9 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
       let Some(msg) = recv_until_deadline(&ui_rx, scan_deadline) else {
         break;
       };
-      if matches!(msg, WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id) {
+      if matches!(msg, WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id)
+        || matches!(msg, WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id)
+      {
         break;
       }
     }

@@ -6,11 +6,10 @@ use super::support::{
 use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-fn wait_for_navigation_complete(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> bool {
+fn wait_for_navigation_complete(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> bool {
   let deadline = Instant::now() + DEFAULT_TIMEOUT;
   let mut saw_frame = false;
   let mut saw_loading_done = false;

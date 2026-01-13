@@ -7,7 +7,11 @@ use std::time::Duration;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn wait_for_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId, viewport: (u32, u32)) {
+fn wait_for_frame(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+  viewport: (u32, u32),
+) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| match msg {
     WorkerToUi::FrameReady { frame, .. } => frame.viewport_css == viewport,
     WorkerToUi::NavigationFailed { .. } => true,

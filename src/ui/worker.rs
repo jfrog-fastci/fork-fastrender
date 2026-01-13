@@ -7,15 +7,15 @@
 use crate::api::{FastRender, PreparedDocument, PreparedPaintOptions};
 use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGuard};
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
-use crate::ui::messages::{TabId, UiToWorker, WorkerToUi};
+use crate::ui::messages::{TabId, UiToWorker, WorkerToUi, WorkerToUiInbox, WorkerToUiMsg};
 use crate::{Pixmap, RenderOptions, Result};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUiMsg>) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     // Best-effort: UI might have dropped its receiver.
-    let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
+    let _ = sender.send(WorkerToUiMsg::Single(WorkerToUi::Stage { tab_id, stage }));
   });
   push_stage_listener(Some(listener))
 }
@@ -26,11 +26,11 @@ fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageL
 /// [`WorkerToUi::Stage`] messages.
 pub struct RenderWorker {
   renderer: FastRender,
-  ui_tx: Sender<WorkerToUi>,
+  ui_tx: Sender<WorkerToUiMsg>,
 }
 
 impl RenderWorker {
-  pub fn new(renderer: FastRender, ui_tx: Sender<WorkerToUi>) -> Self {
+  pub fn new(renderer: FastRender, ui_tx: Sender<WorkerToUiMsg>) -> Self {
     Self { renderer, ui_tx }
   }
 
@@ -62,7 +62,7 @@ impl RenderWorker {
 pub fn spawn_render_worker_thread<T: Send + 'static>(
   name: impl Into<String>,
   renderer: FastRender,
-  ui_tx: Sender<WorkerToUi>,
+  ui_tx: Sender<WorkerToUiMsg>,
   f: impl FnOnce(RenderWorker) -> T + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<T>> {
   std::thread::Builder::new()
@@ -102,7 +102,7 @@ impl UiThreadWorkerHandle {
     self,
   ) -> (
     Sender<UiToWorker>,
-    Receiver<WorkerToUi>,
+    WorkerToUiInbox,
     std::thread::JoinHandle<()>,
   ) {
     self.split()

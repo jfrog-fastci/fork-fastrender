@@ -1,11 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RepaintReason, TabId, WorkerToUi,
-};
+use fastrender::ui::messages::{NavigationReason, PointerButton, RepaintReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use url::Url;
 
@@ -13,9 +10,14 @@ use url::Url;
 // generous to avoid flakes.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messages::RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady(tab={})", tab_id.0));
+fn recv_frame(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> fastrender::ui::messages::RenderedFrame {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady(tab={})", tab_id.0));
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
     _ => unreachable!(),
@@ -25,7 +27,10 @@ fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messa
 fn rgba_unpremultiply(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
   let width = pixmap.width();
   let height = pixmap.height();
-  assert!(x < width && y < height, "pixel out of bounds ({x}, {y}) in {width}x{height}");
+  assert!(
+    x < width && y < height,
+    "pixel out of bounds ({x}, {y}) in {width}x{height}"
+  );
   let idx = (y as usize * width as usize + x as usize) * 4;
   let data = pixmap.data();
   let a = data[idx + 3];
@@ -41,7 +46,11 @@ fn rgba_unpremultiply(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
 
 fn assert_pixel_rgb(pixmap: &tiny_skia::Pixmap, x: u32, y: u32, expected: (u8, u8, u8)) {
   let got = rgba_unpremultiply(pixmap, x, y);
-  assert_eq!(got, [expected.0, expected.1, expected.2, 255], "unexpected pixel at ({x}, {y})");
+  assert_eq!(
+    got,
+    [expected.0, expected.1, expected.2, 255],
+    "unexpected pixel at ({x}, {y})"
+  );
 }
 
 #[test]
@@ -198,7 +207,10 @@ fn fieldset_disabled_semantics_apply_to_interaction_focus_and_submission() {
 
   // Tab from no focus should focus the legend-contained control (fieldset :focus-within marker).
   ui_tx
-    .send(support::key_action(tab_id, fastrender::interaction::KeyAction::Tab))
+    .send(support::key_action(
+      tab_id,
+      fastrender::interaction::KeyAction::Tab,
+    ))
     .expect("Tab");
   let _ = support::drain_for(&ui_rx, Duration::from_millis(250));
   ui_tx
@@ -211,7 +223,10 @@ fn fieldset_disabled_semantics_apply_to_interaction_focus_and_submission() {
 
   // Next Tab should skip the disabled fieldset control and move to the outside input.
   ui_tx
-    .send(support::key_action(tab_id, fastrender::interaction::KeyAction::Tab))
+    .send(support::key_action(
+      tab_id,
+      fastrender::interaction::KeyAction::Tab,
+    ))
     .expect("Tab");
   let _ = support::drain_for(&ui_rx, Duration::from_millis(250));
   ui_tx
@@ -246,9 +261,12 @@ fn fieldset_disabled_semantics_apply_to_interaction_focus_and_submission() {
   expected.set_query(Some("a=1&c=3"));
   let expected_url = expected.to_string();
 
-  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url)
-  })
+  support::recv_for_tab(
+    &ui_rx,
+    tab_id,
+    TIMEOUT,
+    |msg| matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &expected_url),
+  )
   .unwrap_or_else(|| {
     let msgs = support::drain_for(&ui_rx, Duration::from_millis(200));
     panic!(

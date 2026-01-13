@@ -3,12 +3,11 @@
 use super::support;
 use fastrender::ui::messages::{CursorKind, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -22,7 +21,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
   }
 }
 
-fn next_hover_cursor(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> CursorKind {
+fn next_hover_cursor(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> CursorKind {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::HoverChanged { .. }))
     .unwrap_or_else(|| panic!("timed out waiting for HoverChanged for tab {tab_id:?}"));
   match msg {
@@ -108,4 +107,3 @@ fn ui_worker_drag_drop_reports_grabbing_vs_not_allowed_cursor() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

@@ -5,13 +5,16 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // Worker startup + first render can take a few seconds under parallel load (CI).
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> RenderedFrame {
+fn recv_frame(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+) -> RenderedFrame {
   let start = Instant::now();
   let mut seen = Vec::new();
   loop {
@@ -44,7 +47,7 @@ fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> Re
 }
 
 fn wait_for_marker_color(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   expected_rgba: [u8; 4],
   timeout: Duration,

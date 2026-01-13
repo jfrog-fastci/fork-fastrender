@@ -7,10 +7,7 @@ use std::time::{Duration, Instant};
 // Worker startup + navigation + render can take a few seconds under parallel load (CI).
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn recv_nav_committed(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
-  tab_id: TabId,
-) -> (String, bool, bool) {
+fn recv_nav_committed(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> (String, bool, bool) {
   let deadline = Instant::now() + TIMEOUT;
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -37,7 +34,7 @@ fn recv_nav_committed(
   panic!("timed out waiting for NavigationCommitted for tab {tab_id:?}");
 }
 
-fn recv_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn recv_frame(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
   let deadline = Instant::now() + TIMEOUT;
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());

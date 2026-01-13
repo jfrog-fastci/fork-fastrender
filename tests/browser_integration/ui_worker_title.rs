@@ -3,7 +3,6 @@
 use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
@@ -13,7 +12,7 @@ use url::Url;
 const TIMEOUT: Duration = DEFAULT_TIMEOUT;
 
 fn wait_for_navigation_committed(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> (String, Option<String>) {

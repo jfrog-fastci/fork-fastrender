@@ -44,7 +44,7 @@ fn assert_frame_has_color(frame: &RenderedFrame, expected: (u8, u8, u8, u8)) {
 }
 
 fn recv_for_tab<T>(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
   mut map: impl FnMut(WorkerToUi) -> Option<T>,
@@ -67,7 +67,10 @@ fn recv_for_tab<T>(
   }
 }
 
-fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (String, bool, bool) {
+fn next_navigation_committed(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> (String, bool, bool) {
   recv_for_tab(rx, tab_id, TIMEOUT, |msg| match msg {
     WorkerToUi::NavigationCommitted {
       tab_id: msg_tab,
@@ -88,7 +91,7 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (Strin
   })
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
   recv_for_tab(rx, tab_id, TIMEOUT, |msg| match msg {
     WorkerToUi::FrameReady {
       tab_id: msg_tab,
@@ -98,9 +101,10 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   })
 }
 
+
 fn spawn_worker() -> (
   Sender<UiToWorker>,
-  Receiver<WorkerToUi>,
+  fastrender::ui::WorkerToUiInbox,
   std::thread::JoinHandle<()>,
 ) {
   let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");

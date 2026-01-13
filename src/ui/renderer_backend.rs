@@ -1,5 +1,5 @@
-use super::messages::{UiToWorker, WorkerToUi};
-use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError, SendError, Sender, TryRecvError};
+use super::messages::{UiToWorker, WorkerToUi, WorkerToUiInbox};
+use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,14 +48,14 @@ pub type RendererBackendHandle = Arc<dyn RendererBackend>;
 /// Renderer backend backed by an in-process worker thread and `std::sync::mpsc` channels.
 pub struct ThreadRendererBackend {
   tx: Mutex<Option<Sender<UiToWorker>>>,
-  rx: Mutex<Receiver<WorkerToUi>>,
+  rx: Mutex<WorkerToUiInbox>,
   join: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl ThreadRendererBackend {
   fn new(
     tx: Sender<UiToWorker>,
-    rx: Receiver<WorkerToUi>,
+    rx: WorkerToUiInbox,
     join: std::thread::JoinHandle<()>,
   ) -> Self {
     Self {
@@ -75,7 +75,7 @@ impl ThreadRendererBackend {
     name: impl Into<String>,
   ) -> std::io::Result<RendererBackendHandle> {
     let (tx, rx, join) = super::render_worker::spawn_browser_ui_worker(name)?;
-    Ok(Arc::new(Self::new(tx, rx, join)))
+    Ok(Arc::new(Self::new(tx, WorkerToUiInbox::new(rx), join)))
   }
 
   /// Spawn the browser worker thread with an explicit name and wrap it in a [`ThreadRendererBackend`].

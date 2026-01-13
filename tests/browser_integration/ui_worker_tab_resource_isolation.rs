@@ -14,7 +14,7 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn wait_for_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> fastrender::ui::messages::RenderedFrame {

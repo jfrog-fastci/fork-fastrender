@@ -1299,6 +1299,142 @@ impl WorkerToUi {
   }
 }
 
+/// Envelope message used on the worker → UI channel.
+///
+/// `WorkerToUi` often needs to send multiple messages in quick succession (e.g. navigation
+/// lifecycle + frame + scroll state). Sending each message separately creates avoidable channel send
+/// and allocation overhead.
+///
+/// The worker therefore batches related messages into a single send where possible.
+#[derive(Debug)]
+pub enum WorkerToUiMsg {
+  /// Single `WorkerToUi` message (no allocation).
+  Single(WorkerToUi),
+  /// Batch of messages, delivered in order.
+  Batch(Vec<WorkerToUi>),
+}
+
+pub enum WorkerToUiMsgIter {
+  Single(Option<WorkerToUi>),
+  Batch(std::vec::IntoIter<WorkerToUi>),
+}
+
+impl Iterator for WorkerToUiMsgIter {
+  type Item = WorkerToUi;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    match self {
+      WorkerToUiMsgIter::Single(msg) => msg.take(),
+      WorkerToUiMsgIter::Batch(iter) => iter.next(),
+    }
+  }
+}
+
+impl IntoIterator for WorkerToUiMsg {
+  type Item = WorkerToUi;
+  type IntoIter = WorkerToUiMsgIter;
+
+  fn into_iter(self) -> Self::IntoIter {
+    match self {
+      WorkerToUiMsg::Single(msg) => WorkerToUiMsgIter::Single(Some(msg)),
+      WorkerToUiMsg::Batch(msgs) => WorkerToUiMsgIter::Batch(msgs.into_iter()),
+    }
+  }
+}
+
+/// Receiver wrapper that flattens [`WorkerToUiMsg`] envelopes into individual [`WorkerToUi`]
+/// messages.
+///
+/// This is primarily intended for test code and headless callers that prefer the ergonomics of
+/// receiving one logical message at a time, while still benefiting from batching on the underlying
+/// channel.
+#[derive(Debug)]
+pub struct WorkerToUiInbox {
+  rx: std::sync::mpsc::Receiver<WorkerToUiMsg>,
+  pending: std::cell::RefCell<std::collections::VecDeque<WorkerToUi>>,
+}
+
+impl WorkerToUiInbox {
+  pub fn new(rx: std::sync::mpsc::Receiver<WorkerToUiMsg>) -> Self {
+    Self {
+      rx,
+      pending: std::cell::RefCell::new(std::collections::VecDeque::new()),
+    }
+  }
+
+  pub fn recv(&self) -> Result<WorkerToUi, std::sync::mpsc::RecvError> {
+    loop {
+      if let Some(msg) = self.pending.borrow_mut().pop_front() {
+        return Ok(msg);
+      }
+
+      let envelope = self.rx.recv()?;
+      if let Some(msg) = self.push_envelope(envelope) {
+        return Ok(msg);
+      }
+    }
+  }
+
+  pub fn try_recv(&self) -> Result<WorkerToUi, std::sync::mpsc::TryRecvError> {
+    loop {
+      if let Some(msg) = self.pending.borrow_mut().pop_front() {
+        return Ok(msg);
+      }
+
+      let envelope = self.rx.try_recv()?;
+      if let Some(msg) = self.push_envelope(envelope) {
+        return Ok(msg);
+      }
+    }
+  }
+
+  pub fn recv_timeout(
+    &self,
+    timeout: std::time::Duration,
+  ) -> Result<WorkerToUi, std::sync::mpsc::RecvTimeoutError> {
+    use std::time::Instant;
+
+    let start = Instant::now();
+    loop {
+      if let Some(msg) = self.pending.borrow_mut().pop_front() {
+        return Ok(msg);
+      }
+
+      let remaining = timeout.saturating_sub(start.elapsed());
+      if remaining.is_zero() {
+        return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+      }
+
+      let envelope = self.rx.recv_timeout(remaining)?;
+      if let Some(msg) = self.push_envelope(envelope) {
+        return Ok(msg);
+      }
+    }
+  }
+
+  /// Drain any queued messages (including buffered items from an already-received batch).
+  pub fn try_iter(&self) -> impl Iterator<Item = WorkerToUi> + '_ {
+    std::iter::from_fn(|| self.try_recv().ok())
+  }
+
+  pub fn into_inner(self) -> std::sync::mpsc::Receiver<WorkerToUiMsg> {
+    self.rx
+  }
+
+  fn push_envelope(&self, envelope: WorkerToUiMsg) -> Option<WorkerToUi> {
+    match envelope {
+      WorkerToUiMsg::Single(msg) => Some(msg),
+      WorkerToUiMsg::Batch(msgs) => {
+        let mut iter = msgs.into_iter();
+        let first = iter.next()?;
+        let mut pending = self.pending.borrow_mut();
+        pending.extend(iter);
+        Some(first)
+      }
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadOutcome {
   Completed,
@@ -1331,6 +1467,7 @@ fn _assert_accesskit_types_are_send() {
 mod tests {
   use super::*;
   use std::collections::HashSet;
+  use std::time::Duration;
 
   #[test]
   fn tab_id_new_generates_unique_ids() {
@@ -1492,5 +1629,93 @@ mod tests {
     };
     let formatted = format!("{msg:?}");
     assert!(!formatted.is_empty());
+  }
+
+  #[test]
+  fn worker_to_ui_msg_batch_iteration_preserves_order() {
+    let tab_id = TabId(1);
+    let envelope = WorkerToUiMsg::Batch(vec![
+      WorkerToUi::LoadingState {
+        tab_id,
+        loading: true,
+      },
+      WorkerToUi::DebugLog {
+        tab_id,
+        line: "middle".to_string(),
+      },
+      WorkerToUi::LoadingState {
+        tab_id,
+        loading: false,
+      },
+    ]);
+
+    let msgs: Vec<WorkerToUi> = envelope.into_iter().collect();
+    assert_eq!(msgs.len(), 3);
+    assert!(matches!(
+      msgs[0],
+      WorkerToUi::LoadingState {
+        tab_id: t,
+        loading: true
+      } if t == tab_id
+    ));
+    assert!(matches!(
+      msgs[1],
+      WorkerToUi::DebugLog { tab_id: t, .. } if t == tab_id
+    ));
+    assert!(matches!(
+      msgs[2],
+      WorkerToUi::LoadingState {
+        tab_id: t,
+        loading: false
+      } if t == tab_id
+    ));
+  }
+
+  #[test]
+  fn worker_to_ui_inbox_flattens_batch_in_order() {
+    let tab_id = TabId(1);
+    let (tx, rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    tx.send(WorkerToUiMsg::Batch(vec![
+      WorkerToUi::LoadingState {
+        tab_id,
+        loading: true,
+      },
+      WorkerToUi::DebugLog {
+        tab_id,
+        line: "two".to_string(),
+      },
+      WorkerToUi::LoadingState {
+        tab_id,
+        loading: false,
+      },
+    ]))
+    .unwrap();
+    drop(tx);
+
+    let inbox = WorkerToUiInbox::new(rx);
+    let a = inbox.recv_timeout(Duration::from_secs(1)).unwrap();
+    let b = inbox.recv_timeout(Duration::from_secs(1)).unwrap();
+    let c = inbox.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    assert!(matches!(
+      a,
+      WorkerToUi::LoadingState {
+        tab_id: t,
+        loading: true
+      } if t == tab_id
+    ));
+    assert!(matches!(b, WorkerToUi::DebugLog { tab_id: t, .. } if t == tab_id));
+    assert!(matches!(
+      c,
+      WorkerToUi::LoadingState {
+        tab_id: t,
+        loading: false
+      } if t == tab_id
+    ));
+
+    assert!(matches!(
+      inbox.recv_timeout(Duration::from_millis(1)),
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+    ));
   }
 }

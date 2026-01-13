@@ -4,14 +4,16 @@ use super::support;
 use fastrender::ui::messages::WorkerToUi;
 use fastrender::ui::spawn_ui_worker;
 use fastrender::ui::{NavigationReason, TabId, UiToWorker};
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // Worker startup + navigation + rendering can take a few seconds under load when integration tests
 // run in parallel on CI; keep this timeout generous to avoid flakiness.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (String, bool, bool) {
+fn next_navigation_committed(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> (String, bool, bool) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -34,7 +36,10 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (Strin
   }
 }
 
-fn next_scroll_state(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::scroll::ScrollState {
+fn next_scroll_state(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> fastrender::scroll::ScrollState {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })

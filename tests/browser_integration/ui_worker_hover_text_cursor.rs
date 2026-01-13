@@ -3,12 +3,11 @@
 use super::support;
 use fastrender::ui::messages::{CursorKind, NavigationReason, PointerButton, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -22,7 +21,10 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
   }
 }
 
-fn next_hover_changed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (Option<String>, CursorKind) {
+fn next_hover_changed(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> (Option<String>, CursorKind) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::HoverChanged { .. })
   })
@@ -134,4 +136,3 @@ fn hover_changed_reports_text_cursor_for_selectable_text_nodes() {
 
   worker.join().unwrap();
 }
-

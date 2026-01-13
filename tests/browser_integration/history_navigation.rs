@@ -60,10 +60,7 @@ impl ResourceFetcher for StaticHtmlFetcher {
   }
 }
 
-fn recv_nav_committed(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
-  tab_id: TabId,
-) -> (String, bool, bool) {
+fn recv_nav_committed(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> (String, bool, bool) {
   // Navigations can be CPU-heavy (font loading/layout/paint) and this integration test binary runs
   // many of them in parallel by default. Use a slightly more generous timeout to avoid flakes on
   // contended CI runners.

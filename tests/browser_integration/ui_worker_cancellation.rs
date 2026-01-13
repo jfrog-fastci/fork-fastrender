@@ -20,7 +20,7 @@ fn pixmap_is_uniform_rgba(pixmap: &tiny_skia::Pixmap) -> bool {
 }
 
 fn recv_until<F: FnMut(&WorkerToUi) -> bool>(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   timeout: Duration,
   mut predicate: F,
 ) -> Vec<WorkerToUi> {

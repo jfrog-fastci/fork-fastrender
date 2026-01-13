@@ -3,19 +3,18 @@
 use super::support;
 use fastrender::ui::messages::{PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) {
   let _msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
   .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
 }
 
-fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_clipboard_text(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::SetClipboardText { .. })
   })
@@ -146,7 +145,10 @@ fn ui_context_menu_preserves_text_selection() {
       assert_eq!(got_tab, tab_id);
       assert_eq!(got_pos, input_pos);
       assert_eq!(link_url, None);
-      assert!(can_copy, "right-click inside selection should preserve can_copy");
+      assert!(
+        can_copy,
+        "right-click inside selection should preserve can_copy"
+      );
     }
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   }

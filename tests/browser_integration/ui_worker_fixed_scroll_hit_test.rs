@@ -5,7 +5,7 @@ use fastrender::ui::messages::{
   CursorKind, NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -18,7 +18,7 @@ use super::support::{
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 fn wait_for_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl super::support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   timeout: Duration,
 ) -> RenderedFrame {
@@ -42,7 +42,7 @@ fn wait_for_frame_ready(
 }
 
 fn wait_for_hover_changed(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl super::support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   timeout: Duration,
 ) -> (Option<String>, CursorKind) {
@@ -64,7 +64,7 @@ fn wait_for_hover_changed(
 }
 
 fn wait_for_navigation_committed(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl super::support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   expected_url: &str,
   timeout: Duration,

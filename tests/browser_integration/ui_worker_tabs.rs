@@ -10,7 +10,7 @@ use super::support::{create_tab_msg, request_repaint, DEFAULT_TIMEOUT};
 const TEST_TIMEOUT: Duration = DEFAULT_TIMEOUT;
 
 fn wait_for_first_frame(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> fastrender::ui::messages::RenderedFrame {

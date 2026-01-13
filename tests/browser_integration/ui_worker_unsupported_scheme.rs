@@ -27,7 +27,7 @@ fn ui_worker_rejects_unsupported_schemes_without_rendering_error_page() {
 
   fn assert_rejected(
     ui_tx: &std::sync::mpsc::Sender<fastrender::ui::messages::UiToWorker>,
-    ui_rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+    ui_rx: &impl super::support::RecvTimeout<WorkerToUi>,
     tab_id: TabId,
     url: &str,
     expected_err_substring: &str,

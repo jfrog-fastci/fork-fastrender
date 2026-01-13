@@ -7,13 +7,12 @@ use fastrender::interaction::hit_test::{
 };
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // UI worker startup + rendering can take a few seconds when tests run in parallel.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn wait_for_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })

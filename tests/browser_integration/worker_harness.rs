@@ -9,7 +9,7 @@ use fastrender::ui::messages::{
   CursorKind, DateTimeInputKind, DownloadId, DownloadOutcome, FormSubmission, RenderedFrame, TabId,
   UiToWorker, WorkerToUi,
 };
-use fastrender::ui::{spawn_ui_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory};
+use fastrender::ui::{spawn_ui_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory, WorkerToUiInbox};
 use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
@@ -219,7 +219,9 @@ pub enum WorkerToUiEvent {
     outcome: DownloadOutcome,
   },
   /// Catch-all event for forward compatibility when `WorkerToUi` grows new variants.
-  Other { msg: String },
+  Other {
+    msg: String,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,7 +264,9 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::PageAccessibility { .. } => WorkerEventKind::PageAccessibility,
       WorkerToUiEvent::OpenSelectDropdown { .. } => WorkerEventKind::OpenSelectDropdown,
       WorkerToUiEvent::RequestOpenInNewTab { .. } => WorkerEventKind::RequestOpenInNewTab,
-      WorkerToUiEvent::RequestOpenInNewTabRequest { .. } => WorkerEventKind::RequestOpenInNewTabRequest,
+      WorkerToUiEvent::RequestOpenInNewTabRequest { .. } => {
+        WorkerEventKind::RequestOpenInNewTabRequest
+      }
       WorkerToUiEvent::NavigationStarted { .. } => WorkerEventKind::NavigationStarted,
       WorkerToUiEvent::NavigationCommitted { .. } => WorkerEventKind::NavigationCommitted,
       WorkerToUiEvent::NavigationFailed { .. } => WorkerEventKind::NavigationFailed,
@@ -419,7 +423,9 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
-    WorkerToUi::DateTimePickerClosed { tab_id } => (WorkerToUiEvent::DateTimePickerClosed { tab_id }, None),
+    WorkerToUi::DateTimePickerClosed { tab_id } => {
+      (WorkerToUiEvent::DateTimePickerClosed { tab_id }, None)
+    }
     WorkerToUi::FilePickerOpened {
       tab_id,
       input_node_id,
@@ -528,7 +534,12 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
-    other => (WorkerToUiEvent::Other { msg: format!("{other:?}") }, None),
+    other => (
+      WorkerToUiEvent::Other {
+        msg: format!("{other:?}"),
+      },
+      None,
+    ),
   }
 }
 
@@ -795,7 +806,7 @@ pub struct WorkerHarness {
   // of the suite so those overrides don't leak across tests and cause flakiness/timeouts.
   _stage_lock: parking_lot::ReentrantMutexGuard<'static, ()>,
   ui_tx: Option<Sender<UiToWorker>>,
-  ui_rx: Receiver<WorkerToUi>,
+  ui_rx: WorkerToUiInbox,
   handle: Option<JoinHandle<()>>,
   buffered_events: parking_lot::Mutex<VecDeque<WorkerToUiEvent>>,
 }

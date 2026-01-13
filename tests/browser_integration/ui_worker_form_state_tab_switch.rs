@@ -1,15 +1,19 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{NavigationReason, PointerButton, RepaintReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  NavigationReason, PointerButton, RepaintReason, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 
 use super::support::{
   create_tab_msg, navigate_msg, pointer_down, pointer_up, request_repaint, rgba_at, text_input,
   viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
 };
 
-fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::RenderedFrame {
+fn recv_frame(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> fastrender::ui::RenderedFrame {
   super::support::recv_for_tab(rx, tab_id, DEFAULT_TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
@@ -20,7 +24,7 @@ fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::Rende
   .expect("timed out waiting for FrameReady")
 }
 
-fn drain_worker(rx: &Receiver<WorkerToUi>) {
+fn drain_worker(rx: &fastrender::ui::WorkerToUiInbox) {
   while rx.try_recv().is_ok() {}
 }
 
@@ -68,8 +72,12 @@ fn ui_worker_preserves_form_state_across_tab_switching() {
   let tab_a = TabId::new();
   let tab_b = TabId::new();
 
-  ui_tx.send(create_tab_msg(tab_a, None)).expect("CreateTab A");
-  ui_tx.send(create_tab_msg(tab_b, None)).expect("CreateTab B");
+  ui_tx
+    .send(create_tab_msg(tab_a, None))
+    .expect("CreateTab A");
+  ui_tx
+    .send(create_tab_msg(tab_b, None))
+    .expect("CreateTab B");
 
   ui_tx
     .send(viewport_changed_msg(tab_a, (64, 64), 1.0))
@@ -159,4 +167,3 @@ fn ui_worker_preserves_form_state_across_tab_switching() {
   drop(ui_tx);
   join.join().expect("join ui worker");
 }
-

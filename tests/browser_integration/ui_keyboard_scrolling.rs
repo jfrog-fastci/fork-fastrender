@@ -2,7 +2,6 @@
 
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{spawn_browser_worker, NavigationReason, TabId, WorkerToUi};
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use super::support::{
@@ -11,7 +10,7 @@ use super::support::{
 };
 
 fn wait_for_initial_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
 ) -> fastrender::ui::RenderedFrame {
   super::support::recv_for_tab(rx, tab_id, DEFAULT_TIMEOUT * 2, |msg| {
@@ -25,7 +24,7 @@ fn wait_for_initial_frame(
 }
 
 fn wait_for_scroll_response(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
   mut pred: impl FnMut(f32) -> bool,
@@ -346,8 +345,9 @@ fn space_scrolls_when_link_is_focused() {
     fastrender::interaction::KeyAction::ShiftSpace,
   ))
   .unwrap();
-  let (_scroll_y, frame_y) =
-    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next < y - 1.0 || next <= 1.0);
+  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
+    next < y - 1.0 || next <= 1.0
+  });
   assert!(
     frame_y <= 1.0,
     "expected Shift+Space to scroll back to the top when a link is focused, got {frame_y}"

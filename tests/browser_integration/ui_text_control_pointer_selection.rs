@@ -5,21 +5,22 @@ use fastrender::ui::messages::{
   KeyAction, PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
-    .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
     WorkerToUi::FrameReady { frame, .. } => frame,
     other => panic!("unexpected message while waiting for FrameReady: {other:?}"),
   }
 }
 
-fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_clipboard_text(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::SetClipboardText { .. })
   })
@@ -78,7 +79,8 @@ second line</textarea>
 "#,
   );
 
-  let handle = spawn_ui_worker("fastr-ui-worker-text-control-pointer-selection").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-text-control-pointer-selection").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();

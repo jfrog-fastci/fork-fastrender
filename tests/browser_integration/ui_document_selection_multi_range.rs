@@ -5,7 +5,6 @@ use fastrender::ui::messages::{
   PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // UI worker tests exercise real worker threads and rendering; allow some slack on CI.
@@ -26,7 +25,7 @@ fn is_selection_highlight(rgba: [u8; 4]) -> bool {
     && rgba[1].abs_diff(SELECTION_HIGHLIGHT[1]) <= 1
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
@@ -38,7 +37,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
 }
 
 fn next_frame_ready_until(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   context: &'static str,
   mut pred: impl FnMut(&RenderedFrame) -> bool,
@@ -64,7 +63,7 @@ fn next_frame_ready_until(
   }
 }
 
-fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_clipboard_text(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::SetClipboardText { .. })
   })
@@ -92,7 +91,8 @@ fn ui_document_selection_multi_range_ctrl_click_adds_ranges_and_copy_concatenate
 "#,
   );
 
-  let handle = spawn_ui_worker("fastr-ui-worker-document-selection-multi-range").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-document-selection-multi-range").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
@@ -147,7 +147,11 @@ fn ui_document_selection_multi_range_ctrl_click_adds_ranges_and_copy_concatenate
   let frame_a = next_frame_ready_until(&ui_rx, tab_id, "after selecting A", |frame| {
     is_selection_highlight(support::rgba_at(&frame.pixmap, 20, 10))
   });
-  assert!(is_selection_highlight(support::rgba_at(&frame_a.pixmap, 20, 10)));
+  assert!(is_selection_highlight(support::rgba_at(
+    &frame_a.pixmap,
+    20,
+    10
+  )));
   assert_eq!(support::rgba_at(&frame_a.pixmap, 220, 10), WHITE);
   assert_eq!(support::rgba_at(&frame_a.pixmap, 420, 10), WHITE);
 
@@ -184,8 +188,16 @@ fn ui_document_selection_multi_range_ctrl_click_adds_ranges_and_copy_concatenate
       && is_selection_highlight(support::rgba_at(&frame.pixmap, 220, 10))
       && support::rgba_at(&frame.pixmap, 420, 10) == WHITE
   });
-  assert!(is_selection_highlight(support::rgba_at(&frame_ab.pixmap, 20, 10)));
-  assert!(is_selection_highlight(support::rgba_at(&frame_ab.pixmap, 220, 10)));
+  assert!(is_selection_highlight(support::rgba_at(
+    &frame_ab.pixmap,
+    20,
+    10
+  )));
+  assert!(is_selection_highlight(support::rgba_at(
+    &frame_ab.pixmap,
+    220,
+    10
+  )));
   assert_eq!(support::rgba_at(&frame_ab.pixmap, 420, 10), WHITE);
 
   ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
@@ -220,9 +232,21 @@ fn ui_document_selection_multi_range_ctrl_click_adds_ranges_and_copy_concatenate
         && is_selection_highlight(support::rgba_at(&frame.pixmap, 420, 10))
     },
   );
-  assert!(is_selection_highlight(support::rgba_at(&frame_abc.pixmap, 20, 10)));
-  assert!(is_selection_highlight(support::rgba_at(&frame_abc.pixmap, 220, 10)));
-  assert!(is_selection_highlight(support::rgba_at(&frame_abc.pixmap, 420, 10)));
+  assert!(is_selection_highlight(support::rgba_at(
+    &frame_abc.pixmap,
+    20,
+    10
+  )));
+  assert!(is_selection_highlight(support::rgba_at(
+    &frame_abc.pixmap,
+    220,
+    10
+  )));
+  assert!(is_selection_highlight(support::rgba_at(
+    &frame_abc.pixmap,
+    420,
+    10
+  )));
 
   ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
   assert_eq!(next_clipboard_text(&ui_rx, tab_id), "AAAAA\nBBBBBCCCCC");

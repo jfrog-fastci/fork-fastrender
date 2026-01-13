@@ -3,12 +3,14 @@
 use super::support;
 use fastrender::ui::messages::{PointerButton, PointerModifiers, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame_ready(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
     .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
@@ -17,7 +19,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   }
 }
 
-fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_clipboard_text(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::SetClipboardText { .. })
   })
@@ -150,4 +152,3 @@ fn ui_drag_drop_drop_prevent_default_suppresses_default_text_insertion() {
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

@@ -6,14 +6,17 @@ use fastrender::ui::messages::{
   FormSubmission, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use tempfile::tempdir;
 use url::Url;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn wait_for_open_in_new_tab(rx: &Receiver<WorkerToUi>, tab_id: TabId, expected_url: &str) {
+fn wait_for_open_in_new_tab(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+  expected_url: &str,
+) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::RequestOpenInNewTab { .. })
   })
@@ -32,7 +35,7 @@ fn wait_for_open_in_new_tab(rx: &Receiver<WorkerToUi>, tab_id: TabId, expected_u
 }
 
 fn wait_for_open_in_new_tab_request(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   expected_url: &str,
 ) -> FormSubmission {
@@ -54,7 +57,11 @@ fn wait_for_open_in_new_tab_request(
   }
 }
 
-fn wait_for_navigation_failed_unsupported_scheme(rx: &Receiver<WorkerToUi>, tab_id: TabId, url: &str) {
+fn wait_for_navigation_failed_unsupported_scheme(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+  url: &str,
+) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::NavigationFailed { url: failed, .. } if failed == url)
   })

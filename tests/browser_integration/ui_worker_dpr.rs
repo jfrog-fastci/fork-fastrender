@@ -3,13 +3,16 @@
 use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
 use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // Under parallel test load, render worker threads can take a while to produce the first frame.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(20);
 
-fn recv_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> RenderedFrame {
+fn recv_frame_ready(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+  timeout: Duration,
+) -> RenderedFrame {
   let deadline = Instant::now() + timeout;
   loop {
     let now = Instant::now();

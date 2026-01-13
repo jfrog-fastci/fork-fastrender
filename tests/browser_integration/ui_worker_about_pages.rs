@@ -4,7 +4,6 @@ use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT
 use fastrender::ui::about_pages;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // Worker startup + the first navigation can take a few seconds under load when integration tests
@@ -12,7 +11,7 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = DEFAULT_TIMEOUT;
 
 fn wait_for_navigation_committed_and_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   expected_url: &str,
   expected_title: &str,

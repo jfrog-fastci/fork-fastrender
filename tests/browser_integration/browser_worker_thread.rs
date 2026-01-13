@@ -11,7 +11,7 @@ const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
 struct BrowserWorkerFixture {
   tx: Option<Sender<UiToWorker>>,
-  rx: Receiver<WorkerToUi>,
+  rx: fastrender::ui::WorkerToUiInbox,
   join: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -69,7 +69,7 @@ impl Drop for BrowserWorkerFixture {
 }
 
 fn wait_for_navigation_complete(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> String {
@@ -110,7 +110,7 @@ fn wait_for_navigation_complete(
 }
 
 fn wait_for_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> fastrender::ui::messages::RenderedFrame {
@@ -124,7 +124,7 @@ fn wait_for_frame(
   }
 }
 
-fn wait_for_loading_false(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) {
+fn wait_for_loading_false(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId, timeout: Duration) {
   let msg = support::recv_for_tab(rx, tab_id, timeout, |msg| {
     matches!(msg, WorkerToUi::LoadingState { loading: false, .. })
   })
@@ -135,7 +135,7 @@ fn wait_for_loading_false(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Dur
   }
 }
 
-fn drain_available(rx: &Receiver<WorkerToUi>) {
+fn drain_available(rx: &fastrender::ui::WorkerToUiInbox) {
   while rx.try_recv().is_ok() {}
 }
 

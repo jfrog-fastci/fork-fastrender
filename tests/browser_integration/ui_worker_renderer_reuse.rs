@@ -6,13 +6,12 @@ use fastrender::ui::render_worker::{
   renderer_build_count_for_test, reset_renderer_build_count_for_test,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // This test performs real navigations + paints; keep timeout generous for contended CI hosts.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_navigation_committed(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -33,7 +32,7 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String
 }
 
 fn next_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {

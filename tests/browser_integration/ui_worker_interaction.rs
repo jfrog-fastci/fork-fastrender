@@ -3,7 +3,6 @@
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::messages::{NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -33,7 +32,7 @@ fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8,
 }
 
 fn recv_until_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   wait_for_navigation_committed_url: Option<&str>,
   deadline: Instant,
@@ -100,7 +99,7 @@ fn recv_until_frame(
 }
 
 fn recv_until_pixel(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   css_pos: (u32, u32),
   expected: (u8, u8, u8, u8),

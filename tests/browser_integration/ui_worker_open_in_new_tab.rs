@@ -5,14 +5,17 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use tempfile::tempdir;
 use url::Url;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn wait_for_open_in_new_tab(rx: &Receiver<WorkerToUi>, tab_id: TabId, expected_url: &str) {
+fn wait_for_open_in_new_tab(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+  expected_url: &str,
+) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::RequestOpenInNewTab { .. })
   })

@@ -5,12 +5,14 @@ use fastrender::ui::messages::{
   NavigationReason, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::RenderedFrame {
+fn next_frame_ready(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+) -> fastrender::ui::RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
@@ -21,7 +23,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui:
   }
 }
 
-fn next_clipboard_text(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_clipboard_text(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::SetClipboardText { .. })
   })
@@ -79,8 +81,8 @@ fn ui_context_menu_text_caret_right_click_places_paste_at_click_position() {
 "#,
   );
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-context-menu-text-caret-right-click").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-context-menu-text-caret-right-click")
+    .expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
 

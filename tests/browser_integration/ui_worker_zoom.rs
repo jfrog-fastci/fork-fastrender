@@ -3,14 +3,13 @@
 use super::support;
 use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // Keep this generous: these tests do real rendering work and can run under CPU contention.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn wait_for_frame_with_meta(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   expected_viewport_css: (u32, u32),
   expected_dpr: f32,

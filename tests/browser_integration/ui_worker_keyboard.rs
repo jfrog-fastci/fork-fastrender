@@ -9,12 +9,11 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn recv_until<T>(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   timeout: Duration,
   mut f: impl FnMut(WorkerToUi) -> Option<T>,
 ) -> T {
@@ -39,7 +38,7 @@ fn recv_until<T>(
 }
 
 fn wait_for_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
@@ -49,7 +48,7 @@ fn wait_for_frame_ready(
 }
 
 fn try_wait_for_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> Option<fastrender::ui::messages::RenderedFrame> {
@@ -604,9 +603,7 @@ fn autofocus_focuses_element_and_sets_focus_visible_on_load() {
   let handle = spawn_ui_worker("fastr-ui-worker-autofocus").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
     .expect("ViewportChanged");
@@ -637,13 +634,10 @@ fn tab_order_honors_positive_tabindex_ordering() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_positive_tabindex_page();
 
-  let handle =
-    spawn_ui_worker("fastr-ui-worker-keyboard-tabindex-order").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-keyboard-tabindex-order").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (120, 120), 1.0))
     .expect("ViewportChanged");
@@ -687,9 +681,7 @@ fn tab_focus_is_trapped_within_modal_dialog() {
     spawn_ui_worker("fastr-ui-worker-keyboard-modal-focus-trap").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (140, 180), 1.0))
     .expect("ViewportChanged");

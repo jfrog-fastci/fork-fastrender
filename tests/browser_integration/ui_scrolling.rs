@@ -10,7 +10,11 @@ use tempfile::tempdir;
 
 use super::support::{self, create_tab_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
-fn wait_for_message<F>(rx: &Receiver<WorkerToUi>, timeout: Duration, mut f: F) -> WorkerToUi
+fn wait_for_message<F>(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  timeout: Duration,
+  mut f: F,
+) -> WorkerToUi
 where
   F: FnMut(&WorkerToUi) -> bool,
 {
@@ -32,13 +36,13 @@ where
   }
 }
 
-fn drain_worker(rx: &Receiver<WorkerToUi>) {
+fn drain_worker(rx: &fastrender::ui::WorkerToUiInbox) {
   while rx.try_recv().is_ok() {}
 }
 
 fn spawn_worker() -> (
   Sender<UiToWorker>,
-  Receiver<WorkerToUi>,
+  fastrender::ui::WorkerToUiInbox,
   std::thread::JoinHandle<()>,
 ) {
   let handle = fastrender::ui::spawn_browser_worker_with_factory(support::deterministic_factory())

@@ -11,10 +11,11 @@ use fastrender::ui::messages::{
   KeyAction, NavigationReason, PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker,
   WorkerToUi,
 };
+use fastrender::ui::WorkerToUiInbox;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -956,7 +957,7 @@ impl RssPeakSampler {
 fn run_named_scenario(
   name: &str,
   tx: &Sender<UiToWorker>,
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
@@ -1007,7 +1008,7 @@ fn run_named_scenario(
 
 fn run_ttfp_newtab(
   tx: &Sender<UiToWorker>,
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
@@ -1076,7 +1077,7 @@ fn run_ttfp_newtab(
 
 fn run_scroll_fixture(
   tx: &Sender<UiToWorker>,
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
@@ -1200,7 +1201,7 @@ fn run_scroll_fixture(
 
 fn run_resize_fixture(
   tx: &Sender<UiToWorker>,
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
@@ -1292,7 +1293,7 @@ fn run_resize_fixture(
 
 fn run_input_text_fixture(
   tx: &Sender<UiToWorker>,
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
@@ -1460,7 +1461,7 @@ fn run_input_text_fixture(
 
 fn run_tab_switch(
   tx: &Sender<UiToWorker>,
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
@@ -1583,7 +1584,7 @@ fn run_tab_switch(
 
 fn run_network_denied(
   tx: &Sender<UiToWorker>,
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   run_config: &RunConfig,
 ) -> ScenarioSummary {
   let viewport_css = DEFAULT_VIEWPORT_CSS;
@@ -1677,7 +1678,7 @@ enum NavigationOutcome {
 }
 
 fn wait_for_navigation_outcome(
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> Result<NavigationOutcome, WaitError> {
@@ -1713,7 +1714,7 @@ fn wait_for_navigation_outcome(
 }
 
 fn wait_for_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &WorkerToUiInbox,
   tab_id: TabId,
   timeout: Duration,
 ) -> Result<FrameInfo, WaitError> {

@@ -12,7 +12,7 @@ struct Harness {
   tab_id: TabId,
   cancel_gens: CancelGens,
   tx: std::sync::mpsc::Sender<UiToWorker>,
-  rx: Receiver<WorkerToUi>,
+  rx: fastrender::ui::WorkerToUiInbox,
   join: std::thread::JoinHandle<()>,
 }
 

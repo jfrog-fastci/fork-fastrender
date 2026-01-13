@@ -5,7 +5,6 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 // These tests can be CPU-heavy (layout + paint) and run in parallel with other integration tests
@@ -78,7 +77,7 @@ fn expect_rgb_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32, expected: (u
   );
 }
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame_ready(rx: &fastrender::ui::WorkerToUiInbox, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,

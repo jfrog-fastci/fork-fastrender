@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn recv_frame_matching_scroll(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &fastrender::ui::WorkerToUiInbox,
   tab_id: TabId,
   expected_scroll_css: (f32, f32),
 ) -> RenderedFrame {

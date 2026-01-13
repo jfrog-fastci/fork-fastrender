@@ -3,13 +3,16 @@
 use super::support;
 use fastrender::ui::messages::{NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // Worker startup + first render can take a few seconds under parallel load (CI).
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-fn recv_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> RenderedFrame {
+fn recv_frame(
+  rx: &fastrender::ui::WorkerToUiInbox,
+  tab_id: TabId,
+  timeout: Duration,
+) -> RenderedFrame {
   let start = Instant::now();
   let mut seen = Vec::new();
   loop {
