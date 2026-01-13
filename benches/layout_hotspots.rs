@@ -910,7 +910,7 @@ fn bench_block_intrinsic_sizing_parallel(c: &mut Criterion) {
     node.children.len()
   );
 
-  let mut group = c.benchmark_group("layout_hotspots_block_intrinsic_parallel");
+  let mut group = c.benchmark_group("layout_hotspots_block_intrinsic_parallel_block_children");
   group.bench_function("min_and_max_combined_api", |b| {
     b.iter(|| {
       let widths = bfc
