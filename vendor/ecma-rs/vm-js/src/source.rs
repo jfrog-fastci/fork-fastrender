@@ -512,8 +512,9 @@ pub fn format_stack_trace(frames: &[StackFrame]) -> String {
 mod oom_tests {
   use super::*;
 
-  use crate::test_alloc::FailAllocsGuard;
+  use crate::test_alloc::{FailAllocsGuard, FailNextMatchingAllocGuard};
   use crate::HeapLimits;
+  use std::sync::atomic::AtomicUsize;
 
   #[test]
   fn source_text_new_charged_returns_out_of_memory_on_name_alloc_failure() {
@@ -564,5 +565,33 @@ mod oom_tests {
     assert_eq!(source.line_col(0), (1, 1));
     assert_eq!(source.line_col(2), (2, 1));
     assert_eq!(source.line_col(4), (3, 1));
+  }
+
+  #[test]
+  fn source_text_new_charged_arc_returns_out_of_memory_on_source_arc_alloc_failure() {
+    #[repr(C)]
+    struct ArcInner<T> {
+      strong: AtomicUsize,
+      weak: AtomicUsize,
+      data: T,
+    }
+
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    // Pre-allocate name/text so this only exercises the `Arc<SourceText>` allocation at the end.
+    let name: Arc<str> = Arc::from("<inline>");
+    let text: Arc<str> = Arc::from("x");
+
+    let size = std::mem::size_of::<ArcInner<SourceText>>();
+    let align = std::mem::align_of::<ArcInner<SourceText>>();
+    let _guard = FailNextMatchingAllocGuard::new(size, align);
+
+    let err = SourceText::new_charged_arc(&mut heap, name, text).expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+    assert_eq!(
+      heap.vm_external_bytes(),
+      0,
+      "expected external memory charge to be rolled back on OOM"
+    );
   }
 }

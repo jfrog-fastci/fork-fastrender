@@ -162,5 +162,24 @@ mod tests {
     let err = arc_try_new_vm(123u64).expect_err("expected OOM error");
     assert!(matches!(err, VmError::OutOfMemory));
   }
-}
 
+  #[test]
+  fn arc_str_try_from_vm_returns_out_of_memory_on_alloc_failure() {
+    #[repr(C)]
+    struct ArcInnerHeader {
+      strong: AtomicUsize,
+      weak: AtomicUsize,
+    }
+
+    let value = "hello world";
+    let header_layout = Layout::new::<ArcInnerHeader>();
+    let data_layout = Layout::array::<u8>(value.len()).expect("layout for bytes");
+    let (layout, _offset) = header_layout.extend(data_layout).expect("combined layout");
+    let layout = layout.pad_to_align();
+
+    let _guard = FailNextMatchingAllocGuard::new(layout.size(), layout.align());
+
+    let err = arc_str_try_from_vm(value).expect_err("expected OOM error");
+    assert!(matches!(err, VmError::OutOfMemory));
+  }
+}
