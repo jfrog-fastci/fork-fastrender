@@ -14,7 +14,7 @@
     "layout": 3.848250810055866,
     "paint": 13.853702916201115
   },
-  "notes": "",
+  "notes": "Cloudflare noscript interstitial. Remaining Chrome diffs are confined to the centered OpenAI SVG logo and the single-line \"Enable JavaScript and cookies to continue\" text; discrepancies appear to be minor raster-level AA/hinting differences (resvg/tiny-skia vs Chrome/Skia) rather than missing layout/cascade/paint primitives.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 2186,
