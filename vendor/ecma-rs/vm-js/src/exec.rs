@@ -14333,11 +14333,11 @@ impl Trace for GenFrame {
         tracer.trace_value(*v);
       }
       GenFrame::TryAfterFinally { pending } => pending.trace(tracer),
-      GenFrame::ComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
-      GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
+      GenFrame::ComputedMemberAfterMember { base, .. }
+      | GenFrame::AssignComputedMemberAfterMember { base, .. }
+      | GenFrame::UpdateComputedMemberAfterMember { base, .. }
+      | GenFrame::CallComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
       GenFrame::BinaryAfterRight { left, .. } => tracer.trace_value(*left),
-      GenFrame::AssignComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
-      GenFrame::UpdateComputedMemberAfterMember { base, .. } => tracer.trace_value(*base),
       GenFrame::AssignAfterRhs { base, key, .. } => {
         if let Some(v) = base {
           tracer.trace_value(*v);
@@ -32410,6 +32410,10 @@ fn gen_binary_after_left(
         Ok(GenEval::Suspend(suspend))
       }
     },
+    OperatorName::Comma => {
+      let _ = left;
+      gen_eval_expr(evaluator, scope, &expr.right)
+    }
     _ => Err(VmError::Unimplemented("yield in binary operator")),
   }
 }
@@ -32830,7 +32834,6 @@ fn gen_eval_assignment_to_computed_member_after_member(
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-
   if is_nullish(base) {
     return Err(throw_type_error(
       evaluator.vm,
@@ -33045,7 +33048,6 @@ fn gen_reference_from_member<'a>(
     })
   }
 }
-
 fn gen_eval_call(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -34717,10 +34719,10 @@ fn gen_root_values_for_continuation(
         }
       }
       GenFrame::ComputedMemberAfterMember { base, .. }
+      | GenFrame::AssignComputedMemberAfterMember { base, .. }
+      | GenFrame::UpdateComputedMemberAfterMember { base, .. }
       | GenFrame::CallComputedMemberAfterMember { base, .. } => values.push(*base),
       GenFrame::BinaryAfterRight { left, .. } => values.push(*left),
-      GenFrame::AssignComputedMemberAfterMember { base, .. }
-      | GenFrame::UpdateComputedMemberAfterMember { base, .. } => values.push(*base),
       GenFrame::AssignAfterRhs { base, key, .. } => {
         if let Some(base) = base {
           values.push(*base);
