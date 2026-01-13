@@ -387,10 +387,14 @@ fn generate_item_list(
       let aspect_ratio = child_style.aspect_ratio();
       let padding = child_style
         .padding()
-        .resolve_or_zero(node_inner_size, |val, basis| tree.calc(val, basis));
+        // Note: CSS specifies that percentage padding is resolved against the containing block's
+        // inline size (i.e. width), even for vertical (top/bottom) paddings.
+        .resolve_or_zero(node_inner_size.width, |val, basis| tree.calc(val, basis));
       let border = child_style
         .border()
-        .resolve_or_zero(node_inner_size, |val, basis| tree.calc(val, basis));
+        // Note: CSS specifies that percentage border widths are resolved against the containing
+        // block's inline size (i.e. width), even for vertical (top/bottom) borders.
+        .resolve_or_zero(node_inner_size.width, |val, basis| tree.calc(val, basis));
       let pb_sum = (padding + border).sum_axes();
       let box_sizing_adjustment = if child_style.box_sizing() == BoxSizing::ContentBox {
         pb_sum
@@ -985,4 +989,52 @@ fn perform_absolute_layout_on_absolute_children(
   }
 
   absolute_content_size
+}
+
+#[cfg(all(test, feature = "taffy_tree"))]
+mod tests {
+  use crate::prelude::*;
+
+  #[test]
+  fn block_percent_padding_border_resolve_against_width() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        padding: Rect {
+          left: length(0.0),
+          right: length(0.0),
+          top: percent(0.1),
+          bottom: percent(0.1),
+        },
+        border: Rect {
+          left: length(0.0),
+          right: length(0.0),
+          top: percent(0.05),
+          bottom: percent(0.05),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Block,
+          size: Size::from_lengths(200.0, 100.0),
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    let layout = taffy.layout(child).unwrap();
+    // Vertical percentage padding/borders resolve against the containing block's width (200px).
+    assert_eq!(layout.padding.top, 20.0);
+    assert_eq!(layout.padding.bottom, 20.0);
+    assert_eq!(layout.border.top, 10.0);
+    assert_eq!(layout.border.bottom, 10.0);
+  }
 }
