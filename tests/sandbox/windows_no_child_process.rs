@@ -5,15 +5,21 @@ use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Command;
 
-use fastrender::sandbox::windows::spawn_sandboxed;
+use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
+use win_sandbox::SandboxSupport;
 use windows_sys::Win32::Foundation::{
   GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
-use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, TerminateProcess, WaitForSingleObject};
+use windows_sys::Win32::System::Console::{
+  GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+};
+use windows_sys::Win32::System::Threading::{
+  GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
+};
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_NO_CHILD_PROCESS_CHILD";
 const CMD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_CMD_EXE";
+const DISABLE_SANDBOX_ENV: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
 
 // Windows error codes we explicitly treat as "cmd.exe could not be found" rather than "sandbox
 // blocked process creation".
@@ -175,13 +181,22 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     return;
   }
 
+  let support = SandboxSupport::detect();
+  if support != SandboxSupport::Full {
+    eprintln!(
+      "skipping sandbox child-process denial test: Windows sandbox is unavailable ({support})"
+    );
+    return;
+  }
+
   let cmd_exe = cmd_exe_path().expect("determine cmd.exe path");
   // Sanity check: in the normal (unsandboxed) test process, cmd.exe should spawn successfully. If
   // this fails, the regression test could pass for the wrong reason.
   assert_cmd_spawn_works(&cmd_exe);
 
   let exe = std::env::current_exe().expect("current test exe path");
-  let test_name = "sandbox::windows_no_child_process::sandboxed_renderer_cannot_spawn_child_process";
+  let test_name =
+    "sandbox::windows_no_child_process::sandboxed_renderer_cannot_spawn_child_process";
 
   let std_handles = collect_std_handles();
   let inherit_handles: Vec<std::os::windows::io::RawHandle> =
