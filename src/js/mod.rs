@@ -288,8 +288,8 @@ pub enum ScriptType {
 // module layout historically flattened those modules under `crate::js::*`.
 //
 // Some integration guidance (and agent tasks) refer to vm-js tests under a `js::vmjs::*` module
-// path. Provide a small `cfg(test)` shim so `cargo test --lib js::vmjs::window` matches at least
-// the core vm-js window tests.
+// path. Provide a small `cfg(test)` shim so `cargo test --lib js::vmjs::window` and
+// `cargo test --lib js::vmjs::module_loader` match at least the core vm-js integration tests.
 #[cfg(test)]
 mod vmjs {
   pub mod window {
@@ -442,6 +442,119 @@ mod vmjs {
         get_global_prop(&mut host, "__default_prevented"),
         Value::Bool(true)
       ));
+      Ok(())
+    }
+  }
+
+  pub mod module_loader {
+    use crate::dom2;
+    use crate::error::{Error, Result};
+    use crate::js::{EventLoop, VmJsModuleLoader, WindowHostState};
+    use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+    use selectors::context::QuirksMode;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use vm_js::{Budget, PropertyKey, Value};
+
+    struct MapFetcher {
+      map: HashMap<String, FetchedResource>,
+    }
+
+    impl MapFetcher {
+      fn new(map: HashMap<String, FetchedResource>) -> Self {
+        Self { map }
+      }
+    }
+
+    impl ResourceFetcher for MapFetcher {
+      fn fetch(&self, url: &str) -> crate::Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> crate::Result<FetchedResource> {
+        self
+          .map
+          .get(req.url)
+          .cloned()
+          .ok_or_else(|| Error::Other(format!("no fixture for url {url}", url = req.url)))
+      }
+    }
+
+    fn get_global_prop(host: &mut WindowHostState, name: &str) -> Value {
+      let window = host.window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global)).expect("root global");
+      let key_s = scope.alloc_string(name).expect("alloc name");
+      scope.push_root(Value::String(key_s)).expect("root name");
+      let key = PropertyKey::from_string(key_s);
+      scope
+        .heap()
+        .object_get_own_data_property_value(global, &key)
+        .expect("get prop")
+        .unwrap_or(Value::Undefined)
+    }
+
+    fn get_global_prop_utf8(host: &mut WindowHostState, name: &str) -> Option<String> {
+      let value = get_global_prop(host, name);
+      let window = host.window_mut();
+      match value {
+        Value::String(s) => Some(
+          window
+            .heap()
+            .get_string(s)
+            .expect("get string")
+            .to_utf8_lossy(),
+        ),
+        _ => None,
+      }
+    }
+
+    #[test]
+    fn module_import_meta_resolve_resolves_relative_specifier() -> Result<()> {
+      let entry_url = "https://example.com/dir/entry.js";
+      let dep_url = "https://example.com/dir/dep.js";
+      let document_url = "https://example.com/index.html";
+
+      let mut map = HashMap::<String, FetchedResource>::new();
+      map.insert(
+        entry_url.to_string(),
+        FetchedResource::new(
+          "globalThis.resolved = import.meta.resolve(\"./dep.js\");\n"
+            .as_bytes()
+            .to_vec(),
+          Some("application/javascript".to_string()),
+        ),
+      );
+      // Not strictly needed (`import.meta.resolve` should not fetch), but include the dep URL for
+      // completeness and to guard against accidental eager fetching.
+      map.insert(
+        dep_url.to_string(),
+        FetchedResource::new(
+          "export const value = 1;".as_bytes().to_vec(),
+          Some("application/javascript".to_string()),
+        ),
+      );
+
+      let fetcher = Arc::new(MapFetcher::new(map));
+      let dom = dom2::Document::new(QuirksMode::NoQuirks);
+      let mut host = WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+      let mut event_loop = EventLoop::<WindowHostState>::new();
+
+      host
+        .window_mut()
+        .vm_mut()
+        .set_budget(Budget::unlimited(100));
+
+      let mut loader = VmJsModuleLoader::new(fetcher, document_url);
+      loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
+      assert_eq!(
+        get_global_prop_utf8(&mut host, "resolved").as_deref(),
+        Some(dep_url)
+      );
+      loader.teardown(&mut host)?;
       Ok(())
     }
   }
