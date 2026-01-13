@@ -29,6 +29,8 @@ mod js_webidl_insert_adjacent;
 mod js_webidl_window_alert;
 mod js_window_host_base_url_update;
 mod js_window_realm;
+#[cfg(target_os = "macos")]
+mod macos_relaxed_sandbox_write_denied;
 mod preserve3d_env_var_disable_warp_test;
 mod rayon_global_pool_test;
 mod replaced_element_max_width_toggle;
