@@ -7,7 +7,7 @@ use crate::style_helpers::TaffyMinContent;
 use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
 use crate::util::check_layout_abort;
 use crate::util::sys::{f32_max, f32_min, Map, Vec};
-use crate::util::{MaybeMath, ResolveOrZero};
+use crate::util::MaybeMath;
 use crate::CompactLength;
 use core::cmp::Ordering;
 
@@ -697,18 +697,12 @@ pub(super) fn resolve_item_baselines(
       AbstractAxis::Inline => (
         measured_size_and_baselines.first_baselines.y,
         measured_size_and_baselines.size.height,
-        item
-          .margin
-          .top
-          .resolve_or_zero(inner_node_size.width, |val, basis| tree.calc(val, basis)),
+        item.baseline_shim_margin_start_cached(axis, inner_node_size.width, tree),
       ),
       AbstractAxis::Block => (
         measured_size_and_baselines.first_baselines.x,
         measured_size_and_baselines.size.width,
-        item
-          .margin
-          .left
-          .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+        item.baseline_shim_margin_start_cached(axis, inner_node_size.width, tree),
       ),
     };
 
