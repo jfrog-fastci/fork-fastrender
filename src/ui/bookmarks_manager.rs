@@ -1331,8 +1331,8 @@ fn folder_options(store: &BookmarkStore) -> Vec<(Option<BookmarkId>, String)> {
   let mut out = Vec::new();
   out.push((None, "Root".to_string()));
 
-  for (id, path) in store.folders_in_display_order() {
-    out.push((Some(id), path.join("/")));
+  for (id, path) in store.folders_in_display_order_joined() {
+    out.push((Some(id), path));
   }
   out
 }
