@@ -1,3 +1,21 @@
+//! macOS Seatbelt sandbox (libsandbox) helpers.
+//!
+//! FastRender uses Seatbelt to sandbox untrusted renderer processes on macOS. The sandbox is
+//! process-wide and irreversible; apply it as early as possible during renderer startup (and run
+//! sandbox tests in a dedicated child process).
+//!
+//! # Extending the relaxed profile
+//! The relaxed renderer profile intentionally starts small: it blocks network and user filesystem
+//! reads while allowing read-only access to a limited set of system font/framework locations. When
+//! you observe sandbox denials impacting rendering (commonly font discovery), inspect Seatbelt logs
+//! and extend the allowlist with the smallest additional system subpath:
+//!
+//! ```text
+//! log stream --predicate 'process == "<renderer-binary>" && eventMessage CONTAINS "deny"' --style syslog
+//! ```
+//!
+//! The log message usually includes the denied operation and path.
+
 use std::ffi::{CStr, CString};
 use std::io;
 
@@ -13,6 +31,12 @@ extern "C" {
     flags: u64,
     errorbuf: *mut *mut libc::c_char,
   ) -> libc::c_int;
+  fn sandbox_init_with_parameters(
+    profile: *const libc::c_char,
+    flags: u64,
+    parameters: *const *const libc::c_char,
+    errorbuf: *mut *mut libc::c_char,
+  ) -> libc::c_int;
   fn sandbox_free_error(errorbuf: *mut libc::c_char);
 }
 
@@ -22,6 +46,49 @@ extern "C" {
 // rather than raw profile source code. We keep the constant local so the crate can compile on
 // non-macOS targets without pulling in additional bindgen tooling.
 const SANDBOX_NAMED: u64 = 0x0001;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosSandboxMode {
+  /// macOS built-in `pure-computation` profile.
+  ///
+  /// This is very strict and typically breaks system font discovery/loading.
+  PureComputation,
+  /// A renderer-friendly profile that blocks network + user filesystem reads, while allowing
+  /// read-only access to system font/framework locations.
+  RendererSystemFonts,
+}
+
+const RENDERER_SYSTEM_FONTS_PROFILE: &str = r#"(version 1)
+(deny default)
+
+;; Allow basic runtime operations (threads, sysctl reads, mach services, etc.).
+;; This is part of macOS itself: /System/Library/Sandbox/Profiles/system.sb
+(import "system.sb")
+
+;; Block all networking.
+(deny network*)
+
+;; Block writes everywhere.
+(deny file-write*)
+
+;; Explicitly deny reads from user-controlled / sensitive locations.
+(deny file-read* (subpath (param "HOME")))
+(deny file-read* (subpath "/Users"))
+(deny file-read* (subpath "/Volumes"))
+(deny file-read* (subpath "/private/etc"))
+(deny file-read* (subpath "/etc"))
+(deny file-read* (subpath "/private/var/folders"))
+(deny file-read* (subpath "/private/var/tmp"))
+(deny file-read* (subpath "/private/tmp"))
+
+;; Allow read-only access to system resources required for font discovery/loading.
+(allow file-read* (subpath "/System/Library/Fonts"))
+(allow file-read* (subpath "/Library/Fonts"))
+(allow file-read* (subpath "/usr/share/fonts"))
+(allow file-read* (subpath "/System/Library/Frameworks"))
+(allow file-read* (subpath "/System/Library/PrivateFrameworks"))
+(allow file-read* (subpath "/usr/lib"))
+"#;
 
 fn sandbox_init_profile(profile: &CStr, flags: u64) -> io::Result<()> {
   let mut errorbuf: *mut libc::c_char = std::ptr::null_mut();
@@ -33,19 +100,41 @@ fn sandbox_init_profile(profile: &CStr, flags: u64) -> io::Result<()> {
     return Ok(());
   }
 
-  let message = if !errorbuf.is_null() {
-    // SAFETY: `errorbuf` is allocated by `libsandbox` and is NUL-terminated.
-    let message = unsafe { CStr::from_ptr(errorbuf) }
-      .to_string_lossy()
-      .into_owned();
-    // SAFETY: `sandbox_free_error` frees the buffer allocated by `sandbox_init`.
-    unsafe { sandbox_free_error(errorbuf) };
-    message
-  } else {
-    "sandbox_init failed with unknown error".to_string()
-  };
+  Err(io::Error::new(io::ErrorKind::Other, sandbox_message(errorbuf)))
+}
 
-  Err(io::Error::new(io::ErrorKind::Other, message))
+fn sandbox_init_profile_with_parameters(
+  profile: &CStr,
+  flags: u64,
+  parameters: &[*const libc::c_char],
+) -> io::Result<()> {
+  let mut errorbuf: *mut libc::c_char = std::ptr::null_mut();
+
+  // SAFETY: `sandbox_init_with_parameters` installs an irreversible process-wide sandbox. The FFI
+  // contract requires a NUL-terminated profile string, a NULL-terminated `parameters` list, and a
+  // valid out-pointer for the error buffer.
+  let rc = unsafe {
+    sandbox_init_with_parameters(profile.as_ptr(), flags, parameters.as_ptr(), &mut errorbuf)
+  };
+  if rc == 0 {
+    return Ok(());
+  }
+
+  Err(io::Error::new(io::ErrorKind::Other, sandbox_message(errorbuf)))
+}
+
+fn sandbox_message(errorbuf: *mut libc::c_char) -> String {
+  if errorbuf.is_null() {
+    return "sandbox_init failed with unknown error".to_string();
+  }
+
+  // SAFETY: `errorbuf` is allocated by `libsandbox` and is NUL-terminated.
+  let message = unsafe { CStr::from_ptr(errorbuf) }
+    .to_string_lossy()
+    .into_owned();
+  // SAFETY: `sandbox_free_error` frees the buffer allocated by `sandbox_init`.
+  unsafe { sandbox_free_error(errorbuf) };
+  message
 }
 
 fn apply_named_profile(profile_name: &str) -> io::Result<()> {
@@ -57,7 +146,22 @@ fn apply_named_profile(profile_name: &str) -> io::Result<()> {
 fn apply_profile_source(profile_source: &str) -> io::Result<()> {
   let profile_source = CString::new(profile_source)
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "sandbox profile contains NUL"))?;
+  // Flags == 0 means the profile argument is raw profile source (not a named profile).
   sandbox_init_profile(&profile_source, 0)
+}
+
+fn apply_profile_source_with_home_param(profile_source: &str) -> io::Result<()> {
+  let profile_source = CString::new(profile_source)
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "sandbox profile contains NUL"))?;
+
+  let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
+  let home = CString::new(home)
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "HOME contains NUL"))?;
+  let key = CString::new("HOME").expect("static cstr should not contain NUL");
+
+  // `sandbox_init_with_parameters` expects a NULL-terminated list: [key, value, key, value, NULL].
+  let params: [*const libc::c_char; 3] = [key.as_ptr(), home.as_ptr(), std::ptr::null()];
+  sandbox_init_profile_with_parameters(&profile_source, 0, &params)
 }
 
 /// Apply the macOS Seatbelt "pure-computation" sandbox profile to the current process.
@@ -87,6 +191,18 @@ pub fn apply_pure_computation_sandbox() -> io::Result<()> {
   }
 
   Err(named_err)
+}
+
+/// Apply a renderer-focused sandbox to the current process.
+///
+/// This call is irreversible: once applied, the process cannot regain privileges.
+pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
+  match mode {
+    MacosSandboxMode::PureComputation => apply_pure_computation_sandbox(),
+    MacosSandboxMode::RendererSystemFonts => {
+      apply_profile_source_with_home_param(RENDERER_SYSTEM_FONTS_PROFILE)
+    }
+  }
 }
 
 #[cfg(test)]
@@ -183,4 +299,3 @@ mod tests {
     );
   }
 }
-
