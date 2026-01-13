@@ -160,6 +160,10 @@ Linux implementation checklist (shared memory + FD passing footguns): [`docs/ipc
 See also: [docs/sandboxing.md](../docs/sandboxing.md) for repo-specific sandbox implementation notes
 (including the Windows debug escape hatch).
 
+Linux deep dive (rlimits/fd hygiene/namespaces/Landlock/seccomp): [`docs/security/sandbox.md`](../docs/security/sandbox.md).
+
+Sandbox doc entrypoint (links to all platforms): [`docs/renderer_sandbox.md`](../docs/renderer_sandbox.md).
+
 Linux quick reference (developer overrides; documented fully in [`docs/env-vars.md`](../docs/env-vars.md)):
 
 - Disable sandbox entirely (debug escape hatch; **INSECURE**): `FASTR_DISABLE_RENDERER_SANDBOX=1`
