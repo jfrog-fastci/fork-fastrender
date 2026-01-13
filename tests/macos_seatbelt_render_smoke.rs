@@ -21,10 +21,9 @@ impl ResourceFetcher for NoNetworkFetcher {
 fn sandboxed_render_smoke_seatbelt_profile() {
   const CHILD_ENV: &str = "FASTR_TEST_SEATBELT_RENDER_SMOKE_CHILD";
   const SENTINEL: &str = "FASTR_SEATBELT_RENDER_SMOKE_OK";
-  const TEST_NAME: &str = concat!(
-    module_path!(),
-    "::sandboxed_render_smoke_seatbelt_profile"
-  );
+  // Note: libtest `--exact` matches against the *function* name (integration test crate names are
+  // not included in reported test names), so pass just the identifier here.
+  const TEST_NAME: &str = stringify!(sandboxed_render_smoke_seatbelt_profile);
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     // Keep this smoke test lightweight: don't load large bundled emoji fonts and avoid spawning a
