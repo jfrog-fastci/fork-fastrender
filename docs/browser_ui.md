@@ -513,7 +513,8 @@ Manual verification checklist:
     - `chrome_ui` builds the tab strip + toolbar + address bar and returns `ChromeAction` values for
       the front-end to translate into worker messages. The windowed `browser` app calls this helper
       each egui frame.
-  - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
+- About pages (`about:blank`, `about:newtab`, `about:error`, `about:help`, `about:version`, `about:gpu`,
+  `about:history`, `about:bookmarks`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
     - Used by the canonical UI render worker runtime ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
