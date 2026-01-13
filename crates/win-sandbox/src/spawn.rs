@@ -348,10 +348,26 @@ fn spawn_sandboxed_inner(
     .map(|b| b.as_ptr() as *const core::ffi::c_void)
     .unwrap_or(ptr::null());
 
+  // Note: `AppContainerProfile` can be disabled (no SID). Treat that as "no AppContainer".
+  let needs_security_caps = cfg
+    .appcontainer
+    .as_ref()
+    .and_then(|profile| profile.sid_opt())
+    .is_some();
+
   let current_dir_w;
   let current_dir_ptr = match &cfg.current_dir {
     Some(dir) => {
       current_dir_w = wide_null(dir.as_os_str());
+      current_dir_w.as_ptr()
+    }
+    None if needs_security_caps => {
+      // Avoid inheriting a potentially-inaccessible (or sensitive) parent current directory when
+      // spawning an AppContainer process.
+      //
+      // `C:\\Windows\\System32` is a conservative default that should be readable/traversable under
+      // an AppContainer token on supported Windows builds.
+      current_dir_w = wide_null(OsStr::new(r"C:\Windows\System32"));
       current_dir_w.as_ptr()
     }
     None => ptr::null(),
@@ -367,13 +383,6 @@ fn spawn_sandboxed_inner(
   };
 
   // Build any requested attributes.
-  //
-  // Note: `AppContainerProfile` can be disabled (no SID). Treat that as "no AppContainer".
-  let needs_security_caps = cfg
-    .appcontainer
-    .as_ref()
-    .and_then(|profile| profile.sid_opt())
-    .is_some();
   let needs_job = cfg.job.is_some();
   let needs_handle_list = !cfg.inherit_handles.is_empty();
   let needs_mitigation = mitigation_policy.is_some();

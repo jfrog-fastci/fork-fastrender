@@ -31,11 +31,12 @@ Code map (repo reality):
         caller provides an `AppContainerProfile`.
       - Can attach a Job object via `PROC_THREAD_ATTRIBUTE_JOB_LIST` when the caller provides a
         `Job` (the caller configures job limits separately).
-      - Note: if `SpawnConfig.current_dir` is `None`, Windows inherits the parent process CWD
-        (`lpCurrentDirectory = NULL`). When spawning with an AppContainer token, that inherited
-        directory may be inaccessible and can cause surprising startup failures (or break code that
-        uses relative paths). Callers should set an explicit, sandbox-accessible working directory
-        when using this low-level helper.
+      - Working directory behavior:
+        - If `SpawnConfig.current_dir` is `Some`, that directory is passed as `lpCurrentDirectory`.
+        - If `SpawnConfig.current_dir` is `None` and an AppContainer token is requested, the spawner
+          sets `lpCurrentDirectory` to `C:\Windows\System32` (so we do **not** inherit the parent
+          process CWD, which may be inaccessible or sensitive).
+        - Otherwise, the child inherits the parent process CWD (`lpCurrentDirectory = NULL`).
       - Note: `SpawnConfig.env` is an *override list* applied on top of the current process
         environment; this low-level helper does **not** implement `fastrender`'s environment
         sanitization. If you need to avoid leaking secrets from the broker process environment into
