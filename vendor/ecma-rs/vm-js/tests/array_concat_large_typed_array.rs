@@ -28,11 +28,23 @@ fn array_prototype_concat_large_typed_array_completes_under_budget() {
       const ta = new Uint32Array(N);
       ta[Symbol.isConcatSpreadable] = true;
       const out = [].concat(ta);
-      out.length === N && out[0] === 0 && out[N - 1] === 0;
-    "#,
+      if (!(out.length === N && out[0] === 0 && out[N - 1] === 0)) {
+        false;
+      } else {
+        // TypedArray with an overridden `"length"` property. Concat must respect the observable
+        // `length` (creating holes past the real typed-array length) without devolving into an
+        // O(len) loop for attacker-controlled fake lengths.
+        const M = 200_000;
+        const ta2 = new Uint8Array(1);
+        ta2[0] = 7;
+        Object.defineProperty(ta2, "length", { value: M });
+        ta2[Symbol.isConcatSpreadable] = true;
+        const out2 = [].concat(ta2);
+        out2.length === M && out2[0] === 7 && out2[M - 1] === undefined && !((M - 1) in out2);
+      }
+     "#,
     )
     .unwrap();
 
   assert_eq!(value, Value::Bool(true));
 }
-
