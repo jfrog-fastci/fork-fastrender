@@ -21,7 +21,9 @@ use crate::resource::FetchedResource;
 use crate::resource::HttpFetcher;
 use crate::resource::ReferrerPolicy;
 use crate::resource::ResourceFetcher;
-use crate::resource::{ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane, origin_from_url};
+use crate::resource::{
+  ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane, origin_from_url,
+};
 use crate::style::color::Rgba;
 use crate::style::types::ImageResolution;
 use crate::style::types::OrientationTransform;
@@ -719,8 +721,9 @@ pub struct ImageCacheDiagnostics {
 thread_local! {
   static IMAGE_CACHE_DIAGNOSTICS_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
-static IMAGE_CACHE_DIAGNOSTICS: Mutex<Option<HashMap<std::thread::ThreadId, ImageCacheDiagnostics>>> =
-  Mutex::new(None);
+static IMAGE_CACHE_DIAGNOSTICS: Mutex<
+  Option<HashMap<std::thread::ThreadId, ImageCacheDiagnostics>>,
+> = Mutex::new(None);
 static NEXT_IMAGE_CACHE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn enable_image_cache_diagnostics() {
@@ -729,7 +732,10 @@ pub(crate) fn enable_image_cache_diagnostics() {
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner());
   let map = guard.get_or_insert_with(HashMap::new);
-  map.insert(std::thread::current().id(), ImageCacheDiagnostics::default());
+  map.insert(
+    std::thread::current().id(),
+    ImageCacheDiagnostics::default(),
+  );
 }
 
 pub(crate) fn take_image_cache_diagnostics() -> Option<ImageCacheDiagnostics> {
@@ -1689,7 +1695,10 @@ enum SvgSubresourceCacheValue {
 
 type SvgSubresourceCache = Arc<Mutex<SizedLruCache<String, SvgSubresourceCacheValue>>>;
 
-fn estimate_svg_subresource_cache_entry_bytes(key: &str, value: &SvgSubresourceCacheValue) -> usize {
+fn estimate_svg_subresource_cache_entry_bytes(
+  key: &str,
+  value: &SvgSubresourceCacheValue,
+) -> usize {
   let mut bytes = key
     .len()
     .saturating_add(std::mem::size_of::<SvgSubresourceCacheValue>());
@@ -1715,14 +1724,25 @@ fn estimate_svg_subresource_cache_entry_bytes(key: &str, value: &SvgSubresourceC
         acc = acc.saturating_add(id.len());
         acc = acc.saturating_add(el.tag_name.len());
         acc = acc.saturating_add(el.view_box.as_ref().map(|s| s.len()).unwrap_or(0));
-        acc = acc.saturating_add(el.preserve_aspect_ratio.as_ref().map(|s| s.len()).unwrap_or(0));
+        acc = acc.saturating_add(
+          el.preserve_aspect_ratio
+            .as_ref()
+            .map(|s| s.len())
+            .unwrap_or(0),
+        );
         acc = acc.saturating_add(std::mem::size_of::<SvgUseInlineElement>());
         acc
       });
       if let Some(root) = sprite.root.as_ref() {
         bytes = bytes.saturating_add(root.tag_name.len());
         bytes = bytes.saturating_add(root.view_box.as_ref().map(|s| s.len()).unwrap_or(0));
-        bytes = bytes.saturating_add(root.preserve_aspect_ratio.as_ref().map(|s| s.len()).unwrap_or(0));
+        bytes = bytes.saturating_add(
+          root
+            .preserve_aspect_ratio
+            .as_ref()
+            .map(|s| s.len())
+            .unwrap_or(0),
+        );
         bytes = bytes.saturating_add(std::mem::size_of::<SvgUseInlineElement>());
       }
       bytes = bytes.saturating_add(std::mem::size_of::<HashMap<String, String>>());
@@ -2084,7 +2104,9 @@ fn inline_svg_use_references<'a>(
       }
 
       let sprite_final_url = res.final_url.clone();
-      let sprite_base_url = sprite_final_url.clone().unwrap_or_else(|| resolved_url.clone());
+      let sprite_base_url = sprite_final_url
+        .clone()
+        .unwrap_or_else(|| resolved_url.clone());
 
       let mut sprite_text = {
         let bytes = res.bytes;
@@ -2203,7 +2225,10 @@ fn inline_svg_use_references<'a>(
         xmlns_attrs.push('"');
       }
       if !had_default_xmlns {
-        xmlns_attrs_list.push(("xmlns".to_string(), "http://www.w3.org/2000/svg".to_string()));
+        xmlns_attrs_list.push((
+          "xmlns".to_string(),
+          "http://www.w3.org/2000/svg".to_string(),
+        ));
         xmlns_attrs.push_str(" xmlns=\"http://www.w3.org/2000/svg\"");
       }
 
@@ -2459,10 +2484,8 @@ fn inline_svg_use_references<'a>(
         wrapped.push_str(inner);
         wrapped.push_str("</svg>");
 
-        let injection = crate::paint::svg_mask_image::defs_injection_for_svg_fragment(
-          &sprite.id_defs,
-          &wrapped,
-        );
+        let injection =
+          crate::paint::svg_mask_image::defs_injection_for_svg_fragment(&sprite.id_defs, &wrapped);
         sprite
           .defs_injection_cache
           .insert(cache_key.to_string(), injection);
@@ -2517,11 +2540,7 @@ fn inline_svg_use_references<'a>(
           cached.as_deref()
         } else {
           let mut wrapped = String::with_capacity(
-            "<svg".len()
-              + sprite.xmlns_attrs.len()
-              + ">".len()
-              + referenced.len()
-              + "</svg>".len(),
+            "<svg".len() + sprite.xmlns_attrs.len() + ">".len() + referenced.len() + "</svg>".len(),
           );
           wrapped.push_str("<svg");
           wrapped.push_str(&sprite.xmlns_attrs);
@@ -2624,7 +2643,8 @@ fn inline_svg_use_references<'a>(
 
     let replacement = if let Some(defs) = wrapper_defs_injection {
       let mut replacement = String::with_capacity(
-        "<g".len()
+        "<g"
+          .len()
           .saturating_add(wrapper_attrs.len())
           .saturating_add(1)
           .saturating_add(defs.len())
@@ -3015,7 +3035,9 @@ fn inline_svg_image_references<'a>(
       let is_candidate = is_href_attr || is_src_attr;
       let name_range = (node_range.start + name_start)..(node_range.start + name_end);
       let name_growth = if is_src_attr {
-        "href".len().saturating_sub(name_range.end.saturating_sub(name_range.start))
+        "href"
+          .len()
+          .saturating_sub(name_range.end.saturating_sub(name_range.start))
       } else {
         0
       };
@@ -3122,7 +3144,8 @@ fn inline_svg_image_references<'a>(
           let mut cached: Option<SvgCachedDataUrl> = None;
           if let Some(shared) = subresource_cache {
             if let Ok(mut cache) = shared.lock() {
-              if let Some(SvgSubresourceCacheValue::ImageDataUrl(entry)) = cache.get_cloned(&cache_key)
+              if let Some(SvgSubresourceCacheValue::ImageDataUrl(entry)) =
+                cache.get_cloned(&cache_key)
               {
                 if let Some(ctx) = ctx {
                   if let Err(err) = ctx.check_allowed_with_final(
@@ -3378,7 +3401,9 @@ fn inline_svg_image_references<'a>(
         let mut cached: Option<SvgCachedDataUrl> = None;
         if let Some(shared) = subresource_cache {
           if let Ok(mut cache) = shared.lock() {
-            if let Some(SvgSubresourceCacheValue::ImageDataUrl(entry)) = cache.get_cloned(&cache_key) {
+            if let Some(SvgSubresourceCacheValue::ImageDataUrl(entry)) =
+              cache.get_cloned(&cache_key)
+            {
               if let Some(ctx) = ctx {
                 if let Err(err) = ctx.check_allowed_with_final(
                   ResourceKind::Image,
@@ -3948,9 +3973,11 @@ fn fetch_svg_stylesheet_import(
   };
 
   if let Some(ctx) = ctx {
-    if let Err(err) =
-      ctx.check_allowed_with_final(ResourceKind::Stylesheet, requested_url, res.final_url.as_deref())
-    {
+    if let Err(err) = ctx.check_allowed_with_final(
+      ResourceKind::Stylesheet,
+      requested_url,
+      res.final_url.as_deref(),
+    ) {
       return Err(Error::Image(ImageError::LoadFailed {
         url: requested_url.to_string(),
         reason: err.reason,
@@ -3966,7 +3993,10 @@ fn fetch_svg_stylesheet_import(
   }
 
   let bytes_len = res.bytes.len();
-  let final_url = res.final_url.clone().unwrap_or_else(|| requested_url.to_string());
+  let final_url = res
+    .final_url
+    .clone()
+    .unwrap_or_else(|| requested_url.to_string());
   let final_url = strip_url_fragment(&final_url).into_owned();
   let css_text = String::from_utf8_lossy(&res.bytes).into_owned();
   Ok(Some((final_url, css_text, bytes_len)))
@@ -4011,12 +4041,7 @@ fn inline_css_imports_with_budget<'a>(
   let mut last_emitted = start_pos;
 
   loop {
-    check_root_periodic(
-      &mut deadline_counter,
-      256,
-      RenderStage::Paint,
-    )
-    .map_err(Error::Render)?;
+    check_root_periodic(&mut deadline_counter, 256, RenderStage::Paint).map_err(Error::Render)?;
 
     let token_start = parser.position();
     let token = match parser.next_including_whitespace_and_comments() {
@@ -4066,8 +4091,8 @@ fn inline_css_imports_with_budget<'a>(
                     | Ok(Token::ParenthesisBlock)
                     | Ok(Token::SquareBracketBlock)
                     | Ok(Token::CurlyBracketBlock) => {
-                      let _ = nested
-                        .parse_nested_block(|_| Ok::<_, cssparser::ParseError<'a, ()>>(()));
+                      let _ =
+                        nested.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'a, ()>>(()));
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -4115,7 +4140,8 @@ fn inline_css_imports_with_budget<'a>(
 
         let should_rewrite_url = should_absolutize_css_url_for_svg_style_import(&url_token);
 
-        let Some(requested_url) = resolve_svg_stylesheet_import_url(base_url, ctx, &url_token) else {
+        let Some(requested_url) = resolve_svg_stylesheet_import_url(base_url, ctx, &url_token)
+        else {
           continue;
         };
         let requested_url = strip_url_fragment(&requested_url).into_owned();
@@ -4138,8 +4164,9 @@ fn inline_css_imports_with_budget<'a>(
           let import_text = parser.slice_from(import_start);
           let chunk = parser.slice_from(last_emitted);
           let prefix_len = chunk.len().saturating_sub(import_text.len());
-          let out = out
-            .get_or_insert_with(|| String::with_capacity(css.len().saturating_add(replacement.len())));
+          let out = out.get_or_insert_with(|| {
+            String::with_capacity(css.len().saturating_add(replacement.len()))
+          });
           out.push_str(&chunk[..prefix_len]);
           out.push_str(&replacement);
           last_emitted = parser.position();
@@ -4171,22 +4198,22 @@ fn inline_css_imports_with_budget<'a>(
         budget.spend_bytes(svg_url, fetched_bytes)?;
 
         stack.push(final_url.clone());
-        let mut nested =
-          inline_css_imports_with_budget(
-            &fetched_css,
-            Some(&final_url),
-            Some(&final_url),
-            fetcher,
-            ctx,
-            budget,
-            stack,
-            depth + 1,
-            svg_url,
-          )?
-          .into_owned();
+        let mut nested = inline_css_imports_with_budget(
+          &fetched_css,
+          Some(&final_url),
+          Some(&final_url),
+          fetcher,
+          ctx,
+          budget,
+          stack,
+          depth + 1,
+          svg_url,
+        )?
+        .into_owned();
         stack.pop();
 
-        if let Cow::Owned(rewritten) = absolutize_css_urls_for_svg_style_import(&nested, &final_url) {
+        if let Cow::Owned(rewritten) = absolutize_css_urls_for_svg_style_import(&nested, &final_url)
+        {
           nested = rewritten;
         }
 
@@ -4221,8 +4248,9 @@ fn inline_css_imports_with_budget<'a>(
         let import_text = parser.slice_from(import_start);
         let chunk = parser.slice_from(last_emitted);
         let prefix_len = chunk.len().saturating_sub(import_text.len());
-        let out = out
-          .get_or_insert_with(|| String::with_capacity(css.len().saturating_add(replacement.len())));
+        let out = out.get_or_insert_with(|| {
+          String::with_capacity(css.len().saturating_add(replacement.len()))
+        });
         out.push_str(&chunk[..prefix_len]);
         out.push_str(&replacement);
         last_emitted = parser.position();
@@ -4278,14 +4306,11 @@ fn inline_svg_style_imports<'a>(
     Ok(Err(_)) | Err(_) => return Ok(Cow::Borrowed(svg_content)),
   };
 
-  let base_url = Url::parse(svg_url)
-    .ok()
-    .map(|_| svg_url)
-    .or_else(|| {
-      ctx
-        .and_then(|ctx| ctx.document_url.as_deref())
-        .filter(|doc_url| Url::parse(doc_url).is_ok())
-    });
+  let base_url = Url::parse(svg_url).ok().map(|_| svg_url).or_else(|| {
+    ctx
+      .and_then(|ctx| ctx.document_url.as_deref())
+      .filter(|doc_url| Url::parse(doc_url).is_ok())
+  });
   let importer_url = if base_url == Some(svg_url) {
     Some(svg_url)
   } else {
@@ -4299,12 +4324,7 @@ fn inline_svg_style_imports<'a>(
   let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
 
   for node in doc.descendants().filter(|n| n.is_element()) {
-    check_root_periodic(
-      &mut deadline_counter,
-      256,
-      RenderStage::Paint,
-    )
-    .map_err(Error::Render)?;
+    check_root_periodic(&mut deadline_counter, 256, RenderStage::Paint).map_err(Error::Render)?;
 
     if node.tag_name().name() != "style" {
       continue;
@@ -4423,9 +4443,12 @@ fn inline_svg_external_url_fragment_references<'a>(
     if bytes.len() < needle.len() {
       return false;
     }
-    bytes
-      .windows(needle.len())
-      .any(|window| window.iter().zip(needle).all(|(a, b)| a.to_ascii_lowercase() == *b))
+    bytes.windows(needle.len()).any(|window| {
+      window
+        .iter()
+        .zip(needle)
+        .all(|(a, b)| a.to_ascii_lowercase() == *b)
+    })
   }
 
   // Avoid scanning unless we plausibly have url() tokens.
@@ -5829,6 +5852,11 @@ pub struct CachedImageMetadata {
   pub orientation: Option<OrientationTransform>,
   pub resolution: Option<f32>,
   pub is_vector: bool,
+  /// True when the source image is animated (e.g. multi-frame GIF).
+  ///
+  /// This is populated by [`ImageCache::probe`] so upstream systems can schedule animation ticks
+  /// without fully decoding the image.
+  pub is_animated: bool,
   pub intrinsic_ratio: Option<f32>,
   pub aspect_ratio_none: bool,
 }
@@ -5868,7 +5896,19 @@ struct DiskCachedImageProbeMetadataV1 {
   aspect_ratio_none: bool,
 }
 
-impl From<&CachedImageMetadata> for DiskCachedImageProbeMetadataV1 {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DiskCachedImageProbeMetadataV2 {
+  width: u32,
+  height: u32,
+  orientation: Option<DiskCachedOrientationTransformV1>,
+  resolution: Option<f32>,
+  is_vector: bool,
+  is_animated: bool,
+  intrinsic_ratio: Option<f32>,
+  aspect_ratio_none: bool,
+}
+
+impl From<&CachedImageMetadata> for DiskCachedImageProbeMetadataV2 {
   fn from(meta: &CachedImageMetadata) -> Self {
     Self {
       width: meta.width,
@@ -5876,20 +5916,22 @@ impl From<&CachedImageMetadata> for DiskCachedImageProbeMetadataV1 {
       orientation: meta.orientation.map(Into::into),
       resolution: meta.resolution,
       is_vector: meta.is_vector,
+      is_animated: meta.is_animated,
       intrinsic_ratio: meta.intrinsic_ratio,
       aspect_ratio_none: meta.aspect_ratio_none,
     }
   }
 }
 
-impl From<DiskCachedImageProbeMetadataV1> for CachedImageMetadata {
-  fn from(meta: DiskCachedImageProbeMetadataV1) -> Self {
+impl From<DiskCachedImageProbeMetadataV2> for CachedImageMetadata {
+  fn from(meta: DiskCachedImageProbeMetadataV2) -> Self {
     Self {
       width: meta.width,
       height: meta.height,
       orientation: meta.orientation.map(Into::into),
       resolution: meta.resolution,
       is_vector: meta.is_vector,
+      is_animated: meta.is_animated,
       intrinsic_ratio: meta.intrinsic_ratio,
       aspect_ratio_none: meta.aspect_ratio_none,
     }
@@ -5897,13 +5939,28 @@ impl From<DiskCachedImageProbeMetadataV1> for CachedImageMetadata {
 }
 
 fn encode_probe_metadata_for_disk(meta: &CachedImageMetadata) -> Option<Vec<u8>> {
-  serde_json::to_vec(&DiskCachedImageProbeMetadataV1::from(meta)).ok()
+  serde_json::to_vec(&DiskCachedImageProbeMetadataV2::from(meta)).ok()
 }
 
 fn decode_probe_metadata_from_disk(bytes: &[u8]) -> Option<CachedImageMetadata> {
-  serde_json::from_slice::<DiskCachedImageProbeMetadataV1>(bytes)
+  serde_json::from_slice::<DiskCachedImageProbeMetadataV2>(bytes)
     .ok()
     .map(Into::into)
+    .or_else(|| {
+      // Backward compatibility for older on-disk probe metadata entries.
+      serde_json::from_slice::<DiskCachedImageProbeMetadataV1>(bytes)
+        .ok()
+        .map(|meta| CachedImageMetadata {
+          width: meta.width,
+          height: meta.height,
+          orientation: meta.orientation.map(Into::into),
+          resolution: meta.resolution,
+          is_vector: meta.is_vector,
+          is_animated: false,
+          intrinsic_ratio: meta.intrinsic_ratio,
+          aspect_ratio_none: meta.aspect_ratio_none,
+        })
+    })
 }
 
 impl CachedImageMetadata {
@@ -5968,6 +6025,7 @@ impl From<&CachedImage> for CachedImageMetadata {
       orientation: image.orientation,
       resolution: image.resolution,
       is_vector: image.is_vector,
+      is_animated: false,
       intrinsic_ratio: image.intrinsic_ratio,
       aspect_ratio_none: image.aspect_ratio_none,
     }
@@ -6674,6 +6732,15 @@ impl ResourceFetcher for SandboxedImageCacheFetcher {
       )))
     }
   }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GifAnimationProbe {
+  Determined(bool),
+  /// The provided byte slice ended before the GIF trailer was reached (likely a truncated probe).
+  NeedMoreData,
+  /// The payload did not match the GIF block structure.
+  Invalid,
 }
 
 impl ImageCache {
@@ -8096,15 +8163,12 @@ impl ImageCache {
     // synthetic URL `"inline-svg"`, so we must fall back to the embedding document URL when
     // available; otherwise `xml:base` values like `//cdn.example/...` would incorrectly resolve
     // against the dummy base and could bypass policy enforcement on cached pixmaps.
-    let document_base_url = Url::parse(svg_url)
-      .ok()
-      .map(|_| svg_url)
-      .or_else(|| {
-        ctx
-          .document_url
-          .as_deref()
-          .filter(|doc_url| Url::parse(doc_url).is_ok())
-      });
+    let document_base_url = Url::parse(svg_url).ok().map(|_| svg_url).or_else(|| {
+      ctx
+        .document_url
+        .as_deref()
+        .filter(|doc_url| Url::parse(doc_url).is_ok())
+    });
 
     // Avoid paying the cost of an XML parse when the SVG clearly cannot trigger any external
     // subresource fetches. Large SVG exports (Illustrator/Figma/etc.) can contain hundreds of
@@ -8550,9 +8614,14 @@ impl ImageCache {
             Token::Function(_) | Token::ParenthesisBlock | Token::SquareBracketBlock => {
               let mut nested_error: Option<Error> = None;
               let _ = parser.parse_nested_block(|nested| {
-                if let Err(err) =
-                  scan_parser(nested, include_imports, svg_url, record, depth + 1, in_font_face)
-                {
+                if let Err(err) = scan_parser(
+                  nested,
+                  include_imports,
+                  svg_url,
+                  record,
+                  depth + 1,
+                  in_font_face,
+                ) {
                   nested_error = Some(err);
                   return Err(nested.new_custom_error::<(), ()>(()));
                 }
@@ -8583,11 +8652,8 @@ impl ImageCache {
     for node in doc.descendants() {
       if node.is_element() {
         let xml_base_chain = svg_xml_base_chain_for_node(node);
-        let base = apply_svg_xml_base_chain(document_base_url, &xml_base_chain).unwrap_or_else(|| {
-          document_base_url
-            .unwrap_or(svg_url)
-            .to_string()
-        });
+        let base = apply_svg_xml_base_chain(document_base_url, &xml_base_chain)
+          .unwrap_or_else(|| document_base_url.unwrap_or(svg_url).to_string());
 
         for attr in node.attributes() {
           let local_name = attr
@@ -9529,11 +9595,8 @@ impl ImageCache {
     let render_timer = Instant::now();
 
     let svg_preprocessed = self.preprocess_svg_markup(svg_content, url)?;
-    let svg_viewport_resolved = svg_with_resolved_root_viewport_size(
-      svg_preprocessed.as_ref(),
-      render_width,
-      render_height,
-    );
+    let svg_viewport_resolved =
+      svg_with_resolved_root_viewport_size(svg_preprocessed.as_ref(), render_width, render_height);
     let svg_content = svg_viewport_resolved.as_ref();
     if let Some(pixmap) = try_render_simple_svg_pixmap(svg_content, render_width, render_height)? {
       let pixmap = Arc::new(pixmap);
@@ -9654,6 +9717,7 @@ impl ImageCache {
       orientation: None,
       resolution: None,
       is_vector: true,
+      is_animated: false,
       intrinsic_ratio,
       aspect_ratio_none,
     })
@@ -9889,12 +9953,30 @@ impl ImageCache {
         })?;
         self.enforce_decode_limits(width, height, url)?;
 
+        let is_animated = if matches!(format_from_content_type, Some(ImageFormat::Gif))
+          || matches!(sniffed_format, Some(ImageFormat::Gif))
+        {
+          match Self::gif_is_animated(&bytes) {
+            GifAnimationProbe::Determined(animated) => animated,
+            GifAnimationProbe::NeedMoreData => {
+              return Err(Error::Image(ImageError::DecodeFailed {
+                url: url.to_string(),
+                reason: "Unable to determine GIF animation status from probe bytes".to_string(),
+              }));
+            }
+            GifAnimationProbe::Invalid => false,
+          }
+        } else {
+          false
+        };
+
         return Ok(CachedImageMetadata {
           width,
           height,
           orientation,
           resolution,
           is_vector: false,
+          is_animated,
           intrinsic_ratio: None,
           aspect_ratio_none: false,
         });
@@ -9918,12 +10000,30 @@ impl ImageCache {
     })?;
     self.enforce_decode_limits(width, height, url)?;
 
+    let is_animated = if matches!(format_from_content_type, Some(ImageFormat::Gif))
+      || matches!(sniffed_format, Some(ImageFormat::Gif))
+    {
+      match Self::gif_is_animated(bytes) {
+        GifAnimationProbe::Determined(animated) => animated,
+        GifAnimationProbe::NeedMoreData => {
+          return Err(Error::Image(ImageError::DecodeFailed {
+            url: url.to_string(),
+            reason: "Unable to determine GIF animation status from probe bytes".to_string(),
+          }));
+        }
+        GifAnimationProbe::Invalid => false,
+      }
+    } else {
+      false
+    };
+
     Ok(CachedImageMetadata {
       width,
       height,
       orientation,
       resolution,
       is_vector: false,
+      is_animated,
       intrinsic_ratio: None,
       aspect_ratio_none: false,
     })
@@ -10172,6 +10272,180 @@ impl ImageCache {
       ImageFormat::WebP => Self::webp_has_alpha(bytes),
       _ => None,
     }
+  }
+
+  fn gif_is_animated(bytes: &[u8]) -> GifAnimationProbe {
+    // Minimal GIF parser that counts image descriptor blocks (frames) without decoding pixel data.
+    // Stops as soon as a second frame is observed.
+    //
+    // Format reference: https://www.w3.org/Graphics/GIF/spec-gif89a.txt
+    if bytes.len() < 13 {
+      return GifAnimationProbe::Invalid;
+    }
+    let Some(header) = bytes.get(0..6) else {
+      return GifAnimationProbe::Invalid;
+    };
+    if header != b"GIF87a" && header != b"GIF89a" {
+      return GifAnimationProbe::Invalid;
+    }
+
+    // Logical Screen Descriptor starts at byte 6.
+    let packed = match bytes.get(10) {
+      Some(v) => *v,
+      None => return GifAnimationProbe::NeedMoreData,
+    };
+    let mut offset = 13usize;
+
+    // Skip global color table if present.
+    if packed & 0x80 != 0 {
+      let table_bits = (packed & 0x07) as usize;
+      let Some(entries) = 1usize.checked_shl((table_bits + 1) as u32) else {
+        return GifAnimationProbe::Invalid;
+      };
+      let Some(table_bytes) = 3usize.checked_mul(entries) else {
+        return GifAnimationProbe::Invalid;
+      };
+      let Some(next) = offset.checked_add(table_bytes) else {
+        return GifAnimationProbe::Invalid;
+      };
+      if next > bytes.len() {
+        return GifAnimationProbe::NeedMoreData;
+      }
+      offset = next;
+    }
+
+    let mut frame_count = 0usize;
+
+    while offset < bytes.len() {
+      match bytes[offset] {
+        0x3B => {
+          // GIF trailer.
+          return GifAnimationProbe::Determined(frame_count > 1);
+        }
+        0x21 => {
+          // Extension introducer.
+          let Some(label) = bytes.get(offset + 1).copied() else {
+            return GifAnimationProbe::NeedMoreData;
+          };
+          offset = match offset.checked_add(2) {
+            Some(v) => v,
+            None => return GifAnimationProbe::Invalid,
+          };
+
+          if label == 0xF9 {
+            // Graphics Control Extension. Fixed-length block followed by a terminator.
+            let Some(block_size) = bytes.get(offset).copied().map(|b| b as usize) else {
+              return GifAnimationProbe::NeedMoreData;
+            };
+            offset = match offset.checked_add(1) {
+              Some(v) => v,
+              None => return GifAnimationProbe::Invalid,
+            };
+            let Some(end) = offset.checked_add(block_size) else {
+              return GifAnimationProbe::Invalid;
+            };
+            if end > bytes.len() {
+              return GifAnimationProbe::NeedMoreData;
+            }
+            offset = end;
+            // Block terminator byte.
+            match bytes.get(offset) {
+              Some(0x00) => offset += 1,
+              Some(_) => return GifAnimationProbe::Invalid,
+              None => return GifAnimationProbe::NeedMoreData,
+            }
+          } else {
+            // Skip extension data sub-blocks.
+            loop {
+              let Some(size) = bytes.get(offset).copied().map(|b| b as usize) else {
+                return GifAnimationProbe::NeedMoreData;
+              };
+              offset = match offset.checked_add(1) {
+                Some(v) => v,
+                None => return GifAnimationProbe::Invalid,
+              };
+              if size == 0 {
+                break;
+              }
+              let Some(next) = offset.checked_add(size) else {
+                return GifAnimationProbe::Invalid;
+              };
+              if next > bytes.len() {
+                return GifAnimationProbe::NeedMoreData;
+              }
+              offset = next;
+            }
+          }
+        }
+        0x2C => {
+          // Image descriptor (frame).
+          frame_count = frame_count.saturating_add(1);
+          if frame_count > 1 {
+            return GifAnimationProbe::Determined(true);
+          }
+
+          let Some(desc_end) = offset.checked_add(10) else {
+            return GifAnimationProbe::Invalid;
+          };
+          if desc_end > bytes.len() {
+            return GifAnimationProbe::NeedMoreData;
+          }
+          let packed = bytes.get(offset + 9).copied().unwrap_or(0);
+          offset = desc_end;
+
+          // Skip local color table if present.
+          if packed & 0x80 != 0 {
+            let table_bits = (packed & 0x07) as usize;
+            let Some(entries) = 1usize.checked_shl((table_bits + 1) as u32) else {
+              return GifAnimationProbe::Invalid;
+            };
+            let Some(table_bytes) = 3usize.checked_mul(entries) else {
+              return GifAnimationProbe::Invalid;
+            };
+            let Some(next) = offset.checked_add(table_bytes) else {
+              return GifAnimationProbe::Invalid;
+            };
+            if next > bytes.len() {
+              return GifAnimationProbe::NeedMoreData;
+            }
+            offset = next;
+          }
+
+          // LZW minimum code size.
+          offset = match offset.checked_add(1) {
+            Some(v) => v,
+            None => return GifAnimationProbe::Invalid,
+          };
+          if offset > bytes.len() {
+            return GifAnimationProbe::NeedMoreData;
+          }
+
+          // Image data sub-blocks (length-prefixed).
+          loop {
+            let Some(size) = bytes.get(offset).copied().map(|b| b as usize) else {
+              return GifAnimationProbe::NeedMoreData;
+            };
+            offset = match offset.checked_add(1) {
+              Some(v) => v,
+              None => return GifAnimationProbe::Invalid,
+            };
+            if size == 0 {
+              break;
+            }
+            let Some(next) = offset.checked_add(size) else {
+              return GifAnimationProbe::Invalid;
+            };
+            if next > bytes.len() {
+              return GifAnimationProbe::NeedMoreData;
+            }
+            offset = next;
+          }
+        }
+        _ => return GifAnimationProbe::Invalid,
+      }
+    }
+
+    GifAnimationProbe::NeedMoreData
   }
 
   fn gif_has_transparency(bytes: &[u8]) -> Option<bool> {
@@ -11983,8 +12257,8 @@ impl ImageCache {
     let svg_content = svg_preprocessed.as_ref();
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
       svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
-    let svg_has_intrinsic_size = meta_width.filter(|w| *w > 0.0).is_some()
-      || meta_height.filter(|h| *h > 0.0).is_some();
+    let svg_has_intrinsic_size =
+      meta_width.filter(|w| *w > 0.0).is_some() || meta_height.filter(|h| *h > 0.0).is_some();
     let svg_for_parse = svg_markup_for_roxmltree(svg_content);
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       usvg::Tree::from_str(svg_for_parse.as_ref(), &options)
@@ -12454,6 +12728,7 @@ mod tests_inline {
   use crate::style::types::OrientationTransform;
   use base64::Engine;
   use image::codecs::gif::GifEncoder;
+  use image::codecs::jpeg::JpegEncoder;
   use image::codecs::png::PngEncoder;
   use image::ColorType;
   use image::Delay;
@@ -13337,6 +13612,63 @@ mod tests_inline {
     cache.set_animation_time_ms(Some(250.0));
     let img2 = cache.load(&url).expect("gif frame at t=250 should decode");
     assert_eq!(img2.image.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
+  }
+
+  #[test]
+  fn probe_metadata_detects_animated_gif() {
+    let mut bytes = Vec::new();
+    {
+      let red = RgbaImage::from_pixel(1, 1, ImageRgba([255, 0, 0, 255]));
+      let blue = RgbaImage::from_pixel(1, 1, ImageRgba([0, 0, 255, 255]));
+      let delay = Delay::from_numer_denom_ms(100, 1);
+
+      let mut encoder = GifEncoder::new(&mut bytes);
+      encoder
+        .encode_frame(Frame::from_parts(red, 0, 0, delay))
+        .expect("encode gif frame 0");
+      encoder
+        .encode_frame(Frame::from_parts(blue, 0, 0, delay))
+        .expect("encode gif frame 1");
+    }
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let url = format!("data:image/gif;base64,{encoded}");
+
+    let cache = ImageCache::new();
+    let meta = cache.probe(&url).expect("probe animated gif");
+    assert!(
+      meta.is_animated,
+      "expected GIF probe to detect multiple frames"
+    );
+  }
+
+  #[test]
+  fn probe_metadata_non_gif_is_not_animated() {
+    let cache = ImageCache::new();
+
+    let png = RgbaImage::from_pixel(1, 1, ImageRgba([0, 255, 0, 255]));
+    let mut png_bytes = Vec::new();
+    PngEncoder::new(&mut png_bytes)
+      .write_image(png.as_raw(), 1, 1, ColorType::Rgba8)
+      .expect("encode png");
+    let png_url = format!(
+      "data:image/png;base64,{}",
+      base64::engine::general_purpose::STANDARD.encode(&png_bytes)
+    );
+    let png_meta = cache.probe(&png_url).expect("probe png");
+    assert!(!png_meta.is_animated);
+
+    let rgb = [0u8, 0, 0];
+    let mut jpeg_bytes = Vec::new();
+    JpegEncoder::new(&mut jpeg_bytes)
+      .write_image(&rgb, 1, 1, ColorType::Rgb8)
+      .expect("encode jpeg");
+    let jpeg_url = format!(
+      "data:image/jpeg;base64,{}",
+      base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes)
+    );
+    let jpeg_meta = cache.probe(&jpeg_url).expect("probe jpeg");
+    assert!(!jpeg_meta.is_animated);
   }
 
   fn svg_policy_cache_same_origin_only(doc_url: &str) -> ImageCache {
@@ -14791,6 +15123,7 @@ mod tests_inline {
       orientation: None,
       resolution: None,
       is_vector: false,
+      is_animated: false,
       intrinsic_ratio: Some(1.0),
       aspect_ratio_none: false,
     });
@@ -16152,6 +16485,7 @@ mod tests_inline {
       orientation: None,
       resolution: None,
       is_vector: false,
+      is_animated: false,
       intrinsic_ratio: None,
       aspect_ratio_none: false,
     };
@@ -17252,7 +17586,10 @@ mod tests_inline {
     let expanded =
       inline_svg_use_references(main_svg, main_url, &fetcher, None, None).expect("expand");
     assert_eq!(expanded.as_ref(), main_svg);
-    assert!(fetcher.requests().is_empty(), "expected no fetches for display:none <use>");
+    assert!(
+      fetcher.requests().is_empty(),
+      "expected no fetches for display:none <use>"
+    );
   }
 
   #[test]
@@ -17655,7 +17992,9 @@ mod tests_inline {
     ]);
     let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
 
-    let image = cache.load(main_url).expect("load main svg with external url(#id)");
+    let image = cache
+      .load(main_url)
+      .expect("load main svg with external url(#id)");
     assert_eq!((image.width(), image.height()), (1, 1));
     let rgba = image.image.to_rgba8();
     assert_eq!(
@@ -17769,10 +18108,10 @@ mod tests_inline {
   fn svg_style_import_fetch_uses_svg_url_as_referrer_when_parseable() {
     let svg_url = "https://example.test/main.svg";
     let style_url = "https://example.test/style.css";
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
+    let svg =
+      r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
 
-    let mut css_res =
-      FetchedResource::new(b"/* empty */".to_vec(), Some("text/css".to_string()));
+    let mut css_res = FetchedResource::new(b"/* empty */".to_vec(), Some("text/css".to_string()));
     css_res.status = Some(200);
     css_res.final_url = Some(style_url.to_string());
 
@@ -17798,10 +18137,13 @@ mod tests_inline {
     let requested_url = "https://example.test/style.css";
     let final_url = "https://example.test/assets/style.css";
     let nested_url = "https://example.test/assets/nested.css";
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
+    let svg =
+      r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
 
-    let mut redirected_res =
-      FetchedResource::new(b"@import \"nested.css\";".to_vec(), Some("text/css".to_string()));
+    let mut redirected_res = FetchedResource::new(
+      b"@import \"nested.css\";".to_vec(),
+      Some("text/css".to_string()),
+    );
     redirected_res.status = Some(200);
     redirected_res.final_url = Some(final_url.to_string());
 
@@ -17842,10 +18184,10 @@ mod tests_inline {
     let svg_url = "inline-svg";
     let doc_url = "https://example.test/page.html";
     let style_url = "https://example.test/style.css";
-    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
+    let svg =
+      r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
 
-    let mut css_res =
-      FetchedResource::new(b"/* empty */".to_vec(), Some("text/css".to_string()));
+    let mut css_res = FetchedResource::new(b"/* empty */".to_vec(), Some("text/css".to_string()));
     css_res.status = Some(200);
     css_res.final_url = Some(style_url.to_string());
 
@@ -17854,8 +18196,8 @@ mod tests_inline {
     let mut ctx = ResourceContext::default();
     ctx.document_url = Some(doc_url.to_string());
 
-    let _processed = inline_svg_style_imports(svg, svg_url, &fetcher, Some(&ctx))
-      .expect("inlined style imports");
+    let _processed =
+      inline_svg_style_imports(svg, svg_url, &fetcher, Some(&ctx)).expect("inlined style imports");
 
     let requests = fetcher.requests();
     assert!(
@@ -18299,10 +18641,8 @@ mod tests_inline {
     b_res.status = Some(200);
     b_res.final_url = Some(b_url.to_string());
 
-    let fetcher = MapFetcher::with_entries([
-      (a_url.to_string(), a_res),
-      (b_url.to_string(), b_res),
-    ]);
+    let fetcher =
+      MapFetcher::with_entries([(a_url.to_string(), a_res), (b_url.to_string(), b_res)]);
     let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
 
     let _pixmap = cache
@@ -18546,10 +18886,8 @@ mod tests_inline {
 
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><style>@import url("a/a.css");</style><rect class="r" width="1" height="1" fill="blue"/></svg>"#;
 
-    let mut a_res = FetchedResource::new(
-      b"@import \"b.css\";".to_vec(),
-      Some("text/css".to_string()),
-    );
+    let mut a_res =
+      FetchedResource::new(b"@import \"b.css\";".to_vec(), Some("text/css".to_string()));
     a_res.status = Some(200);
     a_res.final_url = Some(a_url.to_string());
 
@@ -18560,10 +18898,8 @@ mod tests_inline {
     b_res.status = Some(200);
     b_res.final_url = Some(b_url.to_string());
 
-    let fetcher = MapFetcher::with_entries([
-      (a_url.to_string(), a_res),
-      (b_url.to_string(), b_res),
-    ]);
+    let fetcher =
+      MapFetcher::with_entries([(a_url.to_string(), a_res), (b_url.to_string(), b_res)]);
     let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
 
     let pixmap = cache
@@ -18691,7 +19027,9 @@ mod tests_inline {
       inlined.as_ref()
     );
     assert!(
-      !inlined.as_ref().contains("src=\"https://example.test/img.png\""),
+      !inlined
+        .as_ref()
+        .contains("src=\"https://example.test/img.png\""),
       "expected src attribute to be rewritten, got: {}",
       inlined.as_ref()
     );
@@ -18776,8 +19114,7 @@ mod tests_inline {
     let main_url = "https://example.test/main.svg";
     let nested_url = "https://example.test/nested.svgz";
 
-    let nested_svg =
-      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#;
+    let nested_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#;
     let nested_svgz = gzip_bytes(nested_svg.as_bytes());
 
     let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="/nested.svgz" width="1" height="1"/></svg>"#;
@@ -19803,6 +20140,7 @@ mod tests_inline {
       orientation: None,
       resolution: None,
       is_vector: false,
+      is_animated: true,
       intrinsic_ratio: None,
       aspect_ratio_none: false,
     };
@@ -19834,6 +20172,7 @@ mod tests_inline {
         .expect("probe thread panicked")
         .expect("probe ok");
       assert_eq!(probed.dimensions(), (42, 24));
+      assert!(probed.is_animated);
     }
 
     assert_eq!(
