@@ -273,8 +273,9 @@ pub fn parse_xml(xml: &str) -> Result<Document> {
       None,
       /* inert_subtree */ false,
     );
-    doc.nodes[id.index()].parent = Some(doc_root);
+    doc.live_range_pre_insert_steps(doc_root, idx, 1);
     doc.nodes[doc_root.index()].children.insert(idx, id);
+    doc.nodes[id.index()].parent = Some(doc_root);
     idx += 1;
   }
 
