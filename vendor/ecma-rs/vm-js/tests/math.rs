@@ -160,6 +160,66 @@ fn unary_math_functions_preserve_negative_zero() -> Result<(), VmError> {
 }
 
 #[test]
+fn round_handles_signed_zero_and_rounding_edges() -> Result<(), VmError> {
+  // test262: built-ins/Math/round/S15.8.2.15_A7.js
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let round = get_data_property(&mut scope, math, "round")?.unwrap();
+
+  // Values in [-0.5, -0] round to -0.
+  for x in [-0.5, -0.25, -0.0] {
+    let out = rt.vm.call_without_host(
+      &mut scope,
+      round,
+      Value::Object(math),
+      &[Value::Number(x)],
+    )?;
+    let Value::Number(n) = out else {
+      return Err(VmError::Unimplemented("Math.round did not return number"));
+    };
+    assert_is_neg_zero(n);
+  }
+
+  // Values just below 0.5 must round to +0 even when `x + 0.5` would round to 1.0 in binary64.
+  let x = 0.5 - f64::EPSILON / 4.0;
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    round,
+    Value::Object(math),
+    &[Value::Number(x)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.round did not return number"));
+  };
+  assert_is_pos_zero(n);
+
+  // Large odd integers around 2^52 must round to themselves.
+  let eps = f64::EPSILON;
+  let cases = [
+    -(2.0 / eps - 1.0),
+    -(1.5 / eps - 1.0),
+    -(1.0 / eps + 1.0),
+    1.0 / eps + 1.0,
+    1.5 / eps - 1.0,
+    2.0 / eps - 1.0,
+  ];
+  for x in cases {
+    let out = rt.vm.call_without_host(
+      &mut scope,
+      round,
+      Value::Object(math),
+      &[Value::Number(x)],
+    )?;
+    assert_eq!(out, Value::Number(x));
+  }
+
+  Ok(())
+}
+
+#[test]
 fn atan2_preserves_signed_zero() -> Result<(), VmError> {
   // test262: built-ins/Math/atan2/S15.8.2.5_A5.js / A9.js
   let mut rt = TestRt::new(VmOptions::default())?;

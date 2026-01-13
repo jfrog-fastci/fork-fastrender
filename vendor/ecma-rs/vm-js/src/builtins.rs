@@ -23234,8 +23234,10 @@ pub fn math_round(
     // Spec: https://tc39.es/ecma262/#sec-math.round
     //
     // Avoid `(n + 0.5).floor()` because the intermediate `n + 0.5` can double-round to an integer
-    // in IEEE-754 binary64, producing incorrect results for values just below a half-integer
-    // boundary (e.g. `0.5 - Number.EPSILON/4`).
+    // in IEEE-754 binary64:
+    // - values just below a half-integer boundary (e.g. `0.5 - Number.EPSILON / 4`) can round up
+    //   to the next integer.
+    // - large odd integers near 2^52 can round up to `n + 1`.
     let t = n.trunc();
     let f = n - t;
     if f >= 0.5 {
