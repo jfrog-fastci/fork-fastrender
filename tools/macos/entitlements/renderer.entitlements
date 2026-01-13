@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FastRender (macOS) — renderer helper process entitlements
+
+  Intent: App-Sandbox the untrusted renderer helper process when FastRender is
+  shipped as a macOS `.app`. The renderer should not have direct OS capabilities
+  beyond what is required to render:
+    - NO network access (do NOT add `com.apple.security.network.client`)
+    - NO filesystem read/write access (do NOT add any `com.apple.security.files.*`
+      entitlements)
+
+  All network and file I/O should be brokered by the trusted browser process
+  (or a dedicated network process) over a narrow IPC surface.
+
+  NOTE: App Sandbox grants are *additive*; by default a sandboxed process has
+  none of the above privileges. We keep this file intentionally small to make
+  the deny-by-default posture obvious in code review.
+
+  TODO(macos-app):
+  - Confirm that our IPC mechanism works under App Sandbox (we may need a
+    specific XPC/mach-lookup entitlement depending on implementation).
+  - Audit renderer dependencies for implicit file/network usage (fonts, media
+    decoding, GPU drivers, temp files, etc.) and either proxy them or add the
+    narrowest possible entitlements.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+  </dict>
+</plist>
+
