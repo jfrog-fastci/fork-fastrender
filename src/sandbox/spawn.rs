@@ -640,7 +640,10 @@ fn apply_landlock_restrict_writes_best_effort() -> std::io::Result<()> {
   if fd < 0 {
     let err = std::io::Error::last_os_error();
     match err.raw_os_error() {
-      Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) => return Ok(()),
+      // Landlock is best-effort here. Treat kernels that don't support the syscall (ENOSYS),
+      // don't enable the LSM (EOPNOTSUPP), or reject unknown access bits (E2BIG) as "unsupported"
+      // rather than failing the entire spawn.
+      Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) | Some(libc::E2BIG) => return Ok(()),
       _ => return Err(err),
     }
   }
@@ -652,7 +655,7 @@ fn apply_landlock_restrict_writes_best_effort() -> std::io::Result<()> {
       libc::close(fd);
     }
     match err.raw_os_error() {
-      Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) => return Ok(()),
+      Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) | Some(libc::EPERM) => return Ok(()),
       _ => return Err(err),
     }
   }
