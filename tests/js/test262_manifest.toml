@@ -1932,6 +1932,14 @@ id = "built-ins/JSON/parse/reviver-context-source-primitive-literal.js"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/JSON/parse/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/JSON/stringify/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/JSON/rawJSON/**"
 status = "pass"
 
