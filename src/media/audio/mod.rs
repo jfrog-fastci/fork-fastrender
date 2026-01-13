@@ -791,7 +791,6 @@ impl PcmF32QueueProducer {
     Ok(())
   }
 }
-<<<<<<< HEAD
 
 #[cfg(all(test, feature = "audio_cpal"))]
 mod audio_cpal_compile_tests {
@@ -807,5 +806,3 @@ mod audio_cpal_compile_tests {
     assert_send_sync::<CpalAudioBackend>();
   }
 }
-=======
->>>>>>> 4429ac38 (feat(audio): add deterministic channel remix helpers)
