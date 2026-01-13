@@ -467,16 +467,12 @@ impl FloatSweepState {
     // separate heap so range scans can cheaply tell whether any new floats begin within a queried
     // band.
     self.pending_start_events.clear();
-    self
-      .pending_start_events
-      .extend(events.iter().copied().map(Reverse));
+    self.pending_start_events.extend(events.iter().copied().map(Reverse));
 
     self.active_left.clear();
     self.active_right.clear();
     self.active_shape_left.clear();
     self.active_shape_right.clear();
-
-    let _ = float_count;
   }
 }
 
