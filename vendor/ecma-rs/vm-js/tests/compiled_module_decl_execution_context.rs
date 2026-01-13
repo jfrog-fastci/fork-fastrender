@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsRuntime, MicrotaskQueue, ModuleGraph,
-  ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Scope,
-  Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  CompiledScript, Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsRuntime, MicrotaskQueue,
+  ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey,
+  Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
 };
 
 // NOTE: This test intentionally exercises the compiled-module pipeline (see Task 91).
@@ -233,30 +233,42 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
 
   let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
 
-  // These modules must be built using the compiled-module record API (Task 91).
-  let m = modules.add_module_with_specifier(
+  // === Compiled-module record construction (Task 91) ===
+  //
+  // The module record must be populated with import/export metadata (requested modules, export
+  // entries, etc) while also carrying a compiled HIR representation of the module body.
+  //
+  // We build this by:
+  // 1. compiling the module source text to HIR (`CompiledScript::compile_module`), and
+  // 2. parsing the same source text to extract module record metadata, then dropping the AST so
+  //    module evaluation is forced down the compiled-module execution path.
+  let compiled_m = CompiledScript::compile_module(
+    heap,
     "m.js",
-    vm_js::CompiledModuleRecord::compile(
-      heap,
-      "m.js",
-      r#"
-        export function f() { return import.meta.url; }
-        export function g() { return import('dep.js'); }
-        export { h } from 'dep.js';
-      "#,
-    )?,
+    r#"
+      export function f() { return import.meta.url; }
+      export function g() { return import('dep.js'); }
+      export { h } from 'dep.js';
+    "#,
   )?;
-  let dep = modules.add_module_with_specifier(
+  let mut record_m = SourceTextModuleRecord::parse_source(compiled_m.source.clone())?;
+  record_m.compiled = Some(compiled_m);
+  record_m.ast = None;
+
+  let compiled_dep = CompiledScript::compile_module(
+    heap,
     "dep.js",
-    vm_js::CompiledModuleRecord::compile(
-      heap,
-      "dep.js",
-      r#"
-        export function h() { return import.meta.url; }
-        export const x = 1;
-      "#,
-    )?,
+    r#"
+      export function h() { return import.meta.url; }
+      export const x = 1;
+    "#,
   )?;
+  let mut record_dep = SourceTextModuleRecord::parse_source(compiled_dep.source.clone())?;
+  record_dep.compiled = Some(compiled_dep);
+  record_dep.ast = None;
+
+  let m = modules.add_module_with_specifier("m.js", record_m)?;
+  let dep = modules.add_module_with_specifier("dep.js", record_dep)?;
 
   modules.link_all_by_specifier();
 
@@ -381,4 +393,3 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
   hooks.teardown_jobs(vm, heap);
   Ok(())
 }
-
