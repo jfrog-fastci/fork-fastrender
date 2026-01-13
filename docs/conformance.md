@@ -40,6 +40,7 @@ FastRender is actively moving toward full browser execution (see the JS workstre
 - **Event loop + microtasks**: HTML event loop semantics (task queues) plus a microtask queue with microtask checkpoints at the HTML-defined points.
 - **Web IDL exposure**: DOM and web APIs exposed to JS via Web IDL rules, ideally via generated bindings from WHATWG IDL sources (see `specs/whatwg-webidl/`).
 - **Timers + Promise job queue**: `setTimeout`/`setInterval` tasks plus Promise job queue / `queueMicrotask` integration.
+- **Frame/idle callbacks**: `requestAnimationFrame` and `requestIdleCallback` are modeled as separate callback queues (not normal tasks) and require an embedder-driven frame/tick loop (see `api::BrowserTab` and [`docs/live_rendering_loop.md`](live_rendering_loop.md)).
 - **URL + fetch (incremental)**: WHATWG URL parsing/serialization and an incremental Fetch surface (`fetch()`, `Request`, `Response`, `Headers`) layered on top of the existing network/resource loader.
 
 ## Support matrix (repo reality)

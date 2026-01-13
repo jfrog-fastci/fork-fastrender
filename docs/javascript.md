@@ -78,6 +78,8 @@ FastRender needs an HTML-shaped event loop model:
 
 - one or more **task queues** (start with a single queue; split by “task source” later),
 - a **microtask queue** for Promise jobs / `queueMicrotask`,
+- a **timer queue** for `setTimeout`/`setInterval` (driven by a host-controlled clock so tests can be deterministic),
+- separate callback queues for **`requestAnimationFrame`** and **`requestIdleCallback`** (driven by the embedding’s “frame/tick” loop; see [`docs/live_rendering_loop.md`](live_rendering_loop.md)),
 - explicit microtask checkpoint points (not “whenever convenient”).
 
 In the `vm-js` embedding, Promise jobs enter the host through `vm_js::VmHostHooks`
