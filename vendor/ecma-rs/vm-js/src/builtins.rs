@@ -13040,7 +13040,7 @@ pub fn regexp_prototype_test(
 
 /// `get RegExp.prototype.source` (ECMA-262) (minimal).
 pub fn regexp_prototype_source_get(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -13054,7 +13054,142 @@ pub fn regexp_prototype_source_get(
     let s = scope.alloc_string("(?:)")?;
     return Ok(Value::String(s));
   }
-  Ok(Value::String(source))
+
+  // https://tc39.es/ecma262/#sec-escaperegexppattern
+  //
+  // `RegExp.prototype.source` must return a pattern string that can be embedded in a RegExp literal
+  // (`"/" + source + "/" + flags`) without producing a syntax error, while still being
+  // behaviorally equivalent to the original pattern.
+  //
+  // The spec is flexible about *how* escaping is performed ("as necessary"), but test262 asserts
+  // that `/` and `LineTerminator` code units are escaped such that no literal line terminators
+  // appear in the output.
+  const SLASH: u16 = 0x002F;
+  const BACKSLASH: u16 = 0x005C;
+  let (needs_escape, escaped_len) = {
+    let units = scope.heap().get_string(source)?.as_code_units();
+    let mut needs_escape = false;
+    let mut escaped_len: usize = 0;
+    let mut escaped = false;
+    for (i, &cu) in units.iter().enumerate() {
+      tick::tick_every(i, tick::DEFAULT_TICK_EVERY, &mut || vm.tick())?;
+
+      if escaped {
+        escaped = false;
+        match cu {
+          // Even if the original pattern escapes a line terminator (e.g. `\` + LF), the returned
+          // string must not contain literal line terminators.
+          0x000A | 0x000D => {
+            needs_escape = true;
+            escaped_len = escaped_len.saturating_add(1);
+          }
+          0x2028 | 0x2029 => {
+            needs_escape = true;
+            escaped_len = escaped_len.saturating_add(5);
+          }
+          _ => escaped_len = escaped_len.saturating_add(1),
+        }
+        continue;
+      }
+
+      match cu {
+        BACKSLASH => {
+          escaped = true;
+          escaped_len = escaped_len.saturating_add(1);
+        }
+        SLASH | 0x000A | 0x000D => {
+          needs_escape = true;
+          escaped_len = escaped_len.saturating_add(2);
+        }
+        0x2028 | 0x2029 => {
+          needs_escape = true;
+          escaped_len = escaped_len.saturating_add(6);
+        }
+        _ => escaped_len = escaped_len.saturating_add(1),
+      }
+    }
+    (needs_escape, escaped_len)
+  };
+
+  if !needs_escape {
+    return Ok(Value::String(source));
+  }
+
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(escaped_len)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  {
+    let units = scope.heap().get_string(source)?.as_code_units();
+    let mut escaped = false;
+    for (i, &cu) in units.iter().enumerate() {
+      tick::tick_every(i, tick::DEFAULT_TICK_EVERY, &mut || vm.tick())?;
+
+      if escaped {
+        escaped = false;
+        match cu {
+          0x000A => vec_try_push(&mut out, b'n' as u16)?,
+          0x000D => vec_try_push(&mut out, b'r' as u16)?,
+          0x2028 => {
+            vec_try_push(&mut out, b'u' as u16)?;
+            vec_try_push(&mut out, b'2' as u16)?;
+            vec_try_push(&mut out, b'0' as u16)?;
+            vec_try_push(&mut out, b'2' as u16)?;
+            vec_try_push(&mut out, b'8' as u16)?;
+          }
+          0x2029 => {
+            vec_try_push(&mut out, b'u' as u16)?;
+            vec_try_push(&mut out, b'2' as u16)?;
+            vec_try_push(&mut out, b'0' as u16)?;
+            vec_try_push(&mut out, b'2' as u16)?;
+            vec_try_push(&mut out, b'9' as u16)?;
+          }
+          _ => vec_try_push(&mut out, cu)?,
+        }
+        continue;
+      }
+
+      match cu {
+        BACKSLASH => {
+          escaped = true;
+          vec_try_push(&mut out, cu)?;
+        }
+        SLASH => {
+          vec_try_push(&mut out, b'\\' as u16)?;
+          vec_try_push(&mut out, b'/' as u16)?;
+        }
+        0x000A => {
+          vec_try_push(&mut out, b'\\' as u16)?;
+          vec_try_push(&mut out, b'n' as u16)?;
+        }
+        0x000D => {
+          vec_try_push(&mut out, b'\\' as u16)?;
+          vec_try_push(&mut out, b'r' as u16)?;
+        }
+        0x2028 => {
+          vec_try_push(&mut out, b'\\' as u16)?;
+          vec_try_push(&mut out, b'u' as u16)?;
+          vec_try_push(&mut out, b'2' as u16)?;
+          vec_try_push(&mut out, b'0' as u16)?;
+          vec_try_push(&mut out, b'2' as u16)?;
+          vec_try_push(&mut out, b'8' as u16)?;
+        }
+        0x2029 => {
+          vec_try_push(&mut out, b'\\' as u16)?;
+          vec_try_push(&mut out, b'u' as u16)?;
+          vec_try_push(&mut out, b'2' as u16)?;
+          vec_try_push(&mut out, b'0' as u16)?;
+          vec_try_push(&mut out, b'2' as u16)?;
+          vec_try_push(&mut out, b'9' as u16)?;
+        }
+        _ => vec_try_push(&mut out, cu)?,
+      }
+    }
+  }
+
+  let escaped_source = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(escaped_source))
 }
 
 /// `get RegExp.prototype.flags` (ECMA-262) (minimal).

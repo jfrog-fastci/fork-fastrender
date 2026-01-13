@@ -1561,12 +1561,6 @@ impl<'a> Parser<'a> {
         }
       }
       x => {
-        if is_line_terminator_unit(x) {
-          return Err(RegExpSyntaxError {
-            message: "Invalid regular expression",
-          }
-          .into());
-        }
         Ok(Atom::Literal(x))
       }
     }

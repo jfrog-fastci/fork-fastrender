@@ -413,3 +413,29 @@ fn regexp_unicode_mode_rejects_character_class_escape_ranges() {
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
 }
+
+#[test]
+fn regexp_prototype_source_escapes_slash_and_line_terminators() {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(r#"new RegExp("/").source"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "\\/");
+
+  let value = rt.exec_script(r#"new RegExp("\n").source"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "\\n");
+
+  let value = rt.exec_script(r#"new RegExp("\r").source"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "\\r");
+
+  let value = rt.exec_script(r#"new RegExp("\u2028").source"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "\\u2028");
+
+  let value = rt.exec_script(r#"new RegExp("\u2029").source"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "\\u2029");
+
+  // The escaped source should be safe to embed directly in a RegExp literal.
+  let value = rt
+    .exec_script(r#"eval("/" + new RegExp("/").source + "/").test("/")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
