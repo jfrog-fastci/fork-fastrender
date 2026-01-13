@@ -1,8 +1,11 @@
 use crate::text::font_db::LoadedFont;
 use crate::text::font_instance::{FontBBox, FontInstance};
 use crate::text::pipeline::{RunRotation, ShapedRun};
-use rustc_hash::FxHashMap;
+use lru::LruCache;
+use rustc_hash::FxHasher;
 use std::cell::RefCell;
+use std::hash::BuildHasherDefault;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tiny_skia::Transform;
 
@@ -15,10 +18,15 @@ struct UnderlineGlyphBboxKey {
 }
 
 const UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES: usize = 8192;
+type UnderlineGlyphBboxCacheHasher = BuildHasherDefault<FxHasher>;
 
 thread_local! {
-  static UNDERLINE_GLYPH_BBOX_CACHE: RefCell<FxHashMap<UnderlineGlyphBboxKey, Option<FontBBox>>> =
-    RefCell::new(FxHashMap::default());
+  static UNDERLINE_GLYPH_BBOX_CACHE: RefCell<
+    LruCache<UnderlineGlyphBboxKey, Option<FontBBox>, UnderlineGlyphBboxCacheHasher>
+  > = RefCell::new(LruCache::with_hasher(
+    NonZeroUsize::new(UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES).unwrap(),
+    UnderlineGlyphBboxCacheHasher::default(),
+  ));
 }
 
 #[inline]
@@ -41,10 +49,7 @@ fn cached_glyph_bounding_box(
       return *cached;
     }
     let bbox = instance.glyph_bounds(glyph_id);
-    if cache.len() >= UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES {
-      cache.clear();
-    }
-    cache.insert(key, bbox);
+    cache.put(key, bbox);
     bbox
   })
 }
@@ -402,6 +407,76 @@ mod tests {
       cache_len, 2,
       "glyph bbox cache should key entries by variation hash"
     );
+  }
+
+  #[test]
+  fn glyph_bbox_cache_is_bounded_lru() {
+    let font_path =
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let data = Arc::new(std::fs::read(font_path).expect("read test font"));
+    let font = LoadedFont {
+      id: None,
+      data,
+      index: 0,
+      face_metrics_overrides: FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
+      family: "DejaVu Sans Subset".to_string(),
+      weight: FontWeight::NORMAL,
+      style: FontStyle::Normal,
+      stretch: FontStretch::Normal,
+    };
+
+    let instance = FontInstance::new(&font, &[]).expect("instance");
+    let variations_hash = instance.variation_hash();
+    let font_ptr = Arc::as_ptr(&font.data) as usize;
+
+    UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| cache.borrow_mut().clear());
+
+    // Use out-of-range glyph IDs so `glyph_bounds` returns early without having to read glyph data.
+    let base_glyph = u16::MAX as u32 + 1;
+    for i in 0..UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES {
+      let _ = cached_glyph_bounding_box(&instance, &font, variations_hash, base_glyph + i as u32);
+    }
+
+    // Touch the oldest entry so it becomes MRU.
+    let _ = cached_glyph_bounding_box(&instance, &font, variations_hash, base_glyph);
+
+    // Push one more entry; the cache should evict a single LRU entry rather than clearing all.
+    let _ = cached_glyph_bounding_box(
+      &instance,
+      &font,
+      variations_hash,
+      base_glyph + UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES as u32,
+    );
+
+    let cache_len = UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| cache.borrow().len());
+    assert_eq!(
+      cache_len, UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES,
+      "glyph bbox cache should stay at capacity via incremental LRU eviction"
+    );
+
+    let key_recent = UnderlineGlyphBboxKey {
+      font_ptr,
+      font_index: font.index,
+      variations_hash,
+      glyph_id: base_glyph,
+    };
+    let key_evicted = UnderlineGlyphBboxKey {
+      glyph_id: base_glyph + 1,
+      ..key_recent
+    };
+
+    UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| {
+      let mut cache = cache.borrow_mut();
+      assert!(
+        cache.get(&key_recent).is_some(),
+        "recently used entry should remain cached after overflow"
+      );
+      assert!(
+        cache.get(&key_evicted).is_none(),
+        "least recently used entry should be evicted on overflow"
+      );
+    });
   }
 
   #[test]
