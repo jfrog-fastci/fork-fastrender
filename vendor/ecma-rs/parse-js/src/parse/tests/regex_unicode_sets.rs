@@ -126,3 +126,23 @@ fn parses_test262_unicode_sets_generated_files() {
     }
   }
 }
+
+#[test]
+fn accepts_unicode_sets_escaped_reserved_punctuators() {
+  // UnicodeSets mode introduces a number of reserved punctuators that become early errors when
+  // used unescaped inside `[...]`. Escaping them should still be accepted.
+  let opts = ecma_script_opts();
+  for pat in [
+    r"[\(]",
+    r"[\)]",
+    r"[\[]",
+    r"[\{]",
+    r"[\}]",
+    r"[\/]",
+    r"[\-]",
+    r"[\|]",
+  ] {
+    let src = format!("let r = /{pat}/v;");
+    assert!(parse_with_options(&src, opts).is_ok(), "expected {src} to parse");
+  }
+}
