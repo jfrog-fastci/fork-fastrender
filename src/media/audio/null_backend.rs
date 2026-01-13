@@ -5,6 +5,12 @@ use std::time::Instant;
 use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
 
 #[derive(Debug)]
+/// A silent audio backend used as a fallback when audio output is unavailable (e.g. CI/headless).
+///
+/// This backend is not intended to be a high-fidelity audio clock: it currently derives time from
+/// `Instant` (see `AudioClock::Instant`), which is sufficient to keep the rest of the pipeline
+/// running but is not deterministic. Tests that need deterministic time should inject a virtual
+/// master clock (see `docs/media_clocking.md`).
 pub struct NullAudioBackend {
   config: AudioStreamConfig,
   start: Instant,
@@ -69,4 +75,3 @@ impl AudioSink for NullAudioSink {
 
   fn set_volume(&self, _volume: f32) {}
 }
-

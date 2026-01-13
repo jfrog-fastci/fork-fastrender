@@ -1,3 +1,13 @@
+//! Media clocking primitives (master clock + per-stream timeline mapping).
+//!
+//! This module defines the clock abstraction used by media playback for A/V sync and
+//! `HTMLMediaElement.currentTime` bookkeeping.
+//!
+//! Key idea: the UI/event-loop tick is only a wake-up mechanism; it is **not** a time source. Media
+//! time is derived from a chosen master clock (audio device time when audio is present).
+//!
+//! For the full intended clocking model and drift-bug checklist, see `docs/media_clocking.md`.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

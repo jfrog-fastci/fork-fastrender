@@ -13,8 +13,7 @@ The goal is to prevent “slow drift” and “mysterious desync” bugs by bein
 Implementation map (keep these modules aligned with this doc):
 
 * `src/media/timebase.rs` — container timebase/tick ↔ `Duration` conversions (PTS normalization)
-* `src/media/clock.rs` — clock selection + timeline mapping (**intended module**, may be introduced
-  as video support lands)
+* `src/media/clock.rs` — `MediaClock` abstraction + per-stream timeline mapping (`AudioStreamClock`)
 * `src/media/audio/mod.rs` — `AudioBackend` trait + `AudioClock` (audio device time exposure)
 * `src/media/audio/null_backend.rs` — `NullAudioBackend` (silence / CI fallback)
 * `src/media/audio/cpal_backend.rs` — CPAL output backend (feature = `audio_cpal`)
@@ -123,11 +122,24 @@ FastRender should expose an **audio clock** to the rest of the media pipeline th
 
 This clock is the **master** when audio is present (see below).
 
-In code today, this is represented by [`AudioClock`](../src/media/audio/mod.rs), which can report:
+In code today, audio time is surfaced in two layers:
+
+1. [`AudioClock`](../src/media/audio/mod.rs) — raw “device time” as exposed by the audio backend.
 
 * `AudioClock::OutputFrames { .. }` — derived from a backend playhead counter (preferred when output
   is active, e.g. CPAL).
 * `AudioClock::Instant { .. }` — derived from wall-clock time (used by `NullAudioBackend`).
+
+2. [`MediaClock`](../src/media/clock.rs) + [`AudioStreamClock`](../src/media/clock.rs) — the
+   clocking abstraction intended for A/V sync + `HTMLMediaElement.currentTime`.
+   * `MediaClock` is the “master clock” interface (audio device time when audio is present).
+   * `AudioStreamClock` maps a shared device clock into a per-element media timeline and applies
+     pause/seek/rate changes without accumulating drift (see `AudioStreamClock::seek` /
+     `AudioStreamClock::set_rate`).
+
+At the time of writing, these layers are not yet fully wired together for real playback; when they
+are, prefer driving `MediaClock` from the audio backend’s `AudioClock::OutputFrames` (plus an output
+latency estimate) rather than from `Instant`.
 
 ---
 
@@ -266,8 +278,8 @@ else:
 
 Seeking updates `base_timeline_time` (and usually resets `base_master_time`).
 
-This mapping should live in `src/media/clock.rs` so *every* subsystem (audio submission, video
-presentation, JS APIs) consumes the same “timeline now”.
+This mapping lives in `src/media/clock.rs` today as `AudioStreamClock`, so *every* subsystem (audio
+submission, video presentation, JS APIs) can consume the same “timeline now”.
 
 ---
 
@@ -320,8 +332,9 @@ The intended test strategy is:
 * A `VirtualClock` that only advances when the test tells it to.
   * There is already a pattern for this in `src/js/clock.rs` (`VirtualClock` implementing a `Clock`
     trait).
-  * Media should use the same idea in `src/media/clock.rs`: no direct `Instant::now()` calls in core
-    scheduling code.
+  * Media clocking is designed to support this via `MediaClock` in `src/media/clock.rs`: production
+    code can use `RealAudioDeviceClock` (wall time), while tests can inject a fake/virtual device
+    clock (see the `FakeDeviceClock` used in `src/media/clock.rs` unit tests).
 * A `NullAudioBackend` (`src/media/audio/*`) that:
   * accepts audio samples into a queue,
   * advances “device playback position” based on the injected `VirtualClock`,
@@ -368,6 +381,11 @@ When debugging, distinguish:
 
 * **Offset:** constant error (fix by calibrating latency).
 * **Drift:** error grows over time (fix by ensuring a single master clock is used everywhere).
+
+Current implementation note: FastRender’s existing clocks (`AudioClock` in `src/media/audio/mod.rs`,
+`RealAudioDeviceClock` in `src/media/clock.rs`) do not yet incorporate an explicit output-latency
+estimate, which is equivalent to assuming `output_latency_constant = 0`. Expect a possible constant
+offset until we plumb real latency/timestamps through the backend.
 
 ### Backend timestamp quality varies
 

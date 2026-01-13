@@ -1,3 +1,20 @@
+//! Audio output backends and audio clock exposure.
+//!
+//! The audio backend is responsible for two things:
+//!
+//! * providing an [`AudioSink`] to accept interleaved PCM samples for playback, and
+//! * exposing an [`AudioClock`] so the rest of the media pipeline can sync video and
+//!   `HTMLMediaElement.currentTime` to what the user hears.
+//!
+//! When audio is present, audio device time is the **master clock** for A/V sync. The UI tick should
+//! only wake the pipeline up; it must not be used as a time source.
+//!
+//! Note: current backends expose time either via an output-frame counter (`AudioClock::OutputFrames`)
+//! or wall time (`AudioClock::Instant`). Output latency is not yet modeled explicitly; treat any
+//! resulting error as a constant offset, not drift.
+//!
+//! See `docs/media_clocking.md` for the broader clocking model and recommended sync tolerances.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,6 +85,14 @@ impl AudioClock {
   }
 
   #[must_use]
+  /// Return the audio backend's current time estimate.
+  ///
+  /// This is intended to be used as (or to derive) the master clock for A/V sync.
+  ///
+  /// Note: this is currently a best-effort estimate and does **not** include an explicit output
+  /// latency model. In particular, clocks derived from output-frame counters (`OutputFrames`) can be
+  /// ahead of “what the user hears” by a backend-dependent constant buffer duration. This should
+  /// show up as a constant A/V offset, not drift.
   pub fn time(&self) -> Duration {
     match self {
       Self::OutputFrames {
@@ -146,4 +171,3 @@ impl dyn AudioBackend {
     Box::new(NullAudioBackend::new())
   }
 }
-

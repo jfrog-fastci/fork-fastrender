@@ -7,6 +7,16 @@ use super::{AudioBackend, AudioClock, AudioError, AudioSink, AudioStreamConfig};
 use crate::media::audio::ring_buffer::AudioRingBuffer;
 use cpal::traits::{HostTrait, StreamTrait};
 
+/// CPAL-based audio output backend (cross-platform).
+///
+/// Clocking notes:
+/// - The exposed `AudioClock::OutputFrames` is derived from the number of frames written into the
+///   CPAL output callback.
+/// - This is a best-effort clock and does not currently model backend/device output latency, so it
+///   may be ahead of “what the user hears” by a roughly constant buffer duration.
+///
+/// See `docs/media_clocking.md` for the intended A/V sync model (audio as master clock, tick as
+/// wake-up only).
 pub struct CpalAudioBackend {
   config: AudioStreamConfig,
   mixer: Arc<MixerState>,
