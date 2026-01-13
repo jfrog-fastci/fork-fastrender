@@ -3,6 +3,7 @@ pub mod autofocus;
 pub mod document_selection;
 pub mod dom_index;
 pub mod dom_mutation;
+pub mod dom_mutation_dom2;
 pub mod dom_geometry;
 pub(crate) mod effective_disabled;
 pub mod engine;
