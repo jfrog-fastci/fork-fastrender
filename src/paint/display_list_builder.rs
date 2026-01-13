@@ -194,7 +194,7 @@ use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
@@ -235,6 +235,8 @@ pub struct DisplayListBuilder {
   /// The display list being built
   list: DisplayList,
   image_cache: Option<ImageCache>,
+  saw_gif_image: Arc<AtomicBool>,
+  saw_animation_time_dependent_image: Arc<AtomicBool>,
   /// Optional provider used to supply decoded media frames (e.g. `<video>`) during display-list
   /// construction.
   media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
@@ -994,7 +996,13 @@ impl DisplayListBuilder {
     if let Some(err) = self.error.take() {
       Err(Error::Render(err))
     } else {
-      Ok(self.list)
+      let has_gif_images = self.saw_gif_image.load(Ordering::Relaxed);
+      let has_time_dependent_images =
+        self.saw_animation_time_dependent_image.load(Ordering::Relaxed);
+      let mut list = self.list;
+      list.set_has_gif_images(has_gif_images);
+      list.set_has_animation_time_dependent_images(has_time_dependent_images);
+      Ok(list)
     }
   }
 
@@ -1442,6 +1450,8 @@ impl DisplayListBuilder {
     Self {
       list: DisplayList::new(),
       image_cache: Some(ImageCache::new()),
+      saw_gif_image: Arc::new(AtomicBool::new(false)),
+      saw_animation_time_dependent_image: Arc::new(AtomicBool::new(false)),
       media_provider: None,
       decoded_image_cache: Arc::new(Mutex::new(DecodedImageCache::new(
         decoded_image_cache_entries,
@@ -1490,6 +1500,8 @@ impl DisplayListBuilder {
     Self {
       list: DisplayList::new(),
       image_cache: Some(image_cache),
+      saw_gif_image: Arc::new(AtomicBool::new(false)),
+      saw_animation_time_dependent_image: Arc::new(AtomicBool::new(false)),
       media_provider: None,
       decoded_image_cache: Arc::new(Mutex::new(DecodedImageCache::new(
         decoded_image_cache_entries,
@@ -6700,6 +6712,8 @@ impl DisplayListBuilder {
     DisplayListBuilder {
       list: DisplayList::new(),
       image_cache: self.image_cache.clone(),
+      saw_gif_image: Arc::clone(&self.saw_gif_image),
+      saw_animation_time_dependent_image: Arc::clone(&self.saw_animation_time_dependent_image),
       media_provider: self.media_provider.clone(),
       decoded_image_cache: Arc::clone(&self.decoded_image_cache),
       svg_filter_defs: self.svg_filter_defs.clone(),
@@ -7573,6 +7587,29 @@ impl DisplayListBuilder {
               base_url: cache_base.as_deref(),
             },
           );
+
+          // Track whether this paint contains any GIF image URLs (including any `srcset` candidates)
+          // so incremental paint paths can conservatively disable scroll-blitting when
+          // `animation_time` affects image decoding.
+          if let Some(image_cache) = self.image_cache.as_ref() {
+            if let ReplacedType::Image {
+              src,
+              srcset,
+              picture_sources,
+              ..
+            } = replaced_type
+            {
+              self.note_resolved_image_url(&image_cache.resolve_url(src));
+              for candidate in srcset.iter() {
+                self.note_resolved_image_url(&image_cache.resolve_url(&candidate.url));
+              }
+              for source in picture_sources.iter() {
+                for candidate in source.srcset.iter() {
+                  self.note_resolved_image_url(&image_cache.resolve_url(&candidate.url));
+                }
+              }
+            }
+          }
 
           let crossorigin = match replaced_type {
             ReplacedType::Image { crossorigin, .. } => *crossorigin,
@@ -15963,6 +16000,25 @@ impl DisplayListBuilder {
     true
   }
 
+  #[inline]
+  fn note_resolved_image_url(&self, resolved_url: &str) {
+    if !crate::image_loader::url_looks_like_gif(resolved_url) {
+      return;
+    }
+    self.saw_gif_image.store(true, Ordering::Relaxed);
+
+    if self
+      .image_cache
+      .as_ref()
+      .and_then(|cache| cache.animation_time_ms())
+      .is_some()
+    {
+      self
+        .saw_animation_time_dependent_image
+        .store(true, Ordering::Relaxed);
+    }
+  }
+
   fn decode_image(
     &self,
     src: &str,
@@ -16000,6 +16056,8 @@ impl DisplayListBuilder {
         .ok()?;
       (resolved_src, image)
     };
+
+    self.note_resolved_image_url(&resolved_src);
 
     if reject_placeholder && !inline_svg && image_cache.is_placeholder_image(&image) {
       return None;

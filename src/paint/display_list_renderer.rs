@@ -10925,6 +10925,36 @@ impl DisplayListRenderer {
         ),
       });
     }
+
+    // When time-based animation sampling is enabled, animated GIF frame selection can change
+    // between paints even if the only visible change is scrolling. Scroll-blitting (copying pixels
+    // from the previous frame and repainting only the exposed strip) would leave stale GIF frames
+    // in regions that are not repainted.
+    //
+    // Conservatively fall back to a full repaint whenever the current display list contains any
+    // images whose pixels can depend on `animation_time`.
+    if original_list.has_animation_time_dependent_images() {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some(
+          "animated GIFs / animation_time affects images; full repaint".to_string(),
+        ),
+      });
+    }
     let composed = self
       .preserve_3d_disabled
       .then(|| crate::paint::preserve_3d::composite_preserve_3d(list));

@@ -2871,6 +2871,19 @@ pub struct DisplayList {
   /// When set, scroll-blit optimizations must fall back to a full repaint because scroll affects
   /// visual output beyond pure translation.
   has_scroll_linked_animations: bool,
+  /// True when the display list was built from at least one GIF URL (or a `data:image/gif` URL).
+  ///
+  /// This is populated by the display-list builder while resolving image URLs (e.g. `<img src>`,
+  /// `srcset`, and `url(...)` references).
+  has_gif_images: bool,
+
+  /// True when at least one image in this display list can depend on the renderer's
+  /// `animation_time` (currently: GIF frame sampling when `ImageCache::set_animation_time_ms(Some(_))`
+  /// is active).
+  ///
+  /// This is used to conservatively gate incremental paint optimizations such as scroll-blit, which
+  /// would otherwise leave stale pixels outside the repainted damage region.
+  has_animation_time_dependent_images: bool,
 }
 
 impl DisplayList {
@@ -2880,6 +2893,8 @@ impl DisplayList {
       items: Vec::new(),
       bounds: None,
       has_scroll_linked_animations: false,
+      has_gif_images: false,
+      has_animation_time_dependent_images: false,
     }
   }
 
@@ -2889,6 +2904,8 @@ impl DisplayList {
       items: Vec::with_capacity(capacity),
       bounds: None,
       has_scroll_linked_animations: false,
+      has_gif_images: false,
+      has_animation_time_dependent_images: false,
     }
   }
 
@@ -2899,6 +2916,8 @@ impl DisplayList {
       items,
       bounds,
       has_scroll_linked_animations: false,
+      has_gif_images: false,
+      has_animation_time_dependent_images: false,
     }
   }
 
@@ -2908,6 +2927,8 @@ impl DisplayList {
       items,
       bounds,
       has_scroll_linked_animations: self.has_scroll_linked_animations,
+      has_gif_images: self.has_gif_images,
+      has_animation_time_dependent_images: self.has_animation_time_dependent_images,
     }
   }
 
@@ -2917,6 +2938,25 @@ impl DisplayList {
 
   pub fn has_scroll_linked_animations(&self) -> bool {
     self.has_scroll_linked_animations
+  }
+
+  /// Returns true when this display list includes at least one GIF image reference.
+  pub fn has_gif_images(&self) -> bool {
+    self.has_gif_images
+  }
+
+  /// Returns true when this display list includes at least one image that can depend on
+  /// `animation_time` (e.g. animated GIF sampling).
+  pub fn has_animation_time_dependent_images(&self) -> bool {
+    self.has_animation_time_dependent_images
+  }
+
+  pub(crate) fn set_has_gif_images(&mut self, value: bool) {
+    self.has_gif_images = value;
+  }
+
+  pub(crate) fn set_has_animation_time_dependent_images(&mut self, value: bool) {
+    self.has_animation_time_dependent_images = value;
   }
 
   /// Add a display item to the list
@@ -3006,6 +3046,8 @@ impl DisplayList {
     self.bounds = None;
     self.has_scroll_linked_animations |= other.has_scroll_linked_animations;
     self.items.append(&mut other.items);
+    self.has_gif_images |= other.has_gif_images;
+    self.has_animation_time_dependent_images |= other.has_animation_time_dependent_images;
   }
 
   /// Get the display items
@@ -3034,6 +3076,8 @@ impl DisplayList {
     self.items.clear();
     self.bounds = None;
     self.has_scroll_linked_animations = false;
+    self.has_gif_images = false;
+    self.has_animation_time_dependent_images = false;
   }
 
   /// Get the bounding rectangle of all items

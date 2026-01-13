@@ -28,3 +28,4 @@ mod ua_smoke;
 mod render_control;
 mod viewport_bounds_dom_node_ids;
 mod scroll_blit_resource_epoch;
+mod scroll_blit_animated_gif;
