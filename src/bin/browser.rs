@@ -6950,6 +6950,28 @@ struct BrowserHud {
   frame_upload_stats: fastrender::ui::FrameUploadCoalescerStats,
   process_cpu_time_ms_total: Option<u64>,
   process_cpu_percent_recent: Option<f64>,
+  /// When set, measure keyboard→present latency for the next presented page frame.
+  pending_keyboard_input_at: Option<std::time::Instant>,
+  /// When set, measure scroll→present latency for the next presented page frame.
+  pending_scroll_input_at: Option<std::time::Instant>,
+  /// When set, measure resize→present latency for the next presented page frame.
+  pending_resize_input_at: Option<std::time::Instant>,
+  last_keyboard_to_present_ms: Option<u64>,
+  last_scroll_to_present_ms: Option<u64>,
+  last_resize_to_present_ms: Option<u64>,
+  /// Navigation start instants keyed by tab id (used to compute TTFP once the first new frame for
+  /// the tab is actually presented).
+  nav_ttfp_start: std::collections::HashMap<fastrender::ui::TabId, std::time::Instant>,
+  /// Last measured time-to-first-present (TTFP) per tab (ms).
+  nav_ttfp_last_ms: std::collections::HashMap<fastrender::ui::TabId, u64>,
+  /// Number of pending frame uploads at the start of the last rendered frame.
+  pending_frame_uploads_at_frame_start: usize,
+  /// Total number of frames dropped/coalesced by `FrameUploadCoalescer` since startup.
+  coalesced_frames_total: u64,
+  /// Tab id whose page texture was updated during the current frame's `flush_pending_frame_uploads`.
+  ///
+  /// We record input/navigation latency only when the newly uploaded frame is actually presented.
+  page_uploaded_tab_in_frame: Option<fastrender::ui::TabId>,
   text_buf: String,
 }
 
@@ -6991,7 +7013,92 @@ impl BrowserHud {
       frame_upload_stats: fastrender::ui::FrameUploadCoalescerStats::default(),
       process_cpu_time_ms_total: None,
       process_cpu_percent_recent: None,
-      text_buf: String::with_capacity(384),
+      pending_keyboard_input_at: None,
+      pending_scroll_input_at: None,
+      pending_resize_input_at: None,
+      last_keyboard_to_present_ms: None,
+      last_scroll_to_present_ms: None,
+      last_resize_to_present_ms: None,
+      nav_ttfp_start: std::collections::HashMap::new(),
+      nav_ttfp_last_ms: std::collections::HashMap::new(),
+      pending_frame_uploads_at_frame_start: 0,
+      coalesced_frames_total: 0,
+      page_uploaded_tab_in_frame: None,
+      text_buf: String::with_capacity(768),
+    }
+  }
+
+  fn note_keyboard_input(&mut self, now: std::time::Instant) {
+    self.pending_keyboard_input_at = Some(now);
+  }
+
+  fn note_scroll_input(&mut self, now: std::time::Instant) {
+    self.pending_scroll_input_at = Some(now);
+  }
+
+  fn note_resize_input(&mut self, now: std::time::Instant) {
+    self.pending_resize_input_at = Some(now);
+  }
+
+  fn note_navigation_start(&mut self, tab_id: fastrender::ui::TabId, now: std::time::Instant) {
+    self.nav_ttfp_start.insert(tab_id, now);
+  }
+
+  fn note_navigation_start_if_absent(
+    &mut self,
+    tab_id: fastrender::ui::TabId,
+    now: std::time::Instant,
+  ) {
+    self.nav_ttfp_start.entry(tab_id).or_insert(now);
+  }
+
+  fn clear_navigation(&mut self, tab_id: fastrender::ui::TabId) {
+    self.nav_ttfp_start.remove(&tab_id);
+  }
+
+  fn clear_tab(&mut self, tab_id: fastrender::ui::TabId) {
+    self.nav_ttfp_start.remove(&tab_id);
+    self.nav_ttfp_last_ms.remove(&tab_id);
+  }
+
+  fn begin_frame_upload_flush(&mut self, pending_count: usize) {
+    self.pending_frame_uploads_at_frame_start = pending_count;
+    self.page_uploaded_tab_in_frame = None;
+  }
+
+  fn record_page_upload(&mut self, tab_id: fastrender::ui::TabId) {
+    self.page_uploaded_tab_in_frame = Some(tab_id);
+  }
+
+  fn record_present(
+    &mut self,
+    now: std::time::Instant,
+    active_tab_id: Option<fastrender::ui::TabId>,
+  ) {
+    let Some(active_tab_id) = active_tab_id else {
+      return;
+    };
+
+    if self.page_uploaded_tab_in_frame != Some(active_tab_id) {
+      return;
+    }
+    self.page_uploaded_tab_in_frame = None;
+
+    if let Some(start) = self.nav_ttfp_start.remove(&active_tab_id) {
+      self
+        .nav_ttfp_last_ms
+        .insert(active_tab_id, now.saturating_duration_since(start).as_millis() as u64);
+    }
+
+    if let Some(input_at) = self.pending_keyboard_input_at.take() {
+      self.last_keyboard_to_present_ms = Some(now.saturating_duration_since(input_at).as_millis() as u64);
+    }
+    if let Some(input_at) = self.pending_scroll_input_at.take() {
+      self.last_scroll_to_present_ms = Some(now.saturating_duration_since(input_at).as_millis() as u64);
+    }
+    if let Some(input_at) = self.pending_resize_input_at.take() {
+      self.last_resize_to_present_ms =
+        Some(now.saturating_duration_since(input_at).as_millis() as u64);
     }
   }
 
@@ -9918,6 +10025,26 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       self.clear_pending_scroll();
     }
 
+    if let Some(hud) = self.hud.as_mut() {
+      let now = std::time::Instant::now();
+      match &msg {
+        UiToWorker::Navigate { tab_id, .. }
+        | UiToWorker::NavigateRequest { tab_id, .. }
+        | UiToWorker::GoBack { tab_id }
+        | UiToWorker::GoForward { tab_id }
+        | UiToWorker::Reload { tab_id } => {
+          hud.note_navigation_start(*tab_id, now);
+        }
+        UiToWorker::StopLoading { tab_id } => {
+          hud.clear_navigation(*tab_id);
+        }
+        UiToWorker::CloseTab { tab_id } => {
+          hud.clear_tab(*tab_id);
+        }
+        _ => {}
+      }
+    }
+
     // Keep overlay scrollbars visible when a scroll is initiated via any input path (wheel, track
     // click, thumb drag, keyboard shortcuts that synthesize `ScrollTo`, accessibility scroll
     // actions, etc).
@@ -11169,6 +11296,21 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       }
     }
 
+    if let Some(hud) = self.hud.as_mut() {
+      match &msg {
+        // Prefer the UI-send timestamp when available (recorded in `send_worker_msg`), but fall back
+        // to the worker's signal so worker-initiated navigations still get a TTFP measurement.
+        fastrender::ui::WorkerToUi::NavigationStarted { tab_id, .. }
+        | fastrender::ui::WorkerToUi::NavigationCommitted { tab_id, .. } => {
+          hud.note_navigation_start_if_absent(*tab_id, std::time::Instant::now());
+        }
+        fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. } => {
+          hud.clear_navigation(*tab_id);
+        }
+        _ => {}
+      }
+    }
+
     // Navigations reset a tab's favicon; drop any cached favicon assets eagerly so we don't render
     // stale icons while a new page is loading (and so GPU resources don't accumulate when switching
     // between many pages).
@@ -11538,6 +11680,11 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         self.perf_frame_ready(frame_ready.tab_id);
         // Coalesce uploads until the next `render_frame`: uploading each intermediate pixmap is
         // expensive.
+        if let Some(hud) = self.hud.as_mut() {
+          if self.pending_frame_uploads.has_pending_for_tab(frame_ready.tab_id) {
+            hud.coalesced_frames_total = hud.coalesced_frames_total.saturating_add(1);
+          }
+        }
         self.pending_frame_uploads.push(frame_ready);
         self.pending_frame_uploads.evict_to_budget(
           self.max_pending_frame_bytes,
@@ -11669,6 +11816,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         hud.frame_upload_stats = app.pending_frame_uploads.take_stats();
       }
     };
+    if let Some(hud) = self.hud.as_mut() {
+      hud.begin_frame_upload_flush(self.pending_frame_uploads.pending_tab_count());
+    }
 
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       self.next_page_upload_redraw = None;
@@ -11762,6 +11912,10 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         hud.last_upload_textures_created = textures_created;
         hud.last_upload_textures_updated = textures_updated;
       }
+    }
+
+    if let Some(hud) = self.hud.as_mut() {
+      hud.record_page_upload(tab_id);
     }
 
     self.last_page_upload_at = Some(now);
@@ -12570,6 +12724,66 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         let _ = writeln!(&mut hud.text_buf, "cpu: -%  total: -ms");
       }
     }
+
+    let _ = write!(&mut hud.text_buf, "latency_ms: key=");
+    match hud.last_keyboard_to_present_ms {
+      Some(ms) => {
+        let _ = write!(&mut hud.text_buf, "{ms}");
+      }
+      None => {
+        let _ = write!(&mut hud.text_buf, "-");
+      }
+    }
+    let _ = write!(&mut hud.text_buf, "  scroll=");
+    match hud.last_scroll_to_present_ms {
+      Some(ms) => {
+        let _ = write!(&mut hud.text_buf, "{ms}");
+      }
+      None => {
+        let _ = write!(&mut hud.text_buf, "-");
+      }
+    }
+    let _ = write!(&mut hud.text_buf, "  resize=");
+    match hud.last_resize_to_present_ms {
+      Some(ms) => {
+        let _ = write!(&mut hud.text_buf, "{ms}");
+      }
+      None => {
+        let _ = write!(&mut hud.text_buf, "-");
+      }
+    }
+    let _ = writeln!(&mut hud.text_buf);
+
+    if let Some(active_tab_id) = self.browser_state.active_tab_id() {
+      let nav_pending = hud
+        .nav_ttfp_start
+        .get(&active_tab_id)
+        .map(|start| start.elapsed().as_millis() as u64);
+      let nav_last = hud.nav_ttfp_last_ms.get(&active_tab_id).copied();
+      match (nav_last, nav_pending) {
+        (Some(last_ms), Some(pending_ms)) => {
+          let _ = writeln!(&mut hud.text_buf, "nav_ttfp: {last_ms}ms (pending {pending_ms}ms)");
+        }
+        (None, Some(pending_ms)) => {
+          let _ = writeln!(&mut hud.text_buf, "nav_ttfp: pending {pending_ms}ms");
+        }
+        (Some(last_ms), None) => {
+          let _ = writeln!(&mut hud.text_buf, "nav_ttfp: {last_ms}ms");
+        }
+        (None, None) => {
+          let _ = writeln!(&mut hud.text_buf, "nav_ttfp: -");
+        }
+      }
+    } else {
+      let _ = writeln!(&mut hud.text_buf, "nav_ttfp: -");
+    }
+
+    let _ = writeln!(
+      &mut hud.text_buf,
+      "frames: pending_uploads={}  dropped={}",
+      hud.pending_frame_uploads_at_frame_start,
+      hud.coalesced_frames_total
+    );
 
     match (
       hud.worker_msgs_per_sec,
@@ -15194,6 +15408,11 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.window.request_redraw();
         }
       }
+      WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+        if let Some(hud) = self.hud.as_mut() {
+          hud.note_resize_input(std::time::Instant::now());
+        }
+      }
       WindowEvent::CursorLeft { .. } => {
         let had_pointer_capture = self.pointer_captured;
         let had_scrollbar_drag = self.scrollbar_drag.is_some();
@@ -15281,6 +15500,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
               fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
             };
+            if let Some(hud) = self.hud.as_mut() {
+              hud.note_scroll_input(std::time::Instant::now());
+            }
             PendingScrollDrag::push(&mut self.pending_scroll_drag, tab_id, delta_css);
           }
           self.window.request_redraw();
@@ -15540,6 +15762,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           mapping.pos_points_to_pos_css_clamped(pos_points)
         };
 
+        if let Some(hud) = self.hud.as_mut() {
+          hud.note_scroll_input(std::time::Instant::now());
+        }
         self.enqueue_scroll(tab_id, delta_css, pointer_css);
         self.window.request_redraw();
       }
@@ -16316,6 +16541,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                 .vertical
                 .and_then(|sb| sb.page_delta_css_for_track_click(pos))
               {
+                if let Some(hud) = self.hud.as_mut() {
+                  hud.note_scroll_input(std::time::Instant::now());
+                }
                 self.enqueue_scroll(tab_id, (0.0, delta_y), None);
                 self.window.request_redraw();
                 return;
@@ -16325,6 +16553,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                 .horizontal
                 .and_then(|sb| sb.page_delta_css_for_track_click(pos))
               {
+                if let Some(hud) = self.hud.as_mut() {
+                  hud.note_scroll_input(std::time::Instant::now());
+                }
                 self.enqueue_scroll(tab_id, (delta_x, 0.0), None);
                 self.window.request_redraw();
                 return;
@@ -16520,6 +16751,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               match plan {
                 KeyboardPageContextMenuOpenPlan::WorkerRequest { pending, msg } => {
                   self.pending_context_menu_request = Some(pending);
+                  if let Some(hud) = self.hud.as_mut() {
+                    hud.note_keyboard_input(std::time::Instant::now());
+                  }
                   let _ = self.send_worker_msg(msg);
                 }
                 KeyboardPageContextMenuOpenPlan::OpenUiOnly(menu) => {
@@ -16559,6 +16793,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             });
 
             if let Some((tab_id, select_node_id, option_node_id)) = choice {
+              if let Some(hud) = self.hud.as_mut() {
+                hud.note_keyboard_input(std::time::Instant::now());
+              }
               let _ = self.send_worker_msg(fastrender::ui::UiToWorker::select_dropdown_choose(
                 tab_id,
                 select_node_id,
@@ -16863,19 +17100,32 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
                 match action {
                   ShortcutAction::Copy => {
+                    if let Some(hud) = self.hud.as_mut() {
+                      hud.note_keyboard_input(std::time::Instant::now());
+                    }
                     let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
                   }
                   ShortcutAction::Cut => {
+                    if let Some(hud) = self.hud.as_mut() {
+                      hud.note_keyboard_input(std::time::Instant::now());
+                    }
                     let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
                   }
                   ShortcutAction::SelectAll => {
-                    let _ = self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
+                    if let Some(hud) = self.hud.as_mut() {
+                      hud.note_keyboard_input(std::time::Instant::now());
+                    }
+                    let _ =
+                      self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
                   }
                   ShortcutAction::Paste => {
                     if let Some(text) = os_clipboard::read_text() {
                       // egui-winit can also emit `egui::Event::Paste` from Ctrl/Cmd+V. Suppress it
                       // for this frame to avoid double pastes.
                       self.suppress_paste_events = true;
+                      if let Some(hud) = self.hud.as_mut() {
+                        hud.note_keyboard_input(std::time::Instant::now());
+                      }
                       let _ =
                         self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
                     }
@@ -16941,6 +17191,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           && !self.modifiers.alt()
           && matches!(key, VirtualKeyCode::A)
         {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_keyboard_input(std::time::Instant::now());
+          }
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: fastrender::interaction::KeyAction::SelectAll,
@@ -16955,6 +17208,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         };
 
         if command && matches!(key, VirtualKeyCode::Z) {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_keyboard_input(std::time::Instant::now());
+          }
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: if self.modifiers.shift() {
@@ -16971,6 +17227,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           && !self.modifiers.shift()
           && matches!(key, VirtualKeyCode::Y)
         {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_keyboard_input(std::time::Instant::now());
+          }
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: fastrender::interaction::KeyAction::Redo,
@@ -16984,6 +17243,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.modifiers.ctrl() && !self.modifiers.alt()
         };
         if word_mod && matches!(key, VirtualKeyCode::Left) {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_keyboard_input(std::time::Instant::now());
+          }
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: if self.modifiers.shift() {
@@ -16995,6 +17257,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           return;
         }
         if word_mod && matches!(key, VirtualKeyCode::Right) {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_keyboard_input(std::time::Instant::now());
+          }
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: if self.modifiers.shift() {
@@ -17012,6 +17277,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.modifiers.ctrl() && !self.modifiers.alt()
         };
         if word_delete_mod && matches!(key, VirtualKeyCode::Back) {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_keyboard_input(std::time::Instant::now());
+          }
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: fastrender::interaction::KeyAction::WordBackspace,
@@ -17019,6 +17287,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           return;
         }
         if word_delete_mod && matches!(key, VirtualKeyCode::Delete) {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_keyboard_input(std::time::Instant::now());
+          }
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: fastrender::interaction::KeyAction::WordDelete,
@@ -17071,6 +17342,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           return;
         };
 
+        if let Some(hud) = self.hud.as_mut() {
+          hud.note_keyboard_input(std::time::Instant::now());
+        }
         let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
           tab_id,
           key: key_action,
@@ -17104,9 +17378,15 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         match ime {
           Ime::Preedit(text, cursor_range) => {
             if text.is_empty() {
+              if let Some(hud) = self.hud.as_mut() {
+                hud.note_keyboard_input(std::time::Instant::now());
+              }
               let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
             } else {
               let cursor = cursor_range.as_ref().copied();
+              if let Some(hud) = self.hud.as_mut() {
+                hud.note_keyboard_input(std::time::Instant::now());
+              }
               let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImePreedit {
                 tab_id,
                 text: text.clone(),
@@ -17117,8 +17397,14 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           }
           Ime::Commit(text) => {
             if text.is_empty() {
+              if let Some(hud) = self.hud.as_mut() {
+                hud.note_keyboard_input(std::time::Instant::now());
+              }
               let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
             } else {
+              if let Some(hud) = self.hud.as_mut() {
+                hud.note_keyboard_input(std::time::Instant::now());
+              }
               let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImeCommit {
                 tab_id,
                 text: text.clone(),
@@ -17127,6 +17413,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             self.window.request_redraw();
           }
           Ime::Disabled => {
+            if let Some(hud) = self.hud.as_mut() {
+              hud.note_keyboard_input(std::time::Instant::now());
+            }
             let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
             self.window.request_redraw();
           }
@@ -17175,6 +17464,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
+        if let Some(hud) = self.hud.as_mut() {
+          hud.note_keyboard_input(std::time::Instant::now());
+        }
         let _ = self.send_worker_msg(fastrender::ui::UiToWorker::TextInput {
           tab_id,
           text: ch.to_string(),
@@ -19798,6 +20090,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     {
       let _span = self.trace.span("wgpu.present", "ui.frame");
       surface_texture.present();
+      if let Some(hud) = self.hud.as_mut() {
+        hud.record_present(std::time::Instant::now(), self.browser_state.active_tab_id());
+      }
     }
 
     if let Some(perf_start) = perf_frame_start {
