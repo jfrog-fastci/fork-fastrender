@@ -384,6 +384,83 @@ mod tests {
   }
 
   #[test]
+  fn binary_property_names_match_ecma_table() {
+    // ECMA-262 `table-binary-unicode-properties` uses the UCD aliases (Unicode v17.0.0). For most
+    // properties the alias corresponds to ICU4X's `SHORT_NAME`; `White_Space` is the notable
+    // exception (`space` vs `WSpace`), covered by the `"space"` special-case above.
+    //
+    // This test guards against accepting a different set of names than the spec table.
+    const BINARY_PROPS: &[(&str, &str)] = &[
+      ("ASCII", "ASCII"),
+      ("ASCII_Hex_Digit", "AHex"),
+      ("Alphabetic", "Alpha"),
+      ("Any", "Any"),
+      ("Assigned", "Assigned"),
+      ("Bidi_Control", "Bidi_C"),
+      ("Bidi_Mirrored", "Bidi_M"),
+      ("Case_Ignorable", "CI"),
+      ("Cased", "Cased"),
+      ("Changes_When_Casefolded", "CWCF"),
+      ("Changes_When_Casemapped", "CWCM"),
+      ("Changes_When_Lowercased", "CWL"),
+      ("Changes_When_NFKC_Casefolded", "CWKCF"),
+      ("Changes_When_Titlecased", "CWT"),
+      ("Changes_When_Uppercased", "CWU"),
+      ("Dash", "Dash"),
+      ("Default_Ignorable_Code_Point", "DI"),
+      ("Deprecated", "Dep"),
+      ("Diacritic", "Dia"),
+      ("Emoji", "Emoji"),
+      ("Emoji_Component", "EComp"),
+      ("Emoji_Modifier", "EMod"),
+      ("Emoji_Modifier_Base", "EBase"),
+      ("Emoji_Presentation", "EPres"),
+      ("Extended_Pictographic", "ExtPict"),
+      ("Extender", "Ext"),
+      ("Grapheme_Base", "Gr_Base"),
+      ("Grapheme_Extend", "Gr_Ext"),
+      ("Hex_Digit", "Hex"),
+      ("IDS_Binary_Operator", "IDSB"),
+      ("IDS_Trinary_Operator", "IDST"),
+      ("ID_Continue", "IDC"),
+      ("ID_Start", "IDS"),
+      ("Ideographic", "Ideo"),
+      ("Join_Control", "Join_C"),
+      ("Logical_Order_Exception", "LOE"),
+      ("Lowercase", "Lower"),
+      ("Math", "Math"),
+      ("Noncharacter_Code_Point", "NChar"),
+      ("Pattern_Syntax", "Pat_Syn"),
+      ("Pattern_White_Space", "Pat_WS"),
+      ("Quotation_Mark", "QMark"),
+      ("Radical", "Radical"),
+      ("Regional_Indicator", "RI"),
+      ("Sentence_Terminal", "STerm"),
+      ("Soft_Dotted", "SD"),
+      ("Terminal_Punctuation", "Term"),
+      ("Unified_Ideograph", "UIdeo"),
+      ("Uppercase", "Upper"),
+      ("Variation_Selector", "VS"),
+      ("White_Space", "space"),
+      ("XID_Continue", "XIDC"),
+      ("XID_Start", "XIDS"),
+    ];
+
+    for &(canonical, alias) in BINARY_PROPS {
+      let Some(PropertyName::Binary(canonical_prop)) = resolve_property_name(canonical) else {
+        panic!("expected canonical binary property {canonical:?} to resolve");
+      };
+      let Some(PropertyName::Binary(alias_prop)) = resolve_property_name(alias) else {
+        panic!("expected alias {alias:?} (for {canonical:?}) to resolve");
+      };
+      assert_eq!(
+        canonical_prop, alias_prop,
+        "canonical name {canonical:?} and alias {alias:?} must resolve to the same property"
+      );
+    }
+  }
+
+  #[test]
   fn strict_value_resolution() {
     use icu_properties::props::{GeneralCategoryGroup as GcGroup, Script};
 
