@@ -19,8 +19,8 @@ Code lives in:
 
 **This is not:**
 
-- A “real” web browser engine (no multi-process architecture, no extensions/devtools/service
-  workers, etc.).
+- A “real” web browser engine (no sandboxed multi-process architecture yet, no
+  extensions/devtools/service workers, etc.).
 - A JavaScript-capable browser (yet): the `browser` binary does not currently execute author
   JavaScript (`<script>` does not run in the GUI today). See [javascript.md](javascript.md) and
   [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream.
@@ -31,6 +31,31 @@ The `browser` binary is feature-gated behind the Cargo feature `browser_ui` so t
 can compile without pulling in the GUI stack.
 
 For build/run commands, platform prerequisites, and MSRV constraints, see [browser_ui.md](browser_ui.md).
+
+### Headless smoke / crash-smoke (CI + multiprocess seam)
+
+The `browser` entrypoint also has **headless** smoke modes intended for CI and quick validation on
+hosts without a working display/GPU (they do not create a window or initialise `winit`/`wgpu`):
+
+```bash
+# Basic “is UI↔worker wired up” smoke test:
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke
+
+# “renderer crash shouldn’t take down the browser” smoke test:
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-crash-smoke
+```
+
+What these validate:
+
+- **`--headless-smoke`**: end-to-end UI↔worker startup and message wiring.
+- **`--headless-crash-smoke`**: crash isolation (today: worker thread crash; future: renderer process crash).
+
+These smoke modes are intended to remain stable as the renderer moves out-of-process. The key seam
+is the `UiToWorker`/`WorkerToUi` message protocol in [`src/ui/messages.rs`](../src/ui/messages.rs) and
+the worker spawn helpers (`spawn_browser_worker` / `spawn_browser_ui_worker`) in
+[`src/ui/render_worker.rs`](../src/ui/render_worker.rs).
 
 ## Current capabilities (MVP)
 

@@ -106,12 +106,32 @@ backend:
 - `browser --wgpu-backends gl` / `FASTR_BROWSER_WGPU_BACKENDS=gl`
 
 For CI environments without a display/GPU, the `browser` entrypoint provides **test-only** headless
-hooks to exercise startup and UI↔worker wiring without creating a window:
+modes that exercise startup and UI↔worker wiring **without** creating a window or initialising
+`winit`/`wgpu`:
 
 - `browser --exit-immediately` / `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1`
-- `browser --headless-smoke` / `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` (prints `HEADLESS_SMOKE_OK` on success)
+  - Parses/apply startup env vars, then exits (used by env parsing tests).
+- `browser --headless-smoke` / `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1`
+  - Runs an end-to-end smoke test of the real `src/bin/browser.rs` entrypoint + the
+    `UiToWorker`/`WorkerToUi` message protocol.
+  - On success prints `HEADLESS_SMOKE_OK` to stdout.
+- `browser --headless-crash-smoke` / `FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE=1`
+  - Runs a smoke test that intentionally crashes the renderer worker and validates that the crash is
+    contained/observable (future: renderer *process* crash isolation).
 
-See [env-vars.md](env-vars.md) for details.
+Run smoke modes under the repo’s resource-limit wrapper:
+
+```bash
+# Headless “does it start / is UI↔worker wired up” smoke test:
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke
+
+# Headless “renderer crash shouldn’t take down the browser” smoke test:
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-crash-smoke
+```
+
+See [env-vars.md](env-vars.md) for test-only overrides (session/bookmarks/history JSON injection).
 
 ### GPU / wgpu adapter selection
 
@@ -134,10 +154,12 @@ Troubleshooting tips:
   example `--wgpu-backends gl`) or `--force-fallback-adapter`.
 - If you're in a headless environment without a working display/GPU, use `--headless-smoke` (or
   `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1`) to run a minimal startup smoke test without winit/wgpu.
+  `--headless-crash-smoke` is a companion mode intended to validate crash isolation.
 - Navigate to `about:gpu` to see the selected adapter/backend and the selection options used.
 
 CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` binary with
-`--features browser_ui` on Linux/macOS/Windows; Linux additionally runs the headless smoke mode.
+`--features browser_ui` on Linux/macOS/Windows; Linux additionally runs the headless smoke mode
+(and may run crash-smoke as multiprocess isolation work lands).
 
 Note: by default, when run **without** a URL, the windowed `browser` app tries to restore the
 previous session (windows + tabs + per-tab zoom + best-effort scroll restoration). When run **with**
@@ -543,6 +565,14 @@ The desktop UI is deliberately split into:
 - **UI thread**: owns the winit event loop, builds egui widgets, and presents frames via wgpu.
 - **Render worker**: runs the “heavy” pipeline (fetch → parse → style → layout → paint) and produces
   a `tiny_skia::Pixmap` for the current viewport.
+
+Multiprocess note (roadmap): today the “worker” is an in-process thread, but the long-term plan is to
+move the content renderer (and eventually JS) into a separate sandboxed process for crash/security
+isolation. The intended seam is the `UiToWorker`/`WorkerToUi` protocol
+([`src/ui/messages.rs`](../src/ui/messages.rs)) and the worker spawn helpers in
+[`src/ui/render_worker.rs`](../src/ui/render_worker.rs) (`spawn_browser_worker` /
+`spawn_browser_ui_worker`). The headless smoke modes (`--headless-smoke` / `--headless-crash-smoke`)
+are intended to remain stable as that swap happens.
 
 The worker boundary keeps the UI responsive under slow network/layout and provides a place to add
 browser-style behaviors over time:
