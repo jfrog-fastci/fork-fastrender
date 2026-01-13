@@ -180,9 +180,6 @@ This tool is **macOS-only**.
 ```bash
 # From repo root (recommended for agent/CI-style environments)
 bash scripts/cargo_agent.sh run --bin macos_sandbox_probe -- --mode strict
-
-# Or, directly:
-cargo run --bin macos_sandbox_probe -- --mode strict
 ```
 
 ### Network probe
