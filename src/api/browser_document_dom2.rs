@@ -2479,69 +2479,41 @@ impl BrowserDocumentDom2 {
       && prev_mapping.is_some_and(|prev| prev.preorder_to_node_id() == mapping.preorder_to_node_id());
 
     // Build optional reuse inputs for the cascade pass.
-    let cascade_reuse = can_attempt_incremental_restyle.then(|| {
+    let cascade_reuse = if can_attempt_incremental_restyle
+      && (!self.dirty_style_nodes.is_empty() || !self.dirty_form_state_style_nodes.is_empty())
+    {
       let dom = self.dom.as_ref();
-      let mut dom2_scope: FxHashSet<crate::dom2::NodeId> = FxHashSet::default();
+      let mut dirty_style_nodes: FxHashSet<crate::dom2::NodeId> = FxHashSet::default();
+      dirty_style_nodes.extend(self.dirty_style_nodes.iter().copied());
+      dirty_style_nodes.extend(self.dirty_form_state_style_nodes.iter().copied());
 
-      // Mark subtrees rooted at the parents of dirty style nodes as needing a recascade. This is a
-      // conservative approximation that ensures sibling selectors can be recomputed without
-      // requiring a full-document recascade.
-      for &dirty in self
-        .dirty_style_nodes
-        .iter()
-        .chain(self.dirty_form_state_style_nodes.iter())
-      {
-        let root = dom.parent_node(dirty).unwrap_or(dirty);
-        let mut stack: Vec<crate::dom2::NodeId> = vec![root];
-        while let Some(node_id) = stack.pop() {
-          if !dom2_scope.insert(node_id) {
-            continue;
+      build_incremental_restyle_scope(renderer_dom_ref, &mapping, dom, &dirty_style_nodes).map(
+        |restyle_scope| {
+          fn collect_reuse_map(
+            node: &StyledNode,
+            out: &mut std::collections::HashMap<usize, *const StyledNode>,
+          ) {
+            out.insert(node.node_id, node as *const _);
+            for child in node.children.iter() {
+              collect_reuse_map(child, out);
+            }
           }
-          let node = dom.node(node_id);
-          for &child in node.children.iter().rev() {
-            stack.push(child);
+
+          let mut reuse_map: std::collections::HashMap<usize, *const StyledNode> =
+            std::collections::HashMap::new();
+          if let Some(prev) = prev_prepared {
+            collect_reuse_map(prev.styled_tree(), &mut reuse_map);
           }
-        }
 
-        let mut current = root;
-        while let Some(parent) = dom.parent_node(current) {
-          dom2_scope.insert(parent);
-          current = parent;
-        }
-      }
-
-      // Convert the dom2-node scope to the renderer preorder-id scope expected by the cascade.
-      let mut restyle_scope: std::collections::HashSet<usize> = std::collections::HashSet::new();
-      for (preorder, node_id) in mapping.preorder_to_node_id().iter().enumerate() {
-        let Some(node_id) = node_id else {
-          continue;
-        };
-        if dom2_scope.contains(node_id) {
-          restyle_scope.insert(preorder);
-        }
-      }
-
-      fn collect_reuse_map(
-        node: &StyledNode,
-        out: &mut std::collections::HashMap<usize, *const StyledNode>,
-      ) {
-        out.insert(node.node_id, node as *const _);
-        for child in node.children.iter() {
-          collect_reuse_map(child, out);
-        }
-      }
-
-      let mut reuse_map: std::collections::HashMap<usize, *const StyledNode> =
-        std::collections::HashMap::new();
-      if let Some(prev) = prev_prepared {
-        collect_reuse_map(prev.styled_tree(), &mut reuse_map);
-      }
-
-      super::CascadeReuse {
-        restyle_scope,
-        reuse_map,
-      }
-    });
+          super::CascadeReuse {
+            restyle_scope,
+            reuse_map,
+          }
+        },
+      )
+    } else {
+      None
+    };
     let did_incremental_restyle = cascade_reuse.is_some();
 
     let prepared = {
@@ -4333,21 +4305,31 @@ mod tests {
 
   #[test]
   fn incremental_restyle_scope_includes_wbr_synthetic_zwsp() {
-    let html = r#"<!doctype html>
-      <html>
-        <body>
-          <div id="scope">
-            <span id="dirty"></span>
-            <wbr id="w">
-          </div>
-        </body>
-      </html>"#;
+    // Create a dom2 tree with a `<wbr>` element that does **not** contain a ZWSP text node; the
+    // renderer snapshot should inject the ZWSP as a synthetic renderer node.
+    let mut dom2 = crate::dom2::Document::new(QuirksMode::NoQuirks);
+    let doc_root = dom2.root();
 
-    let initial = crate::dom::parse_html(html).expect("parse html");
-    let dom2 = crate::dom2::Document::from_renderer_dom(&initial);
+    let html = dom2.create_element("html", "");
+    dom2.append_child(doc_root, html).unwrap();
+    let head = dom2.create_element("head", "");
+    dom2.append_child(html, head).unwrap();
+    let body = dom2.create_element("body", "");
+    dom2.append_child(html, body).unwrap();
+
+    let scope_div = dom2.create_element("div", "");
+    dom2.set_attribute(scope_div, "id", "scope").unwrap();
+    dom2.append_child(body, scope_div).unwrap();
+
+    let dirty_node = dom2.create_element("span", "");
+    dom2.set_attribute(dirty_node, "id", "dirty").unwrap();
+    dom2.append_child(scope_div, dirty_node).unwrap();
+
+    let wbr = dom2.create_element("wbr", "");
+    dom2.set_attribute(wbr, "id", "w").unwrap();
+    dom2.append_child(scope_div, wbr).unwrap();
+
     let snapshot = dom2.to_renderer_dom_with_mapping();
-
-    let dirty_node = dom2.get_element_by_id("dirty").expect("dirty element");
     let mut dirty_style_nodes: FxHashSet<crate::dom2::NodeId> = FxHashSet::default();
     dirty_style_nodes.insert(dirty_node);
 
