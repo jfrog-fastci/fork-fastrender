@@ -19715,16 +19715,13 @@ impl App {
               }
               // Match mouse click-away semantics: touching the underlying media element should close
               // the overlay without immediately reopening it by forwarding the tap to the page.
-              let clicked_media_element =
-                self.open_media_controls.as_ref().is_some_and(|controls| {
-                  self
-                    .page_input_mapping
-                    .and_then(|mapping| {
-                      mapping.rect_css_to_rect_points_clamped(controls.anchor_css)
-                    })
-                    .is_some_and(|rect_points| rect_points.contains(pos_points))
-                });
-              self.close_media_controls();
+              let clicked_media_element = self.open_media_controls.as_ref().is_some_and(|controls| {
+                self
+                  .page_input_mapping
+                  .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
+                  .is_some_and(|rect_points| rect_points.contains(pos_points))
+              });
+              self.cancel_media_controls();
               self.window.request_redraw();
               if clicked_media_element {
                 return;
@@ -20052,7 +20049,7 @@ impl App {
           // any open overlays. Conservatively close the media controls overlay so it cannot keep
           // intercepting input.
           if self.open_media_controls.is_some() {
-            self.close_media_controls();
+            self.cancel_media_controls();
           }
           if self.scrollbar_drag.is_some() {
             self.cancel_scrollbar_drag();
@@ -20590,7 +20587,7 @@ impl App {
             return;
           }
           if self.open_media_controls.is_some() {
-            self.close_media_controls();
+            self.cancel_media_controls();
             self.window.request_redraw();
             return;
           }
@@ -23252,7 +23249,7 @@ impl App {
         self.pending_pointer_move = None;
         self.cancel_select_dropdown();
         self.cancel_date_time_picker();
-        self.close_media_controls();
+        self.cancel_media_controls();
         self.cancel_file_picker();
         self.close_media_controls();
         self.cancel_scrollbar_drag();
@@ -23548,8 +23545,9 @@ impl App {
             self.cancel_date_time_picker();
           } else if self.open_file_picker.is_some() {
             self.cancel_file_picker();
-          } else if !self.clear_browsing_data_dialog_open && !self.page_loading_overlay_blocks_input
-          {
+          } else if self.open_media_controls.is_some() {
+            self.cancel_media_controls();
+          } else if !self.clear_browsing_data_dialog_open && !self.page_loading_overlay_blocks_input {
             // Mark a pending context menu request so the worker response opens the menu even though
             // we don't yet know the final hit-test position (it will be derived from the focused
             // element bounds).
