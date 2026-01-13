@@ -11,6 +11,7 @@ The goal is that contributors can implement/extend site isolation without “fil
 
 Related:
 - Workstream overview: [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md)
+- OS sandbox policy overview (seccomp/AppContainer/etc): [sandboxing.md](sandboxing.md)
 - Current single-process iframe rendering (recursive): [`src/paint/iframe.rs`](../src/paint/iframe.rs)
 - Current iframe depth limit knobs: `FastRenderConfig::with_max_iframe_depth` (default `DEFAULT_MAX_IFRAME_DEPTH` in `src/api.rs`)
 
@@ -77,7 +78,7 @@ Site isolation is a **security boundary**. Assume:
   - mediation of network/storage access.
 
 Non-goals for this doc:
-- OS sandbox policy details (seccomp/AppContainer/etc). That is handled elsewhere in the multiprocess workstream.
+- OS sandbox policy details (seccomp/AppContainer/etc). See [sandboxing.md](sandboxing.md).
 - Perfect Chrome parity (we’re specifying a simpler model that is still coherent and secure).
 
 ---

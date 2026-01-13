@@ -7,6 +7,7 @@ Its purpose is to prevent drift: future code changes should consistently treat
 Related:
 - Site isolation process model (process assignment + OOPIF semantics): [`docs/site_isolation.md`](site_isolation.md)
 - Linux IPC checklist (shared memory + FD passing): [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
+- OS sandbox policy overview (seccomp/AppContainer/etc): [`docs/sandboxing.md`](sandboxing.md)
 
 ## Status / repo reality (today)
 
