@@ -86,19 +86,16 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Intended for debugging and compatibility with older/unusual Windows configurations.
 - `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
   - In debug builds, sandbox spawn debug logs are enabled by default; set this in release builds.
-- `FASTR_RENDERER_JOB_MEM_LIMIT_MB=<MiB>` – **Windows-only**: apply a best-effort renderer Job object memory limit.
-  - Parsed by `crates/win-sandbox` (`win_sandbox::renderer::RendererSandboxBuilder`) and the `win-sandbox` probe tool.
+- `FASTR_RENDERER_JOB_MEM_LIMIT_MB=<MiB>` – **Windows-only**: apply a best-effort renderer Job object committed-memory cap.
+  - Parsed by `crates/win-sandbox` (`win_sandbox::renderer::RendererSandbox::new_default()` / `RendererSandboxBuilder`) and the `win-sandbox` probe tool.
+  - `0`, empty, or unset disables. Accepts `_` separators (e.g. `1_024`).
   - Sets `JOB_OBJECT_LIMIT_JOB_MEMORY` (`JOBOBJECT_EXTENDED_LIMIT_INFORMATION::JobMemoryLimit`) in bytes.
   - Semantics: caps total *committed memory* across all processes in the job (not RSS; not per-process).
-  - Note: `src/sandbox/windows.rs` does **not** currently read this env var.
+  - Note: the production Windows sandbox launcher in `src/sandbox/windows.rs` does **not** currently read this env var.
 - `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` – **Windows-only**: opt into inheriting the full parent environment when spawning sandboxed renderer children.
   - By default `src/sandbox/windows.rs` builds a sanitized environment block to avoid leaking secrets
     (and to ensure TEMP/TMP point at an AppContainer-writable location).
   - This is intended for local debugging only.
-- `FASTR_RENDERER_JOB_MEM_LIMIT_MB=<MiB>` – **Windows-only**: apply a Job Object committed-memory cap when spawning a renderer via `win_sandbox::renderer::RendererSandbox::new_default()`.
-  - This sets `JOB_OBJECT_LIMIT_JOB_MEMORY` / `JOBOBJECT_EXTENDED_LIMIT_INFORMATION::JobMemoryLimit` (total committed memory across all processes in the job).
-  - Intended as a defense-in-depth guardrail for runaway allocations in sandboxed renderer processes.
-  - Note: the production Windows sandbox launcher in `src/sandbox/windows.rs` does **not** currently set this limit.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
 
 ## Renderer sandboxing (macOS)

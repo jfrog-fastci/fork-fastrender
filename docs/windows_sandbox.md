@@ -262,7 +262,7 @@ We configure the renderer Job object with `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`
   - **Not currently set** by `src/sandbox/windows.rs::spawn_sandboxed`.
   - `crates/win-sandbox` test/tooling helpers (`win_sandbox::renderer::RendererSandbox::new_default()` /
     `RendererSandboxBuilder`, `win-sandbox --example probe`) apply this limit when
-    `FASTR_RENDERER_JOB_MEM_LIMIT_MB` is set.
+    `FASTR_RENDERER_JOB_MEM_LIMIT_MB` is set (use `0`/unset to disable).
   - Semantics: limits total *committed* memory for the entire Job (not RSS; not per-process).
   - Tradeoff: if set too low, legitimate pages may hit the limit and fail allocations.
 

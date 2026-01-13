@@ -242,7 +242,9 @@ mod windows {
           return Ok(None);
         }
 
-        let mb: u64 = trimmed.parse().map_err(|_| {
+        // Allow `_` separators for readability (e.g. `1_024`).
+        let normalized: String = trimmed.chars().filter(|c| *c != '_').collect();
+        let mb: u64 = normalized.parse().map_err(|_| {
           io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("invalid environment variable `{JOB_MEM_LIMIT_ENV}`: `{raw}`"),

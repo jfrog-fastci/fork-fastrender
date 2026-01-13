@@ -148,10 +148,20 @@ impl RendererSandbox {
 fn parse_job_mem_limit_env() -> Result<Option<usize>> {
   match std::env::var(JOB_MEM_LIMIT_ENV) {
     Ok(value) => {
-      let mb: u64 = value.parse().map_err(|_| WinSandboxError::InvalidEnvVar {
+      let trimmed = value.trim();
+      if trimmed.is_empty() || trimmed == "0" {
+        return Ok(None);
+      }
+
+      // Allow `_` separators for readability (e.g. `1_024`).
+      let normalized: String = trimmed.chars().filter(|c| *c != '_').collect();
+      let mb: u64 = normalized.parse().map_err(|_| WinSandboxError::InvalidEnvVar {
         name: JOB_MEM_LIMIT_ENV,
         value,
       })?;
+      if mb == 0 {
+        return Ok(None);
+      }
       let bytes = mb.saturating_mul(1024 * 1024);
       Ok(Some(bytes.min(usize::MAX as u64) as usize))
     }
