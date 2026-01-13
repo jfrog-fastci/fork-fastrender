@@ -178,6 +178,182 @@ const PRESERVE_3D_PLANE_PARALLEL_MIN_TOTAL_PIXELS: u64 = 512 * 512;
 const TILE_HALO_SAFETY_MARGIN_CSS: f32 = 4.0;
 const MAX_PARALLEL_TILE_PIXEL_AMPLIFICATION: u128 = 8;
 
+/// Compute a conservative halo size in *device pixels* for rendering a sub-rectangle of a display
+/// list while preserving byte-identical output with a full-frame render.
+///
+/// This is shared between tiled rendering (parallel paint) and incremental region repaints.
+pub(crate) fn conservative_tile_halo_px(list: &DisplayList, device_scale: f32) -> Result<u32> {
+  conservative_tile_halo_px_for_items(list.items(), device_scale)
+}
+
+pub(crate) fn conservative_tile_halo_px_for_items(
+  items: &[DisplayItem],
+  device_scale: f32,
+) -> Result<u32> {
+  let halo_css = max_effect_padding_css(items)? + TILE_HALO_SAFETY_MARGIN_CSS;
+  let device_scale = if device_scale.is_finite() {
+    device_scale.abs()
+  } else {
+    0.0
+  };
+  Ok((halo_css * device_scale).ceil() as u32)
+}
+
+fn max_effect_padding_css(items: &[DisplayItem]) -> Result<f32> {
+  // Capture the largest expansion any item can paint beyond its base bounds so tiled rendering
+  // includes enough halo to avoid clipping strokes, shadows, and filters.
+  let mut max_pad = 0.0f32;
+  let mut deadline_counter = 0usize;
+  let mut transform_stack: Vec<Transform3D> = Vec::new();
+
+  let transform_scale = |transform: Transform3D| -> f32 {
+    if transform.is_identity() {
+      return 1.0;
+    }
+
+    if let Some(affine) = transform.to_2d() {
+      return transform_max_axis_scale(Transform::from_row(
+        affine.a, affine.b, affine.c, affine.d, 0.0, 0.0,
+      ));
+    }
+
+    let (approx, valid) = transform.approximate_2d_with_validity();
+    if !valid {
+      return f32::INFINITY;
+    }
+    transform_max_axis_scale(Transform::from_row(
+      approx.a, approx.b, approx.c, approx.d, 0.0, 0.0,
+    ))
+  };
+
+  let scaled_pad = |pad: f32, scale: f32| -> f32 {
+    if !pad.is_finite() {
+      return 0.0;
+    }
+    let pad = pad.abs();
+    if pad <= f32::EPSILON {
+      return 0.0;
+    }
+    if scale.is_infinite() {
+      return f32::INFINITY;
+    }
+    if !scale.is_finite() {
+      return 0.0;
+    }
+    (pad * scale).abs()
+  };
+
+  for item in items {
+    check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+      .map_err(Error::Render)?;
+
+    let current_transform = *transform_stack.last().unwrap_or(&Transform3D::identity());
+    let current_scale = transform_scale(current_transform);
+
+    match item {
+      DisplayItem::PushTransform(transform) => {
+        let combined = current_transform.multiply(&transform.transform);
+        transform_stack.push(combined);
+      }
+      DisplayItem::PopTransform => {
+        let _ = transform_stack.pop();
+      }
+      DisplayItem::PushStackingContext(sc) => {
+        // Filters are specified in the stacking context's local coordinate space. When the
+        // stacking context is transformed (scale/rotation/etc), the filter kernel is effectively
+        // transformed in output space as well; tile halo estimation must account for that.
+        let local_transform = sc.transform.unwrap_or_else(Transform3D::identity);
+        let painting_transform = current_transform.multiply(&local_transform);
+        let filter_scale = transform_scale(painting_transform);
+
+        let filters_outset =
+          filter_halo_outset_with_bounds(&sc.filters, filter_scale, Some(sc.bounds));
+        let backdrop_outset =
+          filter_halo_outset_with_bounds(&sc.backdrop_filters, filter_scale, Some(sc.bounds));
+        max_pad = max_pad.max(filters_outset.max_side().max(backdrop_outset.max_side()));
+
+        let child_transform = if let Some(perspective) = sc.child_perspective.as_ref() {
+          painting_transform.multiply(perspective)
+        } else {
+          painting_transform
+        };
+        transform_stack.push(child_transform);
+      }
+      DisplayItem::PopStackingContext => {
+        let _ = transform_stack.pop();
+      }
+      DisplayItem::StrokeRect(stroke) => {
+        max_pad = max_pad.max(scaled_pad(stroke.width * 0.5, current_scale));
+      }
+      DisplayItem::StrokeRoundedRect(stroke) => {
+        max_pad = max_pad.max(scaled_pad(stroke.width * 0.5, current_scale));
+      }
+      DisplayItem::Outline(outline) => {
+        max_pad = max_pad.max(scaled_pad(
+          outline.width.abs() + outline.offset.abs(),
+          current_scale,
+        ));
+      }
+      DisplayItem::Border(border) => {
+        let max_w = border
+          .top
+          .width
+          .max(border.right.width)
+          .max(border.bottom.width)
+          .max(border.left.width);
+        max_pad = max_pad.max(scaled_pad(max_w * 0.5, current_scale));
+      }
+      DisplayItem::BoxShadow(shadow) => {
+        if shadow.inset {
+          continue;
+        }
+        if shadow.color.a <= f32::EPSILON {
+          continue;
+        }
+        let blur = box_shadow_blur_radius_to_sigma(shadow.blur_radius) * 3.0;
+        let spread = shadow.spread_radius.abs();
+        let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
+        max_pad = max_pad.max(scaled_pad(blur + spread + offset, current_scale));
+      }
+      DisplayItem::Text(text) => {
+        if text.synthetic_bold.is_finite() {
+          max_pad = max_pad.max(scaled_pad(text.synthetic_bold, current_scale));
+        }
+        if text.stroke_width.is_finite() {
+          max_pad = max_pad.max(scaled_pad(text.stroke_width * 0.5, current_scale));
+        }
+        for shadow in &text.shadows {
+          if shadow.color.a <= f32::EPSILON {
+            continue;
+          }
+          let blur = shadow.blur_radius.abs() * 3.0;
+          let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
+          max_pad = max_pad.max(scaled_pad(blur + offset, current_scale));
+        }
+      }
+      DisplayItem::ListMarker(marker) => {
+        if marker.synthetic_bold.is_finite() {
+          max_pad = max_pad.max(scaled_pad(marker.synthetic_bold, current_scale));
+        }
+        if marker.stroke_width.is_finite() {
+          max_pad = max_pad.max(scaled_pad(marker.stroke_width * 0.5, current_scale));
+        }
+        for shadow in &marker.shadows {
+          if shadow.color.a <= f32::EPSILON {
+            continue;
+          }
+          let blur = shadow.blur_radius.abs() * 3.0;
+          let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
+          max_pad = max_pad.max(scaled_pad(blur + offset, current_scale));
+        }
+      }
+      _ => {}
+    }
+  }
+
+  Ok(max_pad)
+}
+
 fn rgba_bytes(width: u32, height: u32) -> Option<u64> {
   u64::from(width)
     .checked_mul(u64::from(height))
@@ -12232,166 +12408,8 @@ impl DisplayListRenderer {
     Ok((total, image_source_pixels, image_tiles.len()))
   }
 
-  fn max_effect_padding(&self, items: &[DisplayItem]) -> Result<f32> {
-    // Capture the largest expansion any item can paint beyond its base bounds so tiled
-    // rendering includes enough halo to avoid clipping strokes, shadows, and filters.
-    let mut max_pad = 0.0f32;
-    let mut deadline_counter = 0usize;
-    let mut transform_stack: Vec<Transform3D> = Vec::new();
-
-    let transform_scale = |transform: Transform3D| -> f32 {
-      if transform.is_identity() {
-        return 1.0;
-      }
-
-      if let Some(affine) = transform.to_2d() {
-        return transform_max_axis_scale(Transform::from_row(
-          affine.a, affine.b, affine.c, affine.d, 0.0, 0.0,
-        ));
-      }
-
-      let (approx, valid) = transform.approximate_2d_with_validity();
-      if !valid {
-        return f32::INFINITY;
-      }
-      transform_max_axis_scale(Transform::from_row(
-        approx.a, approx.b, approx.c, approx.d, 0.0, 0.0,
-      ))
-    };
-
-    let scaled_pad = |pad: f32, scale: f32| -> f32 {
-      if !pad.is_finite() {
-        return 0.0;
-      }
-      let pad = pad.abs();
-      if pad <= f32::EPSILON {
-        return 0.0;
-      }
-      if scale.is_infinite() {
-        return f32::INFINITY;
-      }
-      if !scale.is_finite() {
-        return 0.0;
-      }
-      (pad * scale).abs()
-    };
-
-    for item in items {
-      check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
-        .map_err(Error::Render)?;
-
-      let current_transform = *transform_stack.last().unwrap_or(&Transform3D::identity());
-      let current_scale = transform_scale(current_transform);
-
-      match item {
-        DisplayItem::PushTransform(transform) => {
-          let combined = current_transform.multiply(&transform.transform);
-          transform_stack.push(combined);
-        }
-        DisplayItem::PopTransform => {
-          let _ = transform_stack.pop();
-        }
-        DisplayItem::PushStackingContext(sc) => {
-          // Filters are specified in the stacking context's local coordinate space. When the
-          // stacking context is transformed (scale/rotation/etc), the filter kernel is effectively
-          // transformed in output space as well; tile halo estimation must account for that.
-          let local_transform = sc.transform.unwrap_or_else(Transform3D::identity);
-          let painting_transform = current_transform.multiply(&local_transform);
-          let filter_scale = transform_scale(painting_transform);
-
-          let filters_outset =
-            filter_halo_outset_with_bounds(&sc.filters, filter_scale, Some(sc.bounds));
-          let backdrop_outset =
-            filter_halo_outset_with_bounds(&sc.backdrop_filters, filter_scale, Some(sc.bounds));
-          max_pad = max_pad.max(filters_outset.max_side().max(backdrop_outset.max_side()));
-
-          let child_transform = if let Some(perspective) = sc.child_perspective.as_ref() {
-            painting_transform.multiply(perspective)
-          } else {
-            painting_transform
-          };
-          transform_stack.push(child_transform);
-        }
-        DisplayItem::PopStackingContext => {
-          let _ = transform_stack.pop();
-        }
-        DisplayItem::StrokeRect(stroke) => {
-          max_pad = max_pad.max(scaled_pad(stroke.width * 0.5, current_scale));
-        }
-        DisplayItem::StrokeRoundedRect(stroke) => {
-          max_pad = max_pad.max(scaled_pad(stroke.width * 0.5, current_scale));
-        }
-        DisplayItem::Outline(outline) => {
-          max_pad = max_pad.max(scaled_pad(
-            outline.width.abs() + outline.offset.abs(),
-            current_scale,
-          ));
-        }
-        DisplayItem::Border(border) => {
-          let max_w = border
-            .top
-            .width
-            .max(border.right.width)
-            .max(border.bottom.width)
-            .max(border.left.width);
-          max_pad = max_pad.max(scaled_pad(max_w * 0.5, current_scale));
-        }
-        DisplayItem::BoxShadow(shadow) => {
-          if shadow.inset {
-            continue;
-          }
-          if shadow.color.a <= f32::EPSILON {
-            continue;
-          }
-          let blur = box_shadow_blur_radius_to_sigma(shadow.blur_radius) * 3.0;
-          let spread = shadow.spread_radius.abs();
-          let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
-          max_pad = max_pad.max(scaled_pad(blur + spread + offset, current_scale));
-        }
-        DisplayItem::Text(text) => {
-          if text.synthetic_bold.is_finite() {
-            max_pad = max_pad.max(scaled_pad(text.synthetic_bold, current_scale));
-          }
-          if text.stroke_width.is_finite() {
-            max_pad = max_pad.max(scaled_pad(text.stroke_width * 0.5, current_scale));
-          }
-          for shadow in &text.shadows {
-            if shadow.color.a <= f32::EPSILON {
-              continue;
-            }
-            let blur = shadow.blur_radius.abs() * 3.0;
-            let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
-            max_pad = max_pad.max(scaled_pad(blur + offset, current_scale));
-          }
-        }
-        DisplayItem::ListMarker(marker) => {
-          if marker.synthetic_bold.is_finite() {
-            max_pad = max_pad.max(scaled_pad(marker.synthetic_bold, current_scale));
-          }
-          if marker.stroke_width.is_finite() {
-            max_pad = max_pad.max(scaled_pad(marker.stroke_width * 0.5, current_scale));
-          }
-          for shadow in &marker.shadows {
-            if shadow.color.a <= f32::EPSILON {
-              continue;
-            }
-            let blur = shadow.blur_radius.abs() * 3.0;
-            let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
-            max_pad = max_pad.max(scaled_pad(blur + offset, current_scale));
-          }
-        }
-        _ => {}
-      }
-    }
-
-    Ok(max_pad)
-  }
-
   fn tile_halo_px(&self, list: &DisplayList) -> Result<u32> {
-    // Add a small safety margin to avoid seams from antialiasing or filter kernels that extend
-    // slightly beyond our conservative padding estimates.
-    let halo_css = self.max_effect_padding(list.items())? + TILE_HALO_SAFETY_MARGIN_CSS;
-    Ok((halo_css * self.scale).ceil() as u32)
+    conservative_tile_halo_px(list, self.scale)
   }
 
   fn estimate_tiled_render_pixels(&self, halo_px: u32) -> u128 {

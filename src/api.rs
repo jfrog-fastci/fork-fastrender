@@ -141,8 +141,8 @@ use crate::layout::formatting_context::intrinsic_cache_reset_counters;
 use crate::layout::formatting_context::intrinsic_cache_stats;
 use crate::layout::formatting_context::LayoutError as FormattingLayoutError;
 use crate::layout::formatting_context::{
-  set_fragmentainer_axes_hint, set_fragmentainer_block_offset_hint,
-  set_fragmentainer_block_size_hint, set_footnote_area_inline_size_hint,
+  set_footnote_area_inline_size_hint, set_fragmentainer_axes_hint,
+  set_fragmentainer_block_offset_hint, set_fragmentainer_block_size_hint,
 };
 use crate::layout::fragment_clone_profile::{
   fragment_clone_profile_enabled, log_fragment_clone_profile, reset_fragment_clone_profile,
@@ -159,6 +159,7 @@ use crate::layout::profile::LayoutProfileSnapshot;
 #[cfg(test)]
 use crate::layout::utils::resolve_font_relative_length;
 use crate::paint::display_list_builder::DisplayListBuilder;
+use crate::paint::display_list_renderer::conservative_tile_halo_px;
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::paint::painter::paint_backend_from_env;
 use crate::paint::painter::paint_display_list_with_resources_scaled_with_trace;
@@ -2807,6 +2808,7 @@ impl PreparedDocument {
         background,
         &self.font_context,
         &self.image_cache,
+        options.media_provider.clone(),
         paint_scale,
         animation_time,
         self.paint_parallelism,
@@ -2827,6 +2829,33 @@ impl PreparedDocument {
       copy_pixmap_rgba_into_strided_buffer(&pixmap, out, stride_usize).map_err(Error::Render)?;
       Ok(scroll_state)
     })
+  }
+
+  /// Paints a region of the prepared document while preserving full-viewport semantics.
+  ///
+  /// Unlike [`PreparedDocument::paint_region`], this does **not** change the viewport size, scroll
+  /// offset, or viewport-relative units (vw/vh). The returned pixmap contains the pixels that would
+  /// appear in the full-frame render within `region` (after clamping to the output viewport).
+  ///
+  /// This is suitable for incremental repaint compositing, where the caller wants to repaint only
+  /// a sub-rectangle of an existing viewport.
+  ///
+  /// Returns the painted frame alongside the effective region rectangle (after clamping/snapping).
+  pub fn paint_with_options_region_frame(
+    &self,
+    options: PreparedPaintOptions,
+    region: Rect,
+  ) -> Result<(PaintedFrame, Rect)> {
+    self.paint_with_options_region_frame_internal(options, region, None)
+  }
+
+  pub(crate) fn paint_with_options_region_frame_with_animation_state_store(
+    &self,
+    options: PreparedPaintOptions,
+    region: Rect,
+    animation_state_store: &mut animation::AnimationStateStore,
+  ) -> Result<(PaintedFrame, Rect)> {
+    self.paint_with_options_region_frame_internal(options, region, Some(animation_state_store))
   }
 
   pub(crate) fn paint_with_options_frame_with_animation_state_store(
@@ -2907,6 +2936,66 @@ impl PreparedDocument {
         self.paint_parallelism,
         self.max_iframe_depth,
         animation_state_store.as_deref_mut(),
+      )
+    })
+  }
+
+  fn paint_with_options_region_frame_internal(
+    &self,
+    options: PreparedPaintOptions,
+    region: Rect,
+    animation_state_store: Option<&mut animation::AnimationStateStore>,
+  ) -> Result<(PaintedFrame, Rect)> {
+    runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
+      if let Some((w, h)) = options.viewport {
+        if w == 0 || h == 0 {
+          return Err(Error::Render(RenderError::InvalidParameters {
+            message: format!("Invalid viewport override: width={w}, height={h}"),
+          }));
+        }
+      }
+
+      if !region.x().is_finite()
+        || !region.y().is_finite()
+        || !region.width().is_finite()
+        || !region.height().is_finite()
+      {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!("Invalid region: {region:?}"),
+        }));
+      }
+
+      let viewport_override = options.viewport.map(|(w, h)| Size::new(w as f32, h as f32));
+      let paint_scale = self.device_pixel_ratio.max(f32::EPSILON);
+      let scroll_state = options
+        .scroll
+        .clone()
+        .unwrap_or_else(|| self.default_scroll.clone());
+      let animation_time = options.animation_time.or(self.animation_time);
+      let scrollport_viewport = viewport_override.unwrap_or(self.layout_viewport);
+      let paint_viewport = viewport_override.unwrap_or(self.paint_viewport);
+      let viewport_inset = viewport_scrollport_inset_for_scrollbar_gutter(
+        &self.styled_tree,
+        scrollport_viewport,
+        paint_viewport,
+      );
+      let mut animation_state_store = animation_state_store;
+      paint_fragment_tree_region_with_state(
+        self.fragment_tree.clone(),
+        scroll_state,
+        scrollport_viewport,
+        paint_viewport,
+        viewport_inset,
+        options.background.unwrap_or(self.background_color),
+        &self.font_context,
+        &self.image_cache,
+        options.media_provider.clone(),
+        paint_scale,
+        animation_time,
+        self.paint_parallelism,
+        self.max_iframe_depth,
+        animation_state_store.as_deref_mut(),
+        region,
       )
     })
   }
@@ -3781,7 +3870,8 @@ impl JsFailureDiagnostics {
       self.collection_disabled = true;
       return;
     }
-    let Some(type_owned) = Self::make_capped_string(type_key, Self::MAX_EXCEPTION_TYPE_BYTES) else {
+    let Some(type_owned) = Self::make_capped_string(type_key, Self::MAX_EXCEPTION_TYPE_BYTES)
+    else {
       self.collection_disabled = true;
       return;
     };
@@ -5089,6 +5179,84 @@ mod pool_prepare_tests {
 }
 
 #[cfg(test)]
+mod prepared_document_region_paint_tests {
+  use super::*;
+
+  #[test]
+  fn prepared_document_region_paint_matches_full_frame_crop_with_halo() {
+    let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+    let pool = FastRenderPool::with_config(
+      FastRenderPoolConfig::new()
+        .with_renderer_config(renderer)
+        .with_pool_size(1),
+    )
+    .expect("pool");
+
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; background: white; }
+      body { height: 2000px; }
+      .spacer { height: 50px; }
+      #sticky { position: sticky; top: 0; height: 20px; background: rgb(0, 200, 0); }
+      #vw { position: absolute; left: 0; top: 200px; width: 50vw; height: 10px; background: rgb(200, 0, 0); }
+      #blur { position: absolute; left: 40px; top: 120px; width: 80px; height: 80px; background: rgb(0, 0, 0); filter: blur(20px); }
+    </style>
+  </head>
+  <body>
+    <div class=\"spacer\"></div>
+    <div id=\"sticky\"></div>
+    <div id=\"vw\"></div>
+    <div id=\"blur\"></div>
+  </body>
+</html>
+"#;
+
+    let prepared = pool
+      .prepare_html_document(
+        html,
+        RenderOptions::new()
+          .with_viewport(200, 200)
+          .with_device_pixel_ratio(1.0),
+      )
+      .expect("prepare");
+
+    let options = PreparedPaintOptions::new().with_scroll(0.0, 80.0);
+    let full = prepared
+      .paint_with_options_frame(options.clone())
+      .expect("paint full");
+
+    let region = Rect::from_xywh(20.0, 0.0, 160.0, 160.0);
+    let (region_frame, effective_region) = prepared
+      .paint_with_options_region_frame(options, region)
+      .expect("paint region");
+
+    assert_eq!(
+      region_frame.scroll_state, full.scroll_state,
+      "expected region paint to apply the same effective scroll state as full-frame paint"
+    );
+
+    // The region paint API may clamp/snap the region; compare against the returned effective rect.
+    let scale = 1.0;
+    let crop_x = ((effective_region.x() * scale).round().max(0.0)) as u32;
+    let crop_y = ((effective_region.y() * scale).round().max(0.0)) as u32;
+    let crop_w = ((effective_region.width() * scale).round().max(1.0)) as u32;
+    let crop_h = ((effective_region.height() * scale).round().max(1.0)) as u32;
+    let expected =
+      crop_pixmap_device(&full.pixmap, crop_x, crop_y, crop_w, crop_h).expect("crop full frame");
+
+    assert_eq!(region_frame.pixmap.width(), expected.width());
+    assert_eq!(region_frame.pixmap.height(), expected.height());
+    assert_eq!(
+      region_frame.pixmap.data(),
+      expected.data(),
+      "region paint output must match full-frame crop"
+    );
+  }
+}
+
+#[cfg(test)]
 mod shared_resource_factory_tests {
   use super::*;
 
@@ -6173,7 +6341,11 @@ fn apply_sticky_offsets_with_context(
     .box_id()
     .and_then(|id| {
       let style = fragment.style.as_deref()?;
-      let mut offset = scroll_state.elements.get(&id).copied().unwrap_or(Point::ZERO);
+      let mut offset = scroll_state
+        .elements
+        .get(&id)
+        .copied()
+        .unwrap_or(Point::ZERO);
       if !overflow_establishes_sticky_scrollport(style.overflow_x) {
         offset.x = 0.0;
       }
@@ -6315,22 +6487,29 @@ fn sanitize_animation_time_ms(animation_time: Option<f32>) -> Option<f32> {
   animation_time.map(|ms| if ms.is_finite() { ms.max(0.0) } else { 0.0 })
 }
 
-fn paint_fragment_tree_with_state(
+struct PreparedFragmentTreePaintState {
+  fragment_tree: FragmentTree,
+  scroll_state: ScrollState,
+  scroll_state_for_paint: ScrollState,
+  paint_image_cache: ImageCache,
+  offset: Point,
+  target_width: u32,
+  target_height: u32,
+}
+
+fn prepare_fragment_tree_paint_state(
   mut fragment_tree: FragmentTree,
   mut scroll_state: ScrollState,
   scrollport_viewport: Size,
   paint_viewport: Size,
   viewport_inset: Point,
-  background: Rgba,
   font_context: &FontContext,
   image_cache: &ImageCache,
-  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
-  device_pixel_ratio: f32,
+  _media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
+  _device_pixel_ratio: f32,
   animation_time: Option<f32>,
-  paint_parallelism: PaintParallelism,
-  max_iframe_depth: usize,
   mut animation_state_store: Option<&mut animation::AnimationStateStore>,
-) -> Result<PaintedFrame> {
+) -> Result<PreparedFragmentTreePaintState> {
   let expand_full_page = runtime::runtime_toggles().truthy("FASTR_FULL_PAGE");
 
   // The layout viewport (used for layout/scroll calculations) can differ from the paint viewport
@@ -6426,8 +6605,16 @@ fn paint_fragment_tree_with_state(
       {
         let existing = scroll_state.elements.get(&box_id).copied().unwrap_or(Point::ZERO);
         let mut offset = Point::new(
-          if existing.x.is_finite() { existing.x } else { 0.0 },
-          if existing.y.is_finite() { existing.y } else { 0.0 },
+          if existing.x.is_finite() {
+            existing.x
+          } else {
+            0.0
+          },
+          if existing.y.is_finite() {
+            existing.y
+          } else {
+            0.0
+          },
         );
 
         let mut bounds = crate::scroll::scroll_bounds_for_fragment(
@@ -6656,10 +6843,9 @@ fn paint_fragment_tree_with_state(
               if let crate::tree::box_tree::FormControlKind::TextArea { value, caret, .. } =
                 &control.control
               {
-                let metrics =
-                  matches!(style.line_height, crate::style::types::LineHeight::Normal)
-                    .then(|| resolve_scaled_metrics_for_style(font_context, style))
-                    .flatten();
+                let metrics = matches!(style.line_height, crate::style::types::LineHeight::Normal)
+                  .then(|| resolve_scaled_metrics_for_style(font_context, style))
+                  .flatten();
                 let line_height = compute_line_height_with_metrics_viewport(
                   style,
                   metrics.as_ref(),
@@ -6668,9 +6854,13 @@ fn paint_fragment_tree_with_state(
                 );
 
                 if line_height.is_finite() && line_height > 0.0 {
-                  let border_rect = Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
-                  let content_rect =
-                    crate::interaction::content_rect_for_border_rect(border_rect, style, viewport_size);
+                  let border_rect =
+                    Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
+                  let content_rect = crate::interaction::content_rect_for_border_rect(
+                    border_rect,
+                    style,
+                    viewport_size,
+                  );
                   let text_rect = Rect::from_xywh(
                     content_rect.x() + 2.0,
                     content_rect.y() + 2.0,
@@ -6697,9 +6887,7 @@ fn paint_fragment_tree_with_state(
                     if control.focused && !control.disabled {
                       let caret_idx = (*caret).min(value.chars().count());
                       let line_idx = crate::textarea::textarea_visual_line_index_for_caret(
-                        value,
-                        &layout,
-                        caret_idx,
+                        value, &layout, caret_idx,
                       );
                       let caret_top = line_idx as f32 * line_height;
                       let caret_bottom = caret_top + line_height;
@@ -6751,10 +6939,18 @@ fn paint_fragment_tree_with_state(
     font_context,
   );
   for root in &fragment_tree.additional_fragments {
-    clamp_element_offsets(root, &mut scroll_state, scrollport_viewport, false, font_context);
+    clamp_element_offsets(
+      root,
+      &mut scroll_state,
+      scrollport_viewport,
+      false,
+      font_context,
+    );
   }
 
-  scroll_state.elements.retain(|_, offset| *offset != Point::ZERO);
+  scroll_state
+    .elements
+    .retain(|_, offset| *offset != Point::ZERO);
   let scroll = scroll_state.viewport;
 
   // Sticky positioning affects the geometry used by view timelines. Apply sticky offsets before
@@ -6816,10 +7012,226 @@ fn paint_fragment_tree_with_state(
   let mut scroll_state_for_paint = scroll_state.clone();
   scroll_state_for_paint.viewport =
     Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
-  let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
-    &fragment_tree,
+
+  Ok(PreparedFragmentTreePaintState {
+    fragment_tree,
+    scroll_state,
+    scroll_state_for_paint,
+    paint_image_cache,
+    offset,
     target_width,
     target_height,
+  })
+}
+
+fn paint_fragment_tree_with_state(
+  fragment_tree: FragmentTree,
+  scroll_state: ScrollState,
+  scrollport_viewport: Size,
+  paint_viewport: Size,
+  viewport_inset: Point,
+  background: Rgba,
+  font_context: &FontContext,
+  image_cache: &ImageCache,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
+  device_pixel_ratio: f32,
+  animation_time: Option<f32>,
+  paint_parallelism: PaintParallelism,
+  max_iframe_depth: usize,
+  animation_state_store: Option<&mut animation::AnimationStateStore>,
+) -> Result<PaintedFrame> {
+  let prepared = prepare_fragment_tree_paint_state(
+    fragment_tree,
+    scroll_state,
+    scrollport_viewport,
+    paint_viewport,
+    viewport_inset,
+    font_context,
+    image_cache,
+    media_provider.clone(),
+    device_pixel_ratio,
+    animation_time,
+    animation_state_store,
+  )?;
+
+  let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
+    &prepared.fragment_tree,
+    prepared.target_width,
+    prepared.target_height,
+    background,
+    font_context.clone(),
+    prepared.paint_image_cache,
+    media_provider,
+    device_pixel_ratio,
+    prepared.offset,
+    paint_parallelism,
+    &prepared.scroll_state_for_paint,
+    paint_backend_from_env(),
+    max_iframe_depth,
+  )?;
+
+  Ok(PaintedFrame {
+    pixmap,
+    scroll_state: prepared.scroll_state,
+  })
+}
+
+fn snap_rect_outward_to_int(rect: Rect) -> Rect {
+  let min_x = rect.min_x().floor();
+  let min_y = rect.min_y().floor();
+  let max_x = rect.max_x().ceil();
+  let max_y = rect.max_y().ceil();
+  Rect::from_xywh(
+    min_x,
+    min_y,
+    (max_x - min_x).max(1.0),
+    (max_y - min_y).max(1.0),
+  )
+}
+
+fn crop_pixmap_device(pixmap: &Pixmap, x: u32, y: u32, width: u32, height: u32) -> Result<Pixmap> {
+  let src_w = pixmap.width();
+  let src_h = pixmap.height();
+  if x >= src_w || y >= src_h {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!(
+        "Invalid crop rect: x={x}, y={y}, width={width}, height={height} for pixmap {src_w}x{src_h}",
+      ),
+    }));
+  }
+
+  let max_w = src_w - x;
+  let max_h = src_h - y;
+  let width = width.min(max_w).max(1);
+  let height = height.min(max_h).max(1);
+
+  let mut out = crate::paint::pixmap::new_pixmap_with_context(width, height, "paint_region crop")
+    .map_err(Error::Render)?;
+  let src_stride = src_w as usize * 4;
+  let dst_stride = width as usize * 4;
+  let src_data = pixmap.data();
+  let dst_data = out.data_mut();
+
+  let mut src_row = y as usize * src_stride + x as usize * 4;
+  let mut dst_row = 0usize;
+  for _ in 0..height {
+    dst_data[dst_row..dst_row + dst_stride]
+      .copy_from_slice(&src_data[src_row..src_row + dst_stride]);
+    src_row += src_stride;
+    dst_row += dst_stride;
+  }
+
+  Ok(out)
+}
+
+fn paint_fragment_tree_region_with_state(
+  fragment_tree: FragmentTree,
+  scroll_state: ScrollState,
+  scrollport_viewport: Size,
+  paint_viewport: Size,
+  viewport_inset: Point,
+  background: Rgba,
+  font_context: &FontContext,
+  image_cache: &ImageCache,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
+  device_pixel_ratio: f32,
+  animation_time: Option<f32>,
+  paint_parallelism: PaintParallelism,
+  max_iframe_depth: usize,
+  animation_state_store: Option<&mut animation::AnimationStateStore>,
+  region: Rect,
+) -> Result<(PaintedFrame, Rect)> {
+  let prepared = prepare_fragment_tree_paint_state(
+    fragment_tree,
+    scroll_state,
+    scrollport_viewport,
+    paint_viewport,
+    viewport_inset,
+    font_context,
+    image_cache,
+    media_provider.clone(),
+    device_pixel_ratio,
+    animation_time,
+    animation_state_store,
+  )?;
+
+  let PreparedFragmentTreePaintState {
+    fragment_tree,
+    scroll_state,
+    scroll_state_for_paint,
+    paint_image_cache,
+    offset: base_offset,
+    target_width,
+    target_height,
+  } = prepared;
+
+  let viewport_bounds = Rect::from_xywh(0.0, 0.0, target_width as f32, target_height as f32);
+  let Some(region) = region.intersection(viewport_bounds) else {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!("Region is outside the viewport: {region:?}"),
+    }));
+  };
+  if region.width() <= 0.0 || region.height() <= 0.0 {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!("Region is empty: {region:?}"),
+    }));
+  }
+  let region = snap_rect_outward_to_int(region);
+
+  // Compute a conservative halo so effects that sample outside the target region (blur,
+  // backdrop-filter, etc) produce byte-identical output with a full-frame render.
+  let culling_viewport = Size::new(target_width as f32, target_height as f32);
+  let viewport = fragment_tree.viewport_size();
+  let halo_media_provider = media_provider.clone();
+  let build_list_for_root = |root: &FragmentNode,
+                              image_cache: &ImageCache|
+   -> Result<crate::paint::display_list::DisplayList> {
+    DisplayListBuilder::with_image_cache(image_cache.clone())
+      .with_font_context(font_context.clone())
+      .with_svg_filter_defs(fragment_tree.svg_filter_defs.clone())
+      .with_svg_id_defs(fragment_tree.svg_id_defs.clone())
+      .with_svg_id_defs_raw(fragment_tree.svg_id_defs_raw.clone())
+      .with_appearance_none_form_controls(fragment_tree.appearance_none_form_controls.clone())
+      .with_scroll_state(scroll_state_for_paint.clone())
+      .with_media_provider(halo_media_provider.clone())
+      .with_device_pixel_ratio(device_pixel_ratio)
+      .with_parallelism(&paint_parallelism)
+      .with_max_iframe_depth(max_iframe_depth)
+      .with_viewport_size(viewport.width, viewport.height)
+      .with_culling_viewport_size(culling_viewport.width, culling_viewport.height)
+      .build_with_stacking_tree_offset_checked(root, base_offset)
+  };
+
+  let mut halo_list = build_list_for_root(&fragment_tree.root, &paint_image_cache)?;
+  for extra in &fragment_tree.additional_fragments {
+    halo_list.append(build_list_for_root(extra, &paint_image_cache)?);
+  }
+  let halo_px = conservative_tile_halo_px(&halo_list, device_pixel_ratio)?;
+  let halo_css = if device_pixel_ratio.is_finite() && device_pixel_ratio > 0.0 {
+    halo_px as f32 / device_pixel_ratio
+  } else {
+    halo_px as f32
+  };
+
+  let expanded = if halo_css.is_finite() && halo_css > 0.0 {
+    region.inflate(halo_css)
+  } else {
+    region
+  };
+  let Some(expanded) = expanded.intersection(viewport_bounds) else {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: "Expanded region does not intersect viewport".to_string(),
+    }));
+  };
+  let expanded = snap_rect_outward_to_int(expanded);
+
+  let expanded_width_css = expanded.width().max(1.0).round() as u32;
+  let expanded_height_css = expanded.height().max(1.0).round() as u32;
+  let offset = Point::new(base_offset.x - expanded.x(), base_offset.y - expanded.y());
+  let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
+    &fragment_tree,
+    expanded_width_css,
+    expanded_height_css,
     background,
     font_context.clone(),
     paint_image_cache,
@@ -6832,10 +7244,27 @@ fn paint_fragment_tree_with_state(
     max_iframe_depth,
   )?;
 
-  Ok(PaintedFrame {
-    pixmap,
-    scroll_state,
-  })
+  let pixmap = if expanded == region {
+    pixmap
+  } else {
+    let crop_x_css = (region.x() - expanded.x()).max(0.0);
+    let crop_y_css = (region.y() - expanded.y()).max(0.0);
+    let crop_w_css = region.width().max(1.0);
+    let crop_h_css = region.height().max(1.0);
+    let crop_x = ((crop_x_css * device_pixel_ratio).round().max(0.0)) as u32;
+    let crop_y = ((crop_y_css * device_pixel_ratio).round().max(0.0)) as u32;
+    let crop_w = ((crop_w_css * device_pixel_ratio).round().max(1.0)) as u32;
+    let crop_h = ((crop_h_css * device_pixel_ratio).round().max(1.0)) as u32;
+    crop_pixmap_device(&pixmap, crop_x, crop_y, crop_w, crop_h)?
+  };
+
+  Ok((
+    PaintedFrame {
+      pixmap,
+      scroll_state,
+    },
+    region,
+  ))
 }
 
 fn paint_fragment_tree_into_rgba_with_state(
@@ -8590,14 +9019,18 @@ impl FastRender {
             Some(taffy_perf.grid_compute_ns as f64 / 1_000_000.0);
           rec.stats.layout.taffy_grid_measure_calls = Some(taffy_perf.grid_measure_calls);
         }
-        if toggles.truthy("FASTR_GRID_MEASURE_CACHE_PROFILE") || toggles.truthy("FASTR_LAYOUT_PROFILE")
+        if toggles.truthy("FASTR_GRID_MEASURE_CACHE_PROFILE")
+          || toggles.truthy("FASTR_LAYOUT_PROFILE")
         {
           let counters = crate::layout::contexts::grid::grid_measure_cache_counters();
           rec.stats.layout.grid_measure_cache_tls_hits = Some(counters.tls_hits);
           rec.stats.layout.grid_measure_cache_shared_hits = Some(counters.shared_hits);
           rec.stats.layout.grid_measure_cache_misses = Some(counters.misses);
           rec.stats.layout.grid_measure_cache_override_lookups = Some(counters.override_lookups);
-          rec.stats.layout.grid_measure_cache_override_shared_bypass_misses =
+          rec
+            .stats
+            .layout
+            .grid_measure_cache_override_shared_bypass_misses =
             Some(counters.override_shared_bypass_misses);
           rec.stats.layout.grid_measure_cache_override_shared_hits =
             Some(counters.override_shared_hits);
@@ -11531,30 +11964,27 @@ impl FastRender {
               .as_ref()
               .map(|ctx| ctx.referrer_policy)
               .unwrap_or_default();
-            let mut sheet = match parse_stylesheet_with_media(
-              &css,
-              media_ctx,
-              Some(&mut local_media_cache),
-            ) {
-              Ok(sheet) => sheet,
-              Err(err) => {
-                if matches!(
-                  &err,
-                  Error::Render(RenderError::Timeout {
-                    stage: RenderStage::Css,
-                    ..
-                  })
-                ) {
-                  if let Some(diag) = diagnostics.as_ref() {
-                    if let Ok(mut guard) = diag.lock() {
-                      guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &err);
+            let mut sheet =
+              match parse_stylesheet_with_media(&css, media_ctx, Some(&mut local_media_cache)) {
+                Ok(sheet) => sheet,
+                Err(err) => {
+                  if matches!(
+                    &err,
+                    Error::Render(RenderError::Timeout {
+                      stage: RenderStage::Css,
+                      ..
+                    })
+                  ) {
+                    if let Some(diag) = diagnostics.as_ref() {
+                      if let Ok(mut guard) = diag.lock() {
+                        guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &err);
+                      }
                     }
+                    return Ok((None, local_media_cache));
                   }
-                  return Ok((None, local_media_cache));
+                  return Err(err);
                 }
-                return Err(err);
-              }
-            };
+              };
             sheet.set_font_face_source_referrer_policy(referrer_policy);
             if sheet.contains_imports() {
               let loader = CssImportFetcher::new(
@@ -11565,13 +11995,15 @@ impl FastRender {
                 stylesheet_fetch_counter.clone(),
                 referrer_policy,
               );
-              match sheet.clone().resolve_imports_owned_with_cache_with_importer_url(
-                &loader,
-                document_base_url.as_deref(),
-                stylesheet_referrer_url,
-                media_ctx,
-                Some(&mut local_media_cache),
-              ) {
+              match sheet
+                .clone()
+                .resolve_imports_owned_with_cache_with_importer_url(
+                  &loader,
+                  document_base_url.as_deref(),
+                  stylesheet_referrer_url,
+                  media_ctx,
+                  Some(&mut local_media_cache),
+                ) {
                 Ok(resolved) => sheet = resolved,
                 Err(err) => {
                   if matches!(
@@ -11584,7 +12016,11 @@ impl FastRender {
                     let wrapped = Error::Render(err.clone());
                     if let Some(diag) = diagnostics.as_ref() {
                       if let Ok(mut guard) = diag.lock() {
-                        guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &wrapped);
+                        guard.record_error(
+                          ResourceKind::Stylesheet,
+                          stylesheet_error_url,
+                          &wrapped,
+                        );
                       }
                     }
                     FastRender::strip_import_rules(&mut sheet.rules);
@@ -12030,39 +12466,38 @@ impl FastRender {
           }
           let stylesheet_referrer_url = self.document_url().or(self.base_url.as_deref());
           let stylesheet_error_url = stylesheet_referrer_url.unwrap_or("<inline stylesheet>");
-          let mut sheet = match parse_stylesheet_with_media(
-            &inline.css,
-            media_ctx,
-            Some(media_query_cache),
-          ) {
-            Ok(sheet) => sheet,
-            Err(err) => {
-              if matches!(
-                &err,
-                Error::Render(RenderError::Timeout {
-                  stage: RenderStage::Css,
-                  ..
-                })
-              ) {
-                if let Some(diag) = &self.diagnostics {
-                  if let Ok(mut guard) = diag.lock() {
-                    guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &err);
+          let mut sheet =
+            match parse_stylesheet_with_media(&inline.css, media_ctx, Some(media_query_cache)) {
+              Ok(sheet) => sheet,
+              Err(err) => {
+                if matches!(
+                  &err,
+                  Error::Render(RenderError::Timeout {
+                    stage: RenderStage::Css,
+                    ..
+                  })
+                ) {
+                  if let Some(diag) = &self.diagnostics {
+                    if let Ok(mut guard) = diag.lock() {
+                      guard.record_error(ResourceKind::Stylesheet, stylesheet_error_url, &err);
+                    }
                   }
+                  continue;
                 }
-                continue;
+                return Err(err);
               }
-              return Err(err);
-            }
-          };
+            };
           sheet.set_font_face_source_referrer_policy(document_referrer_policy);
           if sheet.contains_imports() {
-            match sheet.clone().resolve_imports_owned_with_cache_with_importer_url(
-              &inline_loader,
-              self.base_url.as_deref(),
-              stylesheet_referrer_url,
-              media_ctx,
-              Some(media_query_cache),
-            ) {
+            match sheet
+              .clone()
+              .resolve_imports_owned_with_cache_with_importer_url(
+                &inline_loader,
+                self.base_url.as_deref(),
+                stylesheet_referrer_url,
+                media_ctx,
+                Some(media_query_cache),
+              ) {
               Ok(resolved) => combined_rules.extend(resolved.rules),
               Err(err) => {
                 if matches!(
@@ -24183,12 +24618,11 @@ mod tests {
       FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), body_id, vec![]);
     snapshot.style = Some(old_style);
 
-    let mut anchor =
-      FragmentNode::new_footnote_anchor(
-        Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
-        snapshot,
-        crate::style::types::FootnotePolicy::Line,
-      );
+    let mut anchor = FragmentNode::new_footnote_anchor(
+      Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+      snapshot,
+      crate::style::types::FootnotePolicy::Line,
+    );
     super::refresh_fragment_styles(&mut anchor, &box_map, &style_map, None, false);
 
     match &anchor.content {
@@ -25696,10 +26130,9 @@ mod tests {
     let mut float_style = ComputedStyle::default();
     float_style.display = crate::style::display::Display::Block;
     float_style.float = crate::style::float::Float::Left;
-    float_style.shape_outside =
-      crate::style::types::ShapeOutside::Image(BackgroundImage::Url(
-        crate::style::types::BackgroundImageUrl::new("mask.png".to_string()),
-      ));
+    float_style.shape_outside = crate::style::types::ShapeOutside::Image(BackgroundImage::Url(
+      crate::style::types::BackgroundImageUrl::new("mask.png".to_string()),
+    ));
     let float_node =
       BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
     let root_node = BoxNode::new_block(
@@ -34141,7 +34574,10 @@ mod tests {
     let mut loader_map = HashMap::new();
     loader_map.insert(inline_a_url.to_string(), inline_a_css.to_string());
     loader_map.insert(inline_b_url.to_string(), inline_b_css.to_string());
-    loader_map.insert(external_import_url.to_string(), external_import_css.to_string());
+    loader_map.insert(
+      external_import_url.to_string(),
+      external_import_css.to_string(),
+    );
     let loader = MapLoader::new(loader_map);
 
     let mut expected_cache = MediaQueryCache::default();
