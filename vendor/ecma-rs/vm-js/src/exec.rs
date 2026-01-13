@@ -1721,10 +1721,16 @@ impl JsRuntime {
       );
 
       match res {
-        Err(VmError::Throw(value)) => Err(VmError::ThrowWithStack {
-          value,
-          stack: vm_frame.capture_stack(),
-        }),
+        Err(err) if err.is_throw_completion() => {
+          let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
+          match err {
+            VmError::Throw(value) => Err(VmError::ThrowWithStack {
+              value,
+              stack: vm_frame.capture_stack(),
+            }),
+            other => Err(other),
+          }
+        }
         other => other,
       }
     })();
@@ -1789,10 +1795,16 @@ impl JsRuntime {
       );
 
       match res {
-        Err(VmError::Throw(value)) => Err(VmError::ThrowWithStack {
-          value,
-          stack: vm_frame.capture_stack(),
-        }),
+        Err(err) if err.is_throw_completion() => {
+          let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
+          match err {
+            VmError::Throw(value) => Err(VmError::ThrowWithStack {
+              value,
+              stack: vm_frame.capture_stack(),
+            }),
+            other => Err(other),
+          }
+        }
         other => other,
       }
     })();
