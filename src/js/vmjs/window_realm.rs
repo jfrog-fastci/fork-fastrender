@@ -14171,108 +14171,6 @@ fn document_create_node_iterator_native(
   Ok(Value::Object(obj))
 }
 
-fn document_create_tree_walker_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let Value::Object(document_obj) = this else {
-    return Err(VmError::TypeError(
-      "document.createTreeWalker must be called on a document object",
-    ));
-  };
-
-  let _document_id = ensure_document_handle_for_object(
-    vm,
-    scope,
-    document_obj,
-    "document.createTreeWalker must be called on a document object",
-  )?;
-
-  let root_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(root_value, Value::Object(_)) {
-    return Err(VmError::TypeError(
-      "document.createTreeWalker requires a root node",
-    ));
-  }
-
-  // WebIDL: optional unsigned long whatToShow = 0xFFFFFFFF.
-  let what_to_show_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let what_to_show: u32 = match what_to_show_value {
-    Value::Undefined => 0xFFFF_FFFF,
-    other => webidl_to_uint32(scope, other)?,
-  };
-
-  // WebIDL: optional NodeFilter? filter = null.
-  let filter = match args.get(2).copied().unwrap_or(Value::Undefined) {
-    Value::Undefined => Value::Null,
-    other => other,
-  };
-
-  let obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(obj))?;
-
-  let what_to_show_key = alloc_key(scope, "whatToShow")?;
-  scope.define_property(
-    obj,
-    what_to_show_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: Value::Number(what_to_show as f64),
-        writable: false,
-      },
-    },
-  )?;
-  let filter_key = alloc_key(scope, "filter")?;
-  scope.define_property(
-    obj,
-    filter_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: filter,
-        writable: false,
-      },
-    },
-  )?;
-  let root_key = alloc_key(scope, "root")?;
-  scope.define_property(
-    obj,
-    root_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: root_value,
-        writable: false,
-      },
-    },
-  )?;
-  // TreeWalker starts with currentNode=root.
-  let current_node_key = alloc_key(scope, "currentNode")?;
-  scope.define_property(
-    obj,
-    current_node_key,
-    PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value: root_value,
-        writable: true,
-      },
-    },
-  )?;
-
-  Ok(Value::Object(obj))
-}
-
 fn value_to_rust_utf16_string(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -43440,6 +43338,28 @@ fn init_window_globals(
     data_desc(Value::Object(create_fragment_func)),
   )?;
 
+  // document.createNodeIterator
+  let create_node_iterator_key = alloc_key(&mut scope, "createNodeIterator")?;
+  let create_node_iterator_call_id = vm.register_native_call(document_create_node_iterator_native)?;
+  let create_node_iterator_name = scope.alloc_string("createNodeIterator")?;
+  scope.push_root(Value::String(create_node_iterator_name))?;
+  let create_node_iterator_func = scope.alloc_native_function(
+    create_node_iterator_call_id,
+    None,
+    create_node_iterator_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    create_node_iterator_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_node_iterator_func))?;
+  scope.define_property(
+    document_obj,
+    create_node_iterator_key,
+    data_desc(Value::Object(create_node_iterator_func)),
+  )?;
+
   // document.createTreeWalker
   let create_tree_walker_key = alloc_key(&mut scope, "createTreeWalker")?;
   let create_tree_walker_call_id = vm.register_native_call(document_create_tree_walker_native)?;
@@ -43495,64 +43415,6 @@ fn init_window_globals(
     adopt_node_key,
     data_desc(Value::Object(adopt_node_func)),
   )?;
-
-  // document.createNodeIterator
-  //
-  // Only install our handwritten implementation when the property does not already exist on the
-  // document object or its prototype chain. This avoids clobbering WebIDL-generated bindings when
-  // running with the WebIDL DOM backend.
-  let create_node_iterator_key = alloc_key(&mut scope, "createNodeIterator")?;
-  if matches!(
-    vm.get(&mut scope, document_obj, create_node_iterator_key)?,
-    Value::Undefined
-  ) {
-    let create_node_iterator_call_id = vm.register_native_call(document_create_node_iterator_native)?;
-    let create_node_iterator_name = scope.alloc_string("createNodeIterator")?;
-    scope.push_root(Value::String(create_node_iterator_name))?;
-    let create_node_iterator_func = scope.alloc_native_function(
-      create_node_iterator_call_id,
-      None,
-      create_node_iterator_name,
-      1,
-    )?;
-    scope.heap_mut().object_set_prototype(
-      create_node_iterator_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(create_node_iterator_func))?;
-    scope.define_property(
-      document_obj,
-      create_node_iterator_key,
-      data_desc(Value::Object(create_node_iterator_func)),
-    )?;
-  }
-
-  // document.createTreeWalker
-  let create_tree_walker_key = alloc_key(&mut scope, "createTreeWalker")?;
-  if matches!(
-    vm.get(&mut scope, document_obj, create_tree_walker_key)?,
-    Value::Undefined
-  ) {
-    let create_tree_walker_call_id = vm.register_native_call(document_create_tree_walker_native)?;
-    let create_tree_walker_name = scope.alloc_string("createTreeWalker")?;
-    scope.push_root(Value::String(create_tree_walker_name))?;
-    let create_tree_walker_func = scope.alloc_native_function(
-      create_tree_walker_call_id,
-      None,
-      create_tree_walker_name,
-      1,
-    )?;
-    scope.heap_mut().object_set_prototype(
-      create_tree_walker_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(create_tree_walker_func))?;
-    scope.define_property(
-      document_obj,
-      create_tree_walker_key,
-      data_desc(Value::Object(create_tree_walker_func)),
-    )?;
-  }
 
   // --- DOM Events (MVP): Event / CustomEvent / StorageEvent / document.createEvent --------------
   //
