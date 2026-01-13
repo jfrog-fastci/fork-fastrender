@@ -243,6 +243,8 @@ pub fn panel_list_row(
   leading_icon: Option<BrowserIcon>,
   trailing_actions: impl FnOnce(&mut egui::Ui),
 ) -> PanelListRowResponse {
+  // Scope all nested widgets under a stable row id so egui auto-ids (and therefore AccessKit node
+  // IDs) don't shift when the list ordering changes between frames.
   ui
     .push_id(id_source, |ui| {
       let id = ui.make_persistent_id("panel_list_row");
@@ -477,4 +479,94 @@ pub fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
   let label = label.to_string();
   response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone()));
   response
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod tests {
+  use super::panel_list_row;
+  use crate::ui::{a11y_test_util, icon_button, BrowserIcon};
+
+  fn begin_frame(ctx: &egui::Context) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    ctx.begin_frame(raw);
+  }
+
+  fn render_rows(ctx: &egui::Context, include_extra_row: bool) -> egui::FullOutput {
+    begin_frame(ctx);
+
+    egui::CentralPanel::default().show(ctx, |ui| {
+      if include_extra_row {
+        panel_list_row(
+          ui,
+          "row_extra",
+          "Extra row",
+          None,
+          None,
+          None,
+          |ui| {
+            let resp = icon_button(ui, BrowserIcon::Trash, "Delete", true);
+            resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Extra row delete action")
+            });
+          },
+        );
+      }
+
+      panel_list_row(ui, "row_a", "Row A", None, None, None, |ui| {
+        let resp = icon_button(ui, BrowserIcon::Trash, "Delete", true);
+        resp.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Row A delete action")
+        });
+      });
+
+      panel_list_row(ui, "row_b", "Row B", None, None, None, |ui| {
+        let resp = icon_button(ui, BrowserIcon::Trash, "Delete", true);
+        resp.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Row B delete action")
+        });
+      });
+    });
+
+    ctx.end_frame()
+  }
+
+  fn accesskit_id_for_name(output: &egui::FullOutput, name: &str) -> String {
+    let snapshot = a11y_test_util::accesskit_snapshot_from_full_output(output);
+    let pretty = a11y_test_util::accesskit_pretty_json_from_full_output(output);
+    let matches: Vec<_> = snapshot.nodes.iter().filter(|n| n.name == name).collect();
+    assert!(
+      matches.len() == 1,
+      "expected exactly one AccessKit node with name {name:?}, found {}.\n\nsnapshot:\n{pretty}",
+      matches.len()
+    );
+    matches[0].id.clone()
+  }
+
+  #[test]
+  fn panel_list_row_trailing_action_accesskit_ids_are_stable_across_row_insertion() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let output = render_rows(&ctx, false);
+    let id_a = accesskit_id_for_name(&output, "Row A delete action");
+    let id_b = accesskit_id_for_name(&output, "Row B delete action");
+    assert_ne!(
+      id_a, id_b,
+      "expected identical trailing action buttons in different rows to have distinct AccessKit node IDs"
+    );
+
+    let output_with_extra = render_rows(&ctx, true);
+    let id_b_after = accesskit_id_for_name(&output_with_extra, "Row B delete action");
+    assert_eq!(
+      id_b, id_b_after,
+      "expected Row B trailing action AccessKit node ID to remain stable when a row is inserted before it"
+    );
+  }
 }
