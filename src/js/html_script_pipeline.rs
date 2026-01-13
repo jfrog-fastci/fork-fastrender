@@ -43,7 +43,8 @@ impl JsExecutionGuard {
 impl Drop for JsExecutionGuard {
   fn drop(&mut self) {
     let cur = self.depth.get();
-    debug_assert!(cur > 0, "js execution depth underflow");
+    // Depth tracking is best-effort bookkeeping used to decide when microtasks should run.
+    // Saturate at zero to avoid panicking if a bookkeeping bug causes underflow.
     self.depth.set(cur.saturating_sub(1));
   }
 }
@@ -355,11 +356,13 @@ impl HtmlScriptPipelineState {
           });
           let should_execute = Self::work_has_source(&work).unwrap_or(true);
 
+          let mut exec_result: Result<()> = Ok(());
+
           if should_execute {
-            {
+            exec_result = {
               let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
-              self.execute_work_now(host, event_loop, script_id, node_id, &work)?;
-            }
+              self.execute_work_now(host, event_loop, script_id, Some(node_id), &work)
+            };
           } else if self.blocked_parser_on == Some(script_id) {
             // Fetch failed for a parser-blocking classic script. Unblock parsing even though no
             // script body executed.
@@ -376,6 +379,9 @@ impl HtmlScriptPipelineState {
           if should_execute && self.js_execution_depth.get() == 0 {
             event_loop.perform_microtask_checkpoint(host)?;
           }
+
+          // Surface any execution error after required post-run bookkeeping (microtasks/events).
+          exec_result?;
         }
         HtmlScriptSchedulerAction::QueueTask {
           script_id,
@@ -392,7 +398,7 @@ impl HtmlScriptPipelineState {
           });
           let should_execute = Self::work_has_source(&work).unwrap_or(true);
           if should_execute {
-            self.queue_work_task(event_loop, script_id, node_id, work, event_kind)?;
+            self.queue_work_task(event_loop, script_id, Some(node_id), work, event_kind)?;
           } else {
             // Load failure: dispatch an element error event but do not execute any script body.
             if let Some(event_kind) = event_kind {
@@ -413,49 +419,61 @@ impl HtmlScriptPipelineState {
     host: &mut Host,
     event_loop: &mut EventLoop<Host>,
     script_id: HtmlScriptId,
-    script_node_id: NodeId,
+    script_node_id: Option<NodeId>,
     work: &HtmlScriptWork,
   ) -> Result<()> {
-    let script_type = *self
-      .script_type_by_id
-      .get(&script_id)
-      .unwrap_or(&Self::work_script_type(work));
+    let result: Result<()> = (|| {
+      let script_node_id = script_node_id
+        .ok_or_else(|| Error::Other("execute_script_now requires script node id".to_string()))?;
 
-    let mut document = if let Some(doc) = self.document.as_ref() {
-      doc.clone()
-    } else {
-      let dom = self.parser.document().ok_or_else(|| {
-        Error::Other(
-          "internal error: parser document unavailable when executing script".to_string(),
-        )
-      })?;
-      Document::clone(&dom)
-    };
-    // Ensure declarative Shadow DOM is attached before any connected script observes the tree.
-    document.attach_shadow_roots();
-    host.mutate_dom(|dom| {
-      *dom = document;
-      ((), true)
-    });
+      let script_type = *self
+        .script_type_by_id
+        .get(&script_id)
+        .unwrap_or(&Self::work_script_type(work));
 
-    let mut orchestrator = self.orchestrator.borrow_mut();
-    let mut exec = HostExecutor { work, event_loop };
-    orchestrator.execute_script_element(host, script_node_id, script_type, &mut exec)?;
+      let mut document = if let Some(doc) = self.document.as_ref() {
+        doc.clone()
+      } else {
+        let dom = self.parser.document().ok_or_else(|| {
+          Error::Other(
+            "internal error: parser document unavailable when executing script".to_string(),
+          )
+        })?;
+        Document::clone(&dom)
+      };
+      // Ensure declarative Shadow DOM is attached before any connected script observes the tree.
+      document.attach_shadow_roots();
+      host.mutate_dom(|dom| {
+        *dom = document;
+        ((), true)
+      });
 
+      let mut orchestrator = self.orchestrator.borrow_mut();
+      let mut exec = HostExecutor { work, event_loop };
+      orchestrator.execute_script_element(host, script_node_id, script_type, &mut exec)?;
+
+      Ok(())
+    })();
+
+    // Parser-blocking scripts must always unblock parsing after the execution attempt, even if
+    // execution failed (e.g. host exception).
     if self.blocked_parser_on == Some(script_id) {
       self.blocked_parser_on = None;
     }
-    Ok(())
+
+    result
   }
 
   fn queue_work_task<Host: HtmlScriptPipelineHost>(
     &mut self,
     event_loop: &mut EventLoop<Host>,
     script_id: HtmlScriptId,
-    script_node_id: NodeId,
+    script_node_id: Option<NodeId>,
     work: HtmlScriptWork,
     event_kind: Option<ScriptEventKind>,
   ) -> Result<()> {
+    let script_node_id =
+      script_node_id.ok_or_else(|| Error::Other("queue_script_task requires script node id".to_string()))?;
     let script_type = *self
       .script_type_by_id
       .get(&script_id)
@@ -738,6 +756,7 @@ mod tests {
   use super::*;
   use crate::js::{CurrentScriptStateHandle, RunLimits};
   use selectors::context::QuirksMode;
+  use std::panic::{catch_unwind, AssertUnwindSafe};
 
   struct Host {
     dom: Document,
@@ -1129,5 +1148,69 @@ mod tests {
     assert!(host.started_inline_module_fetches.is_empty());
     assert!(host.log.is_empty());
     Ok(())
+  }
+
+  #[test]
+  fn execute_work_now_missing_node_id_returns_error_and_unblocks_parser() {
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+    let mut state = HtmlScriptPipelineState::new(None, ParseBudget::default());
+    state.document = Some(Document::new(QuirksMode::NoQuirks));
+
+    let script_id = HtmlScriptId::from_u64(1);
+    state.blocked_parser_on = Some(script_id);
+
+    let work = HtmlScriptWork::Classic {
+      source_text: Some("alert(1)".to_string()),
+    };
+    let result = catch_unwind(AssertUnwindSafe(|| {
+      state.execute_work_now(&mut host, &mut event_loop, script_id, None, &work)
+    }));
+    assert!(result.is_ok(), "execute_work_now must not panic on missing node id");
+
+    let err = result.unwrap().expect_err("expected missing node id to be an error");
+    match err {
+      Error::Other(msg) => assert_eq!(msg, "execute_script_now requires script node id"),
+      other => panic!("unexpected error type: {other:?}"),
+    }
+    assert!(
+      state.blocked_parser_on.is_none(),
+      "missing node id must not leave the parser blocked"
+    );
+  }
+
+  #[test]
+  fn queue_work_task_missing_node_id_returns_error_without_panicking() {
+    let mut event_loop = EventLoop::<Host>::new();
+    let mut state = HtmlScriptPipelineState::new(None, ParseBudget::default());
+    state.document = Some(Document::new(QuirksMode::NoQuirks));
+
+    let script_id = HtmlScriptId::from_u64(1);
+    let work = HtmlScriptWork::Classic {
+      source_text: Some("alert(1)".to_string()),
+    };
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+      state.queue_work_task(&mut event_loop, script_id, None, work, None)
+    }));
+    assert!(result.is_ok(), "queue_work_task must not panic on missing node id");
+
+    let err = result.unwrap().expect_err("expected missing node id to be an error");
+    match err {
+      Error::Other(msg) => assert_eq!(msg, "queue_script_task requires script node id"),
+      other => panic!("unexpected error type: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn js_execution_guard_underflow_saturates_without_panicking() {
+    let depth = Rc::new(Cell::new(0usize));
+    let guard = JsExecutionGuard {
+      depth: Rc::clone(&depth),
+    };
+
+    let result = catch_unwind(AssertUnwindSafe(|| drop(guard)));
+    assert!(result.is_ok(), "dropping a guard at depth=0 must not panic");
+    assert_eq!(depth.get(), 0);
   }
 }

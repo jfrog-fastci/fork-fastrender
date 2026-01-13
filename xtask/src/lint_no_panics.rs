@@ -287,9 +287,19 @@ fn find_cfg_test_module_files(parent_path: &Path, source: &str) -> Vec<PathBuf> 
     if pending_cfg_test && !in_line_comment && block_comment_depth == 0 {
       let old = i;
       let end = skip_cfg_item(bytes, i);
-      if let Some(decl) = parse_external_mod_decl(source.get(old..end).unwrap_or("")) {
+      let item = source.get(old..end).unwrap_or("");
+      if let Some(decl) = parse_external_mod_decl(item) {
         if let Some(path) = resolve_mod_file(parent_path, &decl) {
           out.push(path);
+        }
+      } else if let Some((inline_name, body)) = parse_inline_mod_decl(item) {
+        // `#[cfg(test)] mod tests { mod foo; }` is extremely common. Even though the `mod foo;`
+        // declarations are not annotated with `#[cfg(test)]`, they are test-only by virtue of
+        // appearing inside a test-only module. Mark their resolved files as test-only too so
+        // lint-no-panics doesn't force production-grade panic discipline on test suites.
+        if let Some(parent_module_dir) = module_dir_for_file(parent_path) {
+          let synthetic_parent = parent_module_dir.join(inline_name).join("mod.rs");
+          out.extend(find_external_mod_files(&synthetic_parent, body));
         }
       }
       i = end;
@@ -484,6 +494,166 @@ fn parse_external_mod_decl(item: &str) -> Option<ExternalModDecl> {
   }
 
   Some(ExternalModDecl { name, path_attr })
+}
+
+/// Parse an inline module declaration like `mod tests { ... }` (optionally preceded by attributes
+/// and/or `pub` visibility) and return the module name and its body.
+///
+/// This is intentionally conservative: it only matches `mod <ident> { ... }` and does not attempt
+/// to handle edge cases like `mod tests;` (external module) or `mod tests;` with `#[path]` (handled
+/// elsewhere).
+fn parse_inline_mod_decl(item: &str) -> Option<(String, &str)> {
+  let bytes = item.as_bytes();
+  let mut i = 0usize;
+
+  // Skip doc/comments/whitespace + any attributes attached to the item.
+  loop {
+    i = skip_ws_and_comments(bytes, i);
+    if bytes.get(i..i + 2) == Some(b"#[") || bytes.get(i..i + 3) == Some(b"#![") {
+      if let Some(end_after) = skip_attribute(bytes, i) {
+        i = end_after;
+        continue;
+      }
+    }
+    break;
+  }
+
+  i = skip_ws_and_comments(bytes, i);
+
+  // Optional `pub` visibility (including `pub(crate)` etc).
+  if starts_with_token(bytes, i, b"pub") && !bytes.get(i + 3).is_some_and(|b| is_ident_continue(*b))
+  {
+    i += 3;
+    i = skip_ws_and_comments(bytes, i);
+    if bytes.get(i) == Some(&b'(') {
+      let mut depth = 0i32;
+      while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+          b'(' => depth += 1,
+          b')' => {
+            depth -= 1;
+            if depth == 0 {
+              i += 1;
+              break;
+            }
+          }
+          _ => {}
+        }
+        i += 1;
+      }
+      i = skip_ws_and_comments(bytes, i);
+    }
+  }
+
+  if !starts_with_token(bytes, i, b"mod") || bytes.get(i + 3).is_some_and(|b| is_ident_continue(*b))
+  {
+    return None;
+  }
+  i += 3;
+  i = skip_ws_and_comments(bytes, i);
+
+  let start = i;
+  let first = *bytes.get(i)?;
+  if !(first.is_ascii_alphabetic() || first == b'_') {
+    return None;
+  }
+  i += 1;
+  while i < bytes.len() && is_ident_continue(bytes[i]) {
+    i += 1;
+  }
+  let name = item.get(start..i)?.to_string();
+
+  i = skip_ws_and_comments(bytes, i);
+  if bytes.get(i) != Some(&b'{') {
+    return None;
+  }
+  let body_start = i + 1;
+  let body_end = find_matching_brace(bytes, i)?;
+  let body = item.get(body_start..body_end)?;
+
+  Some((name, body))
+}
+
+fn find_matching_brace(bytes: &[u8], start: usize) -> Option<usize> {
+  if bytes.get(start) != Some(&b'{') {
+    return None;
+  }
+
+  let mut i = start;
+  let mut depth: i32 = 0;
+
+  while i < bytes.len() {
+    // Skip comments first.
+    if bytes.get(i..i + 2) == Some(b"//") {
+      i += 2;
+      while i < bytes.len() && bytes[i] != b'\n' {
+        i += 1;
+      }
+      continue;
+    }
+    if bytes.get(i..i + 2) == Some(b"/*") {
+      i += 2;
+      let mut comment_depth = 1usize;
+      while i < bytes.len() && comment_depth > 0 {
+        if bytes.get(i..i + 2) == Some(b"/*") {
+          comment_depth += 1;
+          i += 2;
+          continue;
+        }
+        if bytes.get(i..i + 2) == Some(b"*/") {
+          comment_depth = comment_depth.saturating_sub(1);
+          i += 2;
+          continue;
+        }
+        i += 1;
+      }
+      continue;
+    }
+
+    // Skip strings and chars so brace counting stays correct.
+    if let Some((end_after, _prefix_len)) = skip_raw_string(bytes, i) {
+      i = end_after;
+      continue;
+    }
+    if bytes.get(i..i + 2) == Some(b"b\"") {
+      i = skip_string(bytes, i, 2);
+      continue;
+    }
+    if bytes.get(i) == Some(&b'"') {
+      i = skip_string(bytes, i, 1);
+      continue;
+    }
+    if bytes.get(i..i + 2) == Some(b"b'") {
+      if let Some(end_after) = skip_char_literal(bytes, i + 1) {
+        i = end_after;
+        continue;
+      }
+    }
+    if bytes.get(i) == Some(&b'\'') {
+      if let Some(end_after) = skip_char_literal(bytes, i) {
+        i = end_after;
+        continue;
+      }
+    }
+
+    match bytes[i] {
+      b'{' => {
+        depth += 1;
+        i += 1;
+      }
+      b'}' => {
+        depth -= 1;
+        if depth == 0 {
+          return Some(i);
+        }
+        i += 1;
+      }
+      _ => i += 1,
+    }
+  }
+
+  None
 }
 
 fn parse_path_attribute(attr: &str) -> Option<String> {
@@ -1751,6 +1921,48 @@ pub fn test_only() {
       root.join("tests/nested.rs"),
       r#"
 pub fn nested() {
+  panic!("boom");
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    let violations = lint_dir(root, root).unwrap();
+    assert_eq!(
+      violations.len(),
+      1,
+      "expected only the production file violation to be reported: {violations:#?}"
+    );
+    assert_eq!(violations[0].path, PathBuf::from("mod.rs"));
+    assert_eq!(violations[0].kind, ViolationKind::Unwrap);
+  }
+
+  #[test]
+  fn lint_dir_skips_files_only_referenced_from_inline_cfg_test_modules() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(
+      root.join("mod.rs"),
+      r#"
+#[cfg(test)]
+mod tests {
+  mod foo;
+}
+
+pub fn prod() {
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    fs::create_dir_all(root.join("tests")).unwrap();
+    fs::write(
+      root.join("tests/foo.rs"),
+      r#"
+pub fn test_only() {
   panic!("boom");
   let _ = Some(1).unwrap();
 }
