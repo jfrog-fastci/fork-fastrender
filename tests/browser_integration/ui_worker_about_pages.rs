@@ -72,8 +72,8 @@ fn about_pages_render_and_have_titles() {
 
   // Basic HTML smoke test for the new tab page. (The full rendering validation happens below via
   // UI worker navigation.)
-  let newtab_html = about_pages::html_for_about_url(about_pages::ABOUT_NEWTAB)
-    .expect("about:newtab HTML");
+  let newtab_html =
+    about_pages::html_for_about_url(about_pages::ABOUT_NEWTAB).expect("about:newtab HTML");
   for url in [
     "https://example.com/",
     about_pages::ABOUT_HELP,
@@ -85,6 +85,13 @@ fn about_pages_render_and_have_titles() {
       "expected about:newtab HTML to contain a link to {url}"
     );
   }
+
+  let layout_stress_html = about_pages::html_for_about_url(about_pages::ABOUT_TEST_LAYOUT_STRESS)
+    .expect("about:test-layout-stress HTML");
+  assert!(
+    !layout_stress_html.trim().is_empty(),
+    "expected about:test-layout-stress HTML to be non-empty"
+  );
 
   let tab = TabId::new();
   ui_tx.send(create_tab_msg(tab, None)).expect("create tab");
