@@ -2329,19 +2329,11 @@ impl BrowserDocumentDom2 {
     }
 
     let mut render_affecting = false;
-    let mut saw_form_state_change = false;
     // Treat changes in disconnected/inert subtrees as non-render-affecting.
     for node in mutations.attribute_changed {
       if self.dom.is_connected_for_scripting(node) {
         render_affecting = true;
         self.dirty_style_nodes.insert(node);
-      }
-    }
-
-    for node in mutations.form_state_changed {
-      if self.dom.is_connected_for_scripting(node) {
-        render_affecting = true;
-        saw_form_state_change = true;
       }
     }
 
@@ -2395,11 +2387,6 @@ impl BrowserDocumentDom2 {
     }
 
     if !self.dirty_text_nodes.is_empty() {
-      self.layout_dirty = true;
-      self.paint_dirty = true;
-    }
-
-    if saw_form_state_change {
       self.layout_dirty = true;
       self.paint_dirty = true;
     }
