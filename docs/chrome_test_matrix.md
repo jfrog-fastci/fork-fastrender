@@ -8,6 +8,15 @@ multi-window, OS file manager reveal/open).
 For a deeper, step-by-step checklist (session restore, menus, crash paths, etc), see:
 [`docs/browser_chrome_manual_test_matrix.md`](browser_chrome_manual_test_matrix.md).
 
+Build/run instructions live in [browser_ui.md](browser_ui.md). For a clean manual run that won’t
+clobber your normal profile, consider an isolated session path (see `--session-path` /
+`FASTR_BROWSER_SESSION_PATH` in `browser_ui.md`).
+
+Recommended deterministic test pages:
+
+- `about:test-form` (focus + text input)
+- `about:test-scroll` (scroll)
+
 Key notation:
 
 - **Win/Linux** uses <kbd>Ctrl</kbd> and <kbd>Alt</kbd>.
