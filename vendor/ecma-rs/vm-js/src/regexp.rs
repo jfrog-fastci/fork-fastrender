@@ -2639,6 +2639,12 @@ impl<'a> Parser<'a> {
         } else {
           let atom2 = self.parse_class_atom(ctx)?;
           if let (CharClassItem::Char(a), CharClassItem::Char(b)) = (atom, atom2) {
+            if a > b {
+              return Err(RegExpSyntaxError {
+                message: "Invalid character class",
+              }
+              .into());
+            }
             ctx.vec_try_push(&mut items, CharClassItem::Range(a, b))?;
             continue;
           } else {
