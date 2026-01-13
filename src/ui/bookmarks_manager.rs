@@ -6,9 +6,10 @@
 //! (which keeps page hit-testing/pointer forwarding simple).
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::borrow::Cow;
+use std::time::Duration;
 
+use crate::ui::bookmarks_io_job::{BookmarksIoJob, BookmarksIoJobUpdate};
 use crate::ui::motion::UiMotion;
 
 use super::{
@@ -34,6 +35,7 @@ pub struct BookmarksManagerState {
   pub message: Option<String>,
   pub error: Option<String>,
 
+  io_job: BookmarksIoJob,
   request_focus_search: bool,
   creating_folder: Option<CreateFolderState>,
   editing_bookmark: Option<EditBookmarkState>,
@@ -54,6 +56,46 @@ impl BookmarksManagerState {
   pub fn clear_transient(&mut self) {
     self.creating_folder = None;
     self.editing_bookmark = None;
+  }
+
+  fn poll_io_job(&mut self, store: &mut BookmarkStore, out: &mut BookmarksManagerOutput) {
+    let Some(update) = self.io_job.poll() else {
+      return;
+    };
+
+    match update {
+      BookmarksIoJobUpdate::ExportFinished { path, result } => match result {
+        Ok(()) => {
+          self.error = None;
+          self.message = Some(format!("Exported bookmarks to {}.", path));
+        }
+        Err(err) => {
+          self.error = Some(err);
+        }
+      },
+      BookmarksIoJobUpdate::ImportFinished { result, .. } => match result {
+        Ok((imported, migration)) => {
+          let delta = BookmarkDelta::ReplaceAll(imported);
+          match store.apply_delta(&delta) {
+            Ok(()) => {
+              out.bookmark_deltas.push(delta);
+              out.changed = true;
+              out.request_flush = true;
+              self.error = None;
+              self.message = Some(format!("Imported bookmarks from file ({migration:?})."));
+              self.import_json.clear();
+              self.clear_transient();
+            }
+            Err(err) => {
+              self.error = Some(format!("Failed to import bookmarks: {err:?}"));
+            }
+          }
+        }
+        Err(err) => {
+          self.error = Some(err);
+        }
+      },
+    }
   }
 }
 
@@ -153,6 +195,15 @@ pub fn bookmarks_manager_side_panel(
     .take()
     .unwrap_or_else(|| BookmarksFolderCache::new(store));
   folder_cache.ensure_up_to_date(store);
+
+  // Poll import/export background jobs before building UI.
+  state.poll_io_job(store, &mut out);
+
+  // While an IO job is active, keep the UI repainting so the "Working…" indicator animates and we
+  // can pick up completion without requiring additional user input.
+  if state.io_job.is_busy() {
+    ctx.request_repaint_after(Duration::from_millis(16));
+  }
 
   egui::SidePanel::left("fastr_bookmarks_manager")
     .resizable(true)
@@ -286,21 +337,25 @@ pub fn bookmarks_manager_side_panel(
               state.export_path = profile_path.display().to_string();
             }
 
-            if ui.button("Export file").clicked() {
+            let export_btn =
+              ui.add_enabled(!state.io_job.is_busy(), egui::Button::new("Export file"));
+            if export_btn.clicked() {
               let raw = state.export_path.trim();
               if raw.is_empty() {
                 state.error = Some("Export path is empty.".to_string());
               } else {
-                match crate::ui::save_bookmarks_atomic(Path::new(raw), store) {
-                  Ok(()) => {
-                    state.error = None;
-                    state.message = Some(format!("Exported bookmarks to {}.", raw));
-                  }
-                  Err(err) => {
-                    state.error = Some(format!("Failed to export bookmarks: {err}"));
-                  }
+                if let Err(err) = state.io_job.start_export(raw.to_string(), store.clone()) {
+                  state.error = Some(err);
                 }
               }
+            }
+
+            if state.io_job.is_exporting() {
+              ui.label(
+                egui::RichText::new("Working…")
+                  .small()
+                  .color(ui.visuals().weak_text_color()),
+              );
             }
           });
 
@@ -355,40 +410,25 @@ pub fn bookmarks_manager_side_panel(
               state.import_path = profile_path.display().to_string();
             }
 
-            if ui.button("Import file").clicked() {
+            let import_btn =
+              ui.add_enabled(!state.io_job.is_busy(), egui::Button::new("Import file"));
+            if import_btn.clicked() {
               let raw = state.import_path.trim();
               if raw.is_empty() {
                 state.error = Some("Import path is empty.".to_string());
               } else {
-                match std::fs::read_to_string(raw) {
-                  Ok(json) => match BookmarkStore::from_json_str_migrating(&json) {
-                    Ok((imported, migration)) => {
-                      let delta = BookmarkDelta::ReplaceAll(imported);
-                      match store.apply_delta(&delta) {
-                        Ok(()) => {
-                          out.bookmark_deltas.push(delta);
-                          out.changed = true;
-                          out.request_flush = true;
-                          state.error = None;
-                          state.message =
-                            Some(format!("Imported bookmarks from file ({migration:?})."));
-                          state.import_json.clear();
-                          state.clear_transient();
-                        }
-                        Err(err) => {
-                          state.error = Some(format!("Failed to import bookmarks: {err:?}"));
-                        }
-                      }
-                    }
-                    Err(err) => {
-                      state.error = Some(format!("Failed to import bookmarks: {err:?}"));
-                    }
-                  },
-                  Err(err) => {
-                    state.error = Some(format!("Failed to read {raw:?}: {err}"));
-                  }
+                if let Err(err) = state.io_job.start_import(raw.to_string()) {
+                  state.error = Some(err);
                 }
               }
+            }
+
+            if state.io_job.is_importing() {
+              ui.label(
+                egui::RichText::new("Working…")
+                  .small()
+                  .color(ui.visuals().weak_text_color()),
+              );
             }
           });
 

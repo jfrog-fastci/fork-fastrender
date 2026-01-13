@@ -6,6 +6,7 @@ pub mod compositor;
 pub mod renderer_media_prefs;
 pub mod chrome_assets;
 pub mod bookmarks;
+pub mod bookmarks_io_job;
 pub mod chrome_frame;
 pub mod browser_app;
 pub mod browser_limits;
