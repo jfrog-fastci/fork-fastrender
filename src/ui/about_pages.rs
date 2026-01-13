@@ -66,8 +66,16 @@ pub struct AboutPageSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct OpenTabSnapshot {
+  /// Best-effort identifier for the window that owns this tab.
+  ///
+  /// The windowed browser populates this with a debug string derived from the platform window id.
+  pub window_id: Option<String>,
   pub tab_id: u64,
   pub url: String,
+  /// Derived site key for the current URL (best-effort).
+  pub site_key: Option<String>,
+  /// Renderer process identifier assigned to this tab (if multiprocess is enabled).
+  pub renderer_process: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -920,16 +928,31 @@ fn processes_html() -> String {
 
   let mut rows = String::new();
   if snapshot.open_tabs.is_empty() {
-    rows.push_str("<tr><td colspan=\"5\" class=\"empty\">No tab snapshot is available.</td></tr>");
+    rows.push_str("<tr><td colspan=\"6\" class=\"empty\">No tab snapshot is available.</td></tr>");
   } else {
     for tab in snapshot.open_tabs {
+      let safe_window = escape_html(tab.window_id.as_deref().unwrap_or("-"));
       let safe_url = escape_html(&tab.url);
+      let site = tab
+        .site_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+      let site_cell = match site {
+        Some(site) => format!("<code>{}</code>", escape_html(site)),
+        None => "<span class=\"muted\">(unknown)</span>".to_string(),
+      };
+      let renderer = match tab.renderer_process {
+        Some(id) => format!("<code>{id}</code>"),
+        None => "<span class=\"muted\">(unassigned)</span>".to_string(),
+      };
       rows.push_str(&format!(
         "<tr>
+          <td><code>{safe_window}</code></td>
           <td><code>{}</code></td>
           <td><a href=\"{}\"><code>{}</code></a></td>
-          <td class=\"muted\">(not implemented)</td>
-          <td class=\"muted\">(not implemented)</td>
+          <td>{site_cell}</td>
+          <td>{renderer}</td>
           <td class=\"muted\">(not implemented)</td>
         </tr>",
         tab.tab_id, safe_url, safe_url
@@ -951,6 +974,7 @@ fn processes_html() -> String {
       <table class=\"proc-table\">
         <thead>
           <tr>
+            <th>Window</th>
             <th>Tab</th>
             <th>URL</th>
             <th>Site</th>

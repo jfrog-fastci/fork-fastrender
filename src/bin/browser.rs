@@ -4228,6 +4228,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for win in windows.values_mut() {
           win.app.flush_pending_dropped_files();
         }
+
+        // Keep the `about:processes` snapshot up to date with the current set of open tabs.
+        //
+        // This is best-effort debug state: it is safe to update once per event-loop cycle, and the
+        // about-page renderer will gracefully handle missing/empty snapshot data.
+        let mut open_tabs = Vec::new();
+        for (window_id, win) in windows.iter() {
+          let window_debug = format!("{window_id:?}");
+          for tab in &win.app.browser_state.tabs {
+            let url = tab
+              .current_url
+              .as_deref()
+              .or(tab.committed_url.as_deref())
+              .unwrap_or("")
+              .trim();
+            if url.is_empty() {
+              continue;
+            }
+            let site_key = fastrender::ui::SiteKey::from_url(url)
+              .ok()
+              .map(|key| key.to_string());
+            let renderer_process = tab.renderer_process.map(|id| id.raw());
+            open_tabs.push(fastrender::ui::about_pages::OpenTabSnapshot {
+              window_id: Some(window_debug.clone()),
+              tab_id: tab.id.0,
+              url: url.to_string(),
+              site_key,
+              renderer_process,
+            });
+          }
+        }
+        open_tabs.sort_by(|a, b| a.window_id.cmp(&b.window_id).then(a.tab_id.cmp(&b.tab_id)));
+        fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(open_tabs);
       }
       _ => {}
     }
