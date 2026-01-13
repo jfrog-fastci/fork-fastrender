@@ -850,7 +850,7 @@ fn perform_absolute_layout_on_absolute_children(
         0.0
       },
       bottom: if bottom.is_some() {
-        margin.left.unwrap_or(0.0)
+        margin.bottom.unwrap_or(0.0)
       } else {
         0.0
       },
@@ -1036,5 +1036,53 @@ mod tests {
     assert_eq!(layout.padding.bottom, 20.0);
     assert_eq!(layout.border.top, 10.0);
     assert_eq!(layout.border.bottom, 10.0);
+  }
+
+  #[test]
+  fn block_abspos_auto_vertical_margins_ignore_horizontal_margins() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let abs_child = taffy
+      .new_leaf(Style {
+        position: Position::Absolute,
+        size: Size::from_lengths(10.0, 10.0),
+        // Use a nonzero left margin to catch accidental mixing of axes when computing vertical
+        // free space for auto margins.
+        margin: Rect {
+          left: length(20.0),
+          right: length(0.0),
+          top: auto(),
+          bottom: auto(),
+        },
+        inset: Rect {
+          left: auto(),
+          right: auto(),
+          top: auto(),
+          bottom: length(0.0),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Block,
+          size: Size::from_lengths(100.0, 100.0),
+          ..Default::default()
+        },
+        &[abs_child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    // With bottom inset set and both vertical margins auto, the child should be vertically centered:
+    //   free_space = 100 - 10 = 90, so each auto margin gets 45px.
+    //   y = 100 - 10 - 0 - 45 = 45.
+    //
+    // A bug in non-auto margin bookkeeping that incorrectly uses the left margin for the bottom
+    // margin would reduce the free space and shift the element down.
+    assert_eq!(taffy.layout(abs_child).unwrap().location.y, 45.0);
   }
 }
