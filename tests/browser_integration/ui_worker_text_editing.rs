@@ -300,11 +300,12 @@ fn ui_worker_text_input_ime_preedit_renders_at_caret_and_honors_ime_cursor() {
     caret_column_in_rect(&frame_after_1.pixmap, input_rect, caret_rgb).expect("caret after 1");
   let char_w = x_after_1 - x_home;
 
-  // Start an IME composition with cursor at the end of the preedit string.
+  // Start an IME composition with a cursor inside the preedit string ("XY" with cursor after "X"),
+  // so the painted caret must honor the IME cursor rather than always jumping to the end.
   ui_tx
     .send(UiToWorker::ImePreedit {
       tab_id,
-      text: "X".to_string(),
+      text: "XY".to_string(),
       cursor: Some((1, 1)),
     })
     .expect("ImePreedit");
