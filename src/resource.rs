@@ -2093,7 +2093,10 @@ pub struct AllowedSchemes {
   pub http: bool,
   /// Whether `https://` URLs are permitted.
   pub https: bool,
-  /// Whether `file://` URLs (and bare filesystem paths) are permitted.
+  /// Whether `file://` URLs are permitted.
+  ///
+  /// Bare filesystem paths (relative/unparseable URL strings) are controlled separately via
+  /// [`ResourcePolicy::allow_bare_file_paths`].
   pub file: bool,
   /// Whether `data:` URLs are permitted.
   pub data: bool,
@@ -2152,6 +2155,14 @@ enum ResourceScheme {
 pub struct ResourcePolicy {
   /// Permitted URL schemes.
   pub allowed_schemes: AllowedSchemes,
+  /// Whether to treat bare/unparseable URL strings as filesystem paths.
+  ///
+  /// When true (default), invalid/relative URL strings such as `./foo.html` are classified as
+  /// `ResourceScheme::Relative` and treated as implicit `file://` loads.
+  ///
+  /// When false, `ResourceScheme::Relative` is blocked even if `file://` URLs are otherwise
+  /// allowed, shrinking the attack surface for sandboxed/browser builds.
+  pub allow_bare_file_paths: bool,
   /// Maximum bytes to read per response. Defaults to 50MB.
   pub max_response_bytes: usize,
   /// Total bytes budget across all responses. `None` disables the budget.
@@ -2177,6 +2188,7 @@ impl Default for ResourcePolicy {
   fn default() -> Self {
     Self {
       allowed_schemes: AllowedSchemes::all(),
+      allow_bare_file_paths: true,
       max_response_bytes: 50 * 1024 * 1024,
       total_bytes_budget: None,
       request_timeout: Duration::from_secs(30),
@@ -2193,6 +2205,12 @@ impl ResourcePolicy {
   /// Create a new policy with defaults matching the historical behavior.
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// Allow or disallow treating bare/unparseable URL strings as filesystem paths.
+  pub fn allow_bare_file_paths(mut self, allow: bool) -> Self {
+    self.allow_bare_file_paths = allow;
+    self
   }
 
   /// Override allowed schemes.
@@ -2213,7 +2231,10 @@ impl ResourcePolicy {
     self
   }
 
-  /// Allow or disallow `file://` URLs and bare filesystem paths.
+  /// Allow or disallow `file://` URLs.
+  ///
+  /// Note: bare filesystem paths are controlled separately via
+  /// [`ResourcePolicy::allow_bare_file_paths`].
   pub fn allow_file(mut self, allow: bool) -> Self {
     self.allowed_schemes.file = allow;
     self
@@ -2315,6 +2336,9 @@ impl ResourcePolicy {
       return Err(policy_error("empty URL"));
     }
     let scheme = classify_scheme(url);
+    if scheme == ResourceScheme::Relative && !self.allow_bare_file_paths {
+      return Err(policy_error("bare filesystem paths are not allowed"));
+    }
     if !self.allowed_schemes.allows(scheme) {
       return Err(policy_error(format!("scheme {:?} is not allowed", scheme)));
     }
@@ -13586,6 +13610,36 @@ mod tests {
     assert!(
       policy.ensure_url_allowed("\u{00A0}").is_ok(),
       "NBSP-only URLs should not be rejected as empty"
+    );
+  }
+
+  #[test]
+  fn resource_policy_allows_bare_file_paths_by_default() {
+    let policy = ResourcePolicy::new();
+    assert_eq!(
+      policy.ensure_url_allowed("./foo.html").expect("bare path should be allowed"),
+      ResourceScheme::Relative
+    );
+    assert_eq!(
+      policy
+        .ensure_url_allowed("file:///tmp/foo.html")
+        .expect("file:// URLs should be allowed"),
+      ResourceScheme::File
+    );
+  }
+
+  #[test]
+  fn resource_policy_can_block_bare_file_paths_without_disabling_file_scheme() {
+    let policy = ResourcePolicy::new().allow_bare_file_paths(false);
+    assert!(
+      policy.ensure_url_allowed("./foo.html").is_err(),
+      "bare paths should be blocked when allow_bare_file_paths is false"
+    );
+    assert_eq!(
+      policy
+        .ensure_url_allowed("file:///tmp/foo.html")
+        .expect("file:// URLs should remain allowed"),
+      ResourceScheme::File
     );
   }
 
