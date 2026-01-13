@@ -782,7 +782,10 @@ impl<'vm> HirEvaluator<'vm> {
       ThisMode::Global
     };
 
-    let func_obj = if is_async || is_generator {
+    // HIR execution supports async functions, but generator / async-generator bodies are not yet
+    // implemented (yield is unimplemented). Keep generator functions on the AST-backed path for now
+    // so they can continue to execute via the interpreter.
+    let func_obj = if is_generator {
       let code_id = self.vm.register_ecma_function(
         self.env.source(),
         def_span.start,
@@ -8330,5 +8333,39 @@ pub(crate) fn run_compiled_script(
     Flow::Return(_) => Err(VmError::Unimplemented("return outside of function")),
     Flow::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
     Flow::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
+  }
+}
+
+#[cfg(test)]
+mod async_function_allocation_tests {
+  use crate::function::CallHandler;
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  #[test]
+  fn compiled_hir_allocates_async_functions_as_compiled_user_functions() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        async function f() { return 1; }
+        f;
+      "#,
+    )?;
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected CallHandler::User for async function allocated in compiled HIR executor, got {call_handler:?}"
+    );
+    Ok(())
   }
 }
