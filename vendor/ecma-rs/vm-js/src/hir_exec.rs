@@ -2750,9 +2750,24 @@ impl<'vm> HirEvaluator<'vm> {
       }
       hir_js::UnaryOp::BitNot => {
         let v = self.eval_expr(scope, body, expr)?;
-        let mut tick = || self.vm.tick();
-        let n = crate::ops::to_number_with_tick(scope.heap_mut(), v, &mut tick)?;
-        Ok(Value::Number((!to_int32(n)) as f64))
+
+        // `~` uses `ToNumeric` and preserves BigInt.
+        //
+        // Spec: https://tc39.es/ecma262/#sec-bitwise-not-operator
+        let mut not_scope = scope.reborrow();
+        not_scope.push_root(v)?;
+        let num = self.to_numeric(&mut not_scope, v)?;
+        Ok(match num {
+          NumericValue::Number(n) => Value::Number((!to_int32(n)) as f64),
+          NumericValue::BigInt(b) => {
+            let out = {
+              let bi = not_scope.heap().get_bigint(b)?;
+              bi.bitwise_not()?
+            };
+            let out = not_scope.alloc_bigint(out)?;
+            Value::BigInt(out)
+          }
+        })
       }
       hir_js::UnaryOp::Plus => {
         let v = self.eval_expr(scope, body, expr)?;
@@ -2762,7 +2777,7 @@ impl<'vm> HirEvaluator<'vm> {
         ))
       }
       hir_js::UnaryOp::Minus => {
-        // Unary `-` uses `ToNumeric` (BigInt support).
+        // Unary `-` uses `ToNumeric` and preserves BigInt.
         let v = self.eval_expr(scope, body, expr)?;
         let mut neg_scope = scope.reborrow();
         neg_scope.push_root(v)?;

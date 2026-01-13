@@ -2534,3 +2534,136 @@ fn compiled_parameter_object_destructuring_executes() -> Result<(), VmError> {
   assert_eq!(result, Value::Number(2.0));
   Ok(())
 }
+
+#[test]
+fn compiled_typeof_unbound_identifier() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() { return typeof notDefined; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  let result = scope.push_root(result)?;
+  let expected = scope.alloc_string("undefined")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
+fn compiled_update_prefix_postfix() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let i = 0;
+        let a = i++;
+        let b = ++i;
+        return a * 100 + b * 10 + i;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  // a == 0, b == 2, i == 2 => 0*100 + 2*10 + 2 == 22
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Number(22.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_bigint_update() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let n = 1n;
+        n++;
+        return n;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  let result = scope.push_root(result)?;
+  let expected = scope.alloc_bigint_from_u128(2)?;
+  assert!(result.same_value(Value::BigInt(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
+fn compiled_delete_member() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let o = { a: 1 };
+        return delete o.a && ("a" in o) === false;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
