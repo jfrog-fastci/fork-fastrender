@@ -49,8 +49,8 @@ use std::time::Duration;
 use url::Url;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
-  PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, SourceText, Value,
-  Vm, VmError, VmHost, VmHostHooks, VmOptions, WeakGcObject,
+  NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope,
+  SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions, WeakGcObject,
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
@@ -301,6 +301,8 @@ pub(crate) struct WindowRealmUserData {
   ///
   /// When present, `Vm::module_graph_ptr()` points into this boxed allocation.
   pub(crate) module_graph: Option<Box<ModuleGraph>>,
+  /// Cached native call handler id for `import.meta.resolve`.
+  pub(crate) import_meta_resolve_call_id: Option<NativeFunctionId>,
   pub(crate) worker_registry: crate::js::window_worker::WorkerRegistry,
   dom_platform: Option<DomPlatform>,
   /// Registry of realm-owned (non-host) `dom2::Document` instances keyed by their document ID.
@@ -392,6 +394,10 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
       .field("has_module_graph", &self.module_graph.is_some())
+      .field(
+        "has_import_meta_resolve_call_id",
+        &self.import_meta_resolve_call_id.is_some(),
+      )
       .field("worker_count", &self.worker_registry.len())
       .field("has_dom_platform", &self.dom_platform.is_some())
       .field("crypto_rng_state", &self.crypto_rng_state)
@@ -456,6 +462,7 @@ impl WindowRealmUserData {
       cookie_jar: CookieJar::new(),
       module_loader,
       module_graph: None,
+      import_meta_resolve_call_id: None,
       worker_registry: crate::js::window_worker::WorkerRegistry::default(),
       dom_platform: None,
       owned_dom2_documents: Rc::new(RefCell::new(HashMap::new())),

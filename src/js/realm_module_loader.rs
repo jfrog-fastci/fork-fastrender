@@ -505,6 +505,35 @@ impl ModuleLoader {
     .map_err(|_| ModuleResolveError::BareSpecifier)
   }
 
+  /// Resolve a module specifier the same way the loader would, without fetching or instantiating a
+  /// module.
+  ///
+  /// This is used by `import.meta.resolve(specifier)` and must mirror the loader's resolution
+  /// behavior (including import maps and specifier length limits).
+  pub fn resolve_module_specifier_for_import_meta(
+    &mut self,
+    specifier: &str,
+    base_url: Option<&str>,
+  ) -> Result<String, VmError> {
+    if self.max_module_specifier_length != usize::MAX && specifier.len() > self.max_module_specifier_length {
+      return Err(VmError::TypeError(MODULE_SPECIFIER_TOO_LONG_TYPE_ERROR));
+    }
+
+    let Some(base_url) = base_url else {
+      // If there's no base URL, we can still resolve URL-like specifiers (e.g. `data:` or `https:`).
+      // Relative URLs and bare specifiers require a base URL.
+      return Url::parse(specifier)
+        .map(|url| url.to_string())
+        .map_err(|_| VmError::TypeError(RELATIVE_WITHOUT_BASE_TYPE_ERROR));
+    };
+
+    let base_url = Url::parse(base_url).map_err(|_| VmError::TypeError(RELATIVE_WITHOUT_BASE_TYPE_ERROR))?;
+
+    resolve_import_map_specifier(&mut self.import_map_state, specifier, &base_url)
+      .map(|url| url.to_string())
+      .map_err(|_| VmError::TypeError(BARE_SPECIFIER_TYPE_ERROR))
+  }
+
   /// Handle `HostLoadImportedModule` for a single requested module.
   ///
   /// The caller is responsible for:

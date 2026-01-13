@@ -49,6 +49,9 @@ const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notif
 
 // Native slot index on timer host functions that stores the owning global object.
 const TIMER_GLOBAL_SLOT: usize = 0;
+// Native slot index on `import.meta.resolve` host functions that stores the base URL string
+// (or `undefined` when no base URL is available).
+const IMPORT_META_RESOLVE_BASE_URL_SLOT: usize = 0;
 
 fn hooks_payload_mut<'a>(hooks: &'a mut dyn VmHostHooks) -> Option<&'a mut VmJsHostHooksPayload> {
   let any = hooks.as_any_mut()?;
@@ -106,6 +109,68 @@ fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
     Ok(s) => VmError::Throw(Value::String(s)),
     Err(_) => VmError::Throw(Value::Undefined),
   }
+}
+
+fn get_import_meta_resolve_call_id(vm: &mut Vm) -> Result<vm_js::NativeFunctionId, VmError> {
+  if let Some(id) = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.import_meta_resolve_call_id)
+  {
+    return Ok(id);
+  }
+
+  let id = vm.register_native_call(import_meta_resolve_native)?;
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::InvariantViolation(
+      "window realm missing user data",
+    ));
+  };
+  data.import_meta_resolve_call_id = Some(id);
+  Ok(id)
+}
+
+/// Native implementation of `import.meta.resolve(specifier)`.
+///
+/// The resolved base URL is provided via the function's native slots.
+pub(crate) fn import_meta_resolve_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let spec_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let spec_s = scope.to_string(vm, host, hooks, spec_value)?;
+  let specifier = scope.heap().get_string(spec_s)?.to_utf8_lossy();
+
+  let base_url_slot = scope
+    .heap()
+    .get_function_native_slots(callee)?
+    .get(IMPORT_META_RESOLVE_BASE_URL_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let base_url = match base_url_slot {
+    Value::String(s) => Some(scope.heap().get_string(s)?.to_utf8_lossy()),
+    _ => None,
+  };
+
+  let module_loader = {
+    let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation(
+        "window realm missing user data",
+      ));
+    };
+    data.module_loader.clone()
+  };
+
+  let resolved = module_loader
+    .borrow_mut()
+    .resolve_module_specifier_for_import_meta(&specifier, base_url.as_deref())?;
+
+  let out_s = scope.alloc_string(&resolved)?;
+  Ok(Value::String(out_s))
 }
 
 fn resolve_error_event_location(
@@ -1165,6 +1230,71 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       value: Value::String(value_s),
     });
     Ok(props)
+  }
+
+  fn host_finalize_import_meta(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    import_meta: vm_js::GcObject,
+    module: ModuleId,
+  ) -> Result<(), VmError> {
+    let module_loader = {
+      let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation(
+          "window realm missing user data",
+        ));
+      };
+      data.module_loader.clone()
+    };
+
+    let base_url = module_loader.borrow().module_url(module).map(|s| s.to_string());
+
+    let call_id = get_import_meta_resolve_call_id(vm)?;
+
+    let Some(intr) = vm.intrinsics() else {
+      return Err(VmError::Unimplemented(
+        "import.meta.resolve requires intrinsics (create a Realm first before evaluating modules)",
+      ));
+    };
+
+    let mut scope = scope.reborrow();
+    // Root `import_meta` while allocating keys/functions: allocations may GC.
+    scope.push_root(Value::Object(import_meta))?;
+
+    let key_s = scope.alloc_string("resolve")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let base_url_slot = if let Some(base_url) = base_url.as_deref() {
+      let base_s = scope.alloc_string(base_url)?;
+      scope.push_root(Value::String(base_s))?;
+      Value::String(base_s)
+    } else {
+      Value::Undefined
+    };
+
+    let slots = [base_url_slot];
+    let func = scope.alloc_native_function_with_slots(call_id, None, key_s, 1, &slots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(intr.function_prototype()))?;
+    scope.push_root(Value::Object(func))?;
+
+    scope.define_property(
+      import_meta,
+      key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(func),
+          writable: true,
+        },
+      },
+    )?;
+
+    Ok(())
   }
 
   fn host_exotic_get(

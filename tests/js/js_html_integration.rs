@@ -742,6 +742,41 @@ fn p2_dynamic_import_works_from_classic_and_module_scripts_and_honors_import_map
 }
 
 #[test]
+fn p2_import_meta_resolve_resolves_with_import_maps_and_base_url() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut h = Harness::new("https://example.invalid/dir/page.html", js_options)?;
+
+  h.register_script_source(
+    "https://example.invalid/dir/entry.js",
+    r#"
+      console.log("url:" + import.meta.url);
+      console.log("foo:" + import.meta.resolve("foo"));
+      console.log("rel:" + import.meta.resolve("./rel.js"));
+    "#,
+  );
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script type="importmap">{"imports":{"foo":"https://example.invalid/mapped/foo.js"}}</script>
+      <script type="module" src="https://example.invalid/dir/entry.js"></script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "url:https://example.invalid/dir/entry.js".to_string(),
+      "foo:https://example.invalid/mapped/foo.js".to_string(),
+      "rel:https://example.invalid/dir/rel.js".to_string(),
+    ]
+  );
+  Ok(())
+}
+
+#[test]
 fn p2_import_maps_support_scoped_mappings() -> Result<()> {
   let mut js_options = JsExecutionOptions::default();
   js_options.supports_module_scripts = true;

@@ -3,10 +3,12 @@ use crate::js::import_maps::{
   resolve_module_specifier as resolve_module_specifier_with_import_maps, ImportMapError,
   ImportMapState,
 };
+use crate::js::realm_module_loader::ModuleLoaderHandle;
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::vm_error_format;
 use crate::js::window_realm::WindowRealmHost;
-use crate::js::window_timers::VmJsEventLoopHooks;
+use crate::js::window_realm::WindowRealmUserData;
+use crate::js::window_timers::{import_meta_resolve_native, VmJsEventLoopHooks};
 use crate::js::{EventLoop, JsExecutionOptions, MicrotaskCheckpointLimitedOutcome, RunState};
 use crate::resource::{
   cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success,
@@ -18,7 +20,8 @@ use std::sync::Arc;
 use url::Url;
 use vm_js::{
   HostDefined, ImportMetaProperty, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
-  ModuleRequest, PromiseState, PropertyKey, RootId, Scope, Value, Vm, VmError, VmHostHooks,
+  ModuleRequest, PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Scope, Value,
+  Vm, VmError, VmHostHooks,
 };
 
 const ASYNC_MODULE_LOADING_EVALUATION_UNSUPPORTED_MESSAGE: &str =
@@ -209,6 +212,20 @@ impl VmJsModuleLoader {
       import_map_state,
     };
     hooks.inner.set_event_loop(event_loop);
+
+    // Keep the realm module loader's import map state aligned with the optional import map state
+    // used by this tooling loader so `import.meta.resolve()` (implemented via the realm loader)
+    // observes the same mappings.
+    let _realm_import_map_guard = {
+      let (_, window_realm) = host.vm_host_and_window_realm()?;
+      let handle = window_realm.module_loader_handle();
+      let next_state = hooks
+        .import_map_state
+        .as_deref()
+        .cloned()
+        .unwrap_or_else(ImportMapState::new_empty);
+      RealmModuleLoaderImportMapGuard::new(handle, next_state)
+    };
 
     // Attach the loader's module graph to the VM while we load + evaluate modules and while we
     // drain microtask checkpoints. This ensures dynamic `import()` works in Promise jobs queued
@@ -650,6 +667,24 @@ fn vm_error_to_error_with_fresh_scope(heap: &mut vm_js::Heap, err: VmError) -> E
   vm_error_to_error_in_scope(&mut scope, err)
 }
 
+fn get_import_meta_resolve_call_id(vm: &mut Vm) -> std::result::Result<vm_js::NativeFunctionId, VmError> {
+  if let Some(id) = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.import_meta_resolve_call_id)
+  {
+    return Ok(id);
+  }
+
+  let id = vm.register_native_call(import_meta_resolve_native)?;
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::InvariantViolation(
+      "window realm missing user data",
+    ));
+  };
+  data.import_meta_resolve_call_id = Some(id);
+  Ok(id)
+}
+
 struct VmModuleGraphGuard {
   vm: *mut Vm,
   prev_graph: Option<*mut ModuleGraph>,
@@ -678,6 +713,35 @@ impl Drop for VmModuleGraphGuard {
         None => vm.clear_module_graph(),
       }
     }
+  }
+}
+
+/// Temporarily replaces the WindowRealm module loader's import map state while running tooling-driven
+/// module loading/evaluation.
+///
+/// `import.meta.resolve()` is implemented using the per-realm module loader, so we must keep that
+/// loader's import map state aligned with the state used by [`VmJsModuleLoader`].
+struct RealmModuleLoaderImportMapGuard {
+  handle: ModuleLoaderHandle,
+  prev_state: Option<ImportMapState>,
+}
+
+impl RealmModuleLoaderImportMapGuard {
+  fn new(handle: ModuleLoaderHandle, next_state: ImportMapState) -> Self {
+    let prev_state = {
+      let mut loader = handle.borrow_mut();
+      Some(std::mem::replace(loader.import_map_state_mut(), next_state))
+    };
+    Self { handle, prev_state }
+  }
+}
+
+impl Drop for RealmModuleLoaderImportMapGuard {
+  fn drop(&mut self) {
+    let Some(prev) = self.prev_state.take() else {
+      return;
+    };
+    *self.handle.borrow_mut().import_map_state_mut() = prev;
   }
 }
 
@@ -1108,6 +1172,60 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
       key,
       value: Value::String(url_s),
     }])
+  }
+
+  fn host_finalize_import_meta(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    import_meta: vm_js::GcObject,
+    module: ModuleId,
+  ) -> std::result::Result<(), VmError> {
+    let base_url = self
+      .module_base_url_by_id
+      .get(&module)
+      .map(|s| s.as_str())
+      .unwrap_or(self.document_url);
+
+    let call_id = get_import_meta_resolve_call_id(vm)?;
+
+    let Some(intr) = vm.intrinsics() else {
+      return Err(VmError::Unimplemented(
+        "import.meta.resolve requires intrinsics (create a Realm first before evaluating modules)",
+      ));
+    };
+
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(import_meta))?;
+
+    let key_s = scope.alloc_string("resolve")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let base_s = scope.alloc_string(base_url)?;
+    scope.push_root(Value::String(base_s))?;
+
+    let slots = [Value::String(base_s)];
+    let func = scope.alloc_native_function_with_slots(call_id, None, key_s, 1, &slots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(intr.function_prototype()))?;
+    scope.push_root(Value::Object(func))?;
+
+    scope.define_property(
+      import_meta,
+      key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(func),
+          writable: true,
+        },
+      },
+    )?;
+
+    Ok(())
   }
 
   fn host_load_imported_module(
