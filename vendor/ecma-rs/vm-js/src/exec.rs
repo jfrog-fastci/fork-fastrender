@@ -11,10 +11,10 @@ use crate::iterator;
 use crate::promise_ops::promise_resolve_for_await_with_host_and_hooks;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
-  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
-  GcSymbol, HostDefined, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
+  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, Heap, HostDefined,
+  ModuleGraph, ModuleId, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
   PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule, SourceText, SourceTextModuleRecord,
-  StackFrame, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, ToPrimitiveHint,
+  StackFrame, ToPrimitiveHint, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 use core::cmp::Ordering;
 use diagnostics::{Diagnostic, FileId};
@@ -2602,8 +2602,9 @@ impl JsRuntime {
             &mut hooks,
             await_value,
           );
-          let resolve_res =
-            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+          let resolve_res = resolve_res.map_err(|err| {
+            coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err)
+          });
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -3065,10 +3066,16 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let resolve_res =
-            promise_resolve_for_await_with_host_and_hooks(&mut *vm_frame, &mut root_scope, host, hooks, await_value);
-          let resolve_res =
-            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut root_scope,
+            host,
+            hooks,
+            await_value,
+          );
+          let resolve_res = resolve_res.map_err(|err| {
+            coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err)
+          });
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -15130,9 +15137,16 @@ fn async_handle_body_result(
       // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
       // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
       // undefined)` is sufficient and avoids Promise species side effects.
-      let resolve_res =
-        promise_resolve_for_await_with_host_and_hooks(vm, &mut await_scope, host, hooks, await_value);
-      let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
+      let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+        vm,
+        &mut await_scope,
+        host,
+        hooks,
+        await_value,
+      );
+      let resolve_res = resolve_res.map_err(|err| {
+        coerce_error_to_throw_for_async(vm, &mut await_scope, err)
+      });
 
       let awaited_promise = match resolve_res {
         Ok(p) => p,
@@ -17940,24 +17954,24 @@ fn async_eval_class_after_super(
     ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
   }
 
-    let mut ctor_length: u32 = 0;
-    let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
-      if func_node.stx.generator {
-        return Err(syntax_error(
-          loc,
-          "Class constructor may not be a generator",
-        ));
-      }
+  let mut ctor_length: u32 = 0;
+  let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+    if func_node.stx.generator {
+      return Err(syntax_error(
+        loc,
+        "Class constructor may not be a generator",
+      ));
+    }
 
-      ctor_length = evaluator.function_length(&func_node.stx)?;
+    ctor_length = evaluator.function_length(&func_node.stx)?;
 
-      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
-      let rel_end = func_node
-        .loc
-        .end_u32()
-        .saturating_sub(evaluator.env.prefix_len());
-      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
-      let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+    let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+    let rel_end = func_node
+      .loc
+      .end_u32()
+      .saturating_sub(evaluator.env.prefix_len());
+    let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+    let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
     let code = evaluator.vm.register_ecma_function(
       evaluator.env.source(),
@@ -25970,21 +25984,23 @@ fn async_resume_from_frames(
       },
 
       AsyncFrame::YieldStarAfterOperand => match state {
-        AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
-          Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
-          Ok(AsyncEval::Suspend(mut suspend)) => {
-            suspend.frames.append(&mut frames);
-            return Ok(AsyncBodyResult::Await {
-              kind: suspend.kind,
-              await_value: suspend.await_value,
-              frames: suspend.frames,
-            });
+        AsyncState::Expr(Ok(iterable)) => {
+          match async_yield_star_begin(evaluator, scope, iterable) {
+            Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              state = AsyncState::Expr(Err(err))
+            }
+            Err(err) => return Err(err),
           }
-          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-            state = AsyncState::Expr(Err(err))
-          }
-          Err(err) => return Err(err),
-        },
+        }
         AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
