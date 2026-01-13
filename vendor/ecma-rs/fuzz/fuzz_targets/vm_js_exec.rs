@@ -1,6 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use std::borrow::Cow;
 use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -28,6 +29,26 @@ fn string_from_str_best_effort(s: &str) -> String {
     out.push_str(s);
   }
   out
+}
+
+fn source_text_from_bytes_best_effort(data: &[u8]) -> Option<Cow<'_, str>> {
+  if let Ok(s) = std::str::from_utf8(data) {
+    return Some(Cow::Borrowed(s));
+  }
+
+  // Best-effort lossy conversion that avoids `String::from_utf8_lossy`'s infallible allocation
+  // (which can abort the process on OOM).
+  //
+  // Map each byte to a Unicode scalar in the Latin-1 range so the resulting string is always valid
+  // UTF-8 and has a predictable max expansion factor.
+  let mut out = String::new();
+  if out.try_reserve_exact(data.len().saturating_mul(2)).is_err() {
+    return None;
+  }
+  for &b in data {
+    out.push(b as char);
+  }
+  Some(Cow::Owned(out))
 }
 
 fn panic_on_vm_bug(err: VmError) {
@@ -172,7 +193,9 @@ fuzz_target!(|data: &[u8]| {
     data
   };
 
-  let source = String::from_utf8_lossy(data);
+  let Some(source) = source_text_from_bytes_best_effort(data) else {
+    return;
+  };
 
   let mut seed_bytes = [0u8; 8];
   let seed_len = data.len().min(seed_bytes.len());
