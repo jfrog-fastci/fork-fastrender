@@ -204,14 +204,18 @@ pub fn log_layout_profile(total: Duration) {
     || float_stats.boundary_steps > 0
     || float_stats.sweep_state_clones > 0
     || float_stats.range_boundaries_scanned > 0
+    || float_stats.range_cache_segment_splits > 0
+    || float_stats.range_cache_segment_merges > 0
   {
     parts.push(format!(
-      "float_width_queries={} float_range_queries={} float_boundaries={} float_sweep_state_clones={} float_range_boundaries_scanned={}",
+      "float_width_queries={} float_range_queries={} float_boundaries={} float_sweep_state_clones={} float_range_boundaries_scanned={} float_range_cache_segment_splits={} float_range_cache_segment_merges={}",
       float_stats.width_queries,
       float_stats.range_queries,
       float_stats.boundary_steps,
       float_stats.sweep_state_clones,
-      float_stats.range_boundaries_scanned
+      float_stats.range_boundaries_scanned,
+      float_stats.range_cache_segment_splits,
+      float_stats.range_cache_segment_merges
     ));
   }
   let grid_counters = crate::layout::contexts::grid::grid_measure_cache_counters();

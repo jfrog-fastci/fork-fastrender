@@ -436,9 +436,9 @@ impl FloatRangeCache {
     self.sweep_state = FloatSweepState::new(float_count, events);
   }
 
-  fn split_segment_at(&mut self, y: f32) {
+  fn split_segment_at(&mut self, y: f32) -> bool {
     if self.segments.is_empty() || !y.is_finite() {
-      return;
+      return false;
     }
 
     // Fast path: if a segment already starts at y, nothing to do.
@@ -447,15 +447,15 @@ impl FloatRangeCache {
       .binary_search_by(|seg| seg.start_y.total_cmp(&y))
       .is_ok()
     {
-      return;
+      return false;
     }
 
     let idx = self.segment_index(y);
     let Some(seg) = self.segments.get(idx).copied() else {
-      return;
+      return false;
     };
     if y <= seg.start_y || y >= seg.end_y {
-      return;
+      return false;
     }
 
     self.segments[idx].end_y = y;
@@ -468,6 +468,7 @@ impl FloatRangeCache {
         right_edge: seg.right_edge,
       },
     );
+    true
   }
 
   fn apply_rect_float(&mut self, start_y: f32, end_y: f32, side: FloatSide, edge: f32) {
@@ -498,8 +499,16 @@ impl FloatRangeCache {
     }
 
     // Ensure segment boundaries align with the new float's span.
-    self.split_segment_at(overlap_start);
-    self.split_segment_at(overlap_end);
+    let mut split_count = 0u64;
+    if self.split_segment_at(overlap_start) {
+      split_count += 1;
+    }
+    if self.split_segment_at(overlap_end) {
+      split_count += 1;
+    }
+    if split_count > 0 {
+      profile_count_range_cache_segment_split(split_count);
+    }
 
     let start_idx = self.segment_index(overlap_start);
     let end_idx = match self
@@ -521,24 +530,38 @@ impl FloatRangeCache {
       }
     }
 
-    // Coalesce any adjacent segments that were split but ended up with identical constraints.
-    let mut i = start_idx.saturating_sub(1);
-    let mut stop_idx = end_idx.min(self.segments.len());
-    while i + 1 < self.segments.len() && i < stop_idx {
-      let next = i + 1;
-      let can_merge = self.segments[i].end_y == self.segments[next].start_y
-        && self.segments[i].left_edge == self.segments[next].left_edge
-        && self.segments[i].right_edge == self.segments[next].right_edge;
-      if can_merge {
-        let end_y = self.segments[next].end_y;
-        self.segments[i].end_y = end_y;
-        self.segments.remove(next);
-        if stop_idx > 0 {
-          stop_idx -= 1;
+    // Coalesce adjacent segments that were split but ended up with identical constraints.
+    //
+    // This is intentionally localized to the region around the updated span, but must run in
+    // linear time in the number of affected segments. Repeated `Vec::remove` inside a merge loop
+    // devolves into quadratic behavior due to repeated tail shifting when many segments collapse.
+    let coalesce_start = start_idx.saturating_sub(1);
+    let coalesce_end = (end_idx + 1).min(self.segments.len());
+    if coalesce_end.saturating_sub(coalesce_start) <= 1 {
+      return;
+    }
+
+    let mut write = coalesce_start;
+    for read in coalesce_start..coalesce_end {
+      let seg = self.segments[read];
+      if write > coalesce_start {
+        let last = &mut self.segments[write - 1];
+        if last.end_y == seg.start_y
+          && last.left_edge == seg.left_edge
+          && last.right_edge == seg.right_edge
+        {
+          last.end_y = seg.end_y;
+          continue;
         }
-        continue;
       }
-      i += 1;
+      self.segments[write] = seg;
+      write += 1;
+    }
+
+    let merged = (coalesce_end - write) as u64;
+    if merged > 0 {
+      self.segments.drain(write..coalesce_end);
+      profile_count_range_cache_segment_merge(merged);
     }
   }
 
@@ -563,6 +586,8 @@ pub struct FloatProfileStats {
   pub boundary_steps: u64,
   pub sweep_state_clones: u64,
   pub range_boundaries_scanned: u64,
+  pub range_cache_segment_splits: u64,
+  pub range_cache_segment_merges: u64,
   pub clearance_queries: u64,
   pub clearance_steps: u64,
 }
@@ -572,6 +597,8 @@ static FLOAT_RANGE_QUERIES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_BOUNDARY_STEPS: AtomicU64 = AtomicU64::new(0);
 static FLOAT_SWEEP_STATE_CLONES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_RANGE_BOUNDARIES_SCANNED: AtomicU64 = AtomicU64::new(0);
+static FLOAT_RANGE_CACHE_SEGMENT_SPLITS: AtomicU64 = AtomicU64::new(0);
+static FLOAT_RANGE_CACHE_SEGMENT_MERGES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_CLEARANCE_QUERIES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_CLEARANCE_STEPS: AtomicU64 = AtomicU64::new(0);
 
@@ -612,6 +639,18 @@ fn profile_count_range_boundary_scanned(delta: u64) {
   }
 }
 
+fn profile_count_range_cache_segment_split(delta: u64) {
+  if profile_enabled() {
+    FLOAT_RANGE_CACHE_SEGMENT_SPLITS.fetch_add(delta, AtomicOrdering::Relaxed);
+  }
+}
+
+fn profile_count_range_cache_segment_merge(delta: u64) {
+  if profile_enabled() {
+    FLOAT_RANGE_CACHE_SEGMENT_MERGES.fetch_add(delta, AtomicOrdering::Relaxed);
+  }
+}
+
 fn profile_count_boundary_step(delta: u64) {
   if profile_enabled() {
     FLOAT_BOUNDARY_STEPS.fetch_add(delta, AtomicOrdering::Relaxed);
@@ -644,6 +683,8 @@ pub fn reset_float_profile_counters() {
   FLOAT_BOUNDARY_STEPS.store(0, AtomicOrdering::Relaxed);
   FLOAT_SWEEP_STATE_CLONES.store(0, AtomicOrdering::Relaxed);
   FLOAT_RANGE_BOUNDARIES_SCANNED.store(0, AtomicOrdering::Relaxed);
+  FLOAT_RANGE_CACHE_SEGMENT_SPLITS.store(0, AtomicOrdering::Relaxed);
+  FLOAT_RANGE_CACHE_SEGMENT_MERGES.store(0, AtomicOrdering::Relaxed);
   FLOAT_CLEARANCE_QUERIES.store(0, AtomicOrdering::Relaxed);
   FLOAT_CLEARANCE_STEPS.store(0, AtomicOrdering::Relaxed);
 }
@@ -655,6 +696,8 @@ pub fn float_profile_stats() -> FloatProfileStats {
     boundary_steps: FLOAT_BOUNDARY_STEPS.load(AtomicOrdering::Relaxed),
     sweep_state_clones: FLOAT_SWEEP_STATE_CLONES.load(AtomicOrdering::Relaxed),
     range_boundaries_scanned: FLOAT_RANGE_BOUNDARIES_SCANNED.load(AtomicOrdering::Relaxed),
+    range_cache_segment_splits: FLOAT_RANGE_CACHE_SEGMENT_SPLITS.load(AtomicOrdering::Relaxed),
+    range_cache_segment_merges: FLOAT_RANGE_CACHE_SEGMENT_MERGES.load(AtomicOrdering::Relaxed),
     clearance_queries: FLOAT_CLEARANCE_QUERIES.load(AtomicOrdering::Relaxed),
     clearance_steps: FLOAT_CLEARANCE_STEPS.load(AtomicOrdering::Relaxed),
   }

@@ -87,11 +87,45 @@ fn bench_compute_float_position_overlap_stress(c: &mut Criterion) {
   });
 }
 
+fn bench_range_cache_incremental_updates(c: &mut Criterion) {
+  common::bench_print_config_once("float_bench", &[]);
+  // Stress `FloatRangeCache::apply_rect_float` by:
+  // 1) Building a large cached segment list via a wide range query.
+  // 2) Inserting many floats that each cause many cached segments to merge.
+  c.bench_function("float_range_cache_incremental_updates", |b| {
+    b.iter(|| {
+      const BASE_SEGMENTS: usize = 20_000;
+      const WINDOW: usize = 100;
+      const UPDATE_COUNT: usize = 180;
+
+      let mut ctx = FloatContext::new(10_000.0);
+      for i in 0..BASE_SEGMENTS {
+        let width = (BASE_SEGMENTS - i) as f32;
+        let height = (i + 1) as f32;
+        ctx.add_float_at(FloatSide::Left, 0.0, 0.0, width, height);
+      }
+
+      // Populate the range cache with many distinct segments.
+      black_box(ctx.available_width_in_range(0.0, BASE_SEGMENTS as f32));
+
+      // Trigger incremental cache updates that perform heavy coalescing.
+      for i in 0..UPDATE_COUNT {
+        let y = (i * WINDOW) as f32;
+        let width = (BASE_SEGMENTS - i * WINDOW) as f32;
+        ctx.add_float_at(FloatSide::Left, 0.0, y, width, WINDOW as f32);
+      }
+
+      black_box(ctx.float_count());
+    })
+  });
+}
+
 criterion_group!(
   float_benches,
   bench_available_width,
   bench_available_width_in_range,
   bench_compute_float_position,
-  bench_compute_float_position_overlap_stress
+  bench_compute_float_position_overlap_stress,
+  bench_range_cache_incremental_updates
 );
 criterion_main!(float_benches);
