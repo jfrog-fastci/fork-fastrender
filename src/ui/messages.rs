@@ -4,6 +4,7 @@ use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollBounds;
 use crate::scroll::ScrollState;
 use crate::style::media::{ColorScheme, ContrastPreference};
+use crate::style::types::CursorKeyword;
 use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
 use std::path::PathBuf;
@@ -261,6 +262,28 @@ pub enum CursorKind {
 impl Default for CursorKind {
   fn default() -> Self {
     CursorKind::Default
+  }
+}
+
+impl CursorKind {
+  /// Map a CSS [`CursorKeyword`] to a high-level [`CursorKind`].
+  ///
+  /// Returns `None` for [`CursorKeyword::Auto`], which indicates the UA should choose a cursor based
+  /// on the hovered element's semantics (e.g. links → pointer, selectable text → text caret).
+  pub fn from_css_cursor_keyword(keyword: CursorKeyword) -> Option<Self> {
+    match keyword {
+      CursorKeyword::Auto => None,
+      CursorKeyword::Default => Some(CursorKind::Default),
+      CursorKeyword::None => Some(CursorKind::Hidden),
+      CursorKeyword::Pointer => Some(CursorKind::Pointer),
+      CursorKeyword::Text | CursorKeyword::VerticalText => Some(CursorKind::Text),
+      CursorKeyword::Crosshair => Some(CursorKind::Crosshair),
+      CursorKeyword::NotAllowed | CursorKeyword::NoDrop => Some(CursorKind::NotAllowed),
+      CursorKeyword::Grab => Some(CursorKind::Grab),
+      CursorKeyword::Grabbing => Some(CursorKind::Grabbing),
+      // Degrade gracefully for cursor keywords that do not have a dedicated `CursorKind` variant.
+      _ => Some(CursorKind::Default),
+    }
   }
 }
 
