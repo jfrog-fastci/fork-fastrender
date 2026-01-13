@@ -96,6 +96,58 @@ fn let_in_for_body_allows_asi_split() {
 }
 
 #[test]
+fn labelled_function_in_statement_position_is_syntax_error() {
+  // Static Semantics: IsLabelledFunction(Statement) early errors apply to statement positions
+  // (if/while/do/for/with bodies), regardless of non-strict Annex B allowances.
+  for src in [
+    "if (false) label1: label2: function f() {}",
+    "while (false) label1: label2: function f() {}",
+    "do label1: label2: function f() {} while (false)",
+    "for (; false; ) label1: label2: function f() {}",
+    "with ({}) label1: label2: function f() {}",
+  ] {
+    assert!(
+      parse_with_options(src, ecma_script_opts()).is_err(),
+      "expected parse error for {src:?}"
+    );
+  }
+}
+
+#[test]
+fn labelled_function_outside_statement_position_remains_allowed_in_non_strict() {
+  // Annex B labelled function declarations remain allowed in non-strict statement-list contexts.
+  assert!(parse_with_options("label: function f() {}", ecma_script_opts()).is_ok());
+  assert!(parse_with_options("label1: label2: function f() {}", ecma_script_opts()).is_ok());
+  assert!(parse_with_options("{ label: function f() {} }", ecma_script_opts()).is_ok());
+}
+
+#[test]
+fn labelled_function_inside_block_statement_position_remains_allowed() {
+  // The IsLabelledFunction early error only applies when the *Statement* itself is in a
+  // statement-position context. Wrapping in a block avoids the restriction.
+  assert!(parse_with_options(
+    "if (false) { label1: label2: function f() {} }",
+    ecma_script_opts(),
+  )
+  .is_ok());
+}
+
+#[test]
+fn labelled_function_is_disallowed_in_strict_mode_and_modules() {
+  // LabelledItem : FunctionDeclaration is a syntax error in strict mode (and modules).
+  assert!(parse_with_options(
+    "'use strict'; label1: label2: function f() {}",
+    ecma_script_opts(),
+  )
+  .is_err());
+  assert!(parse_with_options(
+    "label1: label2: function f() {}",
+    ecma_module_opts(),
+  )
+  .is_err());
+}
+
+#[test]
 fn asi_does_not_backtrack_to_treat_slash_as_regex_literal() {
   // In expression context, `/` is a division operator, not a regex literal. The
   // parser must not insert ASI at an earlier LineTerminator just because later
