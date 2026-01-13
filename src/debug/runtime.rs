@@ -278,7 +278,10 @@ pub fn set_runtime_toggles(toggles: Arc<RuntimeToggles>) -> RuntimeTogglesGuard 
 /// Replace the currently active runtime toggles.
 ///
 /// Unlike [`set_runtime_toggles`], this does not return a guard to restore the previous value.
-pub(crate) fn update_runtime_toggles(toggles: Arc<RuntimeToggles>) {
+///
+/// This is primarily intended for long-lived processes (like the windowed browser UI) that want to
+/// react to runtime configuration changes without mutating the process environment.
+pub fn update_runtime_toggles(toggles: Arc<RuntimeToggles>) {
   let _override_lock = ACTIVE_TOGGLES_OVERRIDE_LOCK
     .get_or_init(|| ReentrantMutex::new(()))
     .lock();

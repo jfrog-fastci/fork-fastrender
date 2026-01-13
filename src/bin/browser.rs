@@ -626,6 +626,41 @@ fn determine_startup_session(
 }
 
 #[cfg(feature = "browser_ui")]
+fn update_renderer_media_prefs_runtime_toggles(
+  resolved_theme: fastrender::ui::renderer_media_prefs::ResolvedTheme,
+  high_contrast: bool,
+  reduced_motion: bool,
+) {
+  use std::collections::HashMap;
+  use std::sync::Arc;
+
+  // Capture a fresh snapshot of the process environment so we preserve unrelated `FASTR_*` flags
+  // (profiling toggles, resource limits, etc). Then fill in missing media-preference knobs based on
+  // the browser chrome appearance.
+  //
+  // We intentionally do **not** mutate the process environment itself because the browser process
+  // is long-lived and tests may reuse it.
+  let mut raw = std::env::vars()
+    .filter(|(k, _)| k.starts_with("FASTR_"))
+    .collect::<HashMap<_, _>>();
+
+  for (k, v) in fastrender::ui::renderer_media_prefs::prefers_env_vars_for_appearance(
+    resolved_theme,
+    high_contrast,
+    reduced_motion,
+  ) {
+    // Respect explicit renderer overrides (`FASTR_PREFERS_*` env vars). The browser UI only supplies
+    // defaults when they are unset.
+    if !raw.contains_key(k) {
+      raw.insert(k.to_string(), v.to_string());
+    }
+  }
+
+  let toggles = Arc::new(fastrender::debug::runtime::RuntimeToggles::from_map(raw));
+  fastrender::debug::runtime::update_runtime_toggles(toggles);
+}
+
+#[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
   let cli = BrowserCliArgs::parse();
   let download_dir = resolve_download_directory(cli.download_dir.as_ref());
@@ -951,6 +986,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .iter()
     .find_map(|w| w.as_ref())
     .ok_or("failed to create any window")?;
+
+  // Propagate browser chrome appearance (theme/high contrast/reduced motion) into the renderer's
+  // user-preference media queries so `@media (prefers-color-scheme: dark)` etc. match by default.
+  //
+  // Explicit renderer env overrides (`FASTR_PREFERS_*`) continue to win.
+  let resolved_theme = match applied_appearance.theme {
+    fastrender::ui::theme_parsing::BrowserTheme::Dark => {
+      fastrender::ui::renderer_media_prefs::ResolvedTheme::Dark
+    }
+    fastrender::ui::theme_parsing::BrowserTheme::Light => {
+      fastrender::ui::renderer_media_prefs::ResolvedTheme::Light
+    }
+    fastrender::ui::theme_parsing::BrowserTheme::System => match first_window.theme() {
+      Some(Theme::Dark) => fastrender::ui::renderer_media_prefs::ResolvedTheme::Dark,
+      _ => fastrender::ui::renderer_media_prefs::ResolvedTheme::Light,
+    },
+  };
+  update_renderer_media_prefs_runtime_toggles(
+    resolved_theme,
+    applied_appearance.high_contrast,
+    applied_appearance.reduced_motion,
+  );
+
   let gpu = pollster::block_on(GpuContext::new(first_window, wgpu_init))?;
 
   let mut windows: HashMap<WindowId, BrowserWindow> = HashMap::new();
@@ -1202,6 +1260,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             WindowEvent::ThemeChanged(theme) => {
               if win.app.refresh_theme_from_system_theme(Some(theme)) {
+                win.app.sync_renderer_media_prefs_to_runtime_toggles();
                 win.app.window.request_redraw();
               }
             }
@@ -2422,6 +2481,21 @@ impl App {
     true
   }
 
+  fn sync_renderer_media_prefs_to_runtime_toggles(&self) {
+    use fastrender::ui::renderer_media_prefs::ResolvedTheme;
+
+    let resolved_theme = match self.theme.mode {
+      fastrender::ui::theme::ThemeMode::Dark => ResolvedTheme::Dark,
+      _ => ResolvedTheme::Light,
+    };
+
+    update_renderer_media_prefs_runtime_toggles(
+      resolved_theme,
+      self.applied_appearance.high_contrast,
+      self.applied_appearance.reduced_motion,
+    );
+  }
+
   fn sync_appearance_settings(&mut self) -> bool {
     let desired = self
       .browser_state
@@ -2478,6 +2552,13 @@ impl App {
       // Even if the resolved egui theme is unchanged (e.g. switching System→Light while the system
       // is already light), still treat this as a redraw-worthy UI change.
       needs_redraw = true;
+    }
+
+    if desired.theme != prev.theme
+      || desired.high_contrast != prev.high_contrast
+      || desired.reduced_motion != prev.reduced_motion
+    {
+      self.sync_renderer_media_prefs_to_runtime_toggles();
     }
 
     needs_redraw
