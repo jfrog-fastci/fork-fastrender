@@ -3510,6 +3510,7 @@ fn readable_stream_controller_desired_size_get_native(
     let queue_size: f64 = match stream_state.kind {
       StreamKind::Bytes => stream_state.buffered_byte_len as f64,
       StreamKind::Strings => stream_state.strings.len() as f64,
+      StreamKind::Values => stream_state.values.len() as f64,
       StreamKind::Uninitialized => 0.0,
     };
 
