@@ -1,7 +1,7 @@
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::str::FromStr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use url::Url;
 
 pub const DEFAULT_SEARCH_ENGINE_TEMPLATE: &str = "https://duckduckgo.com/?q={query}";
@@ -215,27 +215,88 @@ fn looks_like_file_path(input: &str) -> bool {
 }
 
 fn looks_like_host_port_without_scheme(input: &str) -> bool {
-  if input.contains("://") || input.contains(' ') {
+  if input.contains("://") || input.as_bytes().iter().any(|b| b.is_ascii_whitespace()) {
     return false;
   }
   let Some((host, rest)) = input.split_once(':') else {
     return false;
   };
 
-  // Be conservative: only treat obvious hostname inputs as host:port. This covers the common dev
-  // cases (`localhost:3000`, `example.com:8080`) without misclassifying arbitrary `foo:bar` opaque
-  // URLs as missing-scheme HTTPS URLs.
   let host = host.trim();
-  if !(host.eq_ignore_ascii_case("localhost") || host.contains('.')) {
+  if host.is_empty() {
+    return false;
+  }
+  if host_is_likely_known_scheme(host) {
+    // Preserve the interpretation of inputs like `mailto:123`, `tel:5551234`, or `javascript:1` as
+    // explicit schemes instead of rewriting them to `https://...`.
+    return false;
+  }
+  if !host_looks_like_hostname(host) {
     return false;
   }
 
   let rest = rest.trim();
   // A host:port candidate must have a numeric port immediately after the colon.
-  rest
-    .as_bytes()
-    .first()
-    .is_some_and(|ch| ch.is_ascii_digit())
+  let bytes = rest.as_bytes();
+  let Some(first) = bytes.first() else {
+    return false;
+  };
+  if !first.is_ascii_digit() {
+    return false;
+  }
+
+  // Be conservative: require the port to be a valid u16 and to be followed by a URL delimiter (or
+  // end-of-input). This avoids reinterpreting inputs like `foo:123bar` as a missing-scheme URL.
+  let mut idx = 0usize;
+  while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+    idx += 1;
+  }
+  let port_str = rest.get(..idx).unwrap_or("");
+  if port_str.parse::<u16>().is_err() {
+    return false;
+  }
+  match bytes.get(idx) {
+    None | Some(b'/') | Some(b'?') | Some(b'#') => true,
+    _ => false,
+  }
+}
+
+fn host_looks_like_hostname(host: &str) -> bool {
+  // Accept common hostname forms:
+  // - single-label dev/intranet hosts: `devbox`
+  // - multi-label domains: `example.com`
+  // This intentionally does *not* accept underscores or non-ASCII characters. Inputs that don't
+  // match this heuristic should fall back to either explicit-scheme handling (`foo:bar`) or search.
+  host.split('.').all(|label| {
+    if label.is_empty() {
+      return false;
+    }
+    let bytes = label.as_bytes();
+    if bytes.first() == Some(&b'-') || bytes.last() == Some(&b'-') {
+      return false;
+    }
+    bytes
+      .iter()
+      .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+  })
+}
+
+fn host_is_likely_known_scheme(host: &str) -> bool {
+  // This list is intentionally small and conservative: it's here to avoid reinterpreting common
+  // explicit scheme URLs that can reasonably start with digits in their opaque portion.
+  //
+  // Note: schemes are ASCII case-insensitive.
+  host.eq_ignore_ascii_case("about")
+    || host.eq_ignore_ascii_case("chrome")
+    || host.eq_ignore_ascii_case("chrome-action")
+    || host.eq_ignore_ascii_case("crash")
+    || host.eq_ignore_ascii_case("data")
+    || host.eq_ignore_ascii_case("file")
+    || host.eq_ignore_ascii_case("javascript")
+    || host.eq_ignore_ascii_case("mailto")
+    || host.eq_ignore_ascii_case("sms")
+    || host.eq_ignore_ascii_case("tel")
+    || host.eq_ignore_ascii_case("view-source")
 }
 
 fn looks_like_windows_drive_path(input: &str) -> bool {
@@ -787,9 +848,29 @@ mod tests {
       "https://localhost:3000/"
     );
     assert_eq!(
+      normalize_user_url("devbox:3000").unwrap(),
+      "https://devbox:3000/"
+    );
+    assert_eq!(
       normalize_user_url("example.com:8080/path").unwrap(),
       "https://example.com:8080/path"
     );
+  }
+
+  #[test]
+  fn opaque_scheme_like_inputs_are_not_rewritten_as_host_port() {
+    // `foo:bar` should remain an opaque URL so callers can provide a meaningful unsupported-scheme
+    // error message.
+    assert_eq!(normalize_user_url("foo:bar").unwrap(), "foo:bar");
+
+    // Explicit schemes should not be mistaken for missing-scheme host:port values.
+    let mailto = normalize_user_url("mailto:someone@example.com").unwrap();
+    assert_eq!(mailto, "mailto:someone@example.com");
+    assert!(validate_user_navigation_url_scheme(&mailto).is_err());
+
+    let javascript = normalize_user_url("javascript:1").unwrap();
+    assert_eq!(javascript, "javascript:1");
+    assert!(validate_user_navigation_url_scheme(&javascript).is_err());
   }
 
   #[test]
@@ -800,6 +881,7 @@ mod tests {
     assert!(omnibox_input_looks_like_url("localhost"));
     assert!(omnibox_input_looks_like_url("127.0.0.1"));
     assert!(omnibox_input_looks_like_url("localhost:3000"));
+    assert!(omnibox_input_looks_like_url("devbox:3000"));
     assert!(omnibox_input_looks_like_url("about:help"));
   }
 
