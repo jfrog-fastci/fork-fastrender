@@ -152,14 +152,14 @@ fn is_resize_burst_active(
   last_resize_event_at: Option<std::time::Instant>,
   now: std::time::Instant,
 ) -> bool {
-  last_resize_event_at.is_some_and(|t| now.duration_since(t) < RESIZE_BURST_TTL)
+  last_resize_event_at.is_some_and(|t| now.saturating_duration_since(t) < RESIZE_BURST_TTL)
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
 fn resize_burst_deadline(
   last_resize_event_at: Option<std::time::Instant>,
 ) -> Option<std::time::Instant> {
-  last_resize_event_at.map(|t| t + RESIZE_BURST_TTL)
+  last_resize_event_at.and_then(|t| t.checked_add(RESIZE_BURST_TTL))
 }
 
 #[cfg(test)]
