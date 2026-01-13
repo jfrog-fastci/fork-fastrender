@@ -29,6 +29,24 @@ fn regex_empty_named_backreference_is_rejected() {
 }
 
 #[test]
+fn regex_named_backreference_invalid_escape_in_name_is_rejected() {
+  let err = parse("/\\k<\\u{}>/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
+fn regex_named_backreference_non_unicode_escape_in_name_is_rejected() {
+  let err = parse("/\\k<\\x61>/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
 fn regex_invalid_unicode_escape_in_charset_is_rejected() {
   let err = parse("/[\\u{}]/u").unwrap_err();
   assert_eq!(

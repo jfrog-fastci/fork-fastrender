@@ -1973,33 +1973,13 @@ fn validate_regex_pattern(
               len: pattern.len().saturating_sub(escape_start),
             });
           };
-          if end_rel == 0 {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: base_offset + escape_start,
-              len: after_angle + '>'.len_utf8() - escape_start,
-            });
-          }
 
-          // If the name contains only literal characters (no escape sequences), perform a basic
-          // identifier-like check so obviously invalid group names are rejected at parse time.
-          let name = &pattern[after_angle..after_angle + end_rel];
-          if !name.contains('\\') {
-            let mut chars = name.chars();
-            let Some(first) = chars.next() else {
-              // The empty name case is already handled above.
-              unreachable!();
-            };
-            let valid_start =
-              first == '$' || first == '_' || unicode_ident::is_xid_start(first);
-            let valid_continue = |c: char| c == '$' || c == '_' || unicode_ident::is_xid_continue(c);
-            if !valid_start || !chars.all(valid_continue) {
-              return Err(RegexError {
-                kind: RegexErrorKind::InvalidPattern,
-                offset: base_offset + escape_start,
-                len: after_angle + end_rel + '>'.len_utf8() - escape_start,
-              });
-            }
+          // Validate the group name itself using the same identifier rules as capture group
+          // definitions. This catches malformed escapes like `\k<\u{}>` and disallows non-`\u`
+          // escapes (e.g. `\k<\x61>`).
+          if let Err(mut err) = regex_parse_group_name(pattern, after_angle) {
+            err.offset += base_offset;
+            return Err(err);
           }
 
           // Skip until the end of the `\k<name>` sequence.
