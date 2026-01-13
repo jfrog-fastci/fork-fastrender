@@ -54,11 +54,11 @@ A change counts if it lands at least one of:
 
 | Metric | Target | Current | How to measure |
 |--------|--------|---------|----------------|
-| Resize frame time | <16ms | ? | `xtask ui-perf-smoke` (`resize_latency_*`) or windowed perf log capture (`resize_to_present_ms`) |
-| Scroll frame time | <16ms | ? | `xtask ui-perf-smoke` (`scroll_latency_*`) or windowed perf log capture (`ui_frame_ms`/fps while scrolling) |
-| Input latency | <50ms | ? | `xtask ui-perf-smoke` (`input_latency_*`) or windowed perf log capture (`input_to_present_ms`) |
-| Time to first paint (TTFP) | <100ms | ? | `xtask ui-perf-smoke` (`ttfp_*`) or perf log capture (`ttfp_ms`) |
-| Idle CPU | ~0% | ? | perf log summary (`cpu_summary.cpu_percent_recent`) + OS profiler while idle |
+| Resize frame time | <16ms | ? | Headless: `scripts/cargo_agent.sh xtask ui-perf-smoke` (`resize_latency_*`).<br>Windowed: `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`resize_to_present_ms`). |
+| Scroll frame time | <16ms | ? | Headless: `scripts/cargo_agent.sh xtask ui-perf-smoke` (`scroll_latency_*`).<br>Windowed: `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`ui_frame_ms`/fps while scrolling). |
+| Input latency | <50ms | ? | Headless: `scripts/cargo_agent.sh xtask ui-perf-smoke` (`input_latency_*`).<br>Windowed: `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`input_to_present_ms`). |
+| Time to first paint (TTFP) | <100ms | ? | Headless: `scripts/cargo_agent.sh xtask ui-perf-smoke` (`ttfp_*`).<br>Windowed: `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`ttfp_ms`). |
+| Idle CPU | ~0% | ? | `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`cpu_summary.cpu_percent_recent`).<br>Also confirm in an OS profiler while idle. |
 
 ### Profiling tools
 
