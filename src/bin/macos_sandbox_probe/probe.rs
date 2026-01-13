@@ -9,7 +9,10 @@ use clap::{Parser, ValueEnum};
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::io;
+use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::os::unix::io::FromRawFd;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -72,6 +75,26 @@ fn run() -> i32 {
     &format!("connect to 127.0.0.1:{}", args.port),
     connect_result,
     matches!(args.mode, SandboxMode::Strict | SandboxMode::Relaxed),
+  );
+
+  println!();
+  println!("== IPC capability matrix (after sandbox) ==");
+
+  let socketpair_result = probe_unix_stream_pair();
+  unexpected_success |= report_action(
+    "ipc: unix socketpair (UnixStream::pair)",
+    socketpair_result,
+    false,
+  );
+
+  let pipe_result = probe_pipe();
+  unexpected_success |= report_action("ipc: pipe() (anonymous)", pipe_result, false);
+
+  let listener_result = probe_unix_listener_bind_temp(&temp_dir);
+  unexpected_success |= report_action(
+    &format!("ipc: unix listener bind under {}", temp_dir.display()),
+    listener_result,
+    matches!(args.mode, SandboxMode::Strict),
   );
 
   let exit_code = if unexpected_success { 1 } else { 0 };
@@ -138,6 +161,82 @@ fn probe_connect_localhost(port: u16) -> ActionResult {
   }
 }
 
+fn probe_unix_stream_pair() -> ActionResult {
+  let (mut a, mut b) = match UnixStream::pair() {
+    Ok(pair) => pair,
+    Err(err) => return ActionResult::failure(err),
+  };
+
+  let _ = a.set_write_timeout(Some(Duration::from_secs(2)));
+  let _ = b.set_read_timeout(Some(Duration::from_secs(2)));
+
+  let payload = b"fastrender-ipc";
+  if let Err(err) = a.write_all(payload).and_then(|_| a.flush()) {
+    return ActionResult::failure(err);
+  }
+
+  let mut buf = vec![0u8; payload.len()];
+  if let Err(err) = b.read_exact(&mut buf) {
+    return ActionResult::failure(err);
+  }
+
+  if buf == payload {
+    ActionResult::success(format!("sent {} bytes", payload.len()))
+  } else {
+    ActionResult::failure(io::Error::new(
+      io::ErrorKind::Other,
+      "socketpair message mismatch",
+    ))
+  }
+}
+
+fn probe_unix_listener_bind_temp(temp_dir: &PathBuf) -> ActionResult {
+  let filename = format!("fastrender_sandbox_probe_{}.sock", std::process::id());
+  let path = temp_dir.join(filename);
+
+  // Best-effort cleanup if a previous run left the socket file behind.
+  let _ = fs::remove_file(&path);
+
+  match UnixListener::bind(&path) {
+    Ok(listener) => {
+      drop(listener);
+      let _ = fs::remove_file(&path);
+      ActionResult::success(format!("bound {}", path.display()))
+    }
+    Err(err) => ActionResult::failure(err),
+  }
+}
+
+fn probe_pipe() -> ActionResult {
+  let mut fds = [0i32; 2];
+  // SAFETY: `pipe` writes two file descriptors into the provided array on success.
+  let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+  if rc != 0 {
+    return ActionResult::failure(io::Error::last_os_error());
+  }
+
+  // SAFETY: `pipe` returns owned file descriptors. We wrap them so they are closed on drop.
+  let mut read_end = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+  let mut write_end = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+
+  let payload = b"fastrender-pipe";
+  if let Err(err) = write_end.write_all(payload).and_then(|_| write_end.flush()) {
+    return ActionResult::failure(err);
+  }
+  drop(write_end);
+
+  let mut buf = vec![0u8; payload.len()];
+  if let Err(err) = read_end.read_exact(&mut buf) {
+    return ActionResult::failure(err);
+  }
+
+  if buf == payload {
+    ActionResult::success(format!("sent {} bytes", payload.len()))
+  } else {
+    ActionResult::failure(io::Error::new(io::ErrorKind::Other, "pipe message mismatch"))
+  }
+}
+
 #[derive(Debug)]
 struct ActionResult {
   ok: bool,
@@ -165,7 +264,7 @@ impl ActionResult {
 
 fn report_action(name: &str, result: ActionResult, expected_denied: bool) -> bool {
   let status = if result.ok {
-    "OK"
+    "ALLOWED"
   } else if matches!(result.kind, Some(io::ErrorKind::PermissionDenied)) {
     "DENIED"
   } else {
