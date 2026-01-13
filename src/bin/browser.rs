@@ -3901,10 +3901,14 @@ fn run_headless_smoke_mode(
 fn run_headless_crash_smoke_mode(
   download_dir: std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
+  use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
+  use fastrender::debug::runtime::RuntimeToggles;
+  use fastrender::text::font_db::FontConfig;
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
+  use std::collections::HashMap;
 
   // Keep the smoke test cheap and deterministic. See `run_headless_smoke_mode` for rationale.
   const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
@@ -3922,8 +3926,25 @@ fn run_headless_crash_smoke_mode(
 
   let crash_url = "crash://panic".to_string();
 
+  // Enable crash URLs explicitly for this smoke-test mode.
+  let factory = {
+    let mut raw = std::env::vars()
+      .filter(|(k, _)| k.starts_with("FASTR_"))
+      .collect::<HashMap<_, _>>();
+    raw.insert("FASTR_ENABLE_CRASH_URLS".to_string(), "1".to_string());
+    let toggles = RuntimeToggles::from_map(raw);
+
+    let renderer_config = FastRenderConfig::default()
+      .with_font_sources(FontConfig::bundled_only())
+      .with_runtime_toggles(toggles);
+    FastRenderFactory::with_config(
+      FastRenderPoolConfig::new().with_renderer_config(renderer_config),
+    )?
+  };
+
   let (ui_to_worker_tx, worker_to_ui_rx, join) =
-    fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-crash-smoke-worker")?;
+    fastrender::ui::spawn_ui_worker_with_factory("fastr-browser-headless-crash-smoke-worker", factory)?
+      .split();
 
   // Not strictly needed for the crash smoke test, but keeps parity with other headless harnesses.
   ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;

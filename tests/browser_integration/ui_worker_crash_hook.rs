@@ -1,11 +1,32 @@
 #![cfg(feature = "browser_ui")]
 
+use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
+use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::text::font_db::FontConfig;
 use fastrender::ui::messages::{NavigationReason, TabId};
-use fastrender::ui::spawn_ui_worker;
+use fastrender::ui::spawn_ui_worker_with_factory;
+use std::collections::HashMap;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use super::support::{create_tab_msg, format_messages, navigate_msg, DEFAULT_TIMEOUT};
+
+fn crash_enabled_factory() -> FastRenderFactory {
+  let mut raw = std::env::vars()
+    .filter(|(k, _)| k.starts_with("FASTR_"))
+    .collect::<HashMap<_, _>>();
+  raw.insert("FASTR_ENABLE_CRASH_URLS".to_string(), "1".to_string());
+  let toggles = RuntimeToggles::from_map(raw);
+
+  let renderer_config = FastRenderConfig::default()
+    .with_font_sources(FontConfig::bundled_only())
+    .with_runtime_toggles(toggles);
+
+  FastRenderFactory::with_config(
+    FastRenderPoolConfig::new().with_renderer_config(renderer_config),
+  )
+  .expect("build crash-enabled factory")
+}
 
 fn join_with_timeout(
   join: std::thread::JoinHandle<()>,
@@ -31,10 +52,14 @@ fn crash_scheme_navigation_panics_worker_thread() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
-  let handle = spawn_ui_worker("fastr-ui-worker-crash-hook").expect("spawn ui worker");
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-crash-hook",
+    crash_enabled_factory(),
+  )
+  .expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
-  let tab_id = TabId(1);
+  let tab_id = TabId::new();
   ui_tx
     .send(create_tab_msg(tab_id, None))
     .expect("send CreateTab");
@@ -74,4 +99,3 @@ fn crash_scheme_navigation_panics_worker_thread() {
     "expected worker thread to panic for crash:// navigation, but join returned {join_res:?}"
   );
 }
-

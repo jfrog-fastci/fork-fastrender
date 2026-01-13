@@ -131,6 +131,29 @@ struct NavigationRequest {
 const TICK_ANIMATION_STEP_MS: f32 = 16.0;
 
 // -----------------------------------------------------------------------------
+// Crash-isolation test hooks
+// -----------------------------------------------------------------------------
+//
+// WARNING: These URLs are an *internal testing hook* that deliberately crashes the UI worker thread
+// (simulating a renderer crash) so the browser can exercise crash recovery and multiprocess
+// isolation logic.
+//
+// They are intentionally disabled by default and are only honored when the runtime toggle
+// `FASTR_ENABLE_CRASH_URLS` is set to a truthy value. Do NOT enable this in normal browsing
+// sessions.
+const CRASH_URL_TOGGLE: &str = "FASTR_ENABLE_CRASH_URLS";
+
+fn is_crash_panic_url(url: &str) -> bool {
+  let Ok(parsed) = url::Url::parse(url.trim()) else {
+    return false;
+  };
+  parsed.scheme().eq_ignore_ascii_case("crash")
+    && parsed
+      .host_str()
+      .is_some_and(|host| host.eq_ignore_ascii_case("panic"))
+}
+
+// -----------------------------------------------------------------------------
 // Favicon loading
 // -----------------------------------------------------------------------------
 
@@ -2511,23 +2534,6 @@ impl BrowserRuntime {
     let had_pending_history_entry = tab.pending_history_entry;
     let url = request.url.clone();
 
-    // Test/debug hook: allow a deterministic worker crash so integration tests can exercise
-    // disconnect handling.
-    //
-    // Restrict this to typed navigations so untrusted pages cannot crash the worker via link clicks.
-    if reason == NavigationReason::TypedUrl
-      && url
-        .trim()
-        .trim_end_matches('/')
-        .eq_ignore_ascii_case("crash://panic")
-    {
-      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-        tab_id,
-        line: "crash://panic requested; simulating worker panic".to_string(),
-      });
-      panic!("crash://panic requested");
-    }
-
     // Record visited URL state for link-click navigations.
     //
     // This is stored per-tab (not global profile) for now; it is later used to synthesize
@@ -2535,7 +2541,6 @@ impl BrowserRuntime {
     if reason == NavigationReason::LinkClick {
       tab.visited_urls.record_visited_url(&url);
     }
-
     // Fragment-only navigation within the same document: update URL + scroll state in-place.
     //
     // Avoid a full reload/reprepare; we reuse the cached layout artifacts for hit-testing and
@@ -2683,6 +2688,10 @@ impl BrowserRuntime {
     }
     tab.pending_history_entry = push_history;
 
+    let should_crash = reason == NavigationReason::TypedUrl
+      && self.runtime_toggles.truthy(CRASH_URL_TOGGLE)
+      && is_crash_panic_url(&url);
+
     let _ = self
       .ui_tx
       .send(WorkerToUi::NavigationStarted { tab_id, url });
@@ -2690,6 +2699,11 @@ impl BrowserRuntime {
       tab_id,
       loading: true,
     });
+
+    if should_crash {
+      // See `CRASH_URL_TOGGLE` for safety/usage notes.
+      panic!("deliberate UI worker crash requested via crash://panic");
+    }
   }
 
   fn handle_tick(&mut self, tab_id: TabId) {
