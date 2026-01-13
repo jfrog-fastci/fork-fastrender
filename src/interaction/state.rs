@@ -175,6 +175,35 @@ impl DocumentSelectionStateDom2 {
       }
     }
   }
+
+  /// Drop any selection endpoints that are no longer reachable from the document root for the
+  /// current renderer snapshot.
+  ///
+  /// Returns `false` when the selection no longer contains any mappable ranges and should be
+  /// cleared by the caller.
+  pub fn prune_detached(&mut self, mapping: &RendererDomMapping) -> bool {
+    let is_connected = |id: NodeId| mapping.preorder_for_node_id(id).is_some();
+    match self {
+      DocumentSelectionStateDom2::All => true,
+      DocumentSelectionStateDom2::Ranges(ranges) => {
+        ranges
+          .ranges
+          .retain(|range| is_connected(range.start.node_id) && is_connected(range.end.node_id));
+        if ranges.ranges.is_empty() {
+          return false;
+        }
+
+        if !is_connected(ranges.anchor.node_id) || !is_connected(ranges.focus.node_id) {
+          // Keep anchor/focus consistent with remaining ranges when the endpoints are detached.
+          let first = ranges.ranges[0];
+          ranges.anchor = first.start;
+          ranges.focus = first.end;
+        }
+        ranges.normalize(mapping);
+        true
+      }
+    }
+  }
 }
 
 /// A multi-range document selection.
@@ -1181,26 +1210,13 @@ impl InteractionStateDom2 {
     self.visited_links.retain(|&id| is_connected(id));
     self.user_validity.retain(|&id| is_connected(id));
 
-    if let Some(selection) = &mut self.document_selection {
-      match selection {
-        DocumentSelectionStateDom2::All => {}
-        DocumentSelectionStateDom2::Ranges(ranges) => {
-          ranges
-            .ranges
-            .retain(|range| is_connected(range.start.node_id) && is_connected(range.end.node_id));
-          if ranges.ranges.is_empty() {
-            self.document_selection = None;
-          } else {
-            if !is_connected(ranges.anchor.node_id) || !is_connected(ranges.focus.node_id) {
-              // Keep anchor/focus consistent with remaining ranges when the endpoints are detached.
-              let first = ranges.ranges[0];
-              ranges.anchor = first.start;
-              ranges.focus = first.end;
-            }
-            ranges.normalize(mapping);
-          }
-        }
-      }
+    let should_clear_selection = if let Some(selection) = &mut self.document_selection {
+      !selection.prune_detached(mapping)
+    } else {
+      false
+    };
+    if should_clear_selection {
+      self.document_selection = None;
     }
   }
 
