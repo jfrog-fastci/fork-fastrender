@@ -797,6 +797,22 @@ impl<'a> ModuleRecordParseCtx<'a> {
   }
 }
 
+/// Runs module-specific static semantics early errors on a parsed `SourceType::Module` AST.
+///
+/// This reuses module record extraction so module compilation (`CompiledScript::compile_module*`)
+/// rejects the same invalid module programs as [`SourceTextModuleRecord::parse_source`], without
+/// parsing the source text twice.
+pub(crate) fn validate_module_static_semantics_early_errors(
+  top: &Node<TopLevel>,
+  cancel: &mut impl FnMut() -> Result<(), VmError>,
+) -> Result<(), VmError> {
+  // `module_record_from_top_level` performs module record extraction and runs
+  // `module_static_semantics_early_errors` as part of the process. The extracted record is not
+  // needed here; we only care about surfacing parse-time syntax errors.
+  let _ = module_record_from_top_level(top, cancel)?;
+  Ok(())
+}
+
 fn module_record_from_top_level(
   top: &Node<TopLevel>,
   cancel: &mut impl FnMut() -> Result<(), VmError>,

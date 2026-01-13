@@ -140,6 +140,7 @@ impl CompiledScript {
         crate::early_errors::EarlyErrorOptions::module(),
         &mut tick,
       )?;
+      crate::module_record::validate_module_static_semantics_early_errors(&parsed, &mut tick)?;
     }
 
     let feature_flags = ast_feature_flags(&parsed);
@@ -246,6 +247,7 @@ impl CompiledScript {
         crate::early_errors::EarlyErrorOptions::module(),
         &mut tick,
       )?;
+      crate::module_record::validate_module_static_semantics_early_errors(&parsed, &mut tick)?;
     }
     let feature_flags = ast_feature_flags(&parsed);
     let contains_async_generators = feature_flags.contains_async_generators;
