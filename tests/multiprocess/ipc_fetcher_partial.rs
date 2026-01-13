@@ -177,3 +177,76 @@ fn ipc_fetcher_fetch_partial_with_request_rejects_content_range_mismatch() {
   );
   ipc_handle.join().unwrap();
 }
+
+#[test]
+fn ipc_fetcher_fetch_range_with_request_rejects_content_range_mismatch() {
+  let _net_guard = net_test_lock();
+  let Some(ipc_listener) =
+    try_bind_localhost("ipc_fetcher_fetch_range_with_request_rejects_content_range_mismatch")
+  else {
+    return;
+  };
+  let ipc_addr = ipc_listener.local_addr().unwrap();
+
+  let ipc_handle = thread::spawn(move || {
+    let (mut stream, _) = ipc_listener.accept().unwrap();
+    stream
+      .set_read_timeout(Some(Duration::from_secs(5)))
+      .unwrap();
+
+    let hello_bytes = read_frame(&mut stream).unwrap();
+    let hello: IpcRequest = serde_json::from_slice(&hello_bytes).unwrap();
+    match hello {
+      IpcRequest::Hello { token } => {
+        assert_eq!(token, TEST_AUTH_TOKEN, "unexpected IPC auth token")
+      }
+      other => panic!("expected IPC hello request, got {other:?}"),
+    }
+    let hello_ack = serde_json::to_vec(&IpcResponse::HelloAck).unwrap();
+    write_frame(&mut stream, &hello_ack).unwrap();
+
+    let req_bytes = read_frame(&mut stream).unwrap();
+    let env: BrowserToNetwork = serde_json::from_slice(&req_bytes).unwrap();
+    validate_ipc_request(&env.request).unwrap();
+    let request_id = env.id;
+
+    match env.request {
+      IpcRequest::FetchHttpRequest { ref req } => {
+        assert_eq!(req.method, "GET");
+        let range = req
+          .headers
+          .iter()
+          .find(|(name, _)| name.eq_ignore_ascii_case("range"))
+          .map(|(_, value)| value.as_str())
+          .expect("missing Range header");
+        assert_eq!(range, "bytes=5-7");
+      }
+      other => panic!("unexpected ipc request: {other:?}"),
+    }
+
+    // Respond with a 206 that claims the body starts at byte 0, even though the caller requested
+    // bytes 5-7. The client must reject this instead of returning bytes from an unexpected offset.
+    let mut resource =
+      FetchedResource::new(b"abc".to_vec(), Some("application/octet-stream".into()));
+    resource.status = Some(206);
+    resource.response_headers = Some(vec![(
+      "Content-Range".to_string(),
+      "bytes 0-2/10".to_string(),
+    )]);
+    let mut service = NetworkService::new(&mut stream);
+    service.send_fetch_ok(request_id, resource).unwrap();
+  });
+
+  let fetcher = IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN)
+    .expect("connect ipc fetcher");
+  let req = FetchRequest::new("http://example.test/asset.bin", FetchDestination::Fetch);
+  let err = fetcher
+    .fetch_range_with_request(req, 5..=7, 10)
+    .expect_err("expected mismatched Content-Range to be rejected");
+
+  assert!(
+    matches!(err, fastrender::Error::Resource(_)),
+    "expected Error::Resource, got {err:?}"
+  );
+  ipc_handle.join().unwrap();
+}
