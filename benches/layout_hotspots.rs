@@ -637,6 +637,108 @@ fn build_float_shrink_to_fit_tree(float_count: usize) -> BoxTree {
   BoxTree::new(root)
 }
 
+fn build_grid_spanning_distribution_tree(item_count: usize, columns: usize) -> BoxTree {
+  // Regression protected:
+  // - CSS Grid track sizing for spanning items can become dominated by the
+  //   `distribute_space_up_to_limits` loop in Taffy's implementation of
+  //   https://www.w3.org/TR/css-grid-1/#extra-space (11.5.1).
+  //
+  // This tree is designed to:
+  // - produce many spanning items (2-6 columns),
+  // - mix track sizing functions that introduce growth limits (fit-content),
+  // - keep the per-item subtree shallow so track sizing dominates.
+  const TEXT: &str = "supercalifragilisticexpialidocious lorem ipsum dolor sit amet";
+
+  let columns = columns.max(6);
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(800.0));
+  // Fixed implicit row size keeps the benchmark focused on *column* track sizing.
+  grid_style.grid_auto_rows = vec![GridTrack::Length(Length::px(24.0))].into();
+
+  // Mixture of intrinsic mins + capped maxes so spanning items repeatedly distribute space up to
+  // limits. Vary limits so `distribute_space_up_to_limits` requires multiple iterations.
+  let mut template = Vec::with_capacity(columns);
+  for idx in 0..columns {
+    let track = match idx % 6 {
+      // fit-content tracks introduce growth limits that force repeated distribution iterations.
+      0 => GridTrack::FitContent(Length::px(60.0)),
+      1 => GridTrack::FitContent(Length::px(120.0)),
+      2 => GridTrack::FitContent(Length::px(200.0)),
+      // Alternate intrinsic mins to ensure min/max-content contributions are computed.
+      3 => GridTrack::MinMax(
+        Box::new(GridTrack::MinContent),
+        Box::new(GridTrack::FitContent(Length::px(160.0))),
+      ),
+      4 => GridTrack::MinMax(
+        Box::new(GridTrack::Length(Length::px(0.0))),
+        Box::new(GridTrack::FitContent(Length::px(140.0))),
+      ),
+      _ => GridTrack::MinMax(
+        Box::new(GridTrack::MinContent),
+        Box::new(GridTrack::FitContent(Length::px(240.0))),
+      ),
+    };
+    template.push(track);
+  }
+  grid_style.grid_template_columns = template;
+  let grid_style = Arc::new(grid_style);
+
+  let mut base_item_style = ComputedStyle::default();
+  base_item_style.display = Display::Block;
+  base_item_style.padding_left = Length::px(2.0);
+  base_item_style.padding_right = Length::px(2.0);
+
+  // Pre-build a small pool of item styles for each possible (start, span) combination we use so
+  // Taffy style conversions can be cached and the benchmark stays dominated by track sizing.
+  let mut style_pool: Vec<Vec<Arc<ComputedStyle>>> = Vec::with_capacity(5);
+  for span in 2..=6 {
+    let max_start = columns.saturating_sub(span) + 1;
+    let mut styles = Vec::with_capacity(max_start);
+    for start in 1..=max_start {
+      let mut style = base_item_style.clone();
+      style.grid_column_raw = Some(format!("{start} / span {span}"));
+      styles.push(Arc::new(style));
+    }
+    style_pool.push(styles);
+  }
+
+  let mut inline_style = ComputedStyle::default();
+  inline_style.display = Display::Block;
+  let inline_style = Arc::new(inline_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(item_count);
+  for idx in 0..item_count {
+    let span = 2 + (idx % 5);
+    let span_idx = span - 2;
+    let styles = &style_pool[span_idx];
+    let max_start = styles.len();
+    // Stable pseudo-random start that spreads spans across many columns.
+    let start_idx = (idx.wrapping_mul(17) + span * 3) % max_start;
+    let item_style = styles[start_idx].clone();
+
+    let text = BoxNode::new_text(text_style.clone(), TEXT.to_string());
+    let inline = BoxNode::new_block(
+      inline_style.clone(),
+      FormattingContextType::Inline,
+      vec![text],
+    );
+    children.push(BoxNode::new_block(
+      item_style,
+      FormattingContextType::Block,
+      vec![inline],
+    ));
+  }
+
+  let root = BoxNode::new_block(grid_style, FormattingContextType::Grid, children);
+  BoxTree::new(root)
+}
+
 fn bench_flex_measure_hot_path(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
@@ -772,6 +874,56 @@ fn bench_flex_intrinsic_sizing(c: &mut Criterion) {
         .compute_intrinsic_inline_sizes(black_box(node))
         .expect("intrinsic sizing should succeed");
       black_box(widths);
+    })
+  });
+  group.finish();
+}
+
+fn bench_grid_spanning_distribution_hotspot(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+  let engine = LayoutEngine::with_font_context(
+    LayoutConfig::for_viewport(viewport).with_parallelism(LayoutParallelism::disabled()),
+    font_ctx,
+  );
+
+  // Moderate-but-non-trivial item count keeps the benchmark fast under micro settings while still
+  // producing enough spanning work to highlight regressions in `distribute_space_up_to_limits`.
+  let mut box_tree = build_grid_spanning_distribution_tree(512, 30);
+  // Use stable, non-zero ids so intrinsic/layout caches can participate within a single iteration.
+  let mut next_id = 69_001usize;
+  assign_box_ids(&mut box_tree.root, &mut next_id);
+
+  // Capture counters once so the benchmark documents its workload.
+  {
+    let _taffy_stats_guard = enable_taffy_counters(true);
+    reset_taffy_counters();
+    let _taffy_perf_guard = TaffyPerfCountersGuard::new();
+    let _ = engine
+      .layout_tree(black_box(&box_tree))
+      .expect("grid layout should succeed");
+    let perf = taffy_perf_counters();
+    let usage = taffy_counters();
+    assert!(perf.grid_compute_ns > 0);
+    eprintln!(
+      "layout_hotspots grid_spanning_distribution: taffy_grid_measure_calls={} taffy_grid_compute_cpu_ms={:.2} taffy_nodes_built={} taffy_nodes_reused={}",
+      perf.grid_measure_calls,
+      perf.grid_compute_ns as f64 / 1_000_000.0,
+      usage.grid_nodes_built,
+      usage.grid_nodes_reused,
+    );
+  }
+
+  let mut group = c.benchmark_group("layout_hotspots_grid");
+  group.bench_function("grid_spanning_distribution_hotspot", |b| {
+    b.iter(|| {
+      let _taffy_perf_guard = TaffyPerfCountersGuard::new();
+      let fragments = engine
+       .layout_tree(black_box(&box_tree))
+       .expect("grid layout should succeed");
+      let perf = taffy_perf_counters();
+      black_box((fragments, perf.grid_measure_calls, perf.grid_compute_ns));
     })
   });
   group.finish();
@@ -1308,6 +1460,7 @@ criterion_group!(
     bench_flex_measure_hot_path,
     bench_flex_intrinsic_sizing,
     bench_grid_track_sizing_measure_fanout,
+    bench_grid_spanning_distribution_hotspot,
     bench_float_shrink_to_fit_intrinsic_cache_reuse,
     bench_block_intrinsic_sizing,
     bench_block_intrinsic_sizing_parallel,
