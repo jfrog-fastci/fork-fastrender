@@ -141,7 +141,7 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     msg.msg_flags = 0;
     let rc = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags) };
     if rc >= 0 {
-      break rc as usize;
+      break 'recvmsg rc as usize;
     }
     let err = io::Error::last_os_error();
     if err.kind() == io::ErrorKind::Interrupted {
