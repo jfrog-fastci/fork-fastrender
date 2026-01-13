@@ -108,16 +108,6 @@ pub enum OmniboxSuggestionSource {
   Search(OmniboxSearchSource),
 }
 
-impl OmniboxSuggestion {
-  fn dedup_key_owned(&self) -> String {
-    match &self.action {
-      OmniboxAction::NavigateToUrl(url) => url.to_ascii_lowercase(),
-      OmniboxAction::ActivateTab(_) => self.url.as_deref().unwrap_or_default().to_ascii_lowercase(),
-      OmniboxAction::Search(query) => query.to_ascii_lowercase(),
-    }
-  }
-}
-
 // -----------------------------------------------------------------------------
 // Providers
 // -----------------------------------------------------------------------------
@@ -509,8 +499,13 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
   let mut seen: HashSet<String> = HashSet::new();
   let mut out = Vec::new();
   for scored in scored {
-    if seen.insert(scored.suggestion.dedup_key_owned()) {
-      out.push(scored.suggestion);
+    let ScoredSuggestion {
+      suggestion,
+      sort_key: SuggestionSortKey { primary, .. },
+      ..
+    } = scored;
+    if seen.insert(primary) {
+      out.push(suggestion);
     }
   }
 
