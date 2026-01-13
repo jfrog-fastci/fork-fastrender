@@ -107,7 +107,6 @@ impl TabGroupColor {
       _ => None,
     }
   }
-
   pub fn rgb(self) -> (u8, u8, u8) {
     match self {
       // Roughly matches Chrome's tab group palette.
@@ -1275,6 +1274,7 @@ impl BrowserAppState {
     let Some(range) = self.tab_group_range(group_id) else {
       // The group exists, but has no tabs; repair by removing it.
       self.tab_groups.remove(&group_id);
+      self.bump_session_revision();
       return;
     };
 
@@ -1512,7 +1512,6 @@ impl BrowserAppState {
 
     let closed = self.tabs.remove(idx);
     self.prune_empty_tab_groups();
-    self.bump_session_revision();
     self.push_closed_tab_state(ClosedTabState {
       url: closed
         .committed_url
@@ -1525,6 +1524,7 @@ impl BrowserAppState {
         .or_else(|| closed.title.clone()),
       pinned: closed.pinned,
     });
+    self.bump_session_revision();
 
     let was_active = self.active_tab == Some(tab_id);
     if !was_active {

@@ -3741,11 +3741,11 @@ impl App {
     self.browser_state.chrome.show_menu_bar =
       show_menu_bar_override_from_env().unwrap_or(show_menu_bar);
 
-    // Restore tab groups (create fresh runtime IDs for each persisted group).
-    let mut group_ids: Vec<fastrender::ui::TabGroupId> = Vec::with_capacity(tab_groups.len());
+    // Recreate runtime tab group ids (session indices are stable; runtime ids are process-unique).
+    let mut runtime_groups: Vec<fastrender::ui::TabGroupId> = Vec::with_capacity(tab_groups.len());
     for group in tab_groups {
       let id = fastrender::ui::TabGroupId::new();
-      group_ids.push(id);
+      runtime_groups.push(id);
       self.browser_state.tab_groups.insert(
         id,
         fastrender::ui::TabGroupState {
@@ -3761,22 +3761,44 @@ impl App {
     // from the start (before any initial navigations).
     self.sync_media_preferences_to_worker(self.window.theme());
 
-    let mut tab_ids = Vec::with_capacity(tabs.len());
+    // Ensure pinned tabs are always contiguous at the start (mirrors `BrowserAppState` invariant).
+    // The session format stores the full tab ordering, but we defensively re-partition here in case
+    // the on-disk session was hand-edited or produced by an older build.
+    let mut pinned_tabs: Vec<(usize, fastrender::ui::BrowserSessionTab)> = Vec::new();
+    let mut unpinned_tabs: Vec<(usize, fastrender::ui::BrowserSessionTab)> = Vec::new();
+    for (idx, tab) in tabs.into_iter().enumerate() {
+      if tab.pinned {
+        pinned_tabs.push((idx, tab));
+      } else {
+        unpinned_tabs.push((idx, tab));
+      }
+    }
 
-    for tab in tabs {
+    let mut tab_ids = Vec::with_capacity(pinned_tabs.len() + unpinned_tabs.len());
+    let mut active_tab_id: Option<fastrender::ui::TabId> = None;
+
+    for (old_idx, tab) in pinned_tabs.into_iter().chain(unpinned_tabs.into_iter()) {
       let tab_id = fastrender::ui::TabId::new();
       tab_ids.push(tab_id);
+      if old_idx == active_tab_index {
+        active_tab_id = Some(tab_id);
+      }
 
       if let Some(scroll_css) = tab.scroll_css {
         self.pending_scroll_restores.insert(tab_id, scroll_css);
       }
 
       let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, tab.url.clone());
-      tab_state.pinned = tab.pinned;
-      tab_state.group = tab.group.and_then(|idx| group_ids.get(idx).copied());
       if let Some(zoom) = tab.zoom {
         tab_state.zoom = zoom;
       }
+      tab_state.loading = true;
+      tab_state.pinned = tab.pinned;
+      tab_state.group = if tab.pinned {
+        None
+      } else {
+        tab.group.and_then(|idx| runtime_groups.get(idx).copied())
+      };
       let cancel = tab_state.cancel.clone();
       self.tab_cancel.insert(tab_id, cancel.clone());
       self.browser_state.push_tab(tab_state, false);
@@ -3788,8 +3810,9 @@ impl App {
       });
     }
 
-    let active_idx = active_tab_index.min(tab_ids.len().saturating_sub(1));
-    let active_tab_id = tab_ids[active_idx];
+    let active_tab_id = active_tab_id
+      .or_else(|| tab_ids.first().copied())
+      .expect("sanitized session should always provide at least one tab");
     self.browser_state.set_active_tab(active_tab_id);
     self.send_worker_msg(UiToWorker::SetActiveTab {
       tab_id: active_tab_id,
@@ -9326,6 +9349,7 @@ impl App {
         }
         ChromeAction::TogglePinTab(tab_id) => {
           if self.browser_state.toggle_pin_tab(tab_id) {
+            session_dirty = true;
             // `chrome_ui` has already been built for this frame; request another redraw so the tab
             // strip reflects the new ordering immediately.
             self.window.request_redraw();

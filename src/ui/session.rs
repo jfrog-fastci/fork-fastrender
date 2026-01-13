@@ -63,6 +63,14 @@ fn is_default_show_menu_bar(value: &bool) -> bool {
   *value == default_show_menu_bar()
 }
 
+fn default_tab_group_title() -> String {
+  "Group".to_string()
+}
+
+fn is_default_tab_group_title(value: &String) -> bool {
+  value == "Group"
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSessionTab {
   pub url: String,
@@ -77,19 +85,34 @@ pub struct BrowserSessionTab {
   /// Whether this tab is pinned in the tab strip.
   #[serde(default, skip_serializing_if = "is_false")]
   pub pinned: bool,
-  /// Optional tab group index (into [`BrowserSessionWindow::tab_groups`]).
+  /// Optional tab group membership, represented as an index into [`BrowserSessionWindow::tab_groups`].
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub group: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSessionTabGroup {
-  #[serde(default, skip_serializing_if = "String::is_empty")]
+  #[serde(
+    default = "default_tab_group_title",
+    skip_serializing_if = "is_default_tab_group_title"
+  )]
   pub title: String,
   #[serde(default, skip_serializing_if = "is_default_tab_group_color")]
   pub color: TabGroupColor,
   #[serde(default, skip_serializing_if = "is_false")]
   pub collapsed: bool,
+}
+
+impl BrowserSessionTabGroup {
+  fn sanitized(mut self) -> Self {
+    let trimmed = self.title.trim();
+    self.title = if trimmed.is_empty() {
+      default_tab_group_title()
+    } else {
+      trimmed.to_string()
+    };
+    self
+  }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -177,20 +200,24 @@ impl BrowserSessionWindow {
         }
       };
       let pinned = tab.pinned;
-      let group = tab.group.filter(|_| !pinned).and_then(|group_id| {
-        if let Some(existing) = group_indices.get(&group_id) {
-          return Some(*existing);
-        }
-        let group_state = app.tab_groups.get(&group_id)?;
-        let idx = tab_groups.len();
-        tab_groups.push(BrowserSessionTabGroup {
-          title: group_state.title.clone(),
-          color: group_state.color,
-          collapsed: group_state.collapsed,
-        });
-        group_indices.insert(group_id, idx);
-        Some(idx)
-      });
+      let group = if pinned {
+        None
+      } else {
+        tab.group.and_then(|group_id| {
+          if let Some(existing) = group_indices.get(&group_id) {
+            return Some(*existing);
+          }
+          let group_state = app.tab_groups.get(&group_id)?;
+          let idx = tab_groups.len();
+          tab_groups.push(BrowserSessionTabGroup {
+            title: group_state.title.clone(),
+            color: group_state.color,
+            collapsed: group_state.collapsed,
+          });
+          group_indices.insert(group_id, idx);
+          Some(idx)
+        })
+      };
       tabs.push(BrowserSessionTab {
         url,
         zoom: Some(tab.zoom),
@@ -233,8 +260,6 @@ impl BrowserSessionWindow {
       sanitize_tab(tab);
     }
 
-    self.active_tab_index = self.active_tab_index.min(self.tabs.len().saturating_sub(1));
-
     // Sanitize tab group state/membership:
     // - pinned tabs cannot be grouped
     // - out-of-range group indices are dropped
@@ -271,7 +296,7 @@ impl BrowserSessionWindow {
         for (old_idx, group) in old_groups.into_iter().enumerate() {
           if used.get(old_idx).copied().unwrap_or(false) {
             let new_idx = self.tab_groups.len();
-            self.tab_groups.push(group);
+            self.tab_groups.push(group.sanitized());
             remap[old_idx] = Some(new_idx);
           }
         }
@@ -283,6 +308,8 @@ impl BrowserSessionWindow {
         }
       }
     }
+
+    self.active_tab_index = self.active_tab_index.min(self.tabs.len().saturating_sub(1));
 
     // Ensure the active tab is always visible: when the active tab belongs to a collapsed group,
     // force that group to expand.
@@ -873,6 +900,7 @@ mod tests {
         },
       ]
     );
+    assert!(session.windows[0].tab_groups.is_empty());
     assert_eq!(session.ui_scale, None);
   }
 
@@ -921,6 +949,63 @@ mod tests {
   }
 
   #[test]
+  fn session_roundtrips_pinned_tabs_and_tab_groups() {
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![
+          BrowserSessionTab {
+            url: "about:newtab".to_string(),
+            zoom: None,
+            scroll_css: None,
+            pinned: true,
+            group: None,
+          },
+          BrowserSessionTab {
+            url: "about:blank".to_string(),
+            zoom: Some(1.25),
+            scroll_css: None,
+            pinned: false,
+            group: Some(0),
+          },
+          BrowserSessionTab {
+            url: "about:error".to_string(),
+            zoom: None,
+            scroll_css: None,
+            pinned: false,
+            group: Some(1),
+          },
+        ],
+        tab_groups: vec![
+          BrowserSessionTabGroup {
+            title: "Work".to_string(),
+            color: TabGroupColor::Red,
+            collapsed: true,
+          },
+          BrowserSessionTabGroup {
+            title: "Fun".to_string(),
+            color: TabGroupColor::Green,
+            collapsed: false,
+          },
+        ],
+        active_tab_index: 2,
+        show_menu_bar: default_show_menu_bar(),
+        window_state: None,
+      }],
+      active_window_index: 0,
+      appearance: AppearanceSettings::default(),
+      did_exit_cleanly: true,
+      ui_scale: None,
+    }
+    .sanitized();
+
+    let json = serde_json::to_string(&session).expect("serialize session");
+    let parsed = parse_session_json(&json).expect("parse session JSON");
+    assert_eq!(parsed, session);
+  }
+
+  #[test]
   fn loads_legacy_v1_session_as_single_window() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
@@ -962,6 +1047,7 @@ mod tests {
         }
       ]
     );
+    assert!(session.windows[0].tab_groups.is_empty());
   }
 
   #[test]
