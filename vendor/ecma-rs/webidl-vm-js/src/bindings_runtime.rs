@@ -23,7 +23,7 @@ use vm_js::{
 
 use webidl::WebIdlLimits;
 
-use crate::WebIdlBindingsHost;
+use crate::{VmJsHostHooksPayload, WebIdlBindingsHost};
 
 /// A minimally-typed value container used by generated binding shims when crossing into the host.
 ///
@@ -378,7 +378,20 @@ impl<'a> BindingsRuntime<'a> {
 
   /// Create a bindings runtime context from an existing [`Scope`], e.g. `scope.reborrow()`.
   pub fn from_scope(vm: &'a mut Vm, scope: Scope<'a>) -> Self {
-    let limits = WebIdlLimits::default();
+    let mut limits = WebIdlLimits::default();
+    if let Some(hooks_ptr) = vm.active_host_hooks_ptr() {
+      // SAFETY: `hooks_ptr` comes from `Vm::active_host_hooks_ptr` and is only valid within the
+      // dynamic extent of a VM entry point that installed a host hooks override (for example
+      // `Vm::call_with_host*`). `BindingsRuntime::from_scope` is typically invoked from native call
+      // handlers, so we are within that extent when `hooks_ptr` is present.
+      let hooks: &mut dyn VmHostHooks = unsafe { &mut *hooks_ptr };
+      if let Some(any) = hooks.as_any_mut() {
+        if let Some(payload) = any.downcast_mut::<VmJsHostHooksPayload>() {
+          limits = payload.webidl_limits();
+        }
+      }
+    }
+
     Self {
       vm,
       scope: WebIdlBindingsScope::new(scope, limits),

@@ -255,6 +255,7 @@ pub struct VmJsHostHooksPayload {
   // duration of a single JS execution boundary.
   vm_host: Option<NonNull<dyn VmHost + 'static>>,
   webidl_bindings_host: WebIdlBindingsHostSlot,
+  webidl_limits: WebIdlLimits,
   /// Optional pointer to the embedder's "host environment" state.
   ///
   /// This is distinct from [`VmJsHostHooksPayload::vm_host`]:
@@ -283,6 +284,18 @@ pub struct VmJsHostHooksPayload {
 }
 
 impl VmJsHostHooksPayload {
+  /// Override the WebIDL conversion limits exposed to generated bindings.
+  #[inline]
+  pub fn set_webidl_limits(&mut self, limits: WebIdlLimits) {
+    self.webidl_limits = limits;
+  }
+
+  /// Returns the WebIDL conversion limits configured for this payload.
+  #[inline]
+  pub fn webidl_limits(&self) -> WebIdlLimits {
+    self.webidl_limits
+  }
+
   /// Stores the active `VmHost` context (for later recovery via [`Self::vm_host_mut`]).
   #[inline]
   pub fn set_vm_host(&mut self, host: &mut dyn VmHost) {
