@@ -802,7 +802,14 @@ pub(super) fn compute_tab_strip_sizing_with_fixed_width(
     0.0
   };
 
-  let gaps = TAB_GAP * (gap_count as f32);
+  let gaps = {
+    let v = TAB_GAP * (gap_count as f32);
+    if v.is_finite() {
+      v.max(0.0)
+    } else {
+      0.0
+    }
+  };
 
   let tab_width = if tab_count == 0 {
     0.0
