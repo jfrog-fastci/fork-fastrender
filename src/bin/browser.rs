@@ -7621,11 +7621,11 @@ struct BrowserHud {
   frame_upload_stats: fastrender::ui::FrameUploadCoalescerStats,
   process_cpu_time_ms_total: Option<u64>,
   process_cpu_percent_recent: Option<f64>,
-  /// When set, measure keyboard→present latency for the next presented page frame.
+  /// When set, measure keyboard→present latency for the next present.
   pending_keyboard_input_at: Option<std::time::Instant>,
-  /// When set, measure scroll→present latency for the next presented page frame.
+  /// When set, measure scroll (wheel/scrollbar drag)→present latency for the next present.
   pending_scroll_input_at: Option<std::time::Instant>,
-  /// When set, measure resize→present latency for the next presented page frame.
+  /// When set, measure resize→present latency for the next present.
   pending_resize_input_at: Option<std::time::Instant>,
   last_keyboard_to_present_ms: Option<u64>,
   last_scroll_to_present_ms: Option<u64>,
@@ -7641,7 +7641,7 @@ struct BrowserHud {
   coalesced_frames_total: u64,
   /// Tab id whose page texture was updated during the current frame's `flush_pending_frame_uploads`.
   ///
-  /// We record input/navigation latency only when the newly uploaded frame is actually presented.
+  /// We record navigation TTFP only when the newly uploaded frame is actually presented.
   page_uploaded_tab_in_frame: Option<fastrender::ui::TabId>,
   text_buf: String,
 }
@@ -7746,6 +7746,14 @@ impl BrowserHud {
     now: std::time::Instant,
     active_tab_id: Option<fastrender::ui::TabId>,
   ) {
+    if let Some(input_at) = self.pending_keyboard_input_at.take() {
+      self.last_keyboard_to_present_ms =
+        Some(now.saturating_duration_since(input_at).as_millis() as u64);
+    }
+    if let Some(input_at) = self.pending_scroll_input_at.take() {
+      self.last_scroll_to_present_ms =
+        Some(now.saturating_duration_since(input_at).as_millis() as u64);
+    }
     // Resize→present latency is meaningful even when we didn't upload a new page pixmap this frame
     // (e.g. egui can scale the existing page texture immediately). Record it on the next present
     // unconditionally.
@@ -7767,13 +7775,6 @@ impl BrowserHud {
       self
         .nav_ttfp_last_ms
         .insert(active_tab_id, now.saturating_duration_since(start).as_millis() as u64);
-    }
-
-    if let Some(input_at) = self.pending_keyboard_input_at.take() {
-      self.last_keyboard_to_present_ms = Some(now.saturating_duration_since(input_at).as_millis() as u64);
-    }
-    if let Some(input_at) = self.pending_scroll_input_at.take() {
-      self.last_scroll_to_present_ms = Some(now.saturating_duration_since(input_at).as_millis() as u64);
     }
   }
 
@@ -16844,6 +16845,9 @@ impl App {
         if map_modifiers(self.modifiers).command() {
           return;
         }
+        if let Some(hud) = self.hud.as_mut() {
+          hud.note_scroll_input(std::time::Instant::now());
+        }
 
         // Treat the clear browsing data dialog as a modal: do not scroll the page beneath it.
         if self.clear_browsing_data_dialog_open {
@@ -16950,9 +16954,6 @@ impl App {
           mapping.pos_points_to_pos_css_clamped(pos_points)
         };
 
-        if let Some(hud) = self.hud.as_mut() {
-          hud.note_scroll_input(std::time::Instant::now());
-        }
         self.enqueue_scroll(tab_id, delta_css, pointer_css);
         self.window.request_redraw();
       }
@@ -17876,6 +17877,9 @@ impl App {
         }
         if input.state != ElementState::Pressed {
           return;
+        }
+        if let Some(hud) = self.hud.as_mut() {
+          hud.note_keyboard_input(std::time::Instant::now());
         }
         let Some(key) = input.virtual_keycode else {
           return;
