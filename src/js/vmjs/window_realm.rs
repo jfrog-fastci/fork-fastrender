@@ -44811,6 +44811,19 @@ fn init_window_globals(
     let html_script_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLScriptElement", html_script_element_proto)?;
 
+    // @@toStringTag branding for common media element detection helpers.
+    let to_string_tag_key =
+      PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag);
+    for (proto, name) in [
+      (html_media_element_proto, "HTMLMediaElement"),
+      (html_video_element_proto, "HTMLVideoElement"),
+      (html_audio_element_proto, "HTMLAudioElement"),
+    ] {
+      let tag = scope.alloc_string(name)?;
+      scope.push_root(Value::String(tag))?;
+      scope.define_property(proto, to_string_tag_key, read_only_data_desc(Value::String(tag)))?;
+    }
+
     // Document.doctype (readonly DocumentType?)
     let doctype_get_call_id = vm.register_native_call(document_doctype_get_native)?;
     let doctype_get_name = scope.alloc_string("get doctype")?;

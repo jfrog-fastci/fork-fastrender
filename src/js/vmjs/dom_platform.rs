@@ -141,6 +141,12 @@ impl DomInterface {
         if tag_name.eq_ignore_ascii_case("script") {
           return Self::HTMLScriptElement;
         }
+        if tag_name.eq_ignore_ascii_case("video") {
+          return Self::HTMLVideoElement;
+        }
+        if tag_name.eq_ignore_ascii_case("audio") {
+          return Self::HTMLAudioElement;
+        }
 
         Self::HTMLElement
       }
@@ -1872,7 +1878,6 @@ mod tests {
     // Element + HTMLElement + HTML*Element chain.
     let element_proto = install_stub_interface(scope, global, "Element", node_proto)?;
     let html_element_proto = install_stub_interface(scope, global, "HTMLElement", element_proto)?;
-
     // HTMLMediaElement inherits from HTMLElement, and video/audio inherit from HTMLMediaElement.
     let html_media_element_proto =
       install_stub_interface(scope, global, "HTMLMediaElement", html_element_proto)?;
@@ -2700,17 +2705,20 @@ mod tests {
 
     assert!(DomInterface::HTMLMediaElement.implements(DomInterface::HTMLElement));
     assert!(DomInterface::HTMLMediaElement.implements(DomInterface::Element));
+    assert!(DomInterface::HTMLMediaElement.implements(DomInterface::Node));
+    assert!(DomInterface::HTMLMediaElement.implements(DomInterface::EventTarget));
+
     assert!(DomInterface::HTMLVideoElement.implements(DomInterface::HTMLMediaElement));
+    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::HTMLElement));
+    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::Element));
+
     assert!(DomInterface::HTMLAudioElement.implements(DomInterface::HTMLMediaElement));
+    assert!(DomInterface::HTMLAudioElement.implements(DomInterface::HTMLElement));
 
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::HTMLElement));
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::Element));
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::Node));
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::EventTarget));
-
-    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::HTMLMediaElement));
-    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::HTMLElement));
-    assert!(DomInterface::HTMLVideoElement.implements(DomInterface::Element));
 
     assert!(!DomInterface::HTMLElement.implements(DomInterface::HTMLInputElement));
     assert!(!DomInterface::Element.implements(DomInterface::HTMLElement));

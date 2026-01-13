@@ -1585,6 +1585,20 @@ mod tests {
   }
 
   #[test]
+  fn object_prototype_to_string_tags_html_media_elements() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let out = host.exec_script("Object.prototype.toString.call(document.createElement('video'))")?;
+    assert_eq!(value_to_string(&host, out), "[object HTMLVideoElement]");
+
+    let out = host.exec_script("Object.prototype.toString.call(document.createElement('audio'))")?;
+    assert_eq!(value_to_string(&host, out), "[object HTMLAudioElement]");
+
+    Ok(())
+  }
+
+  #[test]
   fn generated_vmjs_window_ops_installer_does_not_clobber_existing_timers() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = make_host(dom, "https://example.invalid/")?;
