@@ -174,6 +174,7 @@ mod ui_worker_hover_tooltip_cursor;
 mod ui_worker_hover_text_cursor;
 mod ui_worker_js_viewport_sync;
 mod ui_worker_js_scroll_sync;
+mod ui_worker_pointer_move_hit_test_dedup;
 mod ui_worker_interaction;
 mod ui_worker_js_form_control_state;
 mod ui_details_toggle;
