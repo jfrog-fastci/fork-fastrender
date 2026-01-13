@@ -279,10 +279,25 @@ mod tests {
 
     // Strict mode reserved words (e.g. `yield`, `let`) are not valid `IdentifierReference`s in
     // object literal shorthand properties.
-    let err = parse_with_options("'use strict'; ({ yield })", opts).unwrap_err();
-    assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("identifier"));
-    let err = parse_with_options("'use strict'; ({ let })", opts).unwrap_err();
-    assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("identifier"));
+    for word in [
+      "yield",
+      "let",
+      "static",
+      "implements",
+      "interface",
+      "package",
+      "private",
+      "protected",
+      "public",
+    ] {
+      let src = format!("'use strict'; ({{ {word} }})");
+      let err = parse_with_options(&src, opts).unwrap_err();
+      assert_eq!(
+        err.typ,
+        SyntaxErrorType::ExpectedSyntax("identifier"),
+        "expected `{word}` to be rejected as a strict mode reserved word"
+      );
+    }
 
     // `eval` and `arguments` are restricted in binding positions, but remain valid identifier
     // references (and therefore valid shorthand property names).
