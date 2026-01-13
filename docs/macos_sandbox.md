@@ -35,6 +35,8 @@ system “sandboxd” machinery + kernel enforcement). There are two common inte
       `std::process::Command` into `sandbox-exec -D HOME=... -D TMPDIR=... -p <sbpl> -- <exe> <args...>`
       so SBPL can reference common parameters via `(param "HOME")` / `(param "TMPDIR")`).
       - Opt-in gate: `FASTR_MACOS_USE_SANDBOX_EXEC=1` + `maybe_wrap_command_with_sandbox_exec(...)`.
+      - Escape hatch: `FASTR_DISABLE_RENDERER_SANDBOX=1` or `FASTR_MACOS_RENDERER_SANDBOX=off` makes
+        the `sandbox-exec` helpers no-ops (launches unsandboxed; INSECURE).
 
 Critically:
 
@@ -159,6 +161,8 @@ bring-up; do not rely on them in production.
 - Opt into launching a renderer already sandboxed via Apple’s deprecated `sandbox-exec` wrapper
   (debug/legacy; see `src/sandbox/macos_spawn.rs`):
   - `FASTR_MACOS_USE_SANDBOX_EXEC=1`
+  - Note: this is ignored when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
+    `FASTR_MACOS_RENDERER_SANDBOX=off`.
 
 Renderer-focused quick reference + more examples: [`docs/security/macos_renderer_sandbox.md`](security/macos_renderer_sandbox.md).
 

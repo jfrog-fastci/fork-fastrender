@@ -71,6 +71,7 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - `pure-computation` is the strict default.
   - `system-fonts` enables the relaxed system-font allowlist profile.
 - `FASTR_MACOS_USE_SANDBOX_EXEC=0|1` – **macOS-only**: opt into wrapping spawned subprocesses with `/usr/bin/sandbox-exec` when using `macos_spawn` helpers (debug/legacy; deprecated by Apple).
+  - Ignored when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or `FASTR_MACOS_RENDERER_SANDBOX=off`.
 - `FASTR_DISABLE_WIN_MITIGATIONS=1` – **Windows-only**: disable Win32 *process mitigation policies* applied at process creation (Win32k lockdown, dynamic code prohibition, etc).
   - Any value disables (the check is presence-based, not `0/1` parsing).
   - This disables the optional `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` layer when spawning sandboxed processes.

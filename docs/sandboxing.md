@@ -152,6 +152,8 @@ expectations, see [macos_sandbox.md](macos_sandbox.md) (and the launcher helper 
   `FASTR_MACOS_RENDERER_SANDBOX=system-fonts`.
 - Opt into wrapping spawns with Apple’s deprecated `sandbox-exec` wrapper when using `macos_spawn`
   helpers: `FASTR_MACOS_USE_SANDBOX_EXEC=1`.
+  - Note: this is ignored when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
+    `FASTR_MACOS_RENDERER_SANDBOX=off`.
 
 When FastRender is eventually packaged as a macOS `.app`, the renderer helper process may also be
 sandboxed via App Sandbox entitlements embedded in the code signature; see

@@ -86,8 +86,14 @@ Set:
 
 On macOS this makes the in-process Seatbelt entrypoints in `src/sandbox/macos.rs`
 (`apply_strict_sandbox`, `apply_pure_computation_sandbox`, `apply_renderer_sandbox`) return `Ok(())`
-without calling `sandbox_init`. FastRender prints a warning to stderr once per process so insecure
-runs are not silent.
+without calling `sandbox_init`.
+
+It also disables the spawn-time `sandbox-exec` helpers in `src/sandbox/macos_spawn.rs`
+(`maybe_wrap_command_with_sandbox_exec`, `wrap_command_with_sandbox_exec`, `sandbox_exec_command`),
+so the child is launched **without** `/usr/bin/sandbox-exec` even if `FASTR_MACOS_USE_SANDBOX_EXEC=1`
+is set.
+
+FastRender prints a warning to stderr once per process so insecure runs are not silent.
 
 ### Select a different renderer profile
 
@@ -108,6 +114,9 @@ Some tests and tooling can opt into launching a renderer already sandboxed using
 `/usr/bin/sandbox-exec` wrapper (see `src/sandbox/macos_spawn.rs`). This path is gated by:
 
 - `FASTR_MACOS_USE_SANDBOX_EXEC=1`
+
+Note: when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
+`FASTR_MACOS_RENDERER_SANDBOX=off`, the `sandbox-exec` wrappers become no-ops.
 
 ---
 

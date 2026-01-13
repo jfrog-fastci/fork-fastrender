@@ -47,6 +47,9 @@ use std::sync::OnceLock;
 use std::{fs, io};
 
 #[cfg(target_os = "macos")]
+use crate::sandbox::macos::{ENV_DISABLE_RENDERER_SANDBOX, ENV_MACOS_RENDERER_SANDBOX};
+
+#[cfg(target_os = "macos")]
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 #[cfg(target_os = "macos")]
 const PURE_COMPUTATION_PROFILE_NAME: &str = "pure-computation";
@@ -70,9 +73,42 @@ fn parse_env_bool(raw: Option<&str>) -> bool {
   )
 }
 
+#[cfg(target_os = "macos")]
+fn renderer_sandbox_disabled_via_env() -> bool {
+  if parse_env_bool(std::env::var(ENV_DISABLE_RENDERER_SANDBOX).ok().as_deref()) {
+    return true;
+  }
+
+  let Ok(raw) = std::env::var(ENV_MACOS_RENDERER_SANDBOX) else {
+    return false;
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return false;
+  }
+  matches!(
+    raw.to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
+}
+
+#[cfg(target_os = "macos")]
+fn log_sandbox_disabled_once() {
+  static LOGGED: OnceLock<()> = OnceLock::new();
+  LOGGED.get_or_init(|| {
+    eprintln!(
+      "warning: macOS Seatbelt renderer sandbox is DISABLED (debug escape hatch; INSECURE). \
+Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1 or {ENV_MACOS_RENDERER_SANDBOX}=pure-computation|system-fonts|off to control this."
+    );
+  });
+}
+
 /// Returns `true` when `FASTR_MACOS_USE_SANDBOX_EXEC` is set to an enabled value.
 #[cfg(target_os = "macos")]
 pub fn macos_use_sandbox_exec_from_env() -> bool {
+  if renderer_sandbox_disabled_via_env() {
+    return false;
+  }
   parse_env_bool(std::env::var(ENV_MACOS_USE_SANDBOX_EXEC).ok().as_deref())
 }
 
@@ -101,6 +137,10 @@ pub fn maybe_wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io
 /// calling this helper.
 #[cfg(target_os = "macos")]
 pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Result<()> {
+  if renderer_sandbox_disabled_via_env() {
+    log_sandbox_disabled_once();
+    return Ok(());
+  }
   if !Path::new(SANDBOX_EXEC_PATH).is_file() {
     return Err(io::Error::new(
       io::ErrorKind::NotFound,
@@ -314,6 +354,12 @@ pub fn sandbox_exec_command(
   renderer_path: &Path,
   args: &[OsString],
 ) -> Result<Command, SandboxExecError> {
+  if renderer_sandbox_disabled_via_env() {
+    log_sandbox_disabled_once();
+    let mut cmd = Command::new(renderer_path);
+    cmd.args(args);
+    return Ok(cmd);
+  }
   let invocation = sandbox_exec_invocation()?;
 
   let mut cmd = Command::new(SANDBOX_EXEC_PATH);
@@ -342,6 +388,44 @@ mod tests {
 
   fn env_lock() -> &'static Mutex<()> {
     ENV_LOCK.get_or_init(|| Mutex::new(()))
+  }
+
+  #[test]
+  fn wrap_command_is_noop_when_renderer_sandbox_disabled() {
+    let _guard = env_lock().lock().unwrap();
+    let prev = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+    std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, "1");
+
+    let mut cmd = Command::new("/usr/bin/true");
+    cmd.arg("--hello");
+
+    // Even though the SBPL is invalid, the escape hatch should bypass rewriting entirely.
+    wrap_command_with_sandbox_exec(&mut cmd, "").expect("wrap should be a no-op when disabled");
+
+    assert_eq!(cmd.get_program(), OsStr::new("/usr/bin/true"));
+    let args: Vec<_> = cmd.get_args().collect();
+    assert_eq!(args, vec![OsStr::new("--hello")]);
+
+    match prev {
+      Some(value) => std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, value),
+      None => std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX),
+    }
+  }
+
+  #[test]
+  fn sandbox_exec_command_is_unsandboxed_when_renderer_sandbox_disabled() {
+    let _guard = env_lock().lock().unwrap();
+    let prev = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+    std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, "1");
+
+    let cmd = sandbox_exec_command(Path::new("/usr/bin/true"), &[])
+      .expect("sandbox_exec_command should be a no-op when disabled");
+    assert_eq!(cmd.get_program(), OsStr::new("/usr/bin/true"));
+
+    match prev {
+      Some(value) => std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, value),
+      None => std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX),
+    }
   }
 
   #[test]
