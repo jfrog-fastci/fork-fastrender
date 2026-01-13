@@ -35,11 +35,18 @@ decoding VP8/VP9 without extra tools/tests:
 
 ## Supported targets
 
-Currently supported:
+Tested (CI/agent):
 
 - `x86_64-unknown-linux-gnu`
 
-Other targets will emit a clear build error.
+Best-effort / experimental (not yet CI-covered):
+
+- `x86_64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
+- `x86_64-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain)
+
+Unsupported:
+
+- Linux `musl` targets (use a GNU target or a system libvpx)
 
 ## ABI helpers
 
