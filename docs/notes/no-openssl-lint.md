@@ -20,13 +20,14 @@ This runs `cargo metadata --locked` and inspects the resolved dependency graph.
 
 - Default (no flag): traverses dependencies starting from the `fastrender` crate.
 - `--workspace`: traverses dependencies starting from **all workspace members**.
-  - CI runs workspace-wide because `bash scripts/cargo_agent.sh test --all-features` at the workspace root compiles
-    everything, not just the core renderer crate.
+  - CI runs workspace-wide because `bash scripts/cargo_agent.sh test --features ci` at the workspace root compiles
+    everything needed by the main workflow, not just the core renderer crate.
 
 ## Feature sets
 
 - Default: checks the default feature set.
-- `--all-features`: also checks the `--all-features` graph (recommended).
+- `--all-features`: also checks the `--all-features` graph (recommended; validates optional features even if CI
+  doesn't compile them).
 
 ## Debugging failures
 

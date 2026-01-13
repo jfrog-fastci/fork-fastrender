@@ -80,7 +80,7 @@ bash scripts/cargo_agent.sh test -p fastrender --test integration my::test::name
 Note: `scripts/cargo_agent.sh test` caps `RUST_TEST_THREADS` on very large machines. Override with
 `FASTR_RUST_TEST_THREADS` / `RUST_TEST_THREADS` if you need a different setting.
 
-- Full suite (CI only; extremely expensive): `bash scripts/cargo_agent.sh test --all-features` (do **not** run this on agent hosts; see `AGENTS.md`).
+- Full suite (CI feature-set; extremely expensive): `bash scripts/cargo_agent.sh test --features ci` (do **not** run this on agent hosts; see `AGENTS.md`).
 
 ## Fonts
 

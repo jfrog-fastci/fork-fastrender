@@ -13,15 +13,16 @@ pub struct LintNoOpenSslArgs {
   /// Check the resolved dependency graph for the entire Cargo workspace (all workspace members),
   /// not just the `fastrender` crate.
   ///
-  /// This is a stronger hermeticity guard: CI runs `bash scripts/cargo_agent.sh test --all-features` at the workspace
-  /// root, which compiles all workspace members.
+  /// This is a stronger hermeticity guard: CI runs `bash scripts/cargo_agent.sh test --features ci`
+  /// at the workspace root, which compiles all workspace members used by CI workflows.
   #[arg(long)]
   pub workspace: bool,
 
   /// Also assert that `openssl-sys` is absent when building with all features enabled.
   ///
-  /// CI builds `--all-features`, so this provides an extra guard against optional features pulling
-  /// in system OpenSSL dependencies.
+  /// CI does *not* compile with `--all-features` (some features are intentionally opt-in because
+  /// they require system development packages), but it still validates the resolved dependency graph
+  /// for `--all-features` via `cargo metadata` to catch regressions in optional feature sets.
   #[arg(long)]
   pub all_features: bool,
 }

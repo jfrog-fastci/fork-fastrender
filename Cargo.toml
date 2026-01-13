@@ -35,6 +35,7 @@ default = ["preserve3d_warp", "avif", "direct_network", "direct_websocket", "dir
 a11y_debug = []
 avif = ["dep:avif-decode", "dep:avif-parse"]
 audio_cpal = ["dep:cpal"]
+audio_wav = ["dep:hound"]
 box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
@@ -87,6 +88,23 @@ browser_ui_wayland = [
   "egui-winit/wayland",
 ]
 
+# CI-friendly "all features" umbrella.
+#
+# CI intentionally avoids enabling `audio_cpal` because it requires platform-specific system audio
+# development libraries on Linux (e.g. ALSA headers). Developers can opt in locally via
+# `--features audio_cpal`.
+ci = [
+  "a11y_debug",
+  "avif",
+  "audio_wav",
+  "box_generation_demo",
+  "browser_ui",
+  "browser_ui_wayland",
+  "disk_cache",
+  "preserve3d_warp",
+  "quickjs",
+]
+
 [dependencies]
 fastrender-ipc = { path = "crates/fastrender-ipc" }
 base64 = "0.22"
@@ -94,6 +112,7 @@ avif-decode = { version = "1.0", default-features = false, optional = true }
 avif-parse = { version = "1.4", optional = true }
 arboard = { version = "3.6", optional = true }
 cpal = { version = "0.15", optional = true }
+hound = { version = "3.5", optional = true }
 # Keep AccessKit versions aligned with egui/egui-winit 0.23 so we don't pull in a second
 # (newer) winit via accesskit_winit.
 accesskit = { version = "0.11", optional = true }

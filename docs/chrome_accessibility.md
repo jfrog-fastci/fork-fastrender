@@ -298,8 +298,9 @@ Limitations:
 - `dump_accesskit` only snapshots the **egui** backend (`egui::PlatformOutput::accesskit_update`). It
   does not exercise the renderer-chrome backend (`ChromeAccessKit` / `accesskit_winit::Adapter`).
 
-Note: on Linux, building with `--features browser_ui` requires system GUI/audio development headers
-(`libasound2-dev`, X11/Wayland headers, etc). See
+Note: on Linux, building with `--features browser_ui` requires system GUI development headers
+(X11/Wayland headers, EGL/Vulkan, etc). Real-time audio output via `--features audio_cpal`
+additionally requires ALSA headers (`libasound2-dev`). See
 [`docs/browser_ui.md#platform-prerequisites`](browser_ui.md#platform-prerequisites).
 
 Common invocations:

@@ -37,6 +37,8 @@ pub mod mixer;
 pub mod queue;
 pub mod timed_queue;
 pub mod types;
+#[cfg(feature = "audio_wav")]
+mod wav;
 
 pub use config::{
   audio_engine_config, set_audio_engine_config, with_audio_engine_config, AudioEngineConfig,
@@ -60,6 +62,9 @@ pub use types::{AudioBuffer, AudioSamples, ChannelLayout, SampleFormat};
 ///
 /// This is currently an alias for the producer side of a bounded SPSC PCM queue.
 pub type AudioStreamHandle = PcmF32QueueProducer;
+
+#[cfg(feature = "audio_wav")]
+pub use wav::WavAudioBackend;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioStreamConfig {
@@ -376,5 +381,20 @@ impl PcmF32QueueProducer {
       self.push_without_pts(samples);
     }
     Ok(())
+  }
+}
+
+#[cfg(all(test, feature = "audio_cpal"))]
+mod audio_cpal_compile_tests {
+  use super::CpalAudioBackend;
+
+  /// Compile-only sanity check for the `audio_cpal` feature.
+  ///
+  /// This test must not attempt to open an audio device; it exists purely to ensure the optional
+  /// backend type is available and is thread-safe.
+  #[test]
+  fn audio_cpal_feature_compiles() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<CpalAudioBackend>();
   }
 }

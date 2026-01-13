@@ -25,6 +25,29 @@ Implementation map (keep these modules aligned with this doc):
 > Note: at any point in time, code may be mid-migration. If the implementation diverges from this
 > model, fix the code or update this doc; don’t let the mismatch persist.
 
+## Enabling real audio output (Cargo features)
+
+Audio backends that require platform/system libraries are intentionally **opt-in** so CI/minimal
+hosts don't need system audio development packages.
+
+- Default: `NullAudioBackend` (silence; always available).
+- `audio_cpal`: real-time audio output via [`cpal`](https://crates.io/crates/cpal).
+  - Linux note: typically requires system packages (e.g. ALSA headers).
+- `audio_wav`: pure-Rust WAV debug backend (writes PCM samples into a `.wav` file).
+
+Example (desktop browser UI with real audio output):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui,audio_cpal --bin browser
+```
+
+Compile-only check for developers (does not open an audio device; runs a tiny unit test):
+
+```bash
+bash scripts/cargo_agent.sh test --features audio_cpal --lib audio_cpal_feature_compiles -- --exact
+```
+
 ---
 
 ## Key definitions (terminology)

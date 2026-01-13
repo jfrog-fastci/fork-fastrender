@@ -60,6 +60,18 @@ If you run the `browser` binary without the feature, it will print a short messa
 (the real implementation is behind the `browser_ui` feature gate; see
 [`src/bin/browser.rs`](../src/bin/browser.rs)).
 
+### Audio output (optional)
+
+Audio output backends are opt-in so CI/minimal hosts don't need system audio development packages.
+
+- Default: `NullAudioBackend` (silence), no system deps.
+- Real-time audio output: enable `audio_cpal` (may require ALSA dev packages on Linux).
+
+```bash
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui,audio_cpal --bin browser
+```
+
 ### Native dialogs (file/color) (developer note)
 
 The `browser_ui` feature includes an optional dependency on the
@@ -940,20 +952,23 @@ Do not “cargo update” these casually: newer `egui`/`winit`/`wgpu` releases t
 Building `--features browser_ui` pulls in `winit` (X11 backend) and `wgpu`. On a minimal Linux
 install you will likely need additional system development packages.
 
-Note: `browser_ui` also enables the optional `cpal` audio backend on Linux, which requires the ALSA
-development headers (`libasound2-dev`).
-
-On CI we rely on the `ubuntu-latest` runner image having these available; to reproduce locally:
+To reproduce locally:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
   pkg-config \
-  libasound2-dev \
   libx11-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
   libxrandr-dev libxi-dev libxcursor-dev \
   libxkbcommon-dev libxkbcommon-x11-dev \
   libegl1-mesa-dev libvulkan-dev
+```
+
+If you also enable real-time audio output via `--features audio_cpal`, you'll typically need the
+ALSA development headers:
+
+```bash
+sudo apt-get install -y libasound2-dev
 ```
 
 For Wayland builds (`--features browser_ui,browser_ui_wayland`) you also need the Wayland

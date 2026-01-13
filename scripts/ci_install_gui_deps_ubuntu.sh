@@ -6,8 +6,9 @@ set -euo pipefail
 # We intentionally keep this in a script (instead of inlining apt commands in every
 # workflow job) to reduce duplication and ensure jobs stay in sync.
 #
-# This is primarily required for `--all-features` builds when the optional
-# `browser-ui` feature is enabled (winit/wgpu/egui stack).
+# This is primarily required for CI builds that enable the optional `browser_ui` feature
+# (winit/wgpu/egui stack). CI uses the `ci` Cargo feature-set rather than `--all-features` so we
+# can keep system-dependent features (like real audio output backends) opt-in.
 
 SUDO=""
 if [[ "$(id -u)" != "0" ]]; then
@@ -36,7 +37,6 @@ ${SUDO} apt-get update -y
 echo "Installing Linux GUI build dependencies..."
 ${SUDO} apt-get install -y \
   pkg-config \
-  libasound2-dev \
   libwayland-dev \
   libxkbcommon-dev \
   libvulkan-dev \
