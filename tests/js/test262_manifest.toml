@@ -1855,6 +1855,14 @@ glob = "built-ins/Array/of/**"
 status = "pass"
 
 [[expectations]]
+id = "built-ins/Array/prototype/map/15.4.4.19-3-11.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/Array/prototype/map/15.4.4.19-3-28.js"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/Array/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
