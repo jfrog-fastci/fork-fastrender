@@ -11,6 +11,7 @@ mod api;
 mod browser_integration;
 mod determinism;
 mod dom_integration;
+mod interaction;
 mod fixtures;
 mod grid;
 mod guards;

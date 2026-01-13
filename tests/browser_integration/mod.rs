@@ -76,7 +76,6 @@ mod render_fixtures_js;
 mod location_navigation;
 mod navigation_streaming;
 mod a11y_select_action;
-mod range_input_rtl_pointer_drag;
 mod select_dropdown;
 mod select_dropdown_hidden_option_arrow_key;
 mod select_multiple_arrow_key_preserve_selection;

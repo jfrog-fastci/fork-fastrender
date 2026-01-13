@@ -1,10 +1,14 @@
-#![cfg(feature = "browser_ui")]
-
-use super::support;
 use fastrender::dom::DomNode;
-use fastrender::ui::messages::{PointerButton, RepaintReason, TabId};
-use fastrender::ui::BrowserTabController;
-use fastrender::Result;
+use fastrender::interaction::InteractionEngine;
+use fastrender::ui::messages::{PointerButton, PointerModifiers};
+use fastrender::{BrowserDocument, FastRender, FontConfig, Point, RenderOptions, Result};
+
+fn deterministic_renderer() -> FastRender {
+  fastrender::FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build deterministic renderer")
+}
 
 fn find_element_by_id<'a>(dom: &'a DomNode, element_id: &str) -> &'a DomNode {
   let mut stack = vec![dom];
@@ -21,11 +25,7 @@ fn find_element_by_id<'a>(dom: &'a DomNode, element_id: &str) -> &'a DomNode {
 
 #[test]
 fn range_input_rtl_pointer_drag_respects_visual_direction() -> Result<()> {
-  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
-  let _lock = super::stage_listener_test_lock();
-
-  let tab_id = TabId(1);
-  let viewport_css = (220, 60);
+  let _lock = crate::common::global_state::global_test_lock();
   let url = "https://example.com/index.html";
 
   let html = r#"<!doctype html>
@@ -43,35 +43,69 @@ fn range_input_rtl_pointer_drag_respects_visual_direction() -> Result<()> {
     </html>
   "#;
 
-  let mut controller = BrowserTabController::from_html_with_renderer(
-    support::deterministic_renderer(),
-    tab_id,
-    html,
-    url,
-    viewport_css,
-    1.0,
-  )?;
-  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+  let options = RenderOptions::new().with_viewport(220, 60);
+  let mut doc = BrowserDocument::new(deterministic_renderer(), html, options)?;
+  // Populate layout artifacts required for hit-testing based interaction.
+  let _ = doc.render_frame()?;
+  let mut engine = InteractionEngine::new();
+  let scroll = doc.scroll_state();
 
   // In RTL, the painted range thumb is mirrored: min on the right, max on the left. Pointer
   // mapping should match.
-  let click_left = (5.0, 15.0);
-  let _ = controller.handle_message(support::pointer_down(tab_id, click_left, PointerButton::Primary))?;
-  let _ = controller.handle_message(support::pointer_up(tab_id, click_left, PointerButton::Primary))?;
+  {
+    let point = Point::new(5.0, 15.0);
+    doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let mut changed = engine.pointer_down(dom, box_tree, fragment_tree, &scroll, point);
+      let (changed_up, _) = engine.pointer_up_with_scroll(
+        dom,
+        box_tree,
+        fragment_tree,
+        &scroll,
+        point,
+        PointerButton::Primary,
+        PointerModifiers::NONE,
+        true,
+        url,
+        url,
+      );
+      changed |= changed_up;
+
+      // Range value updates do not affect layout for our deterministic test page; keep cached layout
+      // artifacts so subsequent clicks don't need to re-render.
+      let _ = changed;
+      (false, ())
+    })?;
+  }
   assert_eq!(
-    find_element_by_id(controller.document().dom(), "r").get_attribute_ref("value"),
+    find_element_by_id(doc.dom(), "r").get_attribute_ref("value"),
     Some("2")
   );
 
-  let click_right = (195.0, 15.0);
-  let _ =
-    controller.handle_message(support::pointer_down(tab_id, click_right, PointerButton::Primary))?;
-  let _ = controller.handle_message(support::pointer_up(tab_id, click_right, PointerButton::Primary))?;
+  {
+    let point = Point::new(195.0, 15.0);
+    doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let mut changed = engine.pointer_down(dom, box_tree, fragment_tree, &scroll, point);
+      let (changed_up, _) = engine.pointer_up_with_scroll(
+        dom,
+        box_tree,
+        fragment_tree,
+        &scroll,
+        point,
+        PointerButton::Primary,
+        PointerModifiers::NONE,
+        true,
+        url,
+        url,
+      );
+      changed |= changed_up;
+      let _ = changed;
+      (false, ())
+    })?;
+  }
   assert_eq!(
-    find_element_by_id(controller.document().dom(), "r").get_attribute_ref("value"),
+    find_element_by_id(doc.dom(), "r").get_attribute_ref("value"),
     Some("0")
   );
 
   Ok(())
 }
-
