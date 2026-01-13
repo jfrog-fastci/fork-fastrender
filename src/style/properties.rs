@@ -4079,6 +4079,10 @@ fn parse_transition_shorthand(
   Some((properties, durations, delays, timings, behaviors))
 }
 
+pub(crate) fn supports_transition_shorthand(raw: &str) -> bool {
+  parse_transition_shorthand(raw).is_some()
+}
+
 fn parse_touch_action_keywords(tokens: &[String]) -> Option<TouchAction> {
   if tokens.is_empty() {
     return None;

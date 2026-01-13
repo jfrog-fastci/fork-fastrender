@@ -380,3 +380,33 @@ fn supports_not_at_rule_unknown_matches() {
   let css = r"@supports not at-rule(@unknown-at-rule) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "inline");
 }
+
+#[test]
+fn supports_transition_allow_discrete_matches() {
+  let css = r"@supports (transition: allow-discrete) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_transition_opacity_duration_matches() {
+  let css = r"@supports (transition: opacity 1s) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_transition_rejects_trailing_comma() {
+  let css = r"@supports (transition: 1s,) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
+fn supports_transition_rejects_three_time_values() {
+  let css = r"@supports (transition: 1s 2s 3s) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
+fn supports_transition_rejects_duplicate_behavior_tokens() {
+  let css = r"@supports (transition: normal allow-discrete) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}

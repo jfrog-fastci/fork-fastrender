@@ -3457,6 +3457,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "position-try-fallbacks" => return supports_position_try_fallbacks_value(raw_value),
     "position-try" => return supports_position_try_value(raw_value),
     "transition-behavior" => return supports_transition_behavior_value(raw_value),
+    "transition" => return crate::style::properties::supports_transition_shorthand(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),
     "-webkit-font-smoothing" => {
