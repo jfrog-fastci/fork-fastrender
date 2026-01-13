@@ -5373,6 +5373,119 @@ fn page_background_paints_page_box() {
 }
 
 #[test]
+fn page_marks_crop_draws_lines_in_bleed_area() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 100px 100px;
+            margin: 0;
+            bleed: 20px;
+            trim: 0;
+            marks: crop;
+            background: white;
+          }
+          html, body { margin: 0; background: transparent; }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        // Total page size includes bleed on both sides: 100 + 2*20.
+        .with_viewport(140, 140)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render page crop marks");
+
+  let bg = [255, 255, 255, 255];
+  let mark = [0, 0, 0, 255];
+
+  // Sample both the horizontal and vertical crop mark segments near each corner.
+  let samples: &[(u32, u32)] = &[
+    // Top-left.
+    (15, 19),
+    (19, 15),
+    // Top-right.
+    (125, 19),
+    (120, 15),
+    // Bottom-left.
+    (15, 120),
+    (19, 125),
+    // Bottom-right.
+    (125, 120),
+    (120, 125),
+  ];
+  for &(x, y) in samples {
+    assert_eq!(
+      pixel(&pixmap, x, y),
+      mark,
+      "expected crop mark pixel at ({x},{y}) to be non-background"
+    );
+  }
+
+  // Ensure marks don't leak into the main page area.
+  assert_eq!(pixel(&pixmap, 70, 70), bg);
+}
+
+#[test]
+fn page_marks_none_draws_no_marks() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 100px 100px;
+            margin: 0;
+            bleed: 20px;
+            trim: 0;
+            marks: none;
+            background: white;
+          }
+          html, body { margin: 0; background: transparent; }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(140, 140)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render page marks none");
+
+  let bg = [255, 255, 255, 255];
+  let samples: &[(u32, u32)] = &[
+    (15, 19),
+    (19, 15),
+    (125, 19),
+    (120, 15),
+    (15, 120),
+    (19, 125),
+    (125, 120),
+    (120, 125),
+  ];
+  for &(x, y) in samples {
+    assert_eq!(
+      pixel(&pixmap, x, y),
+      bg,
+      "expected marks:none pixel at ({x},{y}) to match background"
+    );
+  }
+}
+
+#[test]
 fn document_canvas_background_paints_above_page_background() {
   let html = r#"
     <html>

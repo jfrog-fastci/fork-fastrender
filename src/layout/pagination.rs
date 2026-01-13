@@ -2334,6 +2334,9 @@ pub fn paginate_fragment_tree(
     }
 
     page_root.children_mut().push(document_wrapper);
+    page_root
+      .children_mut()
+      .extend(build_page_mark_fragments(&page_style));
 
     let page_strings = if is_blank_page {
       snapshot_running_strings(&string_set_carry)
@@ -3176,6 +3179,148 @@ fn substitute_running_element_placeholders(
       }
     }
   }
+}
+
+fn build_page_mark_fragments(style: &ResolvedPageStyle) -> Vec<FragmentNode> {
+  if style.marks.is_none() {
+    return Vec::new();
+  }
+
+  let bleed = style.bleed;
+  if !bleed.is_finite() || bleed <= EPSILON {
+    return Vec::new();
+  }
+
+  // Fixed (but bleed-clamped) mark length. Clamp to avoid generating marks that spill outside the
+  // page's total bounds.
+  let mut length = 10.0f32;
+  if !length.is_finite() {
+    length = 0.0;
+  }
+  length = length.min(bleed).max(0.0);
+  if length <= EPSILON {
+    return Vec::new();
+  }
+
+  let total = style.total_size;
+  let trim = style.trim.max(0.0);
+  let trimmed_origin = Point::new(bleed + trim, bleed + trim);
+  let trimmed_size = Size::new(
+    (style.page_size.width - 2.0 * trim).max(0.0),
+    (style.page_size.height - 2.0 * trim).max(0.0),
+  );
+  let x0 = trimmed_origin.x;
+  let y0 = trimmed_origin.y;
+  let x1 = x0 + trimmed_size.width;
+  let y1 = y0 + trimmed_size.height;
+
+  // Clamp each mark arm to whatever space is available on that side of the trimmed rect.
+  let len_left = length.min(x0.max(0.0));
+  let len_top = length.min(y0.max(0.0));
+  let len_right = length.min((total.width - x1).max(0.0));
+  let len_bottom = length.min((total.height - y1).max(0.0));
+
+  let thickness = 1.0f32;
+
+  let mut mark_style = ComputedStyle::default();
+  mark_style.display = Display::Block;
+  // Use `currentColor` (the page box color) for mark painting.
+  mark_style.color = style.page_style.color;
+  mark_style.background_color = style.page_style.color;
+  let mark_style = Arc::new(mark_style);
+
+  let mut out: Vec<FragmentNode> = Vec::new();
+
+  let mut push_rect = |rect: Rect| {
+    let mut min_x = rect.x();
+    let mut min_y = rect.y();
+    let mut max_x = rect.max_x();
+    let mut max_y = rect.max_y();
+    if !min_x.is_finite()
+      || !min_y.is_finite()
+      || !max_x.is_finite()
+      || !max_y.is_finite()
+      || max_x - min_x <= EPSILON
+      || max_y - min_y <= EPSILON
+    {
+      return;
+    }
+    if max_x < min_x {
+      std::mem::swap(&mut max_x, &mut min_x);
+    }
+    if max_y < min_y {
+      std::mem::swap(&mut max_y, &mut min_y);
+    }
+
+    min_x = min_x.max(0.0);
+    min_y = min_y.max(0.0);
+    max_x = max_x.min(total.width);
+    max_y = max_y.min(total.height);
+    let w = (max_x - min_x).max(0.0);
+    let h = (max_y - min_y).max(0.0);
+    if w <= EPSILON || h <= EPSILON {
+      return;
+    }
+
+    out.push(FragmentNode::new_block_styled(
+      Rect::from_xywh(min_x, min_y, w, h),
+      Vec::new(),
+      Arc::clone(&mark_style),
+    ));
+  };
+
+  if style.marks.crop {
+    // Top-left.
+    if len_left > EPSILON {
+      push_rect(Rect::from_xywh(x0 - len_left, y0 - thickness, len_left, thickness));
+    }
+    if len_top > EPSILON {
+      push_rect(Rect::from_xywh(x0 - thickness, y0 - len_top, thickness, len_top));
+    }
+
+    // Top-right.
+    if len_right > EPSILON {
+      push_rect(Rect::from_xywh(x1, y0 - thickness, len_right, thickness));
+    }
+    if len_top > EPSILON {
+      push_rect(Rect::from_xywh(x1, y0 - len_top, thickness, len_top));
+    }
+
+    // Bottom-left.
+    if len_left > EPSILON {
+      push_rect(Rect::from_xywh(x0 - len_left, y1, len_left, thickness));
+    }
+    if len_bottom > EPSILON {
+      push_rect(Rect::from_xywh(x0 - thickness, y1, thickness, len_bottom));
+    }
+
+    // Bottom-right.
+    if len_right > EPSILON {
+      push_rect(Rect::from_xywh(x1, y1, len_right, thickness));
+    }
+    if len_bottom > EPSILON {
+      push_rect(Rect::from_xywh(x1, y1, thickness, len_bottom));
+    }
+  }
+
+  if style.marks.cross {
+    let arm = (length / 2.0).max(0.0);
+    if arm > EPSILON {
+      let cross = |cx: f32, cy: f32, out: &mut dyn FnMut(Rect)| {
+        // Horizontal segment.
+        out(Rect::from_xywh(cx - arm, cy, 2.0 * arm, thickness));
+        // Vertical segment.
+        out(Rect::from_xywh(cx, cy - arm, thickness, 2.0 * arm));
+      };
+
+      cross(x0 - arm, y0 - arm, &mut push_rect);
+      cross(x1 + arm, y0 - arm, &mut push_rect);
+      cross(x0 - arm, y1 + arm, &mut push_rect);
+      cross(x1 + arm, y1 + arm, &mut push_rect);
+    }
+  }
+
+  out
 }
 
 fn build_margin_box_fragments(
@@ -4148,6 +4293,7 @@ mod tests {
   use crate::style::content::{StringSetAssignment, StringSetValue};
   use crate::style::content::RunningElementSelect;
   use crate::style::display::{Display, FormattingContextType};
+  use crate::style::page::PageMarks;
   use crate::style::ComputedStyle;
   use crate::text::font_db::FontDatabase;
   use crate::tree::box_tree::{BoxNode, BoxTree};
@@ -4172,6 +4318,7 @@ mod tests {
       margin_left: 0.0,
       bleed: 0.0,
       trim: 0.0,
+      marks: PageMarks::default(),
       margin_boxes: BTreeMap::new(),
       footnote_style: ComputedStyle::default(),
       page_style: ComputedStyle::default(),
@@ -4408,6 +4555,7 @@ mod tests {
         margin_left: 10.0,
         bleed: 0.0,
         trim: 0.0,
+        marks: PageMarks::default(),
         margin_boxes,
         footnote_style: ComputedStyle::default(),
         page_style: ComputedStyle::default(),

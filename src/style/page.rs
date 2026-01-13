@@ -65,6 +65,21 @@ struct PageSizeSpec {
   orientation: Option<PageOrientation>,
 }
 
+/// Computed value for the CSS Paged Media `marks` property.
+///
+/// This controls which printer marks (crop/cross) are rendered in the page bleed area.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PageMarks {
+  pub crop: bool,
+  pub cross: bool,
+}
+
+impl PageMarks {
+  pub fn is_none(&self) -> bool {
+    !self.crop && !self.cross
+  }
+}
+
 #[derive(Debug, Clone, Default)]
 struct PageProperties {
   size: Option<PageSizeSpec>,
@@ -74,6 +89,7 @@ struct PageProperties {
   margin_left: Option<Length>,
   bleed: Option<Length>,
   trim: Option<Length>,
+  marks: Option<PageMarks>,
 }
 
 /// Resolved page box metrics after applying @page rules.
@@ -89,6 +105,7 @@ pub struct ResolvedPageStyle {
   pub margin_left: f32,
   pub bleed: f32,
   pub trim: f32,
+  pub marks: PageMarks,
   pub margin_boxes: BTreeMap<PageMarginArea, ComputedStyle>,
   pub footnote_style: ComputedStyle,
   pub page_style: ComputedStyle,
@@ -437,6 +454,7 @@ pub fn resolve_page_style(
     margin_left,
     bleed,
     trim,
+    marks: props.marks.unwrap_or_default(),
     margin_boxes: margin_styles,
     footnote_style,
     page_style,
@@ -565,7 +583,66 @@ fn apply_page_declaration(
       }
       true
     }
+    "marks" => {
+      if let Some(marks) = parse_page_marks_value(&decl.value) {
+        props.marks = Some(marks);
+      }
+      true
+    }
     _ => false,
+  }
+}
+
+fn parse_page_marks_value(value: &PropertyValue) -> Option<PageMarks> {
+  fn keyword_to_mark(value: &str, marks: &mut PageMarks) -> Result<(), ()> {
+    match value {
+      "crop" => marks.crop = true,
+      "cross" => marks.cross = true,
+      _ => return Err(()),
+    }
+    Ok(())
+  }
+
+  match value {
+    PropertyValue::Keyword(kw) => {
+      let lower = kw.to_ascii_lowercase();
+      match lower.as_str() {
+        "none" => Some(PageMarks::default()),
+        other => {
+          let mut marks = PageMarks::default();
+          keyword_to_mark(other, &mut marks).ok()?;
+          Some(marks)
+        }
+      }
+    }
+    PropertyValue::Multiple(values) => {
+      if values.is_empty() {
+        return None;
+      }
+
+      let mut marks = PageMarks::default();
+      let mut has_none = false;
+
+      for part in values {
+        let PropertyValue::Keyword(kw) = part else {
+          return None;
+        };
+        let lower = kw.to_ascii_lowercase();
+        if lower == "none" {
+          has_none = true;
+          continue;
+        }
+        keyword_to_mark(lower.as_str(), &mut marks).ok()?;
+      }
+
+      if has_none {
+        // `none` is only valid as a single keyword.
+        return (values.len() == 1).then_some(PageMarks::default());
+      }
+
+      (!marks.is_none()).then_some(marks)
+    }
+    _ => None,
   }
 }
 
@@ -973,6 +1050,7 @@ mod tests {
       margin_left: 0.0,
       bleed: 0.0,
       trim: 0.0,
+      marks: PageMarks::default(),
       margin_boxes,
       footnote_style: ComputedStyle::default(),
       page_style: ComputedStyle::default(),
