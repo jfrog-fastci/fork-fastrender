@@ -121,6 +121,24 @@ Chunked fetch response start:
 }
 ```
 
+Fetch error (for a fetch-like request):
+
+```json
+{
+  "FetchErr": {
+    "id": 42,
+    "err": {
+      "message": "fetch failed for https://example.com/: DNS error",
+      "content_type": null,
+      "status": null,
+      "final_url": null,
+      "etag": null,
+      "last_modified": null
+    }
+  }
+}
+```
+
 ---
 
 ## Connection setup (Hello handshake)
@@ -318,7 +336,7 @@ pub enum NetworkToBrowser {
   FetchBodyChunk { id: u64, bytes_b64: String },
   FetchEnd { id: u64 },
 
-  // Chunked fetch error (sent instead of FetchStart/FetchEnd).
+  // Fetch error (used for any fetch-like request; may be sent instead of FetchStart/FetchEnd).
   FetchErr { id: u64, err: IpcError },
 }
 ```
@@ -495,11 +513,18 @@ There are two classes of failures:
 ### 1) Structured per-request errors (normal)
 
 Network/fetch failures (DNS, TLS, HTTP errors surfaced as `Error`, etc.) are returned as an `IpcError`
-inside:
+either:
 
-- `NetworkToBrowser::Response { .. IpcResponse::Fetched(IpcResult::Err(IpcError)) .. }` (inline path),
-  or
-- `NetworkToBrowser::FetchErr { id, err: IpcError }` (chunked path).
+- **For fetch-like requests** (`Fetch*` / `FetchHttpRequest` / `FetchPartial*`): as
+  `NetworkToBrowser::FetchErr { id, err: IpcError }`.
+  - This is used regardless of whether the body would have been inline or chunked.
+  - `FetchErr` may appear as the first response frame for a request (common), and the client also
+    accepts it during a chunked stream as an abort signal (defense in depth).
+- **For non-fetch RPCs** (`CookieHeaderValue`, `StoreCookieFromDocument`, cache artifact ops, etc.):
+  as `NetworkToBrowser::Response { id, response: <... IpcResult::Err(IpcError) ...> }`.
+
+Note: `IpcResponse::Fetched(IpcResult::Err(_))` exists in the schema and the client accepts it, but
+the current server implementation uses `FetchErr` for fetch failures.
 
 These are *request-scoped* and do not imply the connection is unusable.
 
