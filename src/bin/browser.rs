@@ -53,6 +53,32 @@ fn parse_env_bool(raw: Option<&str>) -> bool {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+fn parse_resize_dpr_scale_env(raw: Option<&str>) -> Result<f32, String> {
+  // Defaults tuned for interactive resize. Lowering DPR reduces the pixmap + upload size so the UI
+  // can stay responsive during a resize drag.
+  const DEFAULT: f32 = 0.5;
+  const MIN: f32 = 0.25;
+  const MAX: f32 = 1.0;
+
+  let Some(raw) = raw else {
+    return Ok(DEFAULT);
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return Ok(DEFAULT);
+  }
+
+  let parsed = raw
+    .parse::<f32>()
+    .map_err(|_| format!("invalid value {raw:?}; expected a finite f32"))?;
+  if !parsed.is_finite() {
+    return Err(format!("invalid value {raw:?}; expected a finite f32"));
+  }
+
+  Ok(parsed.clamp(MIN, MAX))
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 fn should_show_debug_log_ui(debug_build: bool, env_value: Option<&str>) -> bool {
   debug_build || parse_env_bool(env_value)
 }
@@ -802,6 +828,28 @@ mod browser_renderer_watchdog_env_tests {
     assert_eq!(parse_allow_crash_urls_env(Some("no")), Ok(false));
     assert_eq!(parse_allow_crash_urls_env(Some("off")), Ok(false));
     assert!(parse_allow_crash_urls_env(Some("maybe")).is_err());
+  }
+}
+
+#[cfg(test)]
+mod resize_dpr_scale_env_tests {
+  use super::parse_resize_dpr_scale_env;
+
+  #[test]
+  fn parse_resize_dpr_scale_defaults_and_clamps() {
+    assert!((parse_resize_dpr_scale_env(None).unwrap() - 0.5).abs() < f32::EPSILON);
+    assert!((parse_resize_dpr_scale_env(Some("")).unwrap() - 0.5).abs() < f32::EPSILON);
+    assert!((parse_resize_dpr_scale_env(Some("   ")).unwrap() - 0.5).abs() < f32::EPSILON);
+
+    assert!((parse_resize_dpr_scale_env(Some("1.0")).unwrap() - 1.0).abs() < f32::EPSILON);
+    assert!((parse_resize_dpr_scale_env(Some("2.0")).unwrap() - 1.0).abs() < f32::EPSILON);
+    assert!((parse_resize_dpr_scale_env(Some("0.25")).unwrap() - 0.25).abs() < f32::EPSILON);
+    assert!((parse_resize_dpr_scale_env(Some("0.1")).unwrap() - 0.25).abs() < f32::EPSILON);
+    assert!((parse_resize_dpr_scale_env(Some("0.7")).unwrap() - 0.7).abs() < f32::EPSILON);
+
+    assert!(parse_resize_dpr_scale_env(Some("nope")).is_err());
+    assert!(parse_resize_dpr_scale_env(Some("NaN")).is_err());
+    assert!(parse_resize_dpr_scale_env(Some("inf")).is_err());
   }
 }
 
@@ -3880,32 +3928,13 @@ fn debug_log_ui_enabled() -> bool {
 
 #[cfg(feature = "browser_ui")]
 fn resize_dpr_scale_from_env() -> f32 {
-  // Defaults tuned for interactive resize. Lowering DPR reduces the pixmap + upload size so the UI
-  // can stay responsive during a resize drag.
-  const DEFAULT: f32 = 0.5;
-  const MIN: f32 = 0.25;
-  const MAX: f32 = 1.0;
-
-  let raw = match std::env::var(ENV_BROWSER_RESIZE_DPR_SCALE) {
-    Ok(raw) => raw,
-    Err(_) => return DEFAULT,
-  };
-  let raw = raw.trim();
-  if raw.is_empty() {
-    return DEFAULT;
-  }
-
-  let parsed = match raw.parse::<f32>() {
-    Ok(value) if value.is_finite() => value,
-    _ => {
-      eprintln!(
-        "{ENV_BROWSER_RESIZE_DPR_SCALE}: invalid value {raw:?}; expected a finite f32"
-      );
-      return DEFAULT;
+  match parse_resize_dpr_scale_env(std::env::var(ENV_BROWSER_RESIZE_DPR_SCALE).ok().as_deref()) {
+    Ok(value) => value,
+    Err(err) => {
+      eprintln!("{ENV_BROWSER_RESIZE_DPR_SCALE}: {err}");
+      parse_resize_dpr_scale_env(None).unwrap_or(0.5)
     }
-  };
-
-  parsed.clamp(MIN, MAX)
+  }
 }
 
 #[cfg(feature = "browser_ui")]
