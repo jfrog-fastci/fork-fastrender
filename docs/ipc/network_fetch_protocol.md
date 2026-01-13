@@ -373,6 +373,38 @@ pub struct IpcFetchRequest {
 }
 ```
 
+#### Semantics of `IpcFetchRequest` fields (as implemented by `HttpFetcher`)
+
+These fields are **security-sensitive** because they influence:
+
+- which cookies are attached,
+- which browser-like request headers are synthesized (`Origin`, `Referer`, `Sec-Fetch-*`, …), and
+- whether CORS checks are enforced on the response.
+
+Key points:
+
+- `destination` drives “fetch mode” behavior:
+  - destinations with `sec_fetch_mode() == "cors"` (notably `Fetch`, `Font`, and the `*Cors` variants)
+    trigger response-side CORS checks in `HttpFetcher` (`enforce_cors_on_network_response`).
+  - destinations with `sec_fetch_mode() == "no-cors"` skip those checks (browser-like behavior for
+    passive subresources).
+- `credentials_mode` controls cookie inclusion (`cookies_allowed_for_request`):
+  - `Include`: always attach cookies (if cookie state is available).
+  - `Omit`: never attach cookies.
+  - `SameOrigin`: attach cookies only when `client_origin` is present and same-origin with `url`.
+- `client_origin` is the strongest input for request-site classification and CORS enforcement. If it
+  is missing, `HttpFetcher` may **skip** response-side CORS checks for `cors`-mode destinations to
+  avoid over-blocking navigations without a known origin.
+
+Security note for multiprocess designs:
+
+- If the **sender is untrusted** (e.g. a compromised renderer), the receiver must not treat fields
+  like `destination` and `client_origin` as authoritative security policy inputs. A malicious sender
+  could otherwise downgrade `destination` to a `no-cors` mode to bypass CORS checks.
+  - In a hardened browser architecture, the browser process should supply/validate these fields
+    (e.g. via a SiteLock / trusted initiator origin), or the protocol should be redesigned so the
+    sender cannot choose a weaker policy than the browser intended.
+
 `IpcHttpRequest` is the “JS fetch/XHR shaped” request:
 
 ```rust
