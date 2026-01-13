@@ -18,7 +18,6 @@ use url::Url;
 fn usvg_options_for_url_does_not_enable_filesystem_resource_dir() {
   let dir = tempfile::tempdir().expect("temp dir");
   let svg_path = dir.path().join("icon.svg");
-  fs::write(&svg_path, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").expect("write svg");
   let svg_url = Url::from_file_path(&svg_path).unwrap().to_string();
 
   let options = super::usvg_options_for_url(&svg_url);

@@ -21177,7 +21177,6 @@ fn document_create_node_iterator_native(
 
   Ok(Value::Object(iter_obj))
 }
-
 fn alloc_node_array(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

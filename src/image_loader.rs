@@ -13991,7 +13991,7 @@ mod tests_inline {
     let png = RgbaImage::from_pixel(1, 1, ImageRgba([0, 255, 0, 255]));
     let mut png_bytes = Vec::new();
     PngEncoder::new(&mut png_bytes)
-      .write_image(png.as_raw(), 1, 1, ColorType::Rgba8)
+      .write_image(png.as_raw(), 1, 1, ColorType::Rgba8.into())
       .expect("encode png");
     let png_url = format!(
       "data:image/png;base64,{}",
