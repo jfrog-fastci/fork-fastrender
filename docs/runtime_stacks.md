@@ -134,7 +134,7 @@ Implementation: [`src/api/browser_tab.rs`](../src/api/browser_tab.rs)
 `BrowserTab` is the JS-capable “tab runtime” API. It owns, at minimum:
 
 - a `BrowserDocumentDom2` (live `dom2` document + render caching),
-- an HTML-shaped `EventLoop<BrowserTabHost>` (tasks + microtasks + timers),
+- an HTML-shaped `EventLoop<BrowserTabHost>` (tasks + microtasks + timers + `requestAnimationFrame`),
 - script scheduling/plumbing for HTML parsing (`StreamingHtmlParser` + `HtmlScriptScheduler`),
 - a pluggable JS executor (`BrowserTabJsExecutor`), e.g. [`VmJsBrowserTabExecutor`](../src/api/browser_tab_vm_js_executor.rs).
 
