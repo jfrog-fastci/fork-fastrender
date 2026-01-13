@@ -8410,6 +8410,11 @@ pub(crate) fn run_compiled_function(
     }));
   }
   if func_meta.async_ {
+    // `Vm::call_user_function` skips `RuntimeEnv::teardown` for async functions so the compiled
+    // executor can eventually support suspension by transferring ownership of the env root to an
+    // async continuation. Until async compiled functions are implemented, this early-return must
+    // still tear down the env root to avoid leaking persistent roots.
+    env.teardown(scope.heap_mut());
     return Err(VmError::Unimplemented("async functions (hir-js compiled path)"));
   }
 
