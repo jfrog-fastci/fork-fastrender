@@ -170,6 +170,74 @@ test(() => {
 }, "TreeWalker traverse-siblings algorithm: FILTER_SKIP descends; FILTER_REJECT does not");
 
 test(() => {
+  const { root, a, a2, b } = make_tree();
+
+  // previousNode() should descend into the last inclusive descendant of a FILTER_SKIP sibling,
+  // but it should treat FILTER_REJECT as a subtree prune (so it will fall back to the nearest
+  // accepted ancestor, which is the root in this tree).
+  const skip_a = (node) => (node === a ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+  const tw_skip = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, skip_a);
+  tw_skip.currentNode = b;
+  assert_equals(tw_skip.previousNode(), a2);
+
+  const reject_a = (node) => (node === a ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
+  const tw_reject = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, reject_a);
+  tw_reject.currentNode = b;
+  assert_equals(tw_reject.previousNode(), root);
+}, "TreeWalker previousNode(): FILTER_SKIP descends into skipped siblings; FILTER_REJECT prunes subtrees");
+
+test(() => {
+  const { root, a, a2, b } = make_tree();
+
+  // If an ancestor is not FILTER_ACCEPT, the traverse-siblings algorithm may walk up and return
+  // that ancestor's next sibling.
+  const skip_a = (node) => (node === a ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, skip_a);
+
+  tw.currentNode = a2;
+  assert_equals(tw.nextSibling(), b);
+  assert_equals(tw.currentNode, b);
+}, "TreeWalker nextSibling(): may traverse to an ancestor's sibling when the ancestor is not FILTER_ACCEPT");
+
+test(() => {
+  clear_children(document.body);
+
+  // Tree shape:
+  // root
+  //   a
+  //   b
+  //   c
+  //     c1
+  const root = document.createElement("div");
+  root.id = "root";
+  const a = document.createElement("div");
+  a.id = "a";
+  const b = document.createElement("div");
+  b.id = "b";
+  const c = document.createElement("div");
+  c.id = "c";
+  const c1 = document.createElement("div");
+  c1.id = "c1";
+  c.appendChild(c1);
+  root.appendChild(a);
+  root.appendChild(b);
+  root.appendChild(c);
+  document.body.appendChild(root);
+
+  const skip_c = (node) => (node === c ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+  const tw_skip = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, skip_c);
+  assert_equals(tw_skip.lastChild(), c1, "lastChild() should descend into skipped nodes");
+  assert_equals(tw_skip.currentNode, c1);
+  assert_equals(tw_skip.parentNode(), root, "parentNode() should walk to the first accepted ancestor");
+  assert_equals(tw_skip.currentNode, root);
+
+  const reject_c = (node) => (node === c ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
+  const tw_reject = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, reject_c);
+  assert_equals(tw_reject.lastChild(), b, "lastChild() should skip rejected subtrees");
+  assert_equals(tw_reject.currentNode, b);
+}, "TreeWalker lastChild() and parentNode(): FILTER_SKIP descends, FILTER_REJECT prunes, and parentNode() finds the first accepted ancestor");
+
+test(() => {
   const { root, a } = make_tree();
 
   let did_reenter = false;
@@ -197,6 +265,34 @@ test(() => {
   assert_true(nested_threw, "Re-entrant nextNode() should throw");
   assert_equals(nested_name, "InvalidStateError");
 }, "TreeWalker rejects re-entrant nextNode() calls from the filter callback (InvalidStateError)");
+
+test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+  const text = document.createTextNode("hello");
+  const a = document.createElement("span");
+  root.appendChild(text);
+  root.appendChild(a);
+  document.body.appendChild(root);
+
+  const calls = [];
+  const filter = (node) => {
+    calls.push(node);
+    return NodeFilter.FILTER_ACCEPT;
+  };
+
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+  assert_equals(tw.nextNode(), a);
+  assert_equals(tw.nextNode(), null);
+
+  assert_true(calls.indexOf(a) !== -1, "Filter should be invoked for nodes included by whatToShow");
+  assert_equals(
+    calls.indexOf(text),
+    -1,
+    "Filter should not be invoked for nodes excluded by whatToShow (text)"
+  );
+}, "TreeWalker does not invoke the filter callback for nodes excluded by whatToShow");
 
 test(() => {
   const { root, a1 } = make_tree();

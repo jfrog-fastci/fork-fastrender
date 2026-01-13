@@ -155,3 +155,33 @@ test(() => {
   assert_equals(it.nextNode(), null);
 }, "NodeIterator supports NodeFilter objects with an acceptNode() method");
 
+test(() => {
+  const { root, a } = make_tree_with_text();
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, null);
+
+  assert_equals(it.nextNode(), root);
+  assert_equals(it.nextNode(), a);
+  assert_equals(it.referenceNode, a);
+  assert_false(it.pointerBeforeReferenceNode);
+
+  // With pointerBeforeReferenceNode false, previousNode() flips it true without moving.
+  assert_equals(it.previousNode(), a);
+  assert_equals(it.referenceNode, a);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  // With pointerBeforeReferenceNode true, previousNode() moves to the first preceding node.
+  assert_equals(it.previousNode(), root);
+  assert_equals(it.referenceNode, root);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  // With pointerBeforeReferenceNode true, nextNode() flips it false without moving.
+  assert_equals(it.nextNode(), root);
+  assert_equals(it.referenceNode, root);
+  assert_false(it.pointerBeforeReferenceNode);
+
+  // With pointerBeforeReferenceNode false, nextNode() moves forward again.
+  assert_equals(it.nextNode(), a);
+  assert_equals(it.referenceNode, a);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator previousNode()/nextNode() move vs toggle based on pointerBeforeReferenceNode");
