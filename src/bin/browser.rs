@@ -17476,6 +17476,11 @@ impl App {
         );
       }
     }
+
+    for text in output.copy_requests {
+      os_clipboard::write_text(&text);
+      self.show_chrome_toast("Copied to clipboard");
+    }
   }
 
   fn select_dropdown_option_a11y_label(base: &str) -> String {

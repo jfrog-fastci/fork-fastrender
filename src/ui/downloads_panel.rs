@@ -109,12 +109,14 @@ pub struct DownloadsPanelOutput {
   pub retry_requests: Vec<(TabId, String)>,
   pub open_requests: Vec<PathBuf>,
   pub reveal_requests: Vec<PathBuf>,
+  pub copy_requests: Vec<String>,
 }
 
 #[cfg(test)]
-fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
+fn store_test_id(ctx: &egui::Context, key: impl std::hash::Hash, id: egui::Id) {
+  let key = egui::Id::new(key);
   ctx.data_mut(|d| {
-    d.insert_temp(egui::Id::new(key), id);
+    d.insert_temp(key, id);
   });
 }
 
@@ -417,37 +419,139 @@ pub fn downloads_panel_ui(
                             a11y_labels::download_open_label(&entry.file_name),
                           )
                         });
-                        if open_resp.clicked() {
-                          out.open_requests.push(entry.path.clone());
-                        }
+                      if open_resp.clicked() {
+                        out.open_requests.push(entry.path.clone());
                       }
-                      DownloadStatus::Cancelled => {
-                        let retry_resp = ui.small_button("Retry");
-                        retry_resp.widget_info(|| {
+
+                      let copy_path_resp = ui.small_button("Copy path");
+                      copy_path_resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                          egui::WidgetType::Button,
+                          a11y_labels::download_copy_path_label(&entry.file_name),
+                        )
+                      });
+                      if copy_path_resp.clicked() {
+                        out.copy_requests.push(entry.path.display().to_string());
+                      }
+                      #[cfg(test)]
+                      store_test_id(
+                        ui.ctx(),
+                        ("downloads_copy_path_button_id", entry.download_id.0),
+                        copy_path_resp.id,
+                      );
+
+                      let copy_link_resp = ui.small_button("Copy link");
+                      copy_link_resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                          egui::WidgetType::Button,
+                          a11y_labels::download_copy_link_label(&entry.file_name),
+                        )
+                      });
+                      if copy_link_resp.clicked() {
+                        out.copy_requests.push(entry.url.clone());
+                      }
+                      #[cfg(test)]
+                      store_test_id(
+                        ui.ctx(),
+                        ("downloads_copy_link_button_id", entry.download_id.0),
+                        copy_link_resp.id,
+                      );
+                    }
+                    DownloadStatus::Cancelled => {
+                      let retry_resp = ui.small_button("Retry");
+                      retry_resp.widget_info(|| {
                           egui::WidgetInfo::labeled(
                             egui::WidgetType::Button,
                             a11y_labels::download_retry_label(&entry.file_name),
                           )
                         });
-                        if retry_resp.clicked() {
-                          out.retry_requests.push((entry.tab_id, entry.url.clone()));
-                        }
+                      if retry_resp.clicked() {
+                        out.retry_requests.push((entry.tab_id, entry.url.clone()));
                       }
-                      DownloadStatus::Failed { .. } => {
-                        let retry_resp = ui.small_button("Retry");
-                        retry_resp.widget_info(|| {
+
+                      let copy_path_resp = ui.small_button("Copy path");
+                      copy_path_resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                          egui::WidgetType::Button,
+                          a11y_labels::download_copy_path_label(&entry.file_name),
+                        )
+                      });
+                      if copy_path_resp.clicked() {
+                        out.copy_requests.push(entry.path.display().to_string());
+                      }
+                      #[cfg(test)]
+                      store_test_id(
+                        ui.ctx(),
+                        ("downloads_copy_path_button_id", entry.download_id.0),
+                        copy_path_resp.id,
+                      );
+
+                      let copy_link_resp = ui.small_button("Copy link");
+                      copy_link_resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                          egui::WidgetType::Button,
+                          a11y_labels::download_copy_link_label(&entry.file_name),
+                        )
+                      });
+                      if copy_link_resp.clicked() {
+                        out.copy_requests.push(entry.url.clone());
+                      }
+                      #[cfg(test)]
+                      store_test_id(
+                        ui.ctx(),
+                        ("downloads_copy_link_button_id", entry.download_id.0),
+                        copy_link_resp.id,
+                      );
+                    }
+                    DownloadStatus::Failed { .. } => {
+                      let retry_resp = ui.small_button("Retry");
+                      retry_resp.widget_info(|| {
                           egui::WidgetInfo::labeled(
                             egui::WidgetType::Button,
                             a11y_labels::download_retry_label(&entry.file_name),
                           )
                         });
-                        if retry_resp.clicked() {
-                          out.retry_requests.push((entry.tab_id, entry.url.clone()));
-                        }
+                      if retry_resp.clicked() {
+                        out.retry_requests.push((entry.tab_id, entry.url.clone()));
                       }
-                    },
-                  );
-                });
+
+                      let copy_path_resp = ui.small_button("Copy path");
+                      copy_path_resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                          egui::WidgetType::Button,
+                          a11y_labels::download_copy_path_label(&entry.file_name),
+                        )
+                      });
+                      if copy_path_resp.clicked() {
+                        out.copy_requests.push(entry.path.display().to_string());
+                      }
+                      #[cfg(test)]
+                      store_test_id(
+                        ui.ctx(),
+                        ("downloads_copy_path_button_id", entry.download_id.0),
+                        copy_path_resp.id,
+                      );
+
+                      let copy_link_resp = ui.small_button("Copy link");
+                      copy_link_resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                          egui::WidgetType::Button,
+                          a11y_labels::download_copy_link_label(&entry.file_name),
+                        )
+                      });
+                      if copy_link_resp.clicked() {
+                        out.copy_requests.push(entry.url.clone());
+                      }
+                      #[cfg(test)]
+                      store_test_id(
+                        ui.ctx(),
+                        ("downloads_copy_link_button_id", entry.download_id.0),
+                        copy_link_resp.id,
+                      );
+                    }
+                  },
+                );
+              });
 
                 if let DownloadStatus::Failed { error } = &entry.status {
                   let err = error.trim();
@@ -576,7 +680,16 @@ mod tests {
     ctx.begin_frame(raw);
   }
 
-  fn expect_temp_id(ctx: &egui::Context, key: &'static str) -> egui::Id {
+  fn key_press(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+      key,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers::default(),
+    }
+  }
+
+  fn expect_temp_id(ctx: &egui::Context, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
     ctx
       .data(|d| d.get_temp::<egui::Id>(egui::Id::new(key)))
       .unwrap_or_else(|| panic!("expected temp id {key:?}"))
@@ -632,12 +745,7 @@ mod tests {
     // Frame 2: press Enter; should enqueue an open request for the injected download_dir.
     begin_frame(
       &ctx,
-      vec![egui::Event::Key {
-        key: egui::Key::Enter,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::default(),
-      }],
+      vec![key_press(egui::Key::Enter)],
     );
     let output = downloads_panel_ui(
       &ctx,
@@ -694,5 +802,131 @@ mod tests {
   fn download_matches_query_rejects_non_matches() {
     let entry = sample_entry("example.zip", "https://example.com/example.zip");
     assert!(!download_matches_query(&entry, "nope"));
+  }
+
+  #[test]
+  fn copy_link_action_emits_download_url() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::dark(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let mut search_query = String::new();
+
+    let download_id = DownloadId(42);
+    let entry = DownloadEntry {
+      download_id,
+      tab_id: TabId(1),
+      url: "https://example.com/file.zip".to_string(),
+      file_name: "file.zip".to_string(),
+      path: PathBuf::from("/tmp/file.zip"),
+      status: DownloadStatus::Completed,
+    };
+
+    // Frame 0: render once to capture widget ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[entry.clone()],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    let copy_link_id = expect_temp_id(&ctx, ("downloads_copy_link_button_id", download_id.0));
+
+    // Frame 1: focus the copy-link button.
+    ctx.memory_mut(|mem| mem.request_focus(copy_link_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[entry.clone()],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(copy_link_id)),
+      "expected focus on Copy link button"
+    );
+
+    // Frame 2: activate via keyboard.
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
+    let output = downloads_panel_ui(
+      &ctx,
+      &[entry.clone()],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+
+    assert_eq!(output.copy_requests, vec![entry.url.clone()]);
+  }
+
+  #[test]
+  fn copy_path_action_emits_file_path_string() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::dark(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let mut search_query = String::new();
+
+    let download_id = DownloadId(7);
+    let entry = DownloadEntry {
+      download_id,
+      tab_id: TabId(1),
+      url: "https://example.com/file.zip".to_string(),
+      file_name: "file.zip".to_string(),
+      path: PathBuf::from("downloads/file.zip"),
+      status: DownloadStatus::Failed {
+        error: "network error".to_string(),
+      },
+    };
+
+    // Frame 0: render once to capture widget ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[entry.clone()],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    let copy_path_id = expect_temp_id(&ctx, ("downloads_copy_path_button_id", download_id.0));
+
+    // Frame 1: focus the copy-path button.
+    ctx.memory_mut(|mem| mem.request_focus(copy_path_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[entry.clone()],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(copy_path_id)),
+      "expected focus on Copy path button"
+    );
+
+    // Frame 2: activate via keyboard.
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
+    let output = downloads_panel_ui(
+      &ctx,
+      &[entry.clone()],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+
+    assert_eq!(output.copy_requests, vec![entry.path.display().to_string()]);
   }
 }

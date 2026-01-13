@@ -14,10 +14,7 @@ fn normalize_context_title_or_url(title: Option<&str>, url: &str) -> String {
   let raw = if !title.is_empty() { title } else { url };
 
   // Strip newlines/tabs and collapse whitespace so screen readers get a concise name.
-  raw
-    .split_whitespace()
-    .collect::<Vec<_>>()
-    .join(" ")
+  raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn normalize_file_name(file_name: &str) -> String {
@@ -61,6 +58,16 @@ pub fn download_show_in_folder_label(file_name: &str) -> String {
 pub fn download_retry_label(file_name: &str) -> String {
   let file_name = normalize_file_name(file_name);
   format!("Retry download: {file_name}")
+}
+
+pub fn download_copy_link_label(file_name: &str) -> String {
+  let file_name = normalize_file_name(file_name);
+  format!("Copy download link: {file_name}")
+}
+
+pub fn download_copy_path_label(file_name: &str) -> String {
+  let file_name = normalize_file_name(file_name);
+  format!("Copy download file path: {file_name}")
 }
 
 pub fn bookmark_open_in_new_tab_label(title: Option<&str>, url: &str) -> String {
@@ -124,7 +131,10 @@ mod tests {
 
   #[test]
   fn download_labels_include_file_name() {
-    assert_eq!(download_cancel_label("file.zip"), "Cancel download: file.zip");
+    assert_eq!(
+      download_cancel_label("file.zip"),
+      "Cancel download: file.zip"
+    );
     assert_eq!(
       download_open_label("file.zip"),
       "Open downloaded file: file.zip"
@@ -134,6 +144,14 @@ mod tests {
       "Show file.zip in folder"
     );
     assert_eq!(download_retry_label("file.zip"), "Retry download: file.zip");
+    assert_eq!(
+      download_copy_link_label("file.zip"),
+      "Copy download link: file.zip"
+    );
+    assert_eq!(
+      download_copy_path_label("file.zip"),
+      "Copy download file path: file.zip"
+    );
   }
 
   #[test]
@@ -152,4 +170,3 @@ mod tests {
     );
   }
 }
-
