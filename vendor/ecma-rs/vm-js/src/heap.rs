@@ -3516,6 +3516,9 @@ impl Heap {
           return Err(VmError::PrototypeChainTooDeep);
         }
         steps += 1;
+        if visited.try_reserve(1).is_err() {
+          return Err(VmError::OutOfMemory);
+        }
         if !visited.insert(current) {
           return Err(VmError::PrototypeCycle);
         }
@@ -3559,6 +3562,9 @@ impl Heap {
       }
       steps += 1;
 
+      if visited.try_reserve(1).is_err() {
+        return Err(VmError::OutOfMemory);
+      }
       if !visited.insert(p) {
         return Err(VmError::PrototypeCycle);
       }

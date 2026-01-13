@@ -1,12 +1,13 @@
 use vm_js::{
   Agent, Budget, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Value, VmError, VmOptions,
+  MAX_PROTOTYPE_CHAIN,
 };
 use std::process;
 
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check"
   );
   process::exit(2);
 }
@@ -25,6 +26,33 @@ fn main() {
   };
   let len_code_units = parse_usize(args.next());
   let filler_bytes = parse_usize(args.next());
+
+  fn exhaust_address_space() -> Vec<Vec<u8>> {
+    // Allocate blocks of decreasing size until further allocations fail. This is used to drive
+    // `HashSet` growth paths into allocator OOM without aborting the process.
+    let mut blocks: Vec<Vec<u8>> = Vec::new();
+    // Pre-reserve space for block headers while memory is still available, so `push` cannot abort
+    // due to an infallible internal reallocation when we are near the RLIMIT_AS ceiling.
+    let _ = blocks.try_reserve(1024);
+    let mut chunk = 8 * 1024 * 1024usize;
+    while chunk >= 16 {
+      loop {
+        let mut block: Vec<u8> = Vec::new();
+        if block.try_reserve_exact(chunk).is_err() {
+          break;
+        }
+        block.resize(chunk, 0);
+        if blocks.try_reserve(1).is_err() {
+          // Keep the block alive even if we can't record it.
+          std::mem::forget(block);
+          return blocks;
+        }
+        blocks.push(block);
+      }
+      chunk /= 2;
+    }
+    blocks
+  }
 
   // Allocate a large filler buffer to reduce available headroom under a process-wide RLIMIT_AS. The
   // tests drive this harness under a small address-space limit so attacker-triggered allocations
@@ -114,27 +142,135 @@ fn main() {
     }
   }
 
-  let script = match scenario.as_str() {
-    "eval" => "eval(S)",
-    "function" => "Function(S, 'return 1;')",
-    "generator" => "Object.getPrototypeOf(function*(){}).constructor(S)",
-    "number" => "Number(S)",
-    "parseFloat" => "parseFloat(S)",
-    "regexp_compile" | "regexp" => "new RegExp(S)",
-    // Trigger per-iteration array index key formatting (`ToString(k)` for each `k < length`) under
-    // memory pressure. Previously this used intermediate Rust heap `String` allocations, which can
-    // abort the process on allocator OOM.
-    "arrayMap" => "Array(S.length).map(() => 0)",
+  let result = match scenario.as_str() {
+    "getPrototypeOf_proxy_chain" => {
+      // Create a Proxy so `Heap::object_prototype` traverses a proxy chain and uses a `HashSet`
+      // for cycle detection.
+      let proxy = {
+        let mut scope = agent.heap_mut().scope();
+        let handler = match scope.alloc_object() {
+          Ok(o) => o,
+          Err(err) => {
+            eprintln!("oom_harness: failed to allocate proxy handler: {err:?}");
+            process::exit(1);
+          }
+        };
+        let mut target = match scope.alloc_object() {
+          Ok(o) => o,
+          Err(err) => {
+            eprintln!("oom_harness: failed to allocate proxy target: {err:?}");
+            process::exit(1);
+          }
+        };
+
+        // Build a deep proxy chain so the visited `HashSet` needs to grow enough to allocate a
+        // large backing table (more likely to hit allocator OOM even when small free-lists exist).
+        for _ in 0..MAX_PROTOTYPE_CHAIN {
+          target = match scope.alloc_proxy(Some(target), Some(handler)) {
+            Ok(p) => p,
+            Err(err) => {
+              eprintln!("oom_harness: failed to allocate proxy: {err:?}");
+              process::exit(1);
+            }
+          };
+        }
+        target
+      };
+
+      // Consume remaining address space so the `HashSet` inside `object_prototype` hits allocator
+      // OOM.
+      let pressure = exhaust_address_space();
+      let _keep = (&filler, &pressure);
+
+      match agent.heap_mut().object_prototype(proxy) {
+        Ok(_) => Ok(Value::Undefined),
+        Err(err) => Err(err),
+      }
+    }
+    "setPrototypeOf_cycle_check" => {
+      // Create ordinary objects so `Heap::object_set_prototype` walks the prototype chain and uses
+      // a `HashSet` for cycle detection.
+      let (obj, proto) = {
+        let mut scope = agent.heap_mut().scope();
+        let obj = match scope.alloc_object() {
+          Ok(o) => o,
+          Err(err) => {
+            eprintln!("oom_harness: failed to allocate object: {err:?}");
+            process::exit(1);
+          }
+        };
+        let proto = match scope.alloc_object() {
+          Ok(o) => o,
+          Err(err) => {
+            eprintln!("oom_harness: failed to allocate prototype object: {err:?}");
+            process::exit(1);
+          }
+        };
+
+        // Create a deep prototype chain so `object_set_prototype` has to insert many entries into
+        // its visited `HashSet` during cycle detection.
+        //
+        // Use the unchecked setter to avoid O(N^2) work while building the chain.
+        let mut tail = proto;
+        for _ in 1..MAX_PROTOTYPE_CHAIN {
+          let next = match scope.alloc_object() {
+            Ok(o) => o,
+            Err(err) => {
+              eprintln!("oom_harness: failed to allocate prototype chain node: {err:?}");
+              process::exit(1);
+            }
+          };
+          if unsafe { scope.heap_mut().object_set_prototype_unchecked(tail, Some(next)) }.is_err() {
+            eprintln!("oom_harness: failed to link prototype chain");
+            process::exit(1);
+          }
+          tail = next;
+        }
+        (obj, proto)
+      };
+
+      // Consume remaining address space so the `HashSet` inside `object_set_prototype` hits
+      // allocator OOM.
+      let pressure = exhaust_address_space();
+      let _keep = (&filler, &pressure);
+
+      match agent.heap_mut().object_set_prototype(obj, Some(proto)) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(err) => Err(err),
+      }
+    }
+    "eval"
+    | "function"
+    | "generator"
+    | "number"
+    | "parseFloat"
+    | "regexp_compile"
+    | "regexp"
+    | "arrayMap" => {
+      let script = match scenario.as_str() {
+        "eval" => "eval(S)",
+        "function" => "Function(S, 'return 1;')",
+        "generator" => "Object.getPrototypeOf(function*(){}).constructor(S)",
+        "number" => "Number(S)",
+        "parseFloat" => "parseFloat(S)",
+        "regexp_compile" | "regexp" => "new RegExp(S)",
+        // Trigger per-iteration array index key formatting (`ToString(k)` for each `k < length`) under
+        // memory pressure. Previously this used intermediate Rust heap `String` allocations, which can
+        // abort the process on allocator OOM.
+        "arrayMap" => "Array(S.length).map(() => 0)",
+        _ => unreachable!(),
+      };
+
+      // Keep `filler` alive for the duration of the run.
+      let _keep = &filler;
+
+      agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
+    }
     other => {
       eprintln!("oom_harness: unknown scenario: {other}");
       process::exit(2);
     }
   };
-
-  // Keep `filler` alive for the duration of the run.
-  let _keep = &filler;
-
-  let result = agent.run_script("oom_harness.js", script, Budget::unlimited(1), None);
   match result {
     Err(VmError::OutOfMemory) => process::exit(0),
     // `parseFloat` is allowed to succeed here: upstream implementations may parse directly from

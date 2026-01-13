@@ -91,3 +91,17 @@ fn array_map_large_length_does_not_abort_on_oom() {
   // key formatting is fallible and does not abort under allocator OOM.
   run_oom_harness("arrayMap", 15_000_000);
 }
+
+#[test]
+fn get_prototype_of_proxy_chain_does_not_abort_on_oom() {
+  // `Object.getPrototypeOf(proxy)` walks proxy chains and uses a `HashSet` for cycle detection.
+  // Ensure allocator OOM does not abort the process.
+  run_oom_harness("getPrototypeOf_proxy_chain", 0);
+}
+
+#[test]
+fn set_prototype_of_cycle_check_does_not_abort_on_oom() {
+  // `Object.setPrototypeOf` performs cycle detection using a `HashSet`. Ensure allocator OOM is
+  // handled as `VmError::OutOfMemory` rather than aborting.
+  run_oom_harness("setPrototypeOf_cycle_check", 0);
+}
