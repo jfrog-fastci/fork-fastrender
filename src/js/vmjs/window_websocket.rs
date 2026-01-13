@@ -2266,6 +2266,22 @@ pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 
   heap: &mut Heap,
   env: WindowWebSocketIpcEnv,
 ) -> Result<WindowWebSocketBindings, VmError> {
+  // IPC-backed WebSockets currently do not route through a `ResourceFetcher` (cookie integration is
+  // handled by the network process). Keep `EnvState` shape consistent by installing a stub fetcher.
+  //
+  // Note: this exists only to satisfy `WindowWebSocketEnv`'s in-process fields; it should never be
+  // used by the IPC backend.
+  struct IpcStubFetcher;
+  impl ResourceFetcher for IpcStubFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<crate::resource::FetchedResource> {
+      Err(crate::error::Error::Other(format!(
+        "WebSocket IPC backend does not support ResourceFetcher::fetch ({url})"
+      )))
+    }
+  }
+
+  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(IpcStubFetcher);
+
   let WindowWebSocketIpcEnv {
     fetcher,
     document_url,

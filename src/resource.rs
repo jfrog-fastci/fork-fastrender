@@ -70,6 +70,11 @@ pub mod ipc_fetcher;
 pub mod disk_cache;
 pub mod web_fetch;
 pub mod web_url;
+// WebSocket client helper (cookie integration) used by the vm-js Window `WebSocket` bindings.
+//
+// This module depends on `tungstenite`, so keep it behind the `direct_websocket` feature so
+// renderer/minimal builds (and lightweight tooling like the WPT DOM runner) can compile with
+// `default-features = false`.
 #[cfg(feature = "direct_websocket")]
 pub(crate) mod websocket;
 pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};

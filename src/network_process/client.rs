@@ -301,7 +301,6 @@ impl NetworkClient {
     {
       Arc::new(DirectWebSocketBackend)
     }
-
     #[cfg(not(feature = "direct_websocket"))]
     {
       Arc::new(DisabledWebSocketBackend)
