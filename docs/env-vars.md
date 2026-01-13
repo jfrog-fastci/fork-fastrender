@@ -161,10 +161,13 @@ JSONL to a file), see [`scripts/capture_browser_perf_log.sh`](../scripts/capture
 - `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
   - When enabled, the `browser` binary emits JSONL (one JSON object per line) events describing
     frame-time samples, input latency, resize latency, and navigation TTFP measurements.
-    Event types: `frame`, `input`, `resize`, `navigation`, `ttfp`.
+    Event types: `frame`, `input`, `resize`, `navigation`, `ttfp`, `cpu_summary`.
   - Output:
     - Defaults to **stdout** (so it can be piped/collected).
     - If `FASTR_PERF_LOG_OUT` is set, the log is written to that path instead (created/truncated).
+  - CPU usage summary (`event=cpu_summary`, emitted ~once per second):
+    - `cpu_time_ms_total`: total process CPU time (user + system) since startup (milliseconds).
+    - `cpu_percent_recent`: CPU usage over the most recent interval (`Δcpu / Δwall * 100`).
   - Example:
     ```bash
     FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \

@@ -63,6 +63,7 @@ When enabled, you should expect events covering at least:
 - **TTFP** (“time to first paint”): navigation start → first presented frame for that tab.
 - **Frame time samples** during scroll and resize (used to spot jank and dropped frames).
 - **Input latency** samples (input arrival → visible UI response).
+- **Idle CPU / background spin**: once-per-second `cpu_summary` events with recent process CPU%.
 
 The exact schema evolves, but each JSON line is intended to be self-describing. Common fields
 include:
@@ -167,6 +168,7 @@ Event payload fields (current schema in `src/bin/browser.rs`, `perf_log::PerfEve
 - `event=resize`: `resize_to_present_ms`, `resize_ts_ms`, `new_width_px`, `new_height_px`.
 - `event=navigation`: `tab_id`, `navigation_seqno`, `url`.
 - `event=ttfp`: `tab_id`, `navigation_seqno`, `ttfp_ms`.
+- `event=cpu_summary`: `cpu_time_ms_total`, `cpu_percent_recent` (process CPU time over the last interval)
 
 To turn a captured JSONL log into p50/p95/max summary numbers, pipe it into the helper:
 

@@ -257,6 +257,7 @@ pub(crate) mod rayon_global;
 pub mod resource;
 #[cfg(target_os = "macos")]
 pub mod sandbox_exec;
+pub mod cpu;
 #[path = "ui/select_dropdown.rs"]
 pub mod select_dropdown;
 pub mod svg;

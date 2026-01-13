@@ -140,6 +140,13 @@ mod perf_log {
       navigation_seqno: u64,
       ttfp_ms: f64,
     },
+    CpuSummary {
+      schema_version: u32,
+      ts_ms: u64,
+      window_id: &'a str,
+      cpu_time_ms_total: u64,
+      cpu_percent_recent: f64,
+    },
   }
 
   pub fn write_event_jsonl<W: Write>(writer: &mut W, event: &PerfEvent<'_>) -> io::Result<()> {
@@ -3528,6 +3535,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fastrender::debug::trace::TraceHandle::disabled()
   };
 
+  let hud_enabled = browser_hud_enabled_from_env();
+  let mut cpu_sampler = ProcessCpuSampler::new(perf_log_writer.clone(), hud_enabled);
+
   // Keep a single profile autosave worker (bookmarks/history) across all windows.
   let (profile_autosave_tx, mut profile_autosave) =
     match fastrender::ui::ProfileAutosaveHandle::spawn(bookmarks_path.clone(), history_path.clone())
@@ -4732,12 +4742,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
-    // Ensure the event loop wakes up to flush pending autosaves (profile/session), if any.
+    // Process-wide CPU usage sampling (1Hz) for idle CPU diagnostics.
+    let cpu_sampled = cpu_sampler.sample_if_due(now);
+    let cpu_time_ms_total = cpu_sampler.cpu_time_ms_total();
+    let cpu_percent_recent = cpu_sampler.cpu_percent_recent();
+    for win in windows.values_mut() {
+      if let Some(hud) = win.app.hud.as_mut() {
+        hud.process_cpu_time_ms_total = cpu_time_ms_total;
+        hud.process_cpu_percent_recent = cpu_percent_recent;
+        if cpu_sampled && !win.app.window_occluded && !win.app.window_minimized {
+          win.app.window.request_redraw();
+        }
+      }
+    }
+
+    // Ensure the event loop wakes up to flush pending autosaves (profile/session), if any, and to
+    // keep process-level CPU sampling armed even when no frames are being drawn.
     let mut next_deadline = session_save_scheduler.next_deadline(now);
     if profile_autosave_tx.is_some() {
-      for deadline in [
-        history_autosave_send_scheduler.next_deadline(now),
-      ] {
+      for deadline in [history_autosave_send_scheduler.next_deadline(now)] {
         if let Some(deadline) = deadline {
           next_deadline = Some(match next_deadline {
             Some(existing) => existing.min(deadline),
@@ -4745,6 +4768,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           });
         }
       }
+    }
+    if let Some(deadline) = cpu_sampler.next_deadline() {
+      next_deadline = Some(match next_deadline {
+        Some(existing) => existing.min(deadline),
+        None => deadline,
+      });
     }
 
     if let Some(deadline) = next_deadline {
@@ -6028,6 +6057,8 @@ struct BrowserHud {
   last_upload_ms: f32,
   last_upload_bytes: u64,
   uploads_this_frame: u32,
+  process_cpu_time_ms_total: Option<u64>,
+  process_cpu_percent_recent: Option<f64>,
   text_buf: String,
 }
 
@@ -6064,6 +6095,8 @@ impl BrowserHud {
       last_upload_ms: 0.0,
       last_upload_bytes: 0,
       uploads_this_frame: 0,
+      process_cpu_time_ms_total: None,
+      process_cpu_percent_recent: None,
       text_buf: String::with_capacity(384),
     }
   }
@@ -6508,6 +6541,153 @@ impl IdleRepaintMonitor {
     self.had_resize_since_present = false;
     self.had_worker_activity_since_present = false;
     self.had_egui_repaint_request_since_present = repaint_after != std::time::Duration::MAX;
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+struct ProcessCpuSampler {
+  enabled: bool,
+  perf_log_writer: Option<
+    std::rc::Rc<
+      std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+    >,
+  >,
+  start_cpu_time: Option<std::time::Duration>,
+  last_sample_wall: Option<std::time::Instant>,
+  last_sample_cpu: Option<std::time::Duration>,
+  next_sample_deadline: Option<std::time::Instant>,
+  cpu_time_ms_total: Option<u64>,
+  cpu_percent_recent: Option<f64>,
+}
+
+#[cfg(feature = "browser_ui")]
+impl ProcessCpuSampler {
+  const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+  fn new(
+    perf_log_writer: Option<
+      std::rc::Rc<
+        std::cell::RefCell<
+          perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>,
+        >,
+      >,
+    >,
+    hud_enabled: bool,
+  ) -> Self {
+    let enabled = hud_enabled || perf_log_writer.is_some();
+    let now = std::time::Instant::now();
+
+    let mut sampler = Self {
+      enabled,
+      perf_log_writer,
+      start_cpu_time: None,
+      last_sample_wall: None,
+      last_sample_cpu: None,
+      next_sample_deadline: None,
+      cpu_time_ms_total: None,
+      cpu_percent_recent: None,
+    };
+
+    if enabled {
+      sampler.prime(now);
+    }
+
+    sampler
+  }
+
+  fn prime(&mut self, now: std::time::Instant) {
+    if let Some(cpu) = fastrender::cpu::current_process_cpu_time() {
+      self.start_cpu_time = Some(cpu);
+      self.last_sample_wall = Some(now);
+      self.last_sample_cpu = Some(cpu);
+      self.cpu_time_ms_total = Some(0);
+      self.cpu_percent_recent = Some(0.0);
+    }
+    self.next_sample_deadline = now.checked_add(Self::SAMPLE_INTERVAL);
+  }
+
+  fn next_deadline(&self) -> Option<std::time::Instant> {
+    if !self.enabled {
+      return None;
+    }
+    self.next_sample_deadline
+  }
+
+  fn cpu_time_ms_total(&self) -> Option<u64> {
+    self.cpu_time_ms_total
+  }
+
+  fn cpu_percent_recent(&self) -> Option<f64> {
+    self.cpu_percent_recent
+  }
+
+  /// Sample process CPU time if the 1Hz interval has elapsed.
+  ///
+  /// Returns `true` when metrics were updated (and a `cpu_summary` event may have been emitted).
+  fn sample_if_due(&mut self, now: std::time::Instant) -> bool {
+    if !self.enabled {
+      return false;
+    }
+
+    let Some(deadline) = self.next_sample_deadline else {
+      return false;
+    };
+    if now < deadline {
+      return false;
+    }
+
+    // Schedule the next sample first so a failed sample doesn't cause a tight loop.
+    self.next_sample_deadline = now.checked_add(Self::SAMPLE_INTERVAL);
+
+    let Some(current_cpu) = fastrender::cpu::current_process_cpu_time() else {
+      // Best-effort: keep old values and try again on the next interval.
+      return false;
+    };
+
+    let Some(start_cpu) = self.start_cpu_time else {
+      // First successful sample: establish a baseline for subsequent deltas.
+      self.start_cpu_time = Some(current_cpu);
+      self.last_sample_wall = Some(now);
+      self.last_sample_cpu = Some(current_cpu);
+      self.cpu_time_ms_total = Some(0);
+      self.cpu_percent_recent = Some(0.0);
+      return true;
+    };
+
+    let prev_wall = self.last_sample_wall.unwrap_or(now);
+    let prev_cpu = self.last_sample_cpu.unwrap_or(current_cpu);
+
+    let delta_wall = now.saturating_duration_since(prev_wall);
+    let delta_cpu = current_cpu.checked_sub(prev_cpu).unwrap_or_default();
+    let percent = if delta_wall.is_zero() {
+      0.0
+    } else {
+      (delta_cpu.as_secs_f64() / delta_wall.as_secs_f64()) * 100.0
+    };
+    let percent = if percent.is_finite() { percent } else { 0.0 };
+
+    let total_cpu = current_cpu.checked_sub(start_cpu).unwrap_or_default();
+    let total_ms = u64::try_from(total_cpu.as_millis()).unwrap_or(u64::MAX);
+
+    self.last_sample_wall = Some(now);
+    self.last_sample_cpu = Some(current_cpu);
+    self.cpu_time_ms_total = Some(total_ms);
+    self.cpu_percent_recent = Some(percent);
+
+    if let Some(writer) = self.perf_log_writer.as_ref() {
+      let mut writer = writer.borrow_mut();
+      let event = perf_log::PerfEvent::CpuSummary {
+        schema_version: perf_log::SCHEMA_VERSION,
+        ts_ms: writer.ms_since_start(now),
+        window_id: "process",
+        cpu_time_ms_total: total_ms,
+        cpu_percent_recent: percent,
+      };
+      writer.emit(&event);
+    }
+
+    true
   }
 }
 
@@ -11253,6 +11433,21 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       }
       _ => {
         let _ = writeln!(&mut hud.text_buf, "ui: - ms  - fps");
+      }
+    }
+
+    match (hud.process_cpu_percent_recent, hud.process_cpu_time_ms_total) {
+      (Some(percent), Some(total_ms)) if percent.is_finite() => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "cpu: {percent:.1}%  total: {total_ms}ms"
+        );
+      }
+      (None, Some(total_ms)) => {
+        let _ = writeln!(&mut hud.text_buf, "cpu: -%  total: {total_ms}ms");
+      }
+      _ => {
+        let _ = writeln!(&mut hud.text_buf, "cpu: -%  total: -ms");
       }
     }
 
