@@ -74,7 +74,7 @@ fn node_id_by_id_attr(root: &DomNode, id_attr: &str) -> usize {
 }
 
 #[test]
-fn accesskit_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
+fn a11y_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
@@ -142,7 +142,7 @@ fn accesskit_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
 
   // The target element is at 1500px; a scroll-into-view request should scroll the viewport down so
   // it becomes visible.
-  let frame = {
+  let scroll = {
     let deadline = Instant::now() + DEFAULT_TIMEOUT;
     loop {
       let remaining = deadline
@@ -150,13 +150,13 @@ fn accesskit_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
         .unwrap_or(Duration::from_secs(0));
       assert!(
         remaining > Duration::ZERO,
-        "timed out waiting for scroll-into-view frame"
+        "timed out waiting for scroll-into-view update"
       );
       let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
       match msg {
-        WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
-          if frame.scroll_state.viewport.y > 0.0 {
-            break frame;
+        WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if got == tab_id => {
+          if scroll.viewport.y > 0.0 {
+            break scroll;
           }
         }
         _ => {}
@@ -164,7 +164,7 @@ fn accesskit_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
     }
   };
 
-  let scroll_y = frame.scroll_state.viewport.y;
+  let scroll_y = scroll.viewport.y;
   assert!(
     scroll_y.is_finite() && scroll_y > 0.0,
     "expected scroll y > 0, got {scroll_y}"

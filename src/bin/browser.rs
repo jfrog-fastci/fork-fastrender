@@ -13148,6 +13148,7 @@ impl App {
       UiToWorker::Scroll { .. }
         | UiToWorker::ScrollTo { .. }
         | UiToWorker::AccessKitActionRequest { .. }
+        | UiToWorker::A11yScrollIntoView { .. }
     ) {
       self
         .overlay_scrollbar_visibility
@@ -13200,6 +13201,10 @@ impl App {
       | UiToWorker::FilePickerChoose { tab_id, .. }
       | UiToWorker::FilePickerCancel { tab_id }
       | UiToWorker::TextInput { tab_id, .. }
+      | UiToWorker::A11ySetFocus { tab_id, .. }
+      | UiToWorker::A11yActivate { tab_id, .. }
+      | UiToWorker::A11yScrollIntoView { tab_id, .. }
+      | UiToWorker::A11yShowContextMenu { tab_id, .. }
       | UiToWorker::A11ySetTextValue { tab_id, .. }
       | UiToWorker::A11ySetTextSelectionRange { tab_id, .. }
       | UiToWorker::ImePreedit { tab_id, .. }
@@ -13235,7 +13240,8 @@ impl App {
           | UiToWorker::StopLoading { .. }
           | UiToWorker::ViewportChanged { .. }
           | UiToWorker::RequestRepaint { .. }
-          | UiToWorker::ContextMenuRequest { .. } => true,
+          | UiToWorker::ContextMenuRequest { .. }
+          | UiToWorker::A11yShowContextMenu { .. } => true,
           UiToWorker::Scroll { delta_css, .. } => {
             let dx = if delta_css.0.is_finite() {
               delta_css.0
@@ -13317,6 +13323,9 @@ impl App {
           | UiToWorker::Scroll { .. }
           | UiToWorker::ScrollTo { .. }
           | UiToWorker::AccessKitActionRequest { .. }
+          | UiToWorker::A11ySetFocus { .. }
+          | UiToWorker::A11yActivate { .. }
+          | UiToWorker::A11yScrollIntoView { .. }
           | UiToWorker::PointerMove { .. }
           | UiToWorker::PointerDown { .. }
           | UiToWorker::PointerUp { .. }
@@ -13351,6 +13360,7 @@ impl App {
           UiToWorker::SetMediaPreferences { .. }
           | UiToWorker::SetDebugLogEnabled { .. }
           | UiToWorker::ContextMenuRequest { .. }
+          | UiToWorker::A11yShowContextMenu { .. }
           | UiToWorker::CreateTab { .. }
           | UiToWorker::NewTab { .. }
           | UiToWorker::CloseTab { .. }
@@ -24315,18 +24325,9 @@ impl App {
               anchor_points: None,
               match_pos_css: false,
             });
-            self.send_worker_msg(fastrender::ui::UiToWorker::AccessKitActionRequest {
+            self.send_worker_msg(fastrender::ui::UiToWorker::A11yShowContextMenu {
               tab_id: active_tab,
-              request: accesskit::ActionRequest {
-                action: accesskit::Action::ShowContextMenu,
-                // Egui only tells us that the page host widget received an action request, not which
-                // page element should anchor the menu. Use a stable non-zero sentinel; the worker
-                // will fall back to the focused node when appropriate.
-                target: accesskit::NodeId(
-                  std::num::NonZeroU128::new(1).expect("non-zero sentinel node id"),
-                ),
-                data: None,
-              },
+              node_id: None,
             });
           }
         }

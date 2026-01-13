@@ -3,7 +3,6 @@
 use super::support;
 use fastrender::ui::messages::{KeyAction, NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::num::NonZeroU128;
 use std::time::Duration;
 
 // Rendering + layout can take a few seconds under CI contention.
@@ -24,7 +23,7 @@ a { display: block; width: 200px; height: 80px; background: #eee; }
 }
 
 #[test]
-fn accesskit_show_context_menu_on_focused_link_reports_link_url() {
+fn a11y_show_context_menu_on_focused_link_reports_link_url() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let (_site, index_url) = fixture();
 
@@ -67,14 +66,9 @@ fn accesskit_show_context_menu_on_focused_link_reports_link_url() {
   // Simulate an assistive-technology "Show context menu" action.
   worker
     .ui_tx
-    .send(UiToWorker::AccessKitActionRequest {
+    .send(UiToWorker::A11yShowContextMenu {
       tab_id,
-      request: accesskit::ActionRequest {
-        action: accesskit::Action::ShowContextMenu,
-        // Use a non-page `NodeId` so the worker falls back to the currently focused DOM node.
-        target: accesskit::NodeId(NonZeroU128::new(1).expect("non-zero node id")),
-        data: None,
-      },
+      node_id: None,
     })
     .unwrap();
 

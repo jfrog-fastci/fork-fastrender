@@ -3584,6 +3584,9 @@ impl BrowserRuntime {
       } => {
         self.handle_context_menu_request(tab_id, pos_css, modifiers);
       }
+      UiToWorker::A11yShowContextMenu { tab_id, node_id } => {
+        self.handle_a11y_show_context_menu(tab_id, node_id);
+      }
       UiToWorker::SelectDropdownChoose {
         tab_id,
         select_node_id,
@@ -7428,6 +7431,54 @@ impl BrowserRuntime {
       can_paste,
       can_select_all,
     });
+  }
+
+  fn handle_a11y_show_context_menu(&mut self, tab_id: TabId, node_id: Option<usize>) {
+    let pos_css = {
+      let Some(tab) = self.tabs.get(&tab_id) else {
+        return;
+      };
+
+      let target = node_id.or(tab.interaction.interaction_state().focused);
+      let anchor_rect = target.and_then(|target| {
+        tab.document.as_ref().and_then(|doc| {
+          doc.prepared().and_then(|prepared| {
+            styled_node_anchor_css(
+              prepared.box_tree(),
+              prepared.fragment_tree(),
+              &tab.scroll_state,
+              target,
+            )
+          })
+        })
+      });
+
+      let mut pos = if let Some(rect) = anchor_rect {
+        let center = rect.center();
+        (center.x, center.y)
+      } else {
+        // Fallback: viewport center in viewport-local CSS pixels.
+        (
+          tab.viewport_css.0 as f32 / 2.0,
+          tab.viewport_css.1 as f32 / 2.0,
+        )
+      };
+
+      let max_x = tab.viewport_css.0 as f32;
+      let max_y = tab.viewport_css.1 as f32;
+      let sanitize = |v: f32, max: f32| {
+        if v.is_finite() {
+          v.clamp(0.0, max)
+        } else {
+          0.0
+        }
+      };
+      pos.0 = sanitize(pos.0, max_x);
+      pos.1 = sanitize(pos.1, max_y);
+      pos
+    };
+
+    self.handle_context_menu_request(tab_id, pos_css, crate::ui::PointerModifiers::NONE);
   }
 
   fn handle_select_dropdown_choose(

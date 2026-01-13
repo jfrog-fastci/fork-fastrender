@@ -806,6 +806,15 @@ pub enum UiToWorker {
     tab_id: TabId,
     node_id: usize,
   },
+  /// Accessibility action: show the context menu for a node (assistive technology / screen readers).
+  ///
+  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
+  ///
+  /// When `None`, workers may fall back to the currently focused node.
+  A11yShowContextMenu {
+    tab_id: TabId,
+    node_id: Option<usize>,
+  },
   /// Send a user action to a media element (play/pause, seek, volume, mute).
   MediaCommand {
     tab_id: TabId,
