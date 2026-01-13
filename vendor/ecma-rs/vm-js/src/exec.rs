@@ -6151,6 +6151,7 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     binding: ClassBinding<'_>,
     func_name: &str,
+    inferred_name: Option<PropertyKey>,
     extends: Option<&Node<Expr>>,
     members: &[Node<ClassMember>],
     extends_null: bool,
@@ -6407,6 +6408,28 @@ impl<'a> Evaluator<'a> {
       super_value,
       instance_field_count,
     )?;
+
+    // ECMA-262 `NamedEvaluation` assigns inferred names to anonymous class expressions in specific
+    // syntactic positions (e.g. `{ key: class {} }`).
+    //
+    // This must happen *before* defining class elements: a class can define a `static name() {}`
+    // method which should override the constructor's initial `"name"` property. Setting the name
+    // after class evaluation would overwrite the method.
+    if func_name.is_empty() {
+      if let Some(name_key) = inferred_name {
+        let mut name_scope = scope.reborrow();
+        name_scope.push_root(Value::Object(func_obj))?;
+        match name_key {
+          PropertyKey::String(s) => {
+            name_scope.push_root(Value::String(s))?;
+          }
+          PropertyKey::Symbol(sym) => {
+            name_scope.push_root(Value::Symbol(sym))?;
+          }
+        }
+        crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
+      }
+    }
 
     // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
     // object so `[[Construct]]` can implement class-field initialization and derived `super()`
@@ -7271,6 +7294,7 @@ impl<'a> Evaluator<'a> {
         scope,
         inner_binding,
         func_name,
+        None,
         decl.stx.extends.as_ref(),
         &decl.stx.members,
         extends_null,
@@ -7299,6 +7323,24 @@ impl<'a> Evaluator<'a> {
   }
 
   fn eval_class_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<ClassExpr>) -> Result<Value, VmError> {
+    self.eval_class_expr_inner(scope, expr, None)
+  }
+
+  fn eval_class_expr_named(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &Node<ClassExpr>,
+    inferred_name: PropertyKey,
+  ) -> Result<Value, VmError> {
+    self.eval_class_expr_inner(scope, expr, Some(inferred_name))
+  }
+
+  fn eval_class_expr_inner(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &Node<ClassExpr>,
+    inferred_name: Option<PropertyKey>,
+  ) -> Result<Value, VmError> {
     let extends_null = match expr.stx.extends.as_ref() {
       None => false,
       Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
@@ -7321,6 +7363,7 @@ impl<'a> Evaluator<'a> {
           scope,
           ClassBinding::None,
           "",
+          inferred_name,
           expr.stx.extends.as_ref(),
           &expr.stx.members,
           extends_null,
@@ -7335,6 +7378,7 @@ impl<'a> Evaluator<'a> {
         scope,
         ClassBinding::Immutable(name.stx.name.as_str()),
         name.stx.name.as_str(),
+        None,
         expr.stx.extends.as_ref(),
         &expr.stx.members,
         extends_null,
@@ -8445,6 +8489,78 @@ impl<'a> Evaluator<'a> {
 
   fn eval_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<Expr>) -> Result<Value, VmError> {
     Ok(self.eval_expr_chain(scope, expr)?.into_value())
+  }
+
+  /// ECMA-262-ish `NamedEvaluation` helper used by object literal property evaluation.
+  ///
+  /// This implements the observable behaviour of `SetFunctionName` for syntactic anonymous
+  /// function/class definitions used as values, using the provided property key as the inferred
+  /// name.
+  ///
+  /// For anonymous *class* expressions, the inferred name must be applied **before** defining class
+  /// elements (so a `static name() {}` element can override the constructor's initial `"name"`
+  /// property). This requires special handling during class construction.
+  fn eval_expr_named(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &Node<Expr>,
+    name: PropertyKey,
+  ) -> Result<Value, VmError> {
+    // This is intentionally syntactic (based on the expression kind), not dynamic (based on the
+    // runtime value), so e.g. `{ x: someFunc }` does not rename `someFunc` even if its current
+    // `.name` is empty.
+    let is_anonymous_function_def = match &*expr.stx {
+      Expr::Func(func) => func.stx.name.is_none(),
+      Expr::ArrowFunc(_) => true,
+      Expr::Class(class) => class.stx.name.is_none(),
+      _ => false,
+    };
+
+    if !is_anonymous_function_def {
+      return self.eval_expr(scope, expr);
+    }
+
+    // Root the inferred name key across evaluation and `SetFunctionName` (which can allocate).
+    let mut named_scope = scope.reborrow();
+    match name {
+      PropertyKey::String(s) => named_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(sym) => named_scope.push_root(Value::Symbol(sym))?,
+    };
+
+    // Anonymous class expressions must receive the inferred name during class construction.
+    if let Expr::Class(class_expr) = &*expr.stx {
+      if class_expr.stx.name.is_none() {
+        // `eval_expr` would have charged one tick at expression entry; preserve that budget behaviour
+        // when we bypass it for class `NamedEvaluation`.
+        self.tick()?;
+        return self.eval_class_expr_named(&mut named_scope, class_expr, name);
+      }
+    }
+
+    let value = self.eval_expr(&mut named_scope, expr)?;
+    named_scope.push_root(value)?;
+
+    if let Value::Object(func_obj) = value {
+      // `SetFunctionName` only applies to actual Function objects (not callable Proxies).
+      let func_name = match named_scope.heap().get_function(func_obj) {
+        Ok(f) => Some(f.name),
+        Err(VmError::NotCallable) => None,
+        Err(err) => return Err(err),
+      };
+      if let Some(current_name) = func_name {
+        // Only infer a name for empty-name functions.
+        if named_scope
+          .heap()
+          .get_string(current_name)?
+          .as_code_units()
+          .is_empty()
+        {
+          crate::function_properties::set_function_name(&mut named_scope, func_obj, name, None)?;
+        }
+      }
+    }
+
+    Ok(value)
   }
 
   fn eval_expr_chain(
@@ -9697,20 +9813,16 @@ impl<'a> Evaluator<'a> {
 
             match val {
               ClassOrObjVal::Prop(Some(value_expr)) => {
-                // Spec-ish `SetFunctionName` behaviour: for anonymous function/class definitions used
-                // as property values, infer `name` from the property key.
-                //
-                // This is intentionally syntactic (based on the expression kind), not dynamic (based
-                // on the runtime value), so e.g. `{ x: someFunc }` does not rename `someFunc` even
-                // if its current `.name` is empty.
-                let is_anonymous_function_def = match &*value_expr.stx {
-                  Expr::Func(func) => func.stx.name.is_none(),
-                  Expr::ArrowFunc(_) => true,
-                  Expr::Class(class) => class.stx.name.is_none(),
-                  _ => false,
+                let value = if is_proto_setter {
+                  // `__proto__` setters do not define a property and do not participate in
+                  // `SetFunctionName` inference.
+                  self.eval_expr(&mut member_scope, value_expr)?
+                } else {
+                  // Spec-ish `NamedEvaluation` / `SetFunctionName` behaviour: for anonymous
+                  // function/class definitions used as property values, infer `name` from the
+                  // property key.
+                  self.eval_expr_named(&mut member_scope, value_expr, key)?
                 };
-
-                let value = self.eval_expr(&mut member_scope, value_expr)?;
                 member_scope.push_root(value)?;
                 if is_proto_setter {
                   match value {
@@ -9725,33 +9837,6 @@ impl<'a> Evaluator<'a> {
                     _ => {}
                   }
                 } else {
-                  if is_anonymous_function_def {
-                    if let Value::Object(func_obj) = value {
-                      // `SetFunctionName` only applies to actual Function objects (not callable
-                      // Proxies).
-                      let func_name = match member_scope.heap().get_function(func_obj) {
-                        Ok(f) => Some(f.name),
-                        Err(VmError::NotCallable) => None,
-                        Err(err) => return Err(err),
-                      };
-                      if let Some(current_name) = func_name {
-                        // Only infer a name for empty-name functions.
-                        if member_scope
-                          .heap()
-                          .get_string(current_name)?
-                          .as_code_units()
-                          .is_empty()
-                        {
-                          crate::function_properties::set_function_name(
-                            &mut member_scope,
-                            func_obj,
-                            key,
-                            None,
-                          )?;
-                        }
-                      }
-                    }
-                  }
                   member_scope.create_data_property_or_throw(obj, key, value)?;
                 }
               }

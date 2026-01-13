@@ -2441,7 +2441,7 @@ impl<'vm> HirEvaluator<'vm> {
           self.env.set_lexical_env(scope.heap_mut(), class_env);
 
           // Evaluate the class definition with an inner immutable name binding.
-          let result = self.eval_class(scope, decl_body, Some(name.as_str()), name.as_str());
+          let result = self.eval_class(scope, decl_body, Some(name.as_str()), name.as_str(), None);
           // Restore the outer environment regardless of how class evaluation completes.
           self.env.set_lexical_env(scope.heap_mut(), outer);
           let func_obj = result?;
@@ -3276,7 +3276,7 @@ impl<'vm> HirEvaluator<'vm> {
           .unwrap_or("")
           .to_owned();
 
-        self.eval_class_expr(scope, *class_body, name.as_ref().map(|_| name_str.as_str()))
+        self.eval_class_expr(scope, *class_body, name.as_ref().map(|_| name_str.as_str()), None)
       }
       hir_js::ExprKind::Template(tpl) => self.eval_template_literal(scope, body, tpl),
       hir_js::ExprKind::TaggedTemplate { tag, template } => {
@@ -6778,6 +6778,78 @@ impl<'vm> HirEvaluator<'vm> {
     }
   }
 
+  /// ECMA-262-ish `NamedEvaluation` helper used by object literal property evaluation.
+  ///
+  /// This implements the observable behaviour of `SetFunctionName` for syntactic anonymous
+  /// function/class definitions used as values, using the provided property key as the inferred
+  /// name.
+  ///
+  /// For anonymous *class* expressions, the inferred name must be applied **before** defining class
+  /// elements (so a `static name() {}` element can override the constructor's initial `"name"`
+  /// property). This requires special handling during class construction.
+  fn eval_expr_named(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    expr_id: hir_js::ExprId,
+    name: PropertyKey,
+  ) -> Result<Value, VmError> {
+    // This is intentionally syntactic (based on the expression kind), not dynamic (based on the
+    // runtime value), so e.g. `{ x: someFunc }` does not rename `someFunc` even if its current
+    // `.name` is empty.
+    let is_anonymous_function_def = {
+      let expr = self.get_expr(body, expr_id)?;
+      match &expr.kind {
+        hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
+        hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
+        _ => false,
+      }
+    };
+
+    if !is_anonymous_function_def {
+      return self.eval_expr(scope, body, expr_id);
+    }
+
+    // Root the inferred name key across evaluation and `SetFunctionName` (which can allocate).
+    let mut named_scope = scope.reborrow();
+    root_property_key(&mut named_scope, name)?;
+
+    // Anonymous class expressions must receive the inferred name during class construction.
+    if let hir_js::ExprKind::ClassExpr { body: class_body, name: None, .. } =
+      &self.get_expr(body, expr_id)?.kind
+    {
+      // `eval_expr` would have charged one tick at expression entry; preserve that budget behaviour
+      // when we bypass it for class `NamedEvaluation`.
+      self.vm.tick()?;
+      return self.eval_class_expr(&mut named_scope, *class_body, None, Some(name));
+    }
+
+    let v = self.eval_expr(&mut named_scope, body, expr_id)?;
+    named_scope.push_root(v)?;
+
+    if let Value::Object(func_obj) = v {
+      // `SetFunctionName` only applies to actual Function objects (not callable Proxies).
+      let func_name = match named_scope.heap().get_function(func_obj) {
+        Ok(f) => Some(f.name),
+        Err(VmError::NotCallable) => None,
+        Err(err) => return Err(err),
+      };
+      if let Some(current_name) = func_name {
+        // Only infer a name for empty-name functions.
+        if named_scope
+          .heap()
+          .get_string(current_name)?
+          .as_code_units()
+          .is_empty()
+        {
+          crate::function_properties::set_function_name(&mut named_scope, func_obj, name, None)?;
+        }
+      }
+    }
+
+    Ok(v)
+  }
+
   fn eval_object_literal(
     &mut self,
     scope: &mut Scope<'_>,
@@ -6838,21 +6910,6 @@ impl<'vm> HirEvaluator<'vm> {
             continue;
           }
 
-          // Spec-ish name inference: for methods and anonymous function definitions used as property
-          // values, apply `SetFunctionName` with the property key.
-          //
-          // This is intentionally syntactic (based on the HIR expression kind), not dynamic (based
-          // on the runtime value), so e.g. `{ x: someFunc }` does not rename `someFunc` even if its
-          // current `.name` is empty.
-          let is_anonymous_function_def = {
-            let expr = self.get_expr(body, *value)?;
-            match &expr.kind {
-              hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
-              hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
-              _ => false,
-            }
-          };
-
           let key = self.eval_object_key(&mut member_scope, body, key)?;
           root_property_key(&mut member_scope, key)?;
 
@@ -6879,32 +6936,18 @@ impl<'vm> HirEvaluator<'vm> {
               _ => self.eval_expr(&mut member_scope, body, *value)?,
             }
           } else {
-            self.eval_expr(&mut member_scope, body, *value)?
+            // Spec-ish `NamedEvaluation` / `SetFunctionName` behaviour: for anonymous function/class
+            // definitions used as property values, infer `name` from the property key.
+            self.eval_expr_named(&mut member_scope, body, *value, key)?
           };
 
           // Root the value across `SetFunctionName` and `CreateDataProperty`.
           member_scope.push_root(v)?;
 
-          if *method || is_anonymous_function_def {
+          // Methods use the property key as the function `name`.
+          if *method {
             if let Value::Object(func_obj) = v {
-              // `SetFunctionName` only applies to actual Function objects (not callable Proxies).
-              let func_name = match member_scope.heap().get_function(func_obj) {
-                Ok(f) => Some(f.name),
-                Err(VmError::NotCallable) => None,
-                Err(err) => return Err(err),
-              };
-
-              if let Some(current_name) = func_name {
-                // Only infer a name for empty-name functions.
-                if member_scope
-                  .heap()
-                  .get_string(current_name)?
-                  .as_code_units()
-                  .is_empty()
-                {
-                  crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
-                }
-              }
+              crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
             }
           }
           let _ = member_scope.create_data_property(obj_val, key, v)?;
@@ -7223,6 +7266,7 @@ impl<'vm> HirEvaluator<'vm> {
     scope: &mut Scope<'_>,
     body_id: hir_js::BodyId,
     name: Option<&str>,
+    inferred_name: Option<PropertyKey>,
   ) -> Result<Value, VmError> {
     // Avoid borrowing the body through `self` across calls that mutably borrow `self`.
     let hir = self.script.hir.clone();
@@ -7245,11 +7289,11 @@ impl<'vm> HirEvaluator<'vm> {
       let class_env = scope.env_create(Some(outer))?;
       self.env.set_lexical_env(scope.heap_mut(), class_env);
 
-      let result = self.eval_class(scope, class_body, Some(name), name);
+      let result = self.eval_class(scope, class_body, Some(name), name, None);
       self.env.set_lexical_env(scope.heap_mut(), outer);
       Ok(Value::Object(result?))
     } else {
-      let result = self.eval_class(scope, class_body, None, "");
+      let result = self.eval_class(scope, class_body, None, "", inferred_name);
       Ok(Value::Object(result?))
     }
   }
@@ -7260,6 +7304,7 @@ impl<'vm> HirEvaluator<'vm> {
     class_body: &hir_js::Body,
     binding_name: Option<&str>,
     func_name: &str,
+    inferred_name: Option<PropertyKey>,
   ) -> Result<GcObject, VmError> {
     // Per ECMA-262, class definitions are always strict mode code.
     let saved_strict = self.strict;
@@ -7373,7 +7418,22 @@ impl<'vm> HirEvaluator<'vm> {
         None
       };
 
-      let func_obj = self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+       let func_obj = self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+
+       // `NamedEvaluation` assigns inferred names to anonymous class expressions in specific syntactic
+       // positions (e.g. `{ key: class {} }`).
+       //
+       // This must happen *before* defining class elements: a class can define a `static name() {}`
+       // method which should override the constructor's initial `"name"` property. Setting the name
+       // after class evaluation would overwrite the method.
+       if func_name.is_empty() {
+         if let Some(name_key) = inferred_name {
+           let mut name_scope = scope.reborrow();
+           name_scope.push_root(Value::Object(func_obj))?;
+           root_property_key(&mut name_scope, name_key)?;
+           crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)?;
+         }
+       }
 
       // Initialize the requested binding now that the class constructor object exists.
       if let Some(name) = binding_name {
