@@ -289,6 +289,9 @@ fn js_string_to_utf8_bytes_limited(
     if next_len > MAX_BLOB_BYTES {
       return Err(VmError::TypeError("Blob size exceeds maximum length"));
     }
+    out
+      .try_reserve(encoded.len())
+      .map_err(|_| VmError::OutOfMemory)?;
     out.extend_from_slice(encoded.as_bytes());
   }
   Ok(())
@@ -997,6 +1000,31 @@ mod tests {
     };
     assert!(realm.heap().is_array_buffer_object(ab_obj));
     assert_eq!(realm.heap().array_buffer_data(ab_obj)?, b"hi");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn blob_string_part_replaces_invalid_surrogates() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let promise = realm.exec_script(r"new Blob(['\uD800']).text()")?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Blob.text must return a Promise",
+      ));
+    };
+    assert_eq!(
+      realm.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = realm.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Blob.text promise missing result",
+      ));
+    };
+    assert_eq!(get_string(realm.heap(), result), "\u{FFFD}");
 
     realm.teardown();
     Ok(())
