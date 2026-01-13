@@ -120,13 +120,15 @@ fn drag_autoscroll_delta_x(pointer_pos: Pos2, viewport_rect: Rect, dt: f32) -> f
   }
 
   // Only auto-scroll while the pointer remains roughly aligned with the strip; this avoids
-  // unexpected scrolling if the user drags far above/below the tab strip.
-  if pointer_pos.y < viewport_rect.top() || pointer_pos.y > viewport_rect.bottom() {
+  // unexpected scrolling if the user drags far away (e.g. starting a detach gesture). Allow some
+  // slack so dragging slightly above/below the strip still scrolls (common browser UX).
+  let slack = TAB_DETACH_DRAG_THRESHOLD.max(zone);
+  if pointer_pos.y < viewport_rect.top() - slack || pointer_pos.y > viewport_rect.bottom() + slack {
     return 0.0;
   }
   // Similarly, ignore pointer positions that are far outside the viewport horizontally (we only
   // want to auto-scroll when the user is near an edge).
-  if pointer_pos.x < viewport_rect.left() - zone || pointer_pos.x > viewport_rect.right() + zone {
+  if pointer_pos.x < viewport_rect.left() - slack || pointer_pos.x > viewport_rect.right() + slack {
     return 0.0;
   }
 
@@ -3683,12 +3685,18 @@ mod tests {
   #[test]
   fn drag_autoscroll_delta_x_is_zero_when_pointer_outside_viewport_y() {
     let rect = Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(200.0, 10.0));
+    let zone = DRAG_AUTOSCROLL_EDGE_ZONE_PX.min(rect.width() * 0.5);
+    let slack = TAB_DETACH_DRAG_THRESHOLD.max(zone);
     assert_eq!(
-      drag_autoscroll_delta_x(Pos2::new(rect.left(), rect.top() - 5.0), rect, 1.0),
+      drag_autoscroll_delta_x(Pos2::new(rect.left(), rect.top() - slack - 1.0), rect, 1.0),
       0.0
     );
     assert_eq!(
-      drag_autoscroll_delta_x(Pos2::new(rect.left(), rect.bottom() + 5.0), rect, 1.0),
+      drag_autoscroll_delta_x(
+        Pos2::new(rect.left(), rect.bottom() + slack + 1.0),
+        rect,
+        1.0
+      ),
       0.0
     );
   }
@@ -3697,9 +3705,10 @@ mod tests {
   fn drag_autoscroll_delta_x_is_zero_when_pointer_far_outside_viewport_x() {
     let rect = Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(200.0, 10.0));
     let zone = DRAG_AUTOSCROLL_EDGE_ZONE_PX.min(rect.width() * 0.5);
+    let slack = TAB_DETACH_DRAG_THRESHOLD.max(zone);
     assert_eq!(
       drag_autoscroll_delta_x(
-        Pos2::new(rect.left() - zone - 1.0, rect.center().y),
+        Pos2::new(rect.left() - slack - 1.0, rect.center().y),
         rect,
         1.0
       ),
@@ -3707,7 +3716,7 @@ mod tests {
     );
     assert_eq!(
       drag_autoscroll_delta_x(
-        Pos2::new(rect.right() + zone + 1.0, rect.center().y),
+        Pos2::new(rect.right() + slack + 1.0, rect.center().y),
         rect,
         1.0
       ),
