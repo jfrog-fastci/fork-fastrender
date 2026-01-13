@@ -106,8 +106,25 @@ impl AudioStreamHandle {
     }
 
     let mut state = self.inner.state.lock();
+    if state.eos {
+      return Err(AudioStreamEnqueueError::StreamFinished);
+    }
     state.queue.extend(samples);
     Ok(())
+  }
+
+  /// Mark this stream as end-of-stream (EOS): no further samples will be enqueued.
+  ///
+  /// Playback is considered *ended/drained* once EOS is set **and** the mixer has consumed all
+  /// queued samples.
+  pub fn finish(&self) {
+    let mut state = self.inner.state.lock();
+    state.eos = true;
+  }
+
+  /// Alias for [`Self::finish`].
+  pub fn set_eos(&self) {
+    self.finish();
   }
 
   /// Starts the stream if it is not already playing.
@@ -145,6 +162,8 @@ impl AudioStreamHandle {
     state.queue.clear();
     state.base_pts = base_pts;
     state.played_frames = 0;
+    // Seeking resets stream completion state so new samples can be pushed for the new timeline.
+    state.eos = false;
   }
 
   /// Alias for [`Self::seek_to`].
@@ -158,11 +177,30 @@ impl AudioStreamHandle {
     let played = frames_to_duration(state.played_frames, self.inner.sample_rate_hz);
     state.base_pts.saturating_add(played)
   }
+
+  /// Returns `Some(final_time)` once EOS has been set and the queued audio has fully drained.
+  #[must_use]
+  pub fn ended(&self) -> Option<Duration> {
+    let state = self.inner.state.lock();
+    if state.eos && state.queue.is_empty() {
+      let played = frames_to_duration(state.played_frames, self.inner.sample_rate_hz);
+      Some(state.base_pts.saturating_add(played))
+    } else {
+      None
+    }
+  }
+
+  /// Returns `true` once EOS has been set and the queued audio has fully drained.
+  #[must_use]
+  pub fn is_drained(&self) -> bool {
+    self.ended().is_some()
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioStreamEnqueueError {
   InvalidInterleavedSampleCount { len: usize, channels: usize },
+  StreamFinished,
 }
 
 #[derive(Debug)]
@@ -212,6 +250,7 @@ struct AudioStreamState {
   base_pts: Duration,
   played_frames: u64,
   queue: VecDeque<f32>,
+  eos: bool,
 }
 
 impl AudioStreamState {
@@ -221,6 +260,7 @@ impl AudioStreamState {
       base_pts: Duration::ZERO,
       played_frames: 0,
       queue: VecDeque::new(),
+      eos: false,
     }
   }
 }
@@ -237,6 +277,14 @@ fn frames_to_duration(frames: u64, sample_rate_hz: u32) -> Duration {
     .unwrap_or(0);
 
   Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
+fn duration_to_frames_floor(duration: Duration, sample_rate_hz: u32) -> u64 {
+  if sample_rate_hz == 0 {
+    return 0;
+  }
+  let frames = duration.as_nanos().saturating_mul(sample_rate_hz as u128) / 1_000_000_000u128;
+  u64::try_from(frames).unwrap_or(u64::MAX)
 }
 
 /// A backend that does not talk to a real audio device.
@@ -268,6 +316,23 @@ impl NullAudioBackend {
   #[must_use]
   pub fn render(&self, frames: usize) -> Vec<f32> {
     self.mixer.mix(frames)
+  }
+
+  /// Test helper: render the number of frames implied by a clock delta.
+  ///
+  /// Callers advance a [`crate::js::VirtualClock`] and then call this with a mutable `last_time`
+  /// cursor. This makes audio drain behaviour deterministic without relying on wall-clock sleeps.
+  #[cfg(test)]
+  pub fn render_for_clock(
+    &self,
+    clock: &crate::js::VirtualClock,
+    last_time: &mut Duration,
+  ) -> Vec<f32> {
+    let now = clock.now();
+    let delta = now.saturating_sub(*last_time);
+    *last_time = now;
+    let frames = duration_to_frames_floor(delta, self.mixer.sample_rate_hz()) as usize;
+    self.render(frames)
   }
 }
 
@@ -364,5 +429,48 @@ mod tests {
     mix_thread.join().unwrap();
     flush_thread.join().unwrap();
   }
-}
 
+  #[test]
+  fn eos_drains_and_freezes_clock() {
+    use crate::js::VirtualClock;
+
+    let clock = VirtualClock::new();
+    let backend = NullAudioBackend::new(48_000, 1);
+    let stream = backend.create_stream();
+
+    stream.enqueue_samples(vec![1.0; 48_000]).unwrap();
+    stream.finish();
+    // Enqueue after EOS should be rejected.
+    assert_eq!(stream.enqueue_samples(vec![1.0; 1]), Err(AudioStreamEnqueueError::StreamFinished));
+
+    stream.play();
+    assert_eq!(stream.ended(), None);
+
+    let mut last = Duration::ZERO;
+    clock.advance(Duration::from_millis(500));
+    let out0 = backend.render_for_clock(&clock, &mut last);
+    assert!(all_samples_eq(&out0, 1.0));
+    assert_eq!(stream.current_time(), Duration::from_millis(500));
+    assert_eq!(stream.ended(), None);
+
+    clock.advance(Duration::from_millis(500));
+    let out1 = backend.render_for_clock(&clock, &mut last);
+    assert!(all_samples_eq(&out1, 1.0));
+    assert_eq!(stream.current_time(), Duration::from_secs(1));
+    assert_eq!(stream.ended(), Some(Duration::from_secs(1)));
+    assert!(stream.is_drained());
+
+    // Once drained, additional time should not advance the stream clock.
+    clock.advance(Duration::from_secs(1));
+    let out2 = backend.render_for_clock(&clock, &mut last);
+    assert!(all_samples_eq(&out2, 0.0));
+    assert_eq!(stream.current_time(), Duration::from_secs(1));
+
+    // Seeking clears EOS so playback can be restarted.
+    stream.seek_to(Duration::ZERO);
+    assert_eq!(stream.ended(), None);
+    stream.enqueue_samples(vec![2.0; 48_000]).unwrap();
+    let out3 = backend.render(24_000);
+    assert!(all_samples_eq(&out3, 2.0));
+  }
+}
