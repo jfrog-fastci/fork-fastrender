@@ -6,8 +6,9 @@ use crate::interaction::selection_serialize::{
 use crate::interaction::state::InteractionStateDom2;
 use crate::interaction::state::{
   DocumentSelectionRangesDom2, DocumentSelectionState, DocumentSelectionStateDom2, FileSelection,
-  FormStateDom2,
+  FormStateDom2, ImePreeditStateDom2, TextEditPaintStateDom2,
 };
+use crate::text::caret::CaretAffinity;
 use rustc_hash::FxHashSet;
 use std::path::PathBuf;
 
@@ -40,7 +41,7 @@ fn interaction_state_dom2_projection_projects_document_selection_and_updates_on_
     },
   });
 
-  let state_dom2 = InteractionStateDom2 {
+  let mut state_dom2 = InteractionStateDom2 {
     document_selection: Some(selection),
     ..Default::default()
   };
@@ -108,7 +109,7 @@ fn interaction_state_dom2_projection_updates_preorder_ids_after_dom_mutation() {
     .preorder_for_node_id(focused)
     .expect("focused node should be connected");
 
-  let state_dom2 = InteractionStateDom2 {
+  let mut state_dom2 = InteractionStateDom2 {
     focused: Some(focused),
     focus_visible: true,
     focus_chain: vec![focused],
@@ -150,7 +151,7 @@ fn interaction_state_dom2_projection_clears_unmappable_focus() {
 
   // Create a detached element and treat it as focused.
   let detached = doc.create_element("div", "");
-  let state_dom2 = InteractionStateDom2 {
+  let mut state_dom2 = InteractionStateDom2 {
     focused: Some(detached),
     focus_visible: true,
     focus_chain: vec![detached],
@@ -174,6 +175,64 @@ fn interaction_state_dom2_projection_clears_unmappable_focus() {
     !projected.focus_visible,
     "focus_visible should be cleared when no focused element is projected"
   );
+
+  assert_eq!(
+    state_dom2.focused, None,
+    "pruning should clear stable focus state when the target node is detached"
+  );
+  assert!(state_dom2.focus_chain.is_empty());
+  assert!(!state_dom2.focus_visible);
+}
+
+#[test]
+fn interaction_state_dom2_prunes_detached_focus_hover_active_and_text_state() {
+  let mut doc = crate::dom2::parse_html("<!doctype html><html><body><input id=a></body></html>")
+    .expect("parse html");
+  let input = doc.get_element_by_id("a").expect("missing input");
+
+  let mut state_dom2 = InteractionStateDom2::default();
+  state_dom2.focused = Some(input);
+  state_dom2.focus_visible = true;
+  state_dom2.focus_chain = vec![input];
+  state_dom2.hover_chain = vec![input];
+  state_dom2.active_chain = vec![input];
+  state_dom2.visited_links.insert(input);
+  state_dom2.user_validity.insert(input);
+  state_dom2.ime_preedit = Some(ImePreeditStateDom2 {
+    node_id: input,
+    text: "あ".to_string(),
+    cursor: Some((0, 1)),
+  });
+  state_dom2.text_edit = Some(TextEditPaintStateDom2 {
+    node_id: input,
+    caret: 0,
+    caret_affinity: CaretAffinity::Downstream,
+    selection: None,
+  });
+
+  let body = doc.body().expect("missing body");
+  assert!(doc.remove_child(body, input).unwrap());
+
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  let projected = state_dom2.project_to_preorder(&snapshot.mapping);
+  assert_eq!(projected.focused, None);
+  assert!(!projected.focus_visible);
+  assert!(projected.focus_chain().is_empty());
+  assert!(projected.hover_chain().is_empty());
+  assert!(projected.active_chain().is_empty());
+  assert!(projected.ime_preedit.is_none());
+  assert!(projected.text_edit.is_none());
+
+  // The stable dom2 state should also be repaired.
+  assert_eq!(state_dom2.focused, None);
+  assert!(!state_dom2.focus_visible);
+  assert!(state_dom2.focus_chain.is_empty());
+  assert!(state_dom2.hover_chain.is_empty());
+  assert!(state_dom2.active_chain.is_empty());
+  assert!(state_dom2.ime_preedit.is_none());
+  assert!(state_dom2.text_edit.is_none());
+  assert!(!state_dom2.visited_links.contains(&input));
+  assert!(!state_dom2.user_validity.contains(&input));
 }
 
 #[test]

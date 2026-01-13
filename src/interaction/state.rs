@@ -968,6 +968,73 @@ pub struct InteractionStateDom2 {
 }
 
 impl InteractionStateDom2 {
+  /// Drop or clear any interaction targets that are no longer reachable from the document root for
+  /// the current renderer snapshot.
+  ///
+  /// `dom2::NodeId` handles remain valid even after nodes are removed from the tree, so interaction
+  /// state must actively prune stale ids to avoid keeping focus/hover/active state pinned to
+  /// detached subtrees.
+  ///
+  /// A node is treated as "detached" when it has no renderer preorder id in `mapping` (i.e.
+  /// [`RendererDomMapping::preorder_for_node_id`] returns `None`).
+  pub fn prune_detached(&mut self, mapping: &RendererDomMapping) {
+    let is_connected = |id: NodeId| mapping.preorder_for_node_id(id).is_some();
+
+    if self.focused.is_some_and(|id| !is_connected(id)) {
+      self.focused = None;
+      self.focus_visible = false;
+      self.focus_chain.clear();
+      self.ime_preedit = None;
+      self.text_edit = None;
+    } else if self.focused.is_none() {
+      // Maintain invariants even when callers clear focus directly.
+      self.focus_visible = false;
+      self.focus_chain.clear();
+      self.ime_preedit = None;
+      self.text_edit = None;
+    } else {
+      // Focus chain is derived from focus; drop any ancestors that are no longer mappable.
+      self.focus_chain.retain(|&id| is_connected(id));
+
+      // IME/text-edit state is tied to the focused control.
+      if let Some(focused) = self.focused {
+        if self
+          .ime_preedit
+          .as_ref()
+          .is_some_and(|state| state.node_id != focused || !is_connected(state.node_id))
+        {
+          self.ime_preedit = None;
+        }
+        if self
+          .text_edit
+          .is_some_and(|state| state.node_id != focused || !is_connected(state.node_id))
+        {
+          self.text_edit = None;
+        }
+      }
+    }
+
+    fn prune_hit_chain(chain: &mut Vec<NodeId>, mapping: &RendererDomMapping) {
+      let Some(&root) = chain.first() else {
+        return;
+      };
+      if mapping.preorder_for_node_id(root).is_none() {
+        // If the root hit node becomes detached, drop the whole chain (including any associated
+        // control nodes that may still be connected).
+        chain.clear();
+        return;
+      }
+      chain.retain(|&id| mapping.preorder_for_node_id(id).is_some());
+    }
+
+    prune_hit_chain(&mut self.hover_chain, mapping);
+    prune_hit_chain(&mut self.active_chain, mapping);
+
+    // Conservative: drop detached nodes from these per-element sets to avoid retaining stale ids.
+    self.visited_links.retain(|&id| is_connected(id));
+    self.user_validity.retain(|&id| is_connected(id));
+  }
+
   /// Project this stable, `dom2::NodeId` keyed state into the renderer's preorder-id keyed
   /// [`InteractionState`].
   ///
@@ -977,7 +1044,9 @@ impl InteractionStateDom2 {
   /// - For vec "chains", order is preserved while filtering out unmappable nodes.
   /// - If the focused node is unmappable, the projected `focused` is set to `None` and the projected
   ///   `focus_chain` is cleared (since it is derived from focus).
-  pub fn project_to_preorder(&self, mapping: &RendererDomMapping) -> InteractionState {
+  pub fn project_to_preorder(&mut self, mapping: &RendererDomMapping) -> InteractionState {
+    self.prune_detached(mapping);
+
     let focused_preorder = self
       .focused
       .and_then(|node_id| mapping.preorder_for_node_id(node_id));
