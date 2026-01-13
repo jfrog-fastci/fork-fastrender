@@ -15,7 +15,8 @@
 //!   the browser process can also launch renderers through `/usr/bin/sandbox-exec` (deprecated by
 //!   Apple; may be removed in future macOS releases). See [`macos_spawn`] for helpers and
 //!   `FASTR_MACOS_USE_SANDBOX_EXEC=1` gating (ignored when sandboxing is disabled via
-//!   `FASTR_DISABLE_RENDERER_SANDBOX=1` / `FASTR_MACOS_RENDERER_SANDBOX=off`).
+//!   `FASTR_DISABLE_RENDERER_SANDBOX=1` / `FASTR_RENDERER_SANDBOX=off` /
+//!   `FASTR_MACOS_RENDERER_SANDBOX=off`).
 //! - **Windows**: renderers are intended to be spawned in an AppContainer (no capabilities) with a
 //!   Job Object configured for kill-on-close and active-process limiting, plus handle inheritance
 //!   allowlisting (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) and process mitigations.
