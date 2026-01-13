@@ -51,3 +51,9 @@ pub use network::{NetworkToRenderer, RendererToNetwork};
 pub use network_service::IpcFetchServer;
 pub use received_frame::{FrameMeta, ReceivedFrame, ShmemSliceView};
 pub use types::{PointF32, RectF32, ScrollMetricsIpc, ScrollStateIpc};
+
+#[cfg(target_os = "linux")]
+pub mod shared_memory;
+
+#[cfg(target_os = "linux")]
+pub use shared_memory::{MmapView, MmapViewMut, SharedMemory, SharedMemoryError};
