@@ -396,6 +396,26 @@ fn parse_script_size_multiplier(raw: Option<&str>) -> Option<f32> {
   }
 }
 
+fn parse_script_level_from_parsed(kind: Option<char>, parsed: i32) -> Option<MathScriptLevel> {
+  match kind {
+    Some('+') => Some(MathScriptLevel::Relative(parsed)),
+    Some('-') => Some(MathScriptLevel::Relative(-parsed)),
+    None => Some(MathScriptLevel::Absolute(
+      parsed.clamp(0, MAX_SCRIPT_LEVEL as i32) as u8,
+    )),
+    other => {
+      // `parse_script_level` only emits `None`, `Some('+')`, or `Some('-')` from its sign parsing.
+      // If this is hit, it indicates an internal logic error or a future refactor bug.
+      #[cfg(not(test))]
+      debug_assert!(
+        false,
+        "parse_script_level_from_parsed: unexpected sign kind {other:?}"
+      );
+      None
+    }
+  }
+}
+
 /// Represents a MathML Core `scriptlevel` override.
 ///
 /// MathML Core allows both absolute (`scriptlevel="2"`) and relative
@@ -991,14 +1011,7 @@ fn parse_script_level(value: Option<&str>) -> Option<MathScriptLevel> {
     _ => (None, raw),
   };
   let parsed = trim_ascii_whitespace(digits).parse::<i32>().ok()?;
-  match kind {
-    Some('+') => Some(MathScriptLevel::Relative(parsed)),
-    Some('-') => Some(MathScriptLevel::Relative(-parsed)),
-    None => Some(MathScriptLevel::Absolute(
-      parsed.clamp(0, MAX_SCRIPT_LEVEL as i32) as u8,
-    )),
-    _ => None,
-  }
+  parse_script_level_from_parsed(kind, parsed)
 }
 
 fn parse_operator_form(value: Option<&str>) -> Option<OperatorForm> {
@@ -4852,6 +4865,13 @@ mod tests {
       }
     }
     out
+  }
+
+  #[test]
+  fn parse_script_level_fallback_does_not_panic() {
+    let result =
+      std::panic::catch_unwind(|| parse_script_level_from_parsed(Some('?'), 1)).expect("no panic");
+    assert!(result.is_none(), "expected invalid sign kind to return None");
   }
 
   #[test]
