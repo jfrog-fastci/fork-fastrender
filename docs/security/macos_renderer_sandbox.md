@@ -135,6 +135,12 @@ This repository includes placeholder entitlement files for that future packaging
 Directory notes + a small validation helper live alongside these files:
 [`tools/macos/entitlements/README.md`](../../tools/macos/entitlements/README.md).
 
+Quick sanity check (optional):
+
+```bash
+python3 tools/macos/entitlements/validate_entitlements.py
+```
+
 Note: a sandboxed process can still read its own **app bundle resources** and can typically read/write
 within its **App Sandbox container**; the goal here is to prevent the renderer from directly accessing
 arbitrary user/system paths (and to keep network I/O brokered by a privileged process).
