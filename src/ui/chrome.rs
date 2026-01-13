@@ -234,6 +234,7 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::D => Key::D,
     egui::Key::F => Key::F,
     egui::Key::H => Key::H,
+    egui::Key::J => Key::J,
     egui::Key::K => Key::K,
     egui::Key::L => Key::L,
     egui::Key::N => Key::N,
@@ -825,6 +826,7 @@ pub fn chrome_ui_with_bookmarks(
     new_window,
     open_find_in_page,
     toggle_bookmarks_manager,
+    toggle_downloads_panel,
     new_tab,
     close_tab,
     reopen_closed_tab,
@@ -847,6 +849,7 @@ pub fn chrome_ui_with_bookmarks(
     let mut new_window = false;
     let mut open_find_in_page = false;
     let mut toggle_bookmarks_manager = false;
+    let mut toggle_downloads_panel = false;
     let mut new_tab = false;
     let mut close_tab = false;
     let mut reopen_closed_tab = false;
@@ -889,6 +892,7 @@ pub fn chrome_ui_with_bookmarks(
         ShortcutAction::NewWindow => new_window = true,
         ShortcutAction::FindInPage => open_find_in_page = true,
         ShortcutAction::ToggleBookmarksManager => toggle_bookmarks_manager = true,
+        ShortcutAction::ToggleDownloadsPanel => toggle_downloads_panel = true,
         ShortcutAction::NewTab => new_tab = true,
         ShortcutAction::CloseTab => close_tab = true,
         ShortcutAction::ReopenClosedTab => reopen_closed_tab = true,
@@ -917,6 +921,7 @@ pub fn chrome_ui_with_bookmarks(
       new_window,
       open_find_in_page,
       toggle_bookmarks_manager,
+      toggle_downloads_panel,
       new_tab,
       close_tab,
       reopen_closed_tab,
@@ -990,6 +995,9 @@ pub fn chrome_ui_with_bookmarks(
   }
   if toggle_bookmarks_manager {
     actions.push(ChromeAction::ToggleBookmarksManager);
+  }
+  if toggle_downloads_panel {
+    actions.push(ChromeAction::ToggleDownloadsPanel);
   }
   if new_tab {
     actions.push(ChromeAction::NewTab);

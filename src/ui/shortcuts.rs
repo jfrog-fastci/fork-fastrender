@@ -10,6 +10,8 @@ pub enum ShortcutAction {
   FindInPage,
   /// Toggle the bookmarks manager UI surface.
   ToggleBookmarksManager,
+  /// Toggle visibility of the downloads panel.
+  ToggleDownloadsPanel,
   /// Open a new top-level browser window.
   NewWindow,
   /// Open the tab search / quick switcher overlay (Ctrl/Cmd+Shift+A).
@@ -80,6 +82,7 @@ pub enum Key {
   D,
   F,
   H,
+  J,
   K,
   L,
   N,
@@ -327,6 +330,13 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
 
     // UI.
     (Key::B, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::ToggleBookmarksBar),
+    // Downloads.
+    (Key::J, Modifiers { shift: false, .. }) if cmd && matches!(platform, Platform::Other) => {
+      Some(ShortcutAction::ToggleDownloadsPanel)
+    }
+    (Key::J, Modifiers { shift: true, .. }) if primary_cmd && matches!(platform, Platform::Mac) => {
+      Some(ShortcutAction::ToggleDownloadsPanel)
+    }
 
     // History / data.
     (Key::Delete, Modifiers { shift: true, .. }) if cmd => {
@@ -456,6 +466,7 @@ pub fn shortcut_preempts_page_focus(action: ShortcutAction) -> bool {
       | ShortcutAction::NewTab
       | ShortcutAction::OpenTabSearch
       | ShortcutAction::ToggleBookmarksManager
+      | ShortcutAction::ToggleDownloadsPanel
       | ShortcutAction::ShowBookmarksManager
       | ShortcutAction::ShowHistory
       | ShortcutAction::OpenClearBrowsingDataDialog
@@ -499,6 +510,28 @@ mod tests {
         Platform::Other
       ),
       Some(ShortcutAction::FindInPage)
+    );
+  }
+
+  #[test]
+  fn ctrl_j_toggles_downloads_panel() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::J, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ToggleDownloadsPanel)
+    );
+  }
+
+  #[test]
+  fn mac_cmd_shift_j_toggles_downloads_panel() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::J, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ToggleDownloadsPanel)
     );
   }
 

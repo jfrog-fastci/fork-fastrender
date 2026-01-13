@@ -5441,6 +5441,8 @@ impl App {
         // Downloads are shown in the right-side panel, so close other panels that share that space.
         self.history_panel_open = false;
         self.bookmarks_panel_open = false;
+        self.history_panel_request_focus_search = false;
+        self.bookmarks_manager.clear_transient();
         if !self.downloads_panel_open {
           self.downloads_panel_request_focus = true;
         }
@@ -7336,6 +7338,7 @@ impl App {
               // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
               // can respect its editing focus rules. Ensure they never reach page input.
               ShortcutAction::ToggleBookmarksManager
+              | ShortcutAction::ToggleDownloadsPanel
               | ShortcutAction::NewWindow
               | ShortcutAction::NewTab
               | ShortcutAction::CloseTab
@@ -7758,6 +7761,8 @@ impl App {
             // history/bookmarks.
             self.history_panel_open = false;
             self.bookmarks_panel_open = false;
+            self.history_panel_request_focus_search = false;
+            self.bookmarks_manager.clear_transient();
             self.page_has_focus = false;
           } else {
             self.downloads_panel_request_focus = false;
@@ -9414,6 +9419,7 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::D => ShortcutKey::D,
     VirtualKeyCode::F => ShortcutKey::F,
     VirtualKeyCode::H => ShortcutKey::H,
+    VirtualKeyCode::J => ShortcutKey::J,
     VirtualKeyCode::K => ShortcutKey::K,
     VirtualKeyCode::L => ShortcutKey::L,
     VirtualKeyCode::N => ShortcutKey::N,
