@@ -452,7 +452,7 @@ function assert_throws_dom(name, target, func, message) {
   // it solely for compatibility with imported WPT tests.
   var resolved_func = func;
   var resolved_message = message;
-  if (typeof target === "function") {
+  if (typeof resolved_func !== "function") {
     resolved_func = target;
     resolved_message = func;
   }
