@@ -1,55 +1,121 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 
 use super::{AudioBackend, AudioClock, AudioOutputInfo, AudioSink, AudioStreamConfig};
 use super::limits::{MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
-use crate::media::audio::ring_buffer::AudioRingBuffer;
+use crate::js::clock::{Clock, RealClock};
 use crate::media::audio_clock::InterpolatedAudioClock;
 
-/// A silent audio backend used as a fallback when audio output is unavailable (e.g. CI/headless).
+/// A silent audio backend intended for headless runs and deterministic tests.
 ///
-/// By default, the backend:
-/// - derives its clock from wall time (`AudioClock::Instant`), and
-/// - discards pushed audio immediately.
-///
-/// For deterministic unit tests that need to inspect mixed output and verify draining semantics,
-/// construct the backend with [`Self::new_deterministic_with_defaults`] and drive playback via
-/// [`Self::render`].
-#[derive(Debug)]
+/// This backend is driven by an injected monotonic [`Clock`]. It advances a simulated output
+/// playhead even when no samples are queued (silence), making it suitable as a stable master clock
+/// in A/V sync tests.
 pub struct NullAudioBackend {
   config: AudioStreamConfig,
   estimated_output_latency: Duration,
-  start: Instant,
+  clock: Arc<dyn Clock>,
+  output_clock: Arc<InterpolatedAudioClock>,
+  dropped_samples: Arc<AtomicU64>,
+  underrun_samples: Arc<AtomicU64>,
+  state: Mutex<BackendState>,
+}
 
-  // Non-deterministic mode: used only for coarse metrics (e.g. frames pushed).
-  frames_played: Arc<AtomicU64>,
+impl std::fmt::Debug for NullAudioBackend {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("NullAudioBackend")
+      .field("config", &self.config)
+      .field("frames_played", &self.output_clock.frames_written())
+      .field(
+        "dropped_samples",
+        &self.dropped_samples.load(Ordering::Relaxed),
+      )
+      .field(
+        "underrun_samples",
+        &self.underrun_samples.load(Ordering::Relaxed),
+      )
+      .finish()
+  }
+}
 
-  // Deterministic mode: software mixer + output-frame clock driven by `render()`.
-  mixer: Option<Arc<MixerState>>,
-  clock: Option<Arc<InterpolatedAudioClock>>,
+#[derive(Debug)]
+struct BackendState {
+  /// Last injected-clock timestamp accounted for by the output playhead.
+  ///
+  /// This is advanced by the integer number of frames that fit into the elapsed time so fractional
+  /// remainder is preserved and the mapping stays deterministic regardless of pump frequency.
+  last_clock_now: Duration,
+  sinks: Vec<Weak<SinkState>>,
 }
 
 impl NullAudioBackend {
+  /// Creates a default `48kHz stereo` null backend driven by real time.
   #[must_use]
   pub fn new() -> Self {
     Self::new_with_defaults(48_000, 2)
   }
 
+  /// Creates a null backend driven by real time with the provided stream configuration.
   #[must_use]
   pub fn new_with_defaults(sample_rate_hz: u32, channels: u16) -> Self {
     let sample_rate_hz = sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ);
     let channels = channels.clamp(1, MAX_CHANNELS);
+    Self::new_with_clock(
+      Arc::new(RealClock::default()),
+      AudioStreamConfig::new(sample_rate_hz, channels),
+    )
+  }
+
+  /// Creates a null backend driven by an injected monotonic clock.
+  ///
+  /// This is intended for deterministic A/V sync tests (e.g. using
+  /// [`crate::js::clock::VirtualClock`]).
+  #[must_use]
+  pub fn new_with_clock(clock: Arc<dyn Clock>, config: AudioStreamConfig) -> Self {
+    let config = AudioStreamConfig::new(
+      config.sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ),
+      config.channels.clamp(1, MAX_CHANNELS),
+    );
+    let now = clock.now();
     Self {
-      config: AudioStreamConfig::new(sample_rate_hz, channels),
+      config,
       estimated_output_latency: Duration::ZERO,
-      start: Instant::now(),
-      frames_played: Arc::new(AtomicU64::new(0)),
-      mixer: None,
-      clock: None,
+      clock,
+      output_clock: Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz)),
+      dropped_samples: Arc::new(AtomicU64::new(0)),
+      underrun_samples: Arc::new(AtomicU64::new(0)),
+      state: Mutex::new(BackendState {
+        last_clock_now: now,
+        sinks: Vec::new(),
+      }),
     }
+  }
+
+  /// Construct a deterministic backend for unit tests.
+  ///
+  /// This uses a `VirtualClock` that remains fixed unless explicitly advanced, so the simulated
+  /// playhead only advances when the test calls [`Self::render`] (or advances the injected clock and
+  /// calls [`Self::pump`]).
+  #[must_use]
+  pub fn new_deterministic_with_defaults(sample_rate_hz: u32, channels: u16) -> Self {
+    use crate::js::clock::VirtualClock;
+
+    let sample_rate_hz = sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ);
+    let channels = channels.clamp(1, MAX_CHANNELS);
+    Self::new_with_clock(
+      Arc::new(VirtualClock::new()),
+      AudioStreamConfig::new(sample_rate_hz, channels),
+    )
+  }
+
+  /// Convenience helper for creating a deterministic backend with the default 48kHz stereo config.
+  #[must_use]
+  pub fn new_deterministic() -> Self {
+    Self::new_deterministic_with_defaults(48_000, 2)
   }
 
   /// Create a `NullAudioBackend` with an explicit output-latency model.
@@ -62,50 +128,117 @@ impl NullAudioBackend {
     backend
   }
 
-  /// Construct a deterministic variant of the null backend for unit tests.
+  /// Advances the simulated output device playhead to the injected clock's current timestamp.
   ///
-  /// This enables a software mixer and exposes an `AudioClock::OutputFrames` clock that advances
-  /// when [`Self::render`] is called.
-  #[must_use]
-  pub fn new_deterministic_with_defaults(sample_rate_hz: u32, channels: u16) -> Self {
-    let mut backend = Self::new_with_defaults(sample_rate_hz, channels);
-    backend.mixer = Some(Arc::new(MixerState::new(backend.config)));
-    backend.clock = Some(Arc::new(InterpolatedAudioClock::new(backend.config.sample_rate_hz)));
-    backend
+  /// No sleeping or background threads are used; callers are expected to drive time forward by
+  /// calling this (or [`AudioBackend::clock`]).
+  pub fn pump(&self) {
+    let now = self.clock.now();
+    let mut state = self.state.lock();
+    let delta = now.saturating_sub(state.last_clock_now);
+    let frames = duration_to_frames_floor(delta, self.config.sample_rate_hz);
+    if frames == 0 {
+      return;
+    }
+
+    self.consume_frames_locked(&mut state, frames, None);
+    self.output_clock.advance_frames(frames);
+    state.last_clock_now = state
+      .last_clock_now
+      .saturating_add(frames_to_duration_floor(frames, self.config.sample_rate_hz));
   }
 
-  /// Convenience helper for creating a deterministic backend with the default 48kHz stereo config.
+  /// Renders `frames` audio frames into an interleaved `f32` buffer and advances the playhead.
+  ///
+  /// This is intended for tests that want to inspect the mixed output. When sinks underrun, the
+  /// missing samples are rendered as silence and the playhead still advances.
   #[must_use]
-  pub fn new_deterministic() -> Self {
-    Self::new_deterministic_with_defaults(48_000, 2)
-  }
-
-  /// Simulate an output callback that requests `frames` frames of audio.
-  ///
-  /// Returns an interleaved `f32` buffer with length `frames * channels`.
-  ///
-  /// This is only meaningful for the deterministic backend variant created via
-  /// [`Self::new_deterministic`] / [`Self::new_deterministic_with_defaults`]. In non-deterministic
-  /// mode it returns silence.
   pub fn render(&self, frames: usize) -> Vec<f32> {
-    let channels = usize::from(self.config.channels.max(1));
-    let mut out = vec![0.0f32; frames.saturating_mul(channels)];
-
-    if let Some(mixer) = &self.mixer {
-      mixer.mix_into(&mut out);
-    }
-
-    // Advance the output-frame clock even if the output is silent (muted / underflow), matching
-    // real device behaviour.
-    if let Some(clock) = &self.clock {
-      let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
-      clock.on_callback_end(frames_u32);
-      self
-        .frames_played
-        .fetch_add(u64::from(frames_u32), Ordering::Relaxed);
-    }
-
+    let channels = self.channels_usize();
+    let mut out = vec![0.0; frames.saturating_mul(channels)];
+    self.render_into(&mut out);
     out
+  }
+
+  /// Mixes queued audio into `out` and advances the playhead by `out.len() / channels` frames.
+  pub fn render_into(&self, out: &mut [f32]) {
+    let channels = self.channels_usize();
+    debug_assert!(
+      channels > 0,
+      "NullAudioBackend created with invalid channel count"
+    );
+    debug_assert!(
+      out.len() % channels == 0,
+      "output buffer must be a multiple of channel count"
+    );
+
+    out.fill(0.0);
+    let frames = out.len() / channels;
+    if frames == 0 {
+      return;
+    }
+
+    let frames_u64 = u64::try_from(frames).unwrap_or(u64::MAX);
+    let mut state = self.state.lock();
+    self.consume_frames_locked(&mut state, frames_u64, Some(out));
+    self.output_clock.advance_frames(frames_u64);
+    state.last_clock_now = state
+      .last_clock_now
+      .saturating_add(frames_to_duration_floor(frames_u64, self.config.sample_rate_hz));
+  }
+
+  #[must_use]
+  pub fn dropped_samples(&self) -> u64 {
+    self.dropped_samples.load(Ordering::Relaxed)
+  }
+
+  #[must_use]
+  pub fn underrun_samples(&self) -> u64 {
+    self.underrun_samples.load(Ordering::Relaxed)
+  }
+
+  fn channels_usize(&self) -> usize {
+    usize::from(self.config.channels.max(1))
+  }
+
+  fn consume_frames_locked(
+    &self,
+    state: &mut BackendState,
+    frames: u64,
+    mut out: Option<&mut [f32]>,
+  ) {
+    if frames == 0 {
+      return;
+    }
+
+    let channels = self.channels_usize();
+    if channels == 0 {
+      return;
+    }
+
+    let frames_usize = usize::try_from(frames).unwrap_or(usize::MAX);
+    let samples_requested = frames_usize.saturating_mul(channels);
+    if let Some(ref out) = out {
+      debug_assert_eq!(out.len(), samples_requested);
+    }
+
+    // Collect strong references and clean up dropped sinks.
+    let sinks: Vec<Arc<SinkState>> = {
+      let mut strong = Vec::with_capacity(state.sinks.len());
+      state.sinks.retain(|weak| {
+        if let Some(sink) = weak.upgrade() {
+          strong.push(sink);
+          true
+        } else {
+          false
+        }
+      });
+      strong
+    };
+
+    for sink in sinks {
+      sink.consume(samples_requested, out.as_deref_mut());
+    }
   }
 }
 
@@ -130,112 +263,86 @@ impl AudioBackend for NullAudioBackend {
   }
 
   fn clock(&self) -> AudioClock {
-    if let Some(clock) = &self.clock {
-      AudioClock::OutputFrames {
-        clock: clock.clone(),
-      }
-    } else {
-      AudioClock::Instant {
-        start: self.start,
-        sample_rate_hz: self.config.sample_rate_hz,
-      }
+    self.pump();
+    AudioClock::OutputFrames {
+      clock: self.output_clock.clone(),
     }
   }
 
   fn create_sink(&self) -> Box<dyn AudioSink> {
-    if let Some(mixer) = &self.mixer {
-      let sink = Arc::new(SinkState::new(self.config));
-      mixer.register_sink(&sink);
-      Box::new(DeterministicNullAudioSink { state: sink })
-    } else {
-      Box::new(NullAudioSink {
-        config: self.config,
-        frames_played: self.frames_played.clone(),
-      })
-    }
-  }
-}
+    let sink = Arc::new(SinkState::new(
+      self.config,
+      self.dropped_samples.clone(),
+      self.underrun_samples.clone(),
+    ));
 
-#[derive(Debug)]
-struct NullAudioSink {
-  config: AudioStreamConfig,
-  frames_played: Arc<AtomicU64>,
-}
+    let mut state = self.state.lock();
+    state.sinks.retain(|weak| weak.upgrade().is_some());
+    state.sinks.push(Arc::downgrade(&sink));
 
-impl AudioSink for NullAudioSink {
-  fn config(&self) -> AudioStreamConfig {
-    self.config
-  }
-
-  fn push_interleaved_f32(&self, samples: &[f32]) -> usize {
-    let channels = usize::from(self.config.channels);
-    if channels == 0 {
-      return 0;
-    }
-
-    let usable_len = samples.len() - (samples.len() % channels);
-    let frames = usable_len / channels;
-    let frames = frames.min(MAX_FRAMES_PER_PUSH);
-    let accepted_samples = frames * channels;
-
-    self.frames_played.fetch_add(frames as u64, std::sync::atomic::Ordering::Relaxed);
-    accepted_samples
-  }
-
-  fn set_volume(&self, _volume: f32) {}
-}
-
-// -----------------------------------------------------------------------------
-// Deterministic mixer implementation (tests)
-// -----------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct MixerState {
-  sinks: RwLock<Vec<Weak<SinkState>>>,
-}
-
-impl MixerState {
-  fn new(_config: AudioStreamConfig) -> Self {
-    Self {
-      sinks: RwLock::new(Vec::new()),
-    }
-  }
-
-  fn register_sink(&self, sink: &Arc<SinkState>) {
-    let mut sinks = self.sinks.write();
-    sinks.retain(|weak| weak.upgrade().is_some());
-    sinks.push(Arc::downgrade(sink));
-  }
-
-  fn mix_into(&self, dst: &mut [f32]) {
-    let sinks = self.sinks.read();
-    for weak in sinks.iter() {
-      let Some(sink) = weak.upgrade() else {
-        continue;
-      };
-      let gain_bits = sink.volume_bits.load(Ordering::Relaxed);
-      let gain = f32::from_bits(gain_bits);
-      sink.buffer.pop_add_into(dst, gain);
-    }
+    Box::new(NullAudioSink { state: sink })
   }
 }
 
 struct SinkState {
   config: AudioStreamConfig,
-  buffer: AudioRingBuffer,
+  capacity_samples: usize,
+  queue: Mutex<VecDeque<f32>>,
   volume_bits: AtomicU32,
+  dropped_samples: AtomicU64,
+  underrun_samples: AtomicU64,
+  total_dropped_samples: Arc<AtomicU64>,
+  total_underrun_samples: Arc<AtomicU64>,
+}
+
+impl std::fmt::Debug for SinkState {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("SinkState")
+      .field("config", &self.config)
+      .field("capacity_samples", &self.capacity_samples)
+      .field("queue_len", &self.queue.lock().len())
+      .field(
+        "volume",
+        &f32::from_bits(self.volume_bits.load(Ordering::Relaxed)),
+      )
+      .field(
+        "dropped_samples",
+        &self.dropped_samples.load(Ordering::Relaxed),
+      )
+      .field(
+        "underrun_samples",
+        &self.underrun_samples.load(Ordering::Relaxed),
+      )
+      .finish()
+  }
 }
 
 impl SinkState {
-  fn new(config: AudioStreamConfig) -> Self {
-    let capacity = (config.sample_rate_hz as usize)
-      .saturating_mul(usize::from(config.channels.max(1)))
-      .saturating_mul(2); // ~2 seconds of audio.
+  fn new(
+    config: AudioStreamConfig,
+    total_dropped_samples: Arc<AtomicU64>,
+    total_underrun_samples: Arc<AtomicU64>,
+  ) -> Self {
+    let channels = usize::from(config.channels.max(1));
+    // ~2 seconds of audio at the output sample rate.
+    let capacity_samples = (config.sample_rate_hz as usize)
+      .saturating_mul(channels)
+      .saturating_mul(2)
+      .max(1);
     Self {
       config,
-      buffer: AudioRingBuffer::new(capacity),
+      capacity_samples,
+      queue: Mutex::new(VecDeque::with_capacity(capacity_samples)),
       volume_bits: AtomicU32::new(1.0f32.to_bits()),
+      dropped_samples: AtomicU64::new(0),
+      underrun_samples: AtomicU64::new(0),
+      total_dropped_samples,
+      total_underrun_samples,
     }
+  }
+
+  fn channels_usize(&self) -> usize {
+    usize::from(self.config.channels.max(1))
   }
 
   fn set_volume(&self, volume: f32) {
@@ -246,24 +353,166 @@ impl SinkState {
     };
     self.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
   }
+
+  fn push(&self, samples: &[f32]) -> usize {
+    let channels = self.channels_usize();
+    let usable_len = samples.len() - (samples.len() % channels);
+    if usable_len == 0 {
+      return 0;
+    }
+
+    let mut queue = self.queue.lock();
+    let free_samples = self.capacity_samples.saturating_sub(queue.len());
+    let free_frames = free_samples / channels;
+    let in_frames = (usable_len / channels).min(MAX_FRAMES_PER_PUSH);
+    let accepted_frames = in_frames.min(free_frames);
+    let accepted_samples = accepted_frames.saturating_mul(channels);
+    if accepted_samples > 0 {
+      queue.extend(&samples[..accepted_samples]);
+    }
+
+    let dropped = usable_len - accepted_samples;
+    if dropped > 0 {
+      let dropped_u64 = dropped as u64;
+      self.dropped_samples.fetch_add(dropped_u64, Ordering::Relaxed);
+      self.total_dropped_samples.fetch_add(dropped_u64, Ordering::Relaxed);
+    }
+
+    accepted_samples
+  }
+
+  fn consume(&self, samples_requested: usize, out: Option<&mut [f32]>) {
+    if samples_requested == 0 {
+      return;
+    }
+
+    let gain = f32::from_bits(self.volume_bits.load(Ordering::Relaxed));
+
+    let mut queue = self.queue.lock();
+    let available = queue.len();
+    let to_read = samples_requested.min(available);
+
+    let underrun = samples_requested - to_read;
+    if underrun > 0 {
+      let underrun_u64 = underrun as u64;
+      self
+        .underrun_samples
+        .fetch_add(underrun_u64, Ordering::Relaxed);
+      self
+        .total_underrun_samples
+        .fetch_add(underrun_u64, Ordering::Relaxed);
+    }
+
+    if to_read == 0 {
+      return;
+    }
+
+    match out {
+      Some(out) if gain != 0.0 => {
+        for (dst, sample) in out.iter_mut().take(to_read).zip(queue.drain(..to_read)) {
+          *dst += sample * gain;
+        }
+      }
+      _ => {
+        // Either there is no output buffer (pump) or gain==0.
+        let _ = queue.drain(..to_read);
+      }
+    }
+  }
 }
 
-struct DeterministicNullAudioSink {
+struct NullAudioSink {
   state: Arc<SinkState>,
 }
 
-impl AudioSink for DeterministicNullAudioSink {
+impl std::fmt::Debug for NullAudioSink {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("NullAudioSink")
+      .field("config", &self.state.config)
+      .finish()
+  }
+}
+
+impl AudioSink for NullAudioSink {
   fn config(&self) -> AudioStreamConfig {
     self.state.config
   }
 
   fn push_interleaved_f32(&self, samples: &[f32]) -> usize {
-    let channels = usize::from(self.state.config.channels.max(1));
-    let usable_len = samples.len() - (samples.len() % channels);
-    self.state.buffer.push(&samples[..usable_len])
+    self.state.push(samples)
   }
 
   fn set_volume(&self, volume: f32) {
     self.state.set_volume(volume);
+  }
+}
+
+fn duration_to_frames_floor(duration: Duration, sample_rate_hz: u32) -> u64 {
+  if sample_rate_hz == 0 {
+    return 0;
+  }
+  let nanos = duration.as_nanos();
+  let frames = nanos.saturating_mul(sample_rate_hz as u128) / 1_000_000_000u128;
+  u64::try_from(frames).unwrap_or(u64::MAX)
+}
+
+fn frames_to_duration_floor(frames: u64, sample_rate_hz: u32) -> Duration {
+  if sample_rate_hz == 0 {
+    return Duration::ZERO;
+  }
+  let nanos = (frames as u128)
+    .saturating_mul(1_000_000_000u128)
+    .checked_div(sample_rate_hz as u128)
+    .unwrap_or(0);
+  Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::js::clock::VirtualClock;
+
+  #[test]
+  fn null_audio_backend_advancing_clock_advances_frames_played() {
+    let clock = Arc::new(VirtualClock::new());
+    let backend =
+      NullAudioBackend::new_with_clock(clock.clone(), AudioStreamConfig::new(48_000, 2));
+
+    backend.pump();
+    assert_eq!(backend.clock().frames(), 0);
+
+    clock.advance(Duration::from_secs(1));
+    backend.pump();
+    assert_eq!(backend.clock().frames(), 48_000);
+  }
+
+  #[test]
+  fn null_audio_backend_time_does_not_advance_if_clock_does_not() {
+    let clock = Arc::new(VirtualClock::new());
+    let backend = NullAudioBackend::new_with_clock(clock, AudioStreamConfig::new(48_000, 2));
+
+    backend.pump();
+    let frames0 = backend.clock().frames();
+    backend.pump();
+    let frames1 = backend.clock().frames();
+    assert_eq!(frames0, frames1);
+  }
+
+  #[test]
+  fn null_audio_backend_render_consumes_samples_and_renders_silence_on_underrun() {
+    let clock = Arc::new(VirtualClock::new());
+    let backend = NullAudioBackend::new_with_clock(clock, AudioStreamConfig::new(48_000, 1));
+    let sink = backend.create_sink();
+
+    assert_eq!(sink.push_interleaved_f32(&[1.0, 2.0, 3.0]), 3);
+    let out0 = backend.render(5);
+    assert_eq!(out0, vec![1.0, 2.0, 3.0, 0.0, 0.0]);
+    assert_eq!(backend.clock().frames(), 5);
+    assert_eq!(backend.underrun_samples(), 2);
+
+    // Queue should have been drained.
+    let out1 = backend.render(1);
+    assert_eq!(out1, vec![0.0]);
+    assert_eq!(backend.clock().frames(), 6);
   }
 }

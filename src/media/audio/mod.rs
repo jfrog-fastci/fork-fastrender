@@ -243,8 +243,11 @@ impl AudioOutputInfo {
 pub enum AudioClock {
   /// Clock derived from the number of frames the output backend reports as delivered.
   OutputFrames { clock: Arc<InterpolatedAudioClock> },
-  /// Clock derived from wall time (used by `NullAudioBackend`).
-  Instant { start: Instant, sample_rate_hz: u32 },
+  /// Clock derived from wall time (fallback for backends without an output playhead counter).
+  Instant {
+    start: Instant,
+    sample_rate_hz: u32,
+  },
 }
 
 impl AudioClock {

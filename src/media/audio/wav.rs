@@ -370,8 +370,7 @@ fn run_mix_loop(
     }
 
     let frames = (to_write / channels as usize) as u64;
-    let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
-    clock.on_callback_end(frames_u32);
+    clock.advance_frames(frames);
   }
 
   let _ = writer.finalize();

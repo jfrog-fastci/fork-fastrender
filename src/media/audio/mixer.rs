@@ -232,7 +232,6 @@ mod tests {
   use crate::media::audio::{test_signal, AudioStreamConfig, TimedAudioSegment};
   use crate::media::audio_clock::InterpolatedAudioClock;
   use std::sync::Arc;
-  use std::time::Instant;
 
   fn seg(start_ms: u64, samples: &[f32], sample_rate: u32) -> TimedAudioSegment {
     TimedAudioSegment {
@@ -361,11 +360,9 @@ mod tests {
       .push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0], 10))
       .unwrap();
 
-    let inner_clock = Arc::new(InterpolatedAudioClock::new(10));
-    inner_clock.on_callback_end_at(Instant::now(), 4, None);
-    let clock = AudioClock::OutputFrames {
-      clock: inner_clock,
-    };
+    let inner = Arc::new(InterpolatedAudioClock::new(10));
+    inner.advance_frames(4);
+    let clock = AudioClock::OutputFrames { clock: inner };
     let output_info = AudioOutputInfo {
       config: AudioStreamConfig::new(10, 1),
       callback_frames: None,
@@ -397,11 +394,9 @@ mod tests {
       .push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 10))
       .unwrap();
 
-    let inner_clock = Arc::new(InterpolatedAudioClock::new(10));
-    inner_clock.on_callback_end_at(Instant::now(), 4, None);
-    let clock = AudioClock::OutputFrames {
-      clock: inner_clock,
-    };
+    let inner = Arc::new(InterpolatedAudioClock::new(10));
+    inner.advance_frames(4);
+    let clock = AudioClock::OutputFrames { clock: inner };
     assert_eq!(clock.frames(), 4);
 
     let mut out = vec![0.0; 2];

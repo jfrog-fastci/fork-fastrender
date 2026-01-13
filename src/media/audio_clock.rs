@@ -69,6 +69,41 @@ impl InterpolatedAudioClock {
     self.frames_written.load(Ordering::Relaxed)
   }
 
+  /// Advances the playhead by `frames` without enabling wall-time interpolation.
+  ///
+  /// This is intended for synthetic/deterministic backends (e.g. `NullAudioBackend`) that advance
+  /// time based on an injected clock rather than real audio callbacks.
+  ///
+  /// It intentionally resets the interpolation state so [`Self::now`] is derived purely from the
+  /// frame counter.
+  pub fn advance_frames(&self, frames: u64) {
+    if frames == 0 {
+      return;
+    }
+
+    // Disable interpolation by clamping the \"time since last callback\" window to 0 frames.
+    //
+    // We still set `last_callback_end_nanos_plus_one` to a non-zero value so `is_started()` becomes
+    // true once the playhead advances.
+    self
+      .last_callback_end_nanos_plus_one
+      .store(1, Ordering::Relaxed);
+    self
+      .last_callback_frames
+      .store(0, Ordering::Relaxed);
+    self
+      .last_device_time_nanos_plus_one
+      .store(0, Ordering::Relaxed);
+
+    // Publish the counter update last with Release so readers that Acquire-load `frames_written`
+    // observe the above metadata consistently.
+    let _ = self
+      .frames_written
+      .fetch_update(Ordering::Release, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(frames))
+      });
+  }
+
   /// Updates the clock at the end of an audio callback using the current system time.
   pub fn on_callback_end(&self, frames_in_callback: u32) {
     self.on_callback_end_at(Instant::now(), frames_in_callback, None);
