@@ -78,7 +78,16 @@ fn generator_function_constructor_large_string_does_not_abort_on_oom() {
 fn generator_function_invocation_does_not_abort_on_oom() {
   // Calling a generator function creates a generator object with a boxed continuation. That boxing
   // must be fallible (return `VmError::OutOfMemory`), not abort the process.
-  run_oom_harness("generator_invoke", 15_000_000);
+  //
+  // This scenario allocates a large number of generator objects; tighten headroom so it reaches OOM
+  // quickly (otherwise the test can take minutes in debug builds).
+  const GENERATOR_INVOKE_FILLER_BYTES: usize = 165 * 1024 * 1024;
+  run_oom_harness_with_limits(
+    "generator_invoke",
+    0,
+    LIMIT_AS_BYTES,
+    GENERATOR_INVOKE_FILLER_BYTES,
+  );
 }
 
 #[test]
@@ -108,7 +117,10 @@ fn array_map_large_length_does_not_abort_on_oom() {
   //
   // Use a slightly larger length to reduce total runtime: a larger backing string leaves less
   // headroom under RLIMIT_AS, so the per-iteration key allocations hit OOM sooner.
-  run_oom_harness("arrayMap", 22_000_000);
+  // Keep this below the input-string allocation failure threshold (observed at ~29M code units
+  // with the current RLIMIT_AS and filler settings) so the harness can reliably allocate the
+  // initial `S` string before the actual test loop runs.
+  run_oom_harness("arrayMap", 26_000_000);
 }
 
 #[test]

@@ -979,17 +979,29 @@ impl ModuleGraph {
     }
 
     // exportedNames = module.GetExportedNames()
-    let exported_names = self.modules[idx].get_exported_names_with_vm(vm, self, module)?;
+    let mut unambiguous_names = self.modules[idx].get_exported_names_with_vm(vm, self, module)?;
 
     // unambiguousNames = [ name | name in exportedNames, module.ResolveExport(name) is ResolvedBinding ]
-    let mut unambiguous_names = Vec::<String>::new();
-    for name in exported_names {
-      if matches!(
-        self.modules[idx].resolve_export_with_vm(vm, self, module, &name)?,
-        ResolveExportResult::Resolved(_)
-      ) {
-        unambiguous_names.push(name);
+    //
+    // This list can be attacker-controlled (large export lists / `export *` graphs). Avoid
+    // infallible host allocations (which abort the process on allocator OOM) by filtering in place
+    // instead of building a new `Vec` via `push`.
+    let mut resolve_err: Option<VmError> = None;
+    unambiguous_names.retain(|name| {
+      if resolve_err.is_some() {
+        return false;
       }
+      match self.modules[idx].resolve_export_with_vm(vm, self, module, name) {
+        Ok(ResolveExportResult::Resolved(_)) => true,
+        Ok(_) => false,
+        Err(err) => {
+          resolve_err = Some(err);
+          false
+        }
+      }
+    });
+    if let Some(err) = resolve_err {
+      return Err(err);
     }
 
     // Allocate and cache a placeholder namespace object *before* computing its exports list.
@@ -1008,7 +1020,7 @@ impl ModuleGraph {
     self.torn_down = false;
 
     // Populate the namespace's `[[Exports]]` list and %Symbol.toStringTag%.
-    let exports_sorted = match self.module_namespace_create(vm, scope, module, namespace_obj, &unambiguous_names) {
+    let exports_sorted = match self.module_namespace_create(vm, scope, module, namespace_obj, unambiguous_names) {
       Ok(exports_sorted) => exports_sorted,
       Err(err) => {
         // Roll back the placeholder cache so subsequent calls don't observe an incomplete namespace.
@@ -1185,12 +1197,15 @@ impl ModuleGraph {
     scope: &mut Scope<'_>,
     module: ModuleId,
     obj: GcObject,
-    exports: &[String],
+    mut exports: Vec<String>,
   ) -> Result<Vec<String>, VmError> {
     // 1. Let exports be a List whose elements are the String values representing the exports of module.
     // 2. Let sortedExports be a List containing the same values as exports in ascending order.
-    let mut sorted_exports = exports.to_vec();
-    sorted_exports.sort_by(|a, b| cmp_utf16(a, b));
+    //
+    // Avoid cloning attacker-controlled strings: infallible `String::clone` can abort the process
+    // under allocator OOM. Also use `sort_unstable_by` to avoid allocations from the stable sort
+    // implementation (sorting does not require stability because export names are unique).
+    exports.sort_unstable_by(|a, b| cmp_utf16(a, b));
 
     let intr = vm
       .intrinsics()
@@ -1205,10 +1220,10 @@ impl ModuleGraph {
     let mut inner = scope.reborrow();
     let mut export_entries: Vec<ModuleNamespaceExport> = Vec::new();
     export_entries
-      .try_reserve_exact(sorted_exports.len())
+      .try_reserve_exact(exports.len())
       .map_err(|_| VmError::OutOfMemory)?;
 
-    for export_name in &sorted_exports {
+    for export_name in &exports {
       let resolution =
         match self.modules[module_index(module)].resolve_export_with_vm(vm, self, module, export_name)? {
           ResolveExportResult::Resolved(res) => res,
@@ -1292,7 +1307,7 @@ impl ModuleGraph {
       PropertyKey::Symbol(intr.well_known_symbols().to_string_tag),
       desc,
     )?;
-    Ok(sorted_exports)
+    Ok(exports)
   }
 
   fn cache_module_error_value(
