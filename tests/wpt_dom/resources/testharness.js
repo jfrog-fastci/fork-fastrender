@@ -420,9 +420,11 @@ function assert_throws_js(constructor, func, message) {
 // "IndexSizeError", so we translate legacy constants to their modern equivalents.
 var __dom_exception_legacy_name_map = {
   INDEX_SIZE_ERR: "IndexSizeError",
+  DOMSTRING_SIZE_ERR: "DOMStringSizeError",
   HIERARCHY_REQUEST_ERR: "HierarchyRequestError",
   WRONG_DOCUMENT_ERR: "WrongDocumentError",
   INVALID_CHARACTER_ERR: "InvalidCharacterError",
+  NO_DATA_ALLOWED_ERR: "NoDataAllowedError",
   NO_MODIFICATION_ALLOWED_ERR: "NoModificationAllowedError",
   NOT_FOUND_ERR: "NotFoundError",
   NOT_SUPPORTED_ERR: "NotSupportedError",
@@ -432,6 +434,7 @@ var __dom_exception_legacy_name_map = {
   INVALID_MODIFICATION_ERR: "InvalidModificationError",
   NAMESPACE_ERR: "NamespaceError",
   INVALID_ACCESS_ERR: "InvalidAccessError",
+  VALIDATION_ERR: "ValidationError",
   TYPE_MISMATCH_ERR: "TypeMismatchError",
   SECURITY_ERR: "SecurityError",
   NETWORK_ERR: "NetworkError",
