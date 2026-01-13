@@ -122,10 +122,25 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
   let flags = 0;
 
   // SAFETY: `recvmsg` writes into the provided iov/control buffers which are valid for the call.
+  let mut need_manual_cloexec = false;
   let rc = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags) };
-  if rc < 0 {
-    return Err(io::Error::last_os_error());
-  }
+  let _rc = if rc >= 0 {
+    rc
+  } else {
+    let err = io::Error::last_os_error();
+    // Some older kernels/sandboxed environments reject MSG_CMSG_CLOEXEC with EINVAL. Retry without
+    // the flag and set FD_CLOEXEC manually on the received fd.
+    if err.raw_os_error() == Some(libc::EINVAL) && (flags & libc::MSG_CMSG_CLOEXEC) != 0 {
+      need_manual_cloexec = true;
+      let rc2 = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags & !libc::MSG_CMSG_CLOEXEC) };
+      if rc2 < 0 {
+        return Err(io::Error::last_os_error());
+      }
+      rc2
+    } else {
+      return Err(err);
+    }
+  };
 
   if (msg.msg_flags & libc::MSG_CTRUNC) != 0 {
     return Err(io::Error::new(
@@ -175,5 +190,18 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
   }
 
   // SAFETY: `received_fd` came from the kernel via SCM_RIGHTS; we now own it.
-  Ok(unsafe { OwnedFd::from_raw_fd(received_fd) })
+  let owned = unsafe { OwnedFd::from_raw_fd(received_fd) };
+  if need_manual_cloexec {
+    let flags = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+      return Err(io::Error::last_os_error());
+    }
+    if (flags & libc::FD_CLOEXEC) == 0 {
+      let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+      if rc < 0 {
+        return Err(io::Error::last_os_error());
+      }
+    }
+  }
+  Ok(owned)
 }

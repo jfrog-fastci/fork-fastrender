@@ -11,9 +11,7 @@
 use std::io;
 
 #[cfg(unix)]
-use std::os::unix::io::{OwnedFd, RawFd};
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 #[cfg(unix)]
 use std::os::unix::io::FromRawFd;
 
@@ -213,17 +211,43 @@ fn recv_msg_inner(
     msg_flags: 0,
   };
 
+  // On Linux/Android we prefer MSG_CMSG_CLOEXEC so received fds are atomically FD_CLOEXEC. However,
+  // some older kernels/sandboxed environments reject MSG_CMSG_CLOEXEC with EINVAL. In that case we
+  // retry without the flag and then set FD_CLOEXEC manually.
+  let mut need_manual_cloexec = false;
   #[cfg(any(target_os = "linux", target_os = "android"))]
-  let recv_flags = libc::MSG_CMSG_CLOEXEC;
+  let read_len = {
+    // SAFETY: `recvmsg` writes into the provided iovec + control buffers. All pointers remain valid
+    // for the duration of the call.
+    let rc = unsafe { libc::recvmsg(sock_fd, &mut hdr, libc::MSG_CMSG_CLOEXEC) };
+    if rc >= 0 {
+      rc
+    } else {
+      let err = io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINVAL) {
+        need_manual_cloexec = true;
+        // Retry without MSG_CMSG_CLOEXEC.
+        let rc2 = unsafe { libc::recvmsg(sock_fd, &mut hdr, 0) };
+        if rc2 < 0 {
+          return Err(RecvMsgError::Io(io::Error::last_os_error()));
+        }
+        rc2
+      } else {
+        return Err(RecvMsgError::Io(err));
+      }
+    }
+  };
   #[cfg(not(any(target_os = "linux", target_os = "android")))]
-  let recv_flags = 0;
-
-  // SAFETY: `recvmsg` writes into the provided iovec + control buffers. All pointers remain valid
-  // for the duration of the call.
-  let read_len = unsafe { libc::recvmsg(sock_fd, &mut hdr, recv_flags) };
-  if read_len < 0 {
-    return Err(RecvMsgError::Io(io::Error::last_os_error()));
-  }
+  let read_len = {
+    need_manual_cloexec = true;
+    // SAFETY: `recvmsg` writes into the provided iovec + control buffers. All pointers remain valid
+    // for the duration of the call.
+    let rc = unsafe { libc::recvmsg(sock_fd, &mut hdr, 0) };
+    if rc < 0 {
+      return Err(RecvMsgError::Io(io::Error::last_os_error()));
+    }
+    rc
+  };
 
   let read_len = read_len as usize;
   data_buf.truncate(read_len);
@@ -244,20 +268,22 @@ fn recv_msg_inner(
     }
     // SAFETY: fds returned in SCM_RIGHTS are newly-created, owned by this process.
     let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-      let flags = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_GETFD) };
+    owned_fds.push(owned);
+  }
+
+  if need_manual_cloexec {
+    for fd in &owned_fds {
+      let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
       if flags < 0 {
         return Err(RecvMsgError::Io(io::Error::last_os_error()));
       }
       if (flags & libc::FD_CLOEXEC) == 0 {
-        let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
         if rc < 0 {
           return Err(RecvMsgError::Io(io::Error::last_os_error()));
         }
       }
     }
-    owned_fds.push(owned);
   }
 
   // On any error after this point, dropping `owned_fds` closes all received descriptors.

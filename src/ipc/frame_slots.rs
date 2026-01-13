@@ -177,10 +177,25 @@ impl UnixSeqpacket {
     };
 
     // SAFETY: `hdr` points to valid buffers.
+    let mut need_manual_cloexec = false;
     let rc = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, libc::MSG_CMSG_CLOEXEC) };
-    if rc < 0 {
-      return Err(Error::Io(io::Error::last_os_error()));
-    }
+    let rc = if rc >= 0 {
+      rc
+    } else {
+      let err = io::Error::last_os_error();
+      // Some environments reject MSG_CMSG_CLOEXEC with EINVAL; retry without and set FD_CLOEXEC
+      // manually on any received fds.
+      if err.raw_os_error() == Some(libc::EINVAL) {
+        need_manual_cloexec = true;
+        let rc2 = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, 0) };
+        if rc2 < 0 {
+          return Err(Error::Io(io::Error::last_os_error()));
+        }
+        rc2
+      } else {
+        return Err(Error::Io(err));
+      }
+    };
 
     if (hdr.msg_flags & libc::MSG_TRUNC) != 0 {
       return Err(Error::Other("truncated seqpacket message".to_string()));
@@ -240,6 +255,23 @@ impl UnixSeqpacket {
           break;
         }
         cmsg_ptr = next as *const libc::cmsghdr;
+      }
+    }
+
+    if need_manual_cloexec {
+      for fd in &fds_out {
+        // SAFETY: `fcntl` called with valid fd.
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+        if flags < 0 {
+          return Err(Error::Io(io::Error::last_os_error()));
+        }
+        if (flags & libc::FD_CLOEXEC) == 0 {
+          // SAFETY: `fcntl` called with valid fd.
+          let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+          if rc < 0 {
+            return Err(Error::Io(io::Error::last_os_error()));
+          }
+        }
       }
     }
 
