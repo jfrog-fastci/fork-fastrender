@@ -786,6 +786,20 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     hooks
   }
 
+  /// Installs an embedder-defined "host environment" state pointer into the hooks payload.
+  ///
+  /// This is only meaningful for native code paths that recover embedder state by downcasting the
+  /// [`VmJsHostHooksPayload`] exposed through [`VmHostHooks::as_any_mut`], for example:
+  /// - WebIDL host dispatch helpers (`webidl_vm_js::host_from_hooks`), and
+  /// - privileged JS bridges like the planned Chrome API dispatcher.
+  ///
+  /// Embeddings that construct hooks via [`Self::new_with_host`] get this automatically. Embeddings
+  /// that can only construct hooks from a borrow-split `(vm_host, window_realm)` pair (via
+  /// [`Self::new_with_vm_host_and_window_realm`]) can opt in by calling this method.
+  pub fn set_embedder_state<State: 'static>(&mut self, state: &mut State) {
+    self.any.set_embedder_state(state);
+  }
+
   pub fn set_event_loop(&mut self, event_loop: &mut EventLoop<Host>) {
     self.any.set_event_loop(event_loop);
   }
@@ -4248,6 +4262,108 @@ mod tests {
     }
 
     assert_eq!(host.bindings_host.webidl_dispatch_count, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn hooks_set_embedder_state_makes_state_available_to_native_calls_for_borrow_split_hooks(
+  ) -> Result<(), VmError> {
+    struct DummyWindowRealmHost;
+
+    impl WindowRealmHost for DummyWindowRealmHost {
+      fn vm_host_and_window_realm(
+        &mut self,
+      ) -> crate::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+        unreachable!("DummyWindowRealmHost is only used as a type parameter in this test")
+      }
+    }
+
+    #[derive(Default)]
+    struct TestState {
+      calls: usize,
+    }
+
+    fn check_embedder_state_native(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      hooks: &mut dyn VmHostHooks,
+      _callee: vm_js::GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Some(payload) = hooks_payload_mut(hooks) else {
+        return Err(VmError::InvariantViolation(
+          "expected VmJsEventLoopHooks to expose VmJsHostHooksPayload via as_any_mut",
+        ));
+      };
+
+      if let Some(state) = payload.embedder_state_mut::<TestState>() {
+        state.calls += 1;
+        Ok(Value::Bool(true))
+      } else {
+        Ok(Value::Bool(false))
+      }
+    }
+
+    let mut vm_host = ();
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let mut state = TestState::default();
+
+    // Hooks constructed from a borrow-split (vm_host, window_realm) pair do not install embedder
+    // state automatically.
+    let mut hooks = VmJsEventLoopHooks::<DummyWindowRealmHost>::new_with_vm_host_and_window_realm(
+      &mut vm_host,
+      &mut window,
+      None,
+    );
+
+    let call_id = window
+      .vm_mut()
+      .register_native_call(check_embedder_state_native)
+      .expect("register_native_call");
+
+    let func = {
+      let mut scope = window.heap_mut().scope();
+      let name = scope.alloc_string("checkEmbedderState").unwrap();
+      scope.push_root(Value::String(name)).unwrap();
+      scope.alloc_native_function(call_id, None, name, 0).unwrap()
+    };
+
+    let result_before = {
+      let (vm, heap) = window.vm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(func))?;
+      vm.call_with_host_and_hooks(
+        &mut vm_host,
+        &mut scope,
+        &mut hooks,
+        Value::Object(func),
+        Value::Undefined,
+        &[],
+      )
+    }?;
+    assert_eq!(result_before, Value::Bool(false));
+
+    hooks.set_embedder_state(&mut state);
+
+    let result_after = {
+      let (vm, heap) = window.vm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(func))?;
+      vm.call_with_host_and_hooks(
+        &mut vm_host,
+        &mut scope,
+        &mut hooks,
+        Value::Object(func),
+        Value::Undefined,
+        &[],
+      )
+    }?;
+    assert_eq!(result_after, Value::Bool(true));
+    assert_eq!(state.calls, 1);
+
+    assert!(hooks.finish(window.heap_mut()).is_none());
     Ok(())
   }
 
