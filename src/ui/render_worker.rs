@@ -1771,32 +1771,6 @@ fn compute_scroll_metrics(
   }
 }
 
-#[cfg(feature = "browser_ui")]
-fn build_page_accesskit_subtree_for_tab(
-  tab_id: TabId,
-  tab: &TabState,
-  cancel_callback: Arc<crate::render_control::CancelCallback>,
-) -> Option<crate::ui::messages::PageAccessKitSubtree> {
-  // Avoid doing any work if the current job was already cancelled.
-  if cancel_callback() {
-    return None;
-  }
-
-  let doc = tab.document.as_ref()?;
-  let prepared = doc.prepared()?;
-
-  // Reuse the worker's cooperative cancellation plumbing: building large accessibility trees should
-  // be interruptible by the UI bumping paint/nav generations.
-  let deadline = deadline_for(cancel_callback, None);
-  let _guard = DeadlineGuard::install(Some(&deadline));
-
-  let interaction_state = Some(tab.interaction.interaction_state());
-  let a11y_tree =
-    crate::accessibility::build_accessibility_tree(prepared.styled_tree(), interaction_state).ok()?;
-
-  Some(page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &a11y_tree))
-}
-
 fn base_url_for_links(tab: &TabState) -> &str {
   tab
     .last_base_url
