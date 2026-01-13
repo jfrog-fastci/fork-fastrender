@@ -694,6 +694,8 @@ struct RegexError {
 }
 
 fn validate_regex_flags(raw: &str, start: usize) -> Result<(), RegexError> {
+  const U_FLAG: u16 = 1 << 5;
+  const V_FLAG: u16 = 1 << 6;
   let mut seen_flags: u16 = 0;
   for (offset, ch) in raw[start..].char_indices() {
     // `u` (Unicode) and `v` (Unicode sets) are mutually exclusive.
@@ -721,6 +723,14 @@ fn validate_regex_flags(raw: &str, start: usize) -> Result<(), RegexError> {
         })
       }
     };
+    // `u` and `v` are mutually exclusive.
+    if (bit == U_FLAG && (seen_flags & V_FLAG) != 0) || (bit == V_FLAG && (seen_flags & U_FLAG) != 0) {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidFlag,
+        offset: start + offset,
+        len: ch.len_utf8(),
+      });
+    }
     if seen_flags & bit != 0 {
       return Err(RegexError {
         kind: RegexErrorKind::DuplicateFlag,

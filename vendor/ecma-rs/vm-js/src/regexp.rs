@@ -689,7 +689,7 @@ impl RegExpFlags {
           flags.unicode = true;
         }
         b'v' => {
-          if flags.unicode || flags.unicode_sets {
+          if flags.unicode_sets || flags.unicode {
             return Err(RegExpSyntaxError {
               message: "Invalid flags supplied to RegExp constructor",
             }
