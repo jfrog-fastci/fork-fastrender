@@ -103,3 +103,76 @@ fn object_prototype_to_string_honors_symbol_to_string_tag_for_async_generators()
 
   Ok(())
 }
+
+#[test]
+fn object_prototype_to_string_async_generator_falls_back_when_to_string_tag_deleted() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let value = match rt.exec_script(
+    r#"
+      (function () {
+        async function* g() { yield 1; }
+        const it = g();
+        if (Object.prototype.toString.call(it) !== "[object AsyncGenerator]") return false;
+
+        const proto1 = Object.getPrototypeOf(it);
+        const proto2 = Object.getPrototypeOf(proto1);
+
+        // Engines differ on whether the async generator instance inherits directly from
+        // %AsyncGeneratorPrototype% or from a per-function prototype object that in turn inherits
+        // from %AsyncGeneratorPrototype%. Delete from both to ensure @@toStringTag is actually
+        // absent.
+        delete proto1[Symbol.toStringTag];
+        if (proto2 !== null) {
+          delete proto2[Symbol.toStringTag];
+        }
+        if (proto1[Symbol.toStringTag] !== undefined) return false;
+
+        // When @@toStringTag is absent, Object.prototype.toString must fall back to the built-in
+        // tag for async generator objects ("AsyncGenerator"), not "[object Object]".
+        return Object.prototype.toString.call(it) === "[object AsyncGenerator]" &&
+               String(it) === "[object AsyncGenerator]";
+      })()
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+    Err(err) => return Err(err),
+  };
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn object_prototype_to_string_async_generator_falls_back_when_to_string_tag_non_string() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let value = match rt.exec_script(
+    r#"
+      (function () {
+        async function* g() { yield 1; }
+        const it = g();
+        if (Object.prototype.toString.call(it) !== "[object AsyncGenerator]") return false;
+
+        const proto1 = Object.getPrototypeOf(it);
+        Object.defineProperty(proto1, Symbol.toStringTag, {
+          get: function () { return 1; },
+          configurable: true
+        });
+        if (it[Symbol.toStringTag] !== 1) return false;
+
+        // When @@toStringTag is present but not a string, Object.prototype.toString must fall back
+        // to the built-in tag for async generator objects ("AsyncGenerator").
+        return Object.prototype.toString.call(it) === "[object AsyncGenerator]";
+      })()
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+    Err(err) => return Err(err),
+  };
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
