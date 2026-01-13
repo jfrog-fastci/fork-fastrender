@@ -31094,6 +31094,57 @@ mod tests {
   }
 
   #[test]
+  fn http_documents_cannot_fetch_file_subresources_when_allow_file_from_http_disabled() {
+    // Regression test: `allow_file_from_http=false` should block file:// subresource fetches before
+    // the user-provided fetcher (or file backend) is invoked. This keeps the pipeline safe even if
+    // a fetcher is permissive or buggy.
+    let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="file:///etc/passwd">
+      </head><body><div>Hello</div></body></html>"#;
+    let document_url = "https://example.test/page.html";
+    let blocked_url = "file:///etc/passwd";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      blocked_url,
+      "body { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default()
+      .with_runtime_toggles(toggles)
+      .with_allow_file_from_http(false);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    let result = renderer
+      .render_html_with_stylesheets(
+        html,
+        document_url,
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .expect("render should succeed");
+
+    assert!(
+      !fetcher.requests().iter().any(|req| req.url == blocked_url),
+      "blocked file:// stylesheet should not be fetched"
+    );
+    assert!(
+      result.diagnostics.fetch_errors.iter().any(|e| {
+        e.kind == ResourceKind::Stylesheet
+          && e.url == blocked_url
+          && e.message.contains("Blocked file:// resource")
+      }),
+      "expected policy violation to be recorded for blocked file:// stylesheet"
+    );
+  }
+
+  #[test]
   fn same_origin_subresources_blocks_subresources_but_allows_documents() {
     let document_origin = origin_from_url("https://example.com/").expect("document origin");
     let ctx = ResourceContext {
