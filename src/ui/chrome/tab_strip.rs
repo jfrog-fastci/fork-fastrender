@@ -442,23 +442,31 @@ fn tab_ui(
 
   let visuals = ui.style().visuals.clone();
 
-  // Micro-interaction: fade hover highlight in/out for inactive tabs.
-  let hover_t = if is_active {
-    0.0
-  } else {
-    motion.animate_bool(
-      ui.ctx(),
-      tab_id.with("hover"),
-      response.hovered(),
-      motion.durations.hover_fade,
-    )
-  };
+  // Micro-interaction: fade hover highlight in/out.
+  //
+  // Active tabs ignore hover (as today), but we still drive the animation state toward `0.0` while
+  // active so switching tabs doesn't resurrect a stale hover value.
+  let hover_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("hover"),
+    response.hovered() && !is_active,
+    motion.durations.hover_fade,
+  );
 
-  let bg = if is_active {
-    visuals.widgets.active.bg_fill
-  } else {
-    lerp_color(visuals.widgets.inactive.bg_fill, visuals.widgets.hovered.bg_fill, hover_t)
-  };
+  // Micro-interaction: fade the active tab background in/out instead of snapping.
+  let active_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("active"),
+    is_active,
+    motion.durations.tab_underline,
+  );
+
+  let inactive_bg = lerp_color(
+    visuals.widgets.inactive.bg_fill,
+    visuals.widgets.hovered.bg_fill,
+    hover_t,
+  );
+  let bg = lerp_color(inactive_bg, visuals.widgets.active.bg_fill, active_t);
   let rounding = visuals.widgets.inactive.rounding;
   {
     let painter = ui.painter();
@@ -717,23 +725,28 @@ fn pinned_tab_ui(
 
   let visuals = ui.style().visuals.clone();
 
-  // Micro-interaction: fade hover highlight in/out for inactive tabs.
-  let hover_t = if is_active {
-    0.0
-  } else {
-    motion.animate_bool(
-      ui.ctx(),
-      tab_id.with("hover"),
-      response.hovered(),
-      motion.durations.hover_fade,
-    )
-  };
+  // Micro-interaction: fade hover highlight in/out (active tabs ignore hover).
+  let hover_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("hover"),
+    response.hovered() && !is_active,
+    motion.durations.hover_fade,
+  );
 
-  let bg = if is_active {
-    visuals.widgets.active.bg_fill
-  } else {
-    lerp_color(visuals.widgets.inactive.bg_fill, visuals.widgets.hovered.bg_fill, hover_t)
-  };
+  // Micro-interaction: fade the active tab background in/out instead of snapping.
+  let active_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("active"),
+    is_active,
+    motion.durations.tab_underline,
+  );
+
+  let inactive_bg = lerp_color(
+    visuals.widgets.inactive.bg_fill,
+    visuals.widgets.hovered.bg_fill,
+    hover_t,
+  );
+  let bg = lerp_color(inactive_bg, visuals.widgets.active.bg_fill, active_t);
   let rounding = visuals.widgets.inactive.rounding;
   ui.painter().rect_filled(tab_rect, rounding, bg);
 
