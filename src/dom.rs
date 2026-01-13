@@ -2466,9 +2466,90 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
     }
   }
 
+  enforce_details_name_group_exclusivity(&mut root, &mut deadline_counter)?;
   strip_authored_file_input_state(&mut root, &mut deadline_counter)?;
 
   Ok(root)
+}
+
+fn enforce_details_name_group_exclusivity(
+  node: &mut DomNode,
+  deadline_counter: &mut usize,
+) -> Result<()> {
+  // HTML `<details name>` elements form exclusive groups within each tree (document or shadow root):
+  // if multiple `open` details share the same non-empty `name`, only the last-open one in tree
+  // order remains open.
+  //
+  // Browsers enforce this dynamically during insertion and attribute mutation; this pass applies
+  // the equivalent semantics to authored markup during our post-parse preprocessing so static
+  // renders match UA behavior.
+  //
+  // Important scoping rules:
+  // - Shadow root boundaries: groups do not cross shadow roots. We therefore process the document
+  //   tree and each shadow root tree separately.
+  // - Inert HTML `<template>` contents: template contents are inert and must not affect outside
+  //   state, so we do not traverse into inert template children.
+
+  let mut pending_roots: Vec<*mut DomNode> = vec![node as *mut DomNode];
+
+  while let Some(root_ptr) = pending_roots.pop() {
+    let mut open_by_name: HashMap<String, *mut DomNode> = HashMap::new();
+    let mut stack: Vec<*mut DomNode> = vec![root_ptr];
+
+    while let Some(ptr) = stack.pop() {
+      check_active_periodic(
+        deadline_counter,
+        DOM_PARSE_NODE_DEADLINE_STRIDE,
+        RenderStage::DomParse,
+      )?;
+
+      // SAFETY: all pointers are derived from a live `DomNode` tree rooted at `node`. This pass
+      // only mutates element attributes (never `children` vectors), so pointers into the tree remain
+      // stable for the duration of the traversal.
+      let current = unsafe { &*ptr };
+
+      // Shadow roots are separate trees; do not enforce group exclusivity across the boundary. When
+      // traversing a tree, treat nested shadow roots as independent roots to process later.
+      if matches!(current.node_type, DomNodeType::ShadowRoot { .. }) && !ptr::eq(ptr, root_ptr) {
+        pending_roots.push(ptr);
+        continue;
+      }
+
+      let is_details = matches!(
+        &current.node_type,
+        DomNodeType::Element {
+          tag_name,
+          namespace,
+          ..
+        } if tag_name.eq_ignore_ascii_case("details") && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+      );
+
+      if is_details {
+        if let Some(name) = current.get_attribute_ref("name") {
+          if !name.is_empty() && current.get_attribute_ref("open").is_some() {
+            if let Some(prev_ptr) = open_by_name.get(name).copied() {
+              // SAFETY: `prev_ptr` is a pointer into the same live DOM tree. We never store the
+              // current node in the map before processing it, so `prev_ptr` cannot alias `ptr`.
+              unsafe { &mut *prev_ptr }.remove_attribute("open");
+            }
+            open_by_name.insert(name.to_string(), ptr);
+          }
+        }
+      }
+
+      // Template contents are inert; do not traverse into them.
+      if current.template_contents_are_inert() {
+        continue;
+      }
+
+      // Pre-order traversal: push children in reverse so they are popped in document order.
+      for child in current.children.iter().rev() {
+        stack.push(child as *const DomNode as *mut DomNode);
+      }
+    }
+  }
+
+  Ok(())
 }
 
 fn strip_authored_file_input_state(node: &mut DomNode, deadline_counter: &mut usize) -> Result<()> {
@@ -10253,6 +10334,36 @@ mod tests {
         subtree_text_content(node).trim().to_string()
       })
       .collect()
+  }
+
+  #[test]
+  fn details_name_group_last_open_wins() {
+    let html = r#"<details name=g open id=one>one</details><details name=g open id=two>two</details>"#;
+    let dom = parse_html(html).expect("parse standard DOM");
+
+    let one = find_by_id(&dom, "one").expect("details#one");
+    assert!(
+      one.get_attribute_ref("open").is_none(),
+      "expected details#one to be closed by later open details in the same name group"
+    );
+
+    let two = find_by_id(&dom, "two").expect("details#two");
+    assert!(
+      two.get_attribute_ref("open").is_some(),
+      "expected details#two to remain open as the last open details in the name group"
+    );
+  }
+
+  #[test]
+  fn details_name_group_skips_inert_template_contents() {
+    let html = r#"<details name=g open id=outside>outside</details><template><details name=g open id=inert>inert</details></template>"#;
+    let dom = parse_html(html).expect("parse standard DOM");
+
+    let outside = find_by_id(&dom, "outside").expect("details#outside");
+    assert!(
+      outside.get_attribute_ref("open").is_some(),
+      "inert <template> contents must not affect details name group state outside the template"
+    );
   }
 
   #[test]
