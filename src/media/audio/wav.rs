@@ -8,7 +8,7 @@ use std::thread;
 
 use parking_lot::{Condvar, Mutex, RwLock};
 
-use super::convert::{sanitize_mix_sample, sanitize_sample};
+use super::convert::sanitize_sample;
 use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
 use crate::media::audio_clock::InterpolatedAudioClock;
 
@@ -216,8 +216,15 @@ impl MixerState {
         let Some(sample) = buf.pop_front() else {
           break;
         };
-        // Sanitize per-sample before accumulation so malformed values can't poison the entire mix.
-        dst[i] += sanitize_mix_sample(sample * gain);
+        // Avoid NaN poisoning / denormal slow paths by dropping non-normal samples before they
+        // reach the hot multiply/add loop.
+        if !sample.is_normal() {
+          continue;
+        }
+        let scaled = sample * gain;
+        if scaled.is_normal() {
+          dst[i] += scaled;
+        }
       }
     }
 
