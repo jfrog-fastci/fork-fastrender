@@ -964,6 +964,101 @@ fn open_url_in_new_tab_state(
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug)]
+struct WindowedSessionRestoreTabPlan {
+  old_index: usize,
+  tab_id: fastrender::ui::TabId,
+  cancel: fastrender::ui::cancel::CancelGens,
+  tab: fastrender::ui::BrowserSessionTab,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug)]
+struct WindowedSessionRestoreStartupPlan {
+  tabs: Vec<WindowedSessionRestoreTabPlan>,
+  active_tab_id: fastrender::ui::TabId,
+  worker_msgs: Vec<fastrender::ui::UiToWorker>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn windowed_session_restore_startup_plan_from_tabs(
+  tabs: Vec<fastrender::ui::BrowserSessionTab>,
+  active_tab_index: usize,
+) -> WindowedSessionRestoreStartupPlan {
+  use fastrender::ui::cancel::CancelGens;
+  use fastrender::ui::{NavigationReason, TabId, UiToWorker};
+
+  // Ensure pinned tabs are always contiguous at the start (mirrors `BrowserAppState` invariant).
+  // The session format stores the full tab ordering, but we defensively re-partition here in case
+  // the on-disk session was hand-edited or produced by an older build.
+  let mut pinned_tabs: Vec<(usize, fastrender::ui::BrowserSessionTab)> = Vec::new();
+  let mut unpinned_tabs: Vec<(usize, fastrender::ui::BrowserSessionTab)> = Vec::new();
+  for (idx, tab) in tabs.into_iter().enumerate() {
+    if tab.pinned {
+      pinned_tabs.push((idx, tab));
+    } else {
+      unpinned_tabs.push((idx, tab));
+    }
+  }
+
+  let mut plans: Vec<WindowedSessionRestoreTabPlan> =
+    Vec::with_capacity(pinned_tabs.len() + unpinned_tabs.len());
+  let mut active_tab_id: Option<TabId> = None;
+
+  for (old_index, tab) in pinned_tabs.into_iter().chain(unpinned_tabs.into_iter()) {
+    let tab_id = TabId::new();
+    if old_index == active_tab_index {
+      active_tab_id = Some(tab_id);
+    }
+    plans.push(WindowedSessionRestoreTabPlan {
+      old_index,
+      tab_id,
+      cancel: CancelGens::new(),
+      tab,
+    });
+  }
+
+  let active_tab_id = active_tab_id
+    .or_else(|| plans.first().map(|p| p.tab_id))
+    .expect("sanitized session should always provide at least one tab");
+
+  let active_url = plans
+    .iter()
+    .find(|p| p.tab_id == active_tab_id)
+    .map(|p| p.tab.url.clone())
+    .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
+
+  let mut worker_msgs: Vec<UiToWorker> = Vec::new();
+  for plan in &plans {
+    worker_msgs.push(UiToWorker::CreateTab {
+      tab_id: plan.tab_id,
+      initial_url: None,
+      cancel: plan.cancel.clone(),
+    });
+  }
+  worker_msgs.push(UiToWorker::SetActiveTab { tab_id: active_tab_id });
+  worker_msgs.push(UiToWorker::Navigate {
+    tab_id: active_tab_id,
+    url: active_url,
+    reason: NavigationReason::TypedUrl,
+  });
+
+  WindowedSessionRestoreStartupPlan {
+    tabs: plans,
+    active_tab_id,
+    worker_msgs,
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn windowed_session_restore_startup_plan(
+  window: fastrender::ui::BrowserSessionWindow,
+) -> WindowedSessionRestoreStartupPlan {
+  let window = window.sanitized();
+  windowed_session_restore_startup_plan_from_tabs(window.tabs, window.active_tab_index)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 fn open_typed_in_new_tab_state(
   browser_state: &mut fastrender::ui::BrowserAppState,
   tab_cancel: &mut std::collections::HashMap<
@@ -4636,6 +4731,92 @@ mod tests {
       detail.ends_with('…'),
       "expected clamped detail to be marked with an ellipsis"
     );
+  #[test]
+  fn session_restore_startup_plan_navigates_only_active_tab() {
+    use fastrender::ui::{BrowserSessionTab, BrowserSessionWindow, NavigationReason, UiToWorker};
+
+    let window = BrowserSessionWindow {
+      tabs: vec![
+        BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: None,
+        },
+        BrowserSessionTab {
+          url: "about:blank".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: true,
+          group: None,
+        },
+        BrowserSessionTab {
+          url: "about:error".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: None,
+        },
+        BrowserSessionTab {
+          url: "about:test-scroll".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: true,
+          group: None,
+        },
+      ],
+      tab_groups: Vec::new(),
+      active_tab_index: 2,
+      show_menu_bar: true,
+      window_state: None,
+    };
+
+    let plan = windowed_session_restore_startup_plan(window);
+
+    let create_tabs = plan
+      .worker_msgs
+      .iter()
+      .filter(|msg| matches!(msg, UiToWorker::CreateTab { .. }))
+      .count();
+    assert_eq!(create_tabs, 4, "expected CreateTab for each restored tab");
+
+    for msg in &plan.worker_msgs {
+      if let UiToWorker::CreateTab { initial_url, .. } = msg {
+        assert!(
+          initial_url.is_none(),
+          "expected restored CreateTab to use initial_url=None"
+        );
+      }
+    }
+
+    let set_active = plan
+      .worker_msgs
+      .iter()
+      .find_map(|msg| match msg {
+        UiToWorker::SetActiveTab { tab_id } => Some(*tab_id),
+        _ => None,
+      })
+      .expect("expected SetActiveTab message");
+
+    let navigations: Vec<_> = plan
+      .worker_msgs
+      .iter()
+      .filter_map(|msg| match msg {
+        UiToWorker::Navigate {
+          tab_id,
+          url,
+          reason,
+        } => Some((*tab_id, url.as_str(), *reason)),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(navigations.len(), 1, "expected only one initial Navigate");
+
+    let (nav_tab_id, nav_url, nav_reason) = navigations[0];
+    assert_eq!(nav_tab_id, set_active, "Navigate should target active tab");
+    assert_eq!(nav_reason, NavigationReason::TypedUrl);
+    assert_eq!(nav_url, "about:error");
   }
 }
 
@@ -12229,8 +12410,6 @@ impl App {
   }
 
   fn startup(&mut self, window: fastrender::ui::BrowserSessionWindow) {
-    use fastrender::ui::UiToWorker;
-
     let fastrender::ui::BrowserSessionWindow {
       tabs,
       downloads,
@@ -12280,61 +12459,59 @@ impl App {
     // Ensure pinned tabs are always contiguous at the start (mirrors `BrowserAppState` invariant).
     // The session format stores the full tab ordering, but we defensively re-partition here in case
     // the on-disk session was hand-edited or produced by an older build.
-    let mut pinned_tabs: Vec<(usize, fastrender::ui::BrowserSessionTab)> = Vec::new();
-    let mut unpinned_tabs: Vec<(usize, fastrender::ui::BrowserSessionTab)> = Vec::new();
-    for (idx, tab) in tabs.into_iter().enumerate() {
-      if tab.pinned {
-        pinned_tabs.push((idx, tab));
-      } else {
-        unpinned_tabs.push((idx, tab));
-      }
-    }
+    let WindowedSessionRestoreStartupPlan {
+      tabs: restore_tabs,
+      active_tab_id,
+      worker_msgs,
+    } = windowed_session_restore_startup_plan_from_tabs(tabs, active_tab_index);
 
-    let mut tab_ids = Vec::with_capacity(pinned_tabs.len() + unpinned_tabs.len());
-    let mut active_tab_id: Option<fastrender::ui::TabId> = None;
+    for entry in restore_tabs {
+      let tab_id = entry.tab_id;
+      let is_active = tab_id == active_tab_id;
 
-    for (old_idx, tab) in pinned_tabs.into_iter().chain(unpinned_tabs.into_iter()) {
-      let tab_id = fastrender::ui::TabId::new();
-      tab_ids.push(tab_id);
-      if old_idx == active_tab_index {
-        active_tab_id = Some(tab_id);
-      }
-
-      if let Some(scroll_css) = tab.scroll_css {
+      if let Some(scroll_css) = entry.tab.scroll_css {
         self.pending_scroll_restores.insert(tab_id, scroll_css);
       }
 
-      let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, tab.url.clone());
-      if let Some(zoom) = tab.zoom {
+      let mut tab_state = fastrender::ui::BrowserTabState::new_with_cancel(
+        tab_id,
+        entry.tab.url.clone(),
+        entry.cancel.clone(),
+      );
+
+      if let Some(scroll_css) = entry.tab.scroll_css {
+        tab_state.scroll_state.viewport =
+          fastrender::geometry::Point::new(scroll_css.0, scroll_css.1);
+      }
+
+      if let Some(zoom) = entry.tab.zoom {
         tab_state.zoom = zoom;
       }
-      tab_state.loading = true;
+      tab_state.loading = is_active;
+      if !is_active {
+        tab_state.pending_restore_url = Some(entry.tab.url.clone());
+      }
       tab_state.unresponsive = false;
       tab_state.last_worker_msg_at = std::time::SystemTime::now();
-      tab_state.pinned = tab.pinned;
-      tab_state.group = if tab.pinned {
+      tab_state.pinned = entry.tab.pinned;
+      tab_state.group = if entry.tab.pinned {
         None
       } else {
-        tab.group.and_then(|idx| runtime_groups.get(idx).copied())
+        entry
+          .tab
+          .group
+          .and_then(|idx| runtime_groups.get(idx).copied())
       };
-      let cancel = tab_state.cancel.clone();
-      self.tab_cancel.insert(tab_id, cancel.clone());
-      self.browser_state.push_tab(tab_state, false);
 
-      let _ = self.send_worker_msg(UiToWorker::CreateTab {
-        tab_id,
-        initial_url: Some(tab.url),
-        cancel,
-      });
+      self.tab_cancel.insert(tab_id, entry.cancel.clone());
+      self.browser_state.push_tab(tab_state, false);
     }
 
-    let active_tab_id = active_tab_id
-      .or_else(|| tab_ids.first().copied())
-      .expect("sanitized session should always provide at least one tab");
     self.browser_state.set_active_tab(active_tab_id);
-    let _ = self.send_worker_msg(UiToWorker::SetActiveTab {
-      tab_id: active_tab_id,
-    });
+
+    for msg in worker_msgs {
+      let _ = self.send_worker_msg(msg);
+    }
 
     // Restore persisted download history for the window. Download ids are process-unique, so we
     // allocate fresh ids for restored entries.
@@ -12490,6 +12667,73 @@ impl App {
     // Match typical new-tab UX: focus the address bar after resetting.
     self.focus_address_bar_select_all();
     self.window.request_redraw();
+  }
+
+  fn viewport_css_and_dpr_for_current_content_rect(
+    &self,
+    zoom: f32,
+  ) -> Option<((u32, u32), f32)> {
+    // When switching tabs we want to send an appropriate viewport before kicking off a lazy
+    // navigation, but we don't want to re-run egui layout outside the normal `render_frame` flow.
+    //
+    // Best-effort: reuse the most recently measured central-panel rect (or the last page rect) as
+    // a proxy for `ui.available_size()` in points.
+    let rect = self.content_rect_points.or(self.page_rect_points)?;
+    let avail_points = (rect.width().max(0.0), rect.height().max(0.0));
+    Some(fastrender::ui::viewport_css_and_dpr_for_zoom(
+      // UI scale affects egui's points↔pixels mapping (chrome/widget scaling), but should not
+      // change the page zoom level.
+      (avail_points.0 * self.ui_scale, avail_points.1 * self.ui_scale),
+      self.system_pixels_per_point,
+      zoom,
+    ))
+  }
+
+  fn maybe_begin_pending_session_restore_navigation(&mut self, tab_id: fastrender::ui::TabId) {
+    use fastrender::ui::{NavigationReason, UiToWorker};
+
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      return;
+    }
+
+    let (pending_url, zoom) = match self.browser_state.tab_mut(tab_id) {
+      Some(tab) => (tab.pending_restore_url.take(), tab.zoom),
+      None => return,
+    };
+    let Some(url) = pending_url else {
+      return;
+    };
+
+    // Ensure the worker has a viewport before navigation so it doesn't start rendering at the
+    // default 800x600/DPR=1.
+    if let Some((viewport_css, dpr)) = self.viewport_css_and_dpr_for_current_content_rect(zoom) {
+      self.update_viewport_throttled(viewport_css, dpr);
+      // Flush any pending emission (defensive: `update_viewport_throttled` should already emit the
+      // first update immediately after a tab switch).
+      self.force_send_viewport_now();
+    }
+
+    // Mark loading immediately so the UI can surface a spinner/unresponsive watchdog even if the
+    // worker is slow or crashes before replying.
+    if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+      tab.loading = true;
+      tab.unresponsive = false;
+      tab.last_worker_msg_at = std::time::SystemTime::now();
+      tab.error = None;
+      tab.title = None;
+      tab.stage = None;
+      tab.load_stage = None;
+      tab.load_progress = Some(0.0);
+      tab.favicon_meta = None;
+      tab.hovered_url = None;
+      tab.cursor = fastrender::ui::CursorKind::Default;
+    }
+
+    self.send_worker_msg(UiToWorker::Navigate {
+      tab_id,
+      url,
+      reason: NavigationReason::TypedUrl,
+    });
   }
 
   fn sync_window_title(&mut self) {
@@ -22635,6 +22879,7 @@ impl App {
               tab_id: new_active,
               reason: RepaintReason::Explicit,
             });
+            self.maybe_begin_pending_session_restore_navigation(new_active);
             if self.pending_frame_uploads.has_pending_for_tab(new_active) {
               self.window.request_redraw();
             }
@@ -22743,6 +22988,7 @@ impl App {
               tab_id: new_active,
               reason: RepaintReason::Explicit,
             });
+            self.maybe_begin_pending_session_restore_navigation(new_active);
           }
 
           // Chrome UI was already built for this frame. Request another redraw so the tab strip and
@@ -22796,6 +23042,7 @@ impl App {
                 tab_id: new_active,
                 reason: RepaintReason::Explicit,
               });
+              self.maybe_begin_pending_session_restore_navigation(new_active);
             }
           }
 
@@ -22850,6 +23097,7 @@ impl App {
                 tab_id: new_active,
                 reason: RepaintReason::Explicit,
               });
+              self.maybe_begin_pending_session_restore_navigation(new_active);
             }
           }
 
@@ -22968,6 +23216,7 @@ impl App {
               tab_id,
               reason: RepaintReason::Explicit,
             });
+            self.maybe_begin_pending_session_restore_navigation(tab_id);
             // `flush_pending_frame_uploads` runs before chrome actions are processed each frame, so
             // ensure we draw a follow-up frame to upload any pending pixmap for the newly active
             // tab.

@@ -516,6 +516,12 @@ pub struct BrowserTabState {
   /// Unlike `title`, this is preserved across optimistic UI updates that clear `title` during a
   /// pending navigation.
   pub committed_title: Option<String>,
+  /// URL to navigate to the first time this tab becomes active after restoring a browsing session.
+  ///
+  /// The windowed UI uses this to implement "lazy" session restore: restored background tabs are
+  /// created in the worker with `initial_url=None` and only begin navigation when the user first
+  /// activates the tab.
+  pub pending_restore_url: Option<String>,
   pub loading: bool,
   pub crashed: bool,
   /// Optional crash reason for this tab, sanitized and bounded.
@@ -589,6 +595,10 @@ pub struct BrowserTabState {
 
 impl BrowserTabState {
   pub fn new(tab_id: TabId, initial_url: String) -> Self {
+    Self::new_with_cancel(tab_id, initial_url, CancelGens::new())
+  }
+
+  pub fn new_with_cancel(tab_id: TabId, initial_url: String, cancel: CancelGens) -> Self {
     let committed_url = initial_url.clone();
     let renderer_site_key = derive_site_key_from_url(&committed_url);
     Self {
@@ -597,11 +607,12 @@ impl BrowserTabState {
       renderer_site_key,
       pinned: false,
       group: None,
-      cancel: CancelGens::new(),
+      cancel,
       current_url: Some(initial_url),
       committed_url: Some(committed_url),
       title: None,
       committed_title: None,
+      pending_restore_url: None,
       loading: false,
       crashed: false,
       crash_reason: None,
