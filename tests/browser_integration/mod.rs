@@ -170,6 +170,7 @@ mod ui_worker_prioritization_preemption;
 mod ui_worker_protocol_smoke;
 mod ui_worker_renderer_reuse;
 mod ui_worker_robustness;
+mod ui_worker_overscroll_behavior;
 mod ui_worker_scroll;
 mod ui_worker_scroll_state_early;
 mod ui_worker_scroll_hover_coalescing;
