@@ -26140,6 +26140,8 @@ mod regexp_prototype_tests {
         (/a/).dotAll === false &&
         (/a/u).unicode === true &&
         (/a/).unicode === false &&
+        (/a/v).unicodeSets === true &&
+        (/a/).unicodeSets === false &&
         (/a/y).sticky === true &&
         (/a/).sticky === false
       "#,
@@ -26149,9 +26151,70 @@ mod regexp_prototype_tests {
   }
 
   #[test]
+  fn regexp_flag_getters_incompatible_receivers() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        // All of the flag getters should return `undefined` when invoked on RegExp.prototype.
+        RegExp.prototype.global === undefined &&
+        RegExp.prototype.ignoreCase === undefined &&
+        RegExp.prototype.multiline === undefined &&
+        RegExp.prototype.dotAll === undefined &&
+        RegExp.prototype.unicode === undefined &&
+        RegExp.prototype.unicodeSets === undefined &&
+        RegExp.prototype.sticky === undefined &&
+
+        // But they should throw TypeError for non-RegExp objects.
+        (function() {
+          var obj = Object.create(RegExp.prototype);
+          var keys = ["global", "ignoreCase", "multiline", "dotAll", "unicode", "unicodeSets", "sticky"];
+          for (var i = 0; i < keys.length; i++) {
+            try {
+              // Getter is found on RegExp.prototype and invoked with `this = obj`.
+              void obj[keys[i]];
+              return false;
+            } catch (e) {
+              if (!(e instanceof TypeError)) return false;
+            }
+          }
+          return true;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn regexp_to_string_basic() -> Result<(), VmError> {
     let mut rt = new_runtime();
-    let v = rt.exec_script("String(/a/gi) === '/a/gi' && /a/gi.toString() === '/a/gi'")?;
+    let v = rt.exec_script(
+      r#"
+        // `flags` are canonicalized (gimsuvy ordering), even if the literal used a different order.
+        String(/a/ig) === "/a/gi" &&
+        /a/ig.toString() === "/a/gi" &&
+
+        // Generic receiver + observable Get(source)/Get(flags).
+        (function() {
+          var log = "";
+          var obj = {
+            get source() { log += "s"; return "a"; },
+            get flags() { log += "f"; return "g"; },
+          };
+          return RegExp.prototype.toString.call(obj) === "/a/g" && log === "sf";
+        })() &&
+
+        // Non-object receivers throw TypeError.
+        (function() {
+          try {
+            RegExp.prototype.toString.call(1);
+            return false;
+          } catch (e) {
+            return e instanceof TypeError;
+          }
+        })()
+      "#,
+    )?;
     assert_eq!(v, Value::Bool(true));
     Ok(())
   }
