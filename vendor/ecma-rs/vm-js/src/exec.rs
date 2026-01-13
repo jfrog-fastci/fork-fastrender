@@ -39471,6 +39471,40 @@ fn gen_root_values_for_continuation(
       | GenFrame::UpdateComputedMemberAfterMember { base, .. }
       | GenFrame::CallComputedMemberAfterMember { base, .. } => values.push(*base),
       GenFrame::BinaryAfterRight { left, .. } => values.push(*left),
+      GenFrame::AssignAfterRhs {
+        base,
+        key,
+        receiver,
+        ..
+      } => {
+        if let Some(base) = base {
+          values.push(*base);
+        }
+        if let Some(key) = key {
+          values.push(*key);
+        }
+        if let Some(receiver) = receiver {
+          values.push(*receiver);
+        }
+      }
+      GenFrame::AssignAddAfterRhs {
+        base,
+        key,
+        receiver,
+        left,
+        ..
+      } => {
+        if let Some(base) = base {
+          values.push(*base);
+        }
+        if let Some(key) = key {
+          values.push(*key);
+        }
+        if let Some(receiver) = receiver {
+          values.push(*receiver);
+        }
+        values.push(*left);
+      }
       GenFrame::AssignPatternAfterBind { result } => values.push(*result),
       GenFrame::BindObjAfterKey { value, excluded, .. }
       | GenFrame::BindObjAfterDefault { value, excluded, .. }
@@ -41734,6 +41768,45 @@ mod tests {
       assert!(matches!(value, Value::Bool(true)), "got {value:?}");
     }
 
+    Ok(())
+  }
+
+  #[test]
+  fn async_class_static_block_super_computed_member_with_await_uses_class_constructor_receiver(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async class evaluation allocates more than sync scripts; use a slightly larger heap.
+    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      var out;
+      async function f() {
+        class Parent {}
+        Object.defineProperty(Parent, "x", {
+          get() { return this; }
+        });
+
+        class C extends Parent {
+          static {
+            out = (super[await "x"] === C);
+          }
+        }
+
+        return out;
+      }
+
+      f().then(function (v) { out = v; });
+      out
+    "#,
+    )?;
+    assert_eq!(value, Value::Undefined);
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value, Value::Bool(true));
     Ok(())
   }
 
