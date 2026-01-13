@@ -5968,7 +5968,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .app
                 .toast_new_window_error(format_args!("create window: {err}"));
             }
-            eprintln!("failed to create new window: {err}");
             return;
           }
         };
@@ -5985,7 +5984,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   .app
                   .toast_new_window_error(format_args!("spawn worker: {err}"));
               }
-              eprintln!("failed to spawn browser worker for new window: {err}");
               return;
             }
           };
@@ -6007,7 +6005,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               "send download directory: {err}"
             ));
           }
-          eprintln!("failed to send download dir to new window worker: {err}");
           return;
         }
 
@@ -6038,7 +6035,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .app
                 .toast_new_window_error(format_args!("init window UI: {err}"));
             }
-            eprintln!("failed to create new window app: {err}");
             return;
           }
         };
@@ -6089,7 +6085,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "spawn worker bridge thread: {err}"
               ));
             }
-            eprintln!("failed to spawn new window bridge thread: {err}");
             return;
           }
         };
@@ -6151,7 +6146,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .app
                 .toast_new_window_error(format_args!("create window: {err}"));
             }
-            eprintln!("failed to create new window: {err}");
             return;
           }
         };
@@ -6168,7 +6162,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   .app
                   .toast_new_window_error(format_args!("spawn worker: {err}"));
               }
-              eprintln!("failed to spawn browser worker for new window: {err}");
               return;
             }
           };
@@ -6190,7 +6183,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               "send download directory: {err}"
             ));
           }
-          eprintln!("failed to send download dir to new window worker: {err}");
           return;
         }
 
@@ -6221,7 +6213,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .app
                 .toast_new_window_error(format_args!("init window UI: {err}"));
             }
-            eprintln!("failed to create new window app: {err}");
             return;
           }
         };
@@ -6267,7 +6258,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "spawn worker bridge thread: {err}"
               ));
             }
-            eprintln!("failed to spawn new window bridge thread: {err}");
             return;
           }
         };
@@ -13916,6 +13906,26 @@ impl App {
       format!("Failed to open new window\n{detail}")
     };
     self.chrome_toast.show(ToastKind::Error, text, now, TOAST_DEFAULT_TTL);
+
+    // Keep stderr logging opt-in (debug builds / explicit env) via the debug log overlay toggle so
+    // normal browsing sessions don't get noisy, while still preserving details for debugging.
+    if self.debug_log_ui_enabled {
+      let debug_line = if detail.is_empty() {
+        "[new-window] failed to open new window".to_string()
+      } else {
+        format!("[new-window] failed to open new window: {detail}")
+      };
+      // Best-effort logging only; ignore failures so a closed stderr cannot panic the browser.
+      {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{debug_line}");
+      }
+      if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+        self.debug_log.pop_front();
+      }
+      self.debug_log.push_back(debug_line);
+    }
+
     self.window.request_redraw();
   }
 
