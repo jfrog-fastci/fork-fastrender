@@ -359,6 +359,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Ctrl/Cmd+Click link | Open link in new tab |
 | Middle-click link | Open link in new tab |
 | Mouse Back / Mouse Forward (buttons 4/5 on Windows/macOS, 8/9 on X11) | Back / Forward |
+| Shift+F10; Apps/Menu key (page focus, Win/Linux) | Open page context menu |
 | PageUp (page focus) | Scroll up |
 | PageDown (page focus) | Scroll down |
 | ArrowUp (page focus, no element focused) | Scroll up |
@@ -375,7 +376,11 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 | Shift+Insert (page focus, Win/Linux) | Paste OS clipboard text into the focused page `<input>`/`<textarea>` |
 | Shift+Delete (page focus, Win/Linux) | Cut selection from the focused page `<input>`/`<textarea>` |
 
-Note: zoom is tracked per-tab and persisted in the browser session file (see `src/ui/session.rs`).
+Notes:
+
+- Zoom is tracked per-tab and persisted in the browser session file (see `src/ui/session.rs`).
+- Ctrl/Cmd+S and Ctrl/Cmd+P are reserved by browser chrome: they currently show a “not implemented
+  yet” toast and are not forwarded to the rendered page.
 
 ## Menu bar
 
