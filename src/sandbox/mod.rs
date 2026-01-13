@@ -109,6 +109,28 @@ fn macos_renderer_sandbox_disabled_via_env() -> bool {
   )
 }
 
+#[cfg(target_os = "macos")]
+fn macos_renderer_sandbox_mode_override_via_env() -> Option<MacosSandboxMode> {
+  let Some(raw) = std::env::var_os(macos::ENV_MACOS_RENDERER_SANDBOX) else {
+    return None;
+  };
+  if raw.is_empty() {
+    return None;
+  }
+  let raw = raw.to_string_lossy();
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  let normalized = trimmed.to_ascii_lowercase().replace('_', "-");
+  match normalized.as_str() {
+    "pure-computation" | "pure" | "strict" => Some(MacosSandboxMode::Strict),
+    "system-fonts" | "fonts" | "relaxed" | "renderer-system-fonts" => Some(MacosSandboxMode::Relaxed),
+    _ => None,
+  }
+}
+
 /// Apply the macOS Seatbelt `pure-computation` sandbox to the current process.
 ///
 /// This is primarily intended for sandboxing untrusted renderer subprocesses. It is a one-way
@@ -654,11 +676,6 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
       })
     }
   };
-  let source = if sandbox_env.is_some() {
-    MacosSandboxSource::EnvVar
-  } else {
-    MacosSandboxSource::Default
-  };
 
   let seatbelt_profile_env = match std::env::var(config::ENV_MACOS_SEATBELT_PROFILE) {
     Ok(v) => Some(v),
@@ -668,6 +685,11 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
         var: config::ENV_MACOS_SEATBELT_PROFILE,
       })
     }
+  };
+  let mut source = if sandbox_env.is_some() || seatbelt_profile_env.is_some() {
+    MacosSandboxSource::EnvVar
+  } else {
+    MacosSandboxSource::Default
   };
 
   let mut env = std::collections::HashMap::<String, String>::new();
@@ -680,7 +702,7 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
 
   let config = config::RendererSandboxEnvConfig::from_env_map(&env, default_enabled)?;
 
-  let mode = if !config.enabled {
+  let mut mode = if !config.enabled {
     MacosSandboxMode::Off
   } else if matches!(
     config.macos_seatbelt_profile,
@@ -690,6 +712,24 @@ pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandbox
   } else {
     MacosSandboxMode::Relaxed
   };
+  #[cfg(target_os = "macos")]
+  {
+    // `FASTR_MACOS_RENDERER_SANDBOX=system-fonts|pure-computation` can override the strict/relaxed
+    // selection for the in-process Seatbelt entrypoints. Only apply it when using those built-in
+    // profiles (not when a named profile like `no-internet` or a custom SBPL file is selected).
+    if mode != MacosSandboxMode::Off
+      && matches!(
+        config.macos_seatbelt_profile,
+        config::MacosSeatbeltProfileSelection::PureComputation
+          | config::MacosSeatbeltProfileSelection::RendererDefault
+      )
+    {
+      if let Some(override_mode) = macos_renderer_sandbox_mode_override_via_env() {
+        mode = override_mode;
+        source = MacosSandboxSource::EnvVar;
+      }
+    }
+  }
 
   if mode == MacosSandboxMode::Off {
     return Ok(MacosSandboxStatus::NotApplied {
