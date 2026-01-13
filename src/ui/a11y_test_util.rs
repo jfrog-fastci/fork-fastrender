@@ -42,6 +42,48 @@ pub struct AccessKitReachableNodeSnapshot {
   pub name: String,
 }
 
+/// Convenience helper for tests that need to reason about multiple incremental AccessKit updates.
+///
+/// `accesskit::TreeUpdate` objects can omit `tree` (and thus the root id) and may only contain the
+/// nodes that changed in a given frame. To validate reachability across frames, tests typically need
+/// to keep a store of previously seen nodes and the last-known root id.
+#[derive(Debug, Default, Clone)]
+pub struct AccessKitTestTree {
+  pub root_id: Option<accesskit::NodeId>,
+  pub nodes: HashMap<accesskit::NodeId, accesskit::Node>,
+}
+
+impl AccessKitTestTree {
+  /// Merge a tree update into this store, updating the remembered root id when present.
+  pub fn apply_update(&mut self, update: &accesskit::TreeUpdate) {
+    if let Some(tree) = update.tree.as_ref() {
+      self.root_id = Some(tree.root);
+    }
+    for (id, node) in update.nodes.iter() {
+      self.nodes.insert(*id, node.clone());
+    }
+  }
+
+  pub fn nodes_iter(&self) -> impl Iterator<Item = (accesskit::NodeId, &accesskit::Node)> + '_ {
+    self.nodes.iter().map(|(id, node)| (*id, node))
+  }
+
+  pub fn reachable_node_ids(&self, update: &accesskit::TreeUpdate) -> Vec<accesskit::NodeId> {
+    accesskit_reachable_node_ids_from_update(update, self.root_id, self.nodes_iter())
+  }
+
+  pub fn orphan_node_ids(&self, update: &accesskit::TreeUpdate) -> Vec<accesskit::NodeId> {
+    accesskit_orphan_node_ids_from_update(update, self.root_id, self.nodes_iter())
+  }
+
+  pub fn reachable_nodes_snapshot(
+    &self,
+    update: &accesskit::TreeUpdate,
+  ) -> Vec<AccessKitReachableNodeSnapshot> {
+    accesskit_reachable_nodes_snapshot_from_update(update, self.root_id, self.nodes_iter())
+  }
+}
+
 fn accesskit_update_from_platform_output(output: &egui::PlatformOutput) -> &accesskit::TreeUpdate {
   output.accesskit_update.as_ref().expect(
     "egui did not emit an AccessKit update. \
@@ -251,7 +293,8 @@ pub fn accesskit_orphan_node_ids_from_update<'a, I>(
 where
   I: IntoIterator<Item = (accesskit::NodeId, &'a accesskit::Node)>,
 {
-  let reachable = accesskit_reachable_node_ids_from_update(update, root_id_fallback, additional_nodes);
+  let reachable =
+    accesskit_reachable_node_ids_from_update(update, root_id_fallback, additional_nodes);
   let reachable_set: HashSet<accesskit::NodeId> = reachable.into_iter().collect();
   update
     .nodes
@@ -303,6 +346,24 @@ pub fn accesskit_reachable_nodes_snapshot_from_platform_output(
 ) -> Vec<AccessKitReachableNodeSnapshot> {
   let update = accesskit_update_from_platform_output(output);
   accesskit_reachable_nodes_snapshot_from_update(update, None, std::iter::empty())
+}
+
+pub fn accesskit_reachable_nodes_snapshot_from_full_output(
+  output: &egui::FullOutput,
+) -> Vec<AccessKitReachableNodeSnapshot> {
+  accesskit_reachable_nodes_snapshot_from_platform_output(&output.platform_output)
+}
+
+pub fn accesskit_reachable_nodes_pretty_json_from_platform_output(
+  output: &egui::PlatformOutput,
+) -> String {
+  let snapshot = accesskit_reachable_nodes_snapshot_from_platform_output(output);
+  serde_json::to_string_pretty(&snapshot)
+    .expect("accesskit reachable node snapshot must serialize to JSON")
+}
+
+pub fn accesskit_reachable_nodes_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
+  accesskit_reachable_nodes_pretty_json_from_platform_output(&output.platform_output)
 }
 
 #[cfg(test)]
@@ -418,5 +479,39 @@ mod tests {
     let additional_nodes = vec![(root_id, &root)];
     let orphans = accesskit_orphan_node_ids_from_update(&update, Some(root_id), additional_nodes);
     assert!(orphans.is_empty());
+  }
+
+  #[test]
+  fn accesskit_test_tree_tracks_incremental_updates_and_detects_orphans() {
+    let root_id = id(1);
+    let child_id = id(2);
+    let orphan_id = id(3);
+
+    let mut classes = accesskit::NodeClassSet::new();
+    let root = node_with_classes(&mut classes, accesskit::Role::Window, "root", &[child_id]);
+    let child = node_with_classes(&mut classes, accesskit::Role::Button, "child", &[]);
+
+    let initial = accesskit::TreeUpdate {
+      nodes: vec![(root_id, root), (child_id, child)],
+      tree: Some(accesskit::Tree {
+        root: root_id,
+        root_scroller: None,
+      }),
+      focus: Some(child_id),
+    };
+
+    let mut store = AccessKitTestTree::default();
+    store.apply_update(&initial);
+
+    // Incremental update introduces a brand-new node but does not attach it anywhere.
+    let orphan = node_with_classes(&mut classes, accesskit::Role::Button, "orphan", &[]);
+    let incremental = accesskit::TreeUpdate {
+      nodes: vec![(orphan_id, orphan)],
+      tree: None,
+      focus: None,
+    };
+
+    assert_eq!(store.reachable_node_ids(&incremental), vec![root_id, child_id]);
+    assert_eq!(store.orphan_node_ids(&incremental), vec![orphan_id]);
   }
 }
