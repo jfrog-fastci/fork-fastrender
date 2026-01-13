@@ -4450,10 +4450,32 @@ impl BrowserTab {
     )
   }
 
-  pub fn from_html_with_js_execution_options<E>(
+  /// Like [`BrowserTab::from_html`], but uses the provided [`ResourceFetcher`] for
+  /// subresource/script/fetch() loads.
+  pub fn from_html_with_fetcher<E>(
     html: &str,
     options: RenderOptions,
     executor: E,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    Self::from_html_with_fetcher_and_js_execution_options(
+      html,
+      options,
+      executor,
+      fetcher,
+      JsExecutionOptions::default(),
+    )
+  }
+
+  /// Like [`BrowserTab::from_html_with_fetcher`], but allows overriding JavaScript execution budgets.
+  pub fn from_html_with_fetcher_and_js_execution_options<E>(
+    html: &str,
+    options: RenderOptions,
+    executor: E,
+    fetcher: Arc<dyn ResourceFetcher>,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self>
   where
@@ -4469,10 +4491,9 @@ impl BrowserTab {
       .then(super::SharedRenderDiagnostics::new);
     let external_script_sources: Arc<Mutex<HashMap<String, String>>> =
       Arc::new(Mutex::new(HashMap::new()));
-    let inner_fetcher: Arc<dyn ResourceFetcher> = Arc::new(crate::resource::HttpFetcher::new());
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
       overrides: Arc::clone(&external_script_sources),
-      inner: inner_fetcher,
+      inner: fetcher,
     });
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
@@ -4552,6 +4573,34 @@ impl BrowserTab {
       }
     }
     Ok(tab)
+  }
+
+  pub fn from_html_with_js_execution_options<E>(
+    html: &str,
+    options: RenderOptions,
+    executor: E,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    #[cfg(feature = "direct_network")]
+    {
+      Self::from_html_with_fetcher_and_js_execution_options(
+        html,
+        options,
+        executor,
+        Arc::new(crate::resource::HttpFetcher::new()),
+        js_execution_options,
+      )
+    }
+    #[cfg(not(feature = "direct_network"))]
+    {
+      let _ = (html, options, executor, js_execution_options);
+      Err(Error::Other(
+        "direct network fetching is disabled; use BrowserTab::from_html_with_fetcher{_and_js_execution_options} and provide an explicit ResourceFetcher".to_string(),
+      ))
+    }
   }
 
   /// Construct a `BrowserTab` from a pre-built renderer instance with JavaScript enabled via the
@@ -4776,11 +4825,36 @@ impl BrowserTab {
     Ok(tab)
   }
 
-  pub fn from_html_with_event_loop_and_js_execution_options<E>(
+  /// Like [`BrowserTab::from_html_with_event_loop`], but uses the provided [`ResourceFetcher`] for
+  /// subresource/script/fetch() loads.
+  pub fn from_html_with_event_loop_and_fetcher<E>(
+    html: &str,
+    options: RenderOptions,
+    executor: E,
+    event_loop: EventLoop<BrowserTabHost>,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    Self::from_html_with_event_loop_and_fetcher_and_js_execution_options(
+      html,
+      options,
+      executor,
+      event_loop,
+      fetcher,
+      JsExecutionOptions::default(),
+    )
+  }
+
+  /// Like [`BrowserTab::from_html_with_event_loop_and_fetcher`], but allows overriding JavaScript
+  /// execution budgets.
+  pub fn from_html_with_event_loop_and_fetcher_and_js_execution_options<E>(
     html: &str,
     options: RenderOptions,
     executor: E,
     mut event_loop: EventLoop<BrowserTabHost>,
+    fetcher: Arc<dyn ResourceFetcher>,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self>
   where
@@ -4797,10 +4871,9 @@ impl BrowserTab {
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
     let external_script_sources: Arc<Mutex<HashMap<String, String>>> =
       Arc::new(Mutex::new(HashMap::new()));
-    let inner_fetcher: Arc<dyn ResourceFetcher> = Arc::new(crate::resource::HttpFetcher::new());
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(ScriptSourceOverrideFetcher {
       overrides: Arc::clone(&external_script_sources),
-      inner: inner_fetcher,
+      inner: fetcher,
     });
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
@@ -4879,6 +4952,36 @@ impl BrowserTab {
       }
     }
     Ok(tab)
+  }
+
+  pub fn from_html_with_event_loop_and_js_execution_options<E>(
+    html: &str,
+    options: RenderOptions,
+    executor: E,
+    mut event_loop: EventLoop<BrowserTabHost>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    #[cfg(feature = "direct_network")]
+    {
+      Self::from_html_with_event_loop_and_fetcher_and_js_execution_options(
+        html,
+        options,
+        executor,
+        event_loop,
+        Arc::new(crate::resource::HttpFetcher::new()),
+        js_execution_options,
+      )
+    }
+    #[cfg(not(feature = "direct_network"))]
+    {
+      let _ = (html, options, executor, event_loop, js_execution_options);
+      Err(Error::Other(
+        "direct network fetching is disabled; use BrowserTab::from_html_with_event_loop_and_fetcher{_and_js_execution_options} and provide an explicit ResourceFetcher".to_string(),
+      ))
+    }
   }
 
   pub fn register_script_source(&mut self, url: impl Into<String>, source: impl Into<String>) {
