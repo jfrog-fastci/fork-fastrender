@@ -366,18 +366,13 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
               committed_can_go_back = Some(*can_go_back);
             }
           }
-          WorkerToUi::ScrollStateUpdated {
-            tab_id: got,
-            scroll,
-          } if *got == tab_id => {
-            if scroll.viewport.y > 0.0 {
-              scroll_y = Some(scroll.viewport.y);
-              viewport_delta_y = Some(scroll.viewport_delta.y);
-            }
-          }
           WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
-            if committed_url.is_some() {
+            // Same-document fragment navigations don't guarantee a standalone `ScrollStateUpdated`
+            // message. Use the scroll state carried on the first scrolled `FrameReady` after
+            // `NavigationCommitted`.
+            if committed_url.is_some() && frame.scroll_state.viewport.y > 0.0 {
               scroll_y = Some(frame.scroll_state.viewport.y);
+              viewport_delta_y = Some(frame.scroll_state.viewport_delta.y);
               final_pixel = Some(support::rgba_at(&frame.pixmap, 10, 10));
             }
           }
@@ -737,7 +732,8 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   let WorkerToUi::FrameReady { frame, .. } = msg else {
     unreachable!();
   };
-  let scroll_after = frame.scroll_state.viewport.y;
+  let scroll = &frame.scroll_state;
+  let scroll_after = scroll.viewport.y;
   assert!(
     scroll.viewport_delta.y.is_finite() && scroll.viewport_delta.y > 0.0,
     "expected viewport_delta.y > 0 on fragment jump, got {:?}",
@@ -771,6 +767,7 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   let WorkerToUi::FrameReady { frame, .. } = msg else {
     unreachable!();
   };
+  let scroll = &frame.scroll_state;
   assert_eq!(
     frame.scroll_state.viewport.y, scroll_before,
     "expected back to restore previous scroll position"
