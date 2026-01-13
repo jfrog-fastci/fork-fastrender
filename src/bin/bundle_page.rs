@@ -2209,6 +2209,7 @@ fn crawl_document(
 
   let fastrender::html::asset_discovery::HtmlAssetUrls {
     images: html_image_urls,
+    media: html_media_urls,
     documents: html_documents,
   } =
     fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
@@ -2358,6 +2359,22 @@ fn crawl_document(
         root_referrer_policy,
       );
     }
+  }
+
+  for url in html_media_urls {
+    enqueue_unique(
+      &mut queue,
+      &mut seen_urls,
+      &mut queued,
+      url,
+      FetchDestination::Other,
+      FetchCredentialsMode::Include,
+      root_referrer,
+      root_client_origin.as_ref(),
+      root_referrer_policy,
+      root_referrer,
+      root_referrer_policy,
+    );
   }
 
   for url in html_documents {
@@ -2654,6 +2671,7 @@ fn crawl_document(
 
         let fastrender::html::asset_discovery::HtmlAssetUrls {
           images: html_image_urls,
+          media: html_media_urls,
           documents: html_documents,
         } = fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
         if matches!(mode, CrawlMode::BestEffort) {
@@ -2797,6 +2815,22 @@ fn crawl_document(
               doc_referrer_policy,
             );
           }
+        }
+
+        for url in html_media_urls {
+          enqueue_unique(
+            &mut queue,
+            &mut seen_urls,
+            &mut queued,
+            url,
+            FetchDestination::Other,
+            FetchCredentialsMode::Include,
+            doc_referrer,
+            doc_origin.as_ref(),
+            doc_referrer_policy,
+            doc_referrer,
+            doc_referrer_policy,
+          );
         }
 
         for url in html_documents {

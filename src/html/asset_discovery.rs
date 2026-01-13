@@ -17,6 +17,8 @@ pub struct HtmlAssetUrls {
   /// Image-like assets (img/src/srcset/source/srcset, video posters, icons/manifests (including
   /// `mask-icon`), and `<link rel=preload as=image>` candidates).
   pub images: Vec<String>,
+  /// Playable media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`).
+  pub media: Vec<String>,
   /// Embedded documents (iframes, objects, embeds).
   pub documents: Vec<String>,
 }
@@ -25,6 +27,7 @@ const MAX_SRCSET_CANDIDATES: usize = 16;
 
 // Keep discovery bounded so pathological HTML doesn't explode memory usage.
 const MAX_DISCOVERED_IMAGES: usize = 4096;
+const MAX_DISCOVERED_MEDIA: usize = 1024;
 const MAX_DISCOVERED_DOCUMENTS: usize = 1024;
 
 fn parse_srcset_urls(srcset: &str, max_candidates: usize) -> Vec<String> {
@@ -234,6 +237,7 @@ pub fn discover_html_asset_urls_with_srcset_limit(
 
   let mut out = HtmlAssetUrls::default();
   let mut seen_images: HashSet<String> = HashSet::new();
+  let mut seen_media: HashSet<String> = HashSet::new();
   let mut seen_documents: HashSet<String> = HashSet::new();
 
   let mut push_image = |out: &mut HtmlAssetUrls, seen_images: &mut HashSet<String>, raw: &str| {
@@ -257,12 +261,24 @@ pub fn discover_html_asset_urls_with_srcset_limit(
         }
       }
     };
+  let mut push_media = |out: &mut HtmlAssetUrls, seen_media: &mut HashSet<String>, raw: &str| {
+    if out.media.len() >= MAX_DISCOVERED_MEDIA {
+      return;
+    }
+    if let Some(resolved) = resolve_href(base_url, raw) {
+      if seen_media.insert(resolved.clone()) {
+        out.media.push(resolved);
+      }
+    }
+  };
 
   let mut template_depth: usize = 0;
   let mut i: usize = 0;
 
   while let Some(rel) = memchr(b'<', &bytes[i..]) {
-    if out.images.len() >= MAX_DISCOVERED_IMAGES && out.documents.len() >= MAX_DISCOVERED_DOCUMENTS
+    if out.images.len() >= MAX_DISCOVERED_IMAGES
+      && out.media.len() >= MAX_DISCOVERED_MEDIA
+      && out.documents.len() >= MAX_DISCOVERED_DOCUMENTS
     {
       break;
     }
@@ -366,9 +382,14 @@ pub fn discover_html_asset_urls_with_srcset_limit(
         }
       } else if name.eq_ignore_ascii_case(b"source") {
         let mut srcset: Option<&str> = None;
+        let mut src: Option<&str> = None;
         for_each_attribute(tag, |attr, value| {
-          if attr.eq_ignore_ascii_case("srcset") {
+          if attr.eq_ignore_ascii_case("srcset") && srcset.is_none() {
             srcset = Some(value);
+          } else if attr.eq_ignore_ascii_case("src") && src.is_none() {
+            src = Some(value);
+          }
+          if srcset.is_some() && src.is_some() {
             return ControlFlow::Break(());
           }
           ControlFlow::Continue(())
@@ -378,17 +399,52 @@ pub fn discover_html_asset_urls_with_srcset_limit(
             push_image(&mut out, &mut seen_images, &candidate);
           }
         }
+        if let Some(raw) = src {
+          push_media(&mut out, &mut seen_media, raw);
+        }
       } else if name.eq_ignore_ascii_case(b"video") {
         let mut poster: Option<&str> = None;
+        let mut src: Option<&str> = None;
         for_each_attribute(tag, |attr, value| {
-          if attr.eq_ignore_ascii_case("poster") {
+          if attr.eq_ignore_ascii_case("poster") && poster.is_none() {
             poster = Some(value);
+          } else if attr.eq_ignore_ascii_case("src") && src.is_none() {
+            src = Some(value);
+          }
+          if poster.is_some() && src.is_some() {
             return ControlFlow::Break(());
           }
           ControlFlow::Continue(())
         });
         if let Some(raw) = poster {
           push_image(&mut out, &mut seen_images, raw);
+        }
+        if let Some(raw) = src {
+          push_media(&mut out, &mut seen_media, raw);
+        }
+      } else if name.eq_ignore_ascii_case(b"audio") {
+        let mut src: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("src") && src.is_none() {
+            src = Some(value);
+            return ControlFlow::Break(());
+          }
+          ControlFlow::Continue(())
+        });
+        if let Some(raw) = src {
+          push_media(&mut out, &mut seen_media, raw);
+        }
+      } else if name.eq_ignore_ascii_case(b"track") {
+        let mut src: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("src") && src.is_none() {
+            src = Some(value);
+            return ControlFlow::Break(());
+          }
+          ControlFlow::Continue(())
+        });
+        if let Some(raw) = src {
+          push_media(&mut out, &mut seen_media, raw);
         }
       } else if name.eq_ignore_ascii_case(b"iframe") {
         let mut src: Option<&str> = None;
@@ -606,11 +662,48 @@ mod tests {
 
   #[test]
   fn discovers_video_posters() {
-    let html = r#"<video poster="/poster.jpg"></video>"#;
+    let html = r#"<video poster="/poster.jpg" src="/video.mp4"></video>"#;
     let out = discover_html_asset_urls(html, "https://example.com/page.html");
     assert_eq!(
       out.images,
       vec!["https://example.com/poster.jpg".to_string()]
+    );
+    assert_eq!(out.media, vec!["https://example.com/video.mp4".to_string()]);
+  }
+
+  #[test]
+  fn discovers_media_sources() {
+    let html = r#"
+      <audio src="sound.mp3"></audio>
+      <video><source src="movie.webm"></video>
+      <video><track src="/subs.vtt"></video>
+    "#;
+    let out = discover_html_asset_urls(html, "https://example.com/base/page.html");
+    assert_eq!(
+      out.media,
+      vec![
+        "https://example.com/base/sound.mp3",
+        "https://example.com/base/movie.webm",
+        "https://example.com/subs.vtt",
+      ]
+      .into_iter()
+      .map(str::to_string)
+      .collect::<Vec<_>>()
+    );
+  }
+
+  #[test]
+  fn caps_discovered_media_urls() {
+    let html = (0..(MAX_DISCOVERED_MEDIA + 10))
+      .map(|i| format!(r#"<audio src="m{i}.mp3"></audio>"#))
+      .collect::<Vec<_>>()
+      .join("");
+    let out = discover_html_asset_urls(&html, "https://example.com/");
+    assert_eq!(out.media.len(), MAX_DISCOVERED_MEDIA);
+    assert_eq!(out.media[0], "https://example.com/m0.mp3");
+    assert_eq!(
+      out.media[MAX_DISCOVERED_MEDIA - 1],
+      format!("https://example.com/m{}.mp3", MAX_DISCOVERED_MEDIA - 1)
     );
   }
 
