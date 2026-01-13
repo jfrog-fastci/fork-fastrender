@@ -697,22 +697,136 @@ pub fn assert_accesskit_full_output_node_is_reachable(
   assert_accesskit_platform_output_node_is_reachable(&output.platform_output, target);
 }
 
+/// Find the first AccessKit node with the given accessible name.
+///
+/// This is intended for writing stateful accessibility regression tests without asserting on
+/// unstable AccessKit `NodeId`s.
+///
+/// Returns `None` when no matching node is present. Panics if more than one node matches the
+/// provided name (tests should disambiguate by using a more specific name).
+pub fn accesskit_node_by_name_from_platform_output<'a>(
+  output: &'a egui::PlatformOutput,
+  name: &str,
+) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+  let update = accesskit_update_from_platform_output(output);
+
+  let needle = name.trim();
+  let mut found: Option<(accesskit::NodeId, &'a accesskit::Node)> = None;
+  let mut duplicates: Vec<(String, String)> = Vec::new();
+
+  for (id, node) in update.nodes.iter() {
+    let node_name = node.name().unwrap_or("").trim();
+    if node_name != needle {
+      continue;
+    }
+
+    if found.is_some() {
+      duplicates.push((id.0.get().to_string(), format!("{:?}", node.role())));
+      continue;
+    }
+    found = Some((*id, node));
+  }
+
+  if let Some((id, node)) = found {
+    if !duplicates.is_empty() {
+      duplicates.insert(0, (id.0.get().to_string(), format!("{:?}", node.role())));
+      panic!(
+        "multiple AccessKit nodes matched name {needle:?}: {duplicates:?}. \
+        Use a more specific accessible name to disambiguate."
+      );
+    }
+    return Some((id, node));
+  }
+
+  None
+}
+
+pub fn accesskit_node_by_name_from_full_output<'a>(
+  output: &'a egui::FullOutput,
+  name: &str,
+) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+  accesskit_node_by_name_from_platform_output(&output.platform_output, name)
+}
+
+/// Resolve the AccessKit focus id into the focused node's accessible name.
+///
+/// Returns `None` when the update has no focus, the focused node is missing from the update, or the
+/// focused node has an empty name.
+pub fn accesskit_focus_name_from_platform_output(output: &egui::PlatformOutput) -> Option<String> {
+  let update = accesskit_update_from_platform_output(output);
+  let focus_id = update.focus?;
+  let node = update
+    .nodes
+    .iter()
+    .find_map(|(id, node)| (*id == focus_id).then_some(node))?;
+  let name = node.name().unwrap_or("").trim();
+  (!name.is_empty()).then_some(name.to_string())
+}
+
+pub fn accesskit_focus_name_from_full_output(output: &egui::FullOutput) -> Option<String> {
+  accesskit_focus_name_from_platform_output(&output.platform_output)
+}
+
+/// Common state helpers for AccessKit nodes.
+///
+/// AccessKit's API exposes some states as optional values (e.g. expanded/collapsed) because not all
+/// nodes support the concept. These helpers are thin wrappers intended for test readability.
+pub fn accesskit_node_expanded(node: &accesskit::Node) -> Option<bool> {
+  node.is_expanded()
+}
+
+pub fn accesskit_node_selected(node: &accesskit::Node) -> Option<bool> {
+  node.is_selected()
+}
+
+/// AccessKit 0.11 exposes "checked"/"toggled"/"pressed" semantics via a single `CheckedState` value.
+///
+/// These helpers fan out the state based on role so tests can assert on ARIA-style terminology:
+/// - `Role::ToggleButton` → "pressed"
+/// - `Role::Switch` → "toggled"
+/// - everything else → "checked"
+pub fn accesskit_node_checked(node: &accesskit::Node) -> Option<accesskit::CheckedState> {
+  if matches!(node.role(), accesskit::Role::ToggleButton | accesskit::Role::Switch) {
+    return None;
+  }
+  node.checked_state()
+}
+
+pub fn accesskit_node_toggled(node: &accesskit::Node) -> Option<accesskit::CheckedState> {
+  if !matches!(node.role(), accesskit::Role::Switch) {
+    return None;
+  }
+  node.checked_state()
+}
+
+pub fn accesskit_node_pressed(node: &accesskit::Node) -> Option<accesskit::CheckedState> {
+  if !matches!(node.role(), accesskit::Role::ToggleButton) {
+    return None;
+  }
+  node.checked_state()
+}
+
+pub fn accesskit_node_supports_action(node: &accesskit::Node, action: accesskit::Action) -> bool {
+  node.supports_action(action)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use accesskit::{Action, NodeBuilder, NodeClassSet, NodeId, Role, TreeUpdate};
   use std::num::NonZeroU128;
 
-  fn id(n: u128) -> accesskit::NodeId {
-    accesskit::NodeId(NonZeroU128::new(n).expect("node id must be non-zero"))
+  fn id(n: u128) -> NodeId {
+    NodeId(NonZeroU128::new(n).expect("node id must be non-zero"))
   }
 
   fn node_with_classes(
-    classes: &mut accesskit::NodeClassSet,
-    role: accesskit::Role,
+    classes: &mut NodeClassSet,
+    role: Role,
     name: &str,
-    children: &[accesskit::NodeId],
+    children: &[NodeId],
   ) -> accesskit::Node {
-    let mut builder = accesskit::NodeBuilder::new(role);
+    let mut builder = NodeBuilder::new(role);
     if !name.is_empty() {
       builder.set_name(name);
     }
@@ -720,6 +834,12 @@ mod tests {
       builder.push_child(*child);
     }
     builder.build(classes)
+  }
+
+  fn output_with_update(update: TreeUpdate) -> egui::PlatformOutput {
+    let mut out = egui::PlatformOutput::default();
+    out.accesskit_update = Some(update);
+    out
   }
 
   #[test]
@@ -730,14 +850,14 @@ mod tests {
     let a1_id = id(4);
     let orphan_id = id(999);
 
-    let mut classes = accesskit::NodeClassSet::new();
-    let root = node_with_classes(&mut classes, accesskit::Role::Window, "root", &[a_id, b_id]);
-    let a = node_with_classes(&mut classes, accesskit::Role::Group, "A", &[a1_id]);
-    let a1 = node_with_classes(&mut classes, accesskit::Role::Button, "A1", &[]);
-    let b = node_with_classes(&mut classes, accesskit::Role::Button, "B", &[]);
-    let orphan = node_with_classes(&mut classes, accesskit::Role::Button, "orphan", &[]);
+    let mut classes = NodeClassSet::new();
+    let root = node_with_classes(&mut classes, Role::Window, "root", &[a_id, b_id]);
+    let a = node_with_classes(&mut classes, Role::Group, "A", &[a1_id]);
+    let a1 = node_with_classes(&mut classes, Role::Button, "A1", &[]);
+    let b = node_with_classes(&mut classes, Role::Button, "B", &[]);
+    let orphan = node_with_classes(&mut classes, Role::Button, "orphan", &[]);
 
-    let update = accesskit::TreeUpdate {
+    let update = TreeUpdate {
       nodes: vec![
         (root_id, root),
         (a_id, a),
@@ -752,8 +872,7 @@ mod tests {
       focus: Some(root_id),
     };
 
-    let reachable =
-      accesskit_reachable_node_ids_from_update(&update, None, std::iter::empty());
+    let reachable = accesskit_reachable_node_ids_from_update(&update, None, std::iter::empty());
     assert_eq!(reachable, vec![root_id, a_id, a1_id, b_id]);
     let orphans = accesskit_orphan_node_ids_from_update(&update, None, std::iter::empty());
     assert_eq!(orphans, vec![orphan_id]);
@@ -768,8 +887,7 @@ mod tests {
       }]
     );
 
-    let snapshot =
-      accesskit_reachable_nodes_snapshot_from_update(&update, None, std::iter::empty());
+    let snapshot = accesskit_reachable_nodes_snapshot_from_update(&update, None, std::iter::empty());
     assert_eq!(
       snapshot,
       vec![
@@ -801,12 +919,12 @@ mod tests {
     let child_id = id(2);
     let grandchild_id = id(3);
 
-    let mut classes = accesskit::NodeClassSet::new();
-    let root = node_with_classes(&mut classes, accesskit::Role::Window, "root", &[child_id]);
-    let child = node_with_classes(&mut classes, accesskit::Role::Group, "child", &[grandchild_id]);
-    let grandchild = node_with_classes(&mut classes, accesskit::Role::Button, "grandchild", &[]);
+    let mut classes = NodeClassSet::new();
+    let root = node_with_classes(&mut classes, Role::Window, "root", &[child_id]);
+    let child = node_with_classes(&mut classes, Role::Group, "child", &[grandchild_id]);
+    let grandchild = node_with_classes(&mut classes, Role::Button, "grandchild", &[]);
 
-    let update = accesskit::TreeUpdate {
+    let update = TreeUpdate {
       nodes: vec![(child_id, child), (grandchild_id, grandchild)],
       tree: None,
       focus: Some(child_id),
@@ -916,5 +1034,95 @@ mod tests {
       focus: None,
     };
     assert_accesskit_node_is_reachable(&update, orphan_id, None, std::iter::empty());
+  }
+
+  #[test]
+  fn node_by_name_finds_unique_node_and_focus_name_resolves() {
+    let mut classes = NodeClassSet::default();
+
+    let mut root = NodeBuilder::new(Role::Window);
+    root.set_name("Root");
+    root.push_child(id(2));
+
+    let mut focused = NodeBuilder::new(Role::Button);
+    focused.set_name("  Focus target  ");
+    focused.add_action(Action::Default);
+
+    let update = TreeUpdate {
+      nodes: vec![
+        (id(1), root.build(&mut classes)),
+        (id(2), focused.build(&mut classes)),
+      ],
+      tree: Some(accesskit::Tree {
+        root: id(1),
+        root_scroller: None,
+      }),
+      focus: Some(id(2)),
+    };
+
+    let platform_output = output_with_update(update);
+
+    let (found_id, found_node) =
+      accesskit_node_by_name_from_platform_output(&platform_output, "Focus target")
+        .expect("expected node by name");
+    assert_eq!(found_id, id(2));
+    assert_eq!(found_node.name().unwrap_or("").trim(), "Focus target");
+
+    assert_eq!(
+      accesskit_focus_name_from_platform_output(&platform_output),
+      Some("Focus target".to_string())
+    );
+    assert!(accesskit_node_by_name_from_platform_output(&platform_output, "Missing").is_none());
+  }
+
+  #[test]
+  fn node_state_helpers_reflect_accesskit_properties() {
+    let mut classes = NodeClassSet::new();
+
+    let mut group = NodeBuilder::new(Role::Group);
+    group.set_name("Group");
+    group.set_expanded(true);
+    group.add_action(Action::Expand);
+
+    let mut tab = NodeBuilder::new(Role::Tab);
+    tab.set_name("Tab");
+    tab.set_selected(true);
+
+    let mut checkbox = NodeBuilder::new(Role::CheckBox);
+    checkbox.set_name("Check");
+    checkbox.set_checked_state(accesskit::CheckedState::True);
+
+    let mut toggle = NodeBuilder::new(Role::ToggleButton);
+    toggle.set_name("Toggle");
+    toggle.set_checked_state(accesskit::CheckedState::True);
+
+    let mut switch = NodeBuilder::new(Role::Switch);
+    switch.set_name("Switch");
+    switch.set_checked_state(accesskit::CheckedState::False);
+
+    let group = group.build(&mut classes);
+    let tab = tab.build(&mut classes);
+    let checkbox = checkbox.build(&mut classes);
+    let toggle = toggle.build(&mut classes);
+    let switch = switch.build(&mut classes);
+
+    assert_eq!(accesskit_node_expanded(&group), Some(true));
+    assert!(accesskit_node_supports_action(&group, Action::Expand));
+
+    assert_eq!(accesskit_node_selected(&tab), Some(true));
+
+    assert_eq!(
+      accesskit_node_checked(&checkbox),
+      Some(accesskit::CheckedState::True)
+    );
+
+    assert_eq!(
+      accesskit_node_pressed(&toggle),
+      Some(accesskit::CheckedState::True)
+    );
+    assert_eq!(
+      accesskit_node_toggled(&switch),
+      Some(accesskit::CheckedState::False)
+    );
   }
 }
