@@ -15,6 +15,16 @@ The rendering pipeline parses the environment once into a typed [`RuntimeToggles
 
 Pageset/profiling runners typically invoke FastRender in `--release` mode, so `FASTR_*` toggles are the primary way to run controlled compatibility experiments (A/B against Chrome/pageset fixtures) without rebuilding.
 
+## Renderer sandboxing
+
+Renderer sandboxing (multiprocess security boundary) is documented in:
+
+- [sandboxing.md](sandboxing.md) (cross-platform overview)
+- [security/sandbox.md](security/sandbox.md) (Linux-focused design notes)
+
+Platform-specific debug escape hatches are listed alongside their `FASTR_*` entries below (for
+example `FASTR_DISABLE_RENDERER_SANDBOX` on Windows).
+
 ## Pageset disk cache tuning
 
 These are parsed by the pageset CLI binaries (`prefetch_assets`, `render_pages`, `pageset_progress`, `fetch_and_render`) and wire into `DiskCacheConfig` when built with the `disk_cache` cargo feature.

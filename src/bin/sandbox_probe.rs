@@ -1,15 +1,22 @@
-//! Linux sandbox probe tool.
+//! Linux renderer sandbox probe tool.
 //!
-//! This binary is intended for iterating on the renderer sandbox policy (seccomp/landlock) without
-//! needing to run the full multi-process browser stack.
+//! This binary is intended to be a quick “is the sandbox working on this host?” diagnostic and an
+//! iteration aid for the renderer sandbox policy (seccomp/landlock) without needing to run the full
+//! multi-process browser stack.
 //!
 //! The probe also honours the renderer sandbox environment variables documented in
 //! `docs/env-vars.md` (notably `FASTR_DISABLE_RENDERER_SANDBOX` and the `FASTR_RENDERER_*` layer
 //! toggles) so developers can quickly disable specific layers when diagnosing issues.
+//!
+//! See docs:
+//! - `docs/sandboxing.md` (overview)
+//! - `docs/security/sandbox.md` (Linux-focused)
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-  eprintln!("sandbox_probe is only supported on Linux.");
+  eprintln!("sandbox_probe is currently Linux-only.");
+  eprintln!("On macOS, see docs/security/macos_renderer_sandbox.md.");
+  eprintln!("On Windows, see docs/security/windows_renderer_sandbox.md.");
   std::process::exit(2);
 }
 
