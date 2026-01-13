@@ -1037,6 +1037,10 @@ pub enum FetchDestination {
   /// `Sec-Fetch-Dest` remains `image`, but `Sec-Fetch-Mode` becomes `cors` and a browser-like
   /// `Origin` header is sent when request headers are enabled.
   ImageCors,
+  /// Media resource fetched for a `<video>` element.
+  Video,
+  /// Media resource fetched for an `<audio>` element.
+  Audio,
   Font,
   Other,
   /// JavaScript `fetch()` request.
@@ -1089,7 +1093,7 @@ impl FetchDestination {
       Self::Style | Self::StyleCors => BROWSER_ACCEPT_STYLESHEET,
       Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
       Self::Script | Self::ScriptCors => BROWSER_ACCEPT_ALL,
-      Self::Font | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
+      Self::Video | Self::Audio | Self::Font | Self::Other | Self::Fetch => BROWSER_ACCEPT_ALL,
     }
   }
 
@@ -1118,6 +1122,8 @@ impl FetchDestination {
       Self::Style | Self::StyleCors => "style",
       Self::Script | Self::ScriptCors => "script",
       Self::Image | Self::ImageCors => "image",
+      Self::Video => "video",
+      Self::Audio => "audio",
       Self::Font => "font",
       Self::Other | Self::Fetch => "empty",
     }
@@ -1127,7 +1133,9 @@ impl FetchDestination {
     match self {
       Self::Document | Self::DocumentNoUser | Self::Iframe => "navigate",
       Self::Font | Self::ImageCors | Self::StyleCors | Self::ScriptCors | Self::Fetch => "cors",
-      Self::Style | Self::Script | Self::Image | Self::Other => "no-cors",
+      Self::Style | Self::Script | Self::Image | Self::Video | Self::Audio | Self::Other => {
+        "no-cors"
+      }
     }
   }
 
@@ -1140,6 +1148,8 @@ impl FetchDestination {
       | Self::ScriptCors
       | Self::Image
       | Self::ImageCors
+      | Self::Video
+      | Self::Audio
       | Self::Font
       | Self::Other
       | Self::Fetch => "same-origin",
@@ -1213,6 +1223,25 @@ pub(crate) fn http_browser_request_profile_for_url(url: &str) -> FetchDestinatio
         || ext.eq_ignore_ascii_case("tiff") =>
     {
       FetchDestination::Image
+    }
+    Some(ext)
+      if ext.eq_ignore_ascii_case("mp4")
+        || ext.eq_ignore_ascii_case("m4v")
+        || ext.eq_ignore_ascii_case("webm")
+        || ext.eq_ignore_ascii_case("ogv") =>
+    {
+      FetchDestination::Video
+    }
+    Some(ext)
+      if ext.eq_ignore_ascii_case("mp3")
+        || ext.eq_ignore_ascii_case("m4a")
+        || ext.eq_ignore_ascii_case("aac")
+        || ext.eq_ignore_ascii_case("oga")
+        || ext.eq_ignore_ascii_case("ogg")
+        || ext.eq_ignore_ascii_case("opus")
+        || ext.eq_ignore_ascii_case("wav") =>
+    {
+      FetchDestination::Audio
     }
     Some(ext)
       if ext.eq_ignore_ascii_case("html")
@@ -3532,6 +3561,8 @@ impl From<FetchDestination> for FetchContextKind {
       FetchDestination::ScriptCors => Self::ScriptCors,
       FetchDestination::Image => Self::Image,
       FetchDestination::ImageCors => Self::ImageCors,
+      FetchDestination::Video => Self::Other,
+      FetchDestination::Audio => Self::Other,
       FetchDestination::Font => Self::Font,
       FetchDestination::Other => Self::Other,
       FetchDestination::Fetch => Self::Other,
@@ -17138,6 +17169,45 @@ mod tests {
     let image_jxl = http_browser_request_profile_for_url("https://example.com/image.jxl");
     assert_eq!(image_jxl, FetchDestination::Image);
     assert_eq!(image_jxl.accept(), BROWSER_ACCEPT_IMAGE);
+
+    let video = http_browser_request_profile_for_url("https://example.com/video.mp4");
+    assert_eq!(video, FetchDestination::Video);
+    assert_eq!(video.accept(), BROWSER_ACCEPT_ALL);
+    assert_eq!(video.sec_fetch_dest(), "video");
+    assert_eq!(video.sec_fetch_mode(), "no-cors");
+    assert_eq!(video.sec_fetch_site(), "same-origin");
+    assert_eq!(video.sec_fetch_user(), None);
+    assert_eq!(video.upgrade_insecure_requests(), None);
+
+    let audio = http_browser_request_profile_for_url("https://example.com/audio.mp3");
+    assert_eq!(audio, FetchDestination::Audio);
+    assert_eq!(audio.accept(), BROWSER_ACCEPT_ALL);
+    assert_eq!(audio.sec_fetch_dest(), "audio");
+    assert_eq!(audio.sec_fetch_mode(), "no-cors");
+    assert_eq!(audio.sec_fetch_site(), "same-origin");
+    assert_eq!(audio.sec_fetch_user(), None);
+    assert_eq!(audio.upgrade_insecure_requests(), None);
+  }
+
+  #[test]
+  fn http_browser_request_profile_for_url_media_extensions() {
+    for ext in ["mp4", "m4v", "webm", "ogv"] {
+      let url = format!("https://example.com/video.{ext}");
+      assert_eq!(
+        http_browser_request_profile_for_url(&url),
+        FetchDestination::Video,
+        "expected {ext} to map to Video"
+      );
+    }
+
+    for ext in ["mp3", "m4a", "aac", "oga", "ogg", "opus", "wav"] {
+      let url = format!("https://example.com/audio.{ext}");
+      assert_eq!(
+        http_browser_request_profile_for_url(&url),
+        FetchDestination::Audio,
+        "expected {ext} to map to Audio"
+      );
+    }
   }
 
   #[test]

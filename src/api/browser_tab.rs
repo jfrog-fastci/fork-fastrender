@@ -3880,6 +3880,8 @@ impl BrowserTabHost {
         FetchDestination::ScriptCors => "script_cors",
         FetchDestination::Image => "image",
         FetchDestination::ImageCors => "image_cors",
+        FetchDestination::Video => "video",
+        FetchDestination::Audio => "audio",
         FetchDestination::Font => "font",
         FetchDestination::Other => "other",
         FetchDestination::Fetch => "fetch",

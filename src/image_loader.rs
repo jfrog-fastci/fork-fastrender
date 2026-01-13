@@ -1753,6 +1753,8 @@ fn fetch_destination_cache_tag(dest: FetchDestination) -> &'static str {
     FetchDestination::ScriptCors => "script-cors",
     FetchDestination::Image => "image",
     FetchDestination::ImageCors => "image-cors",
+    FetchDestination::Video => "video",
+    FetchDestination::Audio => "audio",
     FetchDestination::Font => "font",
     FetchDestination::Other => "other",
     FetchDestination::Fetch => "fetch",
