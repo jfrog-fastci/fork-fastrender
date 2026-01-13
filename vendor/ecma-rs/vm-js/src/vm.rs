@@ -2467,19 +2467,27 @@ impl Vm {
     args: &[Value],
     call_site: Option<CallSite>,
   ) -> Result<Value, VmError> {
-    // Promise jobs / host callbacks can call back into the VM when there is no active
-    // `ExecutionContext` on the stack. Some spec operations (notably dynamic `import()`) require an
-    // active Realm, so establish a minimal context from the callee's captured `[[JobRealm]]` when
-    // needed.
-    if self.current_realm().is_none() {
-      if let Value::Object(obj) = callee {
-        if let Some(realm) = scope.heap().get_function_job_realm(obj) {
-          let script_or_module_token = scope.heap().get_function_script_or_module_token(obj);
-          let script_or_module = self.resolve_script_or_module_token_opt(script_or_module_token);
-          let ctx = ExecutionContext {
-            realm,
-            script_or_module,
-          };
+    // Establish an `ExecutionContext` derived from the callee when needed.
+    //
+    // Most calls happen with an existing execution context (from a script/module entry point), so
+    // historically `vm-js` only synthesized one for Promise jobs / host callbacks where the stack is
+    // empty. However, spec features like dynamic `import()` and `import.meta` consult
+    // `GetActiveScriptOrModule`, which is determined by the *currently running execution context*.
+    //
+    // When calling a function imported from a different module, the callee's `[[ScriptOrModule]]`
+    // must become active for the duration of the call so host module hooks observe the correct
+    // referrer.
+    if let Value::Object(obj) = callee {
+      if let Some(realm) = scope.heap().get_function_job_realm(obj) {
+        let script_or_module_token = scope.heap().get_function_script_or_module_token(obj);
+        let script_or_module = self.resolve_script_or_module_token_opt(script_or_module_token);
+
+        let need_ctx = self.current_realm().is_none()
+          || self.current_realm() != Some(realm)
+          || (script_or_module.is_some() && script_or_module != self.get_active_script_or_module());
+
+        if need_ctx {
+          let ctx = ExecutionContext { realm, script_or_module };
           let mut vm_ctx = self.execution_context_guard(ctx);
           return vm_ctx.call_impl_inner(host, scope, hooks, callee, this, args, call_site);
         }
@@ -3038,17 +3046,20 @@ impl Vm {
     call_site: Option<CallSite>,
   ) -> Result<Value, VmError> {
     // Like `Vm::call_impl`, construct operations can be invoked from Promise jobs / host callbacks
-    // without an active execution context. Use the constructor's `[[JobRealm]]` as a best-effort
-    // Realm for spec operations that require one.
-    if self.current_realm().is_none() {
-      if let Value::Object(obj) = callee {
-        if let Some(realm) = scope.heap().get_function_job_realm(obj) {
-          let script_or_module_token = scope.heap().get_function_script_or_module_token(obj);
-          let script_or_module = self.resolve_script_or_module_token_opt(script_or_module_token);
-          let ctx = ExecutionContext {
-            realm,
-            script_or_module,
-          };
+    // without an active execution context. Additionally, constructing functions imported from other
+    // modules should activate the callee's `[[ScriptOrModule]]` for the duration of the call so host
+    // module hooks observe the correct referrer.
+    if let Value::Object(obj) = callee {
+      if let Some(realm) = scope.heap().get_function_job_realm(obj) {
+        let script_or_module_token = scope.heap().get_function_script_or_module_token(obj);
+        let script_or_module = self.resolve_script_or_module_token_opt(script_or_module_token);
+
+        let need_ctx = self.current_realm().is_none()
+          || self.current_realm() != Some(realm)
+          || (script_or_module.is_some() && script_or_module != self.get_active_script_or_module());
+
+        if need_ctx {
+          let ctx = ExecutionContext { realm, script_or_module };
           let mut vm_ctx = self.execution_context_guard(ctx);
           return vm_ctx.construct_impl_inner(host, scope, hooks, callee, args, new_target, call_site);
         }
