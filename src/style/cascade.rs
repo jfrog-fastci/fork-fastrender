@@ -5143,6 +5143,97 @@ fn apply_forced_colors_overrides(styles: &mut ComputedStyle) {
   }
 }
 
+fn strip_ua_styles_for_appearance_none_form_controls(node: &DomNode, styles: &mut ComputedStyle) {
+  use crate::style::types::BorderStyle;
+
+  if !matches!(styles.appearance, crate::style::types::Appearance::None) {
+    return;
+  }
+
+  if !matches!(
+    node.namespace(),
+    Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
+  ) {
+    return;
+  }
+
+  let Some(tag) = node.tag_name() else {
+    return;
+  };
+
+  let is_form_control = tag.eq_ignore_ascii_case("input")
+    || tag.eq_ignore_ascii_case("textarea")
+    || tag.eq_ignore_ascii_case("select")
+    || tag.eq_ignore_ascii_case("progress")
+    || tag.eq_ignore_ascii_case("meter");
+  if !is_form_control {
+    return;
+  }
+
+  #[inline]
+  fn is_ua_order(order: i32) -> bool {
+    matches!(
+      crate::style::cascade_order_origin(order),
+      Some(crate::style::CascadeOrderOrigin::UserAgent)
+    )
+  }
+
+  // `appearance: none` form controls should not inherit UA border/background/padding unless the
+  // author explicitly specified those properties.
+  if is_ua_order(styles.logical.background_color_order) {
+    styles.background_color = Rgba::TRANSPARENT;
+    styles.background_color_is_system = false;
+  }
+
+  if is_ua_order(styles.logical.padding_orders.top) {
+    styles.padding_top = Length::px(0.0);
+  }
+  if is_ua_order(styles.logical.padding_orders.right) {
+    styles.padding_right = Length::px(0.0);
+  }
+  if is_ua_order(styles.logical.padding_orders.bottom) {
+    styles.padding_bottom = Length::px(0.0);
+  }
+  if is_ua_order(styles.logical.padding_orders.left) {
+    styles.padding_left = Length::px(0.0);
+  }
+
+  // Border stripping is keyed off the winning border-style origin so authors can opt back into
+  // borders by explicitly specifying a border-style.
+  if is_ua_order(styles.logical.border_style_orders.top) {
+    styles.border_top_style = BorderStyle::None;
+    if is_ua_order(styles.logical.border_width_orders.top)
+      || styles.logical.border_width_orders.top < 0
+    {
+      styles.border_top_width = Length::px(0.0);
+    }
+  }
+  if is_ua_order(styles.logical.border_style_orders.right) {
+    styles.border_right_style = BorderStyle::None;
+    if is_ua_order(styles.logical.border_width_orders.right)
+      || styles.logical.border_width_orders.right < 0
+    {
+      styles.border_right_width = Length::px(0.0);
+    }
+  }
+  if is_ua_order(styles.logical.border_style_orders.bottom) {
+    styles.border_bottom_style = BorderStyle::None;
+    if is_ua_order(styles.logical.border_width_orders.bottom)
+      || styles.logical.border_width_orders.bottom < 0
+    {
+      styles.border_bottom_width = Length::px(0.0);
+    }
+  }
+  if is_ua_order(styles.logical.border_style_orders.left) {
+    styles.border_left_style = BorderStyle::None;
+    if is_ua_order(styles.logical.border_width_orders.left)
+      || styles.logical.border_width_orders.left < 0
+    {
+      styles.border_left_width = Length::px(0.0);
+    }
+  }
+}
+
 fn collect_shadow_stylesheets(
   root: &DomNode,
   ids: &HashMap<*const DomNode, usize>,
@@ -17173,6 +17264,8 @@ fn compute_base_styles<'a>(
       is_root,
     );
   }
+
+  strip_ua_styles_for_appearance_none_form_controls(node, &mut styles);
 
   apply_forced_colors_overrides(&mut styles);
 

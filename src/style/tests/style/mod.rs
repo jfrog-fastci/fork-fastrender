@@ -3,6 +3,7 @@
 mod all_unset_test;
 mod anchor_positioning_values_test;
 mod anchor_size_test;
+mod appearance_none_form_control_ua_stripping_test;
 mod aria_label_noop_test;
 mod ascii_casefolding_rejected_test;
 mod background_layer_list_strict_test;

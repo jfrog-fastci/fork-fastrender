@@ -29,6 +29,7 @@ mod abspos_static_position_inline_line_box;
 mod abspos_static_position_subgrid;
 mod anchor_positioning;
 mod appearance_none_form_control_strut;
+mod appearance_none_form_control_ua_box_model_strip;
 mod aria_hidden_has_no_effect;
 mod aria_hidden_layout;
 mod arxiv_lists_and_forms_regressions;
