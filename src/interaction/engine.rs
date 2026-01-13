@@ -1595,6 +1595,62 @@ mod tests {
   }
 
   #[test]
+  fn maxlength_blocks_additional_typing_in_input() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input maxlength=\"5\" value=\"hello\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    set_text_selection_caret(&mut engine, &mut dom, input_id, "hello".chars().count());
+    engine.text_input(&mut dom, "X");
+    assert_eq!(input_value(&mut dom, input_id), "hello");
+  }
+
+  #[test]
+  fn maxlength_allows_replacing_selection_in_input() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input maxlength=\"5\" value=\"hello\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    // Select the last two characters ("lo") and replace with one character.
+    set_text_selection_range(&mut engine, &mut dom, input_id, 3, 5);
+    engine.text_input(&mut dom, "X");
+    assert_eq!(input_value(&mut dom, input_id), "helX");
+  }
+
+  #[test]
+  fn maxlength_counts_utf16_units() {
+    let mut dom = crate::dom::parse_html("<html><body><input maxlength=\"2\"></body></html>")
+      .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    engine.text_input(&mut dom, "😀");
+    assert_eq!(input_value(&mut dom, input_id), "😀");
+    engine.text_input(&mut dom, "😀");
+    assert_eq!(input_value(&mut dom, input_id), "😀");
+  }
+
+  #[test]
+  fn maxlength_blocks_textarea_insertion() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><textarea maxlength=\"3\">abc</textarea></body></html>",
+    )
+    .expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+    set_text_selection_caret(&mut engine, &mut dom, textarea_id, "abc".chars().count());
+    engine.text_input(&mut dom, "X");
+    assert_eq!(textarea_value(&mut dom, textarea_id), "abc");
+  }
+
+  #[test]
   fn enter_inserts_newline_for_textarea_but_not_input() {
     let mut dom = crate::dom::parse_html(
       "<html><body><textarea>hi</textarea><input value=\"hi\"></body></html>",
@@ -1926,6 +1982,53 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   // treat all Unicode whitespace as ignorable. Use an explicit trim to avoid incorrectly dropping
   // characters like NBSP (U+00A0).
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn parse_non_negative_integer(value: &str) -> Option<usize> {
+  let trimmed = trim_ascii_whitespace(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+  let parsed = trimmed.parse::<i64>().ok()?;
+  if parsed < 0 {
+    return None;
+  }
+  usize::try_from(parsed).ok()
+}
+
+fn utf16_len(value: &str) -> usize {
+  value.chars().map(|ch| ch.len_utf16()).sum()
+}
+
+fn truncate_str_to_utf16_units(value: &str, max_units: usize) -> &str {
+  if max_units == 0 {
+    return "";
+  }
+  let mut units = 0usize;
+  let mut end_byte = 0usize;
+  for (byte_idx, ch) in value.char_indices() {
+    let next_units = units.saturating_add(ch.len_utf16());
+    if next_units > max_units {
+      break;
+    }
+    units = next_units;
+    end_byte = byte_idx.saturating_add(ch.len_utf8());
+  }
+  &value[..end_byte]
+}
+
+fn strip_ascii_line_breaks(value: &str) -> Cow<'_, str> {
+  if !value.as_bytes().iter().any(|b| matches!(*b, b'\n' | b'\r')) {
+    return Cow::Borrowed(value);
+  }
+  let mut out = String::with_capacity(value.len());
+  for ch in value.chars() {
+    if matches!(ch, '\n' | '\r') {
+      continue;
+    }
+    out.push(ch);
+  }
+  Cow::Owned(out)
 }
 
 fn is_anchor_with_href(node: &DomNode) -> bool {
@@ -2375,6 +2478,57 @@ fn is_text_input(node: &DomNode) -> bool {
     && !t.eq_ignore_ascii_case("color")
     && !t.eq_ignore_ascii_case("file")
     && !t.eq_ignore_ascii_case("image")
+}
+
+fn is_text_like_input_for_maxlength(node: &DomNode) -> bool {
+  if !is_input(node) {
+    return false;
+  }
+  let ty = input_type(node);
+  if ty.eq_ignore_ascii_case("text")
+    || ty.eq_ignore_ascii_case("search")
+    || ty.eq_ignore_ascii_case("url")
+    || ty.eq_ignore_ascii_case("tel")
+    || ty.eq_ignore_ascii_case("email")
+    || ty.eq_ignore_ascii_case("password")
+  {
+    return true;
+  }
+  if ty.eq_ignore_ascii_case("hidden")
+    || ty.eq_ignore_ascii_case("submit")
+    || ty.eq_ignore_ascii_case("reset")
+    || ty.eq_ignore_ascii_case("button")
+    || ty.eq_ignore_ascii_case("image")
+    || ty.eq_ignore_ascii_case("file")
+    || ty.eq_ignore_ascii_case("checkbox")
+    || ty.eq_ignore_ascii_case("radio")
+    || ty.eq_ignore_ascii_case("range")
+    || ty.eq_ignore_ascii_case("color")
+    || ty.eq_ignore_ascii_case("number")
+    || ty.eq_ignore_ascii_case("date")
+    || ty.eq_ignore_ascii_case("datetime-local")
+    || ty.eq_ignore_ascii_case("month")
+    || ty.eq_ignore_ascii_case("week")
+    || ty.eq_ignore_ascii_case("time")
+  {
+    return false;
+  }
+  // Unknown input types default to text-like state for maxlength enforcement.
+  true
+}
+
+fn text_control_maxlength_for_user_editing(node: &DomNode) -> Option<usize> {
+  if is_textarea(node) {
+    return node
+      .get_attribute_ref("maxlength")
+      .and_then(parse_non_negative_integer);
+  }
+  if is_text_like_input_for_maxlength(node) {
+    return node
+      .get_attribute_ref("maxlength")
+      .and_then(parse_non_negative_integer);
+  }
+  None
 }
 
 fn is_disabled_or_inert(index: &DomIndexMut, node_id: usize) -> bool {
@@ -8146,6 +8300,7 @@ impl InteractionEngine {
       node.get_attribute_ref("value").unwrap_or("").to_string()
     };
     let current_len = current.chars().count();
+    let maxlength = text_control_maxlength_for_user_editing(node);
 
     // Any direct text mutation cancels an in-progress IME preedit string.
     let mut changed = self.ime_cancel_internal();
@@ -8176,13 +8331,26 @@ impl InteractionEngine {
     let start_byte = byte_offset_for_char_idx(&current, caret);
     let end_byte = start_byte;
 
-    let mut next = String::with_capacity(current.len().saturating_add(text.len()));
+    let insert_text = if is_text_input {
+      strip_ascii_line_breaks(text)
+    } else {
+      Cow::Borrowed(text)
+    };
+    let insert_text = if let Some(max) = maxlength {
+      let current_units = utf16_len(&current);
+      let allowed_units = max.saturating_sub(current_units);
+      truncate_str_to_utf16_units(insert_text.as_ref(), allowed_units)
+    } else {
+      insert_text.as_ref()
+    };
+
+    let mut next = String::with_capacity(current.len().saturating_add(insert_text.len()));
     next.push_str(&current[..start_byte]);
-    next.push_str(text);
+    next.push_str(insert_text);
     next.push_str(&current[end_byte..]);
 
     let next_len = next.chars().count();
-    let inserted_chars = text.chars().count();
+    let inserted_chars = insert_text.chars().count();
     let next_caret = caret.saturating_add(inserted_chars).min(next_len);
 
     let Some(node_mut) = index.node_mut(node_id) else {
@@ -8349,6 +8517,9 @@ impl InteractionEngine {
         .to_string()
     };
     let current_len = current.chars().count();
+    let maxlength = index
+      .node(focused)
+      .and_then(|node| text_control_maxlength_for_user_editing(node));
 
     // Any direct text mutation cancels an in-progress IME preedit string.
     changed |= self.ime_cancel_internal();
@@ -8377,18 +8548,33 @@ impl InteractionEngine {
     let start_byte = byte_offset_for_char_idx(&current, replace_start);
     let end_byte = byte_offset_for_char_idx(&current, replace_end);
 
+    let insert_text = if focused_is_text_input {
+      strip_ascii_line_breaks(text)
+    } else {
+      Cow::Borrowed(text)
+    };
+    let insert_text = if let Some(max) = maxlength {
+      let current_units = utf16_len(&current);
+      let replaced_units = utf16_len(&current[start_byte..end_byte]);
+      let base_units = current_units.saturating_sub(replaced_units);
+      let allowed_units = max.saturating_sub(base_units);
+      truncate_str_to_utf16_units(insert_text.as_ref(), allowed_units)
+    } else {
+      insert_text.as_ref()
+    };
+
     let mut next = String::with_capacity(
       current
         .len()
         .saturating_sub(end_byte.saturating_sub(start_byte))
-        .saturating_add(text.len()),
+        .saturating_add(insert_text.len()),
     );
     next.push_str(&current[..start_byte]);
-    next.push_str(text);
+    next.push_str(insert_text);
     next.push_str(&current[end_byte..]);
 
     let next_len = next.chars().count();
-    let inserted_chars = text.chars().count();
+    let inserted_chars = insert_text.chars().count();
     let next_caret = replace_start.saturating_add(inserted_chars).min(next_len);
 
     let Some(node_mut) = index.node_mut(focused) else {
