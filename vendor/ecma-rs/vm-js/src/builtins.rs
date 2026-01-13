@@ -4662,9 +4662,12 @@ pub fn function_constructor_construct(
   let closure_env = scope.heap().get_function_closure_env(callee)?;
 
   // `Function(...params, body)` uses the final argument as the body.
+  //
+  // When called with no arguments, `CreateDynamicFunction` uses the empty string as the body text
+  // (not `ToString(undefined)`).
   let (param_values, body_value) = match args.split_last() {
-    Some((last, rest)) => (rest, *last),
-    None => (&[][..], Value::Undefined),
+    Some((last, rest)) => (rest, Some(*last)),
+    None => (&[][..], None),
   };
 
   let mut params_joined: String = String::new();
@@ -4687,9 +4690,13 @@ pub fn function_constructor_construct(
     params_joined.push_str(&text);
   }
 
-  let body_s = scope.to_string(vm, host, hooks, body_value)?;
-  let body_units = scope.heap().get_string(body_s)?.as_code_units();
-  let body_text = utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?;
+  let body_text = if let Some(body_value) = body_value {
+    let body_s = scope.to_string(vm, host, hooks, body_value)?;
+    let body_units = scope.heap().get_string(body_s)?.as_code_units();
+    utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?
+  } else {
+    String::new()
+  };
 
   // Parse as a single function declaration statement so we can reuse the normal ECMAScript
   // function-object call path.
@@ -4904,9 +4911,12 @@ pub fn generator_function_constructor_construct(
   };
 
   // `GeneratorFunction(...params, body)` uses the final argument as the body.
+  //
+  // When called with no arguments, `CreateDynamicFunction` uses the empty string as the body text
+  // (not `ToString(undefined)`).
   let (param_values, body_value) = match args.split_last() {
-    Some((last, rest)) => (rest, *last),
-    None => (&[][..], Value::Undefined),
+    Some((last, rest)) => (rest, Some(*last)),
+    None => (&[][..], None),
   };
 
   let mut params_joined: String = String::new();
@@ -4929,9 +4939,13 @@ pub fn generator_function_constructor_construct(
     params_joined.push_str(&text);
   }
 
-  let body_s = scope.to_string(vm, host, hooks, body_value)?;
-  let body_units = scope.heap().get_string(body_s)?.as_code_units();
-  let body_text = utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?;
+  let body_text = if let Some(body_value) = body_value {
+    let body_s = scope.to_string(vm, host, hooks, body_value)?;
+    let body_units = scope.heap().get_string(body_s)?.as_code_units();
+    utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?
+  } else {
+    String::new()
+  };
 
   // Parse as a single generator function declaration statement so we can reuse the normal
   // ECMAScript function-object call path.
@@ -5163,9 +5177,12 @@ pub fn async_generator_function_constructor_construct(
   };
 
   // `AsyncGeneratorFunction(...params, body)` uses the final argument as the body.
+  //
+  // When called with no arguments, `CreateDynamicFunction` uses the empty string as the body text
+  // (not `ToString(undefined)`).
   let (param_values, body_value) = match args.split_last() {
-    Some((last, rest)) => (rest, *last),
-    None => (&[][..], Value::Undefined),
+    Some((last, rest)) => (rest, Some(*last)),
+    None => (&[][..], None),
   };
 
   let mut params_joined: String = String::new();
@@ -5188,9 +5205,13 @@ pub fn async_generator_function_constructor_construct(
     params_joined.push_str(&text);
   }
 
-  let body_s = scope.to_string(vm, host, hooks, body_value)?;
-  let body_units = scope.heap().get_string(body_s)?.as_code_units();
-  let body_text = utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?;
+  let body_text = if let Some(body_value) = body_value {
+    let body_s = scope.to_string(vm, host, hooks, body_value)?;
+    let body_units = scope.heap().get_string(body_s)?.as_code_units();
+    utf16_to_utf8_lossy_with_tick(body_units, || vm.tick())?
+  } else {
+    String::new()
+  };
 
   // Parse as a single async generator function declaration statement so we can reuse the normal
   // ECMAScript function-object call path.
@@ -28100,6 +28121,48 @@ mod async_generator_function_constructor_tests {
 
           // `%AsyncGeneratorFunction.prototype%[@@toStringTag]`.
           if (Object.prototype.toString.call(f) !== "[object AsyncGeneratorFunction]") return false;
+
+          return true;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod dynamic_function_constructor_body_empty_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn dynamic_function_constructors_use_empty_body_when_no_args() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function() {
+          // Ordinary functions.
+          const f0 = Function();
+          if (f0.toString() !== "function anonymous(\n) {\n\n}") return false;
+
+          // Generator functions.
+          const gf0 = (function*(){}).constructor();
+          if (gf0.toString() !== "function* anonymous(\n) {\n\n}") return false;
+
+          // Async generator functions.
+          const AGF = (async function*(){}).constructor;
+          const agf0 = AGF();
+          if (agf0.toString() !== "async function* anonymous(\n) {\n\n}") return false;
+
+          // `undefined` body is still `ToString(undefined)` when provided explicitly.
+          const fU = Function(undefined);
+          if (fU.toString() !== "function anonymous(\n) {\nundefined\n}") return false;
 
           return true;
         })()
