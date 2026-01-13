@@ -3,8 +3,9 @@ use fastrender::cli_utils as common;
 use clap::Parser;
 use common::args::parse_viewport;
 use common::render_pipeline::read_cached_document;
-use fastrender::api::{FastRender, RenderOptions};
 use fastrender::accessibility_audit::audit_accessibility_tree;
+use fastrender::api::{FastRender, RenderOptions};
+use fastrender::interaction::dom_geometry;
 use fastrender::resource::{
   FetchRequest, FetchedResource, HttpFetcher, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
   DEFAULT_USER_AGENT,
@@ -39,6 +40,14 @@ struct Args {
   /// any are found.
   #[arg(long)]
   audit: bool,
+
+  /// When enabled, include a `bounds_css` map keyed by DOM node id (renderer preorder id),
+  /// containing viewport-local CSS pixel bounds for nodes present in the accessibility tree.
+  ///
+  /// This triggers full style/layout (prepare) so the output can be generated without a windowed
+  /// browser.
+  #[arg(long)]
+  include_bounds: bool,
 
   /// Override the User-Agent header
   #[arg(long, default_value = DEFAULT_USER_AGENT)]
@@ -98,11 +107,74 @@ fn main() -> Result<(), Box<dyn Error>> {
     .with_viewport(args.viewport.0, args.viewport.1)
     .with_device_pixel_ratio(args.dpr)
     .with_media_type(MediaType::Screen);
-  let tree = renderer.accessibility_tree_fetched_html(&resource, None, options)?;
+
+  let (tree, mut json) = if args.include_bounds {
+    let base_hint = resource.final_url.as_deref().unwrap_or("");
+    if !base_hint.trim().is_empty() {
+      renderer.set_base_url(base_hint.to_string());
+    }
+
+    let html = fastrender::html::encoding::decode_html_bytes(
+      &resource.bytes,
+      resource.content_type.as_deref(),
+    );
+    let prepared = renderer.prepare_html(&html, options.clone())?;
+
+    let tree =
+      fastrender::accessibility::build_accessibility_tree(prepared.styled_tree(), None)?;
+    let mut json = serde_json::to_value(&tree)?;
+
+    let scroll_state = prepared.default_scroll_state();
+    let mut dom_node_ids = std::collections::BTreeSet::<usize>::new();
+    collect_dom_node_ids_from_a11y_tree(&tree, &mut dom_node_ids);
+
+    let dom_node_ids: Vec<usize> = dom_node_ids.into_iter().collect();
+    let bounds = dom_geometry::viewport_bounds_for_dom_node_ids(
+      &prepared,
+      &scroll_state,
+      dom_node_ids.as_slice(),
+    );
+
+    let mut bounds_css = serde_json::Map::new();
+    for dom_node_id in dom_node_ids {
+      let Some(rect) = bounds.get(&dom_node_id).copied() else {
+        continue;
+      };
+      let sanitize = |v: f32| if v.is_finite() { v } else { 0.0 };
+      bounds_css.insert(
+        dom_node_id.to_string(),
+        serde_json::json!({
+          "x": sanitize(rect.x()),
+          "y": sanitize(rect.y()),
+          "width": sanitize(rect.width()).max(0.0),
+          "height": sanitize(rect.height()).max(0.0),
+        }),
+      );
+    }
+
+    match json.as_object_mut() {
+      Some(obj) => {
+        obj.insert(
+          "bounds_css".to_string(),
+          serde_json::Value::Object(bounds_css),
+        );
+      }
+      None => {
+        json = serde_json::json!({
+          "tree": json,
+          "bounds_css": bounds_css,
+        });
+      }
+    }
+
+    (tree, json)
+  } else {
+    let tree = renderer.accessibility_tree_fetched_html(&resource, None, options)?;
+    let json = serde_json::to_value(&tree)?;
+    (tree, json)
+  };
 
   let audit_issues = args.audit.then(|| audit_accessibility_tree(&tree));
-
-  let json = serde_json::to_value(tree)?;
 
   if args.compact {
     println!("{}", serde_json::to_string(&json)?);
@@ -126,6 +198,19 @@ fn main() -> Result<(), Box<dyn Error>> {
   }
 
   Ok(())
+}
+
+fn collect_dom_node_ids_from_a11y_tree(
+  root: &fastrender::accessibility::AccessibilityNode,
+  out: &mut std::collections::BTreeSet<usize>,
+) {
+  let mut stack: Vec<&fastrender::accessibility::AccessibilityNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    out.insert(node.node_id);
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
 }
 
 fn load_document_resource(
