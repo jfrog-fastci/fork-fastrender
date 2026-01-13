@@ -46,6 +46,16 @@ struct ArcInner<T> {
 /// Rust's standard `Arc::new` will abort the process on allocator OOM. `vm-js` frequently stores
 /// attacker-controlled structures (source text, parsed ASTs, compiled scripts) inside `Arc` in hot
 /// runtime paths; those allocations must be recoverable under memory pressure.
+///
+/// ## Safety
+///
+/// This function allocates a `std::sync::Arc` payload using the same layout as the standard
+/// library:
+/// - `strong` refcount
+/// - `weak` refcount (the implicit weak count held by all `Arc`s)
+/// - payload (`T`)
+///
+/// It then constructs the `Arc<T>` using `Arc::from_raw` with a pointer to the `data` field.
 pub(crate) fn arc_try_new_vm<T>(value: T) -> Result<Arc<T>, VmError> {
   let layout = Layout::new::<ArcInner<T>>();
   // SAFETY: We allocate enough space for `ArcInner<T>` and initialise all fields before converting
