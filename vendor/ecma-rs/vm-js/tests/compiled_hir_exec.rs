@@ -277,6 +277,34 @@ fn compiled_object_literal_object_spread_copies_properties() -> Result<(), VmErr
   Ok(())
 }
 
+#[test]
+fn compiled_member_get_boxes_primitive_base_via_to_object() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(&mut rt.heap, "test.js", "'abc'.length")?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_member_call_boxes_primitive_base_via_to_object() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(&mut rt.heap, "test.js", "'abc'.toUpperCase()")?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("ABC")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
 fn proxy_get_trap(
   _vm: &mut Vm,
   _scope: &mut vm_js::Scope<'_>,

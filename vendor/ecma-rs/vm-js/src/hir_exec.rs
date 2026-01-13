@@ -2346,15 +2346,17 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     member: &hir_js::MemberExpr,
   ) -> Result<Value, VmError> {
-    let object = self.eval_expr(scope, body, member.object)?;
-    if member.optional && matches!(object, Value::Null | Value::Undefined) {
+    let base = self.eval_expr(scope, body, member.object)?;
+    if member.optional && matches!(base, Value::Null | Value::Undefined) {
       return Ok(Value::Undefined);
     }
-    let Value::Object(obj) = object else {
-      return Err(VmError::TypeError("member access requires object"));
-    };
 
     let mut scope = scope.reborrow();
+    // Root the original base value across `ToObject` + key evaluation + `[[Get]]` in case any step
+    // allocates / triggers GC.
+    scope.push_root(base)?;
+
+    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
     scope.push_root(Value::Object(obj))?;
 
     let key = self.eval_object_key(&mut scope, body, &member.property)?;
@@ -2371,15 +2373,15 @@ impl<'vm> HirEvaluator<'vm> {
     member: &hir_js::MemberExpr,
     value: Value,
   ) -> Result<(), VmError> {
-    let object = self.eval_expr(scope, body, member.object)?;
-    let Value::Object(obj) = object else {
-      return Err(VmError::TypeError("member assignment requires object"));
-    };
+    let base = self.eval_expr(scope, body, member.object)?;
 
     let mut scope = scope.reborrow();
-    // Root object + value while allocating the key and performing the assignment (which can invoke
-    // accessors).
-    scope.push_roots(&[Value::Object(obj), value])?;
+    // Root base + value across `ToObject` + key evaluation + `[[Set]]` (assignment may invoke
+    // accessors/proxy traps and allocate).
+    scope.push_roots(&[base, value])?;
+
+    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+    scope.push_root(Value::Object(obj))?;
 
     let key = self.eval_object_key(&mut scope, body, &member.property)?;
     root_property_key(&mut scope, key)?;
@@ -2500,13 +2502,15 @@ impl<'vm> HirEvaluator<'vm> {
     // Method call detection: `obj.prop(...)` uses `this = obj`.
     let (callee_value, this_value) = match &self.get_expr(body, call.callee)?.kind {
       hir_js::ExprKind::Member(member) => {
-        let object = self.eval_expr(&mut scope, body, member.object)?;
-        if member.optional && matches!(object, Value::Null | Value::Undefined) {
+        let base = self.eval_expr(&mut scope, body, member.object)?;
+        if member.optional && matches!(base, Value::Null | Value::Undefined) {
           return Ok(Value::Undefined);
         }
-        let Value::Object(obj) = object else {
-          return Err(VmError::TypeError("member call requires object"));
-        };
+        // Root base across `ToObject` + key evaluation + `[[Get]]` in case any step allocates /
+        // triggers GC.
+        scope.push_root(base)?;
+
+        let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
         scope.push_root(Value::Object(obj))?;
         let key = self.eval_object_key(&mut scope, body, &member.property)?;
         root_property_key(&mut scope, key)?;
