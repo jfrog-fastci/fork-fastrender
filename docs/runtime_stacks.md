@@ -22,9 +22,11 @@ All types below are exported as `fastrender::api::*` and also re-exported at the
 - **Interactive/live rendering loop:** `api::BrowserTab` driven via repeated `tick_frame()` calls
   (see [`docs/live_rendering_loop.md`](live_rendering_loop.md) for how rAF/timers fit in).
 - **Desktop browser UI embedding:** the windowed `browser` app’s worker currently renders via
-  `api::BrowserDocument` but also maintains a JS-capable `api::BrowserTab` (enabled with
-  `browser --js`; experimental) and best-effort syncs its `dom2` snapshot into the renderer DOM
+  `api::BrowserDocument` but also maintains a JS-capable `api::BrowserTab` (vm-js; currently enabled
+  by default in windowed mode) and best-effort syncs its `dom2` snapshot into the renderer DOM
   before painting (see [`docs/browser_ui.md`](browser_ui.md)).
+  - CLI note: `browser --js` currently only affects `--headless-smoke` mode (selects the vm-js smoke
+    path); there is no stable CLI flag to disable JS in windowed mode yet.
 - **Legacy JS host harness (manual script execution, no HTML script scheduler):**
   `api::BrowserDocumentJs`.
 
