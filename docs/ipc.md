@@ -164,6 +164,8 @@ Repo reality:
 - [`src/ipc/frame_slots.rs`](../src/ipc/frame_slots.rs) demonstrates a “browser allocates SHM slots
   once; subsequent messages are control-only” design and is another good source of hardening
   patterns (exact message lengths, FD count checks, truncation handling).
+- [`src/ipc/bootstrap.rs`](../src/ipc/bootstrap.rs) contains an exec-safe “parent creates socketpair,
+  child inherits FD 3” helper designed to avoid CLOEXEC races in multithreaded parents.
 
 ---
 
