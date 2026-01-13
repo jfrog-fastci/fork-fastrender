@@ -18479,58 +18479,18 @@ fn async_eval_lit_obj_from(
           AsyncEval::Complete(src_value) => {
             member_scope.push_root(src_value)?;
 
-            let src_obj = match src_value {
-              Value::Undefined | Value::Null => continue,
-              Value::Object(o) => o,
-              _ => return Err(VmError::Unimplemented("object spread source type")),
-            };
-
-            let keys = member_scope.object_own_property_keys_with_host_and_hooks(
+            // Object spread uses `CopyDataProperties(target, source, [])`, which performs
+            // `ToObject` on non-nullish primitives (e.g. `{...1}` is allowed and produces `{}`).
+            crate::spec_ops::copy_data_properties_with_host_and_hooks(
               evaluator.vm,
+              &mut member_scope,
               &mut *evaluator.host,
               &mut *evaluator.hooks,
-              src_obj,
-            )?;
-            for key in keys {
-              evaluator.tick()?;
-
-              let mut key_scope = member_scope.reborrow();
-              key_scope.push_root(Value::Object(src_obj))?;
-              match key {
-                PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-                PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-              };
-
-              let Some(desc) = key_scope.object_get_own_property_with_host_and_hooks(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                src_obj,
-                key,
-              )?
-              else {
-                continue;
-              };
-              if !desc.enumerable {
-                continue;
-              }
-
-              let value = key_scope.get_with_host_and_hooks(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                src_obj,
-                key,
-                Value::Object(src_obj),
-              )?;
-              key_scope.push_root(value)?;
-              let ok = key_scope
-                .create_data_property(obj, key, value)
-                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-              if !ok {
-                return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-              }
-            }
+              obj,
+              src_value,
+              &[],
+            )
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
           }
           AsyncEval::Suspend(mut suspend) => {
             let obj_root = match obj_root {
@@ -23166,60 +23126,16 @@ fn async_resume_from_frames(
                 let mut spread_scope = scope.reborrow();
                 spread_scope.push_roots(&[Value::Object(obj), src_value])?;
 
-                let src_obj = match src_value {
-                  Value::Undefined | Value::Null => return Ok(()),
-                  Value::Object(o) => o,
-                  _ => return Err(VmError::Unimplemented("object spread source type")),
-                };
-
-                let keys = spread_scope.object_own_property_keys_with_host_and_hooks(
+                crate::spec_ops::copy_data_properties_with_host_and_hooks(
                   evaluator.vm,
+                  &mut spread_scope,
                   &mut *evaluator.host,
                   &mut *evaluator.hooks,
-                  src_obj,
-                )?;
-                for key in keys {
-                  evaluator.tick()?;
-
-                  let mut key_scope = spread_scope.reborrow();
-                  key_scope.push_root(Value::Object(src_obj))?;
-                  match key {
-                    PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-                    PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-                  };
-
-                  let Some(desc) = key_scope.object_get_own_property_with_host_and_hooks(
-                    evaluator.vm,
-                    &mut *evaluator.host,
-                    &mut *evaluator.hooks,
-                    src_obj,
-                    key,
-                  )?
-                  else {
-                    continue;
-                  };
-                  if !desc.enumerable {
-                    continue;
-                  }
-
-                  let value = key_scope.get_with_host_and_hooks(
-                    evaluator.vm,
-                    &mut *evaluator.host,
-                    &mut *evaluator.hooks,
-                    src_obj,
-                    key,
-                    Value::Object(src_obj),
-                  )?;
-                  key_scope.push_root(value)?;
-                  let ok = key_scope
-                    .create_data_property(obj, key, value)
-                    .map_err(|err| {
-                      coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
-                    })?;
-                  if !ok {
-                    return Err(VmError::Unimplemented("CreateDataProperty returned false"));
-                  }
-                }
+                  obj,
+                  src_value,
+                  &[],
+                )
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut spread_scope, err))?;
                 Ok(())
               })();
 

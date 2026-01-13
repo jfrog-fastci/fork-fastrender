@@ -62,6 +62,33 @@ fn await_in_object_literal_key_and_value() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_object_literal_spread_accepts_primitive_source() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        const obj = { ...(await Promise.resolve(1)) };
+        return Object.keys(obj).length;
+      }
+      f().then(
+        function (v) { out = String(v); },
+        function (e) { out = "err:" + String(e); },
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "0");
+  Ok(())
+}
+
+#[test]
 fn await_in_template_literal_substitutions() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -83,4 +110,3 @@ fn await_in_template_literal_substitutions() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, value), "ab");
   Ok(())
 }
-
