@@ -611,6 +611,10 @@ Accessibility sources:
   `ui::browser_app::PageAccessibilitySnapshot`. Per-element OS-facing page content exposure is still
   in progress (see [page_accessibility.md](page_accessibility.md)).
 
+When wiring up a page subtree, AccessKit node IDs are expected to be derived from `(tab_id,
+dom_node_id)` (see `ui::page_accesskit_ids`) so OS action requests can be routed back to the correct
+tab + DOM node.
+
 For background and developer workflow:
 
 - Renderer page semantics (`dump_a11y`, bounds mapping): [page_accessibility.md](page_accessibility.md).
