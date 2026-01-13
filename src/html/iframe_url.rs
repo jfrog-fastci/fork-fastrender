@@ -5,7 +5,7 @@ use crate::resource::is_data_url;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum IframeNavigation {
+pub enum IframeNavigation {
   /// Navigate the iframe to `about:blank`.
   ///
   /// This covers both the HTML defaulting behavior when `src` is missing and explicit `about:blank`
@@ -110,7 +110,7 @@ fn is_about_blank(url: &str) -> bool {
   )
 }
 
-pub(crate) fn iframe_navigation_from_src(raw_src: Option<&str>, base_url: &str) -> IframeNavigation {
+pub fn iframe_navigation_from_src(raw_src: Option<&str>, base_url: &str) -> IframeNavigation {
   let Some(raw_src) = raw_src else {
     return IframeNavigation::AboutBlank;
   };
@@ -194,4 +194,3 @@ mod tests {
     );
   }
 }
-

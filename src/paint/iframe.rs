@@ -265,9 +265,6 @@ fn render_iframe_out_of_process(
   )))
 }
 
-fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
-}
 #[inline]
 fn f32_to_canonical_bits(value: f32) -> u32 {
   if value == 0.0 {

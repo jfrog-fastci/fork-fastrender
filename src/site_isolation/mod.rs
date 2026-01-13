@@ -5,8 +5,10 @@
 
 pub mod policy;
 pub mod site_key;
+pub mod iframe_url;
 
 pub use policy::{should_isolate_child_frame, SiteIsolationMode};
 pub use site_key::{
   site_key_for_navigation, FileUrlSiteIsolation, OriginKey, SiteKey, SiteKeyFactory,
 };
+pub use iframe_url::{iframe_navigation_from_src, IframeNavigation};

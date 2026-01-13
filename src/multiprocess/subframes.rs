@@ -1,6 +1,5 @@
 use crate::geometry::{Point, Rect};
-use crate::site_isolation::site_key_for_navigation;
-use crate::site_isolation::SiteKey;
+use crate::site_isolation::{iframe_navigation_from_src, site_key_for_navigation, IframeNavigation, SiteKey};
 use std::collections::{HashMap, HashSet};
 
 use super::registry::{FrameId, ProcessHandle, ProcessSpawner, RendererProcessId, RendererProcessRegistry};
@@ -70,6 +69,41 @@ pub struct DiscoveredSubframe {
   /// to pass through to underlying content (e.g. `pointer-events: none`, `visibility: hidden`, or
   /// `inert` on the `<iframe>` element).
   pub hit_testable: bool,
+}
+
+impl DiscoveredSubframe {
+  /// Construct a discovered subframe from a raw `<iframe src>` attribute and base URL context.
+  ///
+  /// Returns `None` for "no navigation" cases (empty/whitespace-only/fragment-only/javascript:...).
+  pub fn from_raw_src(
+    id: SubframeId,
+    raw_src: Option<&str>,
+    base_url: &str,
+    force_opaque_origin: bool,
+    rect: Rect,
+    clip: Rect,
+    hit_testable: bool,
+  ) -> Option<Self> {
+    match iframe_navigation_from_src(raw_src, base_url) {
+      IframeNavigation::None => None,
+      IframeNavigation::AboutBlank => Some(Self {
+        id,
+        url: "about:blank".to_string(),
+        force_opaque_origin,
+        rect,
+        clip,
+        hit_testable,
+      }),
+      IframeNavigation::Url(url) => Some(Self {
+        id,
+        url,
+        force_opaque_origin,
+        rect,
+        clip,
+        hit_testable,
+      }),
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -658,6 +692,107 @@ mod tests {
   use super::*;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex};
+
+  #[test]
+  fn discovered_subframe_from_raw_src_whitespace_only_is_none() {
+    let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    assert_eq!(
+      DiscoveredSubframe::from_raw_src(
+        SubframeId::new(1),
+        Some("   "),
+        "https://example.com/",
+        false,
+        rect,
+        rect,
+        true,
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn discovered_subframe_from_raw_src_fragment_only_is_none() {
+    let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    assert_eq!(
+      DiscoveredSubframe::from_raw_src(
+        SubframeId::new(1),
+        Some("#"),
+        "https://example.com/",
+        false,
+        rect,
+        rect,
+        true
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn discovered_subframe_from_raw_src_javascript_is_none() {
+    let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    assert_eq!(
+      DiscoveredSubframe::from_raw_src(
+        SubframeId::new(1),
+        Some("javascript:alert(1)"),
+        "https://example.com/",
+        false,
+        rect,
+        rect,
+        true,
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn discovered_subframe_from_raw_src_missing_defaults_to_about_blank() {
+    let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    let sub = DiscoveredSubframe::from_raw_src(
+      SubframeId::new(1),
+      None,
+      "https://example.com/",
+      false,
+      rect,
+      rect,
+      true,
+    )
+    .expect("missing src should yield about:blank");
+    assert_eq!(sub.url, "about:blank");
+  }
+
+  #[test]
+  fn discovered_subframe_from_raw_src_trims_ascii_whitespace() {
+    let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    let sub = DiscoveredSubframe::from_raw_src(
+      SubframeId::new(1),
+      Some(" \t  https://example.com"),
+      "https://bad.example/",
+      false,
+      rect,
+      rect,
+      true,
+    )
+    .expect("expected URL navigation");
+    assert_eq!(sub.url, "https://example.com/");
+  }
+
+  #[test]
+  fn discovered_subframe_from_raw_src_does_not_trim_non_ascii_whitespace() {
+    let rect = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    let nbsp = "\u{00A0}";
+    let src = format!("foo{nbsp}");
+    let sub = DiscoveredSubframe::from_raw_src(
+      SubframeId::new(1),
+      Some(&src),
+      "https://example.com/",
+      false,
+      rect,
+      rect,
+      true,
+    )
+    .expect("expected URL navigation");
+    assert_eq!(sub.url, "https://example.com/foo%C2%A0");
+  }
 
   #[derive(Debug)]
   struct FakeHandle {
