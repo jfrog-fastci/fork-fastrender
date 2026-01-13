@@ -641,8 +641,7 @@ mod tests {
     let base = factory.site_key_for_navigation("file://example.com/tmp/a.html", None, false);
     let frag = factory.site_key_for_navigation("file://example.com/tmp/a.html#x", None, false);
     let query = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1", None, false);
-    let both =
-      factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1#y", None, false);
+    let both = factory.site_key_for_navigation("file://example.com/tmp/a.html?q=1#y", None, false);
 
     assert_eq!(base, frag);
     assert_eq!(base, query);

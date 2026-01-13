@@ -8095,9 +8095,9 @@ mod tests {
 
 #[cfg(test)]
 mod import_map_tests {
-  use super::tests::make_host_state;
   use crate::dom2;
   use crate::js::import_maps::{ImportMapError, SpecifierAsUrlKind};
+  use super::tests::make_host_state;
   use selectors::context::QuirksMode;
   use url::Url;
 

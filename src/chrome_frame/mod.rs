@@ -602,11 +602,17 @@ impl ChromeFrameDocument {
     let title = active.map(|t| t.display_title()).unwrap_or("New Tab");
 
     // Address bar:
-    // - The browser UI state owns the displayed text (`ChromeState::address_bar_text`) and already
-    //   gates syncs while `address_bar_editing` is true (see `BrowserAppState::sync_address_bar_to_active`).
+    // - While editing, use the in-progress omnibox string from `ChromeState::address_bar_text`.
+    // - When not editing, reflect the active tab's committed/current URL.
     // - While navigating omnibox suggestions via keyboard, that same state is updated to preview the
     //   selected item.
-    let desired_address_bar_value = app.chrome.address_bar_text.as_str();
+    let desired_address_bar_value = if app.chrome.address_bar_editing {
+      app.chrome.address_bar_text.as_str()
+    } else {
+      active
+        .and_then(|t| t.current_url())
+        .unwrap_or_default()
+    };
     let mut changed = false;
     if self.last_address_bar_value != desired_address_bar_value {
       self.set_address_bar_value_from_state(desired_address_bar_value);
@@ -1255,12 +1261,21 @@ mod tests {
     hasher.finish()
   }
 
+  fn make_test_renderer() -> Result<FastRender> {
+    let chrome_assets = Arc::new(crate::ui::chrome_assets::ChromeAssetsFetcher::new());
+    let chrome_fetcher = Arc::new(ChromeDynamicAssetFetcher::new(chrome_assets));
+    let fetcher = Arc::new(crate::ui::trusted_chrome_fetcher::TrustedChromeFetcher::new(
+      chrome_fetcher,
+    ));
+    FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
+      .build()
+  }
+
   #[test]
   fn chrome_frame_address_bar_text_input_emits_event() -> Result<()> {
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()
-      .expect("build deterministic renderer");
+    let renderer = make_test_renderer()?;
     let mut doc =
       ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(320, 80))?;
 
@@ -1285,10 +1300,7 @@ mod tests {
 
   #[test]
   fn chrome_frame_address_bar_sync_updates_browser_state_and_enter_clears_editing() -> Result<()> {
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()
-      .expect("build deterministic renderer");
+    let renderer = make_test_renderer()?;
     let mut chrome =
       ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(320, 80))?;
 
@@ -1336,15 +1348,17 @@ mod tests {
   fn chrome_frame_sync_state_mutates_dom_in_place() -> Result<()> {
     let mut app = BrowserAppState::new_with_initial_tab("https://example.com/".to_string());
 
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
+    let renderer = make_test_renderer()?;
 
     let mut chrome =
       ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(360, 40))?;
     chrome.sync_state(&app);
     let first = chrome.render()?;
     let first_hash = pixmap_hash(&first);
+    assert!(
+      chrome.render_if_needed()?.is_none(),
+      "expected chrome frame to be clean after initial render"
+    );
 
     // Flip state that should be reflected in the chrome UI via DOM mutations.
     if let Some(tab) = app.active_tab_mut() {
@@ -1358,12 +1372,22 @@ mod tests {
     let changed = chrome.sync_state(&app);
     assert!(changed, "expected sync_state to report DOM changes");
 
-    let second = chrome.render()?;
+    let second = chrome
+      .render_if_needed()?
+      .expect("expected render_if_needed to produce a new frame after sync_state");
     let second_hash = pixmap_hash(&second);
 
     assert_ne!(
       first_hash, second_hash,
       "expected chrome render to change after sync_state"
+    );
+
+    // A second sync without state changes should be a no-op and should not request a repaint.
+    let changed_again = chrome.sync_state(&app);
+    assert!(!changed_again, "expected sync_state to be idempotent");
+    assert!(
+      chrome.render_if_needed()?.is_none(),
+      "expected chrome frame to remain clean after no-op sync_state"
     );
     Ok(())
   }
@@ -1426,9 +1450,7 @@ mod tests {
 
   #[test]
   fn chrome_frame_pointer_move_reports_hovered_url_and_cursor_kind() -> Result<()> {
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
+    let renderer = make_test_renderer()?;
     let options = RenderOptions::new().with_viewport(160, 80);
     let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
     chrome
@@ -1449,9 +1471,7 @@ mod tests {
 
   #[test]
   fn chrome_frame_wheel_scroll_updates_scroll_state_and_rerenders() -> Result<()> {
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
+    let renderer = make_test_renderer()?;
     let options = RenderOptions::new().with_viewport(64, 24);
     let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
     chrome
@@ -1487,9 +1507,7 @@ mod tests {
 
   #[test]
   fn chrome_frame_wheel_scroll_returns_false_when_no_scroll_change() -> Result<()> {
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
+    let renderer = make_test_renderer()?;
     let options = RenderOptions::new().with_viewport(64, 24);
     let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
     chrome
@@ -1541,9 +1559,7 @@ mod tests {
       source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
     }];
 
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
+    let renderer = make_test_renderer()?;
     let mut chrome = ChromeFrameDocument::new(renderer, RenderOptions::new().with_viewport(360, 80))?;
     chrome.sync_state(&app);
 
@@ -1558,9 +1574,7 @@ mod tests {
 
   #[test]
   fn chrome_frame_tick_advances_css_keyframes_animation() -> Result<()> {
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
+    let renderer = make_test_renderer()?;
 
     let options = RenderOptions::new().with_viewport(32, 32);
     let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
@@ -1622,9 +1636,7 @@ mod tests {
   }
   #[test]
   fn chrome_frame_tick_realtime_animations_only_repaint_when_clock_advances() -> Result<()> {
-    let renderer = FastRender::builder()
-      .font_sources(FontConfig::bundled_only())
-      .build()?;
+    let renderer = make_test_renderer()?;
 
     let options = RenderOptions::new().with_viewport(32, 32);
     let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
