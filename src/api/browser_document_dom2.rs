@@ -2192,6 +2192,11 @@ impl BrowserDocumentDom2 {
     // (e.g. via JS shims using raw pointers) without forcing a re-layout when only paint is
     // outstanding.
     self.last_seen_dom_mutation_generation = dom_generation;
+    // `prepare_dom_with_options` runs a full pipeline against a fresh DOM snapshot, so any
+    // accumulated mutation log entries (for example, from callers that mutated the DOM via
+    // `dom_mut()` and bypassed `mutate_dom`) are now stale. Leaving them around would cause the next
+    // `mutate_dom` call to see the old entries in `take_mutations()` and potentially force an
+    // unnecessary full restyle.
     self.dom.clear_mutations();
     Ok(prepared)
   }
@@ -3929,6 +3934,47 @@ mod tests {
     );
     assert!(doc.dirty_style_nodes.is_empty());
     assert!(doc.dirty_text_nodes.is_empty());
+  }
+
+  #[test]
+  fn dom_mut_structural_changes_do_not_poison_future_incremental_invalidation() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+    doc.render_frame()?;
+
+    let text_id = first_text_node_id(doc.dom()).expect("text node");
+
+    // Mutate via `dom_mut()` so the recorded `MutationLog` entries are not consumed by
+    // `BrowserDocumentDom2::apply_mutation_log`. A subsequent full pipeline run should clear the
+    // stale mutation log so later incremental invalidation isn't forced into a full restyle.
+    {
+      let dom = doc.dom_mut();
+      let body = dom.body().expect("body element");
+      let child = dom.create_element("span", "");
+      dom.append_child(body, child).expect("append child");
+    }
+
+    // Structural changes force a full pipeline.
+    doc.render_frame()?;
+    let after_structural = doc.invalidation_counters();
+
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_id, "Updated").expect("set text"));
+    assert!(changed);
+
+    // Pure text changes should use incremental relayout and must not trigger another full restyle.
+    doc.render_frame()?;
+    let after_text = doc.invalidation_counters();
+    assert_eq!(
+      after_text.incremental_relayouts,
+      after_structural.incremental_relayouts + 1
+    );
+    assert_eq!(after_text.full_restyles, after_structural.full_restyles);
+    assert_eq!(after_text.full_relayouts, after_structural.full_relayouts);
+    Ok(())
   }
 
   #[test]
