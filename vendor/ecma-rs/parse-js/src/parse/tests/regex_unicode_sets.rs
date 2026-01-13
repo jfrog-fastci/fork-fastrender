@@ -1,3 +1,4 @@
+use crate::error::SyntaxErrorType;
 use crate::parse_with_options;
 use crate::Dialect;
 use crate::ParseOptions;
@@ -13,8 +14,10 @@ fn ecma_script_opts() -> ParseOptions {
 #[test]
 fn rejects_regex_literal_with_both_u_and_v_flags() {
   let opts = ecma_script_opts();
-  assert!(parse_with_options("let r = /./uv;", opts).is_err());
-  assert!(parse_with_options("let r = /./vu;", opts).is_err());
+  let err = parse_with_options("/./uv;", opts).unwrap_err();
+  assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("valid regex flags"));
+  let err = parse_with_options("/./vu;", opts).unwrap_err();
+  assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("valid regex flags"));
 }
 
 #[test]
