@@ -31472,11 +31472,12 @@ mod tests {
     let document_url = "https://example.test/page.html";
     let blocked_url = "file:///etc/passwd";
 
-    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
-      blocked_url,
-      "body { color: rgb(1, 2, 3); }",
-      "text/css",
-    ));
+    // Use the simpler `RecordingFetcher` so *any* invocation (direct `fetch()` or a default
+    // `fetch_with_request()` that delegates to `fetch()`) is observable. This ensures the policy
+    // gate runs before the fetcher/file backend is touched.
+    let fetcher = Arc::new(
+      RecordingFetcher::default().with_entry(blocked_url, "body { color: rgb(1, 2, 3); }"),
+    );
     let toggles = RuntimeToggles::from_map(HashMap::from([(
       "FASTR_FETCH_LINK_CSS".to_string(),
       "1".to_string(),
@@ -31499,7 +31500,10 @@ mod tests {
       .expect("render should succeed");
 
     assert!(
-      !fetcher.requests().iter().any(|req| req.url == blocked_url),
+      !fetcher
+        .fetched_urls()
+        .iter()
+        .any(|url| url == blocked_url),
       "blocked file:// stylesheet should not be fetched"
     );
     assert!(
