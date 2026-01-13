@@ -2278,6 +2278,7 @@ impl TextRasterizer {
     }
 
     let scale = font_size / units_per_em;
+    let hinting = self.hinting_enabled && rotation.is_none();
     let mut paths = Vec::with_capacity(glyphs.len());
     let mut cursor_x = x;
     let mut cursor_y = 0.0_f32;
@@ -2297,7 +2298,7 @@ impl TextRasterizer {
           &instance,
           glyph.glyph_id,
           font_size,
-          self.hinting_enabled,
+          hinting,
         )
         .and_then(|glyph| glyph.path.clone());
       if let Some(path) = cached_path {
@@ -4460,6 +4461,57 @@ mod tests {
       assert_eq!(
         outline_stats.misses, 1,
         "expected hinting to be suppressed for rotated runs so outlines reuse across font sizes"
+      );
+    });
+  }
+
+  #[test]
+  fn hinting_is_disabled_for_rotated_positioned_glyph_paths_to_keep_outline_cache_reusable() {
+    let font = match get_test_font() {
+      Some(f) => f,
+      None => return,
+    };
+
+    let face = font.as_ttf_face().unwrap();
+    let Some(glyph_id) = face.glyph_index('H').map(|g| g.0 as u32) else {
+      return;
+    };
+
+    let glyphs = [GlyphPosition {
+      glyph_id,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 0.0,
+      y_advance: 0.0,
+    }];
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_TEXT_HINTING".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_runtime_toggles(toggles, || {
+      let mut rasterizer = TextRasterizer::new();
+      assert!(rasterizer.hinting_enabled);
+      rasterizer.reset_cache_stats();
+
+      let rotation = Some(Transform::from_rotate(25.0));
+
+      rasterizer
+        .positioned_glyph_paths(&glyphs, &font, 16.0, 0.0, 0.0, 0.0, rotation, &[])
+        .unwrap();
+      rasterizer
+        .positioned_glyph_paths(&glyphs, &font, 32.0, 0.0, 0.0, 0.0, rotation, &[])
+        .unwrap();
+
+      let outline_stats = rasterizer
+        .cache
+        .lock()
+        .map(|cache| cache.stats())
+        .unwrap_or_default();
+      assert_eq!(
+        outline_stats.misses, 1,
+        "expected hinting to be suppressed for rotated positioned_glyph_paths so outlines reuse across font sizes"
       );
     });
   }
