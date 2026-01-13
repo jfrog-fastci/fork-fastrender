@@ -3529,6 +3529,24 @@ impl Vm {
           init_scope.push_root(Value::Object(callee))?;
           let global_object = init_scope.alloc_object()?;
           init_scope.push_root(Value::Object(global_object))?;
+          // When running without a full Realm, we still need a minimal global object for sloppy-mode
+          // `this` binding and unresolvable identifier lookups. Provide the standard `undefined`
+          // global so compiled code can evaluate expressions like `...undefined` without throwing.
+          let undefined_key_s = init_scope.alloc_string("undefined")?;
+          init_scope.push_root(Value::String(undefined_key_s))?;
+          let undefined_key = PropertyKey::from_string(undefined_key_s);
+          init_scope.define_property(
+            global_object,
+            undefined_key,
+            PropertyDescriptor {
+              enumerable: false,
+              configurable: false,
+              kind: PropertyKind::Data {
+                value: Value::Undefined,
+                writable: false,
+              },
+            },
+          )?;
           init_scope.heap_mut().set_function_realm(callee, global_object)?;
           global_object
         }

@@ -1113,6 +1113,64 @@ fn compiled_object_literal_object_spread_in_function_overwrites_earlier_keys() -
 }
 
 #[test]
+fn compiled_object_spread_copies_properties() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(){ let o = {a:1, ...{b:2}}; return o.a + o.b; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_spread_ignores_nullish() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(){ let o = {a:1, ...null, ...undefined}; return o.a; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_getter_executes() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
