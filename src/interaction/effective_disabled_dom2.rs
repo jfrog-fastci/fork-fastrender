@@ -78,7 +78,12 @@ fn fieldset_first_legend_child(fieldset: NodeId, dom: &Document) -> Option<NodeI
   None
 }
 
-fn node_self_is_inert(node: NodeId, dom: &Document) -> bool {
+pub(crate) fn node_self_is_inert(node: NodeId, dom: &Document) -> bool {
+  // Only elements and slots can carry attributes.
+  if !node_is_element_like(node, dom) {
+    return false;
+  }
+
   // `<template>` contents are always inert. In `dom2`, inert template contents are represented via
   // `Node::inert_subtree=true` on the `<template>` element. Legacy interaction logic treated the
   // `<template>` element itself as inert as well, so we do the same here.
@@ -106,7 +111,12 @@ fn node_self_is_inert(node: NodeId, dom: &Document) -> bool {
     .is_some_and(|v| v.eq_ignore_ascii_case("true"))
 }
 
-fn node_self_is_hidden(node: NodeId, dom: &Document) -> bool {
+pub(crate) fn node_self_is_hidden(node: NodeId, dom: &Document) -> bool {
+  // Only elements and slots can carry attributes.
+  if !node_is_element_like(node, dom) {
+    return false;
+  }
+
   if dom.has_attribute(node, "hidden").unwrap_or(false) {
     return true;
   }
