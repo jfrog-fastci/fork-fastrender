@@ -49,8 +49,8 @@ mod windows {
   };
   use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-    TokenIsAppContainer, NO_INHERITANCE, PSID, SECURITY_CAPABILITIES,
-    DACL_SECURITY_INFORMATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    TokenIsAppContainer, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSID,
+    SECURITY_CAPABILITIES, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
@@ -445,14 +445,14 @@ mod windows {
     let mut attr_list = ProcThreadAttributeList::new(attr_count)?;
     if appcontainer_sid.is_some() {
       attr_list.update(
-        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
         std::ptr::addr_of_mut!(security_caps).cast(),
         std::mem::size_of::<SECURITY_CAPABILITIES>(),
       )?;
     }
     if !handles.is_empty() {
       attr_list.update(
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
         handles.as_mut_ptr().cast(),
         handles.len() * std::mem::size_of::<windows_sys::Win32::Foundation::HANDLE>(),
       )?;
