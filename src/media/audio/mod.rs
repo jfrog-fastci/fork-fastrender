@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+use super::clock::MediaClock;
+
 mod config;
 #[cfg(feature = "audio_cpal")]
 mod cpal_backend;
@@ -157,6 +159,12 @@ impl AudioClock {
       }
       Self::Instant { start, .. } => start.elapsed(),
     }
+  }
+}
+
+impl MediaClock for AudioClock {
+  fn now(&self) -> Duration {
+    self.time()
   }
 }
 
