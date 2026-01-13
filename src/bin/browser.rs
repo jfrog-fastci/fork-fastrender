@@ -15416,6 +15416,11 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             self.window.request_redraw();
             return;
           }
+          if self.open_media_controls.is_some() {
+            self.close_media_controls();
+            self.window.request_redraw();
+            return;
+          }
 
           if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
             if let Some(plan) = keyboard_page_context_menu_request(
