@@ -433,6 +433,10 @@ harness = false
 name = "bookmarks_manager_ui"
 harness = false
 
+[[bench]]
+name = "bookmark_contains_url"
+harness = false
+
 # Default release profile: fast compilation, good performance.
 #
 # This is what agents and developers use for day-to-day work. Optimized but

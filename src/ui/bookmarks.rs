@@ -14,6 +14,7 @@
 //! of them; otherwise it adds a new bookmark to the root.
 
 use serde::{Deserialize, Serialize};
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::string_match::contains_ascii_case_insensitive;
@@ -79,7 +80,7 @@ pub struct BookmarkFolder {
   pub children: Vec<BookmarkId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BookmarkStore {
   pub version: u32,
   #[serde(default = "default_next_id")]
@@ -96,6 +97,14 @@ pub struct BookmarkStore {
   /// cheaply detect when a store mutation has occurred).
   #[serde(skip)]
   revision: u64,
+  /// URL membership index used by UI surfaces (bookmark star, omnibox suggestions, etc).
+  ///
+  /// The store intentionally allows duplicate URLs; the map value is the number of bookmarks
+  /// currently present for that URL.
+  ///
+  /// This field is derived from `nodes` and thus not serialized.
+  #[serde(skip)]
+  url_index: FxHashMap<String, usize>,
 }
 
 fn default_next_id() -> BookmarkId {
@@ -110,6 +119,7 @@ impl Default for BookmarkStore {
       roots: Vec::new(),
       nodes: BTreeMap::new(),
       revision: 0,
+      url_index: FxHashMap::default(),
     }
   }
 }
@@ -124,6 +134,36 @@ impl PartialEq for BookmarkStore {
 }
 
 impl Eq for BookmarkStore {}
+
+impl<'de> Deserialize<'de> for BookmarkStore {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    #[derive(Deserialize)]
+    struct BookmarkStorePersisted {
+      version: u32,
+      #[serde(default = "default_next_id")]
+      next_id: BookmarkId,
+      #[serde(default)]
+      roots: Vec<BookmarkId>,
+      #[serde(default)]
+      nodes: BTreeMap<BookmarkId, BookmarkNode>,
+    }
+
+    let persisted = BookmarkStorePersisted::deserialize(deserializer)?;
+    let mut store = Self {
+      version: persisted.version,
+      next_id: persisted.next_id,
+      roots: persisted.roots,
+      nodes: persisted.nodes,
+      revision: 0,
+      url_index: FxHashMap::default(),
+    };
+    store.rebuild_url_index();
+    Ok(store)
+  }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BookmarkError {
@@ -338,6 +378,9 @@ impl BookmarkStore {
 
   /// [`Self::remove_by_url`] but also records the mutation as deltas.
   pub fn remove_by_url_with_deltas(&mut self, url: &str, deltas: &mut Vec<BookmarkDelta>) -> usize {
+    if !self.contains_url(url) {
+      return 0;
+    }
     let ids: Vec<BookmarkId> = self
       .nodes
       .iter()
@@ -416,10 +459,7 @@ impl BookmarkStore {
   }
 
   pub fn contains_url(&self, url: &str) -> bool {
-    self
-      .nodes
-      .values()
-      .any(|node| matches!(node, BookmarkNode::Bookmark(b) if b.url == url))
+    self.url_index.get(url).is_some_and(|count| *count > 0)
   }
 
   /// Search bookmarks by title and URL (tokenized, case-insensitive).
@@ -564,7 +604,11 @@ impl BookmarkStore {
     let mut subtree = Vec::new();
     self.collect_subtree_ids(id, &mut subtree);
     for node_id in subtree {
-      self.nodes.remove(&node_id);
+      if let Some(node) = self.nodes.remove(&node_id) {
+        if let BookmarkNode::Bookmark(entry) = node {
+          self.url_index_dec(&entry.url);
+        }
+      }
     }
     self.repair_next_id();
     self.touch();
@@ -575,6 +619,9 @@ impl BookmarkStore {
   ///
   /// Returns the number of removed bookmarks.
   pub fn remove_by_url(&mut self, url: &str) -> usize {
+    if !self.contains_url(url) {
+      return 0;
+    }
     let ids: Vec<BookmarkId> = self
       .nodes
       .iter()
@@ -625,13 +672,21 @@ impl BookmarkStore {
       self.move_node(id, new_parent)?;
     }
 
+    // Keep the URL index in sync with the new URL (including when multiple bookmarks share the
+    // same URL).
+    let new_url_for_index = new_url.clone();
     let node = self.nodes.get_mut(&id).ok_or(BookmarkError::NotFound(id))?;
-    match node {
+    let old_url = match node {
       BookmarkNode::Bookmark(entry) => {
-        entry.url = new_url;
+        let old_url = std::mem::replace(&mut entry.url, new_url);
         entry.title = new_title;
+        old_url
       }
       BookmarkNode::Folder(_) => unreachable!("validated above"),
+    };
+    if old_url != new_url_for_index {
+      self.url_index_dec(&old_url);
+      self.url_index_inc(new_url_for_index);
     }
     self.touch();
     Ok(())
@@ -1033,9 +1088,19 @@ impl BookmarkStore {
         None => return Err(BookmarkError::ParentNotFound(parent_id)),
       }
     }
+
+    // Capture the bookmark URL (if any) before moving `node` into `self.nodes`.
+    let bookmark_url = match &node {
+      BookmarkNode::Bookmark(entry) => Some(entry.url.clone()),
+      BookmarkNode::Folder(_) => None,
+    };
+
     self.nodes.insert(id, node);
     match self.attach_to_parent_list(id, parent) {
       Ok(()) => {
+        if let Some(url) = bookmark_url {
+          self.url_index_inc(url);
+        }
         self.touch();
         Ok(())
       }
@@ -1233,7 +1298,78 @@ impl BookmarkStore {
       return Err(format!("unreachable bookmark nodes: {missing:?}"));
     }
 
+    // URL index must exactly reflect the current bookmark URLs in `nodes`.
+    let mut expected: FxHashMap<&str, usize> = FxHashMap::default();
+    for node in self.nodes.values() {
+      if let BookmarkNode::Bookmark(entry) = node {
+        *expected.entry(entry.url.as_str()).or_insert(0) += 1;
+      }
+    }
+    if expected.len() != self.url_index.len() {
+      return Err(format!(
+        "url_index size mismatch: expected {}, got {}",
+        expected.len(),
+        self.url_index.len()
+      ));
+    }
+    for (url, expected_count) in expected {
+      match self.url_index.get(url) {
+        Some(got) if *got == expected_count => {}
+        Some(got) => {
+          return Err(format!(
+            "url_index count mismatch for {url:?}: expected {expected_count}, got {got}"
+          ))
+        }
+        None => return Err(format!("url_index missing entry for {url:?}")),
+      }
+    }
+
     Ok(())
+  }
+
+  fn rebuild_url_index(&mut self) {
+    self.url_index.clear();
+    for node in self.nodes.values() {
+      if let BookmarkNode::Bookmark(entry) = node {
+        if let Some(count) = self.url_index.get_mut(entry.url.as_str()) {
+          *count += 1;
+        } else {
+          self.url_index.insert(entry.url.clone(), 1);
+        }
+      }
+    }
+  }
+
+  fn url_index_inc(&mut self, url: String) {
+    if let Some(count) = self.url_index.get_mut(url.as_str()) {
+      *count += 1;
+    } else {
+      self.url_index.insert(url, 1);
+    }
+  }
+
+  fn url_index_dec(&mut self, url: &str) {
+    let should_remove = match self.url_index.get_mut(url) {
+      Some(count) => {
+        if *count > 1 {
+          *count -= 1;
+          false
+        } else {
+          true
+        }
+      }
+      None => {
+        debug_assert!(
+          false,
+          "url_index underflow for {url:?} (index out of sync)"
+        );
+        false
+      }
+    };
+
+    if should_remove {
+      self.url_index.remove(url);
+    }
   }
 }
 
@@ -1569,6 +1705,66 @@ mod tests {
   }
 
   #[test]
+  fn url_index_counts_duplicates_and_decrements_on_remove() {
+    let mut store = BookmarkStore::default();
+    let a1 = store
+      .add("https://a.example/".to_string(), Some("A1".to_string()), None)
+      .unwrap();
+    let a2 = store
+      .add("https://a.example/".to_string(), Some("A2".to_string()), None)
+      .unwrap();
+
+    assert_eq!(store.url_index.get("https://a.example/"), Some(&2));
+
+    assert!(store.remove_by_id(a1));
+    assert_eq!(store.url_index.get("https://a.example/"), Some(&1));
+    assert!(store.contains_url("https://a.example/"));
+
+    assert!(store.remove_by_id(a2));
+    assert!(store.url_index.get("https://a.example/").is_none());
+    assert!(!store.contains_url("https://a.example/"));
+  }
+
+  #[test]
+  fn toggle_removes_all_duplicates_and_clears_url_index_entry() {
+    let mut store = BookmarkStore::default();
+    let _ = store
+      .add("https://a.example/".to_string(), Some("A1".to_string()), None)
+      .unwrap();
+    let _ = store
+      .add("https://a.example/".to_string(), Some("A2".to_string()), None)
+      .unwrap();
+    assert_eq!(store.url_index.get("https://a.example/"), Some(&2));
+
+    // Toggle semantics remove *all* bookmarks for the URL.
+    assert_eq!(store.toggle("https://a.example/", None), false);
+    assert!(store.url_index.get("https://a.example/").is_none());
+    assert!(!store.contains_url("https://a.example/"));
+    assert!(store.nodes.is_empty());
+  }
+
+  #[test]
+  fn url_index_is_rebuilt_on_load_and_survives_normalization() {
+    let mut store = BookmarkStore::default();
+    let _ = store
+      .add("https://a.example/".to_string(), Some("A1".to_string()), None)
+      .unwrap();
+    let _ = store
+      .add("https://a.example/".to_string(), Some("A2".to_string()), None)
+      .unwrap();
+
+    // Simulate a corrupted persisted file where `next_id` is lower than the max node id.
+    store.next_id = BookmarkId(1);
+
+    let json = serde_json::to_string_pretty(&store).unwrap();
+    let (loaded, migration) = BookmarkStore::from_json_str_migrating(&json).unwrap();
+    assert_eq!(migration, BookmarkStoreMigration::None);
+    assert_eq!(loaded.next_id, BookmarkId(3));
+    assert!(loaded.contains_url("https://a.example/"));
+    assert_eq!(loaded.url_index.get("https://a.example/"), Some(&2));
+  }
+
+  #[test]
   fn bookmark_widget_info_label_formats_title_and_url() {
     assert_eq!(
       format_bookmark_widget_info_label(Some("Example"), "https://example.com"),
@@ -1663,6 +1859,7 @@ mod tests {
         Some(folder_a),
       )
       .unwrap();
+    assert_eq!(store.url_index.get("https://example.com/"), Some(&1));
 
     store
       .update(
@@ -1672,6 +1869,10 @@ mod tests {
         Some(folder_b),
       )
       .unwrap();
+    assert!(!store.contains_url("https://example.com/"));
+    assert!(store.contains_url("https://example.com/new"));
+    assert!(store.url_index.get("https://example.com/").is_none());
+    assert_eq!(store.url_index.get("https://example.com/new"), Some(&1));
 
     let BookmarkNode::Bookmark(entry) = store.nodes.get(&bookmark).unwrap() else {
       panic!("expected bookmark");
@@ -1771,6 +1972,10 @@ mod tests {
     let (store, migration) = BookmarkStore::from_json_str_migrating(legacy).unwrap();
     assert_eq!(migration, BookmarkStoreMigration::FromLegacyUrls);
     assert_eq!(store.roots.len(), 2);
+    assert!(store.contains_url("https://a.example/"));
+    assert!(store.contains_url("https://b.example/"));
+    assert_eq!(store.url_index.get("https://a.example/"), Some(&1));
+    assert_eq!(store.url_index.get("https://b.example/"), Some(&1));
     let a_id = store.roots[0];
     let b_id = store.roots[1];
     let BookmarkNode::Bookmark(a) = store.nodes.get(&a_id).unwrap() else {
