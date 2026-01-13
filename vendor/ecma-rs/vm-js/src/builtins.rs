@@ -14408,6 +14408,92 @@ fn get_substitution(
   Ok(out)
 }
 
+fn regexp_create_named_captures_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  rx: GcObject,
+  input: GcString,
+  captures: &[usize],
+  named_group_count: usize,
+) -> Result<GcObject, VmError> {
+  debug_assert!(named_group_count > 0);
+  // `groups` objects are `OrdinaryObjectCreate(null)` in ECMA-262 (null prototype). `alloc_object`
+  // creates objects with `[[Prototype]] = null`.
+  let groups_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(groups_obj))?;
+
+  for i in 0..named_group_count {
+    if i % 64 == 0 {
+      vm.tick()?;
+    }
+
+    let (group_name_units, selected) = {
+      let program = scope.heap().regexp_program(rx)?;
+      let group = program
+        .named_capture_groups
+        .get(i)
+        .ok_or(VmError::InvariantViolation(
+          "RegExpProgram named group index out of range",
+        ))?;
+
+      let mut group_name_units: Vec<u16> = Vec::new();
+      group_name_units
+        .try_reserve_exact(group.name.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      group_name_units.extend_from_slice(&group.name);
+
+      // Find the last matched capture among duplicate indices for this name.
+      let mut selected: Option<(usize, usize)> = None;
+      for (j, &cap_idx) in group.capture_indices.iter().rev().enumerate() {
+        if j % 64 == 0 {
+          vm.tick()?;
+        }
+        let idx = cap_idx as usize;
+        let start_slot = idx.saturating_mul(2);
+        let end_slot = start_slot.saturating_add(1);
+        let (start, end) = (
+          captures.get(start_slot).copied().unwrap_or(usize::MAX),
+          captures.get(end_slot).copied().unwrap_or(usize::MAX),
+        );
+        if start == usize::MAX || end == usize::MAX || end < start {
+          continue;
+        }
+        selected = Some((start, end));
+        break;
+      }
+      (group_name_units, selected)
+    };
+
+    let value = match selected {
+      None => Value::Undefined,
+      Some((start, end)) => {
+        let cap_len = end.saturating_sub(start);
+        scope.ensure_can_alloc_string_units(cap_len)?;
+        let units: Vec<u16> = {
+          let s = scope.heap().get_string(input)?;
+          let slice = &s.as_code_units()[start..end];
+          let mut buf: Vec<u16> = Vec::new();
+          buf
+            .try_reserve_exact(slice.len())
+            .map_err(|_| VmError::OutOfMemory)?;
+          vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, slice)?;
+          buf
+        };
+        let s = scope.alloc_string_from_u16_vec(units)?;
+        scope.push_root(Value::String(s))?;
+        Value::String(s)
+      }
+    };
+
+    let key_s = scope.alloc_string_from_u16_vec(group_name_units)?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(groups_obj, key, data_desc(value, true, true, true))?;
+  }
+
+  Ok(groups_obj)
+}
+
 /// `%RegExp.prototype%[@@replace]` (ECMA-262) (partial).
 pub fn regexp_prototype_symbol_replace(
   vm: &mut Vm,
@@ -14436,8 +14522,19 @@ pub fn regexp_prototype_symbol_replace(
     regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
   }
 
-  let program = scope.heap().regexp_program(rx)?;
-  let capture_count = program.capture_count;
+  let (capture_count, named_group_count) = {
+    let program = scope.heap().regexp_program(rx)?;
+    (program.capture_count, program.named_capture_groups.len())
+  };
+
+  let replace_is_callable = scope.heap().is_callable(replace_value)?;
+  let replace_s = if replace_is_callable {
+    None
+  } else {
+    let s = scope.to_string(vm, host, hooks, replace_value)?;
+    scope.push_root(Value::String(s))?;
+    Some(s)
+  };
 
   let mut out_units: Vec<u16> = Vec::new();
   let mut last_pos = 0usize;
@@ -14459,15 +14556,21 @@ pub fn regexp_prototype_symbol_replace(
       vec_try_extend_from_slice(&mut out_units, &js.as_code_units()[last_pos..start], || vm.tick())?;
     }
 
-    let replacement_units: Vec<u16> = if scope.heap().is_callable(replace_value)? {
+    let replacement_units: Vec<u16> = if replace_is_callable {
       // Call replacer function.
+      let mut match_scope = scope.reborrow();
+
       let mut args_vec: Vec<Value> = Vec::new();
+      let extra = if named_group_count == 0 { 2usize } else { 3usize };
       args_vec
-        .try_reserve_exact(capture_count.saturating_add(2))
+        .try_reserve_exact(capture_count.saturating_add(extra))
         .map_err(|_| VmError::OutOfMemory)?;
 
       // match + captures as strings/undefined.
       for i in 0..capture_count {
+        if i % 64 == 0 {
+          vm.tick()?;
+        }
         let start_slot = i.saturating_mul(2);
         let end_slot = start_slot.saturating_add(1);
         let (cap_start, cap_end) = (
@@ -14479,9 +14582,9 @@ pub fn regexp_prototype_symbol_replace(
         } else {
           let cap_len = cap_end.saturating_sub(cap_start);
           // Preflight heap limits before allocating the capture substring buffer.
-          scope.ensure_can_alloc_string_units(cap_len)?;
+          match_scope.ensure_can_alloc_string_units(cap_len)?;
           let units: Vec<u16> = {
-            let js = scope.heap().get_string(input)?;
+            let js = match_scope.heap().get_string(input)?;
             let slice = &js.as_code_units()[cap_start..cap_end];
             let mut buf: Vec<u16> = Vec::new();
             buf
@@ -14490,25 +14593,37 @@ pub fn regexp_prototype_symbol_replace(
             vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, slice)?;
             buf
           };
-          let s = scope.alloc_string_from_u16_vec(units)?;
-          scope.push_root(Value::String(s))?;
+          let s = match_scope.alloc_string_from_u16_vec(units)?;
+          match_scope.push_root(Value::String(s))?;
           args_vec.push(Value::String(s));
         }
       }
       args_vec.push(Value::Number(start as f64));
       args_vec.push(Value::String(input));
 
+      if named_group_count != 0 {
+        let groups_obj = regexp_create_named_captures_object(
+          vm,
+          &mut match_scope,
+          rx,
+          input,
+          &raw.m.captures,
+          named_group_count,
+        )?;
+        args_vec.push(Value::Object(groups_obj));
+      }
+
       let called = vm.call_with_host_and_hooks(
         host,
-        &mut scope,
+        &mut match_scope,
         hooks,
         replace_value,
         Value::Undefined,
         &args_vec,
       )?;
-      scope.push_root(called)?;
-      let rep_s = scope.to_string(vm, host, hooks, called)?;
-      let units = scope.heap().get_string(rep_s)?.as_code_units();
+      match_scope.push_root(called)?;
+      let rep_s = match_scope.to_string(vm, host, hooks, called)?;
+      let units = match_scope.heap().get_string(rep_s)?.as_code_units();
       let mut buf: Vec<u16> = Vec::new();
       buf
         .try_reserve_exact(units.len())
@@ -14516,11 +14631,23 @@ pub fn regexp_prototype_symbol_replace(
       vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
       buf
     } else {
-      let replace_s = scope.to_string(vm, host, hooks, replace_value)?;
-      scope.push_root(Value::String(replace_s))?;
+      let replace_s = replace_s.expect("replace string should be computed");
+      let mut match_scope = scope.reborrow();
+      let named_captures = if named_group_count == 0 {
+        None
+      } else {
+        Some(regexp_create_named_captures_object(
+          vm,
+          &mut match_scope,
+          rx,
+          input,
+          &raw.m.captures,
+          named_group_count,
+        )?)
+      };
       get_substitution(
         vm,
-        &mut scope,
+        &mut match_scope,
         host,
         hooks,
         input,
@@ -14528,7 +14655,7 @@ pub fn regexp_prototype_symbol_replace(
         (start, end),
         &raw.m.captures,
         capture_count,
-        None,
+        named_captures,
       )?
     };
 

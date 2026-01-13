@@ -977,16 +977,23 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     // Note: LexicallyDeclaredNames includes hoistable declarations (function declarations) even in
     // non-strict mode; this is independent of Annex B runtime scoping.
     if let Some(param) = &catch.parameter {
-      // Collect BoundNames(CatchParameter) and report duplicates.
-      let mut param_seen = HashMap::<String, LexicalNameKind>::new();
-      let empty_var_names = HashSet::<String>::new();
-      self.collect_lexical_decl_names_from_pat(
-        ctx,
-        &param.stx.pat,
-        param.loc,
-        &mut param_seen,
-        &empty_var_names,
-      )?;
+      // BoundNames(CatchParameter)
+      let mut bound_names: Vec<(String, Loc)> = Vec::new();
+      Self::collect_bound_names_from_pat(&param.stx.pat, &mut bound_names)?;
+
+      // Duplicate BoundNames(CatchParameter).
+      //
+      // Use borrowed `&str` keys to avoid allocating/cloning binding names again.
+      let mut seen: HashSet<&str> = HashSet::new();
+      for (name, loc) in &bound_names {
+        self.step()?;
+        if seen.contains(name.as_str()) {
+          self.push_error(*loc, "duplicate binding name")?;
+        } else {
+          seen.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          seen.insert(name.as_str());
+        }
+      }
 
       // Collect LexicallyDeclaredNames(CatchBlock) from the top-level statement list.
       let mut lexical_names = HashSet::<String>::new();
@@ -1031,9 +1038,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       }
 
       // Report collisions between the catch parameter bindings and catch block lexical names.
-      for name in param_seen.keys() {
-        if lexical_names.contains(name) {
-          self.push_error(param.loc, "Identifier has already been declared")?;
+      for (name, loc) in &bound_names {
+        self.step()?;
+        if lexical_names.contains(name.as_str()) {
+          self.push_error(*loc, "Identifier has already been declared")?;
         }
       }
     }

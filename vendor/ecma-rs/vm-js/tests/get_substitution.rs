@@ -90,3 +90,19 @@ fn replace_all_falls_back_to_string_search_when_symbol_replace_is_undefined() {
     "/./g|------------------- a($<$<) -------a($<$<)"
   );
 }
+
+#[test]
+fn regexp_named_capture_replacement_uses_dollar_name() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          "abcd".replace(/(?<fst>.)(?<snd>.)/, "$<snd>$<fst>"),
+          "abcd".replace(/(?<fst>.)(?<snd>.)/g, "$<snd>$<fst>")
+        ].join("|")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "bacd|badc");
+}
