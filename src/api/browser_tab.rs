@@ -7305,7 +7305,9 @@ impl BrowserTab {
     // To avoid running rAF callbacks as fast as the embedder can call `tick_frame()`, gate rAF
     // execution to a per-tab "next frame due" time.
     let mut ran_animation_frame = false;
-    if self.event_loop.has_pending_animation_frame_callbacks() {
+    if self.event_loop.has_pending_animation_frame_callbacks()
+      && self.host.document.visibility_state() != DocumentVisibilityState::Hidden
+    {
       let now = self.event_loop.now();
       if now >= self.next_animation_frame_due {
         // Capture the frame time *before* running callbacks so long-running rAF work does not add
@@ -7409,51 +7411,55 @@ impl BrowserTab {
       }
     };
 
-    let raf_outcome = self
-      .event_loop
-      .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
-    if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
-      // HTML: microtask checkpoint after rAF callbacks.
-      //
-      // Drain microtasks only: tasks/timers must wait for a future tick so rendering can happen
-      // first.
-      let microtask_limits = RunLimits {
-        max_tasks: 0,
-        max_microtasks: run_limits.max_microtasks,
-        max_wall_time: run_limits.max_wall_time,
-      };
-      match self.event_loop.run_until_idle_handling_errors_with_hook(
-        &mut self.host,
-        microtask_limits,
-        &mut report_error,
-        |host, event_loop| {
-          let executor_hook: fn(&mut BrowserTabHost, &mut EventLoop<BrowserTabHost>) -> Result<()> =
-            BrowserTabHost::executor_microtask_checkpoint_hook;
-          if !event_loop
-            .microtask_checkpoint_hooks()
-            .iter()
-            .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
-          {
-            BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
+    if self.host.document.visibility_state() != DocumentVisibilityState::Hidden {
+      let raf_outcome = self
+        .event_loop
+        .run_animation_frame_handling_errors(&mut self.host, &mut report_error)?;
+      if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
+        // HTML: microtask checkpoint after rAF callbacks.
+        //
+        // Drain microtasks only: tasks/timers must wait for a future tick so rendering can happen
+        // first.
+        let microtask_limits = RunLimits {
+          max_tasks: 0,
+          max_microtasks: run_limits.max_microtasks,
+          max_wall_time: run_limits.max_wall_time,
+        };
+        match self.event_loop.run_until_idle_handling_errors_with_hook(
+          &mut self.host,
+          microtask_limits,
+          &mut report_error,
+          |host, event_loop| {
+            let executor_hook: fn(
+              &mut BrowserTabHost,
+              &mut EventLoop<BrowserTabHost>,
+            ) -> Result<()> = BrowserTabHost::executor_microtask_checkpoint_hook;
+            if !event_loop
+              .microtask_checkpoint_hooks()
+              .iter()
+              .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
+            {
+              BrowserTabHost::executor_microtask_checkpoint_hook(host, event_loop)?;
+            }
+            host.discover_dynamic_scripts(event_loop)
+          },
+        )? {
+          RunUntilIdleOutcome::Idle
+          | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
+            // Expected: tasks may exist, but this checkpoint only drains microtasks.
           }
-          host.discover_dynamic_scripts(event_loop)
-        },
-      )? {
-        RunUntilIdleOutcome::Idle
-        | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
-          // Expected: tasks may exist, but this checkpoint only drains microtasks.
+          RunUntilIdleOutcome::Stopped(reason) => {
+            return Err(Error::Other(format!(
+              "BrowserTab::tick_animation_frame microtask checkpoint stopped: {reason:?}"
+            )))
+          }
         }
-        RunUntilIdleOutcome::Stopped(reason) => {
-          return Err(Error::Other(format!(
-            "BrowserTab::tick_animation_frame microtask checkpoint stopped: {reason:?}"
-          )))
-        }
-      }
 
-      // Ensure scripts inserted by rAF callbacks are discovered even if there were no microtasks to
-      // drain (meaning the microtask-only run can stop at `MaxTasks` without invoking hooks).
-      let (host, event_loop) = (&mut self.host, &mut self.event_loop);
-      host.discover_dynamic_scripts(event_loop)?;
+        // Ensure scripts inserted by rAF callbacks are discovered even if there were no microtasks to
+        // drain (meaning the microtask-only run can stop at `MaxTasks` without invoking hooks).
+        let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+        host.discover_dynamic_scripts(event_loop)?;
+      }
     }
 
     if self.commit_pending_navigation()? {
@@ -7495,7 +7501,9 @@ impl BrowserTab {
     // Timers are not part of `EventLoop::is_idle()` until they become due and enqueue a task.
     let mut next = self.event_loop.next_timer_due_time().map(|due| due.max(now));
 
-    if self.event_loop.has_pending_animation_frame_callbacks() {
+    if self.event_loop.has_pending_animation_frame_callbacks()
+      && self.host.document.visibility_state() != DocumentVisibilityState::Hidden
+    {
       let raf_due = self.next_animation_frame_due.max(now);
       next = Some(match next {
         Some(existing) => existing.min(raf_due),
@@ -11556,6 +11564,58 @@ mod tests {
         .exec_script("globalThis.__lastHidden")
         .map_err(|err| Error::Other(err.to_string()))?;
       assert_eq!(last_hidden, Value::Bool(false));
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_request_animation_frame_paused_when_hidden() -> Result<()> {
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <script>
+            globalThis.__ran = false;
+            requestAnimationFrame(() => { globalThis.__ran = true; });
+          </script>
+        </body>
+      </html>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(html, RenderOptions::default())?;
+
+    tab.set_hidden(true)?;
+    tab.tick_frame()?;
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let ran = realm
+        .exec_script("globalThis.__ran")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(
+        ran,
+        Value::Bool(false),
+        "expected rAF callback to be skipped while hidden, got {ran:?}"
+      );
+    }
+
+    tab.set_hidden(false)?;
+    tab.tick_frame()?;
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("expected vm-js WindowRealm");
+      let ran = realm
+        .exec_script("globalThis.__ran")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      assert_eq!(
+        ran,
+        Value::Bool(true),
+        "expected rAF callback to run once visible again, got {ran:?}"
+      );
     }
 
     Ok(())
