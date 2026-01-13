@@ -1284,6 +1284,140 @@ fn history_state_change_cross_origin_throws_security_error() -> Result<()> {
 }
 
 #[test]
+fn history_push_state_cross_origin_url_throws_security_error_and_does_not_mutate() -> Result<()> {
+  let url = "https://example.com/path";
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script(
+      r#"(() => {
+  const beforeHref = location.href;
+  const beforeLen = history.length;
+  const beforeState = history.state;
+  let err = null;
+  try {
+    history.pushState({a: 1}, '', 'https://other.example/');
+  } catch (e) {
+    err = { name: e && e.name, message: e && e.message };
+  }
+  const afterHref = location.href;
+  const afterLen = history.length;
+  const afterState = history.state;
+  return JSON.stringify({ beforeHref, beforeLen, beforeState, afterHref, afterLen, afterState, err });
+})()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let out_s = get_string(realm.heap(), value);
+  let out: serde_json::Value =
+    serde_json::from_str(&out_s).map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(out["beforeHref"], url);
+  assert_eq!(out["err"]["name"], "SecurityError");
+  assert_eq!(out["afterHref"], out["beforeHref"]);
+  assert_eq!(out["afterLen"], out["beforeLen"]);
+  assert_eq!(out["afterState"], out["beforeState"]);
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.pushState failure should not schedule navigation"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn history_replace_state_cross_origin_url_throws_security_error_and_does_not_mutate() -> Result<()> {
+  let url = "https://example.com/path";
+  let mut realm =
+    WindowRealm::new_with_js_execution_options(WindowRealmConfig::new(url), js_opts_for_test())
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script(
+      r#"(() => {
+  const beforeHref = location.href;
+  const beforeLen = history.length;
+  const beforeState = history.state;
+  let err = null;
+  try {
+    history.replaceState({a: 1}, '', 'https://other.example/');
+  } catch (e) {
+    err = { name: e && e.name, message: e && e.message };
+  }
+  const afterHref = location.href;
+  const afterLen = history.length;
+  const afterState = history.state;
+  return JSON.stringify({ beforeHref, beforeLen, beforeState, afterHref, afterLen, afterState, err });
+})()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let out_s = get_string(realm.heap(), value);
+  let out: serde_json::Value =
+    serde_json::from_str(&out_s).map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(out["beforeHref"], url);
+  assert_eq!(out["err"]["name"], "SecurityError");
+  assert_eq!(out["afterHref"], out["beforeHref"]);
+  assert_eq!(out["afterLen"], out["beforeLen"]);
+  assert_eq!(out["afterState"], out["beforeState"]);
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.replaceState failure should not schedule navigation"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn history_push_state_opaque_origin_requires_stable_scheme() -> Result<()> {
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("about:blank"),
+    js_opts_for_test(),
+  )
+  .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script(
+      r#"(() => {
+  const beforeHref = location.href;
+  const beforeLen = history.length;
+  const beforeState = history.state;
+  const beforeOrigin = location.origin;
+  let err = null;
+  try {
+    history.pushState({a: 1}, '', 'data:text/plain,x');
+  } catch (e) {
+    err = { name: e && e.name, message: e && e.message };
+  }
+  const afterHref = location.href;
+  const afterLen = history.length;
+  const afterState = history.state;
+  return JSON.stringify({ beforeHref, beforeLen, beforeState, beforeOrigin, afterHref, afterLen, afterState, err });
+})()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let out_s = get_string(realm.heap(), value);
+  let out: serde_json::Value =
+    serde_json::from_str(&out_s).map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(out["beforeOrigin"], "null");
+  assert_eq!(out["err"]["name"], "SecurityError");
+  assert_eq!(out["afterHref"], out["beforeHref"]);
+  assert_eq!(out["afterLen"], out["beforeLen"]);
+  assert_eq!(out["afterState"], out["beforeState"]);
+  assert!(
+    realm.take_pending_navigation_request().is_none(),
+    "history.pushState failure should not schedule navigation"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn history_state_change_invalid_url_throws_security_error() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
