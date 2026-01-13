@@ -136,9 +136,20 @@ pub struct WindowWebSocketTimeouts {
 impl Default for WindowWebSocketTimeouts {
   fn default() -> Self {
     Self {
-      dns_tcp_connect: Duration::from_secs(10),
-      tls_handshake: Duration::from_secs(10),
-      websocket_handshake: Duration::from_secs(10),
+      // Defaults are intentionally small so renderer teardown can never block for long even when a
+      // WebSocket thread is in the middle of connect/handshake.
+      #[cfg(not(test))]
+      dns_tcp_connect: Duration::from_secs(5),
+      #[cfg(test)]
+      dns_tcp_connect: Duration::from_secs(1),
+      #[cfg(not(test))]
+      tls_handshake: Duration::from_secs(5),
+      #[cfg(test)]
+      tls_handshake: Duration::from_secs(1),
+      #[cfg(not(test))]
+      websocket_handshake: Duration::from_secs(5),
+      #[cfg(test)]
+      websocket_handshake: Duration::from_secs(1),
     }
   }
 }
@@ -2210,6 +2221,9 @@ fn connect_websocket_with_timeouts(
 
   let mut last_connect_err: Option<std::io::Error> = None;
   let mut addr_index: usize = 0;
+  // If we observe immediate (non-timeout) errors for every resolved address, return early instead
+  // of spinning until the connect deadline.
+  let mut consecutive_non_timeout_errors: usize = 0;
   let mut tcp_stream = loop {
     if let Some(cmd) = poll_connect_abort(cmd_rx) {
       return Err(match cmd {
@@ -2244,6 +2258,17 @@ fn connect_websocket_with_timeouts(
     match std::net::TcpStream::connect_timeout(&addr, attempt_timeout) {
       Ok(stream) => break stream,
       Err(err) => {
+        if err.kind() == std::io::ErrorKind::Interrupted {
+          continue;
+        }
+        if err.kind() == std::io::ErrorKind::TimedOut {
+          consecutive_non_timeout_errors = 0;
+        } else {
+          consecutive_non_timeout_errors = consecutive_non_timeout_errors.saturating_add(1);
+          if consecutive_non_timeout_errors >= addrs.len() {
+            return Err(ws_fail_io("connect", err));
+          }
+        }
         last_connect_err = Some(err);
       }
     }
