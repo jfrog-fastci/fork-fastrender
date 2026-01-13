@@ -605,7 +605,7 @@ impl WebSocketStream for DirectWebSocketStream {
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "direct_websocket"))]
 mod tests {
   use super::*;
   use crate::testing::{net_test_lock, try_bind_localhost};

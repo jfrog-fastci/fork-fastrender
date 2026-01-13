@@ -3544,7 +3544,7 @@ mod tests {
     }
 
     let clock = Arc::new(VirtualClock::new());
-    let mut event_loop = EventLoop::<ClockHost>::with_clock(Arc::clone(&clock));
+    let mut event_loop = EventLoop::<ClockHost>::with_clock(clock.clone());
     let mut host = ClockHost::new(Arc::clone(&clock));
 
     {
@@ -3553,7 +3553,9 @@ mod tests {
 
       let mut scope = heap.scope();
       let global = realm.global_object();
-      scope.push_root(Value::Object(global))?;
+      scope
+        .push_root(Value::Object(global))
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
 
       let advance_cb = make_callback(vm, &mut scope, global, "__advanceClock", advance_clock_native);
       set_prop(&mut scope, global, "__advanceClock", Value::Object(advance_cb));

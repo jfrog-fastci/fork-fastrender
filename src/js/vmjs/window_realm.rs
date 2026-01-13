@@ -52279,6 +52279,10 @@ fn init_window_globals(
     )?;
   }
 
+  // Privileged `chrome.*` APIs are intentionally **not** installed by default.
+  //
+  // Embedders should opt-in for trusted chrome-frame realms by calling
+  // `install_chrome_api_bindings_vm_js` (see `docs/chrome_js_bridge.md`).
   // --- Deterministic browser environment shims ---------------------------------
   //
   // Real-world scripts often gate responsive logic on these.
