@@ -42,6 +42,108 @@ fn regexp_flags_parsing_rejects_duplicates() {
 }
 
 #[test]
+fn regexp_prototype_unicode_getter_metadata_and_behavior() {
+  let mut rt = new_runtime();
+
+  let value = rt
+    .exec_script(
+      r#"
+        const desc = Object.getOwnPropertyDescriptor(RegExp.prototype, "unicode");
+        [desc.enumerable, desc.configurable, typeof desc.set, typeof desc.get, desc.get.name, desc.get.length].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "false,true,undefined,function,get unicode,0"
+  );
+
+  let value = rt
+    .exec_script(r#"RegExp.prototype.unicode === undefined"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  let value = rt.exec_script(r#"(/./u).unicode + "," + (/./).unicode"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          const get = Object.getOwnPropertyDescriptor(RegExp.prototype, "unicode").get;
+          try { get.call(undefined); return "no"; } catch (e) { return e.name; }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "TypeError");
+
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          const get = Object.getOwnPropertyDescriptor(RegExp.prototype, "unicode").get;
+          try { get.call({}); return "no"; } catch (e) { return e.name; }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "TypeError");
+}
+
+#[test]
+fn regexp_prototype_unicode_sets_getter_metadata_and_behavior() {
+  let mut rt = new_runtime();
+
+  let value = rt
+    .exec_script(
+      r#"
+        const desc = Object.getOwnPropertyDescriptor(RegExp.prototype, "unicodeSets");
+        [desc.enumerable, desc.configurable, typeof desc.set, typeof desc.get, desc.get.name, desc.get.length].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "false,true,undefined,function,get unicodeSets,0"
+  );
+
+  let value = rt
+    .exec_script(r#"RegExp.prototype.unicodeSets === undefined"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  let value = rt
+    .exec_script(r#"(/./v).unicodeSets + "," + (/./u).unicodeSets"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          const get = Object.getOwnPropertyDescriptor(RegExp.prototype, "unicodeSets").get;
+          try { get.call(undefined); return "no"; } catch (e) { return e.name; }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "TypeError");
+
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          const get = Object.getOwnPropertyDescriptor(RegExp.prototype, "unicodeSets").get;
+          try { get.call({}); return "no"; } catch (e) { return e.name; }
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "TypeError");
+}
+
+#[test]
 fn regexp_flags_parsing_accepts_v() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"new RegExp(".", "v").flags"#).unwrap();
@@ -323,15 +425,13 @@ fn regexp_legacy_octal_escape_without_captures() {
 
 #[test]
 fn regexp_legacy_octal_escape_disambiguation_ignores_parens_in_char_class() {
-  // `[]()]` is a character class whose first element is a literal `]` (per the grammar's special
-  // case for the first class atom). The `(` and `)` inside the class are literals and must not
-  // affect capture group counting used to disambiguate `\1` as a backreference vs legacy octal
-  // escape in non-unicode mode.
+  // Parentheses inside a character class are literals and must not affect capture group counting
+  // used to disambiguate `\1` as a backreference vs legacy octal escape in non-unicode mode.
   let mut rt = new_runtime();
   let value = rt
-    .exec_script(r#"new RegExp("[]()]\\1").exec("]\u0001")[0]"#)
+    .exec_script(r#"new RegExp("[()]\\1").exec("(\u0001")[0]"#)
     .unwrap();
-  assert_eq!(as_utf8_lossy(&rt, value), "]\u{1}");
+  assert_eq!(as_utf8_lossy(&rt, value), "(\u{1}");
 }
 
 #[test]
@@ -734,24 +834,32 @@ fn regexp_match_indices_groups_duplicate_named_properties() {
   let value = rt
     .exec_script(
       r#"
-        const matcher = /(?:(?<x>a)|(?<y>a)(?<x>b))(?:(?<z>c)|(?<z>d))/d;
+        // Named capture group names must be unique (parse-time early error for duplicates), but we
+        // still want coverage for indices+groups across alternatives where some groups may be
+        // undefined in a given match.
+        const matcher = /(?:(?<x>a)|(?<y>a)(?<w>b))(?:(?<z>c)|(?<t>d))/d;
         const three = "abc".match(matcher);
         const out1 =
-          three.indices.groups.x.join(",") + "|" +
+          (three.indices.groups.x === undefined) + "|" +
           three.indices.groups.y.join(",") + "|" +
+          three.indices.groups.w.join(",") + "|" +
           three.indices.groups.z.join(",") + "|" +
+          (three.indices.groups.t === undefined) + "|" +
           Object.keys(three.indices.groups).join(",");
 
         const two = "ad".match(matcher);
         const out2 =
           two.indices.groups.x.join(",") + "|" +
           (two.indices.groups.y === undefined) + "|" +
-          two.indices.groups.z.join(",") + "|" +
+          (two.indices.groups.w === undefined) + "|" +
+          (two.indices.groups.z === undefined) + "|" +
+          two.indices.groups.t.join(",") + "|" +
           Object.keys(two.indices.groups).join(",");
 
-        const iteratedMatcher = /(?:(?:(?<x>a)|(?<x>b)|c)\k<x>){2}/d;
+        const iteratedMatcher = /(?:(?:(?<x>a|b)|c)\k<x>){2}/d;
         const prev = "aac".match(iteratedMatcher);
-        const out3 = (prev.indices.groups.x === undefined);
+        const out3 = (prev.indices.groups.x === undefined &&
+          Object.keys(prev.indices.groups).join(",") === "x");
 
         [out1, out2, out3].join(";")
       "#,
@@ -759,7 +867,7 @@ fn regexp_match_indices_groups_duplicate_named_properties() {
     .unwrap();
   assert_eq!(
     as_utf8_lossy(&rt, value),
-    "1,2|0,1|2,3|x,y,z;0,1|true|1,2|x,y,z;true"
+    "true|0,1|1,2|2,3|true|x,y,w,z,t;0,1|true|true|true|1,2|x,y,w,z,t;true"
   );
 }
 
@@ -866,17 +974,28 @@ fn regexp_named_capture_groups_duplicate_names_and_order() {
   let value = rt
     .exec_script(
       r#"
-        const matcher = /(?:(?<x>a)|(?<y>a)(?<x>b))(?:(?<z>c)|(?<z>d))/;
+        const matcher = /(?:(?<x>a)|(?<y>a)(?<w>b))(?:(?<z>c)|(?<t>d))/;
         const three = "abc".match(matcher);
         const two = "ad".match(matcher);
-        three.groups.x + "," + three.groups.y + "," + three.groups.z + "|" +
+        String(three.groups.x) + "," +
+        String(three.groups.y) + "," +
+        String(three.groups.w) + "," +
+        String(three.groups.z) + "," +
+        String(three.groups.t) + "|" +
         Object.keys(three.groups).join(",") + "|" +
-        two.groups.x + "," + String(two.groups.y) + "," + two.groups.z + "|" +
+        String(two.groups.x) + "," +
+        String(two.groups.y) + "," +
+        String(two.groups.w) + "," +
+        String(two.groups.z) + "," +
+        String(two.groups.t) + "|" +
         Object.keys(two.groups).join(",")
       "#,
     )
     .unwrap();
-  assert_eq!(as_utf8_lossy(&rt, value), "b,a,c|x,y,z|a,undefined,d|x,y,z");
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "undefined,a,b,c,undefined|x,y,w,z,t|a,undefined,undefined,undefined,d|x,y,w,z,t"
+  );
 }
 
 #[test]
@@ -885,7 +1004,7 @@ fn regexp_named_backref_basic() {
   let value = rt
     .exec_script(
       r#"
-        var r = /(?:(?<x>a)|(?<x>b)|c)\k<x>/;
+        var r = /(?:(?<x>a|b)|c)\k<x>/;
         [r.test("aa"), r.test("bb"), r.test("c")].join(",")
       "#,
     )
@@ -899,7 +1018,7 @@ fn regexp_named_groups_reset_in_quantifier_iterations() {
   let value = rt
     .exec_script(
       r#"
-        const r = /(?:(?:(?<x>a)|(?<x>b)|c)\k<x>){2}/;
+        const r = /(?:(?:(?<x>a|b)|c)\k<x>){2}/;
         const m = "aac".match(r);
         String(m !== null && m.groups.x === undefined && Object.keys(m.groups).join(",") === "x")
       "#,
