@@ -1,7 +1,7 @@
 //! HTML templates for renderer-driven modal dialogs (alert/confirm/prompt).
 //!
 //! Like the rest of the renderer-chrome templates, these dialogs are intended to be driven without
-//! JavaScript (at least initially) by emitting `chrome-action:` navigations for accept/cancel.
+//! JavaScript (at least initially) by emitting `chrome-dialog:` navigations for accept/cancel.
 
 use crate::ui::html_escape::escape_html;
 
@@ -21,10 +21,10 @@ pub enum ModalDialogButtonAction {
 }
 
 impl ModalDialogButtonAction {
-  pub fn chrome_action_url(self) -> &'static str {
+  pub fn chrome_dialog_url(self) -> &'static str {
     match self {
-      Self::Accept => "chrome-action:accept",
-      Self::Cancel => "chrome-action:cancel",
+      Self::Accept => "chrome-dialog:accept",
+      Self::Cancel => "chrome-dialog:cancel",
     }
   }
 }
@@ -59,7 +59,7 @@ impl ModalDialogButton {
 /// Prompt-specific input field configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptField {
-  /// Name of the `<input>` field. Used when submitting a `chrome-action:` navigation.
+  /// Name of the `<input>` field. Used when submitting a `chrome-dialog:` navigation.
   pub name: String,
   pub value: String,
   pub placeholder: Option<String>,
@@ -163,12 +163,12 @@ pub fn modal_dialog_html(model: &Model) -> String {
     buttons_html.push_str(&format!(
       r#"<button type="submit" class="{class}" formaction="{action}">{label}</button>"#,
       class = class,
-      action = button.action.chrome_action_url(),
+      action = button.action.chrome_dialog_url(),
       label = label
     ));
   }
 
-  // Keep the template JS-free: the chrome host should intercept `chrome-action:` navigations and
+  // Keep the template JS-free: the chrome host should intercept `chrome-dialog:` navigations and
   // dispatch them to the appropriate modal result handlers.
   format!(
     r#"<!doctype html>
@@ -186,7 +186,7 @@ pub fn modal_dialog_html(model: &Model) -> String {
         aria-modal="true"
         aria-labelledby="chrome-modal-title"
         aria-describedby="chrome-modal-body"
-        action="chrome-action:accept"
+        action="chrome-dialog:accept"
         method="get"
       >
         <div class="chrome-modal-header">
@@ -307,12 +307,12 @@ mod tests {
     let doc = parse_with_deterministic_fonts(&html);
 
     assert_eq!(
-      count_buttons_with_formaction(doc.dom(), "chrome-action:accept"),
+      count_buttons_with_formaction(doc.dom(), "chrome-dialog:accept"),
       1,
       "confirm dialog should include exactly one accept button"
     );
     assert_eq!(
-      count_buttons_with_formaction(doc.dom(), "chrome-action:cancel"),
+      count_buttons_with_formaction(doc.dom(), "chrome-dialog:cancel"),
       1,
       "confirm dialog should include exactly one cancel button"
     );

@@ -192,26 +192,26 @@ fn dialog_html(kind: &DialogKind, message: &str) -> String {
     DialogKind::Alert => format!(
       r#"<p id="dialog-message" class="dialog-message">{message}</p>
 <div class="dialog-actions">
-  <a id="dialog-ok" class="dialog-btn primary" href="chrome-action:dialog-ok">OK</a>
+  <a id="dialog-ok" class="dialog-btn primary" href="chrome-dialog:accept">OK</a>
 </div>"#,
       message = safe_message
     ),
     DialogKind::Confirm => format!(
       r#"<p id="dialog-message" class="dialog-message">{message}</p>
 <div class="dialog-actions">
-  <a id="dialog-cancel" class="dialog-btn" href="chrome-action:dialog-cancel">Cancel</a>
-  <a id="dialog-ok" class="dialog-btn primary" href="chrome-action:dialog-ok">OK</a>
+  <a id="dialog-cancel" class="dialog-btn" href="chrome-dialog:cancel">Cancel</a>
+  <a id="dialog-ok" class="dialog-btn primary" href="chrome-dialog:accept">OK</a>
 </div>"#,
       message = safe_message
     ),
     DialogKind::Prompt { default } => {
       let safe_default = escape_html(default);
       format!(
-        r#"<form id="dialog-form" action="chrome-action:dialog-ok" method="get">
+        r#"<form id="dialog-form" action="chrome-dialog:accept" method="get">
   <p id="dialog-message" class="dialog-message">{message}</p>
   <input id="dialog-input" class="dialog-input" type="text" name="value" value="{default}" autofocus>
   <div class="dialog-actions">
-    <a id="dialog-cancel" class="dialog-btn" href="chrome-action:dialog-cancel">Cancel</a>
+    <a id="dialog-cancel" class="dialog-btn" href="chrome-dialog:cancel">Cancel</a>
     <button id="dialog-ok" class="dialog-btn primary" type="submit">OK</button>
   </div>
 </form>"#,
@@ -313,7 +313,7 @@ mod tests {
     assert_eq!(
       ok_action,
       InteractionAction::Navigate {
-        href: "chrome-action:dialog-ok".to_string()
+        href: "chrome-dialog:accept".to_string()
       }
     );
 
@@ -324,7 +324,7 @@ mod tests {
     assert_eq!(
       cancel_action,
       InteractionAction::Navigate {
-        href: "chrome-action:dialog-cancel".to_string()
+        href: "chrome-dialog:cancel".to_string()
       }
     );
   }
@@ -352,7 +352,7 @@ mod tests {
     assert_eq!(
       action,
       InteractionAction::Navigate {
-        href: "chrome-action:dialog-ok?value=abc".to_string()
+        href: "chrome-dialog:accept?value=abc".to_string()
       }
     );
   }

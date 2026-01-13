@@ -9,7 +9,7 @@ use super::support::{
 };
 
 #[test]
-fn untrusted_page_cannot_navigate_to_chrome_action_or_chrome_scheme() {
+fn untrusted_page_cannot_navigate_to_privileged_renderer_chrome_schemes() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
 
@@ -26,21 +26,23 @@ fn untrusted_page_cannot_navigate_to_chrome_action_or_chrome_scheme() {
               position: absolute;
               left: 0;
               width: 240px;
-              height: 80px;
+              height: 60px;
               display: block;
-              font: 24px/80px sans-serif;
+              font: 24px/60px sans-serif;
               color: #fff;
               text-decoration: none;
               padding-left: 10px;
               box-sizing: border-box;
             }
-            #act { top: 0; background: rgb(200, 0, 0); }
-            #chr { top: 100px; background: rgb(0, 140, 0); }
+             #act { top: 0; background: rgb(200, 0, 0); }
+            #chr { top: 70px; background: rgb(0, 140, 0); }
+            #dlg { top: 140px; background: rgb(0, 90, 160); }
           </style>
         </head>
         <body>
           <a id="act" href="chrome-action:back">chrome-action</a>
           <a id="chr" href="chrome://styles/chrome.css">chrome://</a>
+          <a id="dlg" href="chrome-dialog:accept">chrome-dialog</a>
         </body>
       </html>
     "#,
@@ -99,9 +101,9 @@ fn untrusted_page_cannot_navigate_to_chrome_action_or_chrome_scheme() {
   };
 
   click_and_assert_navigation_failed((10.0, 10.0), "chrome-action:back");
-  click_and_assert_navigation_failed((10.0, 110.0), "chrome://styles/chrome.css");
+  click_and_assert_navigation_failed((10.0, 80.0), "chrome://styles/chrome.css");
+  click_and_assert_navigation_failed((10.0, 150.0), "chrome-dialog:accept");
 
   drop(ui_tx);
   join.join().expect("join ui worker");
 }
-

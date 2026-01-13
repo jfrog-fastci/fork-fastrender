@@ -14,6 +14,7 @@ pub mod protocol_limits;
 pub mod browser_tab_controller;
 pub mod chrome_action;
 pub mod chrome_action_url;
+pub mod chrome_dialog_action_url;
 pub mod chrome_compositor_layout;
 pub mod chrome_frame_document;
 pub mod chrome_loading_progress;

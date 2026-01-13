@@ -77,6 +77,7 @@ fn ui_worker_rejects_unsupported_schemes_without_rendering_error_page() {
     ("javascript:alert(1)", "javascript"),
     ("chrome://styles/chrome.css", "chrome"),
     ("chrome-action:new-tab", "chrome-action"),
+    ("chrome-dialog:accept", "chrome-dialog"),
   ] {
     assert_rejected(&ui_tx, &ui_rx, tab_id, url, expected);
   }

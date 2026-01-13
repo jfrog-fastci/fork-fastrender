@@ -1,13 +1,15 @@
-# Renderer-chrome internal URL schemes (`chrome://` and `chrome-action:`)
+# Renderer-chrome internal URL schemes (`chrome://`, `chrome-action:`, and `chrome-dialog:`)
 
 Renderer-chrome is the plan to render the browser UI (“chrome”) using FastRender, in a **trusted**
 renderer instance that runs in the **browser process** (not the sandboxed content renderer).
 
-This document defines two *privileged* URL schemes reserved for that trusted chrome renderer:
+This document defines three *privileged* URL schemes reserved for that trusted chrome renderer:
 
 - `chrome://` — loads built-in UI assets (CSS/JS/images/fonts) from a trusted, allowlisted bundle.
 - `chrome-action:` — pseudo-URLs embedded in trusted chrome HTML to request browser actions (new tab,
   close tab, etc).
+- `chrome-dialog:` — pseudo-URLs embedded in trusted chrome HTML to report modal/dialog "button
+  result" actions (accept/cancel) back to the chrome host.
 
 Note: This `chrome://` scheme is **FastRender-internal**. It is unrelated to external tooling docs
 that mention Google Chrome’s `chrome://tracing` trace viewer.
@@ -30,11 +32,11 @@ FastRender has (or will have) two renderer contexts:
 2. **Untrusted content renderer (renderer/worker process)**: renders arbitrary web content.
 
 Even before renderer-chrome lands, the codebase already enforces a “content must reject unknown
-schemes” rule, which will also reject `chrome://` and `chrome-action:`:
+schemes” rule, which will also reject `chrome://`, `chrome-action:`, and `chrome-dialog:`:
 
 - Scheme allowlist for navigations: [`src/ui/url.rs`](../src/ui/url.rs) (`validate_user_navigation_url_scheme`).
   - This only allows `http`, `https`, `file`, `about`.
-  - Unit test ensures privileged `chrome://` / `chrome-action:` remain rejected:
+  - Unit test ensures privileged `chrome://` / `chrome-action:` / `chrome-dialog:` remain rejected:
     `user_navigation_scheme_validation_rejects_privileged_renderer_chrome_schemes` in
     [`src/ui/url.rs`](../src/ui/url.rs).
 - Content worker uses that allowlist for all non-`about:` navigations:
@@ -53,8 +55,9 @@ schemes” rule, which will also reject `chrome://` and `chrome-action:`:
   (persistent `localStorage`), while treating `about:`/`data:`/`file:` as opaque:
   [`src/js/web_storage.rs`](../src/js/web_storage.rs) (`origin_key_from_document_url`).
 
-**Invariant (untrusted content):** Untrusted web content must treat `chrome://…` and
-`chrome-action:…` as unsupported schemes (no navigation, no fetch, no side effects).
+**Invariant (untrusted content):** Untrusted web content must treat `chrome://…`,
+`chrome-action:…`, and `chrome-dialog:…` as unsupported schemes (no navigation, no fetch, no side
+effects).
 
 **Important exception (internal `about:` pages):** The UI worker installs an origin-gated fetcher
 (`AboutPagesCompositeFetcher` in [`src/ui/about_pages_fetcher.rs`](../src/ui/about_pages_fetcher.rs))
@@ -69,8 +72,9 @@ origins are rejected, and unknown `chrome://` assets fail closed.
 **Do not** “fix” `chrome://` support by adding `chrome` to the global allowlists above. If/when
 `chrome://` is implemented, it must be enabled only inside the trusted chrome renderer context.
 
-Likewise, **do not** add `chrome-action` to navigation allowlists. `chrome-action:` is not a
-fetchable scheme and must be intercepted/handled only inside the trusted chrome renderer context.
+Likewise, **do not** add `chrome-action` or `chrome-dialog` to navigation allowlists.
+`chrome-action:` / `chrome-dialog:` are not fetchable schemes and must be intercepted/handled only
+inside the trusted chrome renderer context.
 
 This also includes **subresource fetching** allowlists/policies (e.g. `ResourcePolicy::allowed_schemes`
 in [`src/resource.rs`](../src/resource.rs)): `chrome://` support should be implemented as a
@@ -229,6 +233,43 @@ renderer, you would instead intercept `chrome-action:` before attempting navigat
 
 ---
 
+## `chrome-dialog:` — trusted dialog result actions
+
+### What it is
+
+`chrome-dialog:` is **not a fetchable resource**. It is a narrow internal encoding used by trusted
+chrome HTML for modal dialogs (alert/confirm/prompt) to report a button result back to the chrome
+host.
+
+Canonical examples:
+
+```text
+chrome-dialog:accept
+chrome-dialog:cancel
+```
+
+Dialog submissions may include a query string payload (for example, prompt text submitted via
+`method=get`), but the action name itself must remain unambiguous and strongly typed:
+
+```text
+chrome-dialog:accept?value=hello
+```
+
+### Where it is allowed
+
+Only in **trusted chrome HTML**, rendered in the browser process.
+
+Untrusted content must treat `chrome-dialog:` as an unsupported scheme (same trust boundary as
+`chrome://` and `chrome-action:`).
+
+### Parsing/dispatch invariants
+
+- Parsing must be strict: accept only known actions (`accept`, `cancel`); fail closed otherwise.
+- Prefer the opaque form `chrome-dialog:<action>` and reject `chrome-dialog://...` authority forms.
+- Dispatch must be reachable only from the trusted chrome renderer context.
+
+---
+
 ## Guidance: adding new assets/actions
 
 ### Adding a new `chrome://` asset
@@ -253,14 +294,15 @@ renderer, you would instead intercept `chrome-action:` before attempting navigat
 
 **Unit tests (scheme-specific):**
 
-- Parser tests: `chrome://` URL parsing + normalization; `chrome-action:` parsing.
+- Parser tests: `chrome://` URL parsing + normalization; `chrome-action:` parsing; `chrome-dialog:`
+  parsing.
 - Fetcher tests: `chrome://` fetch returns correct bytes and MIME type; rejects unknown assets and
   traversal attempts.
 
 **Integration tests (content rejection):**
 
 - [`tests/browser_integration/ui_worker_unsupported_scheme.rs`](../tests/browser_integration/ui_worker_unsupported_scheme.rs) asserts the untrusted content worker
-  rejects `chrome://…` and `chrome-action:…` (as well as other unsupported schemes like
+  rejects `chrome://…`, `chrome-action:…`, and `chrome-dialog:…` (as well as other unsupported schemes like
   `javascript:`). The expected behavior for untrusted content is:
   - `WorkerToUi::NavigationFailed { .. }`
   - no `WorkerToUi::FrameReady { .. }` for the failed navigation.
@@ -274,4 +316,5 @@ renderer, you would instead intercept `chrome-action:` before attempting navigat
   ```
 
 - [`tests/browser_integration/ui_worker_untrusted_chrome_schemes.rs`](../tests/browser_integration/ui_worker_untrusted_chrome_schemes.rs) asserts an untrusted
-  page cannot *click* a link to `chrome-action:` or `chrome://` (same rejection behavior).
+  page cannot *click* a link to `chrome-action:`, `chrome-dialog:`, or `chrome://` (same rejection
+  behavior).

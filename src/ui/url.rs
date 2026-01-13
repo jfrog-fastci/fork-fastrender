@@ -56,7 +56,8 @@ impl OmniboxInputResolution {
 /// argument. It rejects opaque schemes like `javascript:` even though `url::Url` can parse them.
 ///
 /// Note: this intentionally rejects privileged internal schemes reserved for renderer-chrome such
-/// as `chrome://` (built-in UI assets) and `chrome-action:` (chrome UI actions). See
+/// as `chrome://` (built-in UI assets), `chrome-action:` (chrome UI actions), and `chrome-dialog:`
+/// (chrome modal/dialog result actions). See
 /// `docs/renderer_chrome_schemes.md`.
 ///
 /// For programmatic navigations (e.g. link clicks) the worker still validates schemes independently.
@@ -705,6 +706,12 @@ mod tests {
     assert!(
       err.to_ascii_lowercase().contains("unsupported") && err.contains("chrome-action"),
       "unexpected error for chrome-action:: {err}"
+    );
+
+    let err = validate_user_navigation_url_scheme("chrome-dialog:accept").unwrap_err();
+    assert!(
+      err.to_ascii_lowercase().contains("unsupported") && err.contains("chrome-dialog"),
+      "unexpected error for chrome-dialog:: {err}"
     );
   }
 
