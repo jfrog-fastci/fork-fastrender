@@ -12985,6 +12985,7 @@ impl<'a> Evaluator<'a> {
           key_scope.push_root(base)?;
 
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+          // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
           match key {
             PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
             PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
@@ -61015,9 +61016,10 @@ mod tests {
       VmError::Syntax(diags) => {
         let has_engine_early_error = diags.iter().any(|d| d.code.as_str() == "VMJS0004");
         let has_parser_error = diags.iter().any(|d| {
-          // parse-js uses dedicated diagnostics for this early error; accept the legacy
-          // `ExpectedSyntax` code as well as the newer dedicated code.
-          if d.code.as_str() != "PS0002" && d.code.as_str() != "PS0017" {
+          // `parse-js` uses dedicated diagnostics for this early error; accept the legacy
+          // `ExpectedSyntax` code as well as newer dedicated codes.
+          let code = d.code.as_str();
+          if code != "PS0002" && code != "PS0017" {
             return false;
           }
           // Be tolerant to where `parse-js` surfaces the message (`message` vs `notes`) while still
@@ -61207,6 +61209,268 @@ mod tests {
       ok
     "#,
     )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn super_computed_property_getvalue_does_not_evaluate_key_when_this_uninitialized() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var called = false;
+      class Base {
+        constructor() {
+          called = true;
+          throw new Error("base constructor");
+        }
+      }
+      class Derived extends Base {
+        constructor() {
+          return super[super()];
+        }
+      }
+      var ok = false;
+      try {
+        new Derived();
+      } catch (e) {
+        ok = (called === false && e && e.name === "ReferenceError");
+      }
+      ok;
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn super_computed_property_getvalue_does_not_evaluate_key_when_this_uninitialized_hir(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let source = r#"
+      var called = false;
+      class Base {
+        constructor() {
+          called = true;
+          throw new Error("base constructor");
+        }
+      }
+      class Derived extends Base {
+        constructor() {
+          return super[super()];
+        }
+      }
+      var ok = false;
+      try {
+        new Derived();
+      } catch (e) {
+        ok = (called === false && e && e.name === "ReferenceError");
+      }
+      ok;
+    "#;
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn super_computed_property_putvalue_does_not_evaluate_key_when_this_uninitialized() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var called = false;
+      class Base {
+        constructor() {
+          called = true;
+          throw new Error("base constructor");
+        }
+      }
+      class Derived extends Base {
+        constructor() {
+          super[super()] = 0;
+        }
+      }
+      var ok = false;
+      try {
+        new Derived();
+      } catch (e) {
+        ok = (called === false && e && e.name === "ReferenceError");
+      }
+      ok;
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn super_computed_property_putvalue_does_not_evaluate_key_when_this_uninitialized_hir(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let source = r#"
+      var called = false;
+      class Base {
+        constructor() {
+          called = true;
+          throw new Error("base constructor");
+        }
+      }
+      class Derived extends Base {
+        constructor() {
+          super[super()] = 0;
+        }
+      }
+      var ok = false;
+      try {
+        new Derived();
+      } catch (e) {
+        ok = (called === false && e && e.name === "ReferenceError");
+      }
+      ok;
+    "#;
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn super_computed_property_compound_assign_does_not_evaluate_key_when_this_uninitialized(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var called = false;
+      class Base {
+        constructor() {
+          called = true;
+          throw new Error("base constructor");
+        }
+      }
+      class Derived extends Base {
+        constructor() {
+          super[super()] += 0;
+        }
+      }
+      var ok = false;
+      try {
+        new Derived();
+      } catch (e) {
+        ok = (called === false && e && e.name === "ReferenceError");
+      }
+      ok;
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn super_computed_property_compound_assign_does_not_evaluate_key_when_this_uninitialized_hir(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let source = r#"
+      var called = false;
+      class Base {
+        constructor() {
+          called = true;
+          throw new Error("base constructor");
+        }
+      }
+      class Derived extends Base {
+        constructor() {
+          super[super()] += 0;
+        }
+      }
+      var ok = false;
+      try {
+        new Derived();
+      } catch (e) {
+        ok = (called === false && e && e.name === "ReferenceError");
+      }
+      ok;
+    "#;
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn super_computed_property_increment_does_not_evaluate_key_when_this_uninitialized(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var called = false;
+      class Base {
+        constructor() {
+          called = true;
+          throw new Error("base constructor");
+        }
+      }
+      class Derived extends Base {
+        constructor() {
+          super[super()]++;
+        }
+      }
+      var ok = false;
+      try {
+        new Derived();
+      } catch (e) {
+        ok = (called === false && e && e.name === "ReferenceError");
+      }
+      ok;
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn super_computed_property_increment_does_not_evaluate_key_when_this_uninitialized_hir(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let source = r#"
+      var called = false;
+      class Base {
+        constructor() {
+          called = true;
+          throw new Error("base constructor");
+        }
+      }
+      class Derived extends Base {
+        constructor() {
+          super[super()]++;
+        }
+      }
+      var ok = false;
+      try {
+        new Derived();
+      } catch (e) {
+        ok = (called === false && e && e.name === "ReferenceError");
+      }
+      ok;
+    "#;
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
     assert!(matches!(value, Value::Bool(true)));
     Ok(())
   }
