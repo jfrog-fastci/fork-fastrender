@@ -17,7 +17,7 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
-use fastrender::layout::engine::LayoutParallelism;
+use fastrender::layout::engine::{layout_parallelism_workload, LayoutParallelism};
 use fastrender::layout::table::{TableFormattingContext, TableStructure};
 use fastrender::layout::taffy_integration::{
   enable_taffy_counters, reset_taffy_counters, taffy_counters, taffy_perf_counters,
@@ -1032,6 +1032,74 @@ fn bench_block_intrinsic_sizing_parallel_fanout(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_block_intrinsic_sizing_parallel_auto(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  // Ensure the rayon global pool is installed with a conservative thread count so this benchmark
+  // can run in constrained environments without panicking during Rayon's lazy initialization.
+  if !ensure_rayon_global_pool_for_bench(4) {
+    eprintln!("layout_hotspots block_intrinsic_parallel_auto: rayon pool unavailable; skipping");
+    return;
+  }
+
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+
+  let mut tree = build_block_intrinsic_mixed_segments_tree(64);
+  // Disable intrinsic caching for the root so each iteration recomputes intrinsic widths.
+  tree.root.id = 0;
+  let node = &tree.root;
+
+  let min_fanout = 8;
+  let workload = layout_parallelism_workload(&tree, min_fanout);
+  let parallelism = LayoutParallelism::auto(min_fanout)
+    .with_auto_min_nodes(1)
+    .with_max_threads(Some(4))
+    .resolve_for_workload(workload);
+
+  if !parallelism.should_parallelize(node.children.len()) {
+    eprintln!(
+      "layout_hotspots block_intrinsic_parallel_auto: auto parallelism not activated (children={} nodes={} workers={}); skipping",
+      node.children.len(),
+      workload.nodes,
+      parallelism.expected_workers()
+    );
+    return;
+  }
+
+  let serial_factory =
+    FormattingContextFactory::with_font_context_and_viewport(font_ctx.clone(), viewport)
+      .with_parallelism(LayoutParallelism::disabled());
+  let serial_bfc = BlockFormattingContext::with_factory(serial_factory);
+
+  let auto_factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+    .with_parallelism(parallelism);
+  let auto_bfc = BlockFormattingContext::with_factory(auto_factory);
+
+  // Sanity check: serial and auto-parallel intrinsic sizing must match.
+  let (serial_min, serial_max) = serial_bfc
+    .compute_intrinsic_inline_sizes(node)
+    .expect("serial intrinsic sizing should succeed");
+  let (auto_min, auto_max) = auto_bfc
+    .compute_intrinsic_inline_sizes(node)
+    .expect("auto intrinsic sizing should succeed");
+  let eps = 0.001;
+  assert!(
+    (serial_min - auto_min).abs() < eps && (serial_max - auto_max).abs() < eps,
+    "intrinsic mismatch: serial=({serial_min},{serial_max}) auto=({auto_min},{auto_max})"
+  );
+
+  let mut group = c.benchmark_group("layout_hotspots_block_intrinsic_parallel_auto");
+  group.bench_function("auto_min_and_max_combined_api", |b| {
+    b.iter(|| {
+      let widths = auto_bfc
+        .compute_intrinsic_inline_sizes(black_box(node))
+        .expect("intrinsic sizing should succeed");
+      black_box(widths);
+    })
+  });
+  group.finish();
+}
+
 fn bench_float_shrink_to_fit_sizing(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
@@ -1213,6 +1281,7 @@ criterion_group!(
     bench_block_intrinsic_sizing_nowrap,
     bench_block_intrinsic_many_inline_runs,
     bench_block_intrinsic_sizing_parallel_fanout,
+    bench_block_intrinsic_sizing_parallel_auto,
     bench_float_shrink_to_fit_sizing,
     bench_table_cell_intrinsic_and_distribution,
     bench_inline_layout_cache
