@@ -4491,6 +4491,7 @@ impl<'a> Evaluator<'a> {
     name: &str,
     length: u32,
     constructor_body: Option<GcObject>,
+    is_derived: bool,
   ) -> Result<GcObject, VmError> {
     let intr = self
       .vm
@@ -4505,12 +4506,16 @@ impl<'a> Evaluator<'a> {
     }
 
     let name_s = init_scope.alloc_string(name)?;
+    // Native slots:
+    // - slot 0: optional internal (hidden) constructor body function (Value::Object or Undefined)
+    // - slot 1: whether the class has `[[ConstructorKind]] = derived` (i.e. a ClassHeritage is present)
     let slots_buf;
     let slots = if let Some(body) = constructor_body {
-      slots_buf = [Value::Object(body)];
+      slots_buf = [Value::Object(body), Value::Bool(is_derived)];
       &slots_buf[..]
     } else {
-      &[][..]
+      slots_buf = [Value::Undefined, Value::Bool(is_derived)];
+      &slots_buf[..]
     };
 
     let func_obj = init_scope.alloc_native_function_with_slots(
@@ -5608,6 +5613,7 @@ impl<'a> Evaluator<'a> {
     binding: ClassBinding<'_>,
     func_name: &str,
     members: &[Node<ClassMember>],
+    extends_null: bool,
   ) -> Result<GcObject, VmError> {
     // Per ECMA-262, class definitions are always strict mode code, regardless of whether they
     // appear in a sloppy script/function body.
@@ -5743,7 +5749,9 @@ impl<'a> Evaluator<'a> {
       None
     };
 
-    let func_obj = self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+    let is_derived = extends_null;
+    let func_obj =
+      self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func, is_derived)?;
 
     // Initialize the requested binding now that the class constructor object exists.
     if let Some(binding_name) = match binding {
@@ -5782,6 +5790,15 @@ impl<'a> Evaluator<'a> {
       ));
     };
     class_scope.push_root(Value::Object(prototype_obj))?;
+
+    // `extends null` is special-cased by ECMA-262 `ClassDefinitionEvaluation`:
+    // - the class constructor's `[[Prototype]]` is still `%Function.prototype%`
+    // - but the prototype object's `[[Prototype]]` is `null`
+    if extends_null {
+      class_scope
+        .heap_mut()
+        .object_set_prototype(prototype_obj, None)?;
+    }
 
     // Per ECMAScript, class constructors have a non-writable `prototype` property.
     class_scope.define_property_or_throw(
@@ -6229,7 +6246,11 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     decl: &Node<ClassDecl>,
   ) -> Result<Completion, VmError> {
-    if decl.stx.extends.is_some() {
+    let extends_null = match decl.stx.extends.as_ref() {
+      None => false,
+      Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
+    };
+    if decl.stx.extends.is_some() && !extends_null {
       return Err(VmError::Unimplemented("class inheritance"));
     }
     if !decl.stx.decorators.is_empty() {
@@ -6268,7 +6289,7 @@ impl<'a> Evaluator<'a> {
         Some(name) => ClassBinding::Immutable(name.stx.name.as_str()),
         None => ClassBinding::None,
       };
-      self.eval_class(scope, inner_binding, func_name, &decl.stx.members)
+      self.eval_class(scope, inner_binding, func_name, &decl.stx.members, extends_null)
     })();
 
     // Restore outer environment regardless of how class evaluation completes.
@@ -6293,7 +6314,11 @@ impl<'a> Evaluator<'a> {
   }
 
   fn eval_class_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<ClassExpr>) -> Result<Value, VmError> {
-    if expr.stx.extends.is_some() {
+    let extends_null = match expr.stx.extends.as_ref() {
+      None => false,
+      Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
+    };
+    if expr.stx.extends.is_some() && !extends_null {
       return Err(VmError::Unimplemented("class inheritance"));
     }
     if !expr.stx.decorators.is_empty() {
@@ -6310,7 +6335,7 @@ impl<'a> Evaluator<'a> {
     let outer = self.env.lexical_env;
     let result = (|| {
       let Some(name) = expr.stx.name.as_ref() else {
-        let func_obj = self.eval_class(scope, ClassBinding::None, "", &expr.stx.members)?;
+        let func_obj = self.eval_class(scope, ClassBinding::None, "", &expr.stx.members, extends_null)?;
         return Ok(Value::Object(func_obj));
       };
 
@@ -6322,6 +6347,7 @@ impl<'a> Evaluator<'a> {
         ClassBinding::Immutable(name.stx.name.as_str()),
         name.stx.name.as_str(),
         &expr.stx.members,
+        extends_null,
       )?;
       Ok(Value::Object(func_obj))
     })();
@@ -14326,7 +14352,11 @@ fn async_eval_class_decl(
   scope: &mut Scope<'_>,
   decl: &Node<ClassDecl>,
 ) -> Result<AsyncEval<Completion>, VmError> {
-  if decl.stx.extends.is_some() {
+  let extends_null = match decl.stx.extends.as_ref() {
+    None => false,
+    Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
+  };
+  if decl.stx.extends.is_some() && !extends_null {
     return Err(VmError::Unimplemented("class inheritance"));
   }
   if !decl.stx.decorators.is_empty() {
@@ -14364,7 +14394,14 @@ fn async_eval_class_decl(
     None => ClassBinding::None,
   };
 
-  let result = async_eval_class(evaluator, scope, inner_binding, func_name, &decl.stx.members);
+  let result = async_eval_class(
+    evaluator,
+    scope,
+    inner_binding,
+    func_name,
+    &decl.stx.members,
+    extends_null,
+  );
 
   match result {
     Ok(AsyncEval::Complete(func_value)) => {
@@ -14414,7 +14451,11 @@ fn async_eval_class_expr(
   scope: &mut Scope<'_>,
   expr: &Node<ClassExpr>,
 ) -> Result<AsyncEval<Value>, VmError> {
-  if expr.stx.extends.is_some() {
+  let extends_null = match expr.stx.extends.as_ref() {
+    None => false,
+    Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
+  };
+  if expr.stx.extends.is_some() && !extends_null {
     return Err(VmError::Unimplemented("class inheritance"));
   }
   if !expr.stx.decorators.is_empty() {
@@ -14431,7 +14472,7 @@ fn async_eval_class_expr(
   let outer = evaluator.env.lexical_env;
   let result = (|| {
     let Some(name) = expr.stx.name.as_ref() else {
-      return async_eval_class(evaluator, scope, ClassBinding::None, "", &expr.stx.members);
+      return async_eval_class(evaluator, scope, ClassBinding::None, "", &expr.stx.members, extends_null);
     };
 
     let class_env = scope.env_create(Some(outer))?;
@@ -14442,6 +14483,7 @@ fn async_eval_class_expr(
       ClassBinding::Immutable(name.stx.name.as_str()),
       name.stx.name.as_str(),
       &expr.stx.members,
+      extends_null,
     )
   })();
 
@@ -14474,6 +14516,7 @@ fn async_eval_class(
   binding: ClassBinding<'_>,
   func_name: &str,
   members: &Vec<Node<ClassMember>>,
+  extends_null: bool,
 ) -> Result<AsyncEval<Value>, VmError> {
   let class_env = evaluator.env.lexical_env;
 
@@ -14595,8 +14638,14 @@ fn async_eval_class(
     None
   };
 
-  let func_obj =
-    evaluator.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+  let is_derived = extends_null;
+  let func_obj = evaluator.create_class_constructor_object(
+    scope,
+    func_name,
+    ctor_length,
+    ctor_body_func,
+    is_derived,
+  )?;
 
   // Create a persistent root for the class constructor object so it remains GC-safe across `await`
   // suspensions during computed member key evaluation.
@@ -14660,6 +14709,17 @@ fn async_eval_class(
         return Err(e);
       }
     };
+
+  // `extends null` means the prototype object inherits from `null` (not `%Object.prototype%`).
+  if extends_null {
+    if let Err(err) = scope
+      .heap_mut()
+      .object_set_prototype(prototype_obj, None)
+    {
+      scope.heap_mut().remove_root(func_root);
+      return Err(err);
+    }
+  }
 
   // Per ECMAScript, class constructors have a non-writable `prototype` property.
   let patch_res = (|| -> Result<(), VmError> {

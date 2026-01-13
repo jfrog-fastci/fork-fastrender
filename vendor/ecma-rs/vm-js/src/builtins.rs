@@ -505,13 +505,19 @@ pub fn class_constructor_construct(
   //
   // When no constructor body is present (e.g. `class C {}`), fall back to a default constructor that
   // just allocates the instance via `OrdinaryCreateFromConstructor`.
-  let ctor_body = {
+  let (ctor_body, is_derived) = {
     // Extract slot values without holding a heap borrow across VM calls.
     let func = scope.heap().get_function(callee)?;
-    func
-      .native_slots
-      .as_deref()
-      .and_then(|slots| slots.first().copied())
+    let slots = func.native_slots.as_deref();
+    let ctor_body = slots.and_then(|slots| slots.first().copied());
+    let is_derived = slots
+      .and_then(|slots| slots.get(1).copied())
+      .and_then(|v| match v {
+        Value::Bool(b) => Some(b),
+        _ => None,
+      })
+      .unwrap_or(false);
+    (ctor_body, is_derived)
   };
 
   if let Some(Value::Object(body_func)) = ctor_body {
@@ -523,6 +529,21 @@ pub fn class_constructor_construct(
       args,
       new_target,
     );
+  }
+
+  // Default derived constructors behave like:
+  //   constructor(...args) { super(...args); }
+  //
+  // `extends null` is special-cased by the spec: the class constructor's `[[Prototype]]` is still
+  // `%Function.prototype%`, so `superCtor = F.[[GetPrototypeOf]]()` yields `Function.prototype`,
+  // which is **not** constructable. This means `new C()` must throw `TypeError` when no explicit
+  // constructor is provided.
+  if is_derived {
+    let super_ctor = match scope.heap().object_prototype(callee)? {
+      Some(obj) => Value::Object(obj),
+      None => Value::Null,
+    };
+    return vm.construct_with_host_and_hooks(host, scope, hooks, super_ctor, args, new_target);
   }
 
   let intr = require_intrinsics(vm)?;
