@@ -59,12 +59,12 @@ pub enum SandboxStatus {
   Unsupported,
 }
 
-/// Apply the strictest available sandbox profile for the current process.
+/// Apply the macOS Seatbelt `pure-computation` sandbox to the current process.
 ///
 /// This is primarily intended for sandboxing untrusted renderer subprocesses. It is a one-way
 /// operation: once applied, the sandbox cannot be removed.
 ///
-/// Today this is only supported on macOS (Seatbelt). On other platforms this returns
+/// This is only supported on macOS (Seatbelt). On other platforms this returns
 /// `io::ErrorKind::Unsupported`.
 pub fn apply_pure_computation_sandbox() -> io::Result<()> {
   #[cfg(target_os = "macos")]
@@ -73,7 +73,7 @@ pub fn apply_pure_computation_sandbox() -> io::Result<()> {
   #[cfg(not(target_os = "macos"))]
   return Err(io::Error::new(
     io::ErrorKind::Unsupported,
-    "pure-computation sandboxing is only supported on macOS",
+    "Seatbelt `pure-computation` sandboxing is only supported on macOS",
   ));
 }
 
