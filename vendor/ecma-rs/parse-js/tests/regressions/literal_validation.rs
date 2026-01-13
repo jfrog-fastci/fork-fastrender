@@ -288,7 +288,20 @@ fn annex_b_incomplete_hex_and_unicode_regex_escapes_are_identity_in_non_unicode_
 #[test]
 fn incomplete_hex_and_unicode_regex_escapes_are_errors_in_unicode_mode() {
   // UnicodeMode (`/u` or `/v`) uses the stricter grammar where incomplete escapes are early errors.
-  for src in ["/\\xa/u", "/\\u/u", "/\\ua/u", "/\\xa/v", "/\\u/v", "/\\ua/v"] {
+  for src in [
+    "/\\xa/u",
+    "/\\u/u",
+    "/\\ua/u",
+    "/[\\xa]/u",
+    "/[\\u]/u",
+    "/[\\ua]/u",
+    "/\\xa/v",
+    "/\\u/v",
+    "/\\ua/v",
+    "/[\\xa]/v",
+    "/[\\u]/v",
+    "/[\\ua]/v",
+  ] {
     let err = parse(src).unwrap_err();
     assert_eq!(
       err.typ,
