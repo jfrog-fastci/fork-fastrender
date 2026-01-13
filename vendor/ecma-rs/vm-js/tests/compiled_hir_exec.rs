@@ -1130,6 +1130,26 @@ fn compiled_object_literal_accessor_names_are_prefixed() -> Result<(), VmError> 
 }
 
 #[test]
+fn compiled_object_literal_accessor_lengths_are_correct() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let o = { get x() { return 1; }, set x(v) {} };
+      Object.getOwnPropertyDescriptor(o, 'x').get.length * 10 +
+        Object.getOwnPropertyDescriptor(o, 'x').set.length
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_infers_function_names() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
