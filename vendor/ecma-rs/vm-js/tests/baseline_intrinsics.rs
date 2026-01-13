@@ -15,6 +15,16 @@ fn get_own_data_property(
     .object_get_own_data_property_value(obj, &key)
 }
 
+fn get_own_property_descriptor(
+  heap: &mut Heap,
+  obj: GcObject,
+  name: &str,
+) -> Result<Option<PropertyDescriptor>, VmError> {
+  let mut scope = heap.scope();
+  let key = PropertyKey::from_string(scope.alloc_string(name)?);
+  scope.heap().object_get_own_property(obj, &key)
+}
+
 fn define_enumerable_data_property(
   scope: &mut Scope<'_>,
   obj: GcObject,
@@ -123,6 +133,57 @@ fn realm_installs_baseline_globals_and_intrinsic_graph() -> Result<(), VmError> 
   );
 
   // Avoid leaking persistent roots (and tripping the Realm drop assertion).
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn promise_combinators_and_array_at_have_correct_length_and_are_non_enumerable() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+  let intr = *realm.intrinsics();
+
+  // Array.prototype.at
+  let at = get_own_data_property(&mut heap, intr.array_prototype(), "at")?
+    .expect("Array.prototype.at should be installed as an own data property");
+  let Value::Object(at_fn) = at else {
+    panic!("Array.prototype.at should be a function object");
+  };
+  assert_eq!(
+    get_own_data_property(&mut heap, at_fn, "length")?,
+    Some(Value::Number(1.0))
+  );
+  let at_desc = get_own_property_descriptor(&mut heap, intr.array_prototype(), "at")?
+    .expect("Array.prototype.at should have an own property descriptor");
+  assert!(!at_desc.enumerable, "Array.prototype.at should be non-enumerable");
+
+  // Promise combinators: all / race / allSettled / any.
+  let promise = intr.promise();
+  for name in ["all", "race", "allSettled", "any"] {
+    let combinator = get_own_data_property(&mut heap, promise, name)?
+      .unwrap_or_else(|| panic!("Promise.{name} should be installed as an own data property"));
+    let Value::Object(func) = combinator else {
+      panic!("Promise.{name} should be a function object");
+    };
+    assert_eq!(
+      get_own_data_property(&mut heap, func, "length")?,
+      Some(Value::Number(1.0)),
+      "Promise.{name}.length should be 1"
+    );
+
+    let desc = get_own_property_descriptor(&mut heap, promise, name)?
+      .unwrap_or_else(|| panic!("Promise.{name} should have an own property descriptor"));
+    assert!(!desc.enumerable, "Promise.{name} should be non-enumerable");
+
+    // `Promise.all` et al. are normal functions whose prototype should be `Function.prototype`.
+    assert_eq!(
+      heap.object_prototype(func)?,
+      Some(intr.function_prototype()),
+      "Promise.{name} should have Function.prototype as its [[Prototype]]"
+    );
+  }
+
   realm.teardown(&mut heap);
   Ok(())
 }
