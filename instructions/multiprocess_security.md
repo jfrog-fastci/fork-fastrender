@@ -172,6 +172,9 @@ safely run `CommandExt::pre_exec`). This path is opt-in and gated by:
 
 - `FASTR_MACOS_USE_SANDBOX_EXEC=1`
 
+Note: when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
+`FASTR_MACOS_RENDERER_SANDBOX=off`, the `sandbox-exec` wrapper helpers become no-ops.
+
 See `src/sandbox/macos_spawn.rs` (`wrap_command_with_sandbox_exec` /
 `maybe_wrap_command_with_sandbox_exec`). Prefer in-process `sandbox_init` for long-term sandboxing.
 
