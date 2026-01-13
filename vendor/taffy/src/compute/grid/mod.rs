@@ -62,6 +62,10 @@ struct SubgridAxisOverride {
 struct SubgridOverride {
   rows: Option<SubgridAxisOverride>,
   columns: Option<SubgridAxisOverride>,
+  // Named grid areas inherited from an ancestor `grid-template-areas` declaration, clamped into the
+  // subgrid's coordinate space. Used to propagate area-derived implicit line names through nested
+  // subgrids per CSS Grid 2 §7.12.1 “subgrid-area-inheritance”.
+  template_areas: Vec<GridTemplateArea<Ident>>,
 }
 
 #[cfg(feature = "std")]
@@ -168,6 +172,7 @@ pub(crate) fn insert_dummy_subgrid_override(node: NodeId) {
     SubgridOverride {
       rows: None,
       columns: None,
+      template_areas: Vec::new(),
     },
   );
 }
@@ -296,6 +301,73 @@ fn inherited_area_line_names(
     if let Some(target) = result.get_mut(local_end) {
       target.push(end_name);
     }
+  }
+
+  result
+}
+
+fn inherited_template_areas_for_subgrid(
+  subgrid_row_span: Line<OriginZeroLine>,
+  subgrid_col_span: Line<OriginZeroLine>,
+  parent_areas: &[GridTemplateArea<Ident>],
+) -> Vec<GridTemplateArea<Ident>> {
+  use core::cmp::{max, min};
+
+  if parent_areas.is_empty() {
+    return Vec::new();
+  }
+
+  let mut result: Vec<GridTemplateArea<Ident>> = Vec::new();
+  for area in parent_areas.iter() {
+    // Convert 1-indexed grid line numbers into OriginZero coordinates, clamping to the i16 range
+    // used by `OriginZeroLine`.
+    let row_start_oz = OriginZeroLine(
+      ((area.row_start as i32).saturating_sub(1)).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+    );
+    let row_end_oz = OriginZeroLine(
+      ((area.row_end as i32).saturating_sub(1)).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+    );
+    let col_start_oz = OriginZeroLine(
+      ((area.column_start as i32).saturating_sub(1)).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+    );
+    let col_end_oz = OriginZeroLine(
+      ((area.column_end as i32).saturating_sub(1)).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+    );
+
+    // Only areas that overlap the subgrid in *both* axes should be propagated.
+    let clamped_row_start = max(row_start_oz, subgrid_row_span.start);
+    let clamped_row_end = min(row_end_oz, subgrid_row_span.end);
+    let clamped_col_start = max(col_start_oz, subgrid_col_span.start);
+    let clamped_col_end = min(col_end_oz, subgrid_col_span.end);
+    if clamped_row_end <= clamped_row_start || clamped_col_end <= clamped_col_start {
+      continue;
+    }
+
+    let local_row_start = (clamped_row_start.0 - subgrid_row_span.start.0) as i32 + 1;
+    let local_row_end = (clamped_row_end.0 - subgrid_row_span.start.0) as i32 + 1;
+    let local_col_start = (clamped_col_start.0 - subgrid_col_span.start.0) as i32 + 1;
+    let local_col_end = (clamped_col_end.0 - subgrid_col_span.start.0) as i32 + 1;
+
+    let (Ok(row_start), Ok(row_end), Ok(column_start), Ok(column_end)) = (
+      u16::try_from(local_row_start),
+      u16::try_from(local_row_end),
+      u16::try_from(local_col_start),
+      u16::try_from(local_col_end),
+    ) else {
+      continue;
+    };
+
+    if row_end <= row_start || column_end <= column_start {
+      continue;
+    }
+
+    result.push(GridTemplateArea {
+      name: area.name.clone(),
+      row_start,
+      row_end,
+      column_start,
+      column_end,
+    });
   }
 
   result
@@ -852,6 +924,12 @@ fn record_subgrid_overrides<
       continue;
     }
 
+    let template_areas = if subgrid_rows && subgrid_columns {
+      inherited_template_areas_for_subgrid(item.row, item.column, parent_template_areas)
+    } else {
+      Vec::new()
+    };
+
     let mut rows_override = None;
     let mut cols_override = None;
     if record_rows && subgrid_rows {
@@ -934,6 +1012,7 @@ fn record_subgrid_overrides<
         SubgridOverride {
           rows: rows_override,
           columns: cols_override,
+          template_areas,
         },
       );
     }
@@ -979,6 +1058,15 @@ where
     apply_subgrid_override(&mut style_storage, override_data);
   }
   let style: &Style<_> = &style_storage;
+  let template_areas_for_children: &[GridTemplateArea<Ident>] =
+    if style.grid_template_areas.is_empty() {
+      subgrid_override
+        .as_ref()
+        .map(|data| data.template_areas.as_slice())
+        .unwrap_or(&[])
+    } else {
+      style.grid_template_areas.as_slice()
+    };
 
   // 1. Compute "available grid space"
   // https://www.w3.org/TR/css-grid-1/#available-grid-space
@@ -1360,7 +1448,7 @@ where
     &items,
     &parent_row_line_names,
     &parent_col_line_names,
-    style.grid_template_areas.as_slice(),
+    template_areas_for_children,
     &rows,
     &columns,
     record_rows,
@@ -1585,7 +1673,7 @@ where
       &items,
       &parent_row_line_names,
       &parent_col_line_names,
-      style.grid_template_areas.as_slice(),
+      template_areas_for_children,
       &rows,
       &columns,
       record_rows,
@@ -1737,7 +1825,7 @@ where
     &items,
     &parent_row_line_names,
     &parent_col_line_names,
-    style.grid_template_areas.as_slice(),
+    template_areas_for_children,
     &rows,
     &columns,
     true,

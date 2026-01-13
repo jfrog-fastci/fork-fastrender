@@ -321,6 +321,102 @@ fn subgrid_area_line_names_resolve_for_absolute_static_position() {
 }
 
 #[test]
+fn nested_subgrids_clamp_area_line_names_at_each_level() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(10.0)),
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(40.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(10.0))];
+  parent_style.grid_template_areas = vec![vec![
+    Some("gutter".into()),
+    Some("info".into()),
+    Some("info".into()),
+    Some("photos".into()),
+  ]];
+  parent_style.width = Some(Length::px(100.0));
+  parent_style.height = Some(Length::px(10.0));
+  synthesize_area_line_names(&mut parent_style);
+
+  let mut middle_style = ComputedStyle::default();
+  middle_style.display = Display::Grid;
+  middle_style.grid_column_subgrid = true;
+  middle_style.grid_row_subgrid = true;
+  // Span parent columns 2-4.
+  middle_style.grid_column_start = 2;
+  middle_style.grid_column_end = 5;
+  middle_style.grid_row_start = 1;
+  middle_style.grid_row_end = 2;
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.display = Display::Grid;
+  inner_style.grid_column_subgrid = true;
+  inner_style.grid_row_subgrid = true;
+  // Within `middle`, span columns 2-3 (which correspond to the parent's columns 3-4).
+  inner_style.grid_column_start = 2;
+  inner_style.grid_column_end = 4;
+  inner_style.grid_row_start = 1;
+  inner_style.grid_row_end = 2;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.height = Some(Length::px(10.0));
+  child_style.grid_column_raw = Some("info-start / info-end".into());
+  child_style.grid_row_start = 1;
+  child_style.grid_row_end = 2;
+
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
+  let middle = BoxNode::new_block(
+    Arc::new(middle_style),
+    FormattingContextType::Grid,
+    vec![inner],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![middle],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let middle_fragment = &fragment.children[0];
+  let inner_fragment = &middle_fragment.children[0];
+  let child_fragment = &inner_fragment.children[0];
+
+  assert_approx(
+    middle_fragment.bounds.x(),
+    10.0,
+    "middle starts after the `gutter` column",
+  );
+  assert_approx(
+    inner_fragment.bounds.x(),
+    20.0,
+    "inner starts after the first inherited track in `middle`",
+  );
+  assert_approx(
+    child_fragment.bounds.x(),
+    0.0,
+    "info-start is clamped to the inner subgrid's start line",
+  );
+  assert_approx(
+    child_fragment.bounds.width(),
+    30.0,
+    "info-start/info-end spans only the overlapping portion of the original area",
+  );
+}
+
+#[test]
 fn subgrid_contributes_to_parent_row_track_sizing() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
