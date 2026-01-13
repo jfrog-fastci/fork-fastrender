@@ -54,11 +54,11 @@ A change counts if it lands at least one of:
 
 | Metric | Target | Current | How to measure |
 |--------|--------|---------|----------------|
-| Resize frame time | <16ms | ? | Profile during resize |
-| Scroll frame time | <16ms | ? | Profile during scroll |
-| Input latency | <50ms | ? | Time from keypress to response |
-| Time to first paint | <100ms | ? | Navigation start to first frame |
-| Idle CPU | ~0% | ? | Profile when not interacting |
+| Resize frame time | <16ms | ? | `ui_perf_smoke` (resize path) or windowed perf log capture |
+| Scroll frame time | <16ms | ? | `ui_perf_smoke` (scroll path) or windowed perf log capture |
+| Input latency | <50ms | ? | `ui_perf_smoke` (input→response latency) |
+| Time to first paint (TTFP) | <100ms | ? | `ui_perf_smoke` / perf log summary |
+| Idle CPU | ~0% | ? | OS profiler while idle (no interactions) |
 
 ### Profiling tools
 
@@ -68,15 +68,23 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 
-# Headless benchmark harness (JSON summary)
+# Headless benchmark harness (`ui_perf_smoke`; JSON summary) for the required UI metrics:
+# - TTFP (time to first paint)
+# - scroll/resize frame time
+# - input latency
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
+
+# Windowed perf-log capture + summary (preferred over recording huge logs)
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh -- \
+  bash scripts/run_limited.sh --as 64G -- \
+  env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- target/browser_perf.jsonl
 
 # Profile with samply (Linux)
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   samply record bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
-
-# Use egui's built-in profiler
-# (Enable in debug builds, check for frame time breakdown)
 ```
 
 ## Priority order
