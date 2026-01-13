@@ -32,6 +32,10 @@ pub struct FrameUploadCoalescer {
   latest_by_tab: LruCache<TabId, FrameReadyUpdate>,
   total_estimated_bytes: u64,
 
+  received_total: u64,
+  dropped_total: u64,
+  drained_total: u64,
+
   push_calls: u64,
   overwritten_frames: u64,
   drained_frames: u64,
@@ -49,6 +53,9 @@ impl FrameUploadCoalescer {
     Self {
       latest_by_tab: LruCache::unbounded(),
       total_estimated_bytes: 0,
+      received_total: 0,
+      dropped_total: 0,
+      drained_total: 0,
       push_calls: 0,
       overwritten_frames: 0,
       drained_frames: 0,
@@ -68,6 +75,23 @@ impl FrameUploadCoalescer {
   /// Total estimated bytes for all pending pixmaps currently stored in this coalescer.
   pub fn total_estimated_bytes(&self) -> u64 {
     self.total_estimated_bytes
+  }
+
+  /// Total number of frames received by this coalescer (number of [`Self::push`] calls).
+  pub fn received_total(&self) -> u64 {
+    self.received_total
+  }
+
+  /// Total number of frames dropped/coalesced because a newer frame arrived for the same tab
+  /// before the older frame could be drained and uploaded.
+  pub fn dropped_total(&self) -> u64 {
+    self.dropped_total
+  }
+
+  /// Total number of frames drained (removed from the coalescer via [`Self::take`] or
+  /// [`Self::drain`]).
+  pub fn drained_total(&self) -> u64 {
+    self.drained_total
   }
 
   pub fn is_empty(&self) -> bool {
@@ -99,11 +123,13 @@ impl FrameUploadCoalescer {
 
   /// Store `frame`, coalescing with any already-pending upload for the same tab.
   pub fn push(&mut self, frame: FrameReadyUpdate) {
+    self.received_total = self.received_total.saturating_add(1);
     self.push_calls = self.push_calls.saturating_add(1);
 
     let bytes = Self::estimated_bytes_for(&frame);
     // Overwrite older pending frames for this tab (dropping the pixmap without uploading).
     if let Some(prev) = self.latest_by_tab.put(frame.tab_id, frame) {
+      self.dropped_total = self.dropped_total.saturating_add(1);
       self.overwritten_frames = self.overwritten_frames.saturating_add(1);
       self.total_estimated_bytes = self
         .total_estimated_bytes
@@ -174,6 +200,7 @@ impl FrameUploadCoalescer {
     self.total_estimated_bytes = self
       .total_estimated_bytes
       .saturating_sub(Self::estimated_bytes_for(&frame));
+    self.drained_total = self.drained_total.saturating_add(1);
     self.drained_frames = self.drained_frames.saturating_add(1);
     Some(frame)
   }
@@ -181,6 +208,7 @@ impl FrameUploadCoalescer {
   /// Drains all pending uploads.
   pub fn drain(&mut self) -> impl Iterator<Item = FrameReadyUpdate> {
     let drained = self.latest_by_tab.len() as u64;
+    self.drained_total = self.drained_total.saturating_add(drained);
     self.drained_frames = self.drained_frames.saturating_add(drained);
     self.total_estimated_bytes = 0;
     // `lru` versions vary in whether `clear()` is implemented on `LruCache`, so drain by replacing.
@@ -372,6 +400,10 @@ mod tests {
     assert_eq!(stats.push_calls, 2);
     assert_eq!(stats.overwritten_frames, 1);
     assert_eq!(stats.pending_tabs, 1);
+
+    assert_eq!(coalescer.received_total(), 2);
+    assert_eq!(coalescer.dropped_total(), 1);
+    assert_eq!(coalescer.drained_total(), 0);
   }
 
   #[test]
@@ -391,5 +423,20 @@ mod tests {
     let stats = coalescer.take_stats();
     assert_eq!(stats.drained_frames, 2);
     assert_eq!(stats.pending_tabs, 0);
+
+    assert_eq!(coalescer.received_total(), 2);
+    assert_eq!(coalescer.dropped_total(), 0);
+    assert_eq!(coalescer.drained_total(), 2);
+  }
+
+  #[test]
+  fn drained_total_counts_take() {
+    let tab = TabId(1);
+    let mut coalescer = FrameUploadCoalescer::new();
+
+    coalescer.push(make_frame(tab, (1, 1), (10, 10), 1.0));
+    assert_eq!(coalescer.drained_total(), 0);
+    let _ = coalescer.take(tab).expect("expected pending frame");
+    assert_eq!(coalescer.drained_total(), 1);
   }
 }

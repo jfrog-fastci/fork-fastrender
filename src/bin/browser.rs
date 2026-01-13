@@ -14106,8 +14106,11 @@ impl App {
     let frame_upload_stats = record_frame_upload_stats(self);
     if self.perf_log_enabled {
       let pending_bytes = self.pending_frame_uploads.total_estimated_bytes();
+      let received_total = self.pending_frame_uploads.received_total();
+      let dropped_total = self.pending_frame_uploads.dropped_total();
+      let drained_total = self.pending_frame_uploads.drained_total();
       eprintln!(
-        "[{ENV_PERF_LOG}] page_upload: tab={tab_id:?} bytes={uploaded_bytes} upload_last_ms={upload_last_ms:.2} upload_total_ms={upload_total_ms:.2} push={} overwrite={} drained={} pending_tabs={} max_pending_tabs={} pending_bytes={pending_bytes}",
+        "[{ENV_PERF_LOG}] page_upload: tab={tab_id:?} bytes={uploaded_bytes} upload_last_ms={upload_last_ms:.2} upload_total_ms={upload_total_ms:.2} push={} overwrite={} drained={} pending_tabs={} max_pending_tabs={} pending_bytes={pending_bytes} received_total={received_total} dropped_total={dropped_total} drained_total={drained_total}",
         frame_upload_stats.push_calls,
         frame_upload_stats.overwritten_frames,
         frame_upload_stats.drained_frames,
@@ -15287,6 +15290,14 @@ impl App {
       frame_stats.drained_frames,
       frame_stats.pending_tabs,
       frame_stats.max_pending_tabs
+    );
+
+    let _ = writeln!(
+      &mut hud.text_buf,
+      "frame_upload_total: received={} dropped={} drained={}",
+      self.pending_frame_uploads.received_total(),
+      self.pending_frame_uploads.dropped_total(),
+      self.pending_frame_uploads.drained_total()
     );
 
     let _ = writeln!(
