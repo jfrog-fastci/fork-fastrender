@@ -599,6 +599,8 @@ fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RegExpFlags {
+  /// The `d` / `hasIndices` flag.
+  pub(crate) has_indices: bool,
   pub(crate) global: bool,
   pub(crate) ignore_case: bool,
   pub(crate) multiline: bool,
@@ -632,6 +634,15 @@ impl RegExpFlags {
         .into());
       }
       match b as u8 {
+        b'd' => {
+          if flags.has_indices {
+            return Err(RegExpSyntaxError {
+              message: "Invalid flags supplied to RegExp constructor",
+            }
+            .into());
+          }
+          flags.has_indices = true;
+        }
         b'g' => {
           if flags.global {
             return Err(RegExpSyntaxError {
@@ -713,6 +724,9 @@ impl RegExpFlags {
       "RegExpFlags cannot contain both `u` and `v`"
     );
     let mut out = String::new();
+    if self.has_indices {
+      out.push('d');
+    }
     if self.global {
       out.push('g');
     }
@@ -743,6 +757,24 @@ impl RegExpFlags {
   #[inline]
   pub(crate) fn has_either_unicode_flag(self) -> bool {
     self.unicode || self.unicode_sets
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::RegExpFlags;
+
+  #[test]
+  fn regexp_flags_parse_accepts_d_and_canonicalizes() {
+    let mut tick = || Ok(());
+    let flags = RegExpFlags::parse(&[b'd' as u16, b'g' as u16, b'i' as u16], &mut tick).unwrap();
+    assert_eq!(flags.to_canonical_string(), "dgi");
+  }
+
+  #[test]
+  fn regexp_flags_parse_rejects_duplicate_d() {
+    let mut tick = || Ok(());
+    assert!(RegExpFlags::parse(&[b'd' as u16, b'd' as u16], &mut tick).is_err());
   }
 }
 
