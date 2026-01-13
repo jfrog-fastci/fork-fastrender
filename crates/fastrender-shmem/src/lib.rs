@@ -1058,6 +1058,45 @@ mod tests {
 
   #[cfg(unix)]
   #[test]
+  fn posix_shm_name_rejects_invalid_ids() {
+    // Empty.
+    assert!(posix_shm_name("").is_err());
+
+    // Too long.
+    let too_long = "a".repeat(MAX_SHMEM_ID_LEN + 1);
+    assert!(posix_shm_name(&too_long).is_err());
+
+    // Invalid charset.
+    assert!(posix_shm_name("has_underscore").is_err());
+    assert!(posix_shm_name("HasUppercase").is_err());
+    assert!(posix_shm_name("has/slash").is_err());
+    assert!(posix_shm_name("has.dot").is_err());
+
+    // Valid.
+    let ok = posix_shm_name("fastrender-shm-deadbeef").expect("valid posix shm name");
+    assert_eq!(ok.to_bytes()[0], b'/');
+    assert_eq!(ok.to_bytes(), b"/fastrender-shm-deadbeef");
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn posix_shm_open_rejects_size_mismatch() {
+    let (_region, handle) =
+      ShmemRegion::create(ShmemBackend::PosixShm, 4096).expect("create posix shm");
+    let ShmemHandle::PosixShm { id, .. } = handle else {
+      panic!("expected posix shm handle");
+    };
+
+    let wrong = ShmemHandle::PosixShm { id, len: 4097 };
+    let err = match ShmemRegion::map(&wrong) {
+      Ok(_) => panic!("expected size mismatch"),
+      Err(err) => err,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+  }
+
+  #[cfg(unix)]
+  #[test]
   fn posix_shm_unlinked_when_creator_drops() {
     let (region, handle) =
       ShmemRegion::create(ShmemBackend::PosixShm, 4096).expect("create posix shm");
