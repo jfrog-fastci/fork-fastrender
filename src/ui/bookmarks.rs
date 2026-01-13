@@ -970,7 +970,7 @@ fn remove_first(items: &mut Vec<BookmarkId>, needle: BookmarkId) -> bool {
 #[cfg(feature = "browser_ui")]
 mod bookmarks_bar_ui {
   use super::{BookmarkId, BookmarkNode, BookmarkStore};
-  use egui::{Color32, Rect, Stroke};
+  use egui::{Rect, Stroke};
 
   #[derive(Debug, Default)]
   pub struct BookmarksBarOutput {
@@ -1097,10 +1097,30 @@ mod bookmarks_bar_ui {
             .map(str::to_string)
             .unwrap_or_else(|| crate::ui::url_display::truncate_url_middle(url, 36));
 
+          let tooltip = if let Some(title) = title {
+            format!("{title}\n{url}")
+          } else {
+            url.to_string()
+          };
+          let a11y_label = if let Some(title) = title {
+            format!("Bookmark: {title} ({url})")
+          } else {
+            format!("Bookmark: {url}")
+          };
+
           let button = egui::Button::new(label)
             .small()
             .sense(egui::Sense::click_and_drag());
-          let response = ui.add(button).on_hover_text(url);
+          let response = ui.add(button).on_hover_text(tooltip.clone());
+          if response.has_focus() && !response.hovered() {
+            // Egui tooltips only show on pointer hover. Mirror the hover tooltip while
+            // keyboard-focused so bookmark buttons remain discoverable for keyboard-only users.
+            egui::show_tooltip_text(ui.ctx(), response.id.with("focus_tooltip"), tooltip);
+          }
+          response.widget_info({
+            let a11y_label = a11y_label.clone();
+            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+          });
           item_rects.push((id, response.rect));
 
           let open_new_tab =
@@ -1184,10 +1204,11 @@ mod bookmarks_bar_ui {
 
       // Highlight the dragged item (if visible).
       if let Some((_, rect)) = item_rects.iter().find(|(id, _)| *id == dragging_id) {
+        let highlight = ui.visuals().selection.stroke;
         ui.painter().rect_stroke(
           rect.expand(1.0),
           egui::Rounding::same(6.0),
-          Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
+          Stroke::new(highlight.width, highlight.color),
         );
       }
     }
