@@ -724,3 +724,94 @@ fn compiled_dynamic_import_roots_specifier_across_options_eval_under_gc_stress()
   hooks.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn compiled_dynamic_import_evaluates_options_even_when_specifier_to_string_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      var log = "";
+      function o() { log = log + "o"; return undefined; }
+      // `ToString(Symbol(..))` throws a TypeError, but the options expression must still be evaluated.
+      var p = import(Symbol('x'), o());
+    "#,
+  )?;
+
+  let mut hooks = TestHostHooks::new();
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  // Ensure the options expression was evaluated.
+  let log_val = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("log")?);
+    scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?
+  };
+  let Value::String(log_s) = log_val else {
+    return Err(VmError::InvariantViolation(
+      "expected global `log` to be a string",
+    ));
+  };
+  assert_eq!(rt.heap.get_string(log_s)?.to_utf8_lossy(), "o");
+
+  // Promise should be rejected with TypeError and no host load should be requested.
+  let promise_obj = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let promise_value = scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?;
+    let Value::Object(obj) = promise_value else {
+      panic!("import() should assign a Promise object to global `p`");
+    };
+    obj
+  };
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  assert_eq!(
+    hooks.pending_count(),
+    0,
+    "host loader should not be invoked"
+  );
+
+  let reason = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  let Value::Object(err_obj) = reason else {
+    panic!("promise rejection reason should be an object");
+  };
+
+  let mut scope = rt.heap.scope();
+  let name_key = PropertyKey::from_string(scope.alloc_string("name")?);
+  let Some(desc) = scope.heap().object_get_own_property(err_obj, &name_key)? else {
+    panic!("TypeError should have a 'name' property");
+  };
+  let PropertyKind::Data { value, .. } = desc.kind else {
+    panic!("TypeError.name should be a data property");
+  };
+  let Value::String(name) = value else {
+    panic!("TypeError.name should be a string");
+  };
+  assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "TypeError");
+
+  drop(scope);
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
