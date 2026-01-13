@@ -620,6 +620,100 @@ fn p1_document_write_inserts_into_the_token_stream_during_parsing_and_supports_n
 }
 
 #[test]
+fn p1_document_write_limit_per_call_bytes_exceeded_throws_rangeerror_and_parsing_continues() -> Result<()> {
+  let js_options = JsExecutionOptions {
+    max_document_write_bytes_per_call: 4,
+    ..JsExecutionOptions::default()
+  };
+  let mut h = Harness::new(
+    "https://example.invalid/p1_document_write_limit_per_call.html",
+    js_options,
+  )?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        document.write('12345');
+      </script>
+      <script>
+        console.log("after");
+        let found = false;
+        for (const n of document.body.childNodes) {
+          if (n.nodeType === 3 && n.nodeValue === "12345") found = true;
+        }
+        console.log("wrote:" + found);
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["after".to_string(), "wrote:false".to_string()]
+  );
+  let exc = js_exception_messages(&h.tab).join("\n");
+  assert!(
+    exc.contains("document.write exceeded max bytes per call"),
+    "expected JS exception mentioning document.write per-call byte limit, got: {exc:?}"
+  );
+  Ok(())
+}
+
+#[test]
+fn p1_document_write_limit_max_calls_exceeded_throws_rangeerror_and_is_deterministic() -> Result<()> {
+  let js_options = JsExecutionOptions {
+    max_document_write_calls: 1,
+    ..JsExecutionOptions::default()
+  };
+  let mut h = Harness::new(
+    "https://example.invalid/p1_document_write_limit_max_calls.html",
+    js_options,
+  )?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        document.write('<div id="a"></div>');
+        document.write('<div id="b"></div>');
+      </script>
+      <script>
+        console.log("after");
+        console.log("a:" + (document.getElementById("a") !== null));
+        console.log("b:" + (document.getElementById("b") !== null));
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "after".to_string(),
+      "a:true".to_string(),
+      "b:false".to_string()
+    ]
+  );
+  let exc = js_exception_messages(&h.tab).join("\n");
+  assert!(
+    exc.contains("document.write exceeded max call count"),
+    "expected JS exception mentioning document.write call count limit, got: {exc:?}"
+  );
+  assert!(
+    h.tab.dom().get_element_by_id("a").is_some(),
+    "expected first document.write call to insert element a"
+  );
+  assert!(
+    h.tab.dom().get_element_by_id("b").is_none(),
+    "expected second document.write call to be a no-op after exceeding call limit"
+  );
+  Ok(())
+}
+
+#[test]
 fn p1_document_write_is_noop_after_parsing_completes() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p1_document_write_late.html", js_options)?;
