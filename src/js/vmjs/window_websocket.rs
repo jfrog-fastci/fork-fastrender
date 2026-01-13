@@ -1839,10 +1839,14 @@ pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 
     thread: None,
   };
   {
+    // IPC-backed WebSocket mode does not use the in-process network backend, but the shared
+    // `WindowWebSocketEnv` structure still expects a `ResourceFetcher`. Use a best-effort default
+    // fetcher to satisfy the type; the fetcher is unused while `ipc` is active.
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(crate::resource::HttpFetcher::new());
     let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.insert(
       env_id,
-      EnvState::new_ipc(WindowWebSocketEnv::for_document(document_url), ipc_state),
+      EnvState::new_ipc(WindowWebSocketEnv::for_document(fetcher, document_url), ipc_state),
     );
   }
 
