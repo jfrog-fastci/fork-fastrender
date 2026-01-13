@@ -309,7 +309,11 @@ impl DriftResampler {
       for ch in 0..channels {
         let a = self.frame0[ch];
         let b = self.frame1[ch];
-        out[out_idx + ch] = a + (b - a) * frac;
+        // Even if input frames are sanitized, interpolation can still produce non-normal outputs
+        // (e.g. when blending between 0 and a very small normal). Flush those to zero so we never
+        // emit denormals/NaNs/Infs into downstream mixing/conversion code paths.
+        let sample = a + (b - a) * frac;
+        out[out_idx + ch] = if sample.is_normal() { sample } else { 0.0 };
       }
       out_idx += channels;
 
