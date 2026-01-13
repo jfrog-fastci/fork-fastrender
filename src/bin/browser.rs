@@ -177,10 +177,14 @@ use arboard::Clipboard;
 use clap::Parser;
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum UserEvent {
   WorkerWake(winit::window::WindowId),
   RequestNewWindow(winit::window::WindowId),
+  RequestNewWindowWithSession {
+    from_id: winit::window::WindowId,
+    window: fastrender::ui::BrowserSessionWindow,
+  },
 }
 
 #[cfg(feature = "browser_ui")]
@@ -1481,6 +1485,106 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           show_menu_bar: inherit_show_menu_bar.unwrap_or(!cfg!(target_os = "macos")),
           window_state: None,
         });
+
+        let window_id = app.window.id();
+        let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+        let bridge_join = match std::thread::Builder::new()
+          .name(format!("browser_worker_bridge_{window_id:?}"))
+          .spawn({
+            let event_loop_proxy = event_loop_proxy.clone();
+            move || {
+              while let Ok(msg) = worker_to_ui_rx.recv() {
+                if ui_tx.send(msg).is_err() {
+                  break;
+                }
+                let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+              }
+            }
+          }) {
+          Ok(join) => join,
+          Err(err) => {
+            eprintln!("failed to spawn new window bridge thread: {err}");
+            return;
+          }
+        };
+
+        app.window.request_redraw();
+        windows.insert(
+          window_id,
+          BrowserWindow {
+            app,
+            ui_rx,
+            bridge_join: Some(bridge_join),
+          },
+        );
+        window_order.push(window_id);
+        active_window_id = Some(window_id);
+        request_autosave(&windows, &window_order, active_window_id);
+      }
+      Event::UserEvent(UserEvent::RequestNewWindowWithSession { from_id, window: session_window }) => {
+        let inherit_size = windows.get(&from_id).map(|win| win.app.window.inner_size());
+        let inherit_pos = windows.get(&from_id).and_then(|win| {
+          win
+            .app
+            .window
+            .outer_position()
+            .ok()
+            .map(|pos| PhysicalPosition::new(pos.x.saturating_add(32), pos.y.saturating_add(32)))
+        });
+        let window_state = session_window.window_state.clone();
+
+        let window = match build_window(event_loop_target, window_state, inherit_size, inherit_pos) {
+          Ok(window) => window,
+          Err(err) => {
+            eprintln!("failed to create new window: {err}");
+            return;
+          }
+        };
+
+        let worker_name = format!("fastr-browser-ui-worker-{next_window_index}");
+        next_window_index = next_window_index.saturating_add(1);
+
+        let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
+          match fastrender::ui::spawn_browser_ui_worker(&worker_name) {
+            Ok(v) => v,
+            Err(err) => {
+              eprintln!("failed to spawn browser worker for new window: {err}");
+              return;
+            }
+          };
+
+        if let Err(err) = ui_to_worker_tx.send(fastrender::ui::UiToWorker::SetDownloadDirectory {
+          path: download_dir.clone(),
+        }) {
+          eprintln!("failed to send download dir to new window worker: {err}");
+        }
+
+        let mut app = match App::new(
+          window,
+          event_loop_target,
+          event_loop_proxy.clone(),
+          ui_to_worker_tx,
+          worker_join,
+          &gpu,
+          appearance_env,
+          applied_appearance,
+          theme_accent,
+          bookmarks_path.clone(),
+          history_path.clone(),
+          global_bookmarks.clone(),
+          global_history.clone(),
+        ) {
+          Ok(app) => app,
+          Err(err) => {
+            eprintln!("failed to create new window app: {err}");
+            return;
+          }
+        };
+        app.profile_autosave_tx = profile_autosave_tx.clone();
+        app.home_url = home_url.clone();
+        app.browser_state.appearance = startup_appearance;
+
+        app.startup(session_window);
 
         let window_id = app.window.id();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
@@ -7902,6 +8006,152 @@ impl App {
             // `chrome_ui` has already been built for this frame; request another redraw so the tab
             // strip reflects the new ordering immediately.
             self.window.request_redraw();
+          }
+        }
+        ChromeAction::DetachTab(tab_id) => {
+          if self.browser_state.tab(tab_id).is_none() {
+            continue;
+          }
+
+          // If this is the last tab in the window, create a replacement tab first so we preserve
+          // the invariant that each window always has at least one tab.
+          if self.browser_state.tabs.len() <= 1 {
+            session_dirty = true;
+            let replacement_id = fastrender::ui::TabId::new();
+            let initial_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
+            let mut tab_state =
+              fastrender::ui::BrowserTabState::new(replacement_id, initial_url.clone());
+            tab_state.loading = true;
+            let cancel = tab_state.cancel.clone();
+            self.tab_cancel.insert(replacement_id, cancel.clone());
+            self.browser_state.push_tab(tab_state, true);
+            self.browser_state.chrome.address_bar_text = initial_url.clone();
+
+            self.viewport_cache_tab = None;
+            self.pointer_captured = false;
+            self.captured_button = fastrender::ui::PointerButton::None;
+            self.cursor_in_page = false;
+            self.hover_sync_pending = true;
+            self.pending_pointer_move = None;
+
+            self.send_worker_msg(UiToWorker::CreateTab {
+              tab_id: replacement_id,
+              initial_url: Some(initial_url),
+              cancel,
+            });
+            self.send_worker_msg(UiToWorker::SetActiveTab {
+              tab_id: replacement_id,
+            });
+            self.send_worker_msg(UiToWorker::RequestRepaint {
+              tab_id: replacement_id,
+              reason: RepaintReason::Explicit,
+            });
+          }
+
+          // Capture the detached tab's serializable state before we mutate the window.
+          let (url, zoom, scroll_css) = {
+            let tab = self
+              .browser_state
+              .tab(tab_id)
+              .expect("tab exists (checked above)");
+            let url = tab
+              .committed_url
+              .as_ref()
+              .or(tab.current_url.as_ref())
+              .cloned()
+              .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
+            let zoom = tab.zoom;
+            let scroll_css = {
+              let viewport = tab.scroll_state.viewport;
+              let x = viewport.x;
+              let y = viewport.y;
+              if !x.is_finite() || !y.is_finite() {
+                None
+              } else {
+                let x = x.max(0.0);
+                let y = y.max(0.0);
+                ((x, y) != (0.0, 0.0)).then_some((x, y))
+              }
+            };
+            (url, zoom, scroll_css)
+          };
+
+          // Spawn the new window on the winit event loop thread.
+          let session_window = fastrender::ui::BrowserSessionWindow {
+            tabs: vec![fastrender::ui::BrowserSessionTab {
+              url,
+              zoom: Some(zoom),
+              scroll_css,
+            }],
+            active_tab_index: 0,
+            window_state: None,
+          };
+          let _ = self
+            .event_loop_proxy
+            .send_event(UserEvent::RequestNewWindowWithSession {
+              from_id: self.window.id(),
+              window: session_window,
+            });
+
+          // Close the tab in the source window.
+          session_dirty = true;
+          self.pending_frame_uploads.remove_tab(tab_id);
+          if let Some(tex) = self.tab_textures.remove(&tab_id) {
+            tex.destroy(&mut self.egui_renderer);
+          }
+          if let Some(tex) = self.tab_favicons.remove(&tab_id) {
+            tex.destroy(&mut self.egui_renderer);
+          }
+
+          let was_active = self.browser_state.active_tab_id() == Some(tab_id);
+          if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
+            cancel.bump_nav();
+          }
+          self.send_worker_msg(UiToWorker::CloseTab { tab_id });
+
+          let close_result = self.browser_state.remove_tab(tab_id);
+
+          if was_active {
+            self.viewport_cache_tab = None;
+            self.pointer_captured = false;
+            self.captured_button = fastrender::ui::PointerButton::None;
+            self.cursor_in_page = false;
+            self.pending_pointer_move = None;
+          }
+
+          if let Some(created_tab) = close_result.created_tab {
+            let initial_url = "about:newtab".to_string();
+            let cancel = self
+              .browser_state
+              .tab(created_tab)
+              .map(|t| t.cancel.clone())
+              .unwrap_or_else(fastrender::ui::cancel::CancelGens::new);
+            self.tab_cancel.insert(created_tab, cancel.clone());
+            self.send_worker_msg(UiToWorker::CreateTab {
+              tab_id: created_tab,
+              initial_url: Some(initial_url),
+              cancel,
+            });
+            self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: created_tab });
+            self.viewport_cache_tab = None;
+            self.hover_sync_pending = true;
+            self.pending_pointer_move = None;
+            self.send_worker_msg(UiToWorker::RequestRepaint {
+              tab_id: created_tab,
+              reason: RepaintReason::Explicit,
+            });
+
+            self.focus_address_bar_select_all();
+            self.window.request_redraw();
+          } else if let Some(new_active) = close_result.new_active {
+            self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
+            self.viewport_cache_tab = None;
+            self.hover_sync_pending = true;
+            self.pending_pointer_move = None;
+            self.send_worker_msg(UiToWorker::RequestRepaint {
+              tab_id: new_active,
+              reason: RepaintReason::Explicit,
+            });
           }
         }
         ChromeAction::CloseTab(tab_id) => {

@@ -33,6 +33,10 @@ const DRAG_PREVIEW_SCALE: f32 = 1.02;
 const DRAG_GAP_PULSE_EXTRA_ALPHA: f32 = 0.22;
 const DRAG_GAP_BASE_ALPHA: f32 = 0.10;
 
+// Minimum distance (in egui points) the cursor must travel outside the tab strip before we treat a
+// drag as a "detach into new window" gesture.
+const TAB_DETACH_DRAG_THRESHOLD: f32 = 40.0;
+
 const TAB_STRIP_SCROLL_CLAMP_DURATION: f32 = 0.16;
 
 #[derive(Debug, Clone, Copy)]
@@ -2561,6 +2565,37 @@ pub(super) fn tab_strip_ui(
         // Apply the reorder immediately while dragging (standard browser behaviour).
         app.drag_reorder_tab(dragging_tab_id, target_index);
       }
+    }
+  }
+
+  // Drag-to-detach: dragging far enough away from the tab strip (or releasing outside the strip)
+  // should detach the tab into a new window.
+  if let Some(dragging_tab_id) = app.chrome.dragging_tab_id {
+    let detach_on_drag = ui.input(|i| {
+      i.pointer
+        .interact_pos()
+        .is_some_and(|pos| !strip_rect.expand(TAB_DETACH_DRAG_THRESHOLD).contains(pos))
+    });
+
+    let release_pos = ui.input(|i| {
+      i.events.iter().find_map(|event| match event {
+        egui::Event::PointerButton {
+          pos,
+          button: egui::PointerButton::Primary,
+          pressed: false,
+          ..
+        } => Some(*pos),
+        _ => None,
+      })
+    });
+    let detach_on_release = release_pos.is_some_and(|pos| !strip_rect.contains(pos));
+
+    if detach_on_drag || detach_on_release {
+      actions.push(ChromeAction::DetachTab(dragging_tab_id));
+      app.chrome.clear_tab_drag();
+    } else if release_pos.is_some() {
+      // Regular drop inside the strip: clear transient drag state.
+      app.chrome.clear_tab_drag();
     }
   }
 

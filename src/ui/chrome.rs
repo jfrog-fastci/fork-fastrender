@@ -63,6 +63,8 @@ pub enum ChromeAction {
   CloseFindInPage(TabId),
   NewTab,
   CloseTab(TabId),
+  /// Detach a tab into a new top-level browser window.
+  DetachTab(TabId),
   ReloadTab(TabId),
   DuplicateTab(TabId),
   CloseOtherTabs(TabId),
@@ -1087,23 +1089,6 @@ pub fn chrome_ui_with_bookmarks(
   }
   if forward {
     actions.push(ChromeAction::Forward);
-  }
-  // Clear transient tab-drag state on mouse release.
-  if app.chrome.dragging_tab_id.is_some()
-    && ctx.input(|i| {
-      i.events.iter().any(|event| {
-        matches!(
-          event,
-          egui::Event::PointerButton {
-            pressed: false,
-            button: egui::PointerButton::Primary,
-            ..
-          }
-        )
-      })
-    })
-  {
-    app.chrome.clear_tab_drag();
   }
 
   tab_search_overlay_ui(ctx, app, &mut actions, &mut favicon_for_tab);
@@ -5478,7 +5463,11 @@ mod tests {
       egui::vec2(800.0, 600.0),
       vec![egui::Event::PointerMoved(drag_pos)],
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    assert!(
+      !actions.iter().any(|action| matches!(action, ChromeAction::DetachTab(_))),
+      "expected reorder drag not to detach, got {actions:?}"
+    );
     let _ = ctx.end_frame();
 
     // Frame 3: release.
@@ -5495,7 +5484,11 @@ mod tests {
         },
       ],
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    assert!(
+      !actions.iter().any(|action| matches!(action, ChromeAction::DetachTab(_))),
+      "expected drop inside strip not to detach, got {actions:?}"
+    );
     let _ = ctx.end_frame();
 
     assert_eq!(
@@ -5581,6 +5574,71 @@ mod tests {
         .any(|a| matches!(a, ChromeAction::NavigateTo(url) if url == "https://example.com")),
       "expected ChromeAction::NavigateTo(\"https://example.com\"), got {actions:?}"
     );
+  }
+
+  #[test]
+  fn dragging_tab_outside_strip_emits_detach_tab_action() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: read the tab strip layout so we can target a specific tab rect.
+    begin_frame_with_screen_size(&ctx, egui::vec2(800.0, 600.0), Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let (strip_rect, tab_rects) =
+      super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let _ = ctx.end_frame();
+
+    let press_pos = tab_rects.first().expect("expected first tab rect").center();
+    let drag_start_pos = egui::pos2(press_pos.x + 80.0, press_pos.y);
+    let drag_pos = egui::pos2(strip_rect.center().x, strip_rect.top() - 200.0);
+
+    // Frame 1: press on the first tab.
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![
+        egui::Event::PointerMoved(press_pos),
+        egui::Event::PointerButton {
+          pos: press_pos,
+          button: egui::PointerButton::Primary,
+          pressed: true,
+          modifiers: egui::Modifiers::default(),
+        },
+      ],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: start a drag inside the strip so egui enters drag mode.
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![egui::Event::PointerMoved(drag_start_pos)],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 3: drag outside the tab strip.
+    begin_frame_with_screen_size(
+      &ctx,
+      egui::vec2(800.0, 600.0),
+      vec![egui::Event::PointerMoved(drag_pos)],
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, &ChromeAction::DetachTab(id) if id == tab_a)),
+      "expected drag-out to emit DetachTab({tab_a:?}), got {actions:?}"
+    );
+    assert!(app.chrome.dragging_tab_id.is_none());
   }
 
   #[test]
