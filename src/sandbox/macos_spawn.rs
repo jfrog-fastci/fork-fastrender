@@ -50,6 +50,8 @@ use std::sync::OnceLock;
 use std::{fs, io};
 
 #[cfg(target_os = "macos")]
+use crate::sandbox::config;
+#[cfg(target_os = "macos")]
 use crate::sandbox::macos::{ENV_DISABLE_RENDERER_SANDBOX, ENV_MACOS_RENDERER_SANDBOX};
 
 #[cfg(target_os = "macos")]
@@ -80,6 +82,16 @@ fn parse_env_bool(raw: Option<&str>) -> bool {
 fn renderer_sandbox_disabled_via_env() -> bool {
   if parse_env_bool(std::env::var(ENV_DISABLE_RENDERER_SANDBOX).ok().as_deref()) {
     return true;
+  }
+
+  // New multiprocess renderer sandbox knob. Keep the `sandbox-exec` helpers in sync so
+  // `FASTR_RENDERER_SANDBOX=off` disables sandboxing regardless of whether the renderer applies the
+  // sandbox in-process (`sandbox_init`) or is launched already sandboxed (`sandbox-exec`).
+  if let Ok(raw) = std::env::var(config::ENV_RENDERER_SANDBOX) {
+    let raw = raw.trim();
+    if !raw.is_empty() && matches!(raw.to_ascii_lowercase().as_str(), "0" | "off") {
+      return true;
+    }
   }
 
   let Ok(raw) = std::env::var(ENV_MACOS_RENDERER_SANDBOX) else {
@@ -462,6 +474,28 @@ mod tests {
     match prev {
       Some(value) => std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, value),
       None => std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX),
+    }
+  }
+
+  #[test]
+  fn wrap_command_is_noop_when_renderer_sandbox_off_via_fastr_renderer_sandbox() {
+    let _guard = env_lock().lock().unwrap();
+    let prev = std::env::var_os(crate::sandbox::config::ENV_RENDERER_SANDBOX);
+    std::env::set_var(crate::sandbox::config::ENV_RENDERER_SANDBOX, "off");
+
+    let mut cmd = Command::new("/usr/bin/true");
+    cmd.arg("--hello");
+
+    // Even though the SBPL is invalid, the escape hatch should bypass rewriting entirely.
+    wrap_command_with_sandbox_exec(&mut cmd, "").expect("wrap should be a no-op when disabled");
+
+    assert_eq!(cmd.get_program(), OsStr::new("/usr/bin/true"));
+    let args: Vec<_> = cmd.get_args().collect();
+    assert_eq!(args, vec![OsStr::new("--hello")]);
+
+    match prev {
+      Some(value) => std::env::set_var(crate::sandbox::config::ENV_RENDERER_SANDBOX, value),
+      None => std::env::remove_var(crate::sandbox::config::ENV_RENDERER_SANDBOX),
     }
   }
 
