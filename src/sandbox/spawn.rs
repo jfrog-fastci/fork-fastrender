@@ -150,12 +150,12 @@ fn apply_linux_env_overrides(
   let defaults = env_sandbox::RendererSandboxConfig {
     enabled: true,
     seccomp: !matches!(
-      config.seccomp,
-      crate::sandbox::RendererSeccompPolicy::Disabled
+      (config.enable_seccomp, config.seccomp),
+      (false, _) | (_, crate::sandbox::RendererSeccompPolicy::Disabled)
     ),
     landlock: !matches!(
-      config.landlock,
-      crate::sandbox::RendererLandlockPolicy::Disabled
+      (config.enable_landlock, config.landlock),
+      (false, _) | (_, crate::sandbox::RendererLandlockPolicy::Disabled)
     ),
     // Not currently applied here; `std::process::Command` uses internal exec-error pipes that make
     // "close all fds except stdio" from `pre_exec` tricky. (A post-exec close_fds layer can be
@@ -176,9 +176,19 @@ fn apply_linux_env_overrides(
     return Ok(None);
   }
 
-  let mut config = config;
+  // `enable_*` fields are hard toggles: callers can use them to ensure a given layer never runs,
+  // even if an environment override would otherwise enable it.
+  //
+  // Environment overrides are still allowed to *disable* enabled-by-config layers for local
+  // debugging.
+  let allow_seccomp = config.enable_seccomp;
+  let allow_landlock = config.enable_landlock;
 
-  config.seccomp = if env_cfg.seccomp {
+  let mut config = config;
+  let seccomp_enabled = allow_seccomp && env_cfg.seccomp;
+  let landlock_enabled = allow_landlock && env_cfg.landlock;
+
+  config.seccomp = if seccomp_enabled {
     match config.seccomp {
       crate::sandbox::RendererSeccompPolicy::Disabled => {
         crate::sandbox::RendererSeccompPolicy::RendererDefault
@@ -189,7 +199,7 @@ fn apply_linux_env_overrides(
     crate::sandbox::RendererSeccompPolicy::Disabled
   };
 
-  config.landlock = if env_cfg.landlock {
+  config.landlock = if landlock_enabled {
     match config.landlock {
       crate::sandbox::RendererLandlockPolicy::Disabled => {
         crate::sandbox::RendererLandlockPolicy::RestrictWrites
@@ -199,6 +209,11 @@ fn apply_linux_env_overrides(
   } else {
     crate::sandbox::RendererLandlockPolicy::Disabled
   };
+
+  // Keep the master `enable_*` toggles consistent with the derived policy, while preserving hard
+  // disables from the original config (`allow_*`).
+  config.enable_seccomp = seccomp_enabled;
+  config.enable_landlock = landlock_enabled;
 
   Ok(Some(config))
 }
