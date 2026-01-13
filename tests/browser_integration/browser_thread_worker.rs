@@ -4,7 +4,7 @@ use super::support::{
   self, create_tab_msg, navigate_msg, scroll_at_pointer, scroll_viewport, viewport_changed_msg,
 };
 use super::worker_harness::{
-  assert_event_subsequence, WorkerEventKind, WorkerHarness, WorkerToUiEvent,
+  assert_event_subsequence, format_events, WorkerEventKind, WorkerHarness, WorkerToUiEvent,
 };
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker};
 use std::path::Path;
@@ -291,9 +291,26 @@ fn navigation_unsupported_scheme_rejects_with_failed() {
     NavigationReason::TypedUrl,
   ));
 
-  let events = h.wait_for_event(std::time::Duration::from_secs(5), |ev| {
-    matches!(ev, WorkerToUiEvent::NavigationFailed { .. })
-  });
+  let deadline = Instant::now() + Duration::from_secs(5);
+  let mut events = Vec::new();
+  loop {
+    let now = Instant::now();
+    if now >= deadline {
+      panic!(
+        "timed out waiting for NavigationFailed; received:\n{}",
+        format_events(&events)
+      );
+    }
+    let remaining = deadline.saturating_duration_since(now);
+    let ev = h
+      .recv_event(remaining)
+      .unwrap_or_else(|err| panic!("waiting for NavigationFailed: {err}"));
+    let done = matches!(ev, WorkerToUiEvent::NavigationFailed { .. });
+    events.push(ev);
+    if done {
+      break;
+    }
+  }
   assert!(
     events.iter().any(|ev| matches!(
       ev,

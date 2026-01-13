@@ -8,6 +8,8 @@ use fastrender::ui::messages::{
   UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
+use std::collections::VecDeque;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
@@ -17,6 +19,73 @@ use std::time::{Duration, Instant};
 // runtime performs real parsing/layout/paint work. Use a generous timeout to avoid flakes under CPU
 // contention.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_BUFFERED_EVENTS: usize = 200;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HarnessErrorKind {
+  Timeout,
+  Disconnected,
+}
+
+pub struct HarnessError {
+  pub kind: HarnessErrorKind,
+  pub timeout: Duration,
+  pub buffered: Vec<WorkerToUiEvent>,
+}
+
+impl HarnessError {
+  fn timeout(timeout: Duration, buffered: Vec<WorkerToUiEvent>) -> Self {
+    Self {
+      kind: HarnessErrorKind::Timeout,
+      timeout,
+      buffered,
+    }
+  }
+
+  fn disconnected(timeout: Duration, buffered: Vec<WorkerToUiEvent>) -> Self {
+    Self {
+      kind: HarnessErrorKind::Disconnected,
+      timeout,
+      buffered,
+    }
+  }
+
+  pub fn formatted_buffer(&self) -> String {
+    format_events(&self.buffered)
+  }
+}
+
+impl fmt::Debug for HarnessError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("HarnessError")
+      .field("kind", &self.kind)
+      .field("timeout", &self.timeout)
+      .field("buffered", &self.formatted_buffer())
+      .finish()
+  }
+}
+
+impl fmt::Display for HarnessError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self.kind {
+      HarnessErrorKind::Timeout => {
+        write!(
+          f,
+          "timed out waiting for worker event after {:?}; buffered events:\n{}",
+          self.timeout,
+          self.formatted_buffer()
+        )
+      }
+      HarnessErrorKind::Disconnected => write!(
+        f,
+        "worker channel disconnected while waiting for event; buffered events:\n{}",
+        self.formatted_buffer()
+      ),
+    }
+  }
+}
+
+impl std::error::Error for HarnessError {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerToUiEvent {
@@ -31,6 +100,7 @@ pub enum WorkerToUiEvent {
   },
   FrameReady {
     tab_id: TabId,
+    pixmap_px: (u32, u32),
     viewport_css: (u32, u32),
     dpr: f32,
     scroll_state: ScrollState,
@@ -227,6 +297,7 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::FrameReady { tab_id, frame } => {
       let event = WorkerToUiEvent::FrameReady {
         tab_id,
+        pixmap_px: (frame.pixmap.width(), frame.pixmap.height()),
         viewport_css: frame.viewport_css,
         dpr: frame.dpr,
         scroll_state: frame.scroll_state.clone(),
@@ -426,6 +497,236 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
   }
 }
 
+pub fn format_events(events: &[WorkerToUiEvent]) -> String {
+  use std::fmt::Write;
+
+  if events.is_empty() {
+    return "<no events>".to_string();
+  }
+
+  let mut out = String::new();
+  for (idx, ev) in events.iter().enumerate() {
+    let _ = write!(&mut out, "{idx}: ");
+    match ev {
+      WorkerToUiEvent::Stage { tab_id, stage } => {
+        let _ = writeln!(&mut out, "Stage(tab={}, stage={stage:?})", tab_id.0);
+      }
+      WorkerToUiEvent::Favicon {
+        tab_id,
+        width,
+        height,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "Favicon(tab={}, size={}x{})",
+          tab_id.0, width, height
+        );
+      }
+      WorkerToUiEvent::FrameReady {
+        tab_id,
+        pixmap_px,
+        viewport_css,
+        dpr,
+        ..
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "FrameReady(tab={}, pixmap={}x{}, viewport_css={viewport_css:?}, dpr={dpr})",
+          tab_id.0, pixmap_px.0, pixmap_px.1
+        );
+      }
+      WorkerToUiEvent::OpenSelectDropdown {
+        tab_id,
+        select_node_id,
+        ..
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "OpenSelectDropdown(tab={}, select_node_id={select_node_id})",
+          tab_id.0
+        );
+      }
+      WorkerToUiEvent::RequestOpenInNewTab { tab_id, url } => {
+        let _ = writeln!(&mut out, "RequestOpenInNewTab(tab={}, url={url})", tab_id.0);
+      }
+      WorkerToUiEvent::RequestOpenInNewTabRequest { tab_id, request } => {
+        let _ = writeln!(
+          &mut out,
+          "RequestOpenInNewTabRequest(tab={}, request={request:?})",
+          tab_id.0
+        );
+      }
+      WorkerToUiEvent::NavigationStarted { tab_id, url } => {
+        let _ = writeln!(&mut out, "NavigationStarted(tab={}, url={url})", tab_id.0);
+      }
+      WorkerToUiEvent::NavigationCommitted {
+        tab_id,
+        url,
+        can_go_back,
+        can_go_forward,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "NavigationCommitted(tab={}, url={url}, back={can_go_back}, forward={can_go_forward})",
+          tab_id.0
+        );
+      }
+      WorkerToUiEvent::NavigationFailed { tab_id, url, error } => {
+        let _ = writeln!(
+          &mut out,
+          "NavigationFailed(tab={}, url={url}, error={error})",
+          tab_id.0
+        );
+      }
+      WorkerToUiEvent::ScrollStateUpdated { tab_id, scroll } => {
+        let _ = writeln!(
+          &mut out,
+          "ScrollStateUpdated(tab={}, viewport={:?})",
+          tab_id.0,
+          scroll.viewport
+        );
+      }
+      WorkerToUiEvent::LoadingState { tab_id, loading } => {
+        let _ = writeln!(
+          &mut out,
+          "LoadingState(tab={}, loading={loading})",
+          tab_id.0
+        );
+      }
+      WorkerToUiEvent::Warning { tab_id, text } => {
+        let _ = writeln!(&mut out, "Warning(tab={}, text={text})", tab_id.0);
+      }
+      WorkerToUiEvent::SetClipboardText { tab_id, text } => {
+        let _ = writeln!(
+          &mut out,
+          "SetClipboardText(tab={}, text={text:?})",
+          tab_id.0
+        );
+      }
+      WorkerToUiEvent::DebugLog { tab_id, line } => {
+        let line = line.trim_end();
+        let _ = writeln!(&mut out, "DebugLog(tab={}, line={line})", tab_id.0);
+      }
+      WorkerToUiEvent::SelectDropdownClosed { tab_id } => {
+        let _ = writeln!(&mut out, "SelectDropdownClosed(tab={})", tab_id.0);
+      }
+      WorkerToUiEvent::DateTimePickerOpened {
+        tab_id,
+        input_node_id,
+        kind,
+        value,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "DateTimePickerOpened(tab={}, input_node_id={}, kind={kind:?}, value={value:?})",
+          tab_id.0, input_node_id
+        );
+      }
+      WorkerToUiEvent::DateTimePickerClosed { tab_id } => {
+        let _ = writeln!(&mut out, "DateTimePickerClosed(tab={})", tab_id.0);
+      }
+      WorkerToUiEvent::FilePickerOpened {
+        tab_id,
+        input_node_id,
+        multiple,
+        accept,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "FilePickerOpened(tab={}, input_node_id={}, multiple={}, accept={accept:?})",
+          tab_id.0, input_node_id, multiple
+        );
+      }
+      WorkerToUiEvent::FilePickerClosed { tab_id } => {
+        let _ = writeln!(&mut out, "FilePickerClosed(tab={})", tab_id.0);
+      }
+      WorkerToUiEvent::ContextMenu {
+        tab_id,
+        pos_css,
+        link_url,
+        image_url,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "ContextMenu(tab={}, pos_css={pos_css:?}, link_url={link_url:?}, image_url={image_url:?})",
+          tab_id.0
+        );
+      }
+      WorkerToUiEvent::HoverChanged {
+        tab_id,
+        hovered_url,
+        cursor,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "HoverChanged(tab={}, cursor={cursor:?}, hovered_url={:?})",
+          tab_id.0,
+          hovered_url.as_deref()
+        );
+      }
+      WorkerToUiEvent::FindResult {
+        tab_id,
+        query,
+        case_sensitive,
+        match_count,
+        active_match_index,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "FindResult(tab={}, query={query:?}, case_sensitive={case_sensitive}, match_count={match_count}, active={active_match_index:?})",
+          tab_id.0
+        );
+      }
+      WorkerToUiEvent::DownloadStarted {
+        tab_id,
+        download_id,
+        url,
+        file_name,
+        path,
+        total_bytes,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "DownloadStarted(tab={}, id={}, url={url}, file_name={file_name:?}, path={}, total={total_bytes:?})",
+          tab_id.0,
+          download_id.0,
+          path.display()
+        );
+      }
+      WorkerToUiEvent::DownloadProgress {
+        tab_id,
+        download_id,
+        received_bytes,
+        total_bytes,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "DownloadProgress(tab={}, id={}, received={}, total={total_bytes:?})",
+          tab_id.0,
+          download_id.0,
+          received_bytes
+        );
+      }
+      WorkerToUiEvent::DownloadFinished {
+        tab_id,
+        download_id,
+        outcome,
+      } => {
+        let _ = writeln!(
+          &mut out,
+          "DownloadFinished(tab={}, id={}, outcome={outcome:?})",
+          tab_id.0,
+          download_id.0
+        );
+      }
+      WorkerToUiEvent::Other { msg } => {
+        let _ = writeln!(&mut out, "Other(tab=?, msg={msg})");
+      }
+    }
+  }
+  out
+}
+
 pub fn assert_event_subsequence(events: &[WorkerToUiEvent], expected: &[WorkerEventKind]) {
   let mut next = 0usize;
   for ev in events {
@@ -453,6 +754,7 @@ pub struct WorkerHarness {
   ui_tx: Option<Sender<UiToWorker>>,
   ui_rx: Receiver<WorkerToUi>,
   handle: Option<JoinHandle<()>>,
+  buffered_events: parking_lot::Mutex<VecDeque<WorkerToUiEvent>>,
 }
 
 impl WorkerHarness {
@@ -475,6 +777,7 @@ impl WorkerHarness {
       ui_tx: Some(worker.ui_tx),
       ui_rx: worker.ui_rx,
       handle: Some(worker.join),
+      buffered_events: parking_lot::Mutex::new(VecDeque::new()),
     }
   }
 
@@ -485,6 +788,78 @@ impl WorkerHarness {
       .expect("worker harness tx available")
       .send(msg)
       .expect("send UiToWorker");
+  }
+
+  fn push_buffered_event(&self, event: &WorkerToUiEvent) {
+    let mut buf = self.buffered_events.lock();
+    if buf.len() >= MAX_BUFFERED_EVENTS {
+      buf.pop_front();
+    }
+    buf.push_back(event.clone());
+  }
+
+  fn buffered_snapshot(&self) -> Vec<WorkerToUiEvent> {
+    self
+      .buffered_events
+      .lock()
+      .iter()
+      .cloned()
+      .collect::<Vec<_>>()
+  }
+
+  fn recv_message(
+    &self,
+    timeout: Duration,
+  ) -> Result<(WorkerToUiEvent, Option<RenderedFrame>), HarnessError> {
+    match self.ui_rx.recv_timeout(timeout) {
+      Ok(msg) => {
+        let (event, frame) = split_message(msg);
+        self.push_buffered_event(&event);
+        Ok((event, frame))
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+        Err(HarnessError::timeout(timeout, self.buffered_snapshot()))
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(HarnessError::disconnected(
+        timeout,
+        self.buffered_snapshot(),
+      )),
+    }
+  }
+
+  pub fn recv_event(&self, timeout: Duration) -> Result<WorkerToUiEvent, HarnessError> {
+    self.recv_message(timeout).map(|(event, _frame)| event)
+  }
+
+  /// Drain worker events for `duration`, returning a pretty-printed log.
+  pub fn drain_for(&self, duration: Duration) -> String {
+    let events = self.drain_events(duration);
+    format_events(&events)
+  }
+
+  /// Assert that the worker disconnects within `timeout`, returning buffered events for debugging.
+  pub fn assert_disconnect_within(&self, timeout: Duration) -> Vec<WorkerToUiEvent> {
+    let deadline = Instant::now() + timeout;
+    loop {
+      let now = Instant::now();
+      if now >= deadline {
+        panic!(
+          "timed out waiting for worker disconnect; buffered events:\n{}",
+          format_events(&self.buffered_snapshot())
+        );
+      }
+      let remaining = deadline.saturating_duration_since(now);
+      match self.ui_rx.recv_timeout(remaining) {
+        Ok(msg) => {
+          let (event, _frame) = split_message(msg);
+          self.push_buffered_event(&event);
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+          return self.buffered_snapshot();
+        }
+      }
+    }
   }
 
   pub fn drain_events(&self, timeout: Duration) -> Vec<WorkerToUiEvent> {
@@ -499,6 +874,7 @@ impl WorkerHarness {
       match self.ui_rx.recv_timeout(remaining) {
         Ok(msg) => {
           let (event, _frame) = split_message(msg);
+          self.push_buffered_event(&event);
           events.push(event);
         }
         Err(RecvTimeoutError::Timeout) => break,
@@ -518,7 +894,10 @@ impl WorkerHarness {
     loop {
       let now = Instant::now();
       if now >= deadline {
-        panic!("timed out waiting for worker event; got {events:?}");
+        panic!(
+          "timed out waiting for worker event; recent events:\n{}",
+          format_events(&self.buffered_snapshot())
+        );
       }
       let remaining = deadline.saturating_duration_since(now);
       let msg = match self.ui_rx.recv_timeout(remaining) {
@@ -529,11 +908,13 @@ impl WorkerHarness {
           let worker_finished = self.worker_thread_finished();
           let worker_name = self.worker_thread_name().unwrap_or("<unnamed>");
           panic!(
-            "worker channel disconnected while waiting for event (timeout={timeout:?}, thread={worker_name}, finished={worker_finished:?}); collected event kinds: {kinds:?}; events: {events:?}"
+            "worker channel disconnected while waiting for event (timeout={timeout:?}, thread={worker_name}, finished={worker_finished:?}); collected event kinds: {kinds:?}; recent events:\n{}",
+            format_events(&self.buffered_snapshot())
           );
         }
       };
       let (event, _frame) = split_message(msg);
+      self.push_buffered_event(&event);
       let done = pred(&event);
       events.push(event);
       if done {
@@ -552,7 +933,10 @@ impl WorkerHarness {
     loop {
       let now = Instant::now();
       if now >= deadline {
-        panic!("timed out waiting for FrameReady; got {events:?}");
+        panic!(
+          "timed out waiting for FrameReady(tab_id={tab_id:?}); recent events:\n{}",
+          format_events(&self.buffered_snapshot())
+        );
       }
       let remaining = deadline.saturating_duration_since(now);
       let msg = match self.ui_rx.recv_timeout(remaining) {
@@ -563,11 +947,13 @@ impl WorkerHarness {
           let worker_finished = self.worker_thread_finished();
           let worker_name = self.worker_thread_name().unwrap_or("<unnamed>");
           panic!(
-            "worker channel disconnected while waiting for FrameReady(tab_id={tab_id:?}, timeout={timeout:?}, thread={worker_name}, finished={worker_finished:?}); collected event kinds: {kinds:?}; events: {events:?}"
+            "worker channel disconnected while waiting for FrameReady(tab_id={tab_id:?}, timeout={timeout:?}, thread={worker_name}, finished={worker_finished:?}); collected event kinds: {kinds:?}; recent events:\n{}",
+            format_events(&self.buffered_snapshot())
           );
         }
       };
       let (event, frame) = split_message(msg);
+      self.push_buffered_event(&event);
       events.push(event.clone());
       if let (
         WorkerToUiEvent::FrameReady {
@@ -586,29 +972,7 @@ impl WorkerHarness {
   /// Wait until the worker channel disconnects (e.g. worker crash/panic) and return any events that
   /// were received before shutdown.
   pub fn wait_for_disconnect(&self, timeout: Duration) -> Vec<WorkerToUiEvent> {
-    let deadline = Instant::now() + timeout;
-    let mut events = Vec::new();
-    loop {
-      let now = Instant::now();
-      if now >= deadline {
-        let kinds = events.iter().map(WorkerToUiEvent::kind).collect::<Vec<_>>();
-        let worker_finished = self.worker_thread_finished();
-        let worker_name = self.worker_thread_name().unwrap_or("<unnamed>");
-        panic!(
-          "timed out waiting for worker channel to disconnect (timeout={timeout:?}, thread={worker_name}, finished={worker_finished:?}); collected event kinds: {kinds:?}; events: {events:?}"
-        );
-      }
-
-      let remaining = deadline.saturating_duration_since(now);
-      match self.ui_rx.recv_timeout(remaining) {
-        Ok(msg) => {
-          let (event, _frame) = split_message(msg);
-          events.push(event);
-        }
-        Err(RecvTimeoutError::Timeout) => continue,
-        Err(RecvTimeoutError::Disconnected) => return events,
-      }
-    }
+    self.assert_disconnect_within(timeout)
   }
 
   pub fn send_and_wait_for_frame(
