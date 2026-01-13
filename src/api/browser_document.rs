@@ -94,6 +94,201 @@ fn interaction_state_paint_fingerprint(state: Option<&InteractionState>) -> u64 
   hasher.finish()
 }
 
+fn collect_box_id_to_styled_node_id(box_tree: &BoxTree) -> FxHashMap<usize, usize> {
+  let mut mapping: FxHashMap<usize, usize> = FxHashMap::default();
+  let mut stack: Vec<&crate::tree::box_tree::BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if let Some(styled_id) = node.styled_node_id {
+      mapping.insert(node.id, styled_id);
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  mapping
+}
+
+fn normalize_selection_range(
+  selection: Option<(usize, usize)>,
+  max_chars: usize,
+) -> Option<(usize, usize)> {
+  selection.and_then(|(start, end)| {
+    let start = start.min(max_chars);
+    let end = end.min(max_chars);
+    if start == end {
+      None
+    } else if start < end {
+      Some((start, end))
+    } else {
+      Some((end, start))
+    }
+  })
+}
+
+fn apply_form_control_paint_state(
+  control: &mut crate::tree::box_tree::FormControl,
+  node_id: usize,
+  interaction_state: Option<&InteractionState>,
+) {
+  use crate::text::caret::CaretAffinity;
+  use crate::tree::box_tree::FormControlKind;
+
+  match &mut control.control {
+    FormControlKind::Text {
+      value,
+      caret,
+      caret_affinity,
+      selection,
+      ..
+    } => {
+      let value_char_len = value.chars().count();
+      let mut next_caret = value_char_len;
+      let mut next_affinity = CaretAffinity::Downstream;
+      let mut next_selection: Option<(usize, usize)> = None;
+      if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(node_id)) {
+        next_caret = edit.caret.min(value_char_len);
+        next_affinity = edit.caret_affinity;
+        next_selection = normalize_selection_range(edit.selection, value_char_len);
+      }
+      *caret = next_caret;
+      *caret_affinity = next_affinity;
+      *selection = next_selection;
+
+      control.ime_preedit = interaction_state
+        .and_then(|state| state.ime_preedit_for(node_id))
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string());
+    }
+    FormControlKind::TextArea {
+      value,
+      caret,
+      caret_affinity,
+      selection,
+      ..
+    } => {
+      let value_char_len = value.chars().count();
+      let mut next_caret = value_char_len;
+      let mut next_affinity = CaretAffinity::Downstream;
+      let mut next_selection: Option<(usize, usize)> = None;
+      if let Some(edit) = interaction_state.and_then(|state| state.text_edit_for(node_id)) {
+        next_caret = edit.caret.min(value_char_len);
+        next_affinity = edit.caret_affinity;
+        next_selection = normalize_selection_range(edit.selection, value_char_len);
+      }
+      *caret = next_caret;
+      *caret_affinity = next_affinity;
+      *selection = next_selection;
+
+      control.ime_preedit = interaction_state
+        .and_then(|state| state.ime_preedit_for(node_id))
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string());
+    }
+    FormControlKind::File { value } => {
+      let next_value = interaction_state
+        .and_then(|state| state.form_state.files_for(node_id))
+        .and_then(|files| {
+          if files.is_empty() {
+            None
+          } else if files.len() == 1 {
+            Some(files[0].path.to_string_lossy().to_string())
+          } else {
+            Some(format!("{} files", files.len()))
+          }
+        });
+      *value = next_value;
+      control.ime_preedit = None;
+    }
+    _ => {
+      control.ime_preedit = None;
+    }
+  }
+}
+
+fn apply_paint_interaction_state_to_fragment(
+  root: &mut crate::tree::fragment_tree::FragmentNode,
+  box_id_to_styled_node_id: &FxHashMap<usize, usize>,
+  interaction_state: Option<&InteractionState>,
+) {
+  use crate::tree::box_tree::ReplacedType;
+  use crate::tree::fragment_tree::FragmentContent;
+
+  let mut stack: Vec<*mut crate::tree::fragment_tree::FragmentNode> = vec![root as *mut _];
+  while let Some(ptr) = stack.pop() {
+    // SAFETY: We only push pointers to nodes owned by `root`, and we never mutate a `children`
+    // vector while pointers into it are stored in `stack` (we use copy-on-write via
+    // `children_mut()` and traverse each node once).
+    let node = unsafe { &mut *ptr };
+
+    if let FragmentContent::Replaced {
+      replaced_type,
+      box_id,
+      ..
+    } = &mut node.content
+    {
+      if let ReplacedType::FormControl(control) = replaced_type {
+        if let Some(box_id) = *box_id {
+          if let Some(node_id) = box_id_to_styled_node_id.get(&box_id).copied() {
+            apply_form_control_paint_state(control, node_id, interaction_state);
+          }
+        }
+      }
+    }
+
+    if matches!(
+      node.content,
+      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+    ) {
+      continue;
+    }
+
+    for child in node.children_mut().iter_mut().rev() {
+      stack.push(child as *mut _);
+    }
+  }
+}
+
+fn apply_paint_interaction_state_to_fragment_tree(
+  box_tree: &BoxTree,
+  fragment_tree: &mut FragmentTree,
+  interaction_state: Option<&InteractionState>,
+) {
+  // Apply document selection onto the fragment tree for paint-time highlighting.
+  crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
+    box_tree,
+    fragment_tree,
+    interaction_state.and_then(|state| state.document_selection.as_ref()),
+  );
+
+  let box_id_to_styled_node_id = collect_box_id_to_styled_node_id(box_tree);
+
+  apply_paint_interaction_state_to_fragment(
+    &mut fragment_tree.root,
+    &box_id_to_styled_node_id,
+    interaction_state,
+  );
+  for root in fragment_tree.additional_fragments.iter_mut() {
+    apply_paint_interaction_state_to_fragment(root, &box_id_to_styled_node_id, interaction_state);
+  }
+
+  if let Some(existing) = fragment_tree.appearance_none_form_controls.as_ref() {
+    if !existing.is_empty() {
+      let mut updated: HashMap<usize, Arc<crate::tree::box_tree::FormControl>> =
+        HashMap::with_capacity(existing.len());
+      for (box_id, control_arc) in existing.iter() {
+        let mut control = (**control_arc).clone();
+        if let Some(node_id) = box_id_to_styled_node_id.get(box_id).copied() {
+          apply_form_control_paint_state(&mut control, node_id, interaction_state);
+        }
+        updated.insert(*box_id, Arc::new(control));
+      }
+      fragment_tree.appearance_none_form_controls = Some(Arc::new(updated));
+    }
+  }
+}
 impl BrowserDocument {
   /// Creates a new live document from an HTML string using a fresh renderer.
   pub fn from_html(html: &str, options: RenderOptions) -> Result<Self> {

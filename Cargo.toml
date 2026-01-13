@@ -127,6 +127,7 @@ aes-gcm = "0.10"
 aes = "0.8"
 getrandom = "0.2"
 fastrender-shmem = { path = "crates/fastrender-shmem" }
+libvpx-sys-bundled = { path = "crates/libvpx-sys-bundled" }
 avif-decode = { version = "1.0", default-features = false, optional = true }
 avif-parse = { version = "1.4", optional = true }
 arboard = { version = "3.6", optional = true }

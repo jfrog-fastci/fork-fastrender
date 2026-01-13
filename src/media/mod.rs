@@ -27,6 +27,7 @@ pub mod decoder;
 pub mod demux;
 pub mod demuxer;
 pub mod loader;
+pub mod player;
 pub mod frame_provider;
 pub mod track_selection;
 pub mod master_clock;

@@ -1902,6 +1902,7 @@ dependencies = [
  "jpeg-decoder",
  "kamadak-exif",
  "libc",
+ "libvpx-sys-bundled",
  "libwebp-sys",
  "lru",
  "markup5ever",

@@ -5,6 +5,9 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     // Tool discovery depends on PATH (and PATHEXT on Windows). Track these so changes to the
@@ -291,15 +294,28 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         }
         fs::create_dir_all(&build_dir).expect("create libvpx build dir");
 
-        // `configure` is a POSIX shell script. On Windows hosts, invoke it via
-        // `sh`/`bash` (as required by libvpx's upstream README).
+        // Ensure scripts that libvpx's `configure`/`make` invoke are executable. In some vendoring
+        // flows the executable bit is not preserved, which causes confusing `Permission denied`
+        // failures at build time.
+        ensure_libvpx_scripts_executable(&src_dir);
+
+        // `configure` is a POSIX shell script.
+        //
+        // In our agent/CI environments the vendored `configure` script may not have its executable
+        // bit preserved (e.g. depending on how the sources are packaged). Invoke it via a shell
+        // rather than executing it directly to avoid `EACCES`.
+        //
+        // On Windows hosts, we still need to find an available POSIX shell (`sh`/`bash`) as required
+        // by libvpx's upstream README.
         let mut configure_cmd = if host.contains("windows") {
             let shell = find_windows_posix_shell(&target, &host);
             let mut cmd = Command::new(shell);
             cmd.arg(&configure_src_path);
             cmd
         } else {
-            Command::new(&configure_src_path)
+            let mut cmd = Command::new("sh");
+            cmd.arg(&configure_src_path);
+            cmd
         };
         configure_cmd.current_dir(&build_dir);
 
@@ -413,6 +429,36 @@ Ensure MSYS2/Cygwin `make` is installed and `msbuild.exe` is available in PATH (
         // in automatically, but make it explicit for static linking.
         println!("cargo:rustc-link-lib=m");
     }
+}
+
+fn ensure_libvpx_scripts_executable(src_dir: &Path) {
+    // Best-effort: if we cannot set permissions (e.g. non-Unix hosts), the build will fail later
+    // with a clearer error.
+    #[cfg(unix)]
+    {
+        let _ = ensure_executable(&src_dir.join("configure"));
+
+        let make_dir = src_dir.join("build").join("make");
+        if let Ok(entries) = fs::read_dir(&make_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if matches!(ext, "sh" | "pl") {
+                    let _ = ensure_executable(&path);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn ensure_executable(path: &Path) -> std::io::Result<()> {
+    let meta = fs::metadata(path)?;
+    let mut perms = meta.permissions();
+    let mode = perms.mode();
+    // Preserve existing bits, only add execute.
+    perms.set_mode(mode | 0o111);
+    fs::set_permissions(path, perms)
 }
 
 fn run(mut cmd: Command, desc: &str) {
