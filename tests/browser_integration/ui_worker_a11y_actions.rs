@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::scroll::ScrollState;
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -28,20 +28,25 @@ fn wait_for_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> St
   }
 }
 
-fn wait_for_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn wait_for_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
   .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
   match msg {
-    WorkerToUi::FrameReady { .. } => {}
+    WorkerToUi::FrameReady { frame, .. } => frame,
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   }
 }
 
-fn wait_for_scroll_update(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> ScrollState {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+fn wait_for_scroll_update(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  mut pred: impl FnMut(&ScrollState) -> bool,
+) -> ScrollState {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| match msg {
+    WorkerToUi::ScrollStateUpdated { scroll, .. } => pred(scroll),
+    _ => false,
   })
   .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
   match msg {
@@ -139,7 +144,12 @@ fn ui_worker_applies_a11y_actions_to_page_content() {
     .expect("navigate");
   assert_eq!(wait_for_navigation_committed(&ui_rx, tab_id), page_url);
   // Wait for a painted frame so layout artifacts exist for ScrollIntoView / focus scroll.
-  wait_for_frame(&ui_rx, tab_id);
+  let initial_frame = wait_for_frame(&ui_rx, tab_id);
+  let baseline_scroll = initial_frame.scroll_state.viewport;
+
+  // Drain follow-up messages from the initial navigation before asserting accessibility-driven
+  // scrolling.
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
 
   // Scroll the button into view via accessibility action.
   ui_tx
@@ -148,7 +158,9 @@ fn ui_worker_applies_a11y_actions_to_page_content() {
       node_id: button_node_id,
     })
     .expect("a11y scroll into view");
-  let scrolled_down = wait_for_scroll_update(&ui_rx, tab_id);
+  let scrolled_down = wait_for_scroll_update(&ui_rx, tab_id, |scroll| {
+    scroll.viewport.y > baseline_scroll.y + 1.0
+  });
   assert!(
     scrolled_down.viewport.y > 0.0,
     "expected ScrollIntoView to scroll down; got {:?}",
@@ -163,7 +175,9 @@ fn ui_worker_applies_a11y_actions_to_page_content() {
       node_id: input_node_id,
     })
     .expect("a11y focus");
-  let scrolled_up = wait_for_scroll_update(&ui_rx, tab_id);
+  let scrolled_up = wait_for_scroll_update(&ui_rx, tab_id, |scroll| {
+    scroll.viewport.y < scrolled_down.viewport.y - 1.0
+  });
   assert!(
     scrolled_up.viewport.y < scrolled_down.viewport.y,
     "expected focusing the input to scroll back toward the top; before={:?} after={:?}",
