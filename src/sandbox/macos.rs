@@ -264,10 +264,19 @@ pub fn build_renderer_sbpl(allowed_posix_shm_names: &[&str]) -> String {
 // - allow enough for basic runtime (threads, memory, stdio)
 const STRICT_FALLBACK_PROFILE: &str = r#"(version 1)
 (deny default)
+(import "system.sb")
 (deny file-read*)
 (deny file-write*)
 (deny network*)
-(allow process*)
+(deny process*)
+(allow file-read-data (vnode-type PIPE))
+(allow file-write-data (vnode-type PIPE))
+(allow file-read-metadata (vnode-type PIPE))
+(allow file-read-data (vnode-type CHAR-DEVICE))
+(allow file-write-data (vnode-type CHAR-DEVICE))
+(allow file-read-metadata (vnode-type CHAR-DEVICE))
+(allow file-ioctl (vnode-type PIPE))
+(allow file-ioctl (vnode-type CHAR-DEVICE))
 (allow sysctl-read)
 (allow mach-lookup)
 (allow ipc-posix-shm)
@@ -517,15 +526,14 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
   apply_renderer_sandbox_inner(mode)
 }
 
-  #[cfg(test)]
-  mod tests {
+#[cfg(test)]
+mod tests {
   use super::*;
   use std::ffi::CString;
   use std::io::{self, Write};
   use std::net::{TcpListener, TcpStream, UdpSocket};
   use std::process::Command;
   use std::time::{Instant, SystemTime};
-  use std::io::Write;
 
   const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
   const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_PORT";
@@ -990,34 +998,84 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
         "expected strict sandbox helper to use the embedded fallback profile"
       );
 
-      let passwd = Path::new("/etc/passwd");
-      match std::fs::read_to_string(passwd) {
+      std::io::stdout()
+        .write_all(b"fastrender-seatbelt-fallback-ok")
+        .and_then(|_| std::io::stdout().flush())
+        .expect("expected stdout to remain usable under fallback sandbox");
+
+      std::thread::spawn(|| 42_u32)
+        .join()
+        .expect("thread should spawn + join successfully under fallback sandbox");
+
+      let parallelism = std::thread::available_parallelism()
+        .expect("available_parallelism should work under fallback sandbox");
+      assert!(
+        parallelism.get() >= 1,
+        "available_parallelism should return >= 1 (got {})",
+        parallelism.get()
+      );
+
+      let system_now = SystemTime::now();
+      let _ = system_now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system time should be after UNIX_EPOCH");
+      let _instant_now = Instant::now();
+
+      let mut bytes = [0u8; 32];
+      getrandom::getrandom(&mut bytes).expect("getrandom should succeed under fallback sandbox");
+      assert!(
+        bytes.iter().any(|&b| b != 0),
+        "getrandom returned an all-zero buffer, which is unexpectedly unlikely"
+      );
+
+      // File reads should be denied.
+      let passwd_private = Path::new("/private/etc/passwd");
+      let passwd_etc = Path::new("/etc/passwd");
+      let (passwd_path, read_result) = match std::fs::read_to_string(passwd_private) {
+        Ok(contents) => (passwd_private, Ok(contents)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+          (passwd_etc, std::fs::read_to_string(passwd_etc))
+        }
+        Err(err) => (passwd_private, Err(err)),
+      };
+      match read_result {
         Ok(contents) => panic!(
-          "expected filesystem read to be denied by sandbox (read {} bytes from {}); sandbox_check {}={}",
+          "expected filesystem read to be denied by sandbox (read {} bytes from {}); sandbox_check: {}={}; {}={}",
           contents.len(),
-          passwd.display(),
-          passwd.display(),
-          sandbox_check_file_read_diagnostic(passwd)
+          passwd_path.display(),
+          passwd_private.display(),
+          sandbox_check_file_read_diagnostic(passwd_private),
+          passwd_etc.display(),
+          sandbox_check_file_read_diagnostic(passwd_etc)
         ),
         Err(read_err) => assert!(
           is_permission_error(&read_err),
-          "expected file read to be denied by sandbox, got {read_err:?}; sandbox_check {}={}",
-          passwd.display(),
-          sandbox_check_file_read_diagnostic(passwd)
+          "expected file read to be denied by sandbox, got {read_err:?}; sandbox_check: {}={}; {}={}",
+          passwd_private.display(),
+          sandbox_check_file_read_diagnostic(passwd_private),
+          passwd_etc.display(),
+          sandbox_check_file_read_diagnostic(passwd_etc)
         ),
       }
 
-      match TcpStream::connect(("127.0.0.1", port)) {
-        Ok(_stream) => panic!(
-          "expected network connect to be denied by sandbox; sandbox_check network-outbound: {}",
-          sandbox_check_network_outbound_diagnostic()
-        ),
-        Err(connect_err) => assert!(
-          is_permission_error(&connect_err),
-          "expected network connect to be denied by sandbox, got {connect_err:?}; sandbox_check network-outbound: {}",
-          sandbox_check_network_outbound_diagnostic()
-        ),
-      };
+      let temp_path = std::env::temp_dir().join(format!(
+        "fastr_sandbox_test_{}_write.txt",
+        std::process::id()
+      ));
+      let write_err = std::fs::write(&temp_path, b"fastrender sandbox test")
+        .expect_err("expected filesystem write to be denied by sandbox");
+      assert!(
+        is_permission_error(&write_err),
+        "expected file write to be denied by sandbox, got {write_err:?}"
+      );
+
+      let connect_err =
+        TcpStream::connect(("127.0.0.1", port)).expect_err("expected network connect to be denied");
+      assert!(
+        is_permission_error(&connect_err),
+        "expected network connect to be denied by sandbox, got {connect_err:?}; sandbox_check network-outbound: {}",
+        sandbox_check_network_outbound_diagnostic()
+      );
       return;
     }
 
@@ -1105,7 +1163,6 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
       String::from_utf8_lossy(&output.stderr)
     );
   }
-
   #[test]
   fn renderer_sbpl_ipc_posix_shm_allowlist() {
     let is_child = std::env::var_os(CHILD_ENV).is_some();
