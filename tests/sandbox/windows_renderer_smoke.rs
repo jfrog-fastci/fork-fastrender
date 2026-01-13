@@ -366,6 +366,7 @@ fn appcontainer_renderer_can_render_minimal_html() {
     "FASTR_WINDOWS_RENDERER_SANDBOX",
     "FASTR_ALLOW_UNSANDBOXED_RENDERER",
     "FASTR_DISABLE_WIN_MITIGATIONS",
+    "FASTR_WINDOWS_SANDBOX_INHERIT_ENV",
   ]);
 
   if !crate::common::windows_sandbox::require_full_windows_sandbox(

@@ -341,6 +341,7 @@ fn appcontainer_denies_outbound_tcp_connect() {
       ("FASTR_WINDOWS_RENDERER_SANDBOX", None),
       ("FASTR_ALLOW_UNSANDBOXED_RENDERER", None),
       ("FASTR_DISABLE_WIN_MITIGATIONS", None),
+      ("FASTR_WINDOWS_SANDBOX_INHERIT_ENV", None),
       (ENV_PORT, Some(port_str.as_str())),
     ]);
     spawn_sandboxed(&exe, &args, &inherit).expect("spawn sandboxed child")

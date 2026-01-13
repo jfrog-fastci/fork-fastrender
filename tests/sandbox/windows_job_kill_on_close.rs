@@ -56,6 +56,7 @@ fn sandbox_job_kill_on_close_terminates_child_process() {
       ("FASTR_DISABLE_RENDERER_SANDBOX", Some("1")),
       ("FASTR_WINDOWS_RENDERER_SANDBOX", None),
       ("FASTR_ALLOW_UNSANDBOXED_RENDERER", None),
+      ("FASTR_WINDOWS_SANDBOX_INHERIT_ENV", None),
     ]);
     spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child")
   };
