@@ -6501,8 +6501,7 @@ fn transform_sink_abort_native(
   let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
 
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  let reason_string = scope.heap_mut().to_string(reason)?;
-  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+  let msg = best_effort_reason_string(scope, reason, "TransformStream aborted")?;
 
   let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
   if let Some(pending) = pending {

@@ -42,6 +42,7 @@ mod readable_stream_desired_size;
 mod streams_tee_uninitialized;
 mod transform_stream_async_transform_rejection;
 mod transform_stream_async_transform_rejection_symbol;
+mod transform_stream_abort_symbol;
 mod transform_stream_controller_error_symbol;
 mod text_decoder_stream;
 mod transition_behavior_property_test;
