@@ -9,8 +9,7 @@
 use crate::js::window_realm::WindowRealmHost;
 use crate::resource::ResourceFetcher;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use vm_js::{Heap, Realm, Vm, VmError};
 
 static NEXT_ENV_ID: AtomicU64 = AtomicU64::new(1);
@@ -33,65 +32,12 @@ impl WindowWebSocketEnv {
 /// stable (e.g. for lightweight tool binaries that compile the renderer crate with
 /// `default-features = false`). The stub implementation does not install a JS `WebSocket`
 /// constructor, so no commands will be emitted.
-#[derive(Debug)]
-pub enum WebSocketIpcCommand {
-  Connect {
-    ws_id: u64,
-    url: String,
-    /// True if the renderer's document is a secure context (e.g. https://).
-    ///
-    /// The network process must treat the renderer as untrusted; if this is true and `url` is
-    /// `ws://`, it must reject the connection as mixed content.
-    document_is_secure: bool,
-    protocols: Option<String>,
-  },
-  SendText {
-    ws_id: u64,
-    text: String,
-  },
-  SendBinary {
-    ws_id: u64,
-    data: Vec<u8>,
-  },
-  Close {
-    ws_id: u64,
-    code: Option<u16>,
-    reason: Option<String>,
-  },
-}
+pub type WebSocketIpcCommand = crate::ipc::RendererToNetwork;
 
 /// IPC events emitted by a network process and consumed by the renderer/JS realm.
 ///
 /// Stub-only API surface. No events are processed because no WebSocket objects are installed.
-#[derive(Debug)]
-pub enum WebSocketIpcEvent {
-  Open {
-    ws_id: u64,
-    protocol: String,
-  },
-  MessageText {
-    ws_id: u64,
-    text: String,
-  },
-  MessageBinary {
-    ws_id: u64,
-    data: Vec<u8>,
-  },
-  /// Indicates that `amount` bytes have been flushed/written by the network process.
-  Sent {
-    ws_id: u64,
-    amount: usize,
-  },
-  Error {
-    ws_id: u64,
-    message: String,
-  },
-  Close {
-    ws_id: u64,
-    code: u16,
-    reason: String,
-  },
-}
+pub type WebSocketIpcEvent = crate::ipc::NetworkToRenderer;
 
 /// Environment configuration for installing the IPC-based WebSocket backend.
 ///

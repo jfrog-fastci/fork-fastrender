@@ -17,6 +17,11 @@ use crate::js::window_realm::{
   is_secure_context_for_document_url, WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG,
 };
 use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
+use crate::ipc::websocket::{
+  WebSocketCommand, WebSocketConnectParams, WebSocketEvent, MAX_WEBSOCKET_CLOSE_REASON_BYTES,
+  MAX_WEBSOCKET_MESSAGE_BYTES, MAX_WEBSOCKET_PROTOCOL_BYTES, MAX_WEBSOCKET_PROTOCOLS,
+  MAX_WEBSOCKET_URL_BYTES,
+};
 use crate::resource::ResourceFetcher;
 use std::borrow::Cow;
 use std::char::decode_utf16;
@@ -44,17 +49,12 @@ pub const WS_OPEN: u16 = 1;
 pub const WS_CLOSING: u16 = 2;
 pub const WS_CLOSED: u16 = 3;
 
-const MAX_WEBSOCKET_URL_BYTES: usize = 8 * 1024;
-const MAX_WEBSOCKET_PROTOCOL_BYTES: usize = 1 * 1024;
-const MAX_WEBSOCKET_PROTOCOLS: u32 = 32;
-const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Hard upper bound on the total number of bytes that may be queued for sending (`bufferedAmount`)
 /// per WebSocket.
 ///
 /// This prevents untrusted scripts from enqueueing multi-GiB send queues even with a per-message
 /// size limit.
 const MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_WEBSOCKET_CLOSE_REASON_BYTES: usize = 123;
 const MAX_QUEUED_WEBSOCKET_SEND_COMMANDS: usize = 1_024;
 #[cfg(not(test))]
 const MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET: usize = 1_024;
@@ -144,63 +144,10 @@ enum WsCommand {
 ///
 /// Tests can wire these up to an in-process "network process" thread; production embeddings can
 /// forward them across a real IPC boundary.
-#[derive(Debug)]
-pub enum WebSocketIpcCommand {
-  Connect {
-    ws_id: u64,
-    url: String,
-    /// True if the renderer's document is a secure context (e.g. https://).
-    ///
-    /// The network process must treat the renderer as untrusted; if this is true and `url` is
-    /// `ws://`, it must reject the connection as mixed content.
-    document_is_secure: bool,
-    protocols: Option<String>,
-  },
-  SendText {
-    ws_id: u64,
-    text: String,
-  },
-  SendBinary {
-    ws_id: u64,
-    data: Vec<u8>,
-  },
-  Close {
-    ws_id: u64,
-    code: Option<u16>,
-    reason: Option<String>,
-  },
-}
+pub type WebSocketIpcCommand = crate::ipc::RendererToNetwork;
 
 /// IPC events emitted by a network process and consumed by the renderer/JS realm.
-#[derive(Debug)]
-pub enum WebSocketIpcEvent {
-  Open {
-    ws_id: u64,
-    protocol: String,
-  },
-  MessageText {
-    ws_id: u64,
-    text: String,
-  },
-  MessageBinary {
-    ws_id: u64,
-    data: Vec<u8>,
-  },
-  /// Indicates that `amount` bytes have been flushed/written by the network process.
-  Sent {
-    ws_id: u64,
-    amount: usize,
-  },
-  Error {
-    ws_id: u64,
-    message: String,
-  },
-  Close {
-    ws_id: u64,
-    code: u16,
-    reason: String,
-  },
-}
+pub type WebSocketIpcEvent = crate::ipc::NetworkToRenderer;
 
 /// Environment configuration for installing the IPC-based WebSocket backend.
 ///
@@ -544,7 +491,7 @@ fn parse_protocols(
       let iterable = value;
       let mut record = iterator::get_iterator(vm, host, hooks, scope, iterable)?;
       let mut out: Vec<String> = Vec::new();
-      let mut count: u32 = 0;
+      let mut count: usize = 0;
       let collect_result: Result<(), VmError> = (|| {
         loop {
           vm.tick()?;
@@ -666,11 +613,6 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
 
   let protocols_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let protocols = parse_protocols(vm, scope, host, hooks, protocols_value)?;
-  let protocols_header = if protocols.is_empty() {
-    None
-  } else {
-    Some(protocols.join(", "))
-  };
 
   let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
     return Err(VmError::TypeError(
@@ -800,12 +742,18 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
         .map(|ipc| ipc.cmd_tx.clone())
         .ok_or(VmError::InvariantViolation("WebSocket IPC env missing cmd_tx"))
     })?;
-    match ipc_tx.try_send(WebSocketIpcCommand::Connect {
-      ws_id,
+    let document_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+    let params = WebSocketConnectParams {
       url: resolved_url_string,
-      document_is_secure,
-      protocols: protocols_header,
-    }) {
+      protocols,
+      origin: None,
+      document_url,
+    };
+    let msg = WebSocketIpcCommand::WebSocket {
+      conn_id: ws_id,
+      cmd: WebSocketCommand::Connect { params },
+    };
+    match ipc_tx.try_send(msg) {
       Ok(()) => {}
       Err(mpsc::TrySendError::Full(_)) => {
         let _ = with_env_state_mut(env_id, |state| {
@@ -1039,12 +987,13 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
       }
     },
     SendQueue::Ipc(cmd_tx) => {
-      let ipc_cmd = match cmd {
-        WsCommand::SendText(text) => WebSocketIpcCommand::SendText { ws_id, text },
-        WsCommand::SendBinary(data) => WebSocketIpcCommand::SendBinary { ws_id, data },
+      let cmd = match cmd {
+        WsCommand::SendText(text) => WebSocketCommand::SendText { text },
+        WsCommand::SendBinary(data) => WebSocketCommand::SendBinary { data },
         _ => unreachable!("websocket_send only queues SendText/SendBinary"),
       };
-      match cmd_tx.try_send(ipc_cmd) {
+      let msg = WebSocketIpcCommand::WebSocket { conn_id: ws_id, cmd };
+      match cmd_tx.try_send(msg) {
         Ok(()) => Ok(Value::Undefined),
         Err(mpsc::TrySendError::Full(_)) => {
           revert_buffered(byte_len);
@@ -1151,12 +1100,9 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
       let _ = cmd_tx.try_send(cmd);
     }
     CloseQueue::Ipc(cmd_tx) => {
-      let cmd = WebSocketIpcCommand::Close {
-        ws_id,
-        code,
-        reason,
-      };
-      let _ = cmd_tx.try_send(cmd);
+      let cmd = WebSocketCommand::Close { code, reason };
+      let msg = WebSocketIpcCommand::WebSocket { conn_id: ws_id, cmd };
+      let _ = cmd_tx.try_send(msg);
     }
   }
   Ok(Value::Undefined)
@@ -1224,10 +1170,12 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
     if ws.ready_state == WS_CLOSING {
       if let Some((code, reason)) = ws.forced_close.clone() {
         if let Some(ipc) = state.ipc.as_ref() {
-          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::Close {
-            ws_id,
-            code: Some(code),
-            reason: Some(reason),
+          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::WebSocket {
+            conn_id: ws_id,
+            cmd: WebSocketCommand::Close {
+              code: Some(code),
+              reason: Some(reason),
+            },
           });
         } else if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
           let _ = cmd_tx.try_send(WsCommand::Close {
@@ -1251,10 +1199,12 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
         //   close even if the per-socket command queue is full.
         // - IPC backend: notify the network process to close the connection.
         if let Some(ipc) = state.ipc.as_ref() {
-          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::Close {
-            ws_id,
-            code: Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE),
-            reason: Some(reason),
+          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::WebSocket {
+            conn_id: ws_id,
+            cmd: WebSocketCommand::Close {
+              code: Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE),
+              reason: Some(reason),
+            },
           });
         } else if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
           let _ = cmd_tx.try_send(WsCommand::Close {
@@ -1365,10 +1315,12 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
         // - In-process backend: websocket thread observes `forced_close`.
         // - IPC backend: notify the network process.
         if let Some(ipc) = state.ipc.as_ref() {
-          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::Close {
-            ws_id,
-            code: Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE),
-            reason: Some(reason),
+          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::WebSocket {
+            conn_id: ws_id,
+            cmd: WebSocketCommand::Close {
+              code: Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE),
+              reason: Some(reason),
+            },
           });
         } else if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
           let _ = cmd_tx.try_send(WsCommand::Close {
@@ -1520,12 +1472,16 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
   env_id: u64,
   ev: WebSocketIpcEvent,
 ) {
-  match ev {
-    WebSocketIpcEvent::Open { ws_id, protocol } => {
+  let (ws_id, event) = match ev {
+    WebSocketIpcEvent::WebSocket { conn_id, event } => (conn_id, event),
+  };
+
+  match event {
+    WebSocketEvent::Open { selected_protocol } => {
       let _ = with_env_state_mut(env_id, |state| {
         if let Some(ws) = state.sockets.get_mut(&ws_id) {
           ws.ready_state = WS_OPEN;
-          ws.protocol = protocol;
+          ws.protocol = selected_protocol;
         }
         Ok(())
       });
@@ -1542,7 +1498,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
       },
       );
     }
-    WebSocketIpcEvent::MessageText { ws_id, text } => {
+    WebSocketEvent::MessageText { text } => {
       if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES {
         return;
       }
@@ -1563,7 +1519,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
       },
       );
     }
-    WebSocketIpcEvent::MessageBinary { ws_id, data } => {
+    WebSocketEvent::MessageBinary { data } => {
       if data.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
         return;
       }
@@ -1590,7 +1546,8 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
       },
       );
     }
-    WebSocketIpcEvent::Sent { ws_id, amount } => {
+    WebSocketEvent::SendAck { bytes } => {
+      let amount = bytes as usize;
       let _ = with_env_state_mut(env_id, |state| {
         if let Some(ws) = state.sockets.get_mut(&ws_id) {
           ws.buffered_amount = ws.buffered_amount.saturating_sub(amount);
@@ -1598,7 +1555,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
         Ok(())
       });
     }
-    WebSocketIpcEvent::Error { ws_id, message: _ } => {
+    WebSocketEvent::Error { message: _ } => {
       let _ = with_env_state_mut(env_id, |state| {
         if let Some(ws) = state.sockets.get_mut(&ws_id) {
           ws.ready_state = WS_CLOSED;
@@ -1621,7 +1578,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
       },
       );
     }
-    WebSocketIpcEvent::Close { ws_id, code, reason } => {
+    WebSocketEvent::Close { code, reason } => {
       let _ = with_env_state_mut(env_id, |state| {
         if let Some(ws) = state.sockets.get_mut(&ws_id) {
           ws.ready_state = WS_CLOSED;

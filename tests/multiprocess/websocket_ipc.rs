@@ -3,6 +3,7 @@
 //! WebSocket IPC integration test.
 
 use fastrender::dom2;
+use fastrender::ipc::websocket::{WebSocketCommand, WebSocketEvent};
 use fastrender::js::{
   install_window_websocket_ipc_bindings_with_guard, RunLimits, WebSocketIpcCommand, WebSocketIpcEvent,
   WindowHost, WindowHostState, WindowWebSocketIpcEnv,
@@ -71,18 +72,6 @@ fn pump_until_done(host: &mut WindowHost, deadline: Instant) -> Result<()> {
     std::thread::sleep(Duration::from_millis(10));
   }
   Ok(())
-}
-
-fn parse_requested_protocols_header(header: Option<&str>) -> Vec<String> {
-  let Some(header) = header else {
-    return Vec::new();
-  };
-  header
-    .split(',')
-    .map(|v| v.trim())
-    .filter(|v| !v.is_empty())
-    .map(|v| v.to_string())
-    .collect()
 }
 
 fn validate_ws_subprotocol_handshake_response(
@@ -182,19 +171,20 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let (ws_id, url, protocols) = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect {
-          ws_id,
-          url,
-          document_is_secure,
-          protocols,
-        }) => {
-          assert!(
-            !document_is_secure,
-            "expected http:// document to be treated as an insecure context"
-          );
-          break (ws_id, url, protocols);
-        }
-        Ok(other) => panic!("unexpected command before connect: {other:?}"),
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => match cmd {
+          WebSocketCommand::Connect { params } => {
+            assert!(
+              params
+                .document_url
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("http://"),
+              "expected http:// document to be treated as an insecure context"
+            );
+            break (conn_id, params.url, params.protocols);
+          }
+          other => panic!("unexpected command before connect: {other:?}"),
+        },
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
             panic!("network process timed out waiting for connect command");
@@ -205,44 +195,79 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
     };
 
     let mut req = url.into_client_request().expect("into_client_request");
-    if let Some(header) = protocols.as_deref() {
+    if !protocols.is_empty() {
+      let header = protocols.join(", ");
       req
         .headers_mut()
         .insert("Sec-WebSocket-Protocol", header.parse().unwrap());
     }
 
     let (mut socket, response) = tungstenite::connect(req).expect("connect");
-    let requested_protocols = parse_requested_protocols_header(protocols.as_deref());
-    let selected_protocol = match validate_ws_subprotocol_handshake_response(&requested_protocols, response.headers()) {
+    let selected_protocol = match validate_ws_subprotocol_handshake_response(&protocols, response.headers()) {
       Ok(protocol) => protocol,
       Err(()) => {
         // RFC6455: server-selected protocol must match one of the requested protocols.
         event_tx
-          .send(WebSocketIpcEvent::Error {
-            ws_id,
-            message: "invalid websocket subprotocol".to_string(),
+          .send(WebSocketIpcEvent::WebSocket {
+            conn_id: ws_id,
+            event: WebSocketEvent::Error {
+              message: Some("invalid websocket subprotocol".to_string()),
+            },
           })
           .expect("send error event");
         return;
       }
     };
     event_tx
-      .send(WebSocketIpcEvent::Open {
-        ws_id,
-        protocol: selected_protocol,
+      .send(WebSocketIpcEvent::WebSocket {
+        conn_id: ws_id,
+        event: WebSocketEvent::Open {
+          selected_protocol,
+        },
       })
       .expect("send open event");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::SendText { ws_id: id, text }) => {
-          assert_eq!(id, ws_id);
-          let len = text.as_bytes().len();
-          socket.write_message(Message::Text(text)).expect("write");
-          event_tx
-            .send(WebSocketIpcEvent::Sent { ws_id, amount: len })
-            .expect("send ack");
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => {
+          assert_eq!(conn_id, ws_id);
+          let mut did_send_text = false;
+          match cmd {
+            WebSocketCommand::SendText { text } => {
+              did_send_text = true;
+              let len = text.as_bytes().len();
+              socket.write_message(Message::Text(text)).expect("write");
+              event_tx
+                .send(WebSocketIpcEvent::WebSocket {
+                  conn_id: ws_id,
+                  event: WebSocketEvent::SendAck { bytes: len as u32 },
+                })
+                .expect("send ack");
+            }
+            WebSocketCommand::SendBinary { .. } => {
+              panic!("binary send not used by this test");
+            }
+            WebSocketCommand::Close { code, reason } => {
+              let _ = socket.close(None);
+              event_tx
+                .send(WebSocketIpcEvent::WebSocket {
+                  conn_id: ws_id,
+                  event: WebSocketEvent::Close {
+                    code: code.unwrap_or(1000),
+                    reason: reason.unwrap_or_default(),
+                  },
+                })
+                .expect("send close event");
+              break;
+            }
+            WebSocketCommand::Connect { .. } => panic!("unexpected second connect"),
+            WebSocketCommand::Shutdown => break,
+          }
+          if !did_send_text {
+            continue;
+          }
+
           // Keep the read bounded so we don't hang the test if the server never responds.
           match socket.get_ref() {
             tungstenite::stream::MaybeTlsStream::Plain(stream) => {
@@ -276,28 +301,15 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
           match msg {
             Message::Text(text) => {
               event_tx
-                .send(WebSocketIpcEvent::MessageText { ws_id, text })
+                .send(WebSocketIpcEvent::WebSocket {
+                  conn_id: ws_id,
+                  event: WebSocketEvent::MessageText { text },
+                })
                 .expect("send message event");
             }
             other => panic!("unexpected message from server: {other:?}"),
           }
         }
-        Ok(WebSocketIpcCommand::SendBinary { .. }) => {
-          panic!("binary send not used by this test");
-        }
-        Ok(WebSocketIpcCommand::Close { ws_id: id, code, reason }) => {
-          assert_eq!(id, ws_id);
-          let _ = socket.close(None);
-          event_tx
-            .send(WebSocketIpcEvent::Close {
-              ws_id,
-              code: code.unwrap_or(1000),
-              reason: reason.unwrap_or_default(),
-            })
-            .expect("send close event");
-          break;
-        }
-        Ok(WebSocketIpcCommand::Connect { .. }) => panic!("unexpected second connect"),
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= deadline {
             panic!("network process timed out");
@@ -417,19 +429,20 @@ fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()>
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let (ws_id, url, protocols) = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect {
-          ws_id,
-          url,
-          document_is_secure,
-          protocols,
-        }) => {
-          assert!(
-            !document_is_secure,
-            "expected http:// document to be treated as an insecure context"
-          );
-          break (ws_id, url, protocols);
-        }
-        Ok(other) => panic!("unexpected command before connect: {other:?}"),
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => match cmd {
+          WebSocketCommand::Connect { params } => {
+            assert!(
+              params
+                .document_url
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("http://"),
+              "expected http:// document to be treated as an insecure context"
+            );
+            break (conn_id, params.url, params.protocols);
+          }
+          other => panic!("unexpected command before connect: {other:?}"),
+        },
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
             panic!("network process timed out waiting for connect command");
@@ -440,7 +453,8 @@ fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()>
     };
 
     let mut req = url.into_client_request().expect("into_client_request");
-    if let Some(header) = protocols.as_deref() {
+    if !protocols.is_empty() {
+      let header = protocols.join(", ");
       req
         .headers_mut()
         .insert("Sec-WebSocket-Protocol", header.parse().unwrap());
@@ -450,20 +464,23 @@ fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()>
       Ok(pair) => pair,
       Err(_err) => {
         event_tx
-          .send(WebSocketIpcEvent::Error {
-            ws_id,
-            message: "invalid websocket subprotocol".to_string(),
+          .send(WebSocketIpcEvent::WebSocket {
+            conn_id: ws_id,
+            event: WebSocketEvent::Error {
+              message: Some("invalid websocket subprotocol".to_string()),
+            },
           })
           .expect("send error event");
         return;
       }
     };
-    let requested_protocols = parse_requested_protocols_header(protocols.as_deref());
-    if validate_ws_subprotocol_handshake_response(&requested_protocols, response.headers()).is_err() {
+    if validate_ws_subprotocol_handshake_response(&protocols, response.headers()).is_err() {
       event_tx
-        .send(WebSocketIpcEvent::Error {
-          ws_id,
-          message: "invalid websocket subprotocol".to_string(),
+        .send(WebSocketIpcEvent::WebSocket {
+          conn_id: ws_id,
+          event: WebSocketEvent::Error {
+            message: Some("invalid websocket subprotocol".to_string()),
+          },
         })
         .expect("send error event");
       return;
@@ -580,19 +597,20 @@ fn websocket_ipc_protocol_is_set_from_server_handshake_response() -> Result<()> 
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let (ws_id, url, protocols) = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect {
-          ws_id,
-          url,
-          document_is_secure,
-          protocols,
-        }) => {
-          assert!(
-            !document_is_secure,
-            "expected http:// document to be treated as an insecure context"
-          );
-          break (ws_id, url, protocols);
-        }
-        Ok(other) => panic!("unexpected command before connect: {other:?}"),
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => match cmd {
+          WebSocketCommand::Connect { params } => {
+            assert!(
+              params
+                .document_url
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("http://"),
+              "expected http:// document to be treated as an insecure context"
+            );
+            break (conn_id, params.url, params.protocols);
+          }
+          other => panic!("unexpected command before connect: {other:?}"),
+        },
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
             panic!("network process timed out waiting for connect command");
@@ -603,21 +621,23 @@ fn websocket_ipc_protocol_is_set_from_server_handshake_response() -> Result<()> 
     };
 
     let mut req = url.into_client_request().expect("into_client_request");
-    if let Some(header) = protocols.as_deref() {
+    if !protocols.is_empty() {
+      let header = protocols.join(", ");
       req
         .headers_mut()
         .insert("Sec-WebSocket-Protocol", header.parse().unwrap());
     }
 
     let (mut socket, response) = tungstenite::connect(req).expect("connect");
-    let requested_protocols = parse_requested_protocols_header(protocols.as_deref());
     let selected_protocol =
-      validate_ws_subprotocol_handshake_response(&requested_protocols, response.headers()).expect("protocol validate");
+      validate_ws_subprotocol_handshake_response(&protocols, response.headers()).expect("protocol validate");
 
     event_tx
-      .send(WebSocketIpcEvent::Open {
-        ws_id,
-        protocol: selected_protocol,
+      .send(WebSocketIpcEvent::WebSocket {
+        conn_id: ws_id,
+        event: WebSocketEvent::Open {
+          selected_protocol,
+        },
       })
       .expect("send open event");
 
@@ -625,20 +645,27 @@ fn websocket_ipc_protocol_is_set_from_server_handshake_response() -> Result<()> 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Close { ws_id: id, code, reason }) => {
-          assert_eq!(id, ws_id);
-          let _ = socket.close(None);
-          event_tx
-            .send(WebSocketIpcEvent::Close {
-              ws_id,
-              code: code.unwrap_or(1000),
-              reason: reason.unwrap_or_default(),
-            })
-            .expect("send close event");
-          break;
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => {
+          assert_eq!(conn_id, ws_id);
+          match cmd {
+            WebSocketCommand::Close { code, reason } => {
+              let _ = socket.close(None);
+              event_tx
+                .send(WebSocketIpcEvent::WebSocket {
+                  conn_id: ws_id,
+                  event: WebSocketEvent::Close {
+                    code: code.unwrap_or(1000),
+                    reason: reason.unwrap_or_default(),
+                  },
+                })
+                .expect("send close event");
+              break;
+            }
+            WebSocketCommand::Shutdown => break,
+            WebSocketCommand::Connect { .. } => panic!("unexpected second connect"),
+            other => panic!("unexpected command: {other:?}"),
+          }
         }
-        Ok(WebSocketIpcCommand::Connect { .. }) => panic!("unexpected second connect"),
-        Ok(other) => panic!("unexpected command: {other:?}"),
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= deadline {
             panic!("network process timed out");
@@ -749,19 +776,20 @@ fn websocket_ipc_rejects_protocol_when_none_were_requested() -> Result<()> {
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let (ws_id, url, protocols) = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect {
-          ws_id,
-          url,
-          document_is_secure,
-          protocols,
-        }) => {
-          assert!(
-            !document_is_secure,
-            "expected http:// document to be treated as an insecure context"
-          );
-          break (ws_id, url, protocols);
-        }
-        Ok(other) => panic!("unexpected command before connect: {other:?}"),
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => match cmd {
+          WebSocketCommand::Connect { params } => {
+            assert!(
+              params
+                .document_url
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("http://"),
+              "expected http:// document to be treated as an insecure context"
+            );
+            break (conn_id, params.url, params.protocols);
+          }
+          other => panic!("unexpected command before connect: {other:?}"),
+        },
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
             panic!("network process timed out waiting for connect command");
@@ -771,27 +799,36 @@ fn websocket_ipc_rejects_protocol_when_none_were_requested() -> Result<()> {
       }
     };
 
-    assert!(protocols.is_none(), "expected no protocols for this test");
+    assert!(protocols.is_empty(), "expected no protocols for this test");
 
-    let req = url.into_client_request().expect("into_client_request");
+    let mut req = url.into_client_request().expect("into_client_request");
+    if !protocols.is_empty() {
+      let header = protocols.join(", ");
+      req
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", header.parse().unwrap());
+    }
     let (_socket, response) = match tungstenite::connect(req) {
       Ok(pair) => pair,
       Err(_err) => {
         event_tx
-          .send(WebSocketIpcEvent::Error {
-            ws_id,
-            message: "invalid websocket subprotocol".to_string(),
+          .send(WebSocketIpcEvent::WebSocket {
+            conn_id: ws_id,
+            event: WebSocketEvent::Error {
+              message: Some("invalid websocket subprotocol".to_string()),
+            },
           })
           .expect("send error event");
         return;
       }
     };
-    let requested_protocols = Vec::new();
-    if validate_ws_subprotocol_handshake_response(&requested_protocols, response.headers()).is_err() {
+    if validate_ws_subprotocol_handshake_response(&protocols, response.headers()).is_err() {
       event_tx
-        .send(WebSocketIpcEvent::Error {
-          ws_id,
-          message: "invalid websocket subprotocol".to_string(),
+        .send(WebSocketIpcEvent::WebSocket {
+          conn_id: ws_id,
+          event: WebSocketEvent::Error {
+            message: Some("invalid websocket subprotocol".to_string()),
+          },
         })
         .expect("send error event");
       return;
@@ -875,8 +912,10 @@ fn websocket_ipc_send_queue_full_does_not_increase_buffered_amount() -> Result<(
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let ws_id = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect { ws_id, .. }) => break ws_id,
-        Ok(other) => panic!("unexpected command before connect: {other:?}"),
+        Ok(WebSocketIpcCommand::WebSocket { conn_id, cmd }) => match cmd {
+          WebSocketCommand::Connect { .. } => break conn_id,
+          other => panic!("unexpected command before connect: {other:?}"),
+        },
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
             panic!("network process timed out waiting for connect command");
@@ -887,9 +926,11 @@ fn websocket_ipc_send_queue_full_does_not_increase_buffered_amount() -> Result<(
     };
 
     event_tx
-      .send(WebSocketIpcEvent::Open {
-        ws_id,
-        protocol: "".to_string(),
+      .send(WebSocketIpcEvent::WebSocket {
+        conn_id: ws_id,
+        event: WebSocketEvent::Open {
+          selected_protocol: "".to_string(),
+        },
       })
       .expect("send open event");
 
