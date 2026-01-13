@@ -146,12 +146,7 @@ impl CompiledScript {
       let strict = detect_use_strict_directive(source.text.as_ref(), &parsed.stx.body, &mut tick)?;
       crate::early_errors::validate_top_level(
         &parsed.stx.body,
-        crate::early_errors::EarlyErrorOptions {
-          strict,
-          allow_top_level_await: contains_top_level_await,
-          is_module: false,
-          allow_super_call: false,
-        },
+        crate::early_errors::EarlyErrorOptions::script_with_top_level_await(strict, contains_top_level_await),
         Some(source.text.as_ref()),
         &mut tick,
       )?;
@@ -321,12 +316,7 @@ impl CompiledScript {
       let mut tick = || vm.tick();
       crate::early_errors::validate_top_level(
         &parsed.stx.body,
-        crate::early_errors::EarlyErrorOptions {
-          strict,
-          allow_top_level_await: has_top_level_await,
-          is_module: false,
-          allow_super_call: false,
-        },
+        crate::early_errors::EarlyErrorOptions::script_with_top_level_await(strict, has_top_level_await),
         Some(source.text.as_ref()),
         &mut tick,
       )?;

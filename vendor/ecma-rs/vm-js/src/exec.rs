@@ -565,6 +565,7 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
       crate::early_errors::EarlyErrorOptions::script_with_super_call(
         strict,
         meta_property_context.allow_super_call(),
+        meta_property_context.allow_super_property(),
       ),
       Some(source.text.as_ref()),
       enclosing_private_names,
@@ -2654,7 +2655,6 @@ impl JsRuntime {
         let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(&mut hooks);
         (|| {
           let mut vm_frame = vm_hooks.enter_frame(frame)?;
-
           // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
           // interrupt budgets.
           vm_frame.tick()?;
@@ -2680,6 +2680,7 @@ impl JsRuntime {
                 allow_top_level_await: has_await,
                 is_module: false,
                 allow_super_call: false,
+                allow_super_property: false,
               },
               Some(source.text.as_ref()),
               &mut tick,
@@ -3236,6 +3237,7 @@ impl JsRuntime {
             allow_top_level_await: has_await,
             is_module: false,
             allow_super_call: false,
+            allow_super_property: false,
           },
           Some(source.text.as_ref()),
           &mut tick,
@@ -16787,7 +16789,6 @@ pub(crate) enum GenFrame {
     receiver: Option<Value>,
     left: Value,
   },
-
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
   CallMemberAfterBase {
@@ -45646,9 +45647,10 @@ fn gen_root_values_for_continuation(
       }
       GenFrame::ComputedMemberAfterMember { base, .. }
       | GenFrame::DeleteComputedMemberAfterMember { base, .. }
+      | GenFrame::AssignComputedMemberAfterMember { base, .. }
       | GenFrame::UpdateComputedMemberAfterMember { base, .. }
       | GenFrame::CallComputedMemberAfterMember { base, .. }
-      | GenFrame::AssignComputedMemberAfterMember { base, .. } => values.push(*base),
+      => values.push(*base),
       GenFrame::BinaryAfterRight { left, .. } => values.push(*left),
       GenFrame::AssignAfterRhs {
         base,

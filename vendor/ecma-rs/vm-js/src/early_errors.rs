@@ -47,6 +47,7 @@ pub(crate) struct EarlyErrorOptions {
   pub(crate) allow_top_level_await: bool,
   pub(crate) is_module: bool,
   pub(crate) allow_super_call: bool,
+  pub(crate) allow_super_property: bool,
 }
 
 impl EarlyErrorOptions {
@@ -56,15 +57,31 @@ impl EarlyErrorOptions {
       allow_top_level_await: false,
       is_module: false,
       allow_super_call: false,
+      allow_super_property: false,
     }
   }
 
-  pub(crate) fn script_with_super_call(strict: bool, allow_super_call: bool) -> Self {
+  pub(crate) fn script_with_top_level_await(strict: bool, allow_top_level_await: bool) -> Self {
+    Self {
+      strict,
+      allow_top_level_await,
+      is_module: false,
+      allow_super_call: false,
+      allow_super_property: false,
+    }
+  }
+
+  pub(crate) fn script_with_super_call(
+    strict: bool,
+    allow_super_call: bool,
+    allow_super_property: bool,
+  ) -> Self {
     Self {
       strict,
       allow_top_level_await: false,
       is_module: false,
       allow_super_call,
+      allow_super_property,
     }
   }
 
@@ -74,6 +91,7 @@ impl EarlyErrorOptions {
       allow_top_level_await: true,
       is_module: true,
       allow_super_call: false,
+      allow_super_property: false,
     }
   }
 }
@@ -145,6 +163,7 @@ where
     await_is_reserved: opts.allow_top_level_await,
     yield_is_reserved: false,
     super_call_allowed: opts.allow_super_call,
+    super_property_allowed: opts.allow_super_property,
     arguments_allowed: true,
     return_allowed: false,
     using_allowed: opts.is_module,
@@ -210,6 +229,12 @@ struct ControlContext {
   /// `super()` is only valid in derived class constructors (and arrow functions lexically nested
   /// within those constructors).
   super_call_allowed: bool,
+  /// Whether `super.prop`/`super[expr]` are permitted in the current context.
+  ///
+  /// Super property accesses are valid only in contexts that have a `[[HomeObject]]` (class
+  /// methods/constructors, object literal methods/accessors, class field initializers, and class
+  /// static blocks), and in arrow functions lexically nested within those contexts.
+  super_property_allowed: bool,
   /// Whether `arguments` identifier references are permitted in the current context.
   ///
   /// Class field initializer expressions and class static initialization blocks disallow
@@ -248,6 +273,7 @@ struct SavedFunctionContext {
   await_is_reserved: bool,
   yield_is_reserved: bool,
   super_call_allowed: bool,
+  super_property_allowed: bool,
   arguments_allowed: bool,
   return_allowed: bool,
   using_allowed: bool,
@@ -259,6 +285,7 @@ struct SavedFunctionContext {
 struct SavedScopeFlags {
   strict: bool,
   super_call_allowed: bool,
+  super_property_allowed: bool,
   return_allowed: bool,
 }
 
@@ -449,6 +476,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     await_is_reserved: bool,
     yield_is_reserved: bool,
     super_call_allowed: bool,
+    super_property_allowed: bool,
     arguments_allowed: bool,
   ) -> SavedFunctionContext {
     let saved = SavedFunctionContext {
@@ -458,6 +486,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       await_is_reserved: ctx.await_is_reserved,
       yield_is_reserved: ctx.yield_is_reserved,
       super_call_allowed: ctx.super_call_allowed,
+      super_property_allowed: ctx.super_property_allowed,
       arguments_allowed: ctx.arguments_allowed,
       return_allowed: ctx.return_allowed,
       using_allowed: ctx.using_allowed,
@@ -471,6 +500,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.await_is_reserved = await_is_reserved;
     ctx.yield_is_reserved = yield_is_reserved;
     ctx.super_call_allowed = super_call_allowed;
+    ctx.super_property_allowed = super_property_allowed;
     ctx.arguments_allowed = arguments_allowed;
     ctx.return_allowed = true;
     ctx.using_allowed = true;
@@ -487,6 +517,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.await_is_reserved = saved.await_is_reserved;
     ctx.yield_is_reserved = saved.yield_is_reserved;
     ctx.super_call_allowed = saved.super_call_allowed;
+    ctx.super_property_allowed = saved.super_property_allowed;
     ctx.arguments_allowed = saved.arguments_allowed;
     ctx.return_allowed = saved.return_allowed;
     ctx.using_allowed = saved.using_allowed;
@@ -499,6 +530,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     SavedScopeFlags {
       strict: ctx.strict,
       super_call_allowed: ctx.super_call_allowed,
+      super_property_allowed: ctx.super_property_allowed,
       return_allowed: ctx.return_allowed,
     }
   }
@@ -506,6 +538,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn restore_scope_flags(&self, ctx: &mut ControlContext, saved: SavedScopeFlags) {
     ctx.strict = saved.strict;
     ctx.super_call_allowed = saved.super_call_allowed;
+    ctx.super_property_allowed = saved.super_property_allowed;
     ctx.return_allowed = saved.return_allowed;
   }
 
@@ -1761,6 +1794,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     // Do not allow `super()` to leak into nested classes (e.g. from derived constructors), since
     // `super()` is only valid within derived constructor bodies.
     ctx.super_call_allowed = false;
+    // Likewise, super property references are bound to the current method/initializer/static block;
+    // they must not leak into nested class bodies.
+    ctx.super_property_allowed = false;
 
     // Class constructor early errors:
     // - A class may only have one `constructor` method.
@@ -1903,6 +1939,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         &getter.stx.func,
         /* unique */ true,
         /* super_call_allowed */ false,
+        /* super_property_allowed */ true,
         FuncNameKind::Expr,
       ),
       ClassOrObjVal::Setter(setter) => self.visit_func(
@@ -1911,6 +1948,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         &setter.stx.func,
         /* unique */ true,
         /* super_call_allowed */ false,
+        /* super_property_allowed */ true,
         FuncNameKind::Expr,
       ),
       ClassOrObjVal::Method(method) => {
@@ -1926,29 +1964,30 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           &method.stx.func,
           /* unique */ true,
           /* super_call_allowed */ derived && is_constructor,
+          /* super_property_allowed */ true,
           FuncNameKind::Expr,
         )
       }
       ClassOrObjVal::Prop(Some(expr)) => {
-        // `await` and `yield` expressions are always early errors in class field initializers,
-        // regardless of whether the class is nested within an async/generator function.
-        //
-        // Example:
-        // - `async function f(){ class C { x = await 0; } }` is a Syntax Error.
-        // - `function* g(){ class C { x = yield 0; } }` is a Syntax Error.
-        //
-        // `arguments` identifier references are also early errors in class field initializers (ECMA-262
-        // `ContainsArguments`).
+        // Class field initializers introduce early-error boundaries:
+        // - `await`/`yield` expressions are always invalid, regardless of whether the surrounding
+        //   function is async/generator (ECMA-262 `ContainsAwait` / `ContainsYieldExpression`).
+        // - `arguments` identifier references are always invalid (ECMA-262 `ContainsArguments`).
+        // - super property access is permitted (fields are evaluated in a method-like environment
+        //   with a `[[HomeObject]]`), but `super()` is still disallowed (`ContainsSuperCall`).
         let saved_await_allowed = ctx.await_allowed;
         let saved_yield_allowed = ctx.yield_allowed;
         let saved_arguments_allowed = ctx.arguments_allowed;
+        let saved_super_property_allowed = ctx.super_property_allowed;
         ctx.await_allowed = false;
         ctx.yield_allowed = false;
         ctx.arguments_allowed = false;
+        ctx.super_property_allowed = true;
         let res = self.visit_expr(ctx, expr);
         ctx.await_allowed = saved_await_allowed;
         ctx.yield_allowed = saved_yield_allowed;
         ctx.arguments_allowed = saved_arguments_allowed;
+        ctx.super_property_allowed = saved_super_property_allowed;
         res
       }
       ClassOrObjVal::Prop(None) => Ok(()),
@@ -1979,6 +2018,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       /* await_is_reserved */ true,
       /* yield_is_reserved */ saved_yield_is_reserved,
       /* super_call_allowed */ false,
+      /* super_property_allowed */ true,
       /* arguments_allowed */ false,
     );
     ctx.return_allowed = false;
@@ -2006,6 +2046,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       &decl.function,
       /* unique */ false,
       /* super_call_allowed */ false,
+      /* super_property_allowed */ false,
       FuncNameKind::Decl,
     )
   }
@@ -2346,6 +2387,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     func: &Node<Func>,
     unique_formals: bool,
     super_call_allowed: bool,
+    super_property_allowed: bool,
     name_kind: FuncNameKind,
   ) -> Result<(), VmError> {
     self.step()?;
@@ -2523,6 +2565,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       func.stx.async_,
       func.stx.generator,
       super_call_allowed,
+      super_property_allowed,
       arguments_allowed,
     );
 
@@ -2669,6 +2712,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
       Expr::IdPat(id) => {
         self.validate_reserved_identifier(ctx, expr.loc, id.stx.name.as_str())?;
+        if id.stx.name == "arguments" && !ctx.arguments_allowed {
+          self.push_error(
+            expr.loc,
+            "arguments is not allowed in class static initialization blocks",
+          )?;
+        }
         if id.stx.name.starts_with('#') {
           self.push_error(expr.loc, "invalid private identifier")?;
         }
@@ -2691,6 +2740,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       &expr.func,
       /* unique */ true,
       /* super_call_allowed */ ctx.super_call_allowed,
+      /* super_property_allowed */ ctx.super_property_allowed,
       FuncNameKind::Expr,
     )
   }
@@ -2702,6 +2752,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       &expr.func,
       /* unique */ false,
       /* super_call_allowed */ false,
+      /* super_property_allowed */ false,
       FuncNameKind::Expr,
     )
   }
@@ -2729,6 +2780,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if expr.optional_chaining && matches!(&*expr.left.stx, Expr::Super(_)) {
       self.push_error(loc, "optional chaining cannot be used on super")?;
     }
+    if matches!(&*expr.left.stx, Expr::Super(_)) && !ctx.super_property_allowed {
+      self.push_error(loc, "super property access is only valid in methods and class initializers")?;
+    }
     self.visit_expr(ctx, &expr.left)?;
     if expr.right.starts_with('#') {
       if matches!(&*expr.left.stx, Expr::Super(_)) {
@@ -2748,6 +2802,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     if expr.optional_chaining && matches!(&*expr.object.stx, Expr::Super(_)) {
       self.push_error(loc, "optional chaining cannot be used on super")?;
+    }
+    if matches!(&*expr.object.stx, Expr::Super(_)) && !ctx.super_property_allowed {
+      self.push_error(loc, "super property access is only valid in methods and class initializers")?;
     }
     self.visit_expr(ctx, &expr.object)?;
     self.visit_expr(ctx, &expr.member)
@@ -3089,6 +3146,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               &getter.stx.func,
               /* unique */ true,
               /* super_call_allowed */ false,
+              /* super_property_allowed */ true,
               FuncNameKind::Expr,
             )?,
             ClassOrObjVal::Setter(setter) => self.visit_func(
@@ -3097,6 +3155,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               &setter.stx.func,
               /* unique */ true,
               /* super_call_allowed */ false,
+              /* super_property_allowed */ true,
               FuncNameKind::Expr,
             )?,
             ClassOrObjVal::Method(method) => self.visit_func(
@@ -3105,6 +3164,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               &method.stx.func,
               /* unique */ true,
               /* super_call_allowed */ false,
+              /* super_property_allowed */ true,
               FuncNameKind::Expr,
             )?,
             ClassOrObjVal::Prop(Some(expr)) => self.visit_expr(ctx, expr)?,

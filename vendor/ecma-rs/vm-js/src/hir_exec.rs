@@ -14741,7 +14741,7 @@ mod async_function_ast_fallback_tests {
 
 #[cfg(test)]
 mod compiled_hir_async_await_semantics_tests {
-  use crate::function::CallHandler;
+  use crate::function::{CallHandler, FunctionData};
   use crate::property::{PropertyKey, PropertyKind};
   use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
  
@@ -14789,9 +14789,9 @@ mod compiled_hir_async_await_semantics_tests {
  
     // Ensure the async function was allocated as a compiled user function by the HIR script path.
     //
-    // Note: async function bodies currently execute via the AST interpreter at call-time
-    // (`FunctionData::EcmaFallback`). Once compiled async/await support lands, this same test
-    // harness will automatically exercise the compiled async evaluator instead.
+    // Note: async functions may still execute via the call-time AST fallback
+    // (`FunctionData::AsyncEcmaFallback`) until the compiled async evaluator supports all `await`
+    // forms.
     let func_value = get_global_data_property(&mut rt, "__f")?;
     let Value::Object(func_obj) = func_value else {
       panic!("expected __f to be a function object, got {func_value:?}");
@@ -14802,9 +14802,13 @@ mod compiled_hir_async_await_semantics_tests {
       matches!(call_handler, CallHandler::User(_)),
       "expected __f to be a compiled user function, got {call_handler:?}"
     );
- 
-    let _func_data = rt.heap.get_function_data(func_obj)?;
- 
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None | FunctionData::AsyncEcmaFallback { .. }),
+      "expected __f to be a plain user function, got {func_data:?}"
+    );
+
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
  
     let promise_value = get_global_data_property(&mut rt, "__p")?;

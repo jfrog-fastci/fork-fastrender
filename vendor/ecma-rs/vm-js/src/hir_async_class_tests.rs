@@ -27,7 +27,7 @@ fn assert_compiled_hir_async_function(rt: &JsRuntime, func_obj: GcObject) -> Res
     "expected async function to be allocated as a compiled user function, got {call_handler:?}"
   );
   // Async function bodies may still execute via the AST interpreter at call-time
-  // (`FunctionData::EcmaFallback`). Once compiled async/await execution is enabled, this test will
+  // (`FunctionData::AsyncEcmaFallback`). Once compiled async/await execution is enabled, this test will
   // automatically exercise the compiled async evaluator instead.
   let _func_data = rt.heap.get_function_data(func_obj)?;
   Ok(())
