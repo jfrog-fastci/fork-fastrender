@@ -27,7 +27,6 @@ decoding VP8/VP9 without extra tools/tests:
 
 - `--target=generic-gnu` (portable build; avoids assembler requirements)
 - `--disable-examples --disable-tools --disable-unit-tests --disable-docs`
-- `--disable-debug-libs` (avoid building `libvpx_g.a`, etc)
 - `--enable-vp9 --enable-vp8`
 - `--disable-webm-io`
 - `--disable-libyuv` (avoid building libyuv / C++ compilation)

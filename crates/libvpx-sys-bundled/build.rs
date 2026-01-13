@@ -106,9 +106,6 @@ Alternatively, link against a system-provided libvpx.",
         configure_args.push(arg.to_string());
     }
     for arg in [
-        // Avoid building extra debug variants of the libraries (e.g. libvpx_g.a) to keep build
-        // times down.
-        "--disable-debug-libs",
         "--disable-examples",
         "--disable-tools",
         "--disable-unit-tests",
