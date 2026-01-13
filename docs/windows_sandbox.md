@@ -3,6 +3,14 @@
 This doc describes the **current intended sandbox boundary** for the Windows *renderer* process.
 It is written to prevent “small refactors” from accidentally weakening isolation.
 
+Status / repo reality (today):
+
+- The windowed `browser` UI is still largely single-process. The Windows sandbox helpers are used
+  primarily by **tests/tooling** today and are intended to become the standard spawn path once the
+  renderer runs as a separate OS process.
+- This doc is written as if the renderer were already a separate compromised process, because that
+  is the security boundary we are building toward.
+
 Code map (repo reality):
 
 - High-level renderer spawn sandboxing:
