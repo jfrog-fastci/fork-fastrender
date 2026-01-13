@@ -881,12 +881,21 @@ fn sanitize_select_control_for_windowed_ui(
 fn sanitize_worker_to_ui_for_windowed_browser(
   msg: fastrender::ui::WorkerToUi,
 ) -> Option<fastrender::ui::WorkerToUi> {
-  use fastrender::ui::protocol_limits::{MAX_ACCEPT_ATTR_BYTES, MAX_INPUT_VALUE_BYTES};
+  use fastrender::ui::protocol_limits::{
+    MAX_ACCEPT_ATTR_BYTES, MAX_INPUT_VALUE_BYTES, MAX_SELECT_ITEMS, MAX_SELECT_LABEL_BYTES,
+  };
+  use fastrender::ui::messages::DatalistOption;
   use fastrender::ui::WorkerToUi;
 
   const ABSURD_INPUT_VALUE_BYTES_MULTIPLIER: usize = 64;
   let absurd_input_limit =
     MAX_INPUT_VALUE_BYTES.saturating_mul(ABSURD_INPUT_VALUE_BYTES_MULTIPLIER);
+  const ABSURD_DATALIST_OPTIONS_MULTIPLIER: usize = 64;
+  let absurd_datalist_limit =
+    MAX_SELECT_ITEMS.saturating_mul(ABSURD_DATALIST_OPTIONS_MULTIPLIER);
+  const ABSURD_VEC_CAPACITY_MULTIPLIER: usize = 4;
+  let absurd_item_vec_capacity =
+    MAX_SELECT_ITEMS.saturating_mul(ABSURD_VEC_CAPACITY_MULTIPLIER);
 
   match msg {
     WorkerToUi::OpenSelectDropdown {
@@ -916,6 +925,39 @@ fn sanitize_worker_to_ui_for_windowed_browser(
         anchor_css,
       })
     }
+    WorkerToUi::DatalistOpened {
+      tab_id,
+      input_node_id,
+      mut options,
+      anchor_css,
+    } => {
+      // Datalist payloads are derived from page content and untrusted.
+      if options.len() > absurd_datalist_limit {
+        return None;
+      }
+      if options.len() > MAX_SELECT_ITEMS {
+        options.truncate(MAX_SELECT_ITEMS);
+      }
+      // Drop hostile reserved capacity even when length is within bounds.
+      if options.capacity() > absurd_item_vec_capacity {
+        options = options.into_iter().collect();
+      }
+      for option in &mut options {
+        let DatalistOption { value, .. } = option;
+        truncate_utf8_string_in_place(value, MAX_SELECT_LABEL_BYTES);
+      }
+      if options.capacity() > MAX_SELECT_ITEMS {
+        // Best-effort shrink even if we didn't rebuild above.
+        options.shrink_to_fit();
+      }
+      let anchor_css = sanitize_anchor_css_rect(anchor_css);
+      Some(WorkerToUi::DatalistOpened {
+        tab_id,
+        input_node_id,
+        options,
+        anchor_css,
+      })
+    }
     WorkerToUi::DateTimePickerOpened {
       tab_id,
       input_node_id,
@@ -934,6 +976,26 @@ fn sanitize_worker_to_ui_for_windowed_browser(
         tab_id,
         input_node_id,
         kind,
+        value,
+        anchor_css,
+      })
+    }
+    WorkerToUi::ColorPickerOpened {
+      tab_id,
+      input_node_id,
+      mut value,
+      anchor_css,
+    } => {
+      // Color picker values are expected to be tiny; treat extremely large payloads as invalid so we
+      // never clone/parse them.
+      if value.len() > absurd_input_limit {
+        return None;
+      }
+      truncate_utf8_string_in_place(&mut value, MAX_INPUT_VALUE_BYTES);
+      let anchor_css = sanitize_anchor_css_rect(anchor_css);
+      Some(WorkerToUi::ColorPickerOpened {
+        tab_id,
+        input_node_id,
         value,
         anchor_css,
       })
@@ -1438,9 +1500,10 @@ impl ScrollCoalescer {
 mod bridge_worker_to_ui_sanitization_tests {
   use super::{sanitize_worker_to_ui_for_bridge_queue, BridgeSanitizedMsgs, QueuedMsg};
   use fastrender::geometry::Rect;
-  use fastrender::ui::messages::DateTimeInputKind;
+  use fastrender::ui::messages::{DatalistOption, DateTimeInputKind};
   use fastrender::ui::protocol_limits::{
     MAX_ACCEPT_ATTR_BYTES, MAX_CLIPBOARD_TEXT_BYTES, MAX_DEBUG_LOG_BYTES, MAX_FAVICON_BYTES,
+    MAX_INPUT_VALUE_BYTES, MAX_SELECT_ITEMS, MAX_SELECT_LABEL_BYTES,
   };
   use fastrender::ui::{TabId, WorkerToUi};
 
@@ -1663,6 +1726,91 @@ mod bridge_worker_to_ui_sanitization_tests {
       "expected accept capacity to be bounded (cap={}, len={})",
       accept.capacity(),
       accept.len()
+    );
+  }
+
+  #[test]
+  fn datalist_payloads_are_sanitized_before_enqueue() {
+    let tab_id = TabId(1);
+    let mut value = String::with_capacity(MAX_SELECT_LABEL_BYTES * 64);
+    value.push_str("hello");
+    assert!(value.capacity() > MAX_SELECT_LABEL_BYTES);
+
+    let mut options = Vec::with_capacity(MAX_SELECT_ITEMS * 4 + 1);
+    options.push(DatalistOption {
+      option_node_id: 1,
+      value,
+      disabled: false,
+    });
+    assert!(options.capacity() > MAX_SELECT_ITEMS * 4);
+
+    let msg = WorkerToUi::DatalistOpened {
+      tab_id,
+      input_node_id: 5,
+      options,
+      anchor_css: Rect::from_xywh(f32::NAN, f32::INFINITY, -f32::INFINITY, f32::NAN),
+    };
+
+    let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
+      sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
+      panic!("expected DatalistOpened to be enqueued");
+    };
+    let WorkerToUi::DatalistOpened { options, anchor_css, .. } = worker_msg else {
+      panic!("expected DatalistOpened after sanitization");
+    };
+
+    assert_eq!(options.len(), 1);
+    assert!(
+      options.capacity() <= MAX_SELECT_ITEMS,
+      "expected datalist options vec capacity to be bounded (cap={}, len={})",
+      options.capacity(),
+      options.len()
+    );
+    assert!(anchor_css.origin.x.is_finite());
+    assert!(anchor_css.origin.y.is_finite());
+    assert!(anchor_css.size.width.is_finite());
+    assert!(anchor_css.size.height.is_finite());
+
+    let opt = &options[0];
+    assert_eq!(opt.value, "hello");
+    assert!(opt.value.len() <= MAX_SELECT_LABEL_BYTES);
+    assert!(
+      opt.value.capacity() <= MAX_SELECT_LABEL_BYTES,
+      "expected datalist option value capacity to be bounded (cap={}, len={})",
+      opt.value.capacity(),
+      opt.value.len()
+    );
+  }
+
+  #[test]
+  fn color_picker_value_capacity_is_shrunk_before_enqueue() {
+    let tab_id = TabId(1);
+    let mut value = String::with_capacity(MAX_INPUT_VALUE_BYTES * 64);
+    value.push_str("#ff00ff");
+    assert!(value.capacity() > MAX_INPUT_VALUE_BYTES);
+
+    let msg = WorkerToUi::ColorPickerOpened {
+      tab_id,
+      input_node_id: 9,
+      value,
+      anchor_css: Rect::from_xywh(1.0, 2.0, 3.0, 4.0),
+    };
+
+    let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
+      sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
+      panic!("expected ColorPickerOpened to be enqueued");
+    };
+    let WorkerToUi::ColorPickerOpened { value, .. } = worker_msg else {
+      panic!("expected ColorPickerOpened after sanitization");
+    };
+    assert_eq!(value, "#ff00ff");
+    assert!(
+      value.capacity() <= MAX_INPUT_VALUE_BYTES,
+      "expected color picker value capacity to be bounded (cap={}, len={})",
+      value.capacity(),
+      value.len()
     );
   }
 }
