@@ -147,6 +147,7 @@ struct StreamConsumeState {
 struct EnvState {
   env: WindowFetchEnv,
   realm_id: RealmId,
+  global: WeakGcObject,
   promise_executor_call: NativeFunctionId,
   body_stream_get_reader_wrapper_call: NativeFunctionId,
   body_stream_cancel_wrapper_call: NativeFunctionId,
@@ -205,6 +206,7 @@ impl EnvState {
   fn new(
     env: WindowFetchEnv,
     realm_id: RealmId,
+    global: WeakGcObject,
     promise_executor_call: NativeFunctionId,
     body_stream_get_reader_wrapper_call: NativeFunctionId,
     body_stream_cancel_wrapper_call: NativeFunctionId,
@@ -219,6 +221,7 @@ impl EnvState {
     Self {
       env,
       realm_id,
+      global,
       promise_executor_call,
       body_stream_get_reader_wrapper_call,
       body_stream_cancel_wrapper_call,
@@ -3852,6 +3855,116 @@ fn request_ctor_call(
   ))
 }
 
+/// Create a dependent AbortSignal for `Request.signal`.
+///
+/// Fetch's `Request` interface requires `request.signal` to always be an `AbortSignal` and to be a
+/// *new* dependent signal derived from a list of source signals (including the empty list).
+///
+/// When AbortSignal bindings are installed, this uses `AbortSignal.any([...])` which closely
+/// matches the spec's "creating a dependent abort signal from signals" primitive.
+///
+/// If AbortSignal bindings are unavailable (e.g. in minimal unit tests that only install fetch),
+/// this falls back to creating a deterministic plain object with `{ aborted, reason }` snapshot
+/// properties so `Request.signal` is never `null`. This fallback does **not** attempt to fully
+/// emulate AbortSignal semantics (event dispatch, abort propagation, etc).
+fn create_request_signal(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  env_id: u64,
+  sources: &[GcObject],
+) -> Result<Value, VmError> {
+  let heap = scope.heap();
+  let global_obj = with_env_state(env_id, heap, |state| Ok(state.global.upgrade(heap)))?;
+
+  if let Some(global_obj) = global_obj {
+    scope.push_root(Value::Object(global_obj))?;
+
+    let abort_signal_ctor_val = {
+      let abort_signal_key = alloc_key(scope, "AbortSignal")?;
+      vm.get_with_host_and_hooks(host, scope, host_hooks, global_obj, abort_signal_key)?
+    };
+
+    if let Value::Object(abort_signal_ctor) = abort_signal_ctor_val {
+      scope.push_root(Value::Object(abort_signal_ctor))?;
+
+      let any_fn = {
+        let any_key = alloc_key(scope, "any")?;
+        vm.get_with_host_and_hooks(host, scope, host_hooks, abort_signal_ctor, any_key)?
+      };
+
+      if scope.heap().is_callable(any_fn).unwrap_or(false) {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+        // Build `[...]` as an actual Array so `AbortSignal.any` sees a well-formed iterable.
+        let arr = scope.alloc_array(sources.len())?;
+        scope
+          .heap_mut()
+          .object_set_prototype(arr, Some(intr.array_prototype()))?;
+        scope.push_root(Value::Object(arr))?;
+
+        for (idx, source) in sources.iter().enumerate() {
+          // Root the element while allocating the property key: `alloc_key` can trigger GC.
+          scope.push_root(Value::Object(*source))?;
+          let key = alloc_key(scope, &idx.to_string())?;
+          scope.define_property(arr, key, data_desc(Value::Object(*source), true))?;
+        }
+
+        // AbortSignal.any([...]) -> AbortSignal
+        let signal_val = vm.call_with_host_and_hooks(
+          host,
+          scope,
+          host_hooks,
+          any_fn,
+          Value::Object(abort_signal_ctor),
+          &[Value::Object(arr)],
+        )?;
+        if matches!(signal_val, Value::Object(_)) {
+          return Ok(signal_val);
+        }
+      }
+    }
+  }
+
+  // Deterministic fallback: create a plain object with `{ aborted, reason }` based on the current
+  // state of the provided signals.
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+  scope.push_root(Value::Object(obj))?;
+
+  let aborted_key = alloc_key(scope, "aborted")?;
+  let reason_key = alloc_key(scope, "reason")?;
+
+  let mut aborted = false;
+  let mut reason = Value::Undefined;
+
+  for source in sources {
+    // Root `source` while reading its properties in case allocation triggers GC.
+    let mut check_scope = scope.reborrow();
+    check_scope.push_root(Value::Object(*source))?;
+
+    let aborted_val =
+      vm.get_with_host_and_hooks(host, &mut check_scope, host_hooks, *source, aborted_key)?;
+    if check_scope.heap().to_boolean(aborted_val)? {
+      aborted = true;
+      reason =
+        vm.get_with_host_and_hooks(host, &mut check_scope, host_hooks, *source, reason_key)?;
+      break;
+    }
+  }
+
+  // Root `reason` while defining `aborted` in case `set_data_prop` triggers GC.
+  scope.push_root(reason)?;
+  set_data_prop(scope, obj, "aborted", Value::Bool(aborted), /* writable */ false)?;
+  set_data_prop(scope, obj, "reason", reason, /* writable */ false)?;
+  Ok(Value::Object(obj))
+}
+
 fn request_ctor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -3910,8 +4023,13 @@ fn request_ctor_construct(
     CoreRequest::new_with_limits("GET", url, &limits)
   };
 
-  // Associated AbortSignal (optional; FastRender currently treats missing signals as `null`).
-  let mut signal: Option<Value> = None;
+  // Associated AbortSignal.
+  //
+  // Fetch requires `request.signal` to always be a new dependent signal:
+  // - `init.signal` (if present, even if it is `null`) takes precedence
+  // - otherwise, inherit from the input request's signal (if any)
+  // - otherwise, create a fresh non-aborted signal.
+  let mut signal_sources: Vec<GcObject> = Vec::new();
   let mut init_specified_signal = false;
 
   // Wrapper-only Request attributes that are not stored in the core request type.
@@ -4056,8 +4174,8 @@ fn request_ctor_construct(
     if !matches!(signal_val, Value::Undefined) {
       init_specified_signal = true;
       match signal_val {
-        Value::Undefined | Value::Null => signal = None,
-        Value::Object(_) => signal = Some(signal_val),
+        Value::Undefined | Value::Null => {}
+        Value::Object(obj) => signal_sources.push(obj),
         _ => {
           return Err(throw_type_error(
             vm,
@@ -4074,11 +4192,15 @@ fn request_ctor_construct(
   if !init_specified_signal {
     if let Some(input_obj) = input_request_obj {
       let inherited = get_data_prop(scope, input_obj, "signal")?;
-      if matches!(inherited, Value::Object(_)) {
-        signal = Some(inherited);
+      if let Value::Object(obj) = inherited {
+        signal_sources.push(obj);
       }
     }
   }
+
+  let signal = create_request_signal(vm, scope, host, host_hooks, env_id, &signal_sources)?;
+  // Root the newly created signal while we allocate the wrapper object below.
+  scope.push_root(signal)?;
 
   let request_id = with_env_state_mut(env_id, scope.heap(), |state| {
     let id = state.alloc_id();
@@ -4110,7 +4232,7 @@ fn request_ctor_construct(
     scope,
     obj,
     "signal",
-    signal.unwrap_or(Value::Null),
+    signal,
     /* writable */ false,
   )?;
 
@@ -4140,13 +4262,16 @@ fn request_clone_native(
   };
   let (env_id, request_id) = request_info_from_this(scope, Value::Object(original_obj))?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
-  let signal = match get_data_prop(scope, original_obj, "signal")? {
-    Value::Undefined => Value::Null,
-    other => other,
-  };
   let cache = get_data_prop(scope, original_obj, "cache")?;
   let integrity = get_data_prop(scope, original_obj, "integrity")?;
   let keepalive = get_data_prop(scope, original_obj, "keepalive")?;
+  let mut signal_sources: Vec<GcObject> = Vec::new();
+  if let Value::Object(obj) = get_data_prop(scope, original_obj, "signal")? {
+    signal_sources.push(obj);
+  }
+  let signal = create_request_signal(vm, scope, host, host_hooks, env_id, &signal_sources)?;
+  // Root the newly created signal while we allocate the wrapper object below.
+  scope.push_root(signal)?;
   if request_wrapper_cached_body_stream_is_locked(vm, scope, host, host_hooks, original_obj)? {
     return Err(throw_type_error(
       vm,
@@ -8633,6 +8758,7 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
   env: WindowFetchEnv,
 ) -> Result<WindowFetchBindings, VmError> {
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
+  let global = realm.global_object();
   let promise_executor_call = vm.register_native_call(promise_capability_executor_call)?;
   let body_stream_get_reader_wrapper_call = vm.register_native_call(body_stream_get_reader_wrapper_native)?;
   let body_stream_cancel_wrapper_call = vm.register_native_call(body_stream_cancel_wrapper_native)?;
@@ -8651,6 +8777,7 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
       EnvState::new(
         env,
         realm.id(),
+        WeakGcObject::from(global),
         promise_executor_call,
         body_stream_get_reader_wrapper_call,
         body_stream_cancel_wrapper_call,
@@ -8668,7 +8795,6 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
   let bindings = WindowFetchBindings::new(env_id);
 
   let mut scope = heap.scope();
-  let global = realm.global_object();
   scope.push_root(Value::Object(global))?;
 
   let func_proto = realm.intrinsics().function_prototype();
@@ -9935,6 +10061,88 @@ mod tests {
        })()",
     )?;
     assert_eq!(get_string(window.heap(), invalid_cache), "TypeError");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn request_signal_is_non_null_abort_signal() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let ok = window.exec_script(
+      "(() => {\
+         const r = new Request('https://example.invalid/');\
+         return typeof r.signal === 'object' && r.signal !== null && r.signal.aborted === false;\
+       })()",
+    )?;
+    assert!(matches!(ok, Value::Bool(true)), "got {ok:?}");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn request_signal_is_dependent_on_init_signal() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let ok = window.exec_script(
+      "(() => {\
+         const c = new AbortController();\
+         const r = new Request('https://example.invalid/', { signal: c.signal });\
+         if (r.signal === c.signal) return false;\
+         c.abort('x');\
+         return r.signal.aborted === true && r.signal.reason === 'x';\
+       })()",
+    )?;
+    assert!(matches!(ok, Value::Bool(true)), "got {ok:?}");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn request_clone_creates_dependent_signal() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let ok = window.exec_script(
+      "(() => {\
+         const r1 = new Request('https://example.invalid/');\
+         const r2 = r1.clone();\
+         return r2.signal !== r1.signal;\
+       })()",
+    )?;
+    assert!(matches!(ok, Value::Bool(true)), "got {ok:?}");
 
     drop(fetch_bindings);
     window.teardown();
