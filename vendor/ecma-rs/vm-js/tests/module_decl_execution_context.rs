@@ -225,7 +225,7 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
       r#"
         export function f() { return import.meta.url; }
         export function g() { return import('dep.js'); }
-        export { h, gi } from 'dep.js';
+        export { h, gi, K } from 'dep.js';
       "#,
     )?,
   )?;
@@ -237,6 +237,12 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
         export const x = 1;
         export function h() { return import.meta.url; }
         export function gi() { return import('dep2.js'); }
+        export class K {
+          constructor() {
+            this.url = import.meta.url;
+            this.p = import('dep3.js');
+          }
+        }
       "#,
     )?,
   )?;
@@ -244,11 +250,16 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
     "dep2.js",
     SourceTextModuleRecord::parse(heap, "export const y = 2;")?,
   )?;
+  let dep3 = modules.add_module_with_specifier(
+    "dep3.js",
+    SourceTextModuleRecord::parse(heap, "export const z = 3;")?,
+  )?;
   modules.link_all_by_specifier();
 
   let mut hooks = TestHostHooks::new();
   hooks.register_module("dep.js", dep);
   hooks.register_module("dep2.js", dep2);
+  hooks.register_module("dep3.js", dep3);
   hooks.register_import_meta_url(m, META_URL_M);
   hooks.register_import_meta_url(dep, META_URL_DEP);
 
@@ -438,6 +449,107 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
     assert!(matches!(y_value, Value::Number(n) if n == 2.0));
 
     scope.heap_mut().remove_root(dep2_import_promise_root);
+  }
+
+  // Read `K` (a class declared in `dep.js` and re-exported by `m.js`) and construct it from host
+  // code. The constructor uses `import.meta.url` and a dynamic import, which should both observe
+  // `dep.js` as the active module during construction.
+  let dep3_import_promise_root = {
+    let mut scope = heap.scope();
+    let ns = modules.get_module_namespace(m, vm, &mut scope)?;
+    scope.push_root(Value::Object(ns))?;
+
+    let k_key = PropertyKey::from_string(scope.alloc_string("K")?);
+    let k_value =
+      scope.get_with_host_and_hooks(vm, &mut host, &mut hooks, ns, k_key, Value::Object(ns))?;
+    scope.push_root(k_value)?;
+
+    // Construct `new K()` from host code.
+    let instance =
+      vm.construct_with_host_and_hooks(&mut host, &mut scope, &mut hooks, k_value, &[], k_value)?;
+    let Value::Object(instance_obj) = instance else {
+      return Err(VmError::InvariantViolation(
+        "expected new K() to return an object",
+      ));
+    };
+    scope.push_root(instance)?;
+
+    // Verify `this.url` was initialized using `dep.js`'s `import.meta.url`.
+    let url_key = PropertyKey::from_string(scope.alloc_string("url")?);
+    let url_value = scope.get_with_host_and_hooks(
+      vm,
+      &mut host,
+      &mut hooks,
+      instance_obj,
+      url_key,
+      Value::Object(instance_obj),
+    )?;
+    let Value::String(url_s) = url_value else {
+      return Err(VmError::InvariantViolation(
+        "expected K instance .url to be a string",
+      ));
+    };
+    assert_eq!(scope.heap().get_string(url_s)?.to_utf8_lossy(), META_URL_DEP);
+
+    // Extract `this.p` (the dynamic import promise) so we can inspect it after draining microtasks.
+    let p_key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let p_value = scope.get_with_host_and_hooks(
+      vm,
+      &mut host,
+      &mut hooks,
+      instance_obj,
+      p_key,
+      Value::Object(instance_obj),
+    )?;
+    scope.push_root(p_value)?;
+
+    assert_eq!(
+      hooks.import_referrers.get("dep3.js").copied(),
+      Some(ModuleReferrer::Module(dep))
+    );
+
+    scope.heap_mut().add_root(p_value)?
+  };
+
+  // Continue the constructor's dynamic import promise to completion.
+  hooks.perform_microtask_checkpoint(vm, heap)?;
+
+  // Verify the import() promise fulfills to the imported module namespace.
+  {
+    let mut scope = heap.scope();
+    let p = scope
+      .heap()
+      .get_root(dep3_import_promise_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    scope.push_root(p)?;
+    let Value::Object(promise_obj) = p else {
+      return Err(VmError::InvariantViolation(
+        "expected import() to return a Promise object",
+      ));
+    };
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let ns_value = scope
+      .heap()
+      .promise_result(promise_obj)?
+      .expect("fulfilled promise should have a result");
+    let Value::Object(ns_obj) = ns_value else {
+      return Err(VmError::InvariantViolation(
+        "import() promise should fulfill to a module namespace object",
+      ));
+    };
+
+    let z_key = PropertyKey::from_string(scope.alloc_string("z")?);
+    let z_value = scope.get_with_host_and_hooks(
+      vm,
+      &mut host,
+      &mut hooks,
+      ns_obj,
+      z_key,
+      Value::Object(ns_obj),
+    )?;
+    assert!(matches!(z_value, Value::Number(n) if n == 3.0));
+
+    scope.heap_mut().remove_root(dep3_import_promise_root);
   }
 
   hooks.teardown_jobs(vm, heap);
