@@ -323,8 +323,9 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 - Drag a link from page content and drop it onto the address bar to navigate (Chrome-like UX).
 - Hovering a link shows its destination URL in a small bottom-left overlay bubble (modern browser
   style).
-- Right-clicking in the rendered page opens a basic context menu (for example: open link in new tab,
-  copy link address, download link, reload).
+- Right-clicking in the rendered page opens a basic context menu (context-sensitive; can include:
+  open link/image in a new tab, copy link/image address, download link/image, reload, and basic
+  clipboard/editing actions like copy/cut/paste/select all).
 - Click the downloads icon in the toolbar to open the downloads side panel (shows progress and lets
   you cancel/retry/open/reveal completed downloads).
 
