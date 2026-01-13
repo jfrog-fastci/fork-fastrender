@@ -60,6 +60,9 @@ impl ShutdownJoinTracker {
   {
     let label = label.into();
     let (done_tx, done_rx) = mpsc::channel::<std::thread::Result<()>>();
+    // `spawn` takes ownership of the closure even on error, so move a clone into the helper thread
+    // and keep the original `Sender` in this stack frame for error-path cleanup.
+    let done_tx_thread = done_tx.clone();
     let started_at = Instant::now();
     let deadline = started_at + self.detach_timeout;
 
@@ -67,7 +70,7 @@ impl ShutdownJoinTracker {
     match std::thread::Builder::new()
       .name(format!("fastr_shutdown_join_{}", self.joins.len()))
       .spawn(move || {
-        let _ = done_tx.send(join());
+        let _ = done_tx_thread.send(join());
       }) {
       Ok(helper_join) => {
         // Detach the helper; `poll()` will observe completion via the channel.
@@ -82,7 +85,6 @@ impl ShutdownJoinTracker {
       Err(err) => {
         eprintln!("failed to spawn shutdown join helper thread for {label}: {err}");
         drop(done_rx);
-        drop(done_tx);
       }
     }
   }
