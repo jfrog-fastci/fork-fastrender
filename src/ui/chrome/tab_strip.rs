@@ -1553,8 +1553,10 @@ pub(super) fn tab_strip_ui(
   let mut active_tab_is_pinned = false;
   let mut pinned_scroll_offset_x: f32 = 0.0;
   let mut pinned_max_scroll_x: f32 = 0.0;
+  let mut pinned_scroll_viewport_rect: Option<Rect> = None;
   let mut scroll_offset_x: f32 = 0.0;
   let mut unpinned_max_scroll_x: f32 = 0.0;
+  let mut unpinned_scroll_viewport_rect: Option<Rect> = None;
 
   if tabs_viewport_width > 0.0 {
     if pinned_count > 0 && pinned_viewport_rect.width() > 0.0 {
@@ -1653,6 +1655,8 @@ pub(super) fn tab_strip_ui(
       pinned_scroll_offset_x = scroll_state.offset.x;
       pinned_max_scroll_x =
         (scroll_output.content_size.x - scroll_output.inner_rect.width()).max(0.0);
+      let pinned_scroll_rect = scroll_output.inner_rect;
+      pinned_scroll_viewport_rect = Some(pinned_scroll_rect);
       if let Some(scroll_delta) = restore_scroll_delta {
         pinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
@@ -1667,11 +1671,11 @@ pub(super) fn tab_strip_ui(
         ) {
           let dragging_is_pinned = app.tab(dragging_tab_id).is_some_and(|tab| tab.pinned);
           if dragging_is_pinned
-            && pointer_pos.y >= pinned_viewport_rect.top()
-            && pointer_pos.y <= pinned_viewport_rect.bottom()
+            && pointer_pos.y >= pinned_scroll_rect.top()
+            && pointer_pos.y <= pinned_scroll_rect.bottom()
           {
             let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.1);
-            let delta_x = drag_autoscroll_delta_x(pointer_pos, pinned_viewport_rect, dt);
+            let delta_x = drag_autoscroll_delta_x(pointer_pos, pinned_scroll_rect, dt);
             if delta_x != 0.0 {
               let prev = scroll_state.offset.x;
               let next = (prev + delta_x).clamp(0.0, pinned_max_scroll_x);
@@ -1900,6 +1904,8 @@ pub(super) fn tab_strip_ui(
       scroll_offset_x = scroll_state.offset.x;
       unpinned_max_scroll_x =
         (scroll_output.content_size.x - scroll_output.inner_rect.width()).max(0.0);
+      let unpinned_scroll_rect = scroll_output.inner_rect;
+      unpinned_scroll_viewport_rect = Some(unpinned_scroll_rect);
       if let Some(scroll_delta) = restore_scroll_delta {
         unpinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
@@ -1919,11 +1925,11 @@ pub(super) fn tab_strip_ui(
         ) {
           let dragging_is_unpinned = app.tab(dragging_tab_id).is_some_and(|tab| !tab.pinned);
           if dragging_is_unpinned
-            && pointer_pos.y >= unpinned_viewport_rect.top()
-            && pointer_pos.y <= unpinned_viewport_rect.bottom()
+            && pointer_pos.y >= unpinned_scroll_rect.top()
+            && pointer_pos.y <= unpinned_scroll_rect.bottom()
           {
             let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.1);
-            let delta_x = drag_autoscroll_delta_x(pointer_pos, unpinned_viewport_rect, dt);
+            let delta_x = drag_autoscroll_delta_x(pointer_pos, unpinned_scroll_rect, dt);
             if delta_x != 0.0 {
               let prev = scroll_state.offset.x;
               let next = (prev + delta_x).clamp(0.0, unpinned_max_scroll_x);
@@ -1959,17 +1965,19 @@ pub(super) fn tab_strip_ui(
 
   // Edge fades: scrollbars are hidden, so use subtle fades as the overflow affordance.
   if pinned_count > 0 && pinned_viewport_rect.width() > 0.0 {
+    let viewport_rect = pinned_scroll_viewport_rect.unwrap_or(pinned_viewport_rect);
     paint_scroll_edge_fades(
       ui,
-      pinned_viewport_rect,
+      viewport_rect,
       pinned_scroll_offset_x,
       pinned_max_scroll_x,
     );
   }
   if unpinned_viewport_rect.width() > 0.0 {
+    let viewport_rect = unpinned_scroll_viewport_rect.unwrap_or(unpinned_viewport_rect);
     paint_scroll_edge_fades(
       ui,
-      unpinned_viewport_rect,
+      viewport_rect,
       scroll_offset_x,
       unpinned_max_scroll_x,
     );
@@ -2030,13 +2038,15 @@ pub(super) fn tab_strip_ui(
     ui.ctx().request_repaint();
     let dragging_is_pinned = app.tab(dragging_tab_id).map(|t| t.pinned).unwrap_or(false);
 
+    let pinned_clip_rect = pinned_scroll_viewport_rect.unwrap_or(pinned_viewport_rect);
+    let unpinned_clip_rect = unpinned_scroll_viewport_rect.unwrap_or(unpinned_viewport_rect);
     let (tab_rects_for_drag, group_start_index, group_clip_rect) = if dragging_is_pinned {
-      (&pinned_tab_rects_for_drag, 0usize, pinned_viewport_rect)
+      (&pinned_tab_rects_for_drag, 0usize, pinned_clip_rect)
     } else {
       (
         &unpinned_tab_rects_for_drag,
         pinned_count,
-        unpinned_viewport_rect,
+        unpinned_clip_rect,
       )
     };
 
