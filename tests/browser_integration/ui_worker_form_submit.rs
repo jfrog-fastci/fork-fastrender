@@ -589,6 +589,106 @@ fn submit_prevent_default_blocks_click_submit_navigation() {
 }
 
 #[test]
+fn submit_prevent_default_blocks_click_submit_navigation_without_element_ids() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let next_url = site.write(
+    "result.html",
+    r#"<!doctype html>
+<html><body>next</body></html>
+"#,
+  );
+  let page_url = site.write(
+    "page.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      button { position: absolute; left: 0; top: 0; width: 120px; height: 40px; }
+      input { position: absolute; left: 0; top: 60px; width: 120px; height: 24px; }
+    </style>
+  </head>
+  <body>
+    <form action="result.html">
+      <input name="q" value="a b">
+      <button type="submit">Go</button>
+    </form>
+    <script>
+      document.querySelector("form").addEventListener("submit", (ev) => ev.preventDefault());
+    </script>
+  </body>
+</html>
+"#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-form-submit-prevent-default-no-ids")
+    .expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (240, 160), 1.0))
+    .expect("viewport");
+  ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      page_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("navigate");
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+
+  // Click submit. The JS `submit` listener prevents default, so no navigation should occur.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+      click_count: 1,
+    })
+    .expect("pointer down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer up");
+
+  let msgs = support::drain_for(&ui_rx, Duration::from_millis(500));
+  assert!(
+    !msgs.iter().any(|msg| {
+      matches!(
+        msg,
+        WorkerToUi::NavigationStarted { .. }
+          | WorkerToUi::NavigationCommitted { .. }
+          | WorkerToUi::NavigationFailed { .. }
+          | WorkerToUi::RequestOpenInNewTab { .. }
+          | WorkerToUi::RequestOpenInNewTabRequest { .. }
+      )
+    }),
+    "expected submit preventDefault to suppress navigation to {next_url} even without element ids; got:\n{}",
+    support::format_messages(&msgs)
+  );
+
+  drop(ui_tx);
+  join.join().expect("worker join");
+}
+
+#[test]
 fn submit_prevent_default_blocks_enter_form_submission_navigation() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
