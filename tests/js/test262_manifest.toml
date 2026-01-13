@@ -1620,9 +1620,13 @@ id = "built-ins/RegExp/named-groups/unicode-references.js"
 status = "pass"
 
 [[expectations]]
-glob = "built-ins/RegExp/lookBehind/**"
+id = "built-ins/RegExp/lookBehind/greedy-loop.js"
 status = "xfail"
-reason = "lookbehind not implemented yet"
+reason = "vm-js: RegExp lookbehind: greedy-loop capture semantics do not yet match test262."
+
+[[expectations]]
+glob = "built-ins/RegExp/lookBehind/**"
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/RegExp/match-indices/**"
@@ -1644,13 +1648,12 @@ reason = "vm-js: RegExp Unicode property escapes (\\p{...}) are not fully implem
 
 [[expectations]]
 id = "built-ins/RegExp/named-groups/lookbehind.js"
-status = "xfail"
-reason = "vm-js: RegExp lookbehind assertions are not implemented."
+status = "pass"
 
 [[expectations]]
 id = "annexB/built-ins/RegExp/named-groups/non-unicode-malformed-lookbehind.js"
 status = "xfail"
-reason = "vm-js: RegExp lookbehind assertions are not implemented."
+reason = "vm-js: Annex B malformed lookbehind is still rejected as invalid RegExp."
 
 # Numeric escape semantics (Annex B legacy octal + UnicodeMode restrictions) are implemented; keep
 # this test as `pass` so regressions aren't hidden by the broad RegExp xfail below.
@@ -1658,7 +1661,7 @@ reason = "vm-js: RegExp lookbehind assertions are not implemented."
 id = "built-ins/RegExp/unicode_restricted_octal_escape.js"
 status = "pass"
 
-# TODO: Flip the above lookbehind expectations to `pass` once regexp lookbehind lands in vm-js.
+# TODO: Fix the remaining lookbehind xfails and flip them to `pass`.
 [[expectations]]
 glob = "built-ins/RegExp/**"
 status = "xfail"
