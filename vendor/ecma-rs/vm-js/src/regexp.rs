@@ -2801,7 +2801,6 @@ fn utf16_encode_code_point(cp: u32, out: &mut [u16; 2]) -> usize {
     2
   }
 }
-
 fn is_ascii_letter(u: u16) -> bool {
   (b'a' as u16..=b'z' as u16).contains(&u) || (b'A' as u16..=b'Z' as u16).contains(&u)
 }

@@ -8,7 +8,6 @@ use crate::iterator;
 use crate::module_loading;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::tick::vec_try_extend_from_slice_with_ticks;
-use crate::vm::EcmaFunctionKind;
 use crate::{EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -147,16 +146,6 @@ impl Flow {
       other => other,
     }
   }
-
-  /// Converts an unlabelled `break` completion from a breakable statement into a normal completion
-  /// (ECMA-262 `BreakableStatement` / `LabelledEvaluation` semantics).
-  fn normalise_iteration_break(self) -> Self {
-    match self {
-      Flow::Break(None, value) => Flow::Normal(Some(value.unwrap_or(Value::Undefined))),
-      other => other,
-    }
-  }
-
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -356,86 +345,6 @@ struct HirEvaluator<'vm> {
 }
 
 impl<'vm> HirEvaluator<'vm> {
-  fn next_non_trivia_byte_from_source(&mut self, offset: u32) -> Result<Option<u8>, VmError> {
-    let src = self.script.source.text.as_ref();
-    let bytes = src.as_bytes();
-    let mut i = usize::try_from(offset).unwrap_or(usize::MAX);
-    if i > bytes.len() {
-      return Ok(None);
-    }
-    // Clamp to a valid UTF-8 boundary (spans should already be boundaries, but be robust).
-    while i > 0 && !src.is_char_boundary(i) {
-      i = i.saturating_sub(1);
-    }
-
-    const TICK_EVERY: usize = 1024;
-    let mut steps: usize = 0;
-
-    while i < bytes.len() {
-      steps = steps.wrapping_add(1);
-      if steps % TICK_EVERY == 0 {
-        self.vm.tick()?;
-      }
-
-      if !src.is_char_boundary(i) {
-        i = i.saturating_add(1);
-        continue;
-      }
-
-      let b = bytes[i];
-      match b {
-        // ASCII whitespace.
-        b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C => {
-          i += 1;
-          continue;
-        }
-        // Line comment.
-        b'/' if bytes.get(i + 1) == Some(&b'/') => {
-          i += 2;
-          while i < bytes.len() && bytes[i] != b'\n' {
-            i += 1;
-            steps = steps.wrapping_add(1);
-            if steps % TICK_EVERY == 0 {
-              self.vm.tick()?;
-            }
-          }
-          continue;
-        }
-        // Block comment.
-        b'/' if bytes.get(i + 1) == Some(&b'*') => {
-          i += 2;
-          while i + 1 < bytes.len() {
-            if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-              i += 2;
-              break;
-            }
-            i += 1;
-            steps = steps.wrapping_add(1);
-            if steps % TICK_EVERY == 0 {
-              self.vm.tick()?;
-            }
-          }
-          continue;
-        }
-        // Fast path: ASCII non-whitespace/non-comment.
-        b if b < 0x80 => return Ok(Some(b)),
-        // Non-ASCII: treat Unicode whitespace as trivia.
-        _ => {
-          let Some(ch) = src[i..].chars().next() else {
-            return Ok(None);
-          };
-          if ch.is_whitespace() {
-            i = i.saturating_add(ch.len_utf8());
-            continue;
-          }
-          return Ok(Some(b));
-        }
-      }
-    }
-
-    Ok(None)
-  }
-
   fn hir(&self) -> &hir_js::LowerResult {
     self.script.hir.as_ref()
   }
@@ -495,14 +404,9 @@ impl<'vm> HirEvaluator<'vm> {
       let hir_js::ExprKind::Literal(hir_js::Literal::String(s)) = &expr.kind else {
         break;
       };
-      // Parenthesized string literals are not directive prologues.
-      //
-      // HIR does not preserve parse-js's `ParenthesizedExpr` metadata, so detect this by scanning
-      // the original source for a `)` immediately following the expression span.
-      if self.next_non_trivia_byte_from_source(expr.span.end)? == Some(b')') {
-        break;
-      }
       if s.lossy == "use strict" {
+        // Treat as strict; HIR does not currently preserve parenthesization metadata for directive
+        // prologues (unlike the parse-js AST), so this is best-effort.
         return Ok(true);
       }
     }
@@ -513,12 +417,9 @@ impl<'vm> HirEvaluator<'vm> {
     &mut self,
     scope: &mut Scope<'_>,
     body_id: hir_js::BodyId,
-    span_start: u32,
-    span_end: u32,
     name: &str,
     is_arrow: bool,
     is_constructable: bool,
-    kind: EcmaFunctionKind,
     name_binding: Option<&str>,
   ) -> Result<GcObject, VmError> {
     // Avoid holding references into `self.script.hir` across `vm.tick()` calls below: `tick()`
@@ -574,18 +475,15 @@ impl<'vm> HirEvaluator<'vm> {
 
     let is_strict = outer_strict || body_has_use_strict;
 
-    // `async function*` is valid ECMAScript syntax, but vm-js does not implement async generator
-    // semantics yet. Surface this as a throwable `SyntaxError` (matching the interpreter path) so
-    // user code can feature-detect via try/catch instead of treating it as a host-level fatal
-    // error.
-    if is_async && is_generator {
-      let intr = self
-        .vm
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-      let err_obj =
-        crate::error_object::new_syntax_error_object(scope, &intr, "async generator functions")?;
-      return Err(VmError::Throw(err_obj));
+    if is_generator {
+      return Err(VmError::Unimplemented(if is_async {
+        "async generator functions"
+      } else {
+        "generator functions"
+      }));
+    }
+    if is_async {
+      return Err(VmError::Unimplemented("async functions (hir-js compiled path)"));
     }
 
     // Root inputs across string allocation + function allocation in case either triggers GC.
@@ -621,36 +519,18 @@ impl<'vm> HirEvaluator<'vm> {
       ThisMode::Global
     };
 
-    let is_constructable = is_constructable && !is_async && !is_generator && !is_arrow;
-
-    let func_obj = if is_async || is_generator {
-      let code_id =
-        self
-          .vm
-          .register_ecma_function(self.env.source(), span_start, span_end, kind)?;
-      scope.alloc_ecma_function(
-        code_id,
-        is_constructable,
-        name_s,
-        length,
-        this_mode,
-        is_strict,
-        closure_env,
-      )?
-    } else {
-      scope.alloc_user_function_with_env(
-        CompiledFunctionRef {
-          script,
-          body: body_id,
-        },
-        is_constructable,
-        name_s,
-        length,
-        this_mode,
-        is_strict,
-        closure_env,
-      )?
-    };
+    let func_obj = scope.alloc_user_function_with_env(
+      CompiledFunctionRef {
+        script,
+        body: body_id,
+      },
+      is_constructable,
+      name_s,
+      length,
+      this_mode,
+      is_strict,
+      closure_env,
+    )?;
 
     // Root the function object while performing any additional allocations (e.g. `.prototype`
     // creation) and while assigning metadata that can invoke GC (directly or indirectly).
@@ -671,28 +551,22 @@ impl<'vm> HirEvaluator<'vm> {
         .heap_mut()
         .set_function_bound_new_target(func_obj, self.new_target)?;
     }
-    // `Heap::alloc_user_function_with_env` already creates `.prototype` for constructable user
-    // functions. Do not create it here, otherwise non-constructable functions (e.g. method
-    // functions) incorrectly get an own `"prototype"` property.
+
+    // Constructable functions get a `.prototype` object so `instanceof` works per spec.
+    //
+    // `OrdinaryHasInstance` requires `C.prototype` to be an object (and throws if it isn't). Some
+    // callable function kinds (arrow functions, object literal methods/accessors, class methods)
+    // are not constructable and do *not* have an own `"prototype"` property unless user code adds
+    // one, so gate this initialization on the constructability metadata from HIR lowering.
+    if is_constructable {
+      let _ = crate::function_properties::make_constructor(&mut scope, func_obj)?;
+    }
+
     // Best-effort function `[[Prototype]]` / `[[Realm]]` metadata.
     if let Some(intr) = self.vm.intrinsics() {
       scope
         .heap_mut()
-        .object_set_prototype(
-          func_obj,
-          Some(if is_generator {
-            intr.generator_function_prototype()
-          } else {
-            intr.function_prototype()
-          }),
-        )?;
-      if is_generator {
-        crate::function_properties::make_generator_function_instance_prototype(
-          &mut scope,
-          func_obj,
-          intr.generator_prototype(),
-        )?;
-      }
+        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
     }
     scope
       .heap_mut()
@@ -890,7 +764,6 @@ impl<'vm> HirEvaluator<'vm> {
     if let hir_js::FunctionBody::Block(stmts) = &func_meta.body {
       self.early_error_missing_initializers_in_stmt_list(body, stmts.as_slice())?;
     }
-
     // Hoist function declarations (best-effort).
     //
     // This enables simple recursion and calling a function before its declaration statement is
@@ -1178,16 +1051,6 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     stmts: &[hir_js::StmtId],
   ) -> Result<(), VmError> {
-    self.instantiate_function_decls_in_stmt_list(scope, body, stmts, /* in_stmt_list */ true)
-  }
-
-  fn instantiate_function_decls_in_stmt_list(
-    &mut self,
-    scope: &mut Scope<'_>,
-    body: &hir_js::Body,
-    stmts: &[hir_js::StmtId],
-    in_stmt_list: bool,
-  ) -> Result<(), VmError> {
     for stmt_id in stmts {
       self.vm.tick()?;
       let stmt = self.get_stmt(body, *stmt_id)?;
@@ -1210,72 +1073,15 @@ impl<'vm> HirEvaluator<'vm> {
             continue;
           }
           let name = self.resolve_name(def.name)?;
-          let name_str = name.as_str();
-          let span_start = def.span.start;
-          let span_end = def.span.end;
-
-          // Strict mode: only top-level function declarations are var-scoped.
-          //
-          // Block-scoped function declarations are instantiated at block/switch entry in a fresh
-          // lexical environment (see `instantiate_block_scoped_function_decls_in_stmt_list`).
-          if self.strict {
-            let func_obj = self.alloc_user_function_object(
+          let func_obj =
+            self.alloc_user_function_object(
               scope,
               body_id,
-              span_start,
-              span_end,
-              name_str,
+              name.as_str(),
               /* is_arrow */ false,
               /* is_constructable */ true,
-              EcmaFunctionKind::Decl,
               /* name_binding */ None,
             )?;
-            // Root the function object while assigning into the environment.
-            let mut assign_scope = scope.reborrow();
-            assign_scope.push_root(Value::Object(func_obj))?;
-            self.env.set_var(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              &mut assign_scope,
-              name_str,
-              Value::Object(func_obj),
-            )?;
-            continue;
-          }
-
-          // Non-strict mode: Annex B block-level function declarations behave like `var` bindings
-          // (function-scoped), but are initialized only when their containing statement list is
-          // evaluated.
-          //
-          // We approximate that by:
-          // - Declaring the var binding up-front during instantiation (so `typeof f` before the
-          //   block runs is `"undefined"` instead of ReferenceError).
-          // - Deferring function object creation/assignment to statement-list evaluation time.
-          if !in_stmt_list {
-            let eligible = match decl_body.function.as_ref() {
-              None => true,
-              Some(meta) => !meta.async_ && !meta.generator,
-            };
-            if eligible {
-              self.env.declare_var(self.vm, scope, name_str)?;
-              continue;
-            }
-          }
-
-          // Top-level (function/script body) function declarations are initialized during
-          // instantiation so they can be called before their declaration statement executes.
-          let func_obj = self.alloc_user_function_object(
-            scope,
-            body_id,
-            span_start,
-            span_end,
-            name_str,
-            /* is_arrow */ false,
-            /* is_constructable */ true,
-            EcmaFunctionKind::Decl,
-            /* name_binding */ None,
-          )?;
           // Root the function object while assigning into the environment.
           let mut assign_scope = scope.reborrow();
           assign_scope.push_root(Value::Object(func_obj))?;
@@ -1284,52 +1090,54 @@ impl<'vm> HirEvaluator<'vm> {
             &mut *self.host,
             &mut *self.hooks,
             &mut assign_scope,
-            name_str,
+            name.as_str(),
             Value::Object(func_obj),
           )?;
         }
+        // Strict mode: only top-level function declarations are var-scoped.
+        //
+        // Block-scoped function declarations are instantiated at block/switch entry in a fresh
+        // lexical environment (see `instantiate_block_scoped_function_decls_in_stmt_list`).
         _ if self.strict => {}
-        // Non-strict mode: collect nested function declarations for var-binding creation, but do not
-        // initialize them until their containing statement list executes.
+        // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
         hir_js::StmtKind::Block(inner) => {
-          self.instantiate_function_decls_in_stmt_list(scope, body, inner.as_slice(), false)?;
+          self.instantiate_function_decls(scope, body, inner.as_slice())?;
         }
         hir_js::StmtKind::If {
           consequent,
           alternate,
           ..
         } => {
-          self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(consequent), false)?;
+          self.instantiate_function_decls(scope, body, std::slice::from_ref(consequent))?;
           if let Some(alt) = alternate {
-            self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(alt), false)?;
+            self.instantiate_function_decls(scope, body, std::slice::from_ref(alt))?;
           }
         }
         hir_js::StmtKind::While { body: inner, .. }
         | hir_js::StmtKind::DoWhile { body: inner, .. }
-        | hir_js::StmtKind::ForIn { body: inner, .. }
         | hir_js::StmtKind::Labeled { body: inner, .. }
         | hir_js::StmtKind::With { body: inner, .. } => {
-          self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(inner), false)?;
+          self.instantiate_function_decls(scope, body, std::slice::from_ref(inner))?;
         }
         hir_js::StmtKind::For { body: inner, .. } => {
-          self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(inner), false)?;
+          self.instantiate_function_decls(scope, body, std::slice::from_ref(inner))?;
         }
         hir_js::StmtKind::Try {
           block,
           catch,
           finally_block,
         } => {
-          self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(block), false)?;
+          self.instantiate_function_decls(scope, body, std::slice::from_ref(block))?;
           if let Some(catch) = catch {
-            self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(&catch.body), false)?;
+            self.instantiate_function_decls(scope, body, std::slice::from_ref(&catch.body))?;
           }
           if let Some(finally_block) = finally_block {
-            self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(finally_block), false)?;
+            self.instantiate_function_decls(scope, body, std::slice::from_ref(finally_block))?;
           }
         }
         hir_js::StmtKind::Switch { cases, .. } => {
           for case in cases {
-            self.instantiate_function_decls_in_stmt_list(scope, body, case.consequent.as_slice(), false)?;
+            self.instantiate_function_decls(scope, body, case.consequent.as_slice())?;
           }
         }
         _ => {}
@@ -1452,12 +1260,9 @@ impl<'vm> HirEvaluator<'vm> {
       let func_obj = self.alloc_user_function_object(
         scope,
         body_id,
-        def.span.start,
-        def.span.end,
         name_str,
         /* is_arrow */ false,
         /* is_constructable */ true,
-        EcmaFunctionKind::Decl,
         /* name_binding */ None,
       )?;
 
@@ -1466,73 +1271,6 @@ impl<'vm> HirEvaluator<'vm> {
       init_scope
         .heap_mut()
         .env_initialize_binding(env, name_str, Value::Object(func_obj))?;
-    }
-    Ok(())
-  }
-
-  fn instantiate_sloppy_function_decls_in_stmt_list(
-    &mut self,
-    scope: &mut Scope<'_>,
-    body: &hir_js::Body,
-    stmts: &[hir_js::StmtId],
-  ) -> Result<(), VmError> {
-    if self.strict {
-      return Ok(());
-    }
-    for stmt_id in stmts {
-      // Tick per statement list entry so blocks with many declarations still consume fuel even if
-      // their bodies do no other work.
-      self.vm.tick()?;
-      let stmt = self.get_stmt(body, *stmt_id)?;
-      let hir_js::StmtKind::Decl(def_id) = &stmt.kind else {
-        continue;
-      };
-      let def = self
-        .hir()
-        .def(*def_id)
-        .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
-      let Some(body_id) = def.body else {
-        continue;
-      };
-      let decl_body = self.get_body(body_id)?;
-      if decl_body.kind != hir_js::BodyKind::Function {
-        continue;
-      }
-      // Only ordinary (non-async, non-generator) function declarations participate in Annex B
-      // block-level var-scoping.
-      if decl_body
-        .function
-        .as_ref()
-        .is_some_and(|meta| meta.async_ || meta.generator)
-      {
-        continue;
-      }
-
-      let name = self.resolve_name(def.name)?;
-      let name_str = name.as_str();
-      let func_obj = self.alloc_user_function_object(
-        scope,
-        body_id,
-        def.span.start,
-        def.span.end,
-        name_str,
-        /* is_arrow */ false,
-        /* is_constructable */ true,
-        EcmaFunctionKind::Decl,
-        /* name_binding */ None,
-      )?;
-
-      // Root the function object while assigning into the environment.
-      let mut assign_scope = scope.reborrow();
-      assign_scope.push_root(Value::Object(func_obj))?;
-      self.env.set_var(
-        self.vm,
-        &mut *self.host,
-        &mut *self.hooks,
-        &mut assign_scope,
-        name_str,
-        Value::Object(func_obj),
-      )?;
     }
     Ok(())
   }
@@ -1621,7 +1359,6 @@ impl<'vm> HirEvaluator<'vm> {
             block_env,
             stmts.as_slice(),
           )?;
-          self.instantiate_sloppy_function_decls_in_stmt_list(scope, body, stmts.as_slice())?;
           self.eval_stmt_list(scope, body, stmts.as_slice())
         })();
         self.env.set_lexical_env(scope.heap_mut(), prev);
@@ -1634,80 +1371,47 @@ impl<'vm> HirEvaluator<'vm> {
       } => {
         let test_value = self.eval_expr(scope, body, *test)?;
         if scope.heap().to_boolean(test_value)? {
-          self.instantiate_sloppy_function_decls_in_stmt_list(
-            scope,
-            body,
-            std::slice::from_ref(consequent),
-          )?;
           self.eval_stmt(scope, body, *consequent)
         } else if let Some(alt) = alternate {
-          self.instantiate_sloppy_function_decls_in_stmt_list(scope, body, std::slice::from_ref(alt))?;
           self.eval_stmt(scope, body, *alt)
         } else {
           Ok(Flow::empty())
         }
       }
       hir_js::StmtKind::While { test, body: inner } => {
-        // Root `V` across the loop so the value can't be collected between iterations.
-        let mut scope = scope.reborrow();
-        let v_root_idx = scope.heap().root_stack.len();
-        scope.push_root(Value::Undefined)?;
-        let mut v = Value::Undefined;
-
         loop {
           // Ensure empty loops still consume budget.
           self.vm.tick()?;
-          let test_value = self.eval_expr(&mut scope, body, *test)?;
+          let test_value = self.eval_expr(scope, body, *test)?;
           if !scope.heap().to_boolean(test_value)? {
-            return Ok(Flow::normal(v));
+            return Ok(Flow::empty());
           }
-          self.instantiate_sloppy_function_decls_in_stmt_list(
-            &mut scope,
-            body,
-            std::slice::from_ref(inner),
-          )?;
-          let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
-          match stmt_result {
-            Flow::Normal(_) | Flow::Continue(None, _) => {}
+          match self.eval_stmt(scope, body, *inner)? {
+            Flow::Normal(_) => {}
+            Flow::Continue(None, _) => {}
             Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
-          }
-
-          if let Some(value) = stmt_result.value() {
-            v = value;
-            scope.heap_mut().root_stack[v_root_idx] = value;
+            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+            Flow::Break(None, _) => return Ok(Flow::empty()),
+            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
+            Flow::Return(v) => return Ok(Flow::Return(v)),
           }
         }
       }
       hir_js::StmtKind::DoWhile { test, body: inner } => {
-        // Root `V` across the loop so the value can't be collected between iterations.
-        let mut scope = scope.reborrow();
-        let v_root_idx = scope.heap().root_stack.len();
-        scope.push_root(Value::Undefined)?;
-        let mut v = Value::Undefined;
-
         loop {
           self.vm.tick()?;
-          self.instantiate_sloppy_function_decls_in_stmt_list(
-            &mut scope,
-            body,
-            std::slice::from_ref(inner),
-          )?;
-          let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
-          match stmt_result {
-            Flow::Normal(_) | Flow::Continue(None, _) => {}
+          match self.eval_stmt(scope, body, *inner)? {
+            Flow::Normal(_) => {}
+            Flow::Continue(None, _) => {}
             Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
+            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+            Flow::Break(None, _) => return Ok(Flow::empty()),
+            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
+            Flow::Return(v) => return Ok(Flow::Return(v)),
           }
-
-          if let Some(value) = stmt_result.value() {
-            v = value;
-            scope.heap_mut().root_stack[v_root_idx] = value;
-          }
-
-          let test_value = self.eval_expr(&mut scope, body, *test)?;
+          let test_value = self.eval_expr(scope, body, *test)?;
           if !scope.heap().to_boolean(test_value)? {
-            return Ok(Flow::normal(v));
+            return Ok(Flow::empty());
           }
         }
       }
@@ -1717,12 +1421,6 @@ impl<'vm> HirEvaluator<'vm> {
         update,
         body: inner,
       } => {
-        // Root `V` across the loop so the value can't be collected between iterations.
-        let mut scope = scope.reborrow();
-        let v_root_idx = scope.heap().root_stack.len();
-        scope.push_root(Value::Undefined)?;
-        let mut v = Value::Undefined;
-
         // Lexically-declared `for` loops require per-iteration environments so closures capture the
         // correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
         let lexical_init = match init {
@@ -1768,11 +1466,10 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             // Evaluate initializer(s) and initialize the bindings.
-            self.eval_var_decl(&mut scope, body, init_decl)?;
+            self.eval_var_decl(scope, body, init_decl)?;
 
             // Enter the first per-iteration environment.
-            let mut iter_env =
-              self.create_for_triple_per_iteration_env(&mut scope, outer_lex, loop_env)?;
+            let mut iter_env = self.create_for_triple_per_iteration_env(scope, outer_lex, loop_env)?;
             self.env.set_lexical_env(scope.heap_mut(), iter_env);
 
             loop {
@@ -1780,37 +1477,29 @@ impl<'vm> HirEvaluator<'vm> {
               self.vm.tick()?;
 
               if let Some(test) = test {
-                let test_value = self.eval_expr(&mut scope, body, *test)?;
+                let test_value = self.eval_expr(scope, body, *test)?;
                 if !scope.heap().to_boolean(test_value)? {
-                  return Ok(Flow::normal(v));
+                  return Ok(Flow::empty());
                 }
               }
 
-              self.instantiate_sloppy_function_decls_in_stmt_list(
-                &mut scope,
-                body,
-                std::slice::from_ref(inner),
-              )?;
-              let body_result = self.eval_stmt(&mut scope, body, *inner)?;
-              match body_result {
-                Flow::Normal(_) | Flow::Continue(None, _) => {}
+              match self.eval_stmt(scope, body, *inner)? {
+                Flow::Normal(_) => {}
+                Flow::Continue(None, _) => {}
                 Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-                abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
-              }
-
-              if let Some(value) = body_result.value() {
-                v = value;
-                scope.heap_mut().root_stack[v_root_idx] = value;
+                Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+                Flow::Break(None, _) => return Ok(Flow::empty()),
+                Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
+                Flow::Return(v) => return Ok(Flow::Return(v)),
               }
 
               // Create the next iteration's environment *before* evaluating the update expression so
               // closures created in the body do not observe the post-update value.
-              iter_env =
-                self.create_for_triple_per_iteration_env(&mut scope, outer_lex, iter_env)?;
+              iter_env = self.create_for_triple_per_iteration_env(scope, outer_lex, iter_env)?;
               self.env.set_lexical_env(scope.heap_mut(), iter_env);
 
               if let Some(update) = update {
-                let _ = self.eval_expr(&mut scope, body, *update)?;
+                let _ = self.eval_expr(scope, body, *update)?;
               }
             }
           })();
@@ -1823,10 +1512,10 @@ impl<'vm> HirEvaluator<'vm> {
         if let Some(init) = init {
           match init {
             hir_js::ForInit::Expr(expr) => {
-              let _ = self.eval_expr(&mut scope, body, *expr)?;
+              let _ = self.eval_expr(scope, body, *expr)?;
             }
             hir_js::ForInit::Var(decl) => {
-              self.eval_var_decl(&mut scope, body, decl)?;
+              self.eval_var_decl(scope, body, decl)?;
             }
           }
         }
@@ -1835,31 +1524,24 @@ impl<'vm> HirEvaluator<'vm> {
           // Ensure empty loops still consume budget.
           self.vm.tick()?;
           if let Some(test) = test {
-            let test_value = self.eval_expr(&mut scope, body, *test)?;
+            let test_value = self.eval_expr(scope, body, *test)?;
             if !scope.heap().to_boolean(test_value)? {
-              return Ok(Flow::normal(v));
+              return Ok(Flow::empty());
             }
           }
 
-          self.instantiate_sloppy_function_decls_in_stmt_list(
-            &mut scope,
-            body,
-            std::slice::from_ref(inner),
-          )?;
-          let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
-          match stmt_result {
-            Flow::Normal(_) | Flow::Continue(None, _) => {}
+          match self.eval_stmt(scope, body, *inner)? {
+            Flow::Normal(_) => {}
+            Flow::Continue(None, _) => {}
             Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
-          }
-
-          if let Some(value) = stmt_result.value() {
-            v = value;
-            scope.heap_mut().root_stack[v_root_idx] = value;
+            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+            Flow::Break(None, _) => return Ok(Flow::empty()),
+            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
+            Flow::Return(v) => return Ok(Flow::Return(v)),
           }
 
           if let Some(update) = update {
-            let _ = self.eval_expr(&mut scope, body, *update)?;
+            let _ = self.eval_expr(scope, body, *update)?;
           }
         }
       }
@@ -1894,11 +1576,6 @@ impl<'vm> HirEvaluator<'vm> {
           // Root the current iteration value across binding + body evaluation.
           let iter_value_root_idx = iter_scope.heap().root_stack.len();
           iter_scope.push_root(Value::Undefined)?;
-
-          // Root `V` across the loop so the value can't be collected between iterations.
-          let v_root_idx = iter_scope.heap().root_stack.len();
-          iter_scope.push_root(Value::Undefined)?;
-          let mut v = Value::Undefined;
 
           // Per-iteration lexical environments for `let`/`const` in the head.
           let outer_lex: GcEnv = self.env.lexical_env();
@@ -1970,14 +1647,7 @@ impl<'vm> HirEvaluator<'vm> {
               }
             }
 
-            let flow = match (|| {
-              self.instantiate_sloppy_function_decls_in_stmt_list(
-                &mut iter_scope,
-                body,
-                std::slice::from_ref(inner),
-              )?;
-              self.eval_stmt(&mut iter_scope, body, *inner)
-            })() {
+            let flow = match self.eval_stmt(&mut iter_scope, body, *inner) {
               Ok(f) => f,
               Err(err) => {
                 if iter_env.is_some() {
@@ -2005,23 +1675,12 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             match flow {
-              Flow::Normal(_) | Flow::Continue(None, _) => {
-                if let Some(value) = flow.value() {
-                  v = value;
-                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
-                }
-              }
-              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {
-                if let Some(value) = flow.value() {
-                  v = value;
-                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
-                }
-              }
-              abrupt => {
-                let abrupt = abrupt.update_empty(Some(v));
-                // Root the completion's value (if any) across iterator closing, which can allocate / GC.
-                if let Some(value) = abrupt.value() {
-                  iter_scope.push_root(value)?;
+              Flow::Normal(_) => {}
+              Flow::Continue(None, _) => {}
+              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+              Flow::Continue(Some(label), value) => {
+                if let Some(v) = value {
+                  iter_scope.push_root(v)?;
                 }
                 if let Err(err) = iterator::iterator_close(
                   self.vm,
@@ -2033,12 +1692,56 @@ impl<'vm> HirEvaluator<'vm> {
                 ) {
                   return Err(err);
                 }
-                return Ok(abrupt.normalise_iteration_break());
+                return Ok(Flow::Continue(Some(label), value));
+              }
+              Flow::Break(None, _) => {
+                if let Err(err) = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::NonThrow,
+                ) {
+                  return Err(err);
+                }
+                return Ok(Flow::empty());
+              }
+              Flow::Break(Some(label), value) => {
+                if let Some(v) = value {
+                  iter_scope.push_root(v)?;
+                }
+                if let Err(err) = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::NonThrow,
+                ) {
+                  return Err(err);
+                }
+                return Ok(Flow::Break(Some(label), value));
+              }
+              Flow::Return(v) => {
+                // Root the return value across iterator closing.
+                iter_scope.push_root(v)?;
+                if let Err(err) = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::NonThrow,
+                ) {
+                  return Err(err);
+                }
+                return Ok(Flow::Return(v));
               }
             }
           }
 
-          Ok(Flow::normal(v))
+          Ok(Flow::empty())
         } else {
           // --- for..in ---
           let rhs_value = self.eval_expr(scope, body, *right)?;
@@ -2046,7 +1749,7 @@ impl<'vm> HirEvaluator<'vm> {
           // ECMA-262 `ForIn/OfHeadEvaluation` (iterationKind = enumerate):
           // If the RHS evaluates to `null` or `undefined`, iteration is skipped (no throw).
           if matches!(rhs_value, Value::Null | Value::Undefined) {
-            return Ok(Flow::normal(Value::Undefined));
+            return Ok(Flow::empty());
           }
 
           // Root the RHS while converting to object; `ToObject` can allocate/GC and the RHS might
@@ -2063,11 +1766,6 @@ impl<'vm> HirEvaluator<'vm> {
           // Root the current key value across binding + body evaluation.
           let key_value_root_idx = iter_scope.heap().root_stack.len();
           iter_scope.push_root(Value::Undefined)?;
-
-          // Root `V` across the loop so the value can't be collected between iterations.
-          let v_root_idx = iter_scope.heap().root_stack.len();
-          iter_scope.push_root(Value::Undefined)?;
-          let mut v = Value::Undefined;
 
           // Per-iteration lexical environments for `let`/`const` in the head.
           let outer_lex: GcEnv = self.env.lexical_env();
@@ -2116,14 +1814,7 @@ impl<'vm> HirEvaluator<'vm> {
               return Err(err);
             }
 
-            let flow = match (|| {
-              self.instantiate_sloppy_function_decls_in_stmt_list(
-                &mut iter_scope,
-                body,
-                std::slice::from_ref(inner),
-              )?;
-              self.eval_stmt(&mut iter_scope, body, *inner)
-            })() {
+            let flow = match self.eval_stmt(&mut iter_scope, body, *inner) {
               Ok(f) => f,
               Err(err) => {
                 if iter_env.is_some() {
@@ -2138,23 +1829,17 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             match flow {
-              Flow::Normal(_) | Flow::Continue(None, _) => {
-                if let Some(value) = flow.value() {
-                  v = value;
-                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
-                }
-              }
-              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {
-                if let Some(value) = flow.value() {
-                  v = value;
-                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
-                }
-              }
-              abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
+              Flow::Normal(_) => {}
+              Flow::Continue(None, _) => {}
+              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+              Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
+              Flow::Break(None, _) => return Ok(Flow::empty()),
+              Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
+              Flow::Return(v) => return Ok(Flow::Return(v)),
             }
           }
 
-          Ok(Flow::normal(v))
+          Ok(Flow::empty())
         }
       }
       hir_js::StmtKind::Switch { discriminant, cases } => {
@@ -2243,21 +1928,38 @@ impl<'vm> HirEvaluator<'vm> {
               if case_idx % CASE_TICK_EVERY == 0 {
                 self.vm.tick()?;
               }
-              self.instantiate_sloppy_function_decls_in_stmt_list(
-                &mut switch_scope,
-                body,
-                case.consequent.as_slice(),
-              )?;
               for stmt_id in &case.consequent {
-                let stmt_result = self.eval_stmt(&mut switch_scope, body, *stmt_id)?;
-                match stmt_result {
+                match self.eval_stmt(&mut switch_scope, body, *stmt_id)? {
                   Flow::Normal(value) => {
                     if let Some(value) = value {
                       v = value;
                       switch_scope.heap_mut().root_stack[v_root_idx] = value;
                     }
                   }
-                  abrupt => return Ok(abrupt.update_empty(Some(v)).normalise_iteration_break()),
+                  // Unlabeled `break` exits the switch.
+                  Flow::Break(None, break_value) => {
+                    if let Some(value) = break_value {
+                      v = value;
+                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
+                    }
+                    return Ok(Flow::Normal(Some(v)));
+                  }
+                  // Labeled control flow propagates.
+                  Flow::Break(Some(label), break_value) => {
+                    if let Some(value) = break_value {
+                      v = value;
+                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
+                    }
+                    return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)));
+                  }
+                  Flow::Continue(label, continue_value) => {
+                    if let Some(value) = continue_value {
+                      v = value;
+                      switch_scope.heap_mut().root_stack[v_root_idx] = value;
+                    }
+                    return Ok(Flow::Continue(label, continue_value).update_empty(Some(v)));
+                  }
+                  Flow::Return(value) => return Ok(Flow::Return(value)),
                 }
               }
             }
@@ -2399,8 +2101,7 @@ impl<'vm> HirEvaluator<'vm> {
                 }
 
                 // Catch bindings accept any binding pattern (identifier, object/array destructuring,
-                // rest, etc). Bind into the catch environment we just installed as the current
-                // lexical environment.
+                // rest, etc).
                 //
                 // Catch parameters allow default initializers. Per spec, all bound names must be
                 // created in TDZ before default initializers run, so defaults like
@@ -2471,7 +2172,6 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::StmtKind::Labeled { label, body: inner } => {
         let mut new_label_set: Vec<hir_js::NameId> = label_set.to_vec();
         new_label_set.push(*label);
-        self.instantiate_sloppy_function_decls_in_stmt_list(scope, body, std::slice::from_ref(inner))?;
         let flow = self.eval_stmt_labelled(scope, body, *inner, new_label_set.as_slice())?;
         match flow {
           Flow::Break(Some(target), value) if target == *label => Ok(Flow::Normal(value)),
@@ -2479,21 +2179,6 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::StmtKind::With { object, body: inner } => {
-        if self.strict {
-          // Early error in strict mode (ECMA-262). The compiled HIR execution path does not run the
-          // full early-error validator today, so reject at runtime to keep behaviour aligned with
-          // the interpreter for scripts/functions that contain `"use strict"`.
-          let diag = diagnostics::Diagnostic::error(
-            "VMJS0004",
-            "with statements are not allowed in strict mode",
-            diagnostics::Span {
-              file: diagnostics::FileId(0),
-              range: diagnostics::TextRange::new(0, 0),
-            },
-          );
-          return Err(VmError::Syntax(vec![diag]));
-        }
-
         // Minimal ECMA-262 `WithStatement` evaluation:
         //
         // - Evaluate the object expression, then `ToObject` it.
@@ -2510,14 +2195,7 @@ impl<'vm> HirEvaluator<'vm> {
         let with_env = with_scope.alloc_object_env_record(binding_object, Some(outer), true)?;
         self.env.set_lexical_env(with_scope.heap_mut(), with_env);
 
-        let result = (|| {
-          self.instantiate_sloppy_function_decls_in_stmt_list(
-            &mut with_scope,
-            body,
-            std::slice::from_ref(inner),
-          )?;
-          self.eval_stmt_labelled(&mut with_scope, body, *inner, label_set)
-        })();
+        let result = self.eval_stmt(&mut with_scope, body, *inner);
 
         // Always restore the outer lexical environment so later statements run in the correct
         // scope.
@@ -3153,8 +2831,6 @@ impl<'vm> HirEvaluator<'vm> {
         is_arrow,
         ..
       } => {
-        let span_start = expr.span.start;
-        let span_end = expr.span.end;
         let mut name_str = name
           .as_ref()
           .and_then(|id| self.hir().names.resolve(*id))
@@ -3166,17 +2842,15 @@ impl<'vm> HirEvaluator<'vm> {
         if *is_arrow {
           name_str.clear();
         }
-        let name_binding = (!*is_arrow && !name_str.is_empty()).then_some(name_str.as_str());
         let func_obj = self.alloc_user_function_object(
           scope,
           *func_body,
-          span_start,
-          span_end,
           name_str.as_str(),
           *is_arrow,
           /* is_constructable */ !*is_arrow,
-          EcmaFunctionKind::Expr,
-          name_binding,
+          // Named function expressions create an inner binding for their own name.
+          // Arrow functions are always anonymous at the syntax level.
+          /* name_binding */ (!*is_arrow && !name_str.is_empty()).then_some(name_str.as_str()),
         )?;
         Ok(Value::Object(func_obj))
       }
@@ -3456,6 +3130,13 @@ impl<'vm> HirEvaluator<'vm> {
 
         // Stage 1: scan using classic RegExp character-class termination rules to extract flags.
         //
+        // This is the legacy `in_class: bool` behaviour, expressed as a depth counter that only ever
+        // takes values 0/1. We do this first because:
+        // - It preserves behaviour for classic patterns like `/[[]/` where `[` inside a class is a
+        //   literal character (not nested), and
+        // - It gives us the literal flags suffix so we can detect `v` and optionally do a nested-class
+        //   aware scan.
+        //
         // Budget scanning for the closing `/` so enormous regexp literals can't monopolize CPU.
         const TICK_EVERY: usize = 1024;
         let mut escaped = false;
@@ -3482,7 +3163,6 @@ impl<'vm> HirEvaluator<'vm> {
             _ => {}
           }
         }
-
         let Some(mut end_pat) = end_pat else {
           let err_obj = crate::error_object::new_syntax_error_object(
             scope,
@@ -3493,16 +3173,15 @@ impl<'vm> HirEvaluator<'vm> {
         };
 
         // If the literal flags contain `v`, do a nested character-class aware scan to avoid
-        // mis-detecting the closing `/` for UnicodeSets-mode patterns with nested character classes
-        // (e.g. `/[[0-9]\\/]/v`).
+        // mis-detecting the closing `/` for modern RegExp set notation (e.g. `/[[0-9]\\/]/v`).
         //
-        // If the nested scan fails to find a terminator (e.g. the pattern contains unbalanced
-        // `[`/`]` pairs under nesting semantics), fall back to the classic terminator position; the
-        // RegExp constructor will report the pattern error.
+        // If the nested scan fails to find a terminator (e.g. the pattern contains unbalanced `[`/`]`
+        // pairs under nesting semantics), fall back to the classic terminator position; the RegExp
+        // constructor will report the pattern error.
         let mut has_v_flag = false;
         for (i, b) in literal[end_pat + 1..].bytes().enumerate() {
-          // Avoid ticking on the first iteration so short flag strings don't effectively
-          // double-charge fuel (the surrounding expression evaluation already ticks).
+          // Avoid ticking on the first iteration so short flag strings don't effectively double-charge
+          // fuel (the surrounding expression evaluation already ticks).
           if i != 0 && i % TICK_EVERY == 0 {
             self.vm.tick()?;
           }
@@ -3511,7 +3190,6 @@ impl<'vm> HirEvaluator<'vm> {
             break;
           }
         }
-
         if has_v_flag {
           let mut escaped = false;
           let mut depth: usize = 0;
@@ -3768,7 +3446,7 @@ impl<'vm> HirEvaluator<'vm> {
         let _ = self.eval_expr(scope, body, expr)?;
         Ok(Value::Undefined)
       }
-      hir_js::UnaryOp::Await => Err(VmError::Unimplemented("await (hir-js compiled path)")),
+      _ => Err(VmError::Unimplemented("unary operator (hir-js compiled path)")),
     }
   }
 
@@ -4105,19 +3783,22 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(Value::Number(to_int32(a).wrapping_shl(shift) as f64))
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let shift = {
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_negative() {
+                return Err(VmError::RangeError("BigInt shift count must be >= 0"));
+              }
+              let Some(shift) = b.try_to_i128() else {
+                return Err(VmError::OutOfMemory);
+              };
+              if shift > u64::MAX as i128 {
+                return Err(VmError::OutOfMemory);
+              }
+              shift as u64
+            };
             let out = {
               let a = scope.heap().get_bigint(a)?;
-              let b = scope.heap().get_bigint(b)?;
-
-              // Match the interpreter `exec.rs` semantics: negative shift counts reverse the shift
-              // direction, and extremely large magnitudes saturate to `u64::MAX` (the underlying
-              // BigInt ops can still report OOM if needed).
-              let (shift_negative, shift) = bigint_shift_count(b);
-              if shift_negative {
-                a.shr(shift)?
-              } else {
-                a.shl(shift)?
-              }
+              a.shl(shift)?
             };
             let out = scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
@@ -4136,18 +3817,22 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(Value::Number(to_int32(a).wrapping_shr(shift) as f64))
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let shift = {
+              let b = scope.heap().get_bigint(b)?;
+              if b.is_negative() {
+                return Err(VmError::RangeError("BigInt shift count must be >= 0"));
+              }
+              let Some(shift) = b.try_to_i128() else {
+                return Err(VmError::OutOfMemory);
+              };
+              if shift > u64::MAX as i128 {
+                return Err(VmError::OutOfMemory);
+              }
+              shift as u64
+            };
             let out = {
               let a = scope.heap().get_bigint(a)?;
-              let b = scope.heap().get_bigint(b)?;
-
-              // Match the interpreter `exec.rs` semantics: negative shift counts reverse the shift
-              // direction, and extremely large magnitudes saturate to `u64::MAX`.
-              let (shift_negative, shift) = bigint_shift_count(b);
-              if shift_negative {
-                a.shl(shift)?
-              } else {
-                a.shr(shift)?
-              }
+              a.shr(shift)?
             };
             let out = scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
@@ -4156,20 +3841,13 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::BinaryOp::ShiftRightUnsigned => {
+        // `>>>` always performs `ToNumber` and does not support BigInt.
         let mut scope = scope.reborrow();
         scope.push_roots(&[l, r])?;
-        let ln = self.to_numeric(&mut scope, l)?;
-        let rn = self.to_numeric(&mut scope, r)?;
-        match (ln, rn) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => {
-            let shift = to_uint32(b) & 0x1f;
-            Ok(Value::Number((to_uint32(a) >> shift) as f64))
-          }
-          (NumericValue::BigInt(_), NumericValue::BigInt(_)) => Err(VmError::TypeError(
-            "BigInt does not support unsigned right shift",
-          )),
-          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
-        }
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
       }
       hir_js::BinaryOp::BitOr => {
         let mut scope = scope.reborrow();
@@ -4239,30 +3917,32 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::BinaryOp::StrictEquality => Ok(Value::Bool(self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::StrictInequality => Ok(Value::Bool(!self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::LessThan => {
-        Ok(Value::Bool(
-          self
-            .abstract_relational_comparison(scope, l, r, /* left_first */ true)?
-            .unwrap_or(false),
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Bool(ln < rn))
       }
       hir_js::BinaryOp::LessEqual => {
-        Ok(Value::Bool(match self.abstract_relational_comparison(scope, r, l, false)? {
-          None => false,
-          Some(r) => !r,
-        }))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Bool(ln <= rn))
       }
       hir_js::BinaryOp::GreaterThan => {
-        Ok(Value::Bool(
-          self
-            .abstract_relational_comparison(scope, r, l, /* left_first */ false)?
-            .unwrap_or(false),
-        ))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Bool(ln > rn))
       }
       hir_js::BinaryOp::GreaterEqual => {
-        Ok(Value::Bool(match self.abstract_relational_comparison(scope, l, r, true)? {
-          None => false,
-          Some(r) => !r,
-        }))
+        let mut scope = scope.reborrow();
+        scope.push_roots(&[l, r])?;
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
+        Ok(Value::Bool(ln >= rn))
       }
       hir_js::BinaryOp::Instanceof => Ok(Value::Bool(self.instanceof_operator(scope, l, r)?)),
       hir_js::BinaryOp::Comma => {
@@ -4606,111 +4286,6 @@ impl<'vm> HirEvaluator<'vm> {
     }
   }
 
-  /// ECMA-262 Abstract Relational Comparison.
-  ///
-  /// Returns `Ok(None)` for the spec's `undefined` result (e.g. when comparing NaN).
-  fn abstract_relational_comparison(
-    &mut self,
-    scope: &mut Scope<'_>,
-    x: Value,
-    y: Value,
-    left_first: bool,
-  ) -> Result<Option<bool>, VmError> {
-    // Root inputs for the duration of the comparison: `ToPrimitive`/`ToNumeric` can allocate.
-    let mut scope = scope.reborrow();
-    scope.push_roots(&[x, y])?;
-
-    // 1. ToPrimitive, hint Number (order depends on `left_first`).
-    let (px, py) = if left_first {
-      let px = scope.to_primitive(
-        self.vm,
-        &mut *self.host,
-        &mut *self.hooks,
-        x,
-        ToPrimitiveHint::Number,
-      )?;
-      scope.push_root(px)?;
-      let py = scope.to_primitive(
-        self.vm,
-        &mut *self.host,
-        &mut *self.hooks,
-        y,
-        ToPrimitiveHint::Number,
-      )?;
-      scope.push_root(py)?;
-      (px, py)
-    } else {
-      let py = scope.to_primitive(
-        self.vm,
-        &mut *self.host,
-        &mut *self.hooks,
-        y,
-        ToPrimitiveHint::Number,
-      )?;
-      scope.push_root(py)?;
-      let px = scope.to_primitive(
-        self.vm,
-        &mut *self.host,
-        &mut *self.hooks,
-        x,
-        ToPrimitiveHint::Number,
-      )?;
-      scope.push_root(px)?;
-      (px, py)
-    };
-
-    // 2. String/string => lexicographic code-unit comparison.
-    if let (Value::String(sx), Value::String(sy)) = (px, py) {
-      let a = scope.heap().get_string(sx)?.as_code_units();
-      let b = scope.heap().get_string(sy)?.as_code_units();
-      let ord = crate::tick::code_units_cmp_with_ticks(a, b, || self.vm.tick())?;
-      return Ok(Some(ord == Ordering::Less));
-    }
-
-    // 2.b. BigInt/string => parse the string as a BigInt (StringToBigInt).
-    match (px, py) {
-      (Value::BigInt(a), Value::String(bs)) => {
-        let mut tick = || self.vm.tick();
-        let Some(bi) = string_to_bigint(scope.heap(), bs, &mut tick)? else {
-          return Ok(None);
-        };
-        return Ok(Some(scope.heap().get_bigint(a)? < &bi));
-      }
-      (Value::String(as_), Value::BigInt(b)) => {
-        let mut tick = || self.vm.tick();
-        let Some(ai) = string_to_bigint(scope.heap(), as_, &mut tick)? else {
-          return Ok(None);
-        };
-        return Ok(Some(&ai < scope.heap().get_bigint(b)?));
-      }
-      _ => {}
-    }
-
-    // 3. Otherwise => ToNumeric then numeric comparison.
-    let nx = self.to_numeric(&mut scope, px)?;
-    let ny = self.to_numeric(&mut scope, py)?;
-    Ok(match (nx, ny) {
-      (NumericValue::Number(a), NumericValue::Number(b)) => {
-        if a.is_nan() || b.is_nan() {
-          None
-        } else {
-          Some(a < b)
-        }
-      }
-      (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-        let a = scope.heap().get_bigint(a)?;
-        let b = scope.heap().get_bigint(b)?;
-        Some(a < b)
-      }
-      (NumericValue::BigInt(a), NumericValue::Number(b)) => {
-        bigint_compare_number(scope.heap(), a, b)?.map(|ord| ord == Ordering::Less)
-      }
-      (NumericValue::Number(a), NumericValue::BigInt(b)) => {
-        bigint_compare_number(scope.heap(), b, a)?.map(|ord| ord == Ordering::Greater)
-      }
-    })
-  }
-
   fn eval_assignment(
     &mut self,
     scope: &mut Scope<'_>,
@@ -4721,35 +4296,34 @@ impl<'vm> HirEvaluator<'vm> {
   ) -> Result<Value, VmError> {
     match op {
       hir_js::AssignOp::Assign => {
-        // For simple assignment targets (`x = rhs`, `obj[prop] = rhs`), evaluate the assignment
-        // target (including computed property keys / binding resolution) *before* evaluating the
-        // RHS expression.
+        // Spec note: plain assignment targets (identifiers / members) evaluate the reference (and
+        // therefore computed property keys / `with` binding resolution) before evaluating the RHS.
         //
-        // Destructuring assignment patterns (`{x} = rhs`, `[a] = rhs`) evaluate the RHS first, then
-        // destructure and assign.
+        // Destructuring assignment patterns evaluate the RHS first.
         let pat = self.get_pat(body, target)?;
         match &pat.kind {
           hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_) => {
             let reference = self.eval_assignment_reference(scope, body, target)?;
+
             let mut scope = scope.reborrow();
             self.root_assignment_reference(&mut scope, &reference)?;
 
             let v = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(v)?;
-            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
-            self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
-            Ok(v)
-          }
-          _ => {
-            // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
-            let mut scope = scope.reborrow();
-            let v = self.eval_expr(&mut scope, body, value)?;
-            scope.push_root(v)?;
-            self.assign_to_pat(&mut scope, body, target, v)?;
-            Ok(v)
-          }
-        }
-      }
+             self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
+             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
+             Ok(v)
+           }
+           _ => {
+             // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
+             let mut scope = scope.reborrow();
+             let v = self.eval_expr(&mut scope, body, value)?;
+             scope.push_root(v)?;
+             self.assign_to_pat(&mut scope, body, target, v)?;
+             Ok(v)
+           }
+         }
+       }
       hir_js::AssignOp::AddAssign
       | hir_js::AssignOp::SubAssign
       | hir_js::AssignOp::MulAssign
@@ -5161,9 +4735,6 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(left)?;
         let right = self.eval_expr(&mut scope, body, value)?;
         scope.push_root(right)?;
-        // `||=` / `&&=` / `??=` are assignment expressions. When the RHS is an anonymous
-        // function/class definition, infer its `name` from the assignment target.
-        maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
         self.env.set_resolved_binding(
           self.vm,
           &mut *self.host,
@@ -5198,9 +4769,6 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
-            // `||=` / `&&=` / `??=` are assignment expressions. When the RHS is an anonymous
-            // function/class definition, infer its `name` from the assignment target.
-            maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
             self.env.set_resolved_binding(
               self.vm,
               &mut *self.host,
@@ -5245,10 +4813,6 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
-            // `||=` / `&&=` / `??=` are assignment expressions. When the RHS is an anonymous
-            // function/class definition, infer its `name` from the assignment target.
-            let reference = AssignmentReference::Property { base, key };
-            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, right)?;
 
             let ok = crate::spec_ops::internal_set_with_host_and_hooks(
               self.vm,
@@ -5398,135 +4962,47 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::AssignOp::ShiftLeftAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = self.to_numeric(&mut scope, left)?;
-        let rn = self.to_numeric(&mut scope, right)?;
-        match (ln, rn) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => {
-            let shift = to_uint32(b) & 0x1f;
-            Ok(Value::Number(to_int32(a).wrapping_shl(shift) as f64))
-          }
-          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let out = {
-              let a = scope.heap().get_bigint(a)?;
-              let b = scope.heap().get_bigint(b)?;
-              let (shift_negative, shift) = bigint_shift_count(b);
-              if shift_negative {
-                a.shr(shift)?
-              } else {
-                a.shl(shift)?
-              }
-            };
-            let out = scope.alloc_bigint(out)?;
-            Ok(Value::BigInt(out))
-          }
-          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
-        }
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_int32(ln).wrapping_shl(shift) as f64))
       }
       hir_js::AssignOp::ShiftRightAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = self.to_numeric(&mut scope, left)?;
-        let rn = self.to_numeric(&mut scope, right)?;
-        match (ln, rn) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => {
-            let shift = to_uint32(b) & 0x1f;
-            Ok(Value::Number(to_int32(a).wrapping_shr(shift) as f64))
-          }
-          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let out = {
-              let a = scope.heap().get_bigint(a)?;
-              let b = scope.heap().get_bigint(b)?;
-              let (shift_negative, shift) = bigint_shift_count(b);
-              if shift_negative {
-                a.shl(shift)?
-              } else {
-                a.shr(shift)?
-              }
-            };
-            let out = scope.alloc_bigint(out)?;
-            Ok(Value::BigInt(out))
-          }
-          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
-        }
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_int32(ln).wrapping_shr(shift) as f64))
       }
       hir_js::AssignOp::ShiftRightUnsignedAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = self.to_numeric(&mut scope, left)?;
-        let rn = self.to_numeric(&mut scope, right)?;
-        match (ln, rn) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => {
-            let shift = to_uint32(b) & 0x1f;
-            Ok(Value::Number((to_uint32(a) >> shift) as f64))
-          }
-          (NumericValue::BigInt(_), NumericValue::BigInt(_)) => Err(VmError::TypeError(
-            "BigInt does not support unsigned right shift",
-          )),
-          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
-        }
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
       }
       hir_js::AssignOp::BitOrAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = self.to_numeric(&mut scope, left)?;
-        let rn = self.to_numeric(&mut scope, right)?;
-        match (ln, rn) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => {
-            Ok(Value::Number((to_int32(a) | to_int32(b)) as f64))
-          }
-          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let out = {
-              let a = scope.heap().get_bigint(a)?;
-              let b = scope.heap().get_bigint(b)?;
-              a.bitwise_or(b)?
-            };
-            let out = scope.alloc_bigint(out)?;
-            Ok(Value::BigInt(out))
-          }
-          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
-        }
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        Ok(Value::Number((to_int32(ln) | to_int32(rn)) as f64))
       }
       hir_js::AssignOp::BitAndAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = self.to_numeric(&mut scope, left)?;
-        let rn = self.to_numeric(&mut scope, right)?;
-        match (ln, rn) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => {
-            Ok(Value::Number((to_int32(a) & to_int32(b)) as f64))
-          }
-          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let out = {
-              let a = scope.heap().get_bigint(a)?;
-              let b = scope.heap().get_bigint(b)?;
-              a.bitwise_and(b)?
-            };
-            let out = scope.alloc_bigint(out)?;
-            Ok(Value::BigInt(out))
-          }
-          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
-        }
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        Ok(Value::Number((to_int32(ln) & to_int32(rn)) as f64))
       }
       hir_js::AssignOp::BitXorAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = self.to_numeric(&mut scope, left)?;
-        let rn = self.to_numeric(&mut scope, right)?;
-        match (ln, rn) {
-          (NumericValue::Number(a), NumericValue::Number(b)) => {
-            Ok(Value::Number((to_int32(a) ^ to_int32(b)) as f64))
-          }
-          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let out = {
-              let a = scope.heap().get_bigint(a)?;
-              let b = scope.heap().get_bigint(b)?;
-              a.bitwise_xor(b)?
-            };
-            let out = scope.alloc_bigint(out)?;
-            Ok(Value::BigInt(out))
-          }
-          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
-        }
+        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
+        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
+        Ok(Value::Number((to_int32(ln) ^ to_int32(rn)) as f64))
       }
       _ => Err(VmError::Unimplemented(
         "compound assignment operator (hir-js compiled path)",
@@ -5815,13 +5291,10 @@ impl<'vm> HirEvaluator<'vm> {
       let mut prop_scope = scope.reborrow();
       root_property_key(&mut prop_scope, key)?;
 
-      // Best-effort assignment target evaluation order: if the LHS is a member target, evaluate the
-      // base + key *expression* before reading the source property value. For computed member
-      // targets, delay `ToPropertyKey` conversion until `PutValue` (after `GetV` / default
-      // evaluation), matching the interpreter behaviour and test262.
+      // Best-effort assignment target evaluation order: if the LHS is a member target, evaluate it
+      // before reading the source property value.
       enum PropTarget {
         PreResolvedMember { base: Value, key: PropertyKey },
-        PreResolvedComputedMember { base: Value, key_value: Value },
         Pat(hir_js::PatId),
       }
       let mut target = PropTarget::Pat(prop.value);
@@ -5832,18 +5305,9 @@ impl<'vm> HirEvaluator<'vm> {
           if let hir_js::ExprKind::Member(member) = &target_expr.kind {
             let base = self.eval_expr(&mut prop_scope, body, member.object)?;
             let base = prop_scope.push_root(base)?;
-            match member.property {
-              hir_js::ObjectKey::Computed(expr_id) => {
-                let key_value = self.eval_expr(&mut prop_scope, body, expr_id)?;
-                let key_value = prop_scope.push_root(key_value)?;
-                target = PropTarget::PreResolvedComputedMember { base, key_value };
-              }
-              _ => {
-                let member_key = self.eval_object_key(&mut prop_scope, body, &member.property)?;
-                root_property_key(&mut prop_scope, member_key)?;
-                target = PropTarget::PreResolvedMember { base, key: member_key };
-              }
-            }
+            let member_key = self.eval_object_key(&mut prop_scope, body, &member.property)?;
+            root_property_key(&mut prop_scope, member_key)?;
+            target = PropTarget::PreResolvedMember { base, key: member_key };
           }
         }
       }
@@ -5860,14 +5324,6 @@ impl<'vm> HirEvaluator<'vm> {
         PropTarget::PreResolvedMember { base, key } => {
           self.assign_to_property_key(&mut prop_scope, base, key, prop_value)?
         }
-        PropTarget::PreResolvedComputedMember { base, key_value } => {
-          // Root the property value across `ToPropertyKey`, which can allocate and invoke user
-          // code. (The base/key_value are already rooted from target pre-resolution above.)
-          let prop_value = prop_scope.push_root(prop_value)?;
-          let key = prop_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-          root_property_key(&mut prop_scope, key)?;
-          self.assign_to_property_key(&mut prop_scope, base, key, prop_value)?
-        }
         PropTarget::Pat(pat_id) => self.assign_to_pat(&mut prop_scope, body, pat_id, prop_value)?,
       }
     }
@@ -5879,7 +5335,6 @@ impl<'vm> HirEvaluator<'vm> {
     // Rest property assignment should evaluate the LHS before copying properties.
     enum RestTarget {
       PreResolvedMember { base: Value, key: PropertyKey },
-      PreResolvedComputedMember { base: Value, key_value: Value },
       Pat(hir_js::PatId),
     }
     let mut rest_target = RestTarget::Pat(rest_pat_id);
@@ -5890,18 +5345,9 @@ impl<'vm> HirEvaluator<'vm> {
         if let hir_js::ExprKind::Member(member) = &target_expr.kind {
           let base = self.eval_expr(scope, body, member.object)?;
           let base = scope.push_root(base)?;
-          match member.property {
-            hir_js::ObjectKey::Computed(expr_id) => {
-              let key_value = self.eval_expr(scope, body, expr_id)?;
-              let key_value = scope.push_root(key_value)?;
-              rest_target = RestTarget::PreResolvedComputedMember { base, key_value };
-            }
-            _ => {
-              let member_key = self.eval_object_key(scope, body, &member.property)?;
-              root_property_key(scope, member_key)?;
-              rest_target = RestTarget::PreResolvedMember { base, key: member_key };
-            }
-          }
+          let member_key = self.eval_object_key(scope, body, &member.property)?;
+          root_property_key(scope, member_key)?;
+          rest_target = RestTarget::PreResolvedMember { base, key: member_key };
         }
       }
     }
@@ -5926,13 +5372,6 @@ impl<'vm> HirEvaluator<'vm> {
 
     match rest_target {
       RestTarget::PreResolvedMember { base, key } => {
-        self.assign_to_property_key(scope, base, key, Value::Object(rest_obj))
-      }
-      RestTarget::PreResolvedComputedMember { base, key_value } => {
-        // Root the rest object across `ToPropertyKey`.
-        scope.push_root(Value::Object(rest_obj))?;
-        let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-        root_property_key(scope, key)?;
         self.assign_to_property_key(scope, base, key, Value::Object(rest_obj))
       }
       RestTarget::Pat(pat_id) => self.assign_to_pat(scope, body, pat_id, Value::Object(rest_obj)),
@@ -5974,13 +5413,10 @@ impl<'vm> HirEvaluator<'vm> {
         continue;
       };
 
-      // Best-effort assignment target evaluation order: evaluate member targets (base + key
-      // *expression*) before consuming the iterator. For computed member targets, delay
-      // `ToPropertyKey` conversion until `PutValue` (after the iterator step / default evaluation),
-      // matching the interpreter behaviour and test262.
+      // Best-effort assignment target evaluation order: evaluate member targets before consuming
+      // the iterator.
       enum ElemTarget {
         PreResolvedMember { base: Value, key: PropertyKey },
-        PreResolvedComputedMember { base: Value, key_value: Value },
         Pat(hir_js::PatId),
       }
       let mut target = ElemTarget::Pat(elem.pat);
@@ -5991,18 +5427,9 @@ impl<'vm> HirEvaluator<'vm> {
           if let hir_js::ExprKind::Member(member) = &target_expr.kind {
             let base = self.eval_expr(&mut elem_scope, body, member.object)?;
             let base = elem_scope.push_root(base)?;
-            match member.property {
-              hir_js::ObjectKey::Computed(expr_id) => {
-                let key_value = self.eval_expr(&mut elem_scope, body, expr_id)?;
-                let key_value = elem_scope.push_root(key_value)?;
-                target = ElemTarget::PreResolvedComputedMember { base, key_value };
-              }
-              _ => {
-                let member_key = self.eval_object_key(&mut elem_scope, body, &member.property)?;
-                root_property_key(&mut elem_scope, member_key)?;
-                target = ElemTarget::PreResolvedMember { base, key: member_key };
-              }
-            }
+            let member_key = self.eval_object_key(&mut elem_scope, body, &member.property)?;
+            root_property_key(&mut elem_scope, member_key)?;
+            target = ElemTarget::PreResolvedMember { base, key: member_key };
           }
         }
       }
@@ -6030,13 +5457,6 @@ impl<'vm> HirEvaluator<'vm> {
 
       let res = match target {
         ElemTarget::PreResolvedMember { base, key } => self.assign_to_property_key(&mut elem_scope, base, key, item),
-        ElemTarget::PreResolvedComputedMember { base, key_value } => {
-          // Root the element value across `ToPropertyKey`.
-          let item = elem_scope.push_root(item)?;
-          let key = elem_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-          root_property_key(&mut elem_scope, key)?;
-          self.assign_to_property_key(&mut elem_scope, base, key, item)
-        }
         ElemTarget::Pat(pat_id) => self.assign_to_pat(&mut elem_scope, body, pat_id, item),
       };
       if let Err(err) = res {
@@ -6061,7 +5481,6 @@ impl<'vm> HirEvaluator<'vm> {
     // Rest element assignment must evaluate the LHS target before consuming the iterator.
     enum RestTarget {
       PreResolvedMember { base: Value, key: PropertyKey },
-      PreResolvedComputedMember { base: Value, key_value: Value },
       Pat(hir_js::PatId),
     }
     let mut rest_target = RestTarget::Pat(rest_pat_id);
@@ -6072,18 +5491,9 @@ impl<'vm> HirEvaluator<'vm> {
         if let hir_js::ExprKind::Member(member) = &target_expr.kind {
           let base = self.eval_expr(scope, body, member.object)?;
           let base = scope.push_root(base)?;
-          match member.property {
-            hir_js::ObjectKey::Computed(expr_id) => {
-              let key_value = self.eval_expr(scope, body, expr_id)?;
-              let key_value = scope.push_root(key_value)?;
-              rest_target = RestTarget::PreResolvedComputedMember { base, key_value };
-            }
-            _ => {
-              let member_key = self.eval_object_key(scope, body, &member.property)?;
-              root_property_key(scope, member_key)?;
-              rest_target = RestTarget::PreResolvedMember { base, key: member_key };
-            }
-          }
+          let member_key = self.eval_object_key(scope, body, &member.property)?;
+          root_property_key(scope, member_key)?;
+          rest_target = RestTarget::PreResolvedMember { base, key: member_key };
         }
       }
     }
@@ -6143,13 +5553,6 @@ impl<'vm> HirEvaluator<'vm> {
 
     let assign_res = match rest_target {
       RestTarget::PreResolvedMember { base, key } => {
-        self.assign_to_property_key(scope, base, key, Value::Object(rest_arr))
-      }
-      RestTarget::PreResolvedComputedMember { base, key_value } => {
-        // Root the rest array across `ToPropertyKey`.
-        scope.push_root(Value::Object(rest_arr))?;
-        let key = scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
-        root_property_key(scope, key)?;
         self.assign_to_property_key(scope, base, key, Value::Object(rest_arr))
       }
       RestTarget::Pat(pat_id) => self.assign_to_pat(scope, body, pat_id, Value::Object(rest_arr)),
@@ -6300,18 +5703,6 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     obj: &hir_js::ObjectLiteral,
   ) -> Result<Value, VmError> {
-    const PROTO_KEY_UNITS: [u16; 9] = [
-      b'_' as u16,
-      b'_' as u16,
-      b'p' as u16,
-      b'r' as u16,
-      b'o' as u16,
-      b't' as u16,
-      b'o' as u16,
-      b'_' as u16,
-      b'_' as u16,
-    ];
-
     // Object literals inherit from %Object.prototype% (when intrinsics are available).
     //
     // The heap can be used without an initialized realm in some low-level unit tests; in that case
@@ -6333,11 +5724,8 @@ impl<'vm> HirEvaluator<'vm> {
           key,
           value,
           method,
-          shorthand,
+          ..
         } => {
-          let is_proto_setter =
-            !*method && !*shorthand && !matches!(key, hir_js::ObjectKey::Computed(_));
-
           // Spec-ish name inference: for methods and anonymous function definitions used as property
           // values, apply `SetFunctionName` with the property key.
           //
@@ -6348,7 +5736,6 @@ impl<'vm> HirEvaluator<'vm> {
             let expr = self.get_expr(body, *value)?;
             match &expr.kind {
               hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
-              hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
               _ => false,
             }
           };
@@ -6367,49 +5754,19 @@ impl<'vm> HirEvaluator<'vm> {
                 body: func_body,
                 is_arrow,
                 ..
-              } => {
-                let func_span = self.get_body(*func_body)?.span;
-                Value::Object(self.alloc_user_function_object(
-                  &mut member_scope,
-                  *func_body,
-                  func_span.start,
-                  func_span.end,
-                  "",
-                  *is_arrow,
-                  /* is_constructable */ false,
-                  EcmaFunctionKind::ObjectMember,
-                  /* name_binding */ None,
-                )?)
-              }
+              } => Value::Object(self.alloc_user_function_object(
+                &mut member_scope,
+                *func_body,
+                "",
+                *is_arrow,
+                /* is_constructable */ false,
+                /* name_binding */ None,
+              )?),
               _ => self.eval_expr(&mut member_scope, body, *value)?,
             }
           } else {
             self.eval_expr(&mut member_scope, body, *value)?
           };
-
-          // `__proto__: value` does *not* create an own property. If the evaluated value is an
-          // Object or Null, it sets the object's `[[Prototype]]`; otherwise it is ignored.
-          //
-          // Importantly, this returns early before `SetFunctionName` name inference for anonymous
-          // function definitions (since no property is created).
-          if is_proto_setter {
-            if let PropertyKey::String(s) = key {
-              if member_scope.heap().get_string(s)?.as_code_units() == PROTO_KEY_UNITS.as_slice() {
-                match v {
-                  Value::Object(proto) => {
-                    member_scope
-                      .heap_mut()
-                      .object_set_prototype(obj_val, Some(proto))?;
-                  }
-                  Value::Null => {
-                    member_scope.heap_mut().object_set_prototype(obj_val, None)?;
-                  }
-                  _ => {}
-                }
-                continue;
-              }
-            }
-          }
 
           // Root the value across `SetFunctionName` and `CreateDataProperty`.
           member_scope.push_root(v)?;
@@ -6465,16 +5822,12 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
 
-          let getter_span = self.get_body(*getter_body)?.span;
           let func_obj = self.alloc_user_function_object(
             &mut member_scope,
             *getter_body,
-            getter_span.start,
-            getter_span.end,
             /* name */ "",
             /* is_arrow */ false,
             /* is_constructable */ false,
-            EcmaFunctionKind::ObjectMember,
             /* name_binding */ None,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
@@ -6506,16 +5859,12 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
 
-          let setter_span = self.get_body(*setter_body)?.span;
           let func_obj = self.alloc_user_function_object(
             &mut member_scope,
             *setter_body,
-            setter_span.start,
-            setter_span.end,
             /* name */ "",
             /* is_arrow */ false,
             /* is_constructable */ false,
-            EcmaFunctionKind::ObjectMember,
             /* name_binding */ None,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
@@ -6541,92 +5890,31 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(Value::Object(obj_val))
   }
 
-  fn eval_call_arguments(
-    &mut self,
-    scope: &mut Scope<'_>,
-    body: &hir_js::Body,
-    call_args: &[hir_js::CallArg],
-  ) -> Result<Vec<Value>, VmError> {
-    let mut args: Vec<Value> = Vec::new();
-    // Best-effort lower bound: spread args can expand beyond this.
-    args
-      .try_reserve_exact(call_args.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-
-    for arg in call_args {
-      if arg.spread {
-        let spread_value = self.eval_expr(scope, body, arg.expr)?;
-        scope.push_root(spread_value)?;
-
-        let mut iter =
-          iterator::get_iterator(self.vm, &mut *self.host, &mut *self.hooks, scope, spread_value)?;
-        scope.push_roots(&[iter.iterator, iter.next_method])?;
-
-        loop {
-          let next_value = match iterator::iterator_step_value(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            scope,
-            &mut iter,
-          ) {
-            Ok(v) => v,
-            // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
-            // while stepping the iterator (`next`/`done`/`value`).
-            Err(err) => return Err(err),
-          };
-          let Some(value) = next_value else {
-            break;
-          };
-
-          let step_res: Result<(), VmError> = (|| {
-            // Per-spread-element tick: spreading large iterators should be budgeted even when the
-            // iterator's `next()` is native/cheap.
-            self.vm.tick()?;
-            scope.push_root(value)?;
-            args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-            args.push(value);
-            Ok(())
-          })();
-          if let Err(err) = step_res {
-            return Err(self.iterator_close_on_error(scope, &iter, err));
-          }
-        }
-      } else {
-        let value = self.eval_expr(scope, body, arg.expr)?;
-        scope.push_root(value)?;
-        args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-        args.push(value);
-      }
-    }
-
-    Ok(args)
-  }
-
   fn eval_call(
     &mut self,
     scope: &mut Scope<'_>,
     body: &hir_js::Body,
     call: &hir_js::CallExpr,
   ) -> Result<Value, VmError> {
+    // Only support non-spread arguments for now.
+    if call.args.iter().any(|arg| arg.spread) {
+      return Err(VmError::Unimplemented("spread arguments (hir-js compiled path)"));
+    }
+
     // Track whether this call is *syntactically* a direct eval candidate (`eval(...)`).
     //
     // A call is only a direct eval if:
     // - it is syntactically `eval(...)`, and
     // - `eval` resolves to the original `%eval%` intrinsic function object.
+    //
+    // HIR does not preserve parenthesization metadata, so this is best-effort.
     let callee_expr = self.get_expr(body, call.callee)?;
-    let direct_eval_syntax = !call.is_new
-      && !call.optional
+    let direct_eval_syntax = !call.optional
       && matches!(
         &callee_expr.kind,
         hir_js::ExprKind::Ident(name_id)
           if self.hir().names.resolve(*name_id) == Some("eval")
-      )
-      // HIR does not preserve parse-js's `ParenthesizedExpr` metadata. Detect a parenthesized callee
-      // (e.g. `(eval)(...)`) by scanning the original source for a `)` immediately after the callee
-      // expression span. Comments and whitespace are skipped.
-      && self.next_non_trivia_byte_from_source(callee_expr.span.start)? != Some(b'(')
-      && self.next_non_trivia_byte_from_source(callee_expr.span.end)? != Some(b')');
+      );
 
     let mut scope = scope.reborrow();
 
@@ -6638,11 +5926,21 @@ impl<'vm> HirEvaluator<'vm> {
       if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
         return Ok(Value::Undefined);
       }
+
+      // Root callee while evaluating args.
       scope.push_root(callee_value)?;
 
-      let args = self.eval_call_arguments(&mut scope, body, call.args.as_slice())?;
+      let mut args: Vec<Value> = Vec::new();
+      args
+        .try_reserve_exact(call.args.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for arg in &call.args {
+        let v = self.eval_expr(&mut scope, body, arg.expr)?;
+        scope.push_root(v)?;
+        args.push(v);
+      }
 
-      // For `new`, the `newTarget` is the same as the constructor.
+      // For `new F(...)`, the `newTarget` is `F` itself.
       return self.vm.construct_with_host_and_hooks(
         &mut *self.host,
         &mut scope,
@@ -6653,7 +5951,7 @@ impl<'vm> HirEvaluator<'vm> {
       );
     }
 
-    // Method call detection: `obj.prop(...)` uses `this = obj` (or primitive base for strict mode).
+    // Method call detection: `obj.prop(...)` uses `this = obj`.
     let (callee_value, this_value) = match &callee_expr.kind {
       hir_js::ExprKind::Member(member) => {
         let base = self.eval_expr(&mut scope, body, member.object)?;
@@ -6684,7 +5982,6 @@ impl<'vm> HirEvaluator<'vm> {
       }
     };
 
-    // Optional call: if the callee is nullish, return `undefined` without evaluating args.
     if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
       return Ok(Value::Undefined);
     }
@@ -6692,7 +5989,15 @@ impl<'vm> HirEvaluator<'vm> {
     // Root callee/this while evaluating args.
     scope.push_roots(&[callee_value, this_value])?;
 
-    let args = self.eval_call_arguments(&mut scope, body, call.args.as_slice())?;
+    let mut args: Vec<Value> = Vec::new();
+    args
+      .try_reserve_exact(call.args.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    for arg in &call.args {
+      let v = self.eval_expr(&mut scope, body, arg.expr)?;
+      scope.push_root(v)?;
+      args.push(v);
+    }
 
     if direct_eval_syntax {
       let intr = self
@@ -6746,14 +6051,7 @@ impl<'vm> HirEvaluator<'vm> {
     let Some(class_meta) = class_body.class.as_ref() else {
       return Err(VmError::InvariantViolation("class body missing class metadata"));
     };
-    let extends_null = match class_meta.extends {
-      None => false,
-      Some(expr_id) => {
-        let expr = self.get_expr(class_body, expr_id)?;
-        matches!(&expr.kind, hir_js::ExprKind::Literal(hir_js::Literal::Null))
-      }
-    };
-    if class_meta.extends.is_some() && !extends_null {
+    if class_meta.extends.is_some() {
       return Err(VmError::Unimplemented("class inheritance"));
     }
 
@@ -6787,14 +6085,7 @@ impl<'vm> HirEvaluator<'vm> {
       let Some(class_meta) = class_body.class.as_ref() else {
         return Err(VmError::InvariantViolation("class body missing class metadata"));
       };
-      let extends_null = match class_meta.extends {
-        None => false,
-        Some(expr_id) => {
-          let expr = self.get_expr(class_body, expr_id)?;
-          matches!(&expr.kind, hir_js::ExprKind::Literal(hir_js::Literal::Null))
-        }
-      };
-      if class_meta.extends.is_some() && !extends_null {
+      if class_meta.extends.is_some() {
         return Err(VmError::Unimplemented("class inheritance"));
       }
 
@@ -6833,17 +6124,15 @@ impl<'vm> HirEvaluator<'vm> {
         };
         if let Some(body_id) = *body {
           // Allocate the compiled function object for the constructor body.
-          let body_func = self.alloc_user_function_object(
-            scope,
-            body_id,
-            member.span.start,
-            member.span.end,
-            "constructor",
-            /* is_arrow */ false,
-            /* is_constructable */ true,
-            EcmaFunctionKind::ClassMember,
-            /* name_binding */ None,
-          )?;
+          let body_func =
+            self.alloc_user_function_object(
+              scope,
+              body_id,
+              "constructor",
+              /* is_arrow */ false,
+              /* is_constructable */ true,
+              /* name_binding */ None,
+            )?;
           ctor_length = scope.heap().get_function(body_func)?.length;
 
           // Wrap it in a constructable native function so `class_constructor_construct` can delegate
@@ -6895,9 +6184,7 @@ impl<'vm> HirEvaluator<'vm> {
         None
       };
 
-      let is_derived = extends_null;
-      let func_obj =
-        self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func, is_derived)?;
+      let func_obj = self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
 
       // Initialize the requested binding now that the class constructor object exists.
       if let Some(name) = binding_name {
@@ -6930,13 +6217,6 @@ impl<'vm> HirEvaluator<'vm> {
         ));
       };
       class_scope.push_root(Value::Object(prototype_obj))?;
-
-      // `extends null` means the prototype object inherits from `null` (not `%Object.prototype%`).
-      if extends_null {
-        class_scope
-          .heap_mut()
-          .object_set_prototype(prototype_obj, None)?;
-      }
 
       // Per ECMAScript, class constructors have a non-writable `prototype` property.
       class_scope.define_property_or_throw(
@@ -6984,26 +6264,22 @@ impl<'vm> HirEvaluator<'vm> {
               ));
             };
 
-            // Allocate the method/accessor function object (non-constructable).
-            //
-            // We pass an empty string here and rely on `set_function_name` below to compute the
-            // correct name from the actual property key (including accessor prefixes).
+            // Allocate the method function object (non-constructable).
+            let method_name = match key {
+              PropertyKey::String(s) => member_scope.heap().get_string(s)?.to_utf8_lossy(),
+              PropertyKey::Symbol(_) => String::new(),
+            };
             let func_obj_member = self.alloc_user_function_object(
               &mut member_scope,
               *body_id,
-              member.span.start,
-              member.span.end,
-              /* name */ "",
+              method_name.as_str(),
               /* is_arrow */ false,
               /* is_constructable */ false,
-              EcmaFunctionKind::ClassMember,
               /* name_binding */ None,
             )?;
-            member_scope.push_root(Value::Object(func_obj_member))?;
 
             match kind {
               hir_js::ClassMethodKind::Method => {
-                crate::function_properties::set_function_name(&mut member_scope, func_obj_member, key, None)?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
@@ -7017,12 +6293,6 @@ impl<'vm> HirEvaluator<'vm> {
                 )?;
               }
               hir_js::ClassMethodKind::Getter => {
-                crate::function_properties::set_function_name(
-                  &mut member_scope,
-                  func_obj_member,
-                  key,
-                  Some("get"),
-                )?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
@@ -7035,12 +6305,6 @@ impl<'vm> HirEvaluator<'vm> {
                 )?;
               }
               hir_js::ClassMethodKind::Setter => {
-                crate::function_properties::set_function_name(
-                  &mut member_scope,
-                  func_obj_member,
-                  key,
-                  Some("set"),
-                )?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
@@ -7079,12 +6343,8 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::ClassMemberKey::Number(s) => Ok(PropertyKey::from_string(scope.alloc_string(s)?)),
       hir_js::ClassMemberKey::Computed(expr_id) => {
         let v = self.eval_expr(scope, class_body, *expr_id)?;
-        // Computed class member keys use full ECMAScript `ToPropertyKey`, which performs
-        // `ToPrimitive` (hint String) and can invoke user code. Root the computed value across the
-        // conversion.
-        let mut scope = scope.reborrow();
-        scope.push_root(v)?;
-        scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, v)
+        let key = scope.heap_mut().to_property_key(v)?;
+        Ok(key)
       }
       hir_js::ClassMemberKey::Private(_) => Err(VmError::Unimplemented("class private elements")),
     }
@@ -7096,7 +6356,6 @@ impl<'vm> HirEvaluator<'vm> {
     name: &str,
     length: u32,
     constructor_body: Option<GcObject>,
-    is_derived: bool,
   ) -> Result<GcObject, VmError> {
     let intr = self
       .vm
@@ -7113,11 +6372,10 @@ impl<'vm> HirEvaluator<'vm> {
     let name_s = init_scope.alloc_string(name)?;
     let slots_buf;
     let slots = if let Some(body) = constructor_body {
-      slots_buf = [Value::Object(body), Value::Bool(is_derived)];
+      slots_buf = [Value::Object(body)];
       &slots_buf[..]
     } else {
-      slots_buf = [Value::Undefined, Value::Bool(is_derived)];
-      &slots_buf[..]
+      &[][..]
     };
 
     let func_obj = init_scope.alloc_native_function_with_slots(
@@ -7217,28 +6475,6 @@ fn bigint_compare_number(
   } else {
     Ordering::Greater
   }))
-}
-
-fn bigint_shift_count(value: &crate::JsBigInt) -> (bool, u64) {
-  match value.try_to_i128() {
-    Some(shift_i) => {
-      // `(-i128::MIN)` overflows, so handle it explicitly.
-      let shift_mag: u128 = if shift_i == i128::MIN {
-        1u128 << 127
-      } else if shift_i < 0 {
-        (-shift_i) as u128
-      } else {
-        shift_i as u128
-      };
-      let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
-      (shift_i < 0, shift)
-    }
-    // If the shift count does not fit into an i128, it is either extremely large or extremely
-    // negative. Saturate to `u64::MAX` so:
-    // - huge right shifts quickly produce 0/-1,
-    // - huge left shifts attempt to allocate and surface OOM.
-    None => (value.is_negative(), u64::MAX),
-  }
 }
 
 fn to_int32(n: f64) -> i32 {
@@ -7411,151 +6647,5 @@ pub(crate) fn run_compiled_script(
     Flow::Return(_) => Err(VmError::Unimplemented("return outside of function")),
     Flow::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
     Flow::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
-
-  fn new_runtime() -> JsRuntime {
-    let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-    JsRuntime::new(vm, heap).unwrap()
-  }
-
-  fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
-    let script = CompiledScript::compile_script(rt.heap_mut(), "<test>", source)?;
-    rt.exec_compiled_script(script)
-  }
-
-  #[test]
-  fn compiled_try_catches_thrown_value() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ try { throw 1; } catch(e) { return e; } } f();",
-    )?;
-    assert_eq!(v, Value::Number(1.0));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_try_catches_internal_type_error() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ try { null.x; return 0; } catch(e) { return 1; } } f();",
-    )?;
-    assert_eq!(v, Value::Number(1.0));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_finally_runs_on_return() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ try { return 1; } finally { globalThis._ran = 1; } } f();",
-    )?;
-    assert_eq!(v, Value::Number(1.0));
-
-    let ran = exec_compiled(&mut rt, "globalThis._ran")?;
-    assert_eq!(ran, Value::Number(1.0));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_try_catches_internal_not_callable() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ try { (0)(); return 0; } catch(e) { return 1; } } f();",
-    )?;
-    assert_eq!(v, Value::Number(1.0));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_try_catch_binds_destructuring_param() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ try { throw {a: 1}; } catch({a}) { return a; } } f();",
-    )?;
-    assert_eq!(v, Value::Number(1.0));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_finally_overrides_throw() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ try { throw 1; } finally { return 2; } } f();",
-    )?;
-    assert_eq!(v, Value::Number(2.0));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_finally_throw_overrides_return() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let res = exec_compiled(
-      &mut rt,
-      "function f(){ try { return 1; } finally { throw 2; } } f();",
-    );
-    let Err(err) = res else {
-      return Err(VmError::InvariantViolation("expected throw from finally"));
-    };
-    assert_eq!(err.thrown_value(), Some(Value::Number(2.0)));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_try_optional_catch_binding() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ try { throw 1; } catch { return 2; } } f();",
-    )?;
-    assert_eq!(v, Value::Number(2.0));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_catch_param_not_visible_after_catch() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ try { throw 1; } catch(e) {} return typeof e; } f();",
-    )?;
-    let Value::String(s) = v else {
-      return Err(VmError::InvariantViolation("expected typeof result to be a string"));
-    };
-    assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "undefined");
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_finally_runs_on_break() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ globalThis._ran = 0; for(let i=0;i<1;i++){ try { break; } finally { globalThis._ran = 1; } } return globalThis._ran; } f();",
-    )?;
-    assert_eq!(v, Value::Number(1.0));
-    Ok(())
-  }
-
-  #[test]
-  fn compiled_finally_runs_on_continue() -> Result<(), VmError> {
-    let mut rt = new_runtime();
-    let v = exec_compiled(
-      &mut rt,
-      "function f(){ globalThis._ran = 0; for(let i=0;i<1;i++){ try { continue; } finally { globalThis._ran = 1; } } return globalThis._ran; } f();",
-    )?;
-    assert_eq!(v, Value::Number(1.0));
-    Ok(())
   }
 }

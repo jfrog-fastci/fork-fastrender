@@ -32190,6 +32190,51 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn regexp_literal_pattern_and_flags_splitting_hir() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let source = r#"
+      (() => {
+        // Escaped slash in the pattern (`\/`) should be treated as part of the pattern, not as the
+        // literal terminator.
+        const r1 = /a\//;
+        if (r1.flags !== "") return false;
+        if (!r1.test("a/")) return false;
+        if (r1.test("a")) return false;
+
+        // Flags are parsed from the literal suffix after the closing `/`.
+        const r1g = /a\//g;
+        if (r1g.flags !== "g") return false;
+        if (!r1g.test("a/")) return false;
+
+        // `[` inside a character class should not confuse literal splitting.
+        const r2 = /[[]/;
+        if (!r2.test("[")) return false;
+
+        // Unescaped `/` inside a character class should not terminate the literal.
+        const r3 = /[/]/;
+        if (!r3.test("/")) return false;
+
+        const r3g = /[/]/g;
+        if (r3g.flags !== "g") return false;
+
+        return true;
+      })()
+    "#;
+
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
+    assert_eq!(
+      value,
+      Value::Bool(true),
+      "expected RegExp literal pattern/flags splitting to preserve escapes and character classes (HIR)"
+    );
+    Ok(())
+  }
+
   // Nested character classes (RegExp set notation) require the `v` flag.
   //
   // `vm-js` supports the `v` flag plumbing (parsing, canonicalization, and UnicodeMode semantics),
