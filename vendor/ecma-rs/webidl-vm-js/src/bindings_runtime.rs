@@ -530,6 +530,9 @@ impl<'a> BindingsRuntime<'a> {
 
   /// Allocates an array exotic object and sets its prototype to `%Array.prototype%` when available.
   pub fn alloc_array(&mut self, len: usize) -> Result<GcObject, VmError> {
+    if len > self.limits.max_sequence_length {
+      return Err(self.throw_range_error("sequence exceeds maximum length"));
+    }
     let obj = self.scope.alloc_array(len)?;
     let _ = self.root(Value::Object(obj))?;
     if let Some(intr) = self.vm.intrinsics() {
@@ -704,7 +707,7 @@ impl<'a> BindingsRuntime<'a> {
 
   /// Convert a host-returned [`BindingValue`] into a `vm-js` [`Value`].
   pub fn binding_value_to_js(&mut self, value: BindingValue) -> Result<Value, VmError> {
-    binding_value_to_js(&mut *self.vm, &mut self.scope, value)
+    binding_value_to_js_with_limits(&mut *self.vm, &mut self.scope, self.limits, value)
   }
 
   /// Derive the prototype used for a WebIDL constructor-created wrapper object.
@@ -797,20 +800,59 @@ impl<'a> BindingsRuntime<'a> {
 ///
 /// This is a standalone helper so generated/native code that already has `&mut Vm`/`&mut Scope`
 /// does not need to construct a full [`BindingsRuntime`] just for return-value conversion.
+///
+/// Note: this helper enforces [`WebIdlLimits::default()`]. Embeddings that need custom limits should
+/// convert via [`BindingsRuntime::binding_value_to_js`] after configuring
+/// [`BindingsRuntime::set_limits`].
 pub fn binding_value_to_js(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   value: BindingValue,
 ) -> Result<Value, VmError> {
+  // By default, `BindingsRuntime` uses `WebIdlLimits::default()`, so using the default limits here
+  // ensures this convenience helper does not perform unbounded allocations.
+  binding_value_to_js_with_limits(vm, scope, WebIdlLimits::default(), value)
+}
+
+fn binding_value_to_js_with_limits(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  limits: WebIdlLimits,
+  value: BindingValue,
+) -> Result<Value, VmError> {
+  fn throw_range_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> VmError {
+    let Some(intr) = vm.intrinsics() else {
+      return VmError::Unimplemented("throw_range_error requires initialized realm intrinsics");
+    };
+    match vm_js::new_error(scope, intr.range_error_prototype(), "RangeError", message) {
+      Ok(value) => VmError::Throw(value),
+      Err(err) => err,
+    }
+  }
+
+  #[inline]
+  fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+  }
+
   match value {
     BindingValue::Undefined => Ok(Value::Undefined),
     BindingValue::Null => Ok(Value::Null),
     BindingValue::Bool(b) => Ok(Value::Bool(b)),
     BindingValue::Number(n) => Ok(Value::Number(n)),
     BindingValue::String(s) => Ok(Value::String(s)),
-    BindingValue::RustString(s) => Ok(Value::String(scope.alloc_string(&s)?)),
+    BindingValue::RustString(s) => {
+      if utf16_len(&s) > limits.max_string_code_units {
+        return Err(throw_range_error(vm, scope, "string exceeds maximum length"));
+      }
+      Ok(Value::String(scope.alloc_string(&s)?))
+    }
     BindingValue::Object(v) => Ok(v),
     BindingValue::Sequence(items) => {
+      if items.len() > limits.max_sequence_length {
+        return Err(throw_range_error(vm, scope, "sequence exceeds maximum length"));
+      }
+
       let arr = scope.alloc_array(items.len())?;
       scope.push_root(Value::Object(arr))?;
 
@@ -825,11 +867,15 @@ pub fn binding_value_to_js(
         child.push_root(Value::Object(arr))?;
 
         // Root the key string across the recursive conversion (which may allocate/GC).
-        let key_s = child.alloc_string(&idx.to_string())?;
+        let key_str = idx.to_string();
+        if utf16_len(&key_str) > limits.max_string_code_units {
+          return Err(throw_range_error(vm, &mut child, "string exceeds maximum length"));
+        }
+        let key_s = child.alloc_string(&key_str)?;
         child.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
 
-        let v = binding_value_to_js(vm, &mut child, item)?;
+        let v = binding_value_to_js_with_limits(vm, &mut child, limits, item)?;
         child.push_root(v)?;
         child.create_data_property_or_throw(arr, key, v)?;
       }
@@ -837,6 +883,14 @@ pub fn binding_value_to_js(
       Ok(Value::Object(arr))
     }
     BindingValue::Dictionary(map) => {
+      if map.len() > limits.max_record_entries {
+        return Err(throw_range_error(
+          vm,
+          scope,
+          "record exceeds maximum entry count",
+        ));
+      }
+
       let obj = scope.alloc_object()?;
       scope.push_root(Value::Object(obj))?;
 
@@ -847,6 +901,10 @@ pub fn binding_value_to_js(
       }
 
       for (k, item) in map {
+        if utf16_len(&k) > limits.max_string_code_units {
+          return Err(throw_range_error(vm, scope, "string exceeds maximum length"));
+        }
+
         let mut child = scope.reborrow();
         child.push_root(Value::Object(obj))?;
 
@@ -854,7 +912,7 @@ pub fn binding_value_to_js(
         child.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
 
-        let v = binding_value_to_js(vm, &mut child, item)?;
+        let v = binding_value_to_js_with_limits(vm, &mut child, limits, item)?;
         child.push_root(v)?;
         child.create_data_property_or_throw(obj, key, v)?;
       }

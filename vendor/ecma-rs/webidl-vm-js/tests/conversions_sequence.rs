@@ -160,17 +160,17 @@ fn sequence_conversion_materializes_array_and_enforces_limits() -> Result<(), Vm
   )?;
 
   // ---- length limit throws RangeError ----
-  rt.set_limits(webidl::WebIdlLimits {
-    max_sequence_length: 1,
-    ..Default::default()
-  });
-
   let input2 = rt.alloc_array(2)?;
   rt.scope.push_root(Value::Object(input2))?;
   for (idx, n) in [1.0, 2.0].into_iter().enumerate() {
     let key = alloc_key(&mut rt.scope, &idx.to_string())?;
     rt.scope.create_data_property_or_throw(input2, key, Value::Number(n))?;
   }
+
+  rt.set_limits(webidl::WebIdlLimits {
+    max_sequence_length: 1,
+    ..Default::default()
+  });
 
   let err = conversions::to_iterable_list(
     &mut rt,
