@@ -172,6 +172,7 @@ fn svg_filter_kernel_outset_css(
       FilterPrimitive::ConvolveMatrix {
         order_x,
         order_y,
+        kernel_unit_length,
         target_x,
         target_y,
         edge_mode,
@@ -185,8 +186,11 @@ fn svg_filter_kernel_outset_css(
         let ty = i64::from(*target_y);
         let reach_x = tx.max(max_x.saturating_sub(tx)).max(0);
         let reach_y = ty.max(max_y.saturating_sub(ty)).max(0);
-        let reach_x = reach_x as f32;
-        let reach_y = reach_y as f32;
+        let (ku_x, ku_y) = resolve_pair(kernel_unit_length.unwrap_or((1.0, 1.0)));
+        let ku_x = if ku_x.is_finite() { ku_x.abs() } else { 1.0 };
+        let ku_y = if ku_y.is_finite() { ku_y.abs() } else { 1.0 };
+        let reach_x = reach_x as f32 * ku_x;
+        let reach_y = reach_y as f32 * ku_y;
         if reach_x.is_finite() {
           pad_x += reach_x;
         }
@@ -698,6 +702,7 @@ mod tests {
           kernel,
           divisor: None,
           bias: 0.0,
+          kernel_unit_length: None,
           target_x: 12,
           target_y: 0,
           edge_mode: EdgeMode::None,
@@ -742,6 +747,7 @@ mod tests {
           kernel,
           divisor: None,
           bias: 0.0,
+          kernel_unit_length: None,
           target_x: 1,
           target_y: 0,
           edge_mode: EdgeMode::Wrap,

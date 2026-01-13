@@ -755,6 +755,7 @@ pub enum FilterPrimitive {
     kernel: Vec<f32>,
     divisor: Option<f32>,
     bias: f32,
+    kernel_unit_length: Option<(f32, f32)>,
     target_x: i32,
     target_y: i32,
     edge_mode: EdgeMode,
@@ -1436,6 +1437,7 @@ fn hash_filter_primitive(prim: &FilterPrimitive, state: &mut impl Hasher) {
       kernel,
       divisor,
       bias,
+      kernel_unit_length,
       target_x,
       target_y,
       edge_mode,
@@ -1456,6 +1458,13 @@ fn hash_filter_primitive(prim: &FilterPrimitive, state: &mut impl Hasher) {
         state.write_u8(0);
       }
       hash_f32(*bias, state);
+      if let Some((x, y)) = kernel_unit_length {
+        state.write_u8(1);
+        hash_f32(*x, state);
+        hash_f32(*y, state);
+      } else {
+        state.write_u8(0);
+      }
       state.write(&target_x.to_le_bytes());
       state.write(&target_y.to_le_bytes());
       match edge_mode {
@@ -2957,6 +2966,21 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     .attribute("bias")
     .and_then(|v| v.parse::<f32>().ok())
     .unwrap_or(0.0);
+  let kernel_unit_length = attribute_ci(node, "kernelUnitLength").map(|v| {
+    let (mut x, mut y) = parse_number_pair(Some(v));
+    // SVG 1.1: `kernelUnitLength` is a pair of positive numbers describing the sampling distance
+    // between adjacent kernel matrix entries in the current `primitiveUnits` coordinate system.
+    //
+    // Match the existing lighting primitives' handling by clamping negatives to 0 while
+    // treating non-finite values as missing (falling back to the spec default of 1).
+    if !x.is_finite() {
+      x = 1.0;
+    }
+    if !y.is_finite() {
+      y = 1.0;
+    }
+    (x.max(0.0), y.max(0.0))
+  });
   let target_x = node
     .attribute("targetX")
     .and_then(|v| v.parse::<i32>().ok())
@@ -2992,6 +3016,7 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     kernel,
     divisor,
     bias,
+    kernel_unit_length,
     target_x,
     target_y,
     edge_mode,
@@ -4506,6 +4531,7 @@ fn apply_primitive(
       kernel,
       divisor,
       bias,
+      kernel_unit_length,
       target_x,
       target_y,
       edge_mode,
@@ -4523,6 +4549,14 @@ fn apply_primitive(
         return Ok(None);
       };
       let region = img.region;
+      let kernel_unit = filter.resolve_primitive_pair(
+        kernel_unit_length.unwrap_or((1.0, 1.0)),
+        css_bbox,
+      );
+      let step_x = kernel_unit.0.abs() * scale_x;
+      let step_y = kernel_unit.1.abs() * scale_y;
+      let step_x = if step_x.is_finite() { step_x } else { scale_x };
+      let step_y = if step_y.is_finite() { step_y } else { scale_y };
       let output = apply_convolve_matrix(
         img.pixmap,
         *order_x,
@@ -4530,6 +4564,7 @@ fn apply_primitive(
         kernel,
         *divisor,
         *bias,
+        (step_x, step_y),
         *target_x,
         *target_y,
         *edge_mode,
@@ -6056,6 +6091,7 @@ fn apply_convolve_matrix(
   kernel: &[f32],
   divisor: Option<f32>,
   bias: f32,
+  kernel_unit_px: (f32, f32),
   target_x: i32,
   target_y: i32,
   edge_mode: EdgeMode,
@@ -6105,6 +6141,24 @@ fn apply_convolve_matrix(
   let height_i32 = height_u32 as i32;
   let src_pixels = input.pixels();
   let dst_pixels = out.pixels_mut();
+  // Kernel sampling distances are expressed in pixel-space. Treat non-finite values as the
+  // default 1px spacing so the filter graph remains usable even with malformed content.
+  let step_x = if kernel_unit_px.0.is_finite() {
+    kernel_unit_px.0
+  } else {
+    1.0
+  };
+  let step_y = if kernel_unit_px.1.is_finite() {
+    kernel_unit_px.1
+  } else {
+    1.0
+  };
+  let x_offsets: Vec<f32> = (0..order_x)
+    .map(|kx| (target_x - kx as i32) as f32 * step_x)
+    .collect();
+  let y_offsets: Vec<f32> = (0..order_y)
+    .map(|ky| (target_y - ky as i32) as f32 * step_y)
+    .collect();
   let sub_min_x = primitive_region.min_x().floor() as i32;
   let sub_min_y = primitive_region.min_y().floor() as i32;
   let sub_max_x = primitive_region.max_x().ceil() as i32;
@@ -6149,16 +6203,48 @@ fn apply_convolve_matrix(
             let mut sum_b = 0.0;
             let mut sum_a = 0.0;
 
+            let x_f = x as f32;
+            let y_f = y as f32;
+            let integer_sampling =
+              (step_x - 1.0).abs() <= f32::EPSILON && (step_y - 1.0).abs() <= f32::EPSILON;
+
             for (ky, row) in kernel_rows.iter().enumerate() {
-              let sy = y + target_y - ky as i32;
-              for (kx, weight) in row.iter().enumerate() {
-                if *weight == 0.0 {
-                  continue;
+              if row.is_empty() {
+                continue;
+              }
+              if integer_sampling {
+                let sy = y + target_y - ky as i32;
+                for (kx, weight) in row.iter().enumerate() {
+                  if *weight == 0.0 {
+                    continue;
+                  }
+                  let sx = x + target_x - kx as i32;
+                  if let Some(px) =
+                    sample_pixel(src_pixels, sx, sy, width_i32, height_i32, edge_mode)
+                  {
+                    let (r, g, b, a) = unpremultiply(px);
+                    sum_r += r * weight;
+                    sum_g += g * weight;
+                    sum_b += b * weight;
+                    sum_a += a * weight;
+                  }
                 }
-                let sx = x + target_x - kx as i32;
-                if let Some(px) = sample_pixel(src_pixels, sx, sy, width_i32, height_i32, edge_mode)
-                {
-                  let (r, g, b, a) = unpremultiply(px);
+              } else {
+                let sy = y_f + y_offsets.get(ky).copied().unwrap_or(0.0);
+                for (kx, weight) in row.iter().enumerate() {
+                  if *weight == 0.0 {
+                    continue;
+                  }
+                  let sx = x_f + x_offsets.get(kx).copied().unwrap_or(0.0);
+                  let sample = sample_premultiplied_edge_mode(
+                    src_pixels,
+                    sx,
+                    sy,
+                    width_i32,
+                    height_i32,
+                    edge_mode,
+                  );
+                  let (r, g, b, a) = unpremultiply_f32(sample);
                   sum_r += r * weight;
                   sum_g += g * weight;
                   sum_b += b * weight;
@@ -6197,6 +6283,84 @@ fn apply_convolve_matrix(
     reencode_pixmap_to_srgb(&mut out)?;
   }
   Ok(out)
+}
+
+fn sample_premultiplied_edge_mode(
+  pixels: &[PremultipliedColorU8],
+  x: f32,
+  y: f32,
+  width: i32,
+  height: i32,
+  edge_mode: EdgeMode,
+) -> [f32; 4] {
+  if width <= 0 || height <= 0 || !x.is_finite() || !y.is_finite() {
+    return [0.0; 4];
+  }
+  let x0 = x.floor() as i32;
+  let y0 = y.floor() as i32;
+  let tx = (x - x0 as f32).clamp(0.0, 1.0);
+  let ty = (y - y0 as f32).clamp(0.0, 1.0);
+
+  let max_x = width - 1;
+  let max_y = height - 1;
+
+  let wrap = |v: i32, max: i32| {
+    let mut v = v % max;
+    if v < 0 {
+      v += max;
+    }
+    v
+  };
+
+  let mut accum = [0.0; 4];
+  for dy in 0..=1 {
+    for dx in 0..=1 {
+      let weight =
+        (if dx == 0 { 1.0 - tx } else { tx }) * (if dy == 0 { 1.0 - ty } else { ty });
+      if weight <= 0.0 {
+        continue;
+      }
+
+      let sx = x0 + dx;
+      let sy = y0 + dy;
+
+      let (sx, sy) = match edge_mode {
+        EdgeMode::Duplicate => (sx.clamp(0, max_x), sy.clamp(0, max_y)),
+        EdgeMode::Wrap => (wrap(sx, width), wrap(sy, height)),
+        EdgeMode::None => {
+          if sx < 0 || sy < 0 || sx >= width || sy >= height {
+            continue;
+          }
+          (sx, sy)
+        }
+      };
+
+      let idx = sy as usize * width as usize + sx as usize;
+      let px = pixels
+        .get(idx)
+        .copied()
+        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+      accum[0] += px.red() as f32 / 255.0 * weight;
+      accum[1] += px.green() as f32 / 255.0 * weight;
+      accum[2] += px.blue() as f32 / 255.0 * weight;
+      accum[3] += px.alpha() as f32 / 255.0 * weight;
+    }
+  }
+  accum
+}
+
+fn unpremultiply_f32(sample: [f32; 4]) -> (f32, f32, f32, f32) {
+  let a = sample[3].clamp(0.0, 1.0);
+  if a <= 0.0 {
+    (0.0, 0.0, 0.0, 0.0)
+  } else {
+    (
+      (sample[0] / a).clamp(0.0, 1.0),
+      (sample[1] / a).clamp(0.0, 1.0),
+      (sample[2] / a).clamp(0.0, 1.0),
+      a,
+    )
+  }
 }
 
 fn sample_pixel(
@@ -7384,6 +7548,7 @@ mod unit_tests {
         &kernel,
         None,
         0.0,
+        (1.0, 1.0),
         1,
         0,
         EdgeMode::Duplicate,
@@ -7419,6 +7584,67 @@ mod unit_tests {
   }
 
   #[test]
+  fn convolve_matrix_kernel_unit_length_changes_sampling_and_fingerprint() {
+    let cache = ImageCache::new();
+    let svg = |kernel_unit_length: Option<&str>| {
+      let ku_attr = kernel_unit_length
+        .map(|v| format!(" kernelUnitLength=\"{v}\""))
+        .unwrap_or_default();
+      format!(
+        "<svg xmlns='http://www.w3.org/2000/svg'>\
+           <filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='userSpaceOnUse'\
+                   x='0' y='0' width='5' height='1' color-interpolation-filters='sRGB'>\
+             <feConvolveMatrix order='2 1' kernelMatrix='0.5 0.5'{ku_attr} edgeMode='duplicate'/>\
+           </filter>\
+         </svg>"
+      )
+    };
+
+    let filter_default = parse_filter_definition(&svg(None), Some("f"), &cache).expect("filter");
+    let filter_scaled =
+      parse_filter_definition(&svg(Some("2 1")), Some("f"), &cache).expect("filter");
+
+    // Ensure the parsed primitive includes the attribute and contributes to the fingerprint.
+    assert_ne!(filter_default.fingerprint, filter_scaled.fingerprint);
+    match &filter_scaled.steps[0].primitive {
+      FilterPrimitive::ConvolveMatrix {
+        kernel_unit_length, ..
+      } => assert_eq!(*kernel_unit_length, Some((2.0, 1.0))),
+      other => panic!("expected convolve matrix primitive, got {other:?}"),
+    }
+
+    // Source has a sharp edge: black, black, white, white, white.
+    let mut src = new_pixmap(5, 1).unwrap();
+    for x in 0..5 {
+      let v = if x < 2 { 0 } else { 255 };
+      src.pixels_mut()[x] = PremultipliedColorU8::from_rgba(v, v, v, 255).unwrap();
+    }
+    let bbox = Rect::from_xywh(0.0, 0.0, 5.0, 1.0);
+
+    let mut out_default = src.clone();
+    apply_svg_filter(filter_default.as_ref(), &mut out_default, 1.0, bbox).unwrap();
+    let mut out_scaled = src.clone();
+    apply_svg_filter(filter_scaled.as_ref(), &mut out_scaled, 1.0, bbox).unwrap();
+
+    let px_default = out_default.pixel(0, 0).unwrap();
+    let px_scaled = out_scaled.pixel(0, 0).unwrap();
+
+    assert_eq!(
+      (px_default.red(), px_default.green(), px_default.blue(), px_default.alpha()),
+      (0, 0, 0, 255),
+      "expected default kernelUnitLength to sample adjacent black pixel"
+    );
+    let expected = 128u8;
+    assert!(
+      (px_scaled.red() as i32 - expected as i32).abs() <= 1
+        && (px_scaled.green() as i32 - expected as i32).abs() <= 1
+        && (px_scaled.blue() as i32 - expected as i32).abs() <= 1,
+      "expected kernelUnitLength=2 to sample from white pixel two units away (got {:?})",
+      (px_scaled.red(), px_scaled.green(), px_scaled.blue(), px_scaled.alpha())
+    );
+  }
+
+  #[test]
   fn convolve_matrix_respects_cancel_callback() {
     let (deadline, calls) = deadline_after_first_check();
     let pixmap = new_pixmap(1, 1).unwrap();
@@ -7429,6 +7655,7 @@ mod unit_tests {
       kernel: vec![1.0],
       divisor: Some(1.0),
       bias: 0.0,
+      kernel_unit_length: None,
       target_x: 0,
       target_y: 0,
       edge_mode: EdgeMode::Duplicate,
@@ -8537,6 +8764,7 @@ mod unit_tests {
       kernel: vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
       divisor: None,
       bias: 0.0,
+      kernel_unit_length: None,
       target_x: 1,
       target_y: 1,
       edge_mode: EdgeMode::Duplicate,
@@ -8561,6 +8789,7 @@ mod unit_tests {
       kernel: vec![1.0; 9],
       divisor: Some(9.0),
       bias: 0.0,
+      kernel_unit_length: None,
       target_x: 1,
       target_y: 1,
       edge_mode: EdgeMode::Duplicate,
@@ -8592,6 +8821,7 @@ mod unit_tests {
       kernel: vec![1.0; 9],
       divisor: Some(9.0),
       bias: 0.0,
+      kernel_unit_length: None,
       target_x: 1,
       target_y: 1,
       edge_mode: EdgeMode::Duplicate,
@@ -8604,6 +8834,7 @@ mod unit_tests {
       kernel: vec![1.0; 9],
       divisor: Some(9.0),
       bias: 0.0,
+      kernel_unit_length: None,
       target_x: 1,
       target_y: 1,
       edge_mode: EdgeMode::None,
@@ -8640,6 +8871,7 @@ mod unit_tests {
       &[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
       None,
       0.0,
+      (1.0, 1.0),
       1,
       1,
       EdgeMode::Duplicate,

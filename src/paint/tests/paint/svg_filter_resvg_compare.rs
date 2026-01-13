@@ -462,6 +462,26 @@ fn svg_filter_resvg_convolve_matrix_edge_mode_duplicate() {
 }
 
 #[test]
+fn svg_filter_resvg_convolve_matrix_kernel_unit_length_bilinear_sampling() {
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="6" height="1" shape-rendering="crispEdges">
+      <defs>
+        <filter id="f" x="0" y="0" width="6" height="1" filterUnits="userSpaceOnUse"
+                primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+          <feConvolveMatrix order="2 1" kernelMatrix="0.5 0.5" targetX="1" targetY="0"
+                            kernelUnitLength="1.5 1" edgeMode="duplicate" />
+        </filter>
+      </defs>
+      <g filter="url(#f)">
+        <rect x="0" y="0" width="3" height="1" fill="black" />
+        <rect x="3" y="0" width="3" height="1" fill="white" />
+      </g>
+    </svg>
+  "#;
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 6.0, 1.0), (6, 1), 3);
+}
+
+#[test]
 fn svg_filter_resvg_offset_fractional_dx_dy_interpolates() {
   let svg_source = r#"
     <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
