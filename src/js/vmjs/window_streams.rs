@@ -27,7 +27,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 use vm_js::{
-  new_promise_capability_with_host_and_hooks, new_type_error_object,
+  new_promise_capability_with_host_and_hooks, new_range_error, new_type_error_object,
   perform_promise_then_with_host_and_hooks, promise_resolve_with_host_and_hooks, GcObject, Heap,
   HostSlots, Intrinsics, NativeConstructId, NativeFunctionId, PromiseCapability, PropertyDescriptor,
   PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -5390,6 +5390,210 @@ fn transform_stream_ctor_construct(
   Ok(Value::Object(ts_obj))
 }
 
+// === QueuingStrategy constructors (minimal stubs) ==============================
+
+fn byte_length_queuing_strategy_ctor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "ByteLengthQueuingStrategy constructor requires 'new'",
+  ))
+}
+
+fn byte_length_queuing_strategy_ctor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm, "ByteLengthQueuingStrategy requires intrinsics")?;
+
+  let init_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(init_obj) = init_val else {
+    return Err(VmError::TypeError(
+      "ByteLengthQueuingStrategy constructor expects an options object",
+    ));
+  };
+
+  // Root init object across property access/conversion.
+  scope.push_root(Value::Object(init_obj))?;
+  let high_water_mark_key = alloc_key(scope, "highWaterMark")?;
+  let high_water_mark_val =
+    vm.get_with_host_and_hooks(host, scope, hooks, init_obj, high_water_mark_key)?;
+  let mut high_water_mark = scope.heap_mut().to_number(high_water_mark_val)?;
+  if high_water_mark.is_nan() || high_water_mark < 0.0 {
+    return Err(VmError::Throw(new_range_error(
+      scope,
+      intr,
+      "The highWaterMark value is invalid.",
+    )?));
+  }
+  // Canonicalize -0 to +0.
+  if high_water_mark == 0.0 {
+    high_water_mark = 0.0;
+  }
+
+  // Determine instance prototype.
+  let proto = {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(callee))?;
+    let key = alloc_key(&mut scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(callee, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => intr.object_prototype(),
+    }
+  };
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+
+  let high_water_mark_key = alloc_key(scope, "highWaterMark")?;
+  scope.define_property(
+    obj,
+    high_water_mark_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Number(high_water_mark),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn byte_length_queuing_strategy_size_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // WHATWG Streams: return ? GetV(chunk, "byteLength").
+  let chunk = args.get(0).copied().unwrap_or(Value::Undefined);
+  let chunk_obj = scope.to_object(vm, host, hooks, chunk)?;
+  scope.push_root(Value::Object(chunk_obj))?;
+  let byte_length_key = alloc_key(scope, "byteLength")?;
+  let byte_length_val =
+    vm.get_with_host_and_hooks(host, scope, hooks, chunk_obj, byte_length_key)?;
+  let n = scope.heap_mut().to_number(byte_length_val)?;
+  Ok(Value::Number(n))
+}
+
+fn count_queuing_strategy_ctor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "CountQueuingStrategy constructor requires 'new'",
+  ))
+}
+
+fn count_queuing_strategy_ctor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm, "CountQueuingStrategy requires intrinsics")?;
+
+  let init_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(init_obj) = init_val else {
+    return Err(VmError::TypeError(
+      "CountQueuingStrategy constructor expects an options object",
+    ));
+  };
+
+  // Root init object across property access/conversion.
+  scope.push_root(Value::Object(init_obj))?;
+  let high_water_mark_key = alloc_key(scope, "highWaterMark")?;
+  let high_water_mark_val =
+    vm.get_with_host_and_hooks(host, scope, hooks, init_obj, high_water_mark_key)?;
+  let mut high_water_mark = scope.heap_mut().to_number(high_water_mark_val)?;
+  if high_water_mark.is_nan() || high_water_mark < 0.0 {
+    return Err(VmError::Throw(new_range_error(
+      scope,
+      intr,
+      "The highWaterMark value is invalid.",
+    )?));
+  }
+  if high_water_mark == 0.0 {
+    high_water_mark = 0.0;
+  }
+
+  let proto = {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(callee))?;
+    let key = alloc_key(&mut scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(callee, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => intr.object_prototype(),
+    }
+  };
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+
+  let high_water_mark_key = alloc_key(scope, "highWaterMark")?;
+  scope.define_property(
+    obj,
+    high_water_mark_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Number(high_water_mark),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn count_queuing_strategy_size_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Number(1.0))
+}
+
 pub(crate) fn readable_stream_is_locked(vm: &Vm, heap: &Heap, obj: GcObject) -> bool {
   let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
 
@@ -6215,6 +6419,166 @@ pub fn install_window_streams_bindings(
 
   let ts_ctor_key = alloc_key(&mut scope, "TransformStream")?;
   scope.define_property(global, ts_ctor_key, data_desc(Value::Object(ts_ctor), true))?;
+
+  // --- Queuing strategies ------------------------------------------------------
+  // These are used by the full WHATWG Streams API to configure queuing/backpressure. Our stream
+  // implementation does not currently use them, but many scripts expect the constructors to exist
+  // and to expose the `highWaterMark`/`size` surface area.
+
+  // ByteLengthQueuingStrategy
+  let blqs_call_id: NativeFunctionId =
+    vm.register_native_call(byte_length_queuing_strategy_ctor_call)?;
+  let blqs_construct_id: NativeConstructId =
+    vm.register_native_construct(byte_length_queuing_strategy_ctor_construct)?;
+  let blqs_size_call_id: NativeFunctionId =
+    vm.register_native_call(byte_length_queuing_strategy_size_native)?;
+
+  let blqs_name = scope.alloc_string("ByteLengthQueuingStrategy")?;
+  scope.push_root(Value::String(blqs_name))?;
+  let blqs_ctor = scope.alloc_native_function_with_slots(
+    blqs_call_id,
+    Some(blqs_construct_id),
+    blqs_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(blqs_ctor))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(blqs_ctor, Some(intr.function_prototype()))?;
+
+  let blqs_proto = {
+    let key = alloc_key(&mut scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(blqs_ctor, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "ByteLengthQueuingStrategy constructor missing prototype object",
+        ))
+      }
+    }
+  };
+  scope.push_root(Value::Object(blqs_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(blqs_proto, Some(intr.object_prototype()))?;
+
+  let blqs_tag_key = PropertyKey::from_symbol(to_string_tag);
+  let blqs_tag_val = scope.alloc_string("ByteLengthQueuingStrategy")?;
+  scope.push_root(Value::String(blqs_tag_val))?;
+  scope.define_property(
+    blqs_proto,
+    blqs_tag_key,
+    data_desc(Value::String(blqs_tag_val), false),
+  )?;
+
+  let blqs_size_name = scope.alloc_string("size")?;
+  scope.push_root(Value::String(blqs_size_name))?;
+  let blqs_size_fn = scope.alloc_native_function_with_slots(
+    blqs_size_call_id,
+    None,
+    blqs_size_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(blqs_size_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(blqs_size_fn, Some(intr.function_prototype()))?;
+  let blqs_size_key = alloc_key(&mut scope, "size")?;
+  scope.define_property(
+    blqs_proto,
+    blqs_size_key,
+    data_desc(Value::Object(blqs_size_fn), true),
+  )?;
+
+  let blqs_ctor_key = alloc_key(&mut scope, "ByteLengthQueuingStrategy")?;
+  scope.define_property(
+    global,
+    blqs_ctor_key,
+    data_desc(Value::Object(blqs_ctor), true),
+  )?;
+
+  // CountQueuingStrategy
+  let cqs_call_id: NativeFunctionId = vm.register_native_call(count_queuing_strategy_ctor_call)?;
+  let cqs_construct_id: NativeConstructId =
+    vm.register_native_construct(count_queuing_strategy_ctor_construct)?;
+  let cqs_size_call_id: NativeFunctionId =
+    vm.register_native_call(count_queuing_strategy_size_native)?;
+
+  let cqs_name = scope.alloc_string("CountQueuingStrategy")?;
+  scope.push_root(Value::String(cqs_name))?;
+  let cqs_ctor = scope.alloc_native_function_with_slots(
+    cqs_call_id,
+    Some(cqs_construct_id),
+    cqs_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(cqs_ctor))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(cqs_ctor, Some(intr.function_prototype()))?;
+
+  let cqs_proto = {
+    let key = alloc_key(&mut scope, "prototype")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(cqs_ctor, &key)?
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "CountQueuingStrategy constructor missing prototype object",
+        ))
+      }
+    }
+  };
+  scope.push_root(Value::Object(cqs_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(cqs_proto, Some(intr.object_prototype()))?;
+
+  let cqs_tag_key = PropertyKey::from_symbol(to_string_tag);
+  let cqs_tag_val = scope.alloc_string("CountQueuingStrategy")?;
+  scope.push_root(Value::String(cqs_tag_val))?;
+  scope.define_property(
+    cqs_proto,
+    cqs_tag_key,
+    data_desc(Value::String(cqs_tag_val), false),
+  )?;
+
+  let cqs_size_name = scope.alloc_string("size")?;
+  scope.push_root(Value::String(cqs_size_name))?;
+  let cqs_size_fn = scope.alloc_native_function_with_slots(
+    cqs_size_call_id,
+    None,
+    cqs_size_name,
+    1,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(cqs_size_fn))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(cqs_size_fn, Some(intr.function_prototype()))?;
+  let cqs_size_key = alloc_key(&mut scope, "size")?;
+  scope.define_property(
+    cqs_proto,
+    cqs_size_key,
+    data_desc(Value::Object(cqs_size_fn), true),
+  )?;
+
+  let cqs_ctor_key = alloc_key(&mut scope, "CountQueuingStrategy")?;
+  scope.define_property(
+    global,
+    cqs_ctor_key,
+    data_desc(Value::Object(cqs_ctor), true),
+  )?;
 
   // Register per-realm state.
   let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
