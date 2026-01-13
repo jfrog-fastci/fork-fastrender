@@ -37924,6 +37924,37 @@ fn element_reflected_string_get_native(
   Ok(Value::String(scope.alloc_string(value)?))
 }
 
+fn html_media_element_can_play_type_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let platform =
+    dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+  let _ = platform.require_html_media_element_handle(scope.heap(), Value::Object(obj))?;
+
+  let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_s = match type_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  let type_str = scope
+    .heap()
+    .get_string(type_s)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let result = crate::html::media::can_play_type(&type_str);
+  Ok(Value::String(scope.alloc_string(result.as_str())?))
+}
+
 fn element_reflected_string_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -49029,6 +49060,24 @@ fn init_window_globals(
       ),
     )?;
 
+    // HTMLMediaElement.prototype.canPlayType(type)
+    let can_play_type_key = alloc_key(&mut scope, "canPlayType")?;
+    let can_play_type_call_id = vm.register_native_call(html_media_element_can_play_type_native)?;
+    let can_play_type_name = scope.alloc_string("canPlayType")?;
+    scope.push_root(Value::String(can_play_type_name))?;
+    let can_play_type_func =
+      scope.alloc_native_function(can_play_type_call_id, None, can_play_type_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      can_play_type_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(can_play_type_func))?;
+    scope.define_property(
+      html_media_element_proto,
+      can_play_type_key,
+      data_desc(Value::Object(can_play_type_func)),
+    )?;
+
     // HTMLTextAreaElement.prototype.value
     let text_area_value_get_call_id =
       vm.register_native_call(html_text_area_element_value_get_native)?;
@@ -56352,6 +56401,28 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_can_play_type_returns_expected_strings() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const v = document.createElement('video');
+        if (typeof v.canPlayType !== 'function') return 'missing';
+        const a = v.canPlayType('video/mp4');
+        const b = v.canPlayType('video/mp4; codecs=avc1.42E01E');
+        const c = v.canPlayType('video/mp4; codecs=bogus');
+        return a + '|' + b + '|' + c;
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "maybe|probably|");
     Ok(())
   }
 
