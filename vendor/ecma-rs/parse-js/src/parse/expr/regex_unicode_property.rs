@@ -10,6 +10,24 @@ fn contains_sorted(haystack: &[&'static str], needle: &str) -> bool {
 }
 
 fn parse_backtick_words(table: &'static str) -> Vec<&'static str> {
+  // The vendored property tables are embedded as small HTML snippets. We only want the backticked
+  // identifiers listed inside the `<pre>...</pre>` block, not any incidental backticks in comments
+  // or surrounding prose.
+  //
+  // (The caller includes files like `specs/tc39-ecma262/table-binary-unicode-properties.html`
+  // where the header comment mentions non-binary properties like `Script` — those must not end up
+  // being treated as supported binary property names.)
+  let table = match table.find("<pre>") {
+    Some(start) => {
+      let after_start = start + "<pre>".len();
+      match table[after_start..].find("</pre>") {
+        Some(end_rel) => &table[after_start..after_start + end_rel],
+        None => &table[after_start..],
+      }
+    }
+    None => table,
+  };
+
   let bytes = table.as_bytes();
   let mut out = Vec::new();
   let mut i = 0usize;
