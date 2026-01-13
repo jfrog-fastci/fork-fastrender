@@ -217,19 +217,42 @@ mod tests {
   use super::*;
 
   #[test]
-  fn rejects_less_than_in_element_context() {
-    assert_eq!(
-      validate_element_qualified_name("a<b").unwrap_err(),
-      DomError::InvalidCharacterError
-    );
+  fn validate_element_qualified_name_rejects_curated_invalid_cases() {
+    for name in ["", "a b", "a<b", "a:b:c"] {
+      assert_eq!(
+        validate_element_qualified_name(name).unwrap_err(),
+        DomError::InvalidCharacterError,
+        "expected InvalidCharacterError for element qualified name {name:?}"
+      );
+    }
   }
 
   #[test]
-  fn rejects_less_than_in_attribute_context() {
-    assert_eq!(
-      validate_attribute_qualified_name("a<b").unwrap_err(),
-      DomError::InvalidCharacterError
-    );
+  fn validate_attribute_qualified_name_rejects_curated_invalid_cases() {
+    for name in ["", "a b", "a<b", "a:b:c"] {
+      assert_eq!(
+        validate_attribute_qualified_name(name).unwrap_err(),
+        DomError::InvalidCharacterError,
+        "expected InvalidCharacterError for attribute qualified name {name:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn validate_qualified_names_accept_common_valid_names() {
+    for name in ["div", "my-element", "a:b", "x_y"] {
+      assert!(
+        validate_element_qualified_name(name).is_ok(),
+        "expected element qualified name {name:?} to be valid"
+      );
+    }
+
+    for name in ["id", "class", "data-foo", "aria-label", "a:b"] {
+      assert!(
+        validate_attribute_qualified_name(name).is_ok(),
+        "expected attribute qualified name {name:?} to be valid"
+      );
+    }
   }
 
   #[test]

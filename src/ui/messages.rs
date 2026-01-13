@@ -920,7 +920,6 @@ pub enum WorkerToUi {
     tab_id: TabId,
     frame: RenderedFrame,
   },
-<<<<<<< HEAD
   /// Snapshot of the currently rendered page's accessibility tree.
   ///
   /// `bounds_css` maps DOM preorder node id → viewport-local CSS rect. The vector is sorted by id
@@ -929,6 +928,14 @@ pub enum WorkerToUi {
     tab_id: TabId,
     tree: AccessibilityNode,
     bounds_css: Vec<(usize, Rect)>,
+  },
+  /// Updated page accessibility subtree (AccessKit nodes + focus) for the given tab.
+  ///
+  /// Feature-gated behind `browser_ui` because it depends on AccessKit types.
+  #[cfg(feature = "browser_ui")]
+  PageAccessKitSubtree {
+    tab_id: TabId,
+    subtree: PageAccessKitSubtree,
   },
   /// Request that the UI wake up after `after` to drive media/time-based updates for `tab_id`.
   ///
@@ -941,15 +948,6 @@ pub enum WorkerToUi {
     tab_id: TabId,
     after: Duration,
     reason: WakeReason,
-=======
-  /// Updated page accessibility subtree (AccessKit nodes + focus) for the given tab.
-  ///
-  /// Feature-gated behind `browser_ui` because it depends on AccessKit types.
-  #[cfg(feature = "browser_ui")]
-  PageAccessKitSubtree {
-    tab_id: TabId,
-    subtree: PageAccessKitSubtree,
->>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
   },
   OpenSelectDropdown {
     tab_id: TabId,
@@ -1206,6 +1204,8 @@ impl WorkerToUi {
   /// watchdog timers) simple and centralised.
   pub fn tab_id(&self) -> TabId {
     match self {
+      #[cfg(feature = "browser_ui")]
+      WorkerToUi::PageAccessKitSubtree { tab_id, .. } => *tab_id,
       WorkerToUi::Stage { tab_id, .. }
       | WorkerToUi::Favicon { tab_id, .. }
       | WorkerToUi::FrameReady { tab_id, .. }
@@ -1231,8 +1231,6 @@ impl WorkerToUi {
       | WorkerToUi::ColorPickerClosed { tab_id }
       | WorkerToUi::FilePickerOpened { tab_id, .. }
       | WorkerToUi::FilePickerClosed { tab_id }
-      | WorkerToUi::DatalistOpened { tab_id, .. }
-      | WorkerToUi::DatalistClosed { tab_id }
       | WorkerToUi::MediaControlsOpened { tab_id, .. }
       | WorkerToUi::MediaControlsClosed { tab_id }
       | WorkerToUi::ContextMenu { tab_id, .. }
