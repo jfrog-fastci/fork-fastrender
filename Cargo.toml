@@ -157,6 +157,8 @@ icu_segmenter = { version = "2.1.1", features = ["compiled_data"] }
 url = "2.5"
 urlencoding = "2.1"
 publicsuffix = "2.3"
+symphonia-core = "0.5.5"
+symphonia-codec-aac = "0.5.5"
 # Use Rustls to avoid requiring system OpenSSL headers/libs in CI/agent environments.
 reqwest = { version = "0.12", default-features = false, optional = true, features = ["blocking", "cookies", "http2", "rustls-tls-webpki-roots"] }
 ureq = { version = "3.1", default-features = false, optional = true, features = ["rustls"] }
@@ -241,6 +243,7 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
 directories = "5"
 fs2 = "0.4"
+symphonia-format-isomp4 = "0.5.5"
 
 [target.'cfg(windows)'.dev-dependencies]
 # Used by Windows-only sandbox security tests.

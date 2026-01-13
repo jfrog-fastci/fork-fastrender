@@ -107,12 +107,23 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         .min(u128::from(u64::MAX)) as u64;
       let pts_ns = pts_ns.saturating_sub(codec_delay_ns);
 
+      let duration_ns = self
+        .frame
+        .duration
+        .map(|duration| {
+          (duration as u128)
+            .saturating_mul(self.timestamp_scale_ns as u128)
+            .min(u128::from(u64::MAX)) as u64
+        })
+        .unwrap_or(0);
+
       let data = std::mem::take(&mut self.frame.data);
       let is_keyframe = self.frame.is_keyframe.unwrap_or(false);
 
       return Ok(Some(MediaPacket {
         track_id: self.frame.track,
         pts_ns,
+        duration_ns,
         data,
         is_keyframe,
       }));
@@ -231,4 +242,3 @@ mod tests {
     assert!(post_seek_audio, "expected Opus packet after seek");
   }
 }
-

@@ -4,6 +4,7 @@
 //! - timestamp/timebase helpers used by media playback work
 //! - paint-facing plumbing for supplying decoded media frames (video; audio is currently a stub)
 //! - container demux primitives (track metadata + compressed packets)
+//! - codec backends for decoding compressed packets into PCM / frames
 //!
 //! For the intended A/V clocking model (audio master clock, UI tick as wake-up only), see
 //! `docs/media_clocking.md`.
@@ -16,6 +17,7 @@ use thiserror::Error;
 pub mod audio;
 pub mod av_sync;
 pub mod clock;
+pub mod codecs;
 pub mod demux;
 pub mod timebase;
 
@@ -114,6 +116,9 @@ pub enum MediaError {
 
   #[error("demux error: {0}")]
   Demux(String),
+
+  #[error("decode error: {0}")]
+  Decode(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +131,7 @@ pub enum MediaTrackType {
 pub enum MediaCodec {
   Vp9,
   Opus,
+  Aac,
   Unknown(String),
 }
 
@@ -157,6 +163,21 @@ pub struct MediaTrackInfo {
 pub struct MediaPacket {
   pub track_id: u64,
   pub pts_ns: u64,
+  pub duration_ns: u64,
   pub data: Vec<u8>,
   pub is_keyframe: bool,
 }
+
+/// Interleaved PCM audio decoded from a compressed packet.
+#[derive(Debug, Clone)]
+pub struct DecodedAudioChunk {
+  /// Presentation timestamp of the first sample (nanoseconds).
+  pub pts_ns: u64,
+  /// Duration covered by this chunk (nanoseconds).
+  pub duration_ns: u64,
+  pub sample_rate_hz: u32,
+  pub channels: u16,
+  /// Interleaved f32 samples in the range `[-1.0, 1.0]`.
+  pub samples: Vec<f32>,
+}
+
