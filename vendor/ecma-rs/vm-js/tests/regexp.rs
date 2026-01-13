@@ -88,6 +88,71 @@ fn regexp_valid_character_class_range_still_matches() {
 }
 
 #[test]
+fn regexp_legacy_octal_escape_without_captures() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"new RegExp("\\1").exec("\u0001")[0]"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "\u{1}");
+}
+
+#[test]
+fn regexp_decimal_escape_backreference_takes_precedence() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"new RegExp("(.)\\1").exec("aa")[0]"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "aa");
+}
+
+#[test]
+fn regexp_class_legacy_octal_escape() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"new RegExp("[\\1]").exec("\u0001")[0]"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "\u{1}");
+}
+
+#[test]
+fn regexp_identity_escape_8_in_non_unicode_mode() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"String(new RegExp("\\8").test("8"))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true");
+}
+
+#[test]
+fn regexp_legacy_octal_escape_max_length_rule() {
+  // `\400` parses as `\40` (octal for U+0020) followed by a literal `0`.
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"new RegExp("\\400").exec(" 0")[0]"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), " 0");
+}
+
+#[test]
+fn regexp_unicode_mode_rejects_invalid_numeric_escape_backreference() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\1", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
+fn regexp_unicode_mode_rejects_legacy_octal_escape_sequence_00() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\00", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
+fn regexp_unicode_mode_rejects_escape_8() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\8", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
 fn regexp_last_index_global_exec_updates_and_resets() {
   let mut rt = new_runtime();
   let value = rt

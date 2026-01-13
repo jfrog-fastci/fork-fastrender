@@ -2250,6 +2250,16 @@ struct Parser<'a> {
   named_capture_groups: Vec<NamedCaptureGroup>,
 }
 
+#[inline]
+fn is_decimal_digit(u: u16) -> bool {
+  (b'0' as u16..=b'9' as u16).contains(&u)
+}
+
+#[inline]
+fn is_octal_digit(u: u16) -> bool {
+  (b'0' as u16..=b'7' as u16).contains(&u)
+}
+
 impl<'a> Parser<'a> {
   fn new(units: &'a [u16], flags: RegExpFlags) -> Self {
     Self {
@@ -2278,6 +2288,52 @@ impl<'a> Parser<'a> {
     } else {
       false
     }
+  }
+
+  /// Parse the Annex B `LegacyOctalEscapeSequence` value after having consumed the first octal
+  /// digit (`0`-`7`).
+  ///
+  /// This consumes the correct number of additional octal digits:
+  /// - Leading `0`-`3`: up to 2 more digits (max 3 digits total).
+  /// - Leading `4`-`7`: at most 1 more digit (max 2 digits total).
+  /// - 1-digit form is only used when the following code unit is not an octal digit.
+  fn parse_legacy_octal_escape_after_first(
+    &mut self,
+    first_digit: u16,
+  ) -> Result<u16, RegExpCompileError> {
+    debug_assert!(is_octal_digit(first_digit));
+    let mut value: u16 = (first_digit - (b'0' as u16)) as u16;
+
+    if (b'0' as u16..=b'3' as u16).contains(&first_digit) {
+      if let Some(d1) = self.peek() {
+        if is_octal_digit(d1) {
+          self.next();
+          value = value
+            .saturating_mul(8)
+            .saturating_add((d1 - (b'0' as u16)) as u16);
+          if let Some(d2) = self.peek() {
+            if is_octal_digit(d2) {
+              self.next();
+              value = value
+                .saturating_mul(8)
+                .saturating_add((d2 - (b'0' as u16)) as u16);
+            }
+          }
+        }
+      }
+    } else {
+      // `4`-`7`: exactly 2 digits when there is a following octal digit.
+      if let Some(d1) = self.peek() {
+        if is_octal_digit(d1) {
+          self.next();
+          value = value
+            .saturating_mul(8)
+            .saturating_add((d1 - (b'0' as u16)) as u16);
+        }
+      }
+    }
+
+    Ok(value)
   }
 
   fn parse_disjunction(
@@ -2784,17 +2840,43 @@ impl<'a> Parser<'a> {
           x if x == (b'v' as u16) => Ok(CharClassItem::Char(0x000B)),
           x if x == (b'f' as u16) => Ok(CharClassItem::Char(0x000C)),
           x if x == (b'0' as u16) => {
+            // `\0` in a character class.
             if self.flags.has_either_unicode_flag() {
-              if let Some(peek) = self.peek() {
-                if (b'0' as u16..=b'9' as u16).contains(&peek) {
-                  return Err(RegExpSyntaxError {
-                    message: "Invalid regular expression",
-                  }
-                  .into());
+              if self.peek().is_some_and(is_decimal_digit) {
+                return Err(RegExpSyntaxError {
+                  message: "Invalid regular expression",
                 }
+                .into());
               }
+              return Ok(CharClassItem::Char(0x0000));
+            }
+
+            if self.peek().is_some_and(is_octal_digit) {
+              let v = self.parse_legacy_octal_escape_after_first(x)?;
+              return Ok(CharClassItem::Char(v));
             }
             Ok(CharClassItem::Char(0x0000))
+          }
+          x if (b'1' as u16..=b'7' as u16).contains(&x) => {
+            // Annex B legacy octal escapes in character classes.
+            if self.flags.has_either_unicode_flag() {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            }
+            let v = self.parse_legacy_octal_escape_after_first(x)?;
+            Ok(CharClassItem::Char(v))
+          }
+          x if x == (b'8' as u16) || x == (b'9' as u16) => {
+            // `\8` / `\9` are identity escapes in non-unicode mode.
+            if self.flags.has_either_unicode_flag() {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            }
+            Ok(CharClassItem::Char(x))
           }
           x if x == (b'-' as u16) => {
             if self.flags.has_either_unicode_flag() {
@@ -2918,15 +3000,21 @@ impl<'a> Parser<'a> {
         Ok(Atom::Literal(((next as u8) & 0x1F) as u32))
       }
       x if x == (b'0' as u16) => {
+        // `\0` has special semantics: it's either a NUL escape or an Annex B legacy octal escape.
         if self.flags.has_either_unicode_flag() {
-          if let Some(peek) = self.peek() {
-            if (b'0' as u16..=b'9' as u16).contains(&peek) {
-              return Err(RegExpSyntaxError {
-                message: "Invalid regular expression",
-              }
-              .into());
+          // In unicode mode, `\0` may not be followed by a decimal digit.
+          if self.peek().is_some_and(is_decimal_digit) {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
             }
+            .into());
           }
+          return Ok(Atom::Literal(0x0000));
+        }
+
+        if self.peek().is_some_and(is_octal_digit) {
+          let v = self.parse_legacy_octal_escape_after_first(x)?;
+          return Ok(Atom::Literal(v));
         }
         Ok(Atom::Literal(0x0000))
       }
@@ -2944,11 +3032,15 @@ impl<'a> Parser<'a> {
         }
       }
       x if (b'1' as u16..=b'9' as u16).contains(&x) => {
-        // Decimal escape => backreference (approximation).
+        // `\1`-`\9` is either a DecimalEscape/backreference or (in non-unicode mode) an Annex B
+        // legacy octal escape / identity escape.
+        let digit_start = self.idx.saturating_sub(1);
+
+        // Parse as decimal integer literal first.
         let mut n: u32 = (x - (b'0' as u16)) as u32;
         let mut digit_i: usize = 0;
         while let Some(d) = self.peek() {
-          if !(b'0' as u16..=b'9' as u16).contains(&d) {
+          if !is_decimal_digit(d) {
             break;
           }
           if digit_i != 0 {
@@ -2960,7 +3052,32 @@ impl<'a> Parser<'a> {
             .saturating_mul(10)
             .saturating_add((d - (b'0' as u16)) as u32);
         }
-        Ok(Atom::BackRef(n))
+
+        if n <= self.capture_count {
+          return Ok(Atom::BackRef(n));
+        }
+
+        if self.flags.has_either_unicode_flag() {
+          // In unicode mode, numeric escapes must be valid backreferences.
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
+
+        // Non-unicode: invalid backreference => legacy octal escape (if possible) or identity
+        // escape (`\8`/`\9`).
+        if x == (b'8' as u16) || x == (b'9' as u16) {
+          // IdentityEscape: keep only the first digit.
+          self.idx = digit_start.saturating_add(1);
+          return Ok(Atom::Literal(x));
+        }
+
+        // LegacyOctalEscapeSequence: rewind to after the first digit and consume the correct octal
+        // digit length.
+        self.idx = digit_start.saturating_add(1);
+        let v = self.parse_legacy_octal_escape_after_first(x)?;
+        Ok(Atom::Literal(v))
       }
       x if x == (b'x' as u16) => Ok(Atom::Literal(self.parse_hex_escape_2(ctx)?)),
       x if x == (b'u' as u16) => Ok(Atom::Literal(self.parse_unicode_escape(ctx)?)),
