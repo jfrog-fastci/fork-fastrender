@@ -1258,6 +1258,7 @@ impl<'a, 'state> BuildContext<'a, 'state> {
                     && allows_visible_text_name(tag, role);
 
                 if allows_content
+                  && is_html_element(&node.node)
                   && tag.is_some_and(|t| t.eq_ignore_ascii_case("dialog"))
                   && node
                     .node
@@ -2832,6 +2833,9 @@ fn is_details_summary(node: &StyledNode, styled_parent: Option<&StyledNode>) -> 
   let Some(parent) = styled_parent else {
     return false;
   };
+  if !is_html_element(&node.node) || !is_html_element(&parent.node) {
+    return false;
+  }
 
   if !parent
     .node
@@ -2843,11 +2847,12 @@ fn is_details_summary(node: &StyledNode, styled_parent: Option<&StyledNode>) -> 
   }
 
   for child in &parent.children {
-    if child
-      .node
-      .tag_name()
-      .map(|t| t.eq_ignore_ascii_case("summary"))
-      .unwrap_or(false)
+    if is_html_element(&child.node)
+      && child
+        .node
+        .tag_name()
+        .map(|t| t.eq_ignore_ascii_case("summary"))
+        .unwrap_or(false)
     {
       return ptr::eq(child, node);
     }
@@ -4134,10 +4139,11 @@ fn compute_modal(node: &DomNode) -> Option<bool> {
     return Some(value);
   }
 
-  let is_dialog = match node.tag_name() {
-    Some(tag) => tag.eq_ignore_ascii_case("dialog"),
-    None => false,
-  };
+  let is_dialog = is_html_element(node)
+    && match node.tag_name() {
+      Some(tag) => tag.eq_ignore_ascii_case("dialog"),
+      None => false,
+    };
 
   if is_dialog && attr_truthy(node, "data-fastr-modal") {
     return Some(true);
@@ -4163,22 +4169,24 @@ fn compute_expanded(node: &StyledNode, role: Option<&str>, ancestors: &[&DomNode
     .map(|t| t.to_ascii_lowercase())
     .unwrap_or_default();
 
-  if tag == "details" {
+  if tag == "details" && is_html_element(&node.node) {
     return Some(node.node.get_attribute_ref("open").is_some());
   }
 
-  let is_summary = node
-    .node
-    .tag_name()
-    .map(|t| t.eq_ignore_ascii_case("summary"))
-    .unwrap_or(false);
+  let is_summary = is_html_element(&node.node)
+    && node
+      .node
+      .tag_name()
+      .map(|t| t.eq_ignore_ascii_case("summary"))
+      .unwrap_or(false);
 
   if role == Some("button") && is_summary {
     if let Some(parent) = ancestors.last() {
-      if parent
-        .tag_name()
-        .map(|t| t.eq_ignore_ascii_case("details"))
-        .unwrap_or(false)
+      if is_html_element(parent)
+        && parent
+          .tag_name()
+          .map(|t| t.eq_ignore_ascii_case("details"))
+          .unwrap_or(false)
       {
         if let Some(expanded) = parse_expanded(parent) {
           return Some(expanded);
@@ -4433,6 +4441,7 @@ fn is_labelable(node: &DomNode) -> bool {
 mod tests {
   use super::*;
   use crate::style::ComputedStyle;
+  use crate::dom::SVG_NAMESPACE;
   use selectors::context::QuirksMode;
   use std::sync::Arc;
 
@@ -4592,6 +4601,68 @@ mod tests {
     assert!(
       parse_aria_role_attr(input, &ancestors).is_none(),
       "fieldset first-legend exception should keep controls focusable; role=presentation must be ignored in that case"
+    );
+  }
+
+  #[test]
+  fn svg_dialog_does_not_imply_modal_state_from_data_fastr_modal() {
+    let svg_dialog = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "dialog".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![("data-fastr-modal".to_string(), "true".to_string())],
+      },
+      children: Vec::new(),
+    };
+
+    assert_eq!(
+      compute_modal(&svg_dialog),
+      None,
+      "non-HTML namespace elements must not inherit HTML <dialog> modal semantics"
+    );
+  }
+
+  #[test]
+  fn svg_details_does_not_imply_expanded_state_from_open_attribute() {
+    let styles = Arc::new(ComputedStyle::default());
+    let svg_details = StyledNode {
+      node_id: 1,
+      node: DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "details".to_string(),
+          namespace: SVG_NAMESPACE.to_string(),
+          attributes: vec![("open".to_string(), String::new())],
+        },
+        children: Vec::new(),
+      },
+      styles,
+      starting_styles: Default::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      progress_bar_styles: None,
+      progress_value_styles: None,
+      meter_bar_styles: None,
+      meter_optimum_value_styles: None,
+      meter_suboptimum_value_styles: None,
+      meter_even_less_good_value_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: Vec::new(),
+    };
+
+    assert_eq!(
+      compute_expanded(&svg_details, None, &[]),
+      None,
+      "non-HTML namespace elements must not inherit HTML <details> expanded semantics"
     );
   }
 }
