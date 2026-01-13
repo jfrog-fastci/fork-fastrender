@@ -2174,8 +2174,8 @@ mod autofocus_tests {
     let state = controller.interaction_state();
     assert_eq!(state.focused, Some(autofocus_id));
     assert!(
-      state.focus_chain().contains(&autofocus_id),
-      "expected focus chain to include the focused element"
+      state.is_focus_within(autofocus_id),
+      "expected :focus-within to match the focused element"
     );
     assert!(
       state.focus_visible,
