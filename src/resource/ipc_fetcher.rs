@@ -15,6 +15,8 @@ use url::Url;
 
 const IPC_FRAME_LEN_BYTES: usize = 4;
 const MAX_COOKIE_BYTES: usize = 4096;
+// Avoid deadlocking the renderer if the network process becomes unresponsive mid-request.
+const IPC_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Environment variable used by [`IpcResourceFetcher::new`] to read the IPC auth token.
 pub const IPC_AUTH_TOKEN_ENV: &str = "FASTR_NETWORK_AUTH_TOKEN";
@@ -643,6 +645,8 @@ impl IpcResourceFetcher {
       ))
     })?;
     let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(IPC_IO_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(IPC_IO_TIMEOUT));
 
     // Authenticate immediately; the network process must ignore any traffic until it receives the
     // correct token.
