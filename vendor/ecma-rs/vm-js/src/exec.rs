@@ -10146,14 +10146,40 @@ impl<'a> Evaluator<'a> {
         self.eval_update_expression(scope, &expr.argument, -1, false)
       }
       OperatorName::Delete => match &*expr.argument.stx {
-        Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => Err(
-          // ECMA-262 `Evaluation` for the `delete` operator explicitly rejects Super References.
+        Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+          // `delete` of a Super Reference must throw a ReferenceError. However, evaluating a super
+          // property reference requires an initialized `this` binding; in derived constructors
+          // before `super()` that evaluation throws first (and must not be masked by the delete
+          // semantics).
           //
-          // This must be a runtime error (not a syntax error), and it applies to both instance and
-          // static `super` property references.
-          throw_reference_error(self.vm, scope, "Cannot delete a super property")?,
-        ),
+          // Spec: https://tc39.es/ecma262/#sec-delete-operator-runtime-semantics-evaluation
+          if self.derived_constructor && !self.this_initialized {
+            return Err(throw_reference_error(
+              self.vm,
+              scope,
+              "Must call super constructor in derived class before accessing 'this'",
+            )?);
+          }
+          Err(
+            // ECMA-262 `Evaluation` for the `delete` operator explicitly rejects Super References.
+            //
+            // This must be a runtime error (not a syntax error), and it applies to both instance and
+            // static `super` property references.
+            throw_reference_error(self.vm, scope, "Cannot delete a super property")?,
+          )
+        }
         Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+          // Evaluating a super property reference requires an initialized `this` binding. In
+          // derived constructors before `super()`, this check happens before evaluating the
+          // computed key expression.
+          if self.derived_constructor && !self.this_initialized {
+            return Err(throw_reference_error(
+              self.vm,
+              scope,
+              "Must call super constructor in derived class before accessing 'this'",
+            )?);
+          }
+
           // Ensure the computed key expression is evaluated (including `ToPropertyKey`
           // coercion) before throwing, per `super[expr]` evaluation semantics.
           let mut del_scope = scope.reborrow();

@@ -396,3 +396,28 @@ fn delete_super_property_derived_static_method_throws_reference_error() -> Resul
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }
+
+#[test]
+fn delete_super_property_derived_constructor_does_not_evaluate_key_before_super() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_or_skip_class_inheritance(
+    &mut rt,
+    r#"
+      let side = 0;
+      class B {}
+      class D extends B {
+        constructor() {
+          delete super[(side = 1, "m")];
+        }
+      }
+      try { new D(); }
+      catch (e) { String(side) + ":" + e.name; }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+
+  assert_value_is_utf8(&rt, value, "0:ReferenceError");
+  Ok(())
+}
