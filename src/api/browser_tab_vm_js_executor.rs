@@ -2,6 +2,9 @@ use crate::debug::runtime::runtime_toggles;
 use crate::error::{Error, Result};
 use crate::js::console_sink::{fanout_console_sink, formatting_console_sink, stderr_console_sink};
 use crate::js::time::update_time_bindings_clock;
+use crate::js::error_reporting::{
+  dispatch_window_error_event as dispatch_window_error_event_raw, resolve_error_event_location,
+};
 use crate::js::vm_error_format;
 use crate::js::window_file_reader::install_window_file_reader_bindings;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
@@ -28,8 +31,8 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use vm_js::{
-  GcObject, HostDefined, ModuleGraph, ModuleId, PromiseState, PropertyDescriptor, PropertyKey,
-  PropertyKind, RootId, Scope, SourceText, StackFrame, Value, VmError, VmHost,
+  GcObject, HostDefined, ModuleGraph, ModuleId, PromiseState, RootId, SourceText, Value, VmError,
+  VmHost,
 };
 use webidl_vm_js::WebIdlBindingsHost;
 
@@ -226,132 +229,19 @@ impl VmJsBrowserTabExecutor {
       vm.tick()?;
 
       let mut scope = heap.scope();
-      scope.push_root(Value::Object(global_obj))?;
-
-      let type_s = scope.alloc_string("error")?;
-      scope.push_root(Value::String(type_s))?;
-
-      // Build the init dict.
-      let init_obj = scope.alloc_object()?;
-      scope.push_root(Value::Object(init_obj))?;
-
-      let cancelable_key = alloc_key(&mut scope, "cancelable")?;
-      scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
-
-      // ErrorEventInit:
-      let message_s = scope.alloc_string(message)?;
-      scope.push_root(Value::String(message_s))?;
-      let message_key = alloc_key(&mut scope, "message")?;
-      scope.define_property(init_obj, message_key, data_desc(Value::String(message_s)))?;
-
-      let filename_s = scope.alloc_string(filename)?;
-      scope.push_root(Value::String(filename_s))?;
-      let filename_key = alloc_key(&mut scope, "filename")?;
-      scope.define_property(init_obj, filename_key, data_desc(Value::String(filename_s)))?;
-
-      let lineno_key = alloc_key(&mut scope, "lineno")?;
-      scope.define_property(
-        init_obj,
-        lineno_key,
-        data_desc(Value::Number(lineno as f64)),
-      )?;
-
-      let colno_key = alloc_key(&mut scope, "colno")?;
-      scope.define_property(
-        init_obj,
-        colno_key,
-        data_desc(Value::Number(colno as f64)),
-      )?;
-
-      let error_key = alloc_key(&mut scope, "error")?;
-      let error_value = error_value.unwrap_or(Value::Null);
-      scope.push_root(error_value)?;
-      scope.define_property(init_obj, error_key, data_desc(error_value))?;
-
-      let error_event_ctor_key = alloc_key(&mut scope, "ErrorEvent")?;
-      let error_event_ctor = vm.get_with_host_and_hooks(
-        document,
+      let canceled = dispatch_window_error_event_raw(
+        &mut *vm,
         &mut scope,
+        document,
         &mut hooks,
         global_obj,
-        error_event_ctor_key,
+        message,
+        filename,
+        lineno,
+        colno,
+        error_value,
       )?;
-      scope.push_root(error_event_ctor)?;
-
-      let (event_value, needs_payload_define) = if scope
-        .heap()
-        .is_constructor(error_event_ctor)
-        .unwrap_or(false)
-      {
-        (
-          vm.construct_with_host_and_hooks(
-            document,
-            &mut scope,
-            &mut hooks,
-            error_event_ctor,
-            &[Value::String(type_s), Value::Object(init_obj)],
-            error_event_ctor,
-          )?,
-          false,
-        )
-      } else {
-        let event_ctor_key = alloc_key(&mut scope, "Event")?;
-        let event_ctor =
-          vm.get_with_host_and_hooks(document, &mut scope, &mut hooks, global_obj, event_ctor_key)?;
-        scope.push_root(event_ctor)?;
-        (
-          vm.construct_with_host_and_hooks(
-            document,
-            &mut scope,
-            &mut hooks,
-            event_ctor,
-            &[Value::String(type_s), Value::Object(init_obj)],
-            event_ctor,
-          )?,
-          true,
-        )
-      };
-
-      let Value::Object(event_obj) = event_value else {
-        return Err(VmError::Unimplemented(
-          "ErrorEvent/Event constructor returned non-object",
-        ));
-      };
-      scope.push_root(Value::Object(event_obj))?;
-
-      if needs_payload_define {
-        scope.define_property(event_obj, message_key, read_only_data_desc(Value::String(message_s)))?;
-        scope.define_property(
-          event_obj,
-          filename_key,
-          read_only_data_desc(Value::String(filename_s)),
-        )?;
-        scope.define_property(
-          event_obj,
-          lineno_key,
-          read_only_data_desc(Value::Number(lineno as f64)),
-        )?;
-        scope.define_property(
-          event_obj,
-          colno_key,
-          read_only_data_desc(Value::Number(colno as f64)),
-        )?;
-        scope.define_property(event_obj, error_key, read_only_data_desc(error_value))?;
-      }
-
-      let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
-      let dispatch =
-        vm.get_with_host_and_hooks(document, &mut scope, &mut hooks, global_obj, dispatch_key)?;
-      let dispatch_result = vm.call_with_host_and_hooks(
-        document,
-        &mut scope,
-        &mut hooks,
-        dispatch,
-        Value::Object(global_obj),
-        &[Value::Object(event_obj)],
-      )?;
-
-      Ok(matches!(dispatch_result, Value::Bool(true)))
+      Ok(!canceled)
     })();
 
     let finish_err = hooks.finish(realm.heap_mut());
@@ -1654,53 +1544,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
   fn window_realm_mut(&mut self) -> Option<&mut WindowRealm> {
     self.realm.as_mut()
-  }
-}
-
-fn alloc_key(scope: &mut Scope<'_>, name: &str) -> std::result::Result<PropertyKey, VmError> {
-  let s = scope.alloc_string(name)?;
-  scope.push_root(Value::String(s))?;
-  Ok(PropertyKey::from_string(s))
-}
-
-fn data_desc(value: Value) -> PropertyDescriptor {
-  PropertyDescriptor {
-    enumerable: false,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value,
-      writable: true,
-    },
-  }
-}
-
-fn read_only_data_desc(value: Value) -> PropertyDescriptor {
-  PropertyDescriptor {
-    enumerable: false,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value,
-      writable: false,
-    },
-  }
-}
-
-fn resolve_error_event_location(
-  filename_hint: Option<&str>,
-  first_frame: Option<&StackFrame>,
-) -> (String, u32, u32) {
-  if let Some(frame) = first_frame {
-    let from_stack = frame.source.as_ref();
-    // vm-js uses synthetic `<inline>` names for unnamed scripts; prefer a real document/script URL
-    // when available so `window.onerror` gets a useful filename.
-    let filename = if from_stack.starts_with('<') {
-      filename_hint.unwrap_or(from_stack)
-    } else {
-      from_stack
-    };
-    (filename.to_string(), frame.line, frame.col)
-  } else {
-    (filename_hint.unwrap_or("").to_string(), 0, 0)
   }
 }
 

@@ -90,6 +90,8 @@ pub mod vmjs_chrome_api;
 pub mod chrome_command_queue;
 #[path = "vmjs/vm_error_format.rs"]
 pub(crate) mod vm_error_format;
+#[path = "vmjs/error_reporting.rs"]
+pub(crate) mod error_reporting;
 #[path = "vmjs/vm_limits.rs"]
 pub mod vm_limits;
 #[path = "vmjs/window.rs"]
