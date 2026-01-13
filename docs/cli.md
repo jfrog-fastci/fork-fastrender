@@ -30,7 +30,7 @@ These are optional wrappers for the most common loops:
   - Use `--dry-run` to print the underlying `bash scripts/cargo_agent.sh xtask pageset ...` command instead of executing it.
 - Cached-pages Chrome-vs-FastRender diff (best-effort; non-deterministic): `scripts/chrome_vs_fastrender.sh [options] [--] [page_stem...]`
   - Wraps `scripts/chrome_baseline.sh`, `render_pages`, and `diff_renders` into one command.
-  - Defaults to `viewport=1200x800`, `dpr=1.0`, JavaScript disabled (to match FastRender’s “no JS” model).
+  - Defaults to `viewport=1200x800`, `dpr=1.0`, JavaScript disabled (to match FastRender’s default static pipeline, where author scripts are not executed unless `--js` is enabled).
   - Disables CSS animations/transitions by default for more deterministic Chrome screenshots; set `ALLOW_ANIMATIONS=1` to opt out when debugging.
   - `scripts/chrome_baseline.sh` also patches HTML to force a light color scheme + white background by default to avoid platform dark-mode/background differences (set `ALLOW_DARK_MODE=1` or run it with `--allow-dark-mode` to opt out).
   - Writes a report at `<out>/report.html` (default: `target/chrome_vs_fastrender/report.html`).
@@ -354,7 +354,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Notes:
   - These baselines are **local-only** artifacts under `target/` (they are not committed).
   - Defaults match the fixture runner viewport/DPR (1040x1240 @ 1.0) unless overridden.
-  - JavaScript is disabled by default to match FastRender’s “no JS” model (enforced via injected CSP).
+  - JavaScript is disabled by default to match FastRender’s default static pipeline (enforced via injected CSP; enable `--js on` to execute author scripts).
   - Prefers Chrome's `--headless=new` mode but automatically retries with legacy `--headless` on older Chrome versions (the chosen mode is recorded in `<fixture>.json` metadata).
   - `<fixture>.json` metadata also records hashes of fixture inputs (`input_sha256` for `index.html`, `assets_sha256` for other fixture-local files, plus `shared_assets_sha256` for the fixtures-root `assets/` directory) so `fixture-chrome-diff --no-chrome` can detect stale baselines.
   - Pass `--chrome /path/to/chrome` (or set `CHROME_BIN=/path/to/chrome`) if auto-detection fails.
@@ -381,7 +381,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - `<out>/overlay/<fixture>.png` (when `--overlay` is enabled; rendered by `inspect_frag`)
   - `<out>/report.html`, `<out>/report.json`
 - Notes:
-  - JavaScript is disabled by default (Chrome baseline uses an injected CSP, matching FastRender's no-JS model).
+  - JavaScript is disabled by default (Chrome baseline uses an injected CSP, matching FastRender's default static pipeline; enable `--js on` to execute author scripts).
   - When `--no-chrome` is set, existing Chrome baseline metadata (`<out>/chrome/<fixture>.json`) is validated against the current `--viewport`, `--dpr`, `--media`, and `--js` values when present. Missing metadata emits a warning; use `--require-chrome-metadata` to fail fast.
   - When `--no-chrome` is set, the command checks the stored Chrome baseline metadata against the current fixture `index.html`, other fixture-local inputs like `assets/`, `styles.css`, etc, and the shared fixtures-root `assets/` directory (when available). If the fixture inputs have changed since the baseline was generated, it fails fast to avoid misleading diffs. Use `--allow-stale-chrome-baselines` to downgrade this to a warning.
   - Pass `--write-snapshot` to also write per-fixture snapshots/diagnostics for later `diff_snapshots` (equivalent to `render_fixtures --write-snapshot`).
