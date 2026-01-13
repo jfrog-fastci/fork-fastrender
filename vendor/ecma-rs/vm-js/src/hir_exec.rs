@@ -389,6 +389,7 @@ impl<'vm> HirEvaluator<'vm> {
     body_id: hir_js::BodyId,
     name: &str,
     is_arrow: bool,
+    is_constructable: bool,
     name_binding: Option<&str>,
   ) -> Result<GcObject, VmError> {
     // Avoid holding references into `self.script.hir` across `vm.tick()` calls below: `tick()`
@@ -493,6 +494,7 @@ impl<'vm> HirEvaluator<'vm> {
         script,
         body: body_id,
       },
+      is_constructable,
       name_s,
       length,
       this_mode,
@@ -891,6 +893,7 @@ impl<'vm> HirEvaluator<'vm> {
               body_id,
               name.as_str(),
               /* is_arrow */ false,
+              /* is_constructable */ true,
               /* name_binding */ None,
             )?;
           // Root the function object while assigning into the environment.
@@ -2467,6 +2470,7 @@ impl<'vm> HirEvaluator<'vm> {
           *func_body,
           name_str.as_str(),
           *is_arrow,
+          /* is_constructable */ !*is_arrow,
           /* name_binding */ (!name_str.is_empty()).then_some(name_str.as_str()),
         )?;
         Ok(Value::Object(func_obj))
@@ -3836,10 +3840,11 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
           _ => {
-            // Destructuring assignment evaluates the RHS expression first, then performs
+            // Destructuring assignment patterns evaluate the RHS first, then perform
             // `DestructuringAssignmentEvaluation` on the resulting value.
             let mut scope = scope.reborrow();
             let v = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(v)?;
             self.assign_pattern(&mut scope, body, target, v)?;
             Ok(v)
           }
@@ -4826,14 +4831,45 @@ impl<'vm> HirEvaluator<'vm> {
 
           let key = self.eval_object_key(&mut member_scope, body, key)?;
           root_property_key(&mut member_scope, key)?;
-          let v = self.eval_expr(&mut member_scope, body, *value)?;
-          if *method || is_anonymous_function_def {
-            if let Value::Object(func_obj) = v {
-              if member_scope.heap().get_function(func_obj).is_ok() {
+
+          let v = if *method {
+            // Object literal method definitions (`{ m() {} }`) produce function objects that:
+            // - are **not** constructable (`[[Construct]]` is absent), and
+            // - do **not** have an own `"prototype"` property.
+            //
+            // hir-js lowers these as `ObjectProperty::KeyValue { method: true, value: FunctionExpr }`,
+            // so we can allocate the function object with the correct constructability here.
+            match &self.get_expr(body, *value)?.kind {
+              hir_js::ExprKind::FunctionExpr {
+                body: func_body,
+                is_arrow,
+                ..
+              } => {
+                let func_obj = self.alloc_user_function_object(
+                  &mut member_scope,
+                  *func_body,
+                  "",
+                  *is_arrow,
+                  /* is_constructable */ false,
+                  /* name_binding */ None,
+                )?;
+                // Set the function's `name` based on the property key (best-effort).
                 crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
+                Value::Object(func_obj)
+              }
+              _ => self.eval_expr(&mut member_scope, body, *value)?,
+            }
+          } else {
+            let v = self.eval_expr(&mut member_scope, body, *value)?;
+            if is_anonymous_function_def {
+              if let Value::Object(func_obj) = v {
+                if member_scope.heap().get_function(func_obj).is_ok() {
+                  crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
+                }
               }
             }
-          }
+            v
+          };
           let _ = member_scope.create_data_property(obj_val, key, v)?;
         }
         hir_js::ObjectProperty::Spread(expr_id) => {
@@ -4868,6 +4904,7 @@ impl<'vm> HirEvaluator<'vm> {
             *getter_body,
             /* name */ "",
             /* is_arrow */ false,
+            /* is_constructable */ false,
             /* name_binding */ None,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
@@ -4904,6 +4941,7 @@ impl<'vm> HirEvaluator<'vm> {
             *setter_body,
             /* name */ "",
             /* is_arrow */ false,
+            /* is_constructable */ false,
             /* name_binding */ None,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
@@ -4958,6 +4996,9 @@ impl<'vm> HirEvaluator<'vm> {
     let mut scope = scope.reborrow();
 
     if call.is_new {
+      // `new callee(...args)` evaluates the callee as a value (no method-call `this` binding) and
+      // invokes `[[Construct]]` with `newTarget = callee` (best-effort; `Reflect.construct` sets
+      // `newTarget` explicitly).
       let callee_value = self.eval_expr(&mut scope, body, call.callee)?;
       if call.optional && matches!(callee_value, Value::Null | Value::Undefined) {
         return Ok(Value::Undefined);
@@ -5166,6 +5207,7 @@ impl<'vm> HirEvaluator<'vm> {
               body_id,
               "constructor",
               /* is_arrow */ false,
+              /* is_constructable */ true,
               /* name_binding */ None,
             )?;
           ctor_length = scope.heap().get_function(body_func)?.length;
@@ -5309,6 +5351,7 @@ impl<'vm> HirEvaluator<'vm> {
               *body_id,
               method_name.as_str(),
               /* is_arrow */ false,
+              /* is_constructable */ false,
               /* name_binding */ None,
             )?;
 

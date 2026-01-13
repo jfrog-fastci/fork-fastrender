@@ -3237,7 +3237,7 @@ impl Vm {
     let (source, line, col) = if let Some(call_site) = call_site.as_ref() {
       (call_site.source.clone(), call_site.line, call_site.col)
     } else {
-      match construct_handler {
+      match &construct_handler {
         ConstructHandler::Native(_) => (Arc::<str>::from("<native>"), 0, 0),
         ConstructHandler::Ecma(code_id) => match self.ecma_functions.get(code_id.0 as usize) {
           Some(code) => {

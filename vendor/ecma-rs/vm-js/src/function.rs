@@ -290,16 +290,20 @@ impl JsFunction {
 
   pub(crate) fn new_user(
     func: CompiledFunctionRef,
+    is_constructable: bool,
     name: GcString,
     length: u32,
     this_mode: ThisMode,
     is_strict: bool,
     closure_env: Option<GcEnv>,
   ) -> Self {
-    // Arrow functions (ThisMode::Lexical) are not constructable.
-    let construct = match this_mode {
-      ThisMode::Lexical => None,
-      ThisMode::Strict | ThisMode::Global => Some(ConstructHandler::User),
+    // Arrow functions (ThisMode::Lexical) are not constructable, and neither are method/accessor
+    // functions created via object literal or class syntax. Callers decide constructability and
+    // pass it explicitly.
+    let construct = match (this_mode, is_constructable) {
+      (ThisMode::Lexical, _) => None,
+      (_, true) => Some(ConstructHandler::User),
+      (_, false) => None,
     };
     Self {
       call: CallHandler::User(func),

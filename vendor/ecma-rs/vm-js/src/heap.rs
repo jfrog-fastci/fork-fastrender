@@ -7166,7 +7166,7 @@ impl Heap {
     func: GcObject,
   ) -> Result<Option<ConstructHandler>, VmError> {
     match self.get_heap_object(func.0)? {
-      HeapObject::Function(f) => Ok(f.construct),
+      HeapObject::Function(f) => Ok(f.construct.clone()),
       _ => Err(VmError::NotConstructable),
     }
   }
@@ -9095,6 +9095,7 @@ impl<'a> Scope<'a> {
 
     let func = JsFunction::new_user(
       func,
+      /* is_constructable */ true,
       name,
       length,
       ThisMode::Global,
@@ -9107,6 +9108,13 @@ impl<'a> Scope<'a> {
 
     let obj = HeapObject::Function(func);
     let func = GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?);
+
+    // Root the newly-allocated function object while defining its standard properties.
+    //
+    // `set_function_name` / `set_function_length` / `make_constructor` can allocate (and therefore
+    // trigger GC). Without rooting, the fresh function object is only held in a local Rust
+    // variable and can be collected before this method returns, producing an invalid handle.
+    scope.push_root(Value::Object(func))?;
 
     // Define standard function metadata properties (`name`, `length`).
     crate::function_properties::set_function_name(
@@ -9128,6 +9136,7 @@ impl<'a> Scope<'a> {
   pub(crate) fn alloc_user_function_with_env(
     &mut self,
     func: CompiledFunctionRef,
+    is_constructable: bool,
     name: GcString,
     length: u32,
     this_mode: ThisMode,
@@ -9144,13 +9153,28 @@ impl<'a> Scope<'a> {
       scope.push_root(Value::String(name))?;
     }
 
-    let func = JsFunction::new_user(func, name, length, this_mode, is_strict, closure_env);
+    let func = JsFunction::new_user(
+      func,
+      is_constructable,
+      name,
+      length,
+      this_mode,
+      is_strict,
+      closure_env,
+    );
     let is_constructable = func.construct.is_some();
     let new_bytes = func.heap_size_bytes();
     scope.heap.ensure_can_allocate(new_bytes)?;
 
     let obj = HeapObject::Function(func);
     let func = GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?);
+
+    // Root the newly-allocated function object while defining its standard properties.
+    //
+    // `set_function_name` / `set_function_length` / `make_constructor` can allocate (and therefore
+    // trigger GC). Without rooting, the fresh function object is only held in a local Rust
+    // variable and can be collected before this method returns, producing an invalid handle.
+    scope.push_root(Value::Object(func))?;
 
     // Define standard function metadata properties (`name`, `length`).
     crate::function_properties::set_function_name(
@@ -9192,7 +9216,7 @@ impl<'a> Scope<'a> {
         }
         remaining -= 1;
         match self.heap().get_heap_object(obj.0)? {
-          HeapObject::Function(f) => break (f.call.clone(), f.construct),
+          HeapObject::Function(f) => break (f.call.clone(), f.construct.clone()),
           HeapObject::Proxy(p) => {
             let (Some(next), Some(_handler)) = (p.target, p.handler) else {
               return Err(VmError::TypeError(
