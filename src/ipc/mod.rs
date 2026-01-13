@@ -25,6 +25,7 @@ pub mod validate;
 pub mod sync;
 pub mod types;
 pub mod websocket;
+pub mod shmem;
 
 #[cfg(unix)]
 pub mod bootstrap;

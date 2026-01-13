@@ -17,6 +17,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod macos {
   use clap::{Parser, ValueEnum};
+  use fastrender::ipc::shmem::generate_shmem_id;
   use std::collections::BTreeSet;
   use std::ffi::{CStr, CString};
   use std::fs;
@@ -26,7 +27,7 @@ mod macos {
   use std::os::unix::io::FromRawFd;
   use std::os::unix::net::{UnixListener, UnixStream};
   use std::path::PathBuf;
-  use std::time::{Duration, SystemTime, UNIX_EPOCH};
+  use std::time::Duration;
 
   #[derive(Parser)]
   #[command(about = "Probe FastRender's macOS renderer sandbox (Seatbelt) behavior")]
@@ -593,17 +594,12 @@ mod macos {
   // ============================================================================
 
   fn setup_posix_shm_inputs() -> (Result<i32, io::Error>, CString) {
-    let pid = std::process::id();
-    let ts = SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .unwrap_or_default()
-      .as_nanos();
-
-    let pre_name = format!("/fastrender_sandbox_probe_shm_pre_{pid}_{ts}");
-    let post_name = format!("/fastrender_sandbox_probe_shm_post_{pid}_{ts}");
-
-    let post_name = CString::new(post_name).expect("generated shm name contains no NUL");
-    let pre_name = CString::new(pre_name).expect("generated shm name contains no NUL");
+    // macOS's `shm_open` name length limit is commonly `PSHMNAMLEN=31` bytes, including the leading
+    // `/`. Use the shared generator so probe runs match production behavior.
+    let pre_name =
+      CString::new(format!("/{}", generate_shmem_id())).expect("generated shm name contains no NUL");
+    let post_name =
+      CString::new(format!("/{}", generate_shmem_id())).expect("generated shm name contains no NUL");
 
     (create_posix_shm_object_pre_sandbox(&pre_name), post_name)
   }

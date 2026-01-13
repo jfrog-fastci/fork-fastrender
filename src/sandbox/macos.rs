@@ -606,6 +606,7 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ipc::shmem::{generate_shmem_id, MAX_SHMEM_NAME_LEN};
   use std::ffi::CString;
   use std::io::{self, Write};
   use std::net::{TcpListener, TcpStream, UdpSocket};
@@ -621,13 +622,21 @@ mod tests {
   const RELAXED_TMP_FILE_ENV: &str = "FASTR_TEST_MACOS_RELAXED_SANDBOX_TMP_FILE";
 
   fn shm_name(label: &str) -> String {
-    let pid = std::process::id();
-    let nanos = SystemTime::now()
-      .duration_since(SystemTime::UNIX_EPOCH)
-      .unwrap_or_default()
-      .as_nanos();
-    // POSIX `shm_open` names must begin with `/` and contain no additional slashes.
-    format!("/fastr_sbpl_{label}_{pid}_{nanos}")
+    // macOS commonly limits POSIX shm names to `PSHMNAMLEN=31` bytes including the leading '/'.
+    // Keep these test names within that limit so failures are attributable to the sandbox policy,
+    // not name-length errors like `ENAMETOOLONG`.
+    let tag = match label {
+      "allowed" => 'a',
+      "denied" => 'd',
+      _ => 'x',
+    };
+    let name = format!("/{}{}", tag, generate_shmem_id());
+    assert!(
+      name.len() <= MAX_SHMEM_NAME_LEN,
+      "generated shm name too long: {} bytes (max {MAX_SHMEM_NAME_LEN}): {name:?}",
+      name.len()
+    );
+    name
   }
 
   fn shm_unlink_best_effort(name: &str) {
