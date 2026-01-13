@@ -678,13 +678,22 @@ fn bookmarks_list(
     if !query.is_empty() {
       let results = store.search(&query, usize::MAX);
       if results.is_empty() {
-        panel_empty_state(
+        let empty = panel_empty_state(
           ui,
           BrowserIcon::Search,
           "No matches",
           Some("Try a different search."),
-          None,
+          Some("Clear search"),
         );
+        if empty
+          .action_response
+          .as_ref()
+          .is_some_and(|resp| resp.clicked())
+        {
+          state.search.clear();
+          state.request_focus_search = true;
+          out.unfocus_page = true;
+        }
         return;
       }
 
