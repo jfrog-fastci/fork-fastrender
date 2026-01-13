@@ -124,6 +124,7 @@ include = [
   "built-ins/Object/values/**/*.js",
   "built-ins/Object/entries/**/*.js",
   "built-ins/Object/fromEntries/**/*.js",
+  "built-ins/Object/groupBy/**/*.js",
   "built-ins/Object/getOwnPropertyDescriptor/**/*.js",
   "built-ins/Object/getOwnPropertyDescriptors/**/*.js",
   "built-ins/Object/getOwnPropertyNames/**/*.js",
