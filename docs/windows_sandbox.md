@@ -29,6 +29,12 @@ Rule of thumb:
 - Use `win_sandbox::spawn_sandboxed(...)` when you explicitly want “spawn a process with mitigation
   policies applied” (primarily tests).
 
+Related docs:
+
+- Sandboxing overview (cross-platform): [sandboxing.md](sandboxing.md)
+- IPC safety invariants (framing, shared memory): [ipc.md](ipc.md)
+- Multiprocess threat model (what the sandbox is protecting): [multiprocess_threat_model.md](multiprocess_threat_model.md)
+
 ## Threat model (renderer on Windows)
 
 Treat the renderer process as **attacker-controlled**:
