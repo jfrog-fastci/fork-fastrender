@@ -1762,3 +1762,58 @@ mod object_builtins_smoke {
     Ok(())
   }
 }
+
+mod webidl_vmjs_promise_resolve_smoke {
+  use crate::js::webidl::{
+    InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlHooks, WebIdlLimits,
+  };
+  use vm_js::{Heap, HeapLimits, PromiseState, Realm, Value, Vm, VmError, VmOptions};
+  use webidl_js_runtime::WebIdlJsRuntime as _;
+
+  #[derive(Default)]
+  struct NoHooks;
+
+  impl WebIdlHooks<Value> for NoHooks {
+    fn is_platform_object(&self, _value: Value) -> bool {
+      false
+    }
+
+    fn implements_interface(&self, _value: Value, _interface: InterfaceId) -> bool {
+      false
+    }
+  }
+
+  #[test]
+  fn vmjs_webidl_runtime_adapter_promise_resolve_smoke() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let realm = Realm::new(&mut vm, &mut heap)?;
+
+    let state = VmJsWebIdlBindingsState::<()>::new(
+      realm.global_object(),
+      WebIdlLimits::default(),
+      Box::new(NoHooks),
+    );
+
+    // Create a resolved promise from a non-object value.
+    let promise;
+    let promise_again;
+    {
+      let mut cx = VmJsWebIdlBindingsCx::new(&mut vm, &mut heap, &state);
+      promise = cx.promise_resolve(Value::Number(7.0))?;
+      // PromiseResolve(%Promise%, promise) should return the promise unchanged when it uses the
+      // intrinsic Promise constructor.
+      promise_again = cx.promise_resolve(promise)?;
+      assert_eq!(promise, promise_again);
+    }
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("expected promise_resolve to return a Promise object, got {promise:?}");
+    };
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(heap.promise_result(promise_obj)?, Some(Value::Number(7.0)));
+
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+}
