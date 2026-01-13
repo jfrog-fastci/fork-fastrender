@@ -25,6 +25,18 @@ test(() => {
   // Spec: open shadow roots are exposed via `host.shadowRoot`, not via `firstChild/childNodes`.
   const shadowRoot = host.shadowRoot;
   assert_true(!!shadowRoot, "host.shadowRoot should exist for an open shadow root");
+  assert_not_equals(
+    host.firstChild,
+    shadowRoot,
+    "ShadowRoot must not be exposed via host.firstChild"
+  );
+  for (let i = 0; i < host.childNodes.length; i++) {
+    assert_not_equals(
+      host.childNodes[i],
+      shadowRoot,
+      "ShadowRoot must not be exposed via host.childNodes"
+    );
+  }
 
   const shadowChild = shadowRoot.firstChild;
   assert_true(!!shadowChild, "shadow root should have a child node");
