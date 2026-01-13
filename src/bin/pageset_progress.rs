@@ -10676,6 +10676,9 @@ mod progress_tests {
       render_parse: RenderParseArgs {
         render_parse_scripting_enabled: true,
       },
+      js: false,
+      js_max_frames: 10,
+      js_execution: JsExecutionArgs::default(),
       pages: None,
       shard: None,
       selection: ProgressSelectionArgs::default(),

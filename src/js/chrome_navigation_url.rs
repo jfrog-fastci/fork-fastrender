@@ -72,7 +72,6 @@ pub fn validate_chrome_navigation_url(url: &str) -> Result<(), ChromeApiError> {
 // chrome-frame helpers). The canonical vm-js implementation lives under `crate::js::vmjs_chrome_api`
 // (declared in `src/js/mod.rs`) to avoid a `js::chrome_api` module name collision, so re-export it
 // here rather than compiling the file twice.
-
 pub use super::vmjs_chrome_api::{
   install_chrome_api_bindings_vm_js, ChromeApiHost, ChromeCommand, MAX_CHROME_API_URL_CODE_UNITS,
 };
