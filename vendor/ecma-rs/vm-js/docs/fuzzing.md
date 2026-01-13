@@ -10,7 +10,7 @@ The fuzz targets live in `vendor/ecma-rs/fuzz/`:
 
 - `parse_js` (parser-only)
 - `vm_js_exec` (parse + execute via `vm-js::Agent::run_script`)
-- `vm_js_exec_compiled` (compile + execute via `vm-js::CompiledScript` + `vm-js::JsRuntime::exec_compiled_script`)
+- `vm_js_exec_compiled` (compile + execute via `vm-js::CompiledScript` + `vm-js::Agent::run_compiled_script`)
 
 ## Safety: budgets + heap limits
 
