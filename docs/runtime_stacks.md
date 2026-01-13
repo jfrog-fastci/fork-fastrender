@@ -181,7 +181,8 @@ In the public API this maps to:
 
 Note: `tick_frame()` runs at most one `requestAnimationFrame` “turn” when callbacks are queued, and
 it drains the post-rAF microtask checkpoint before rendering. It does **not** enforce a wall-clock
-frame cadence by itself; interactive embedders should call it on their chosen frame schedule (see
+frame cadence by itself; interactive embedders should call it on their chosen frame schedule and
+can use `BrowserTab::next_wake_time()` as a sleep hint (see
 [`docs/live_rendering_loop.md`](live_rendering_loop.md)).
 
 Conceptually:
@@ -199,6 +200,11 @@ loop {
     // - after forwarding input to the tab (mouse/keyboard),
     // - when timers/network wake the event loop,
     // - on vsync / a frame budget.
+    //
+    // `next_wake_time()` is a convenience helper for sleeping until the next due timer or rAF turn:
+    // if let Some(wake_at) = tab.next_wake_time() {
+    //     sleep_for(wake_at.saturating_sub(tab.now()));
+    // }
 }
 # }
 ```
