@@ -2,6 +2,7 @@
 
 use super::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
 use super::Document;
+use super::DomError;
 use super::NodeKind;
 use selectors::context::QuirksMode;
 
@@ -453,6 +454,65 @@ fn node_iterator_registry_is_gc_safe_and_prunes_rust_state() -> Result<(), vm_js
   doc.sweep_dead_live_traversals_if_needed(scope.heap());
   assert_eq!(doc.live_mutation.node_iterator_wrapper_len(), 0);
   assert_eq!(doc.node_iterator_root(id), None);
+  Ok(())
+}
+
+#[test]
+fn live_range_registry_prunes_rust_ranges_and_does_not_leak() -> Result<(), vm_js::VmError> {
+  use vm_js::{Heap, HeapLimits, RootId, Value};
+
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut scope = heap.scope();
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  fn create_n(
+    scope: &mut vm_js::Scope<'_>,
+    doc: &mut Document,
+    n: usize,
+  ) -> Result<Vec<RootId>, vm_js::VmError> {
+    let mut roots: Vec<RootId> = Vec::with_capacity(n);
+    for _ in 0..n {
+      let wrapper = scope.alloc_object()?;
+      let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
+      roots.push(root);
+      let _range_id = doc.register_live_range(scope.heap(), wrapper);
+    }
+    Ok(roots)
+  }
+
+  const N: usize = 128;
+
+  // Cycle 1: allocate ranges + wrappers.
+  let wrapper1 = scope.alloc_object()?;
+  let root1 = scope.heap_mut().add_root(Value::Object(wrapper1))?;
+  let r1 = doc.register_live_range(scope.heap(), wrapper1);
+  let roots = create_n(&mut scope, &mut doc, N - 1)?;
+  assert_eq!(doc.ranges.len(), N);
+
+  // Drop roots and collect.
+  scope.heap_mut().remove_root(root1);
+  for root in roots {
+    scope.heap_mut().remove_root(root);
+  }
+  scope.heap_mut().collect_garbage();
+  doc.sweep_dead_live_traversals_if_needed(scope.heap());
+  assert_eq!(doc.ranges.len(), 0);
+  assert!(
+    matches!(doc.range_start_container(r1), Err(DomError::NotFoundError)),
+    "RangeId should be tombstoned once its JS wrapper is collected"
+  );
+
+  // Cycle 2: allocate the same number again. Map size should not grow monotonically.
+  let roots = create_n(&mut scope, &mut doc, N)?;
+  assert_eq!(doc.ranges.len(), N);
+
+  // Drop roots and collect again.
+  for root in roots {
+    scope.heap_mut().remove_root(root);
+  }
+  scope.heap_mut().collect_garbage();
+  doc.sweep_dead_live_traversals_if_needed(scope.heap());
+  assert_eq!(doc.ranges.len(), 0);
   Ok(())
 }
 
