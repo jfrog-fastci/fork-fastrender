@@ -11,9 +11,9 @@ use std::time::Duration;
 #[cfg(test)]
 use std::sync::Mutex;
 
-pub use crate::interaction::KeyAction;
 pub use crate::interaction::DateTimeInputKind;
 pub use crate::interaction::FormSubmission;
+pub use crate::interaction::KeyAction;
 use tiny_skia::Pixmap;
 
 static NEXT_TAB_ID: AtomicU64 = AtomicU64::new(1);
@@ -476,7 +476,7 @@ pub enum UiToWorker {
   DateTimePickerCancel {
     tab_id: TabId,
   },
-  /// User chose a value in a color picker popup.
+  /// User chose a color in a color picker popup for an `<input type=color>` control.
   ///
   /// The UI should send this after receiving [`WorkerToUi::ColorPickerOpened`].
   ColorPickerChoose {

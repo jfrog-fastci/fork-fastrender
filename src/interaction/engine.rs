@@ -5218,7 +5218,11 @@ impl InteractionEngine {
 
   /// Update the value for an `<input type="color">` control as if the user edited it.
   ///
-  /// This applies HTML "simple color" sanitization rules: invalid values sanitize to `#000000`.
+  /// This applies HTML value sanitization rules for color inputs:
+  /// - Values must be a [simple color](https://html.spec.whatwg.org/multipage/input.html#simple-colour),
+  ///   i.e. `#` followed by exactly 6 ASCII hex digits.
+  /// - Invalid (including empty) values are sanitized to black (`#000000`), matching browser
+  ///   behavior and the spec's default value semantics for color inputs.
   pub fn set_color_input_value(
     &mut self,
     dom: &mut DomNode,
@@ -5278,19 +5282,6 @@ impl InteractionEngine {
     changed |= changed_value;
     if changed_value {
       changed |= self.mark_user_validity(input_node_id);
-    }
-
-    // Keep caret state in sync for focused controls.
-    if self.state.focused == Some(input_node_id) {
-      let len = sanitized.chars().count();
-      self.text_edit = Some(TextEditState {
-        node_id: input_node_id,
-        caret: len,
-        caret_affinity: CaretAffinity::Downstream,
-        selection_anchor: None,
-        preferred_x: None,
-      });
-      changed |= self.sync_text_edit_paint_state();
     }
 
     changed

@@ -9,7 +9,7 @@ use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::ui::about_pages;
-use crate::ui::find_in_page::{FindIndex, FindOptions, FindMatch};
+use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
@@ -148,7 +148,9 @@ impl BrowserTabController {
         button,
         modifiers,
         click_count,
-      } if tab_id == self.tab_id => self.handle_pointer_down(pos_css, button, modifiers, click_count),
+      } if tab_id == self.tab_id => {
+        self.handle_pointer_down(pos_css, button, modifiers, click_count)
+      }
       UiToWorker::PointerUp {
         tab_id,
         pos_css,
@@ -271,11 +273,7 @@ impl BrowserTabController {
     }
 
     let count = self.find_matches.len();
-    let next = self
-      .find_active_match_index
-      .unwrap_or(0)
-      .saturating_add(1)
-      % count;
+    let next = self.find_active_match_index.unwrap_or(0).saturating_add(1) % count;
     self.find_active_match_index = Some(next);
     self.scroll_to_active_find_match();
 
@@ -598,7 +596,11 @@ impl BrowserTabController {
     }
   }
 
-  fn handle_drop_files(&mut self, pos_css: (f32, f32), paths: Vec<PathBuf>) -> Result<Vec<WorkerToUi>> {
+  fn handle_drop_files(
+    &mut self,
+    pos_css: (f32, f32),
+    paths: Vec<PathBuf>,
+  ) -> Result<Vec<WorkerToUi>> {
     self.last_pointer_pos_css = Some(pos_css);
     let (box_tree_ptr, fragment_tree_ptr) = {
       let Some(prepared) = self.document.prepared() else {
@@ -1026,6 +1028,7 @@ impl BrowserTabController {
   }
 
   fn handle_key_action(&mut self, key: crate::interaction::KeyAction) -> Result<Vec<WorkerToUi>> {
+    let mut picker_value: Option<String> = None;
     let result = self
       .document
       .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -1037,20 +1040,32 @@ impl BrowserTabController {
           &self.current_url,
           &self.base_url,
         );
+        if let InteractionAction::OpenColorPicker { input_node_id } = &action {
+          picker_value = crate::dom::find_node_mut_by_preorder_id(dom, *input_node_id)
+            .and_then(|node| crate::dom::input_color_value_string(node));
+        }
         (dom_changed, (dom_changed, action))
       });
     let (changed, action) = match result {
       Ok(result) => result,
       Err(_) => {
         let mut action = InteractionAction::None;
+        let mut fallback_picker_value: Option<String> = None;
         let changed = self.document.mutate_dom(|dom| {
           let (dom_changed, next_action) =
             self
               .interaction
               .key_activate(dom, key, &self.current_url, &self.base_url);
+          if let InteractionAction::OpenColorPicker { input_node_id } = &next_action {
+            fallback_picker_value = crate::dom::find_node_mut_by_preorder_id(dom, *input_node_id)
+              .and_then(|node| crate::dom::input_color_value_string(node));
+          }
           action = next_action;
           dom_changed
         });
+        if fallback_picker_value.is_some() {
+          picker_value = fallback_picker_value;
+        }
         (changed, action)
       }
     };
@@ -1133,6 +1148,31 @@ impl BrowserTabController {
           anchor_css,
         });
       }
+      InteractionAction::OpenColorPicker { input_node_id } => {
+        let anchor_css = self
+          .select_anchor_css(input_node_id)
+          .filter(|rect| {
+            rect.origin.x.is_finite()
+              && rect.origin.y.is_finite()
+              && rect.size.width.is_finite()
+              && rect.size.height.is_finite()
+          })
+          .unwrap_or_else(|| {
+            let (x, y) = self.last_pointer_pos_css.unwrap_or((0.0, 0.0));
+            Rect::from_xywh(
+              if x.is_finite() { x } else { 0.0 },
+              if y.is_finite() { y } else { 0.0 },
+              1.0,
+              1.0,
+            )
+          });
+        out.push(WorkerToUi::ColorPickerOpened {
+          tab_id: self.tab_id,
+          input_node_id,
+          value: picker_value.unwrap_or_else(|| "#000000".to_string()),
+          anchor_css,
+        });
+      }
       _ => {}
     }
 
@@ -1210,13 +1250,14 @@ impl BrowserTabController {
   ) -> Result<Vec<WorkerToUi>> {
     // Mirror the threaded worker semantics: choosing files should close the popup even when it
     // results in no DOM mutation (e.g. choosing the already-selected path).
-    let mut out = vec![WorkerToUi::FilePickerClosed { tab_id: self.tab_id }];
+    let mut out = vec![WorkerToUi::FilePickerClosed {
+      tab_id: self.tab_id,
+    }];
 
     let engine = &mut self.interaction;
-    let changed =
-      self
-        .document
-        .mutate_dom(|dom| engine.file_picker_choose(dom, input_node_id, &paths));
+    let changed = self
+      .document
+      .mutate_dom(|dom| engine.file_picker_choose(dom, input_node_id, &paths));
 
     if changed {
       out.extend(self.paint_if_needed()?);
@@ -1225,17 +1266,19 @@ impl BrowserTabController {
     Ok(out)
   }
 
-  fn handle_color_picker_choose(&mut self, input_node_id: usize, value: String) -> Result<Vec<WorkerToUi>> {
+  fn handle_color_picker_choose(
+    &mut self,
+    input_node_id: usize,
+    value: String,
+  ) -> Result<Vec<WorkerToUi>> {
     // Mirror the threaded worker semantics: choosing a value should close the popup even when it
-    // results in no DOM mutation (e.g. choosing the already-selected value).
+    // results in no DOM mutation (e.g. choosing the already-set value).
     let mut out = vec![WorkerToUi::ColorPickerClosed { tab_id: self.tab_id }];
 
     let engine = &mut self.interaction;
-    let changed =
-      self
-        .document
-        .mutate_dom(|dom| engine.set_color_input_value(dom, input_node_id, &value));
-
+    let changed = self
+      .document
+      .mutate_dom(|dom| engine.set_color_input_value(dom, input_node_id, &value));
     if changed {
       out.extend(self.paint_if_needed()?);
     }

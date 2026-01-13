@@ -4325,6 +4325,24 @@ struct OpenDateTimePicker {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
+struct OpenColorPicker {
+  tab_id: fastrender::ui::TabId,
+  input_node_id: usize,
+  /// egui widget id that held focus before the picker was opened.
+  ///
+  /// Used to restore focus when the popup closes (or clear focus when none was set) so we don't
+  /// leave egui focused on widgets that have been removed.
+  focus_before_open: Option<egui::Id>,
+  /// Bounding box of the `<input>` control in viewport CSS coordinates.
+  anchor_css: fastrender::geometry::Rect,
+  /// Fallback anchor position in egui points (cursor position).
+  anchor_points: egui::Pos2,
+  /// Current selected color (RGB; alpha ignored for HTML color inputs).
+  color: egui::Color32,
+}
+
+#[cfg(feature = "browser_ui")]
 fn egui_focused_widget_id(ctx: &egui::Context) -> Option<egui::Id> {
   ctx.memory(|mem| mem.focus())
 }
@@ -4368,6 +4386,20 @@ fn close_date_time_picker_popup(
     return;
   };
   *open_date_time_picker_rect = None;
+  restore_or_clear_egui_focus(ctx, picker.focus_before_open);
+}
+
+#[cfg(feature = "browser_ui")]
+fn close_color_picker_popup(
+  ctx: &egui::Context,
+  open_color_picker: &mut Option<OpenColorPicker>,
+  open_color_picker_rect: &mut Option<egui::Rect>,
+) {
+  let Some(picker) = open_color_picker.take() else {
+    *open_color_picker_rect = None;
+    return;
+  };
+  *open_color_picker_rect = None;
   restore_or_clear_egui_focus(ctx, picker.focus_before_open);
 }
 
@@ -5371,6 +5403,8 @@ struct App {
   open_select_dropdown_rect: Option<egui::Rect>,
   open_date_time_picker: Option<OpenDateTimePicker>,
   open_date_time_picker_rect: Option<egui::Rect>,
+  open_color_picker: Option<OpenColorPicker>,
+  open_color_picker_rect: Option<egui::Rect>,
   open_file_picker: Option<OpenFilePicker>,
   open_file_picker_rect: Option<egui::Rect>,
   debug_log: std::collections::VecDeque<String>,
@@ -5642,6 +5676,9 @@ impl App {
       .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_date_time_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_color_picker_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_file_picker_rect
@@ -6009,6 +6046,8 @@ impl App {
       open_select_dropdown_rect: None,
       open_date_time_picker: None,
       open_date_time_picker_rect: None,
+      open_color_picker: None,
+      open_color_picker_rect: None,
       open_file_picker: None,
       open_file_picker_rect: None,
       bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState::default(),
@@ -6966,6 +7005,21 @@ impl App {
     self.close_date_time_picker();
   }
 
+  fn close_color_picker(&mut self) {
+    close_color_picker_popup(
+      &self.egui_ctx,
+      &mut self.open_color_picker,
+      &mut self.open_color_picker_rect,
+    );
+  }
+
+  fn cancel_color_picker(&mut self) {
+    if let Some(picker) = self.open_color_picker.as_ref() {
+      self.send_worker_msg(fastrender::ui::UiToWorker::ColorPickerCancel { tab_id: picker.tab_id });
+    }
+    self.close_color_picker();
+  }
+
   fn close_file_picker(&mut self) {
     self.open_file_picker = None;
     self.open_file_picker_rect = None;
@@ -7498,6 +7552,7 @@ impl App {
       | fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. }
       | fastrender::ui::WorkerToUi::SelectDropdownClosed { tab_id }
       | fastrender::ui::WorkerToUi::DateTimePickerClosed { tab_id }
+      | fastrender::ui::WorkerToUi::ColorPickerClosed { tab_id }
       | fastrender::ui::WorkerToUi::FilePickerClosed { tab_id } => {
         if self
           .open_select_dropdown
@@ -7512,6 +7567,13 @@ impl App {
           .is_some_and(|picker| picker.tab_id == *tab_id)
         {
           self.close_date_time_picker();
+        }
+        if self
+          .open_color_picker
+          .as_ref()
+          .is_some_and(|picker| picker.tab_id == *tab_id)
+        {
+          self.close_color_picker();
         }
         if self
           .open_file_picker
@@ -7698,6 +7760,58 @@ impl App {
           value: safe_value,
         });
         self.open_date_time_picker_rect = None;
+        request_redraw = true;
+      }
+    }
+
+    if let fastrender::ui::WorkerToUi::ColorPickerOpened {
+      tab_id,
+      input_node_id,
+      value,
+      anchor_css,
+    } = &msg
+    {
+      if self.browser_state.active_tab_id() == Some(*tab_id) {
+        let focus_before_open = self
+          .open_color_picker
+          .as_ref()
+          .map(|existing| existing.focus_before_open)
+          .unwrap_or_else(|| egui_focused_widget_id(&self.egui_ctx));
+
+        let mut anchor_points = self
+          .last_cursor_pos_points
+          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
+          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
+        if self.page_input_tab == Some(*tab_id) {
+          if let Some(mapping) = self.page_input_mapping {
+            if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(*anchor_css) {
+              anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+            }
+          }
+        }
+
+        let parse_byte = |hex: &str| u8::from_str_radix(hex, 16).ok();
+        let color = value
+          .strip_prefix('#')
+          .filter(|hex| hex.len() == 6)
+          .and_then(|hex| {
+            Some(egui::Color32::from_rgb(
+              parse_byte(&hex[0..2])?,
+              parse_byte(&hex[2..4])?,
+              parse_byte(&hex[4..6])?,
+            ))
+          })
+          .unwrap_or(egui::Color32::BLACK);
+
+        self.open_color_picker = Some(OpenColorPicker {
+          tab_id: *tab_id,
+          input_node_id: *input_node_id,
+          focus_before_open,
+          anchor_css: *anchor_css,
+          anchor_points,
+          color,
+        });
+        self.open_color_picker_rect = None;
         request_redraw = true;
       }
     }
@@ -10339,6 +10453,124 @@ impl App {
     }
   }
 
+  fn render_color_picker(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::UiToWorker;
+
+    let (tab_id, input_node_id, anchor_css, fallback_anchor_points) =
+      match self.open_color_picker.as_ref() {
+        Some(picker) => (
+          picker.tab_id,
+          picker.input_node_id,
+          picker.anchor_css,
+          picker.anchor_points,
+        ),
+        None => {
+          self.open_color_picker_rect = None;
+          return;
+        }
+      };
+
+    // When the popup first opens, force keyboard focus into it so keyboard-only workflows work
+    // without requiring an extra click.
+    let request_initial_focus = self.open_color_picker_rect.is_none();
+
+    let mut anchor_pos_points = fallback_anchor_points;
+    if let Some(mapping) = self.page_input_mapping {
+      if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
+        anchor_pos_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+      }
+    }
+
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      self.cancel_color_picker();
+      self.window.request_redraw();
+      return;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      self.cancel_color_picker();
+      self.window.request_redraw();
+      return;
+    }
+
+    enum Action {
+      Choose(egui::Color32),
+      Cancel,
+    }
+
+    let popup = egui::Area::new(egui::Id::new((
+      "fastr_color_picker_popup",
+      tab_id.0,
+      input_node_id,
+    )))
+    .order(egui::Order::Foreground)
+    .fixed_pos(anchor_pos_points)
+    .show(ctx, |ui| {
+      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+        let Some(picker) = self.open_color_picker.as_mut() else {
+          return None;
+        };
+
+        let mut action: Option<Action> = None;
+
+        // Preview + hex label.
+        let color = picker.color;
+        let hex = format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b());
+        ui.horizontal(|ui| {
+          let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), egui::Sense::hover());
+          ui.painter().rect_filled(rect, 2.0, color);
+          ui.monospace(hex);
+        });
+
+        // RGB sliders (simple in-app picker; avoids platform dialogs in CI).
+        let mut r = picker.color.r();
+        let mut g = picker.color.g();
+        let mut b = picker.color.b();
+        let r_resp = ui.add(egui::Slider::new(&mut r, 0..=255).text("R"));
+        let _ = ui.add(egui::Slider::new(&mut g, 0..=255).text("G"));
+        let _ = ui.add(egui::Slider::new(&mut b, 0..=255).text("B"));
+        if request_initial_focus {
+          r_resp.request_focus();
+        }
+        picker.color = egui::Color32::from_rgb(r, g, b);
+
+        ui.horizontal(|ui| {
+          if ui.button("OK").clicked() {
+            action = Some(Action::Choose(picker.color));
+          }
+          if ui.button("Cancel").clicked() {
+            action = Some(Action::Cancel);
+          }
+        });
+
+        action
+      });
+
+      (frame.response.rect, frame.inner)
+    });
+
+    let (popup_rect, action) = popup.inner;
+    self.open_color_picker_rect = Some(popup_rect);
+
+    match action {
+      Some(Action::Choose(color)) => {
+        let value = format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b());
+        self.send_worker_msg(UiToWorker::ColorPickerChoose {
+          tab_id,
+          input_node_id,
+          value,
+        });
+        self.close_color_picker();
+        self.window.request_redraw();
+      }
+      Some(Action::Cancel) => {
+        self.cancel_color_picker();
+        self.window.request_redraw();
+      }
+      None => {}
+    }
+  }
+
   fn render_file_picker(&mut self, ctx: &egui::Context) {
     use fastrender::ui::UiToWorker;
     use std::path::PathBuf;
@@ -10762,6 +10994,10 @@ impl App {
         }
         if self.open_date_time_picker.is_some() {
           self.cancel_date_time_picker();
+          self.window.request_redraw();
+        }
+        if self.open_color_picker.is_some() {
+          self.cancel_color_picker();
           self.window.request_redraw();
         }
         if self.open_file_picker.is_some() {
@@ -11541,6 +11777,34 @@ impl App {
           });
 
           self.cancel_date_time_picker();
+          self.window.request_redraw();
+          if clicked_input_control {
+            return;
+          }
+        }
+
+        if matches!(state, ElementState::Pressed) && self.open_color_picker.is_some() {
+          // If the picker popup is open, clicks inside it are handled by egui.
+          if self
+            .open_color_picker_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+
+          // Close the picker before processing the click so we don't require a second click to
+          // interact with the underlying page/chrome.
+          //
+          // Special-case: clicking the `<input>` control itself should typically just toggle the
+          // popup closed (don't immediately reopen it by forwarding the click to the page).
+          let clicked_input_control = self.open_color_picker.as_ref().is_some_and(|picker| {
+            self
+              .page_input_mapping
+              .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(picker.anchor_css))
+              .is_some_and(|rect_points| rect_points.contains(pos_points))
+          });
+
+          self.cancel_color_picker();
           self.window.request_redraw();
           if clicked_input_control {
             return;
@@ -14690,6 +14954,7 @@ impl App {
     );
     self.render_select_dropdown(&ctx);
     self.render_date_time_picker(&ctx);
+    self.render_color_picker(&ctx);
     self.render_file_picker(&ctx);
     session_dirty |= self.render_context_menu(&ctx);
     self.sync_hover_after_tab_change(&ctx);
