@@ -3461,9 +3461,9 @@ fn count_total_capturing_groups(
     if !class_stack.is_empty() {
       // Inside a character class: ignore `(`/`)` entirely, but track `[`/`]` balancing (nested only
       // in `/v` UnicodeSets mode) and the special-case "first `]` is literal" rule.
-      let top = class_stack
-        .last_mut()
-        .expect("class_stack is non-empty");
+      let Some(top) = class_stack.last_mut() else {
+        return Err(VmError::InvariantViolation("RegExp class stack unexpectedly empty").into());
+      };
 
       if u == (b'\\' as u16) {
         // Escapes inside classes consume one ClassAtom.
@@ -4213,7 +4213,12 @@ impl<'a> Parser<'a> {
       && self.units.get(self.idx + 2).copied() == Some(b']' as u16)
     {
       self.next(); // consume '\'
-      let esc = self.next().unwrap();
+      let Some(esc) = self.next() else {
+        return Err(RegExpSyntaxError {
+          message: "Unterminated character class",
+        }
+        .into());
+      };
       let item = match esc {
         x if x == (b'd' as u16) => CharClassItem::Digit { negated: false },
         x if x == (b'D' as u16) => CharClassItem::Digit { negated: true },
@@ -4221,7 +4226,12 @@ impl<'a> Parser<'a> {
         x if x == (b'W' as u16) => CharClassItem::Word { negated: true },
         x if x == (b's' as u16) => CharClassItem::Space { negated: false },
         x if x == (b'S' as u16) => CharClassItem::Space { negated: true },
-        _ => unreachable!("filtered by fast-path guard"),
+        _ => {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
       };
       let mut items: Vec<CharClassItem> = Vec::new();
       ctx.vec_try_push(&mut items, item)?;
@@ -4814,7 +4824,12 @@ impl<'a> Parser<'a> {
           && is_utf16_high_surrogate(other)
           && self.peek().is_some_and(is_utf16_low_surrogate)
         {
-          let low = self.next().unwrap();
+          let Some(low) = self.next() else {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          };
           return Ok(utf16_decode_surrogate_pair(other, low));
         }
         Ok(other as u32)
@@ -5646,7 +5661,7 @@ impl ProgramBuilder {
       // Patch the split's second branch to the start of the next alternative.
       let next_pc = self.insts.len();
       let Inst::Split(_, ref mut b) = self.insts[split_pc] else {
-        unreachable!();
+        return Err(VmError::InvariantViolation("expected Split instruction for alternation").into());
       };
       *b = next_pc;
     }
@@ -5654,7 +5669,7 @@ impl ProgramBuilder {
     let end = self.insts.len();
     for pc in end_jumps {
       let Inst::Jump(ref mut target) = self.insts[pc] else {
-        unreachable!();
+        return Err(VmError::InvariantViolation("expected Jump instruction for alternation").into());
       };
       *target = end;
     }
@@ -5823,7 +5838,7 @@ impl ProgramBuilder {
     self.emit(ctx, Inst::RepeatEnd { start: start_pc })?;
     let exit = self.insts.len();
     let Inst::RepeatStart { exit: ref mut e, .. } = self.insts[start_pc] else {
-      unreachable!();
+      return Err(VmError::InvariantViolation("expected RepeatStart instruction for quantifier").into());
     };
     *e = exit;
     Ok(())

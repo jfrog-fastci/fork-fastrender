@@ -681,7 +681,11 @@ impl<'vm> HirEvaluator<'vm> {
           hir_js::VarDeclKind::Const
           | hir_js::VarDeclKind::Using
           | hir_js::VarDeclKind::AwaitUsing => scope.env_create_immutable_binding(tdz_env, name.as_str())?,
-          _ => unreachable!("checked by lexical kind guard"),
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "unexpected VarDeclKind in for-in/of head TDZ environment creation",
+            ));
+          }
         }
       }
     }
@@ -1588,7 +1592,11 @@ impl<'vm> HirEvaluator<'vm> {
         match decl.kind {
           hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env, name.as_str())?,
           hir_js::VarDeclKind::Const => scope.env_create_immutable_binding(env, name.as_str())?,
-          _ => unreachable!(),
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "unexpected VarDeclKind in lexical declaration instantiation",
+            ));
+          }
         }
       }
     }
@@ -1917,7 +1925,11 @@ impl<'vm> HirEvaluator<'vm> {
                   hir_js::VarDeclKind::Const => {
                     scope.env_create_immutable_binding(loop_env, name.as_str())?;
                   }
-                  _ => unreachable!("checked in lexical_init match"),
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "unexpected VarDeclKind in lexical for-loop initialization",
+                    ));
+                  }
                 }
               }
             }
@@ -2864,7 +2876,11 @@ impl<'vm> HirEvaluator<'vm> {
               hir_js::VarDeclKind::Const => {
                 scope.env_create_immutable_binding(env_rec, name.as_str())?
               }
-              _ => unreachable!(),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "unexpected VarDeclKind in for-in/of TDZ binding creation",
+                ));
+              }
             }
           }
         }
@@ -7689,7 +7705,9 @@ impl<'vm> HirEvaluator<'vm> {
       let mut ctor_body_inner_func: Option<GcObject> = None;
       let ctor_body_func = if let Some(member) = ctor_member {
         let hir_js::ClassMemberKind::Constructor { body, .. } = &member.kind else {
-          unreachable!();
+          return Err(VmError::InvariantViolation(
+            "expected constructor member kind for class constructor",
+          ));
         };
         if let Some(body_id) = *body {
           // Allocate the compiled function object for the constructor body.

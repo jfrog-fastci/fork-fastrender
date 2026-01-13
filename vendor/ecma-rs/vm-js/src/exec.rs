@@ -12589,7 +12589,11 @@ impl<'a> Evaluator<'a> {
                 OperatorName::BitwiseAnd => a.bitwise_and(b)?,
                 OperatorName::BitwiseOr => a.bitwise_or(b)?,
                 OperatorName::BitwiseXor => a.bitwise_xor(b)?,
-                _ => unreachable!(),
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "unexpected operator in bitwise BigInt binary op",
+                  ));
+                }
               }
             };
             let out = rhs_scope.alloc_bigint(out)?;
@@ -12680,8 +12684,16 @@ impl<'a> Evaluator<'a> {
                     a.shr(shift)?
                   }
                 }
-                OperatorName::BitwiseUnsignedRightShift => unreachable!(),
-                _ => unreachable!(),
+                OperatorName::BitwiseUnsignedRightShift => {
+                  return Err(VmError::InvariantViolation(
+                    "unexpected unsigned right shift in BigInt shift op",
+                  ));
+                }
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "unexpected operator in BigInt shift op",
+                  ));
+                }
               }
             };
             let out = rhs_scope.alloc_bigint(out)?;
@@ -12710,7 +12722,11 @@ impl<'a> Evaluator<'a> {
             OperatorName::Subtraction => Value::Number(a - b),
             OperatorName::Division => Value::Number(a / b),
             OperatorName::Remainder => Value::Number(a % b),
-            _ => unreachable!(),
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "unexpected operator in numeric arithmetic binary op",
+              ));
+            }
           }),
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
             let out = {
@@ -12739,7 +12755,11 @@ impl<'a> Evaluator<'a> {
                   let (_, r) = a.div_mod_with_tick(b, &mut || self.tick())?;
                   r
                 }
-                _ => unreachable!(),
+                _ => {
+                  return Err(VmError::InvariantViolation(
+                    "unexpected operator in BigInt arithmetic binary op",
+                  ));
+                }
               }
             };
             let out = rhs_scope.alloc_bigint(out)?;
@@ -21195,7 +21215,9 @@ fn async_eval_expr_chain(
             Ok(AsyncEval::Suspend(suspend))
           }
         },
-        _ => unreachable!(),
+        _ => Err(VmError::InvariantViolation(
+          "unexpected unary operator in async await/yield evaluation",
+        )),
       }
     }
     Expr::Unary(unary) if unary.stx.operator == OperatorName::New => {
@@ -24237,7 +24259,11 @@ fn async_apply_binary_operator(
             OperatorName::BitwiseAnd => a & b,
             OperatorName::BitwiseOr => a | b,
             OperatorName::BitwiseXor => a ^ b,
-            _ => unreachable!(),
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "unexpected operator in bitwise int32 binary op",
+              ));
+            }
           };
           Ok(Value::Number(out as f64))
         }
@@ -24249,7 +24275,9 @@ fn async_apply_binary_operator(
               OperatorName::BitwiseAnd => a.bitwise_and(b),
               OperatorName::BitwiseOr => a.bitwise_or(b),
               OperatorName::BitwiseXor => a.bitwise_xor(b),
-              _ => unreachable!(),
+              _ => Err(VmError::InvariantViolation(
+                "unexpected operator in bitwise BigInt binary op",
+              )),
             }
           }
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -24289,7 +24317,9 @@ fn async_apply_binary_operator(
               let a = to_uint32(a);
               Ok(Value::Number((a >> shift) as f64))
             }
-            _ => unreachable!(),
+            _ => Err(VmError::InvariantViolation(
+              "unexpected operator in bitwise shift numeric op",
+            )),
           }
         }
         (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
@@ -24335,8 +24365,12 @@ fn async_apply_binary_operator(
                   a.shr(shift)
                 }
               }
-              OperatorName::BitwiseUnsignedRightShift => unreachable!(),
-              _ => unreachable!(),
+              OperatorName::BitwiseUnsignedRightShift => Err(VmError::InvariantViolation(
+                "unexpected unsigned right shift in BigInt shift op",
+              )),
+              _ => Err(VmError::InvariantViolation(
+                "unexpected operator in BigInt shift op",
+              )),
             }
           }
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -24363,7 +24397,11 @@ fn async_apply_binary_operator(
           OperatorName::Subtraction => Value::Number(a - b),
           OperatorName::Division => Value::Number(a / b),
           OperatorName::Remainder => Value::Number(a % b),
-          _ => unreachable!(),
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "unexpected operator in numeric arithmetic binary op",
+            ));
+          }
         }),
         (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
           let out = {
@@ -24388,7 +24426,9 @@ fn async_apply_binary_operator(
                 let (_, r) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
                 Ok(r)
               }
-              _ => unreachable!(),
+              _ => Err(VmError::InvariantViolation(
+                "unexpected operator in BigInt arithmetic binary op",
+              )),
             }
           }
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -30732,7 +30772,11 @@ fn gen_try_after_wrapped(
     if let Some(catch) = &stmt.catch {
       let (thrown_value, thrown_stack) = match result {
         Completion::Throw(thrown) => (thrown.value, thrown.stack),
-        _ => unreachable!(),
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "expected Throw completion for catch clause",
+          ));
+        }
       };
       crate::error_object::attach_stack_property_for_throw(scope, thrown_value, &thrown_stack);
       match gen_eval_catch(evaluator, scope, &catch.stx, thrown_value)? {
@@ -35475,7 +35519,9 @@ pub(crate) fn start_module_tla_evaluation(
         return match next {
           AsyncBodyResult::CompleteOk(_) => Ok(ModuleTlaStepResult::Completed),
           AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
-          AsyncBodyResult::Await { .. } => unreachable!(),
+          AsyncBodyResult::Await { .. } => Err(VmError::InvariantViolation(
+            "unexpected AsyncBodyResult::Await in non-await module TLA branch",
+          )),
         };
       };
 
@@ -35875,7 +35921,9 @@ pub(crate) fn run_module_async_start(
     });
     cont
       .as_mut()
-      .expect("just inserted")
+      .ok_or(VmError::InvariantViolation(
+        "module async continuation missing after creation",
+      ))?
       .env
       .set_source_info(source.clone(), 0, 0);
 
@@ -35890,7 +35938,9 @@ pub(crate) fn run_module_async_start(
       let mut vm_frame = vm.enter_frame(frame)?;
 
       let async_eval = {
-        let cont = cont.as_mut().expect("module async continuation missing");
+        let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
+          "module async continuation missing",
+        ))?;
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
           host,
@@ -35913,50 +35963,40 @@ pub(crate) fn run_module_async_start(
       };
 
       match async_eval {
-        (AsyncEval::Complete(completion), _this_at_suspend, _new_target_at_suspend) => {
-          match completion {
-            Completion::Normal(_) => {
-              // Completed without suspension: immediately tear down the continuation (it owns the
-              // module env roots).
-              let cont = cont.take().expect("module async continuation missing");
-              module_async_teardown_continuation(scope, cont);
-              Ok(ModuleAsyncStep::Completed)
-            }
-            Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
-              value: thrown.value,
-              stack: thrown.stack,
-            }),
-            Completion::Return(_) => Err(VmError::InvariantViolation(
-              "module evaluation produced Return completion (early errors should prevent this)",
-            )),
-            Completion::Break(..) => Err(VmError::InvariantViolation(
-              "module evaluation produced Break completion (early errors should prevent this)",
-            )),
-            Completion::Continue(..) => Err(VmError::InvariantViolation(
-              "module evaluation produced Continue completion (early errors should prevent this)",
-            )),
+        (AsyncEval::Complete(completion), _this_at_suspend, _new_target_at_suspend) => match completion {
+          Completion::Normal(_) => {
+            // Completed without suspension: immediately tear down the continuation (it owns the
+            // module env roots).
+            let cont = cont.take().ok_or(VmError::InvariantViolation(
+              "module async continuation missing",
+            ))?;
+            module_async_teardown_continuation(scope, cont);
+            Ok(ModuleAsyncStep::Completed)
           }
-        }
+          Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+            value: thrown.value,
+            stack: thrown.stack,
+          }),
+          Completion::Return(_) => Err(VmError::InvariantViolation(
+            "module evaluation produced Return completion (early errors should prevent this)",
+          )),
+          Completion::Break(..) => Err(VmError::InvariantViolation(
+            "module evaluation produced Break completion (early errors should prevent this)",
+          )),
+          Completion::Continue(..) => Err(VmError::InvariantViolation(
+            "module evaluation produced Continue completion (early errors should prevent this)",
+          )),
+        },
         (AsyncEval::Suspend(mut suspend), this_at_suspend, new_target_at_suspend) => {
           async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)?;
-          scope.heap_mut().set_root(
-            cont
-              .as_ref()
-              .expect("module async continuation missing")
-              .this_root,
-            this_at_suspend,
-          );
-          scope.heap_mut().set_root(
-            cont
-              .as_ref()
-              .expect("module async continuation missing")
-              .new_target_root,
-            new_target_at_suspend,
-          );
-          cont
-            .as_mut()
-            .expect("module async continuation missing")
-            .frames = suspend.frames;
+          {
+            let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
+              "module async continuation missing",
+            ))?;
+            scope.heap_mut().set_root(cont.this_root, this_at_suspend);
+            scope.heap_mut().set_root(cont.new_target_root, new_target_at_suspend);
+            cont.frames = suspend.frames;
+          }
 
           // `Await` uses `? PromiseResolve(%Promise%, value)`.
           let mut await_scope = scope.reborrow();
@@ -35971,12 +36011,16 @@ pub(crate) fn run_module_async_start(
           .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?;
           await_scope.push_root(awaited_promise)?;
           let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
-          cont
-            .as_mut()
-            .expect("module async continuation missing")
-            .awaited_promise_root = Some(awaited_root);
+          {
+            let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
+              "module async continuation missing",
+            ))?;
+            cont.awaited_promise_root = Some(awaited_root);
+          }
 
-          let continuation = cont.take().expect("module async continuation missing");
+          let continuation = cont.take().ok_or(VmError::InvariantViolation(
+            "module async continuation missing",
+          ))?;
           Ok(ModuleAsyncStep::Await {
             promise: awaited_promise,
             continuation,
@@ -36033,7 +36077,7 @@ pub(crate) fn run_module_async_resume(
 
   let source = cont
     .as_ref()
-    .expect("module async continuation missing")
+    .ok_or(VmError::InvariantViolation("module async continuation missing"))?
     .env
     .source()
     .clone();
@@ -36049,7 +36093,9 @@ pub(crate) fn run_module_async_resume(
     let mut vm_frame = vm.enter_frame(frame)?;
 
     let body_result = {
-      let cont = cont.as_mut().expect("module async continuation missing");
+      let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
+        "module async continuation missing",
+      ))?;
       let this = scope
         .heap()
         .get_root(cont.this_root)
@@ -36090,16 +36136,20 @@ pub(crate) fn run_module_async_resume(
 
     match body_result {
       AsyncBodyResult::CompleteOk(_) => {
-        let cont = cont.take().expect("module async continuation missing");
+        let cont = cont.take().ok_or(VmError::InvariantViolation(
+          "module async continuation missing",
+        ))?;
         module_async_teardown_continuation(scope, cont);
         Ok(ModuleAsyncStep::Completed)
       }
       AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
       AsyncBodyResult::Await { await_value, frames, .. } => {
-        cont
-          .as_mut()
-          .expect("module async continuation missing")
-          .frames = frames;
+        {
+          let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
+            "module async continuation missing",
+          ))?;
+          cont.frames = frames;
+        }
 
         let mut await_scope = scope.reborrow();
         await_scope.push_root(await_value)?;
@@ -36113,12 +36163,16 @@ pub(crate) fn run_module_async_resume(
         .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?;
         await_scope.push_root(awaited_promise)?;
         let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
-        cont
-          .as_mut()
-          .expect("module async continuation missing")
-          .awaited_promise_root = Some(awaited_root);
+        {
+          let cont = cont.as_mut().ok_or(VmError::InvariantViolation(
+            "module async continuation missing",
+          ))?;
+          cont.awaited_promise_root = Some(awaited_root);
+        }
 
-        let continuation = cont.take().expect("module async continuation missing");
+        let continuation = cont.take().ok_or(VmError::InvariantViolation(
+          "module async continuation missing",
+        ))?;
         Ok(ModuleAsyncStep::Await {
           promise: awaited_promise,
           continuation,

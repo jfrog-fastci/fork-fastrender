@@ -1688,9 +1688,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               private_name_decl_state
                 .insert(try_clone_string(name)?, PrivateNameDeclState::default());
               // Safe: just inserted.
-              private_name_decl_state
-                .get_mut(name)
-                .expect("private name state entry missing after insert")
+              private_name_decl_state.get_mut(name).ok_or(VmError::InvariantViolation(
+                "private name state entry missing after insert",
+              ))?
             }
           };
 
@@ -2983,4 +2983,33 @@ enum PatRole {
   Assignment,
   /// An assignment target pattern position (e.g. for-in/of LHS).
   AssignmentTarget,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{validate_top_level, EarlyErrorOptions};
+  use crate::VmError;
+  use diagnostics::Diagnostic;
+
+  #[test]
+  fn private_name_decl_state_insert_returns_syntax_error_instead_of_panicking() {
+    // Exercise the private-name declaration state insertion path in `visit_class_body` by
+    // introducing an illegal duplicate private name (static vs instance).
+    let program = parse_js::parse("class C { #x; static #x; }").expect("parse class with private names");
+    let mut tick = || Ok(());
+    let res = validate_top_level(&program.stx.body, EarlyErrorOptions::script(false), &mut tick);
+    match res {
+      Err(VmError::Syntax(diags)) => {
+        assert!(
+          !diags.is_empty(),
+          "expected at least one early error diagnostic for duplicate private name"
+        );
+        // Ensure diagnostics are well-formed (the exact message is not important here).
+        for d in diags {
+          let Diagnostic { .. } = d;
+        }
+      }
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
+  }
 }

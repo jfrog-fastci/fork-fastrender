@@ -2467,7 +2467,9 @@ impl Vm {
       }
       // Index is offset by 1 so `0` can represent "no script/module".
       let n = (idx as u32) + 1;
-      return Ok(NonZeroU32::new(n).expect("idx + 1 is non-zero"));
+      return NonZeroU32::new(n).ok_or(VmError::InvariantViolation(
+        "script/module token should be non-zero",
+      ));
     }
 
     // `Vec::push` can abort the process on allocator OOM; reserve fallibly first.

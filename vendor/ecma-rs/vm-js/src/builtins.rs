@@ -16746,12 +16746,15 @@ pub fn regexp_prototype_symbol_replace(
       args_vec.push(Value::Number(position as f64));
       args_vec.push(Value::String(input));
       if has_indices {
+        let indices_key = indices_key.ok_or(VmError::InvariantViolation(
+          "indices_key should be present when has_indices is true",
+        ))?;
         let indices = iter_scope.get_with_host_and_hooks(
           vm,
           host,
           hooks,
           result_obj,
-          indices_key.expect("indices_key should be present when has_indices is true"),
+          indices_key,
           Value::Object(result_obj),
         )?;
         iter_scope.push_root(indices)?;
@@ -16779,7 +16782,9 @@ pub fn regexp_prototype_symbol_replace(
       vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
       buf
     } else {
-      let replace_s = replace_string.expect("replacement string should be computed");
+      let replace_s = replace_string.ok_or(VmError::InvariantViolation(
+        "replacement string should be computed",
+      ))?;
       get_substitution_regexp(
         vm,
         &mut iter_scope,
@@ -29593,6 +29598,34 @@ mod regexp_prototype_tests {
           ok = (e === "boom");
         }
         ok
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_replace_passes_match_indices_and_supports_string_replacement() -> Result<(), VmError> {
+    // Regression coverage for RegExp.prototype[@@replace] internal invariants:
+    // - When the `d` (hasIndices) flag is enabled and a functional replacer is used, the `indices`
+    //   value must be retrieved and passed to the replacer.
+    // - When a string replacer is used, the replacement string must be available for
+    //   `GetSubstitution`.
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          let seen = false;
+          const out1 = (/a/d)[Symbol.replace]("aba", function (m, pos, s, indices) {
+            seen = Array.isArray(indices) &&
+              indices.length === 1 &&
+              indices[0][0] === pos &&
+              indices[0][1] === pos + m.length;
+            return "x";
+          });
+          const out2 = (/a/g)[Symbol.replace]("aba", "x");
+          return seen && out1 === "xba" && out2 === "xbx";
+        })()
       "#,
     )?;
     assert_eq!(v, Value::Bool(true));
