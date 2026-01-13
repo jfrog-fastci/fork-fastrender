@@ -145,6 +145,7 @@ mod ui_worker_viewport_limits;
 mod ui_worker_zoom;
 mod worker_harness;
 mod ui_text_control_pointer_selection;
+mod untrusted_worker_messages;
 
 // -----------------------------------------------------------------------------
 // Global integration test environment
