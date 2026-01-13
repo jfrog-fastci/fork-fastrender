@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 const UI_PERF_SMOKE_SCHEMA_VERSION: u32 = 1;
+const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
 
 const DEFAULT_OUTPUT_PATH: &str = "target/ui_perf_smoke.json";
 
@@ -37,6 +38,14 @@ struct Args {
   /// Write the JSON summary to this path (also printed to stdout).
   #[arg(long, default_value = DEFAULT_OUTPUT_PATH)]
   output: PathBuf,
+
+  /// Number of Rayon worker threads to use for rendering work.
+  ///
+  /// When provided, sets `RAYON_NUM_THREADS` before spawning the UI worker thread. When omitted and
+  /// `RAYON_NUM_THREADS` is not already set, this harness defaults to 1 for deterministic output
+  /// (CI-friendly).
+  #[arg(long, value_name = "N")]
+  rayon_threads: Option<usize>,
 
   /// Optional baseline JSON to compare against.
   #[arg(long)]
@@ -100,8 +109,21 @@ struct ScenarioSummary {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct RunConfig {
+  rayon_threads: usize,
+}
+
+impl Default for RunConfig {
+  fn default() -> Self {
+    Self { rayon_threads: 1 }
+  }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct UiPerfSmokeSummary {
   schema_version: u32,
+  #[serde(default)]
+  run_config: RunConfig,
   scenarios: Vec<ScenarioSummary>,
 }
 
@@ -129,11 +151,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   if args.fail_on_regression && args.baseline.is_none() {
     return Err("--fail-on-regression requires --baseline".into());
   }
+  if args.rayon_threads == Some(0) {
+    return Err("--rayon-threads must be greater than 0".into());
+  }
 
   if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
   }
-  ensure_single_thread_rayon_pool();
+  let rayon_threads = apply_rayon_threads_config(resolve_requested_rayon_threads(args.rayon_threads));
 
   let scenario_names = selected_scenarios(args.only.as_deref())?;
 
@@ -171,6 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   scenarios.sort_by(|a, b| a.name.cmp(&b.name));
   let summary = UiPerfSmokeSummary {
     schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
+    run_config: RunConfig { rayon_threads },
     scenarios: scenarios.clone(),
   };
 
@@ -258,16 +284,135 @@ fn resolve_fail_on_failure(args: &Args) -> bool {
   std::env::var_os("CI").is_some()
 }
 
-fn ensure_single_thread_rayon_pool() {
-  // Avoid mutating process environment variables. Instead, eagerly initialize Rayon's global pool.
-  //
-  // This matches the approach used by `browser --headless-smoke` so perf harness results are less
-  // sensitive to the host CPU count (and avoids the global-pool race panic).
-  if !std::env::var_os("RAYON_NUM_THREADS").is_some_and(|value| !value.is_empty()) {
-    let _ = rayon::ThreadPoolBuilder::new()
-      .num_threads(1)
-      .build_global();
+fn env_var_is_nonempty(key: &str) -> bool {
+  std::env::var_os(key).is_some_and(|value| !value.is_empty())
+}
+
+fn parse_env_threads() -> Option<usize> {
+  let raw = std::env::var(RAYON_NUM_THREADS_ENV).ok()?;
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
   }
+  raw.parse::<usize>().ok().filter(|v| *v > 0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RayonThreadsSource {
+  Cli,
+  Env,
+  HarnessDefault,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RayonThreadsDecision {
+  requested: Option<usize>,
+  source: RayonThreadsSource,
+}
+
+fn resolve_requested_rayon_threads(cli_value: Option<usize>) -> RayonThreadsDecision {
+  if let Some(value) = cli_value {
+    return RayonThreadsDecision {
+      requested: Some(value.max(1)),
+      source: RayonThreadsSource::Cli,
+    };
+  }
+
+  if let Some(env_threads) = parse_env_threads() {
+    return RayonThreadsDecision {
+      requested: Some(env_threads.max(1)),
+      source: RayonThreadsSource::Env,
+    };
+  }
+
+  RayonThreadsDecision {
+    requested: Some(1),
+    source: RayonThreadsSource::HarnessDefault,
+  }
+}
+
+fn apply_rayon_threads_config(decision: RayonThreadsDecision) -> usize {
+  let requested = decision.requested.unwrap_or(1).max(1);
+
+  // When explicitly requested via `--rayon-threads`, set the environment variable before spawning
+  // any workers or rendering. If Rayon has already initialized its global pool, this will be
+  // best-effort; we detect and warn below.
+  let should_set_env = match decision.source {
+    RayonThreadsSource::Cli => true,
+    RayonThreadsSource::HarnessDefault => !env_var_is_nonempty(RAYON_NUM_THREADS_ENV),
+    RayonThreadsSource::Env => false,
+  };
+  if should_set_env {
+    std::env::set_var(RAYON_NUM_THREADS_ENV, requested.to_string());
+  }
+
+  let outcome = init_rayon_global_pool_best_effort(requested);
+  if decision.source == RayonThreadsSource::Cli
+    && outcome.already_initialized
+    && outcome.effective != requested
+  {
+    eprintln!(
+      "warning: requested --rayon-threads {requested}, but Rayon global pool is already initialized with {} thread(s)",
+      outcome.effective
+    );
+  }
+  outcome.effective
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RayonInitOutcome {
+  effective: usize,
+  already_initialized: bool,
+}
+
+fn init_rayon_global_pool_best_effort(requested_threads: usize) -> RayonInitOutcome {
+  let requested_threads = requested_threads.max(1);
+  let mut threads = requested_threads;
+  let mut attempted: Vec<usize> = Vec::new();
+
+  loop {
+    attempted.push(threads);
+    match rayon::ThreadPoolBuilder::new()
+      .num_threads(threads)
+      .build_global()
+    {
+      Ok(()) => {
+        let effective = current_rayon_threads_fallback();
+        return RayonInitOutcome {
+          effective,
+          already_initialized: false,
+        };
+      }
+      Err(err) => {
+        if threads <= 1 {
+          let already_initialized = std::panic::catch_unwind(|| rayon::current_num_threads()).ok();
+          if let Some(effective) = already_initialized {
+            return RayonInitOutcome {
+              effective: effective.max(1),
+              already_initialized: true,
+            };
+          }
+          eprintln!(
+            "warning: failed to initialize Rayon global pool after trying {attempted:?}: {err}"
+          );
+          return RayonInitOutcome {
+            effective: 1,
+            already_initialized: false,
+          };
+        }
+
+        // If initialization fails due to OS thread-spawn limits, retry with a smaller pool.
+        threads = (threads / 2).max(1);
+      }
+    }
+  }
+}
+
+fn current_rayon_threads_fallback() -> usize {
+  std::panic::catch_unwind(|| rayon::current_num_threads())
+    .ok()
+    .unwrap_or(1)
+    .max(1)
 }
 
 fn selected_scenarios(only: Option<&[String]>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -965,5 +1110,30 @@ fn join_with_timeout(join: std::thread::JoinHandle<()>, timeout: Duration) -> Re
     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
       Err("UI worker join helper thread disconnected".to_string())
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use clap::Parser;
+
+  #[test]
+  fn json_includes_rayon_threads() {
+    let summary = UiPerfSmokeSummary {
+      schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
+      run_config: RunConfig { rayon_threads: 1 },
+      scenarios: Vec::new(),
+    };
+
+    let value = serde_json::to_value(&summary).expect("serialize JSON");
+    assert_eq!(value["run_config"]["rayon_threads"].as_u64(), Some(1));
+  }
+
+  #[test]
+  fn parses_rayon_threads_flag() {
+    let args = Args::try_parse_from(["ui_perf_smoke", "--rayon-threads", "1"])
+      .expect("parse args");
+    assert_eq!(args.rayon_threads, Some(1));
   }
 }
