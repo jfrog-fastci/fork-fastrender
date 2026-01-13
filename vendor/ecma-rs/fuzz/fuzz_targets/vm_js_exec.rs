@@ -107,7 +107,7 @@ fn wrapper_script(input: &str) -> String {
   }
   let mut s = String::new();
   if s
-    .try_reserve(256usize.saturating_add(quoted.len()))
+    .try_reserve(2048usize.saturating_add(quoted.len()))
     .is_err()
   {
     // Best-effort: if we can't allocate the wrapper, still return a valid script.
