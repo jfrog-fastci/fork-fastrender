@@ -1913,6 +1913,14 @@ assert.sameValue(other.$262, realm, 'new realm should install and return its own
 
 assert.sameValue(other.Object !== Object, true, 'Object constructor differs across realms');
 assert.sameValue(other.Symbol.for('x'), Symbol.for('x'), 'Symbol registry is shared across realms');
+assert.sameValue(other.Symbol.iterator, Symbol.iterator, 'well-known symbols are shared across realms');
+
+var obj = Reflect.construct(Object, [], other.Function);
+assert.sameValue(Object.getPrototypeOf(obj) === other.Function.prototype, true, 'Reflect.construct uses newTarget prototype');
+
+// `$262.createRealm` must work recursively from the new realm.
+var realm2 = realm.createRealm();
+assert.sameValue(realm2.global.Object !== other.Object, true, 'createRealm is recursive');
 "#,
         &cancel,
       )

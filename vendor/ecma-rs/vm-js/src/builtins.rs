@@ -563,27 +563,34 @@ pub fn class_constructor_construct(
 fn object_constructor_impl(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   args: &[Value],
+  new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
 
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  let mut host_state = ();
   match arg0 {
     Value::Undefined | Value::Null => {
-      let obj = scope.alloc_object()?;
-      scope
-        .heap_mut()
-        .object_set_prototype(obj, Some(intr.object_prototype()))?;
+      let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+        vm,
+        scope,
+        host,
+        hooks,
+        new_target,
+        intr.object_prototype(),
+        &[],
+        |scope| scope.alloc_object(),
+      )?;
       Ok(Value::Object(obj))
     }
     Value::Object(obj) => Ok(Value::Object(obj)),
     Value::String(_) => string_constructor_construct(
       vm,
       scope,
-      &mut host_state,
       host,
+      hooks,
       intr.string_constructor(),
       &[arg0],
       Value::Object(intr.string_constructor()),
@@ -591,8 +598,8 @@ fn object_constructor_impl(
     Value::Number(_) => number_constructor_construct(
       vm,
       scope,
-      &mut host_state,
       host,
+      hooks,
       intr.number_constructor(),
       &[arg0],
       Value::Object(intr.number_constructor()),
@@ -600,8 +607,8 @@ fn object_constructor_impl(
     Value::Bool(_) => boolean_constructor_construct(
       vm,
       scope,
-      &mut host_state,
       host,
+      hooks,
       intr.boolean_constructor(),
       &[arg0],
       Value::Object(intr.boolean_constructor()),
@@ -654,25 +661,26 @@ fn object_constructor_impl(
 pub fn object_constructor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  object_constructor_impl(vm, scope, host, args)
+  let intr = require_intrinsics(vm)?;
+  object_constructor_impl(vm, scope, host, hooks, args, Value::Object(intr.object_constructor()))
 }
 
 pub fn object_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
-  _new_target: Value,
+  new_target: Value,
 ) -> Result<Value, VmError> {
-  object_constructor_impl(vm, scope, host, args)
+  object_constructor_impl(vm, scope, host, hooks, args, new_target)
 }
 
 pub fn object_define_property(
