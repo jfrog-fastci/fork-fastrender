@@ -494,6 +494,12 @@ Repo reality note:
   - If you are accepting SHM from an **untrusted** peer, treat `SealStatus::Unsupported` as a
     protocol violation (or redesign so the browser allocates + seals the buffer before handing it to
     the renderer).
+- `src/ipc/validate.rs` provides hardened, reusable validation helpers for untrusted shared-memory FDs
+  (Linux-focused):
+  - `validate_shm_fd(...)` checks fd type (`S_IFREG`), size bounds, and (on Linux) requires
+    `F_SEAL_SHRINK|F_SEAL_GROW` and rejects non-sealable fds (fails closed).
+  - `rgba_len(width, height)` computes expected RGBA8 sizes with checked arithmetic and enforces the
+    pixmap hard cap (`MAX_PIXMAP_BYTES`).
 
 ### Frame pixels via FD attachment (`FrameReady`)
 
@@ -518,10 +524,14 @@ Receiver invariants (browser-side):
    - require `expected_len == byte_len` (or, if you intentionally allow padding, require
      `expected_len <= byte_len` and clearly document the padding rule)
 3. **Hard caps:** `expected_len` must be <=:
-   - the global SHM cap (`shm::MAX_SHM_SIZE`), and
-   - your compositor/pixmap policy cap (e.g. `MAX_PIXMAP_BYTES`)
-4. **FD validation before `mmap`:** `fstat` the FD and require `st_size == expected_len`, then map
-   only that length.
+    - the global SHM cap (`shm::MAX_SHM_SIZE`), and
+    - your compositor/pixmap policy cap (e.g. `MAX_PIXMAP_BYTES`)
+4. **FD validation before `mmap`:** validate the FD is the expected type and size (and, on Linux,
+   that it is sealed) before mapping:
+   - `fstat` the FD and require `st_size == expected_len`, then map only that length.
+   - Prefer using the shared helper `validate_shm_fd(...)` in
+     [`src/ipc/validate.rs`](../src/ipc/validate.rs) (Linux-focused) rather than re-implementing these
+     checks.
 5. **Prefer read-only mapping:** the browser should map with `PROT_READ` unless there is a strong
    reason to allow writes.
 
