@@ -194,6 +194,7 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
     (alias: `webgpu`), `all` (aliases: `auto`, `default`).
 - `FASTR_BROWSER_DOWNLOAD_DIR=/path/to/dir` – override the download directory used by the windowed browser UI.
   - CLI equivalent: `browser --download-dir /path/to/dir`.
+  - Legacy alias (mainly for older harnesses/tests): `FASTR_DOWNLOAD_DIR=/path/to/dir`.
 - `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` – override where the browser session file is stored.
   - CLI equivalent: `browser --session-path /path/to/fastrender_session.json` (takes precedence over the env var).
 - `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/bookmarks.json` – override the bookmarks persistence file path (JSON).

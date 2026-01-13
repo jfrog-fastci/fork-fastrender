@@ -128,6 +128,8 @@ The `browser` binary also supports an in-process, best-effort address-space cap 
 
 The download directory can be configured via `browser --download-dir <path>` or
 `FASTR_BROWSER_DOWNLOAD_DIR=<path>`.
+Legacy note: some older test setups may still use `FASTR_DOWNLOAD_DIR` as an alias; prefer
+`FASTR_BROWSER_DOWNLOAD_DIR` in new code/scripts.
 
 Downloaded files are saved into a per-browser download directory resolved in this order:
 
@@ -1033,7 +1035,7 @@ FastRender includes several internal `about:` pages implemented in
 [`src/ui/about_pages.rs`](../src/ui/about_pages.rs).
 
 See [`docs/about_pages.md`](about_pages.md) for the canonical list and per-page expectations (notably
-`about:processes` for multiprocess/chrome debugging).
+`about:settings` for runtime paths and `about:processes` for multiprocess/chrome debugging).
 
 Quick note: `about:processes` is a *multiprocess/process-assignment placeholder* page — today it
 shows a best-effort snapshot of open tabs (and a derived Site column), and will eventually show
