@@ -724,6 +724,57 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn d_o_m_token_list_supports<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "token",
+        ty: IdlType::String(StringType::DomString),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "DOMTokenList",
+      "supports",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn d_o_m_token_list_toggle<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1517,6 +1568,49 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_get_bounding_client_rect<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Element",
+      "getBoundingClientRect",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn element_matches<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1721,6 +1815,63 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_replace_with<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "nodes",
+        ty: IdlType::Union(vec![
+          IdlType::Named(NamedType {
+            name: "Node".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          IdlType::String(StringType::DomString),
+        ]),
+        optional: false,
+        variadic: true,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Element",
+      "replaceWith",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn element_set_attribute<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1881,6 +2032,42 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_get_attribute_client_height<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "clientHeight")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_client_width<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "clientWidth")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn element_get_attribute_id<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1936,6 +2123,284 @@ pub mod window {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "Element", "id", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_next_element_sibling<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "nextElementSibling")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_offset_height<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "offsetHeight")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_offset_left<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "offsetLeft")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_offset_top<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "offsetTop")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_offset_width<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "offsetWidth")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_previous_element_sibling<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "previousElementSibling")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_scroll_height<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "scrollHeight")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_scroll_left<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "scrollLeft")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute_scroll_left<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static SCHEMAS: OnceLock<Vec<ArgumentSchema>> = OnceLock::new();
+    let schemas = SCHEMAS.get_or_init(|| {
+      vec![ArgumentSchema {
+        name: "value",
+        ty: IdlType::Numeric(NumericType::UnrestrictedDouble),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]
+    });
+    let ctx = type_context();
+    let converted = convert_arguments(rt, args, schemas, ctx)?;
+    let value = converted
+      .into_iter()
+      .next()
+      .unwrap_or(ConvertedValue::Undefined);
+    let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
+    host.set_attribute(rt, Some(this), "Element", "scrollLeft", converted)?;
+    Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_scroll_top<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "scrollTop")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute_scroll_top<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static SCHEMAS: OnceLock<Vec<ArgumentSchema>> = OnceLock::new();
+    let schemas = SCHEMAS.get_or_init(|| {
+      vec![ArgumentSchema {
+        name: "value",
+        ty: IdlType::Numeric(NumericType::UnrestrictedDouble),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]
+    });
+    let ctx = type_context();
+    let converted = convert_arguments(rt, args, schemas, ctx)?;
+    let value = converted
+      .into_iter()
+      .next()
+      .unwrap_or(ConvertedValue::Undefined);
+    let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
+    host.set_attribute(rt, Some(this), "Element", "scrollTop", converted)?;
+    Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_scroll_width<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "scrollWidth")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_style<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "style")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -2754,6 +3219,24 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn node_get_attribute_parent_element<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Node", "parentElement")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn node_get_attribute_parent_node<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -3281,24 +3764,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -3336,6 +3801,24 @@ pub mod window {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -4456,6 +4939,8 @@ pub mod window {
     rt.define_method(proto_d_o_m_token_list, "remove", func)?;
     let func = rt.create_function("replace", 2, d_o_m_token_list_replace::<Host, R>)?;
     rt.define_method(proto_d_o_m_token_list, "replace", func)?;
+    let func = rt.create_function("supports", 1, d_o_m_token_list_supports::<Host, R>)?;
+    rt.define_method(proto_d_o_m_token_list, "supports", func)?;
     let func = rt.create_function("toggle", 1, d_o_m_token_list_toggle::<Host, R>)?;
     rt.define_method(proto_d_o_m_token_list, "toggle", func)?;
     let func = rt.create_function("values", 0, d_o_m_token_list_values::<Host, R>)?;
@@ -4535,6 +5020,12 @@ pub mod window {
     rt.define_method(proto_element, "closest", func)?;
     let func = rt.create_function("getAttribute", 1, element_get_attribute::<Host, R>)?;
     rt.define_method(proto_element, "getAttribute", func)?;
+    let func = rt.create_function(
+      "getBoundingClientRect",
+      0,
+      element_get_bounding_client_rect::<Host, R>,
+    )?;
+    rt.define_method(proto_element, "getBoundingClientRect", func)?;
     let func = rt.create_function("matches", 1, element_matches::<Host, R>)?;
     rt.define_method(proto_element, "matches", func)?;
     let func = rt.create_function("querySelector", 1, element_query_selector::<Host, R>)?;
@@ -4543,6 +5034,8 @@ pub mod window {
     rt.define_method(proto_element, "querySelectorAll", func)?;
     let func = rt.create_function("removeAttribute", 1, element_remove_attribute::<Host, R>)?;
     rt.define_method(proto_element, "removeAttribute", func)?;
+    let func = rt.create_function("replaceWith", 0, element_replace_with::<Host, R>)?;
+    rt.define_method(proto_element, "replaceWith", func)?;
     let func = rt.create_function("setAttribute", 2, element_set_attribute::<Host, R>)?;
     rt.define_method(proto_element, "setAttribute", func)?;
     let get = rt.create_function("get children", 0, element_get_attribute_children::<Host, R>)?;
@@ -4566,9 +5059,104 @@ pub mod window {
       element_set_attribute_class_name::<Host, R>,
     )?;
     rt.define_attribute_accessor(proto_element, "className", get, set)?;
+    let get = rt.create_function(
+      "get clientHeight",
+      0,
+      element_get_attribute_client_height::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "clientHeight", get, set)?;
+    let get = rt.create_function(
+      "get clientWidth",
+      0,
+      element_get_attribute_client_width::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "clientWidth", get, set)?;
     let get = rt.create_function("get id", 0, element_get_attribute_id::<Host, R>)?;
     let set = rt.create_function("set id", 1, element_set_attribute_id::<Host, R>)?;
     rt.define_attribute_accessor(proto_element, "id", get, set)?;
+    let get = rt.create_function(
+      "get nextElementSibling",
+      0,
+      element_get_attribute_next_element_sibling::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "nextElementSibling", get, set)?;
+    let get = rt.create_function(
+      "get offsetHeight",
+      0,
+      element_get_attribute_offset_height::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "offsetHeight", get, set)?;
+    let get = rt.create_function(
+      "get offsetLeft",
+      0,
+      element_get_attribute_offset_left::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "offsetLeft", get, set)?;
+    let get = rt.create_function(
+      "get offsetTop",
+      0,
+      element_get_attribute_offset_top::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "offsetTop", get, set)?;
+    let get = rt.create_function(
+      "get offsetWidth",
+      0,
+      element_get_attribute_offset_width::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "offsetWidth", get, set)?;
+    let get = rt.create_function(
+      "get previousElementSibling",
+      0,
+      element_get_attribute_previous_element_sibling::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "previousElementSibling", get, set)?;
+    let get = rt.create_function(
+      "get scrollHeight",
+      0,
+      element_get_attribute_scroll_height::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "scrollHeight", get, set)?;
+    let get = rt.create_function(
+      "get scrollLeft",
+      0,
+      element_get_attribute_scroll_left::<Host, R>,
+    )?;
+    let set = rt.create_function(
+      "set scrollLeft",
+      1,
+      element_set_attribute_scroll_left::<Host, R>,
+    )?;
+    rt.define_attribute_accessor(proto_element, "scrollLeft", get, set)?;
+    let get = rt.create_function(
+      "get scrollTop",
+      0,
+      element_get_attribute_scroll_top::<Host, R>,
+    )?;
+    let set = rt.create_function(
+      "set scrollTop",
+      1,
+      element_set_attribute_scroll_top::<Host, R>,
+    )?;
+    rt.define_attribute_accessor(proto_element, "scrollTop", get, set)?;
+    let get = rt.create_function(
+      "get scrollWidth",
+      0,
+      element_get_attribute_scroll_width::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "scrollWidth", get, set)?;
+    let get = rt.create_function("get style", 0, element_get_attribute_style::<Host, R>)?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_element, "style", get, set)?;
     let get = rt.create_function("get tagName", 0, element_get_attribute_tag_name::<Host, R>)?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_element, "tagName", get, set)?;
@@ -4644,6 +5232,13 @@ pub mod window {
     let get = rt.create_function("get nodeType", 0, node_get_attribute_node_type::<Host, R>)?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_node, "nodeType", get, set)?;
+    let get = rt.create_function(
+      "get parentElement",
+      0,
+      node_get_attribute_parent_element::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_node, "parentElement", get, set)?;
     let get = rt.create_function(
       "get parentNode",
       0,
@@ -5658,24 +6253,6 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt_is_object::<Host, R>(rt, this) {
-      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -5713,6 +6290,24 @@ pub mod worker {
     let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]

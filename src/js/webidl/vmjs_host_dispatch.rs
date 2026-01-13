@@ -4461,6 +4461,83 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
         }
       }
+      ("Element", "replaceWith", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+
+        // 1) If receiver has no parent, return undefined.
+        let parent = self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.parent(node_id))))?;
+        let Some(parent_id) = (match parent {
+          Ok(parent) => parent,
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            return Err(throw_dom_error(scope, class, err));
+          }
+        }) else {
+          return Ok(Value::Undefined);
+        };
+
+        enum ReplaceWithItem {
+          Node(NodeId),
+          Text(String),
+        }
+
+        // 2) Convert args: (Node or DOMString)...
+        let mut items: Vec<ReplaceWithItem> = Vec::with_capacity(args.len());
+        for &arg in args {
+          match require_dom_platform_mut(vm)?.require_node_id(scope.heap(), arg) {
+            Ok(id) => items.push(ReplaceWithItem::Node(id)),
+            Err(VmError::TypeError("Illegal invocation")) => {
+              let text = match arg {
+                Value::String(_) => js_string_to_rust_string(scope, arg)?,
+                other => {
+                  let s = scope.heap_mut().to_string(other)?;
+                  scope.heap().get_string(s)?.to_utf8_lossy()
+                }
+              };
+              items.push(ReplaceWithItem::Text(text));
+            }
+            Err(err) => return Err(err),
+          }
+        }
+
+        // 3) If args are empty, remove receiver from its parent.
+        // 4) Otherwise, build a DocumentFragment, append converted nodes, and replace receiver with
+        //    the fragment (DocumentFragment replacement splices its children).
+        let result = self.with_dom_host(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let generation = dom.mutation_generation();
+            let result: Result<(), DomError> = (|| {
+              if items.is_empty() {
+                dom.remove_child(parent_id, node_id)?;
+                return Ok(());
+              }
+
+              let fragment = dom.create_document_fragment();
+              for item in &items {
+                let child_id = match item {
+                  ReplaceWithItem::Node(id) => *id,
+                  ReplaceWithItem::Text(text) => dom.create_text(text),
+                };
+                dom.append_child(fragment, child_id)?;
+              }
+
+              dom.replace_child(parent_id, fragment, node_id)?;
+              Ok(())
+            })();
+
+            let changed = dom.mutation_generation() != generation;
+            (result, changed)
+          }))
+        })?;
+
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => {
+            let class = self.dom_exception_class_for_realm(vm, scope)?;
+            Err(throw_dom_error(scope, class, err))
+          }
+        }
+      }
 
       ("Window", "alert", _) => Ok(Value::Undefined),
       ("Window", "queueMicrotask", 0) => {
@@ -4545,6 +4622,49 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod element_replace_with_tests {
+  use super::*;
+  use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
+  use crate::js::window_timers::VmJsEventLoopHooks;
+  use crate::js::{DocumentHostState, WindowHostState};
+  use vm_js::Value;
+
+  #[test]
+  fn element_replace_with_inserts_text_and_node_in_order() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      r#"
+        (() => {
+          document.body.innerHTML = '<div id="root"><span id="a"></span></div>';
+          document.getElementById('a').replaceWith('x', document.createElement('b'));
+          return document.getElementById('a') === null
+            && document.getElementById('root').innerHTML === 'x<b></b>';
+        })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
   }
 }
 

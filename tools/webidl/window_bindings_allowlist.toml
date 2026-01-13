@@ -94,6 +94,7 @@ operations = [
   "getBoundingClientRect",
   "querySelector",
   "querySelectorAll",
+  "replaceWith",
 ]
 
 [[interface]]

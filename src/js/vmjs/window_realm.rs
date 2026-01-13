@@ -6204,6 +6204,7 @@ fn history_state_change_native(
       read_only_data_desc(Value::Number(history_len as f64)),
     )?;
   }
+  }
 
   Ok(Value::Undefined)
 }
