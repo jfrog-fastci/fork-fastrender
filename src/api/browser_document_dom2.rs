@@ -2711,7 +2711,10 @@ impl BrowserDocumentDom2 {
           if tag_name.eq_ignore_ascii_case("input") {
             let ty = attributes
               .iter()
-              .find(|attr| attr.local_name.eq_ignore_ascii_case("type"))
+              .find(|attr| {
+                attr.namespace == crate::dom2::NULL_NAMESPACE
+                  && attr.local_name.eq_ignore_ascii_case("type")
+              })
               .map(|attr| attr.value.as_str())
               .unwrap_or("text");
             !(ty.eq_ignore_ascii_case("hidden")
