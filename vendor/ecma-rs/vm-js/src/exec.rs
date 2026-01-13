@@ -7965,11 +7965,13 @@ impl<'a> Evaluator<'a> {
 
     let saved_this = self.this;
     let saved_new_target = self.new_target;
+    let saved_home_object = self.home_object;
     let saved_lex = self.env.lexical_env;
     let saved_var_env = self.env.var_env();
 
     self.this = Value::Object(receiver);
     self.new_target = Value::Undefined;
+    self.home_object = Some(receiver);
 
     let var_env = block_scope.env_create(Some(saved_lex))?;
     let body_lex = block_scope.env_create(Some(var_env))?;
@@ -7986,6 +7988,7 @@ impl<'a> Evaluator<'a> {
     self.env.set_var_env(saved_var_env);
     self.this = saved_this;
     self.new_target = saved_new_target;
+    self.home_object = saved_home_object;
 
     match res? {
       Completion::Normal(_) => Ok(()),
@@ -8019,8 +8022,10 @@ impl<'a> Evaluator<'a> {
 
     let saved_this = self.this;
     let saved_new_target = self.new_target;
+    let saved_home_object = self.home_object;
     self.this = Value::Object(receiver);
     self.new_target = Value::Undefined;
+    self.home_object = Some(receiver);
 
     let res: Result<(), VmError> = (|| {
       let value = match init {
@@ -8047,6 +8052,7 @@ impl<'a> Evaluator<'a> {
 
     self.this = saved_this;
     self.new_target = saved_new_target;
+    self.home_object = saved_home_object;
     res
   }
 
@@ -10778,6 +10784,11 @@ impl<'a> Evaluator<'a> {
                 member_scope
                   .heap_mut()
                   .set_function_home_object(func_obj, self.home_object)?;
+              } else {
+                // Object literal methods use the object itself as their `[[HomeObject]]`.
+                member_scope
+                  .heap_mut()
+                  .set_function_home_object(func_obj, Some(obj))?;
               }
               member_scope.push_root(Value::Object(func_obj))?;
 
@@ -10871,6 +10882,11 @@ impl<'a> Evaluator<'a> {
                 member_scope
                   .heap_mut()
                   .set_function_home_object(func_obj, self.home_object)?;
+              } else {
+                // Object literal accessors use the object itself as their `[[HomeObject]]`.
+                member_scope
+                  .heap_mut()
+                  .set_function_home_object(func_obj, Some(obj))?;
               }
               member_scope.push_root(Value::Object(func_obj))?;
               crate::function_properties::set_function_name(
@@ -10972,6 +10988,11 @@ impl<'a> Evaluator<'a> {
                 member_scope
                   .heap_mut()
                   .set_function_home_object(func_obj, self.home_object)?;
+              } else {
+                // Object literal accessors use the object itself as their `[[HomeObject]]`.
+                member_scope
+                  .heap_mut()
+                  .set_function_home_object(func_obj, Some(obj))?;
               }
               member_scope.push_root(Value::Object(func_obj))?;
               crate::function_properties::set_function_name(
@@ -14013,6 +14034,7 @@ enum AsyncFrame {
     func_root: RootId,
     saved_this_root: RootId,
     saved_new_target_root: RootId,
+    saved_home_object_root: RootId,
     saved_lex: GcEnv,
     saved_var_env: VarEnv,
   },
@@ -14623,11 +14645,13 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
       func_root,
       saved_this_root,
       saved_new_target_root,
+      saved_home_object_root,
       ..
     } => {
       heap.remove_root(*func_root);
       heap.remove_root(*saved_this_root);
       heap.remove_root(*saved_new_target_root);
+      heap.remove_root(*saved_home_object_root);
     }
     AsyncFrame::CallComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::BinaryAfterRight { left_root, .. } => heap.remove_root(*left_root),
@@ -18129,18 +18153,26 @@ fn async_eval_class_static_blocks_from(
 
     let saved_this = evaluator.this;
     let saved_new_target = evaluator.new_target;
+    let saved_home_object_value = evaluator
+      .home_object
+      .map(Value::Object)
+      .unwrap_or(Value::Undefined);
     let saved_lex = evaluator.env.lexical_env;
     let saved_var_env = evaluator.env.var_env();
 
     // Root the saved values so they remain GC-safe even if we suspend (the async continuation's
-    // `this_root` / `new_target_root` will be updated to the block's overridden values).
+    // `this_root` / `new_target_root` / `home_object_root` will be updated to the block's
+    // overridden values).
     block_scope.push_root(saved_this)?;
     block_scope.push_root(saved_new_target)?;
+    block_scope.push_root(saved_home_object_value)?;
     let saved_this_root = block_scope.heap_mut().add_root(saved_this)?;
     let saved_new_target_root = block_scope.heap_mut().add_root(saved_new_target)?;
+    let saved_home_object_root = block_scope.heap_mut().add_root(saved_home_object_value)?;
 
     evaluator.this = Value::Object(func_obj);
     evaluator.new_target = Value::Undefined;
+    evaluator.home_object = Some(func_obj);
 
     let var_env = block_scope.env_create(Some(saved_lex))?;
     let body_lex = block_scope.env_create(Some(var_env))?;
@@ -18162,8 +18194,13 @@ fn async_eval_class_static_blocks_from(
         evaluator.env.set_var_env(saved_var_env);
         evaluator.this = saved_this;
         evaluator.new_target = saved_new_target;
+        evaluator.home_object = match saved_home_object_value {
+          Value::Object(o) => Some(o),
+          _ => None,
+        };
         block_scope.heap_mut().remove_root(saved_this_root);
         block_scope.heap_mut().remove_root(saved_new_target_root);
+        block_scope.heap_mut().remove_root(saved_home_object_root);
 
         match completion {
           Completion::Normal(_) => continue,
@@ -18201,6 +18238,7 @@ fn async_eval_class_static_blocks_from(
             func_root,
             saved_this_root,
             saved_new_target_root,
+            saved_home_object_root,
             saved_lex,
             saved_var_env,
           },
@@ -18217,8 +18255,13 @@ fn async_eval_class_static_blocks_from(
           evaluator.env.set_var_env(saved_var_env);
           evaluator.this = saved_this;
           evaluator.new_target = saved_new_target;
+          evaluator.home_object = match saved_home_object_value {
+            Value::Object(o) => Some(o),
+            _ => None,
+          };
           block_scope.heap_mut().remove_root(saved_this_root);
           block_scope.heap_mut().remove_root(saved_new_target_root);
+          block_scope.heap_mut().remove_root(saved_home_object_root);
           return Err(err);
         }
         return Ok(AsyncEval::Suspend(suspend));
@@ -18231,8 +18274,13 @@ fn async_eval_class_static_blocks_from(
         evaluator.env.set_var_env(saved_var_env);
         evaluator.this = saved_this;
         evaluator.new_target = saved_new_target;
+        evaluator.home_object = match saved_home_object_value {
+          Value::Object(o) => Some(o),
+          _ => None,
+        };
         block_scope.heap_mut().remove_root(saved_this_root);
         block_scope.heap_mut().remove_root(saved_new_target_root);
+        block_scope.heap_mut().remove_root(saved_home_object_root);
         return Err(err);
       }
     }
@@ -21973,6 +22021,11 @@ fn async_eval_lit_obj_apply_valued_member(
         member_scope
           .heap_mut()
           .set_function_home_object(func_obj, evaluator.home_object)?;
+      } else {
+        // Object literal methods use the object itself as their `[[HomeObject]]`.
+        member_scope
+          .heap_mut()
+          .set_function_home_object(func_obj, Some(obj))?;
       }
       member_scope.push_root(Value::Object(func_obj))?;
 
@@ -22068,6 +22121,11 @@ fn async_eval_lit_obj_apply_valued_member(
         member_scope
           .heap_mut()
           .set_function_home_object(func_obj, evaluator.home_object)?;
+      } else {
+        // Object literal accessors use the object itself as their `[[HomeObject]]`.
+        member_scope
+          .heap_mut()
+          .set_function_home_object(func_obj, Some(obj))?;
       }
       member_scope.push_root(Value::Object(func_obj))?;
 
@@ -22175,6 +22233,11 @@ fn async_eval_lit_obj_apply_valued_member(
         member_scope
           .heap_mut()
           .set_function_home_object(func_obj, evaluator.home_object)?;
+      } else {
+        // Object literal accessors use the object itself as their `[[HomeObject]]`.
+        member_scope
+          .heap_mut()
+          .set_function_home_object(func_obj, Some(obj))?;
       }
       member_scope.push_root(Value::Object(func_obj))?;
 
@@ -26306,6 +26369,7 @@ fn async_resume_from_frames(
         func_root,
         saved_this_root,
         saved_new_target_root,
+        saved_home_object_root,
         saved_lex,
         saved_var_env,
       } => match state {
@@ -26327,16 +26391,25 @@ fn async_resume_from_frames(
               .ok_or(VmError::InvariantViolation(
                 "missing class static block saved new.target root",
               ))?;
+          let saved_home_object_value =
+            scope
+              .heap()
+              .get_root(saved_home_object_root)
+              .ok_or(VmError::InvariantViolation(
+                "missing class static block saved home object root",
+              ))?;
 
           // Root the restored values for the duration of this resumption segment. The async
           // continuation's `this_root` / `new_target_root` will be updated only after
           // `async_resume_from_frames` returns, so ensure GC cannot collect these values while class
           // evaluation continues.
-          if let Err(err) = scope.push_roots(&[saved_this, saved_new_target]) {
+          if let Err(err) = scope.push_roots(&[saved_this, saved_new_target, saved_home_object_value])
+          {
             // Best-effort cleanup: this frame owns persistent roots that won't be torn down by the
             // async frame drop guard after we've popped it.
             scope.heap_mut().remove_root(saved_this_root);
             scope.heap_mut().remove_root(saved_new_target_root);
+            scope.heap_mut().remove_root(saved_home_object_root);
             scope.heap_mut().remove_root(func_root);
             return Err(err);
           }
@@ -26345,8 +26418,13 @@ fn async_resume_from_frames(
           evaluator.env.set_var_env(saved_var_env);
           evaluator.this = saved_this;
           evaluator.new_target = saved_new_target;
+          evaluator.home_object = match saved_home_object_value {
+            Value::Object(o) => Some(o),
+            _ => None,
+          };
           scope.heap_mut().remove_root(saved_this_root);
           scope.heap_mut().remove_root(saved_new_target_root);
+          scope.heap_mut().remove_root(saved_home_object_root);
 
           match completion {
             Completion::Normal(_) => match async_eval_class_static_blocks_from(
