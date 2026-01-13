@@ -3,9 +3,13 @@
 This doc describes the **current intended sandbox boundary** for the Windows *renderer* process.
 It is written to prevent “small refactors” from accidentally weakening isolation.
 
-Implementation lives in `crates/win-sandbox/` (Win32 wrappers for:
-AppContainer, restricted tokens + Integrity Levels, Job objects, and extended process creation via
-`STARTUPINFOEXW`).
+Code map (repo reality):
+
+- High-level renderer spawn sandboxing:
+  - `src/sandbox/windows.rs` (`spawn_sandboxed(...)`)
+  - `src/sandbox/windows/appcontainer.rs` (dynamic loader for AppContainer APIs in `userenv.dll`)
+- Reusable Win32 wrappers + tests (not yet fully wired into the renderer spawner):
+  - `crates/win-sandbox/` (`Job`, AppContainer SID helpers, mitigation policy builder + verifier)
 
 ## Threat model (renderer on Windows)
 
@@ -37,7 +41,7 @@ Non-goals (handled elsewhere, or inherently “hard” to fully prevent):
 The Windows renderer sandbox is **defense-in-depth**, layered as:
 
 1. **AppContainer token** (preferred): no capabilities → blocks network + most filesystem/registry.
-2. **Job object limits**: lifetime + process-count + optional memory ceiling.
+2. **Job object limits**: lifetime + process-count (and optional memory ceiling, when enabled).
 3. **CreateProcess handle allowlist**: only explicitly-approved handles are inherited.
 4. **Process mitigation policies**: reduce kernel / Win32 API attack surface.
 5. **Fallback mode** if AppContainer cannot be used: restricted token + Low IL (weaker; see below).
@@ -73,7 +77,8 @@ In particular:
 
 ### Policy: no capabilities
 
-We intentionally create the renderer AppContainer with:
+We intentionally create the renderer AppContainer with **zero capabilities** (see
+`src/sandbox/windows.rs`):
 
 - `SECURITY_CAPABILITIES.CapabilityCount = 0`
 - `SECURITY_CAPABILITIES.Capabilities = NULL`
@@ -105,7 +110,8 @@ lifetime and resource usage.
 
 ### Limits we set
 
-We configure the renderer Job object with `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` to enforce:
+We configure the renderer Job object with `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` to enforce (see
+`src/sandbox/windows.rs::JobObject::apply_limits` and `crates/win-sandbox/src/job.rs`):
 
 - **Kill-on-close:** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
   - If the broker exits/crashes, the renderer is not left behind.
@@ -116,14 +122,32 @@ We configure the renderer Job object with `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`
   - This is important even if the token is restricted: child processes complicate containment and
     can become an escape vector if they end up outside the intended security config.
 
-- **Optional memory cap:** (enabled when configured)
-  - Use a Job memory limit so the renderer cannot allocate unbounded memory.
-  - Tradeoff: if set too low, legitimate pages may hit the limit and fail/terminate.
+- **UI restrictions (best-effort):** `JOBOBJECT_BASIC_UI_RESTRICTIONS`
+  - Disables a set of UI capabilities (clipboard, global atoms, display settings, etc.) appropriate
+    for a headless renderer.
+  - In `src/sandbox/windows.rs` this is “best-effort” (failure is ignored); in `crates/win-sandbox`,
+    `Job::set_ui_restrictions_headless()` treats failure as an error.
+
+- **Optional memory cap:** `JOB_OBJECT_LIMIT_JOB_MEMORY` / `JOBOBJECT_EXTENDED_LIMIT_INFORMATION::JobMemoryLimit`
+  - Supported by `crates/win-sandbox` (`Job::set_job_memory_limit_bytes`), but **not currently set**
+    by `src/sandbox/windows.rs::spawn_sandboxed`.
+  - Semantics: limits total *committed* memory for the entire Job (not RSS; not per-process).
+  - Tradeoff: if set too low, legitimate pages may hit the limit and fail allocations.
 
 Notes:
 
 - The Job is owned by the broker. The renderer should never be given a handle to the Job object.
 - The process-count limit is a security boundary, not just “resource management”.
+
+### Important edge case: parent already in a Job
+
+If the parent process is already running inside a Windows Job (common in CI/supervisors):
+
+- `spawn_sandboxed(...)` may try `CREATE_BREAKAWAY_FROM_JOB` first, then retry without breakaway on
+  `ERROR_ACCESS_DENIED`.
+- Assigning the child to our new Job can still fail (nested jobs/breakaway restrictions). In that
+  case `SandboxedChild.job` is `None` and the code prints a warning: **kill-on-close + active
+  process limit are not enforced**.
 
 ## Handle inheritance allowlisting (critical)
 
@@ -153,6 +177,7 @@ This is an *explicit allowlist* of inheritable handles:
 - The broker duplicates/creates the IPC handles it wants the renderer to have.
 - Process creation sets `bInheritHandles = TRUE` **but** provides a handle list, so only those
   handles can cross the boundary.
+- When no handles are needed, `bInheritHandles = FALSE` so there is no “ambient inheritance”.
 
 Why this matters:
 
@@ -169,8 +194,16 @@ When adding a new IPC primitive (shared memory, events, pipes):
 
 ## Process mitigation policies
 
-In addition to token restrictions, we enable Win32 process mitigations at creation time using
-`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (and where supported, the “policy2” attribute).
+In addition to token restrictions, we support Win32 process mitigations at creation time using
+`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`.
+
+In repo reality today:
+
+- `crates/win-sandbox/src/mitigations.rs` defines the renderer mitigation bitmask
+  (`mitigations::renderer_mitigation_policy()`).
+- `crates/win-sandbox/src/spawn.rs` can apply it during process creation.
+- Escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1` disables **mitigation policies only** (useful for
+  debugging/compatibility).
 
 These mitigations reduce the renderer’s attack surface against:
 
@@ -179,14 +212,14 @@ These mitigations reduce the renderer’s attack surface against:
 - dynamic code injection techniques
 - DLL search order hijacks / image load tricks
 
-Mitigations we enable (intended):
+Mitigations we enable (when supported by the OS):
 
 | Mitigation | Why we want it | Tradeoffs / compatibility |
 |-----------|-----------------|---------------------------|
 | **Win32k lockdown** (`WIN32K_SYSTEM_CALL_DISABLE`) | Removes a historically bug-dense kernel attack surface (USER/GDI). | Breaks anything that requires USER32/GDI syscalls. Renderer must stay headless (no windows, no GDI text paths). |
 | **Disable extension points** | Blocks legacy “extension point” injection mechanisms. | Rare compatibility issues with injected DLL ecosystems (IME/hooks) — acceptable for sandbox. |
 | **Prohibit dynamic code** | Prevents RWX / JIT-style codegen as an exploitation primitive. | Incompatible with JIT engines and some runtime code generation. Ensure renderer JS engine does not rely on JIT. |
-| **Image load hardening** (no remote / no low-integrity images; prefer System32) | Reduces DLL planting / loading untrusted binaries. | Can break plugins/drivers/3rd-party DLL loading. Prefer static linking where possible. |
+| **Image load hardening** (no remote images, no low-mandatory-label images) | Reduces DLL planting / loading untrusted binaries. | Can break plugins/drivers/3rd-party DLL loading. Prefer static linking where possible. |
 | **Strict handle checks** | Makes some handle misuse patterns fail fast. | Can surface latent bugs as hard failures; treat as “correctness pressure”. |
 
 Important: these flags must be treated as *security-critical defaults*. If a mitigation is disabled
@@ -200,8 +233,8 @@ for compatibility, record:
 
 If AppContainer is unavailable or fails to initialize, we fall back to a “best-effort” sandbox:
 
-- Create a **restricted token** (drop SIDs/privileges; disable admin-like capabilities).
-- Set the token’s **Integrity Level (IL)** to **Low**.
+- Create a **restricted token** via `CreateRestrictedToken(..., DISABLE_MAX_PRIVILEGE, ...)`.
+- Set the token’s **Integrity Level (IL)** to **Low** (`S-1-16-4096`).
 
 This is meaningfully weaker than AppContainer:
 
@@ -253,10 +286,13 @@ let err = std::io::Error::last_os_error();
 eprintln!("CreateProcessW failed: {err}"); // includes code + message
 ```
 
-If using the `windows` crate, prefer an error that preserves the code:
+If using the `windows`/`windows-sys` crates, prefer an error that preserves the code:
 
 - `windows::core::Error::from_win32()`
 - `windows::Win32::Foundation::GetLastError()` + `FormatMessageW` for custom formatting
+
+If you are working inside `crates/win-sandbox`, prefer returning `WinSandboxError::last("ApiName")`,
+which captures `GetLastError()` and includes the formatted message in the error string.
 
 Common error codes you’ll see:
 
@@ -270,4 +306,3 @@ When debugging, include in logs:
 - the numeric error code
 - whether AppContainer or fallback mode was used
 - which mitigation flags were requested
-
