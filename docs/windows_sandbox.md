@@ -31,6 +31,11 @@ Code map (repo reality):
         caller provides an `AppContainerProfile`.
       - Can attach a Job object via `PROC_THREAD_ATTRIBUTE_JOB_LIST` when the caller provides a
         `Job` (the caller configures job limits separately).
+      - Note: if `SpawnConfig.current_dir` is `None`, Windows inherits the parent process CWD
+        (`lpCurrentDirectory = NULL`). When spawning with an AppContainer token, that inherited
+        directory may be inaccessible and can cause surprising startup failures (or break code that
+        uses relative paths). Callers should set an explicit, sandbox-accessible working directory
+        when using this low-level helper.
       - Supports handle inheritance allowlisting (`inherit_handles` /
         `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
       - Can apply a mitigation policy bitmask (`mitigation_policy`) via
