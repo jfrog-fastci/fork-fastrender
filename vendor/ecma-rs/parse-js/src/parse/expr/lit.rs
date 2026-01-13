@@ -2917,7 +2917,13 @@ fn validate_regex_pattern(
             err
           })?;
         if let Some(name) = capture_name {
-          named_capture_groups.insert(name);
+          if !named_capture_groups.insert(name) {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + i,
+              len: consumed,
+            });
+          }
         }
         group_stack.push(quantifiable);
         prev_can_be_quantified = false;

@@ -166,6 +166,18 @@ fn regex_named_backreference_can_appear_before_group_definition() {
 }
 
 #[test]
+fn regex_duplicate_named_captures_are_rejected() {
+  for src in ["/(?<a>a)(?<a>b)/", "/(?<a>a)(?<a>b)/u", "/(?<a>a)(?<a>b)/v"] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+}
+
+#[test]
 fn regex_invalid_unicode_escape_in_charset_is_rejected() {
   let err = parse("/[\\u{}]/u").unwrap_err();
   assert_eq!(
