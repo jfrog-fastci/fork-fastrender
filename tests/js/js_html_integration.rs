@@ -1503,3 +1503,32 @@ fn p3_load_event_waits_for_video_poster() -> Result<()> {
   );
   Ok(())
 }
+
+#[test]
+fn p3_window_onload_property_fires_after_load_listeners() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_onload_property.html", js_options)?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => console.log("dcl"));
+        window.addEventListener("load", () => console.log("listener"));
+        window.onload = () => console.log("onload");
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "dcl".to_string(),
+      "listener".to_string(),
+      "onload".to_string(),
+    ]
+  );
+  Ok(())
+}

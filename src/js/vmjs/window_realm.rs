@@ -1207,11 +1207,9 @@ impl WindowRealm {
   ) -> Result<Value, VmError> {
     let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
     // When the embedder doesn't provide a real document host, `WindowRealm::exec_script` runs
-    // against this lightweight `DocumentHostState`. Treat it as an already-loaded document so
-    // `document.readyState` observes the same default as browsers after load.
-    host_ctx
-      .dom_mut()
-      .set_ready_state(crate::web::dom::DocumentReadyState::Complete);
+    // against this lightweight `DocumentHostState`. Keep the document in the default `loading`
+    // state so embedders/tests that drive the document lifecycle can observe the expected
+    // `loading` → `interactive` → `complete` transitions.
     self.exec_script_source_with_host_and_hooks(&mut host_ctx, hooks, source)
   }
 
@@ -1343,11 +1341,9 @@ impl WindowRealm {
       let mut guard = MicrotaskQueueRestoreGuard::new(&mut rt.vm);
       let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
       // When the embedder doesn't provide a real document host, `WindowRealm::exec_script` runs
-      // against this lightweight `DocumentHostState`. Treat it as an already-loaded document so
-      // `document.readyState` observes the same default as browsers after load.
-      host_ctx
-        .dom_mut()
-        .set_ready_state(crate::web::dom::DocumentReadyState::Complete);
+      // against this lightweight `DocumentHostState`. Keep the document in the default `loading`
+      // state so embedders/tests that drive the document lifecycle can observe the expected
+      // `loading` → `interactive` → `complete` transitions.
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(&mut host_ctx);
       let mut fallback_webidl_bindings_host = WindowRealmWebIdlBindingsHost::default();
