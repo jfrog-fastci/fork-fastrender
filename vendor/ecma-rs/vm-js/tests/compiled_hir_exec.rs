@@ -6369,6 +6369,18 @@ fn compiled_bigint_shift_right_unsigned_assign_throws_type_error() -> Result<(),
 }
 
 #[test]
+fn compiled_bigint_shift_right_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let x = 7n;
+      x >>= 1n;
+      x
+    "#,
+    3,
+  )
+}
+
+#[test]
 fn compiled_bitwise_and_assign_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -6387,6 +6399,18 @@ fn compiled_bitwise_and_assign_executes() -> Result<(), VmError> {
   let result = rt.exec_compiled_script(script)?;
   assert_eq!(result, Value::Number(1.0));
   Ok(())
+}
+
+#[test]
+fn compiled_bigint_bitwise_or_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let x = 1n;
+      x |= 2n;
+      x
+    "#,
+    3,
+  )
 }
 
 #[test]
