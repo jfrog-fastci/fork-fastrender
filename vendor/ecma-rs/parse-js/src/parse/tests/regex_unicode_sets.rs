@@ -79,6 +79,49 @@ fn rejects_unicode_sets_breaking_change_patterns() {
 }
 
 #[test]
+fn accepts_breaking_change_patterns_in_u_mode() {
+  // These patterns are explicitly called out by test262 as previously being valid with `/u`, and
+  // only becoming early errors with `/v`.
+  let opts = ecma_script_opts();
+  for pat in [
+    "[(]",
+    "[)]",
+    "[[]",
+    "[{]",
+    "[}]",
+    "[/]",
+    "[-]",
+    "[|]",
+    "[&&]",
+    "[!!]",
+    "[##]",
+    "[$$]",
+    "[%%]",
+    "[**]",
+    "[++]",
+    "[,,]",
+    "[..]",
+    "[::]",
+    "[;;]",
+    "[<<]",
+    "[==]",
+    "[>>]",
+    "[??]",
+    "[@@]",
+    "[``]",
+    "[~~]",
+    "[^^^]",
+    "[_^^]",
+  ] {
+    let src = format!("let r = /{pat}/u;");
+    assert!(
+      parse_with_options(&src, opts).is_ok(),
+      "expected {src} to parse in /u mode",
+    );
+  }
+}
+
+#[test]
 fn accepts_unicode_sets_examples() {
   let opts = ecma_script_opts();
   assert!(parse_with_options("let r = /^[[0-9]_]+$/v;", opts).is_ok());
