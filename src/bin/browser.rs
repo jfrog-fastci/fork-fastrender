@@ -4954,14 +4954,13 @@ impl App {
               move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
             });
 
-            let msg = ui
-              .add(
-                egui::Label::new(
-                  egui::RichText::new(toast_text.clone()).color(theme_colors.text_primary),
-                )
-                .wrap(true),
+            let msg = ui.add(
+              egui::Label::new(
+                egui::RichText::new(toast_text.clone()).color(theme_colors.text_primary),
               )
-              .sense(egui::Sense::hover());
+              .wrap(true)
+              .sense(egui::Sense::hover()),
+            );
             msg.widget_info({
               let label = toast_text.clone();
               move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
@@ -8266,6 +8265,13 @@ impl App {
               // Allow these keys to be forwarded to the page so focused text controls can handle
               // them for caret navigation and text entry.
               ShortcutAction::Space | ShortcutAction::Home | ShortcutAction::End => {}
+
+              // Any other mapped shortcut should not be forwarded into the page. Most are handled
+              // inside the egui chrome layer; swallowing here prevents pages from intercepting
+              // browser shortcuts even if we haven't added a dedicated winit-layer handler.
+              _ => {
+                return;
+              }
             }
           }
         }
