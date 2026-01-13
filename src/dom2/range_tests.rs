@@ -868,6 +868,58 @@ fn live_range_pre_insert_increments_offsets_and_remove_roundtrips() {
 }
 
 #[test]
+fn live_range_replace_data_full_replacement_clamps_offsets_to_replacement_offset() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  let root = doc.root();
+  let host = doc.create_element("div", "");
+  doc.append_child(root, host).unwrap();
+  let text = doc.create_text("abcd");
+  doc.append_child(host, text).unwrap();
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 3).unwrap();
+
+  // Setting `.data` runs the DOM "replace data" algorithm with offset=0 and count=oldLength,
+  // clamping any boundary point inside the replaced range to offset 0.
+  assert!(doc.set_text_data(text, "wxyz").unwrap());
+
+  assert_eq!(doc.range_start_container(range).unwrap(), text);
+  assert_eq!(doc.range_end_container(range).unwrap(), text);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 0);
+}
+
+#[test]
+fn live_range_replace_data_uses_utf16_offsets() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  let root = doc.root();
+  let host = doc.create_element("div", "");
+  doc.append_child(root, host).unwrap();
+
+  // U+1F600 GRINNING FACE is encoded as a surrogate pair in UTF-16 (2 code units).
+  let text = doc.create_text("😀a");
+  doc.append_child(host, text).unwrap();
+
+  // Range spans from inside the surrogate pair to the end of the string ("😀a" is 3 UTF-16 units).
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 3).unwrap();
+
+  // Delete the emoji (2 UTF-16 units). The start offset falls within the removed range, so it is
+  // clamped to 0. The end offset is after the removed range, so it shifts left by 2.
+  assert!(doc.replace_data(text, 0, 2, "").unwrap());
+  assert_eq!(doc.text_data(text).unwrap(), "a");
+
+  assert_eq!(doc.range_start_container(range).unwrap(), text);
+  assert_eq!(doc.range_end_container(range).unwrap(), text);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
 fn live_range_replace_data_clamps_and_shifts_offsets() {
   let html = "<!doctype html><html><body><div id=c>abcdef</div></body></html>";
   let mut doc: Document = parse_html(html).unwrap();
