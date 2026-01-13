@@ -542,6 +542,32 @@ pub fn install_time_bindings(
       global_data_desc(Value::Object(perf_clear_resource_timings)),
     )?;
 
+    let perf_set_resource_timing_buffer_size_id =
+      vm.register_native_call(performance_set_resource_timing_buffer_size_native)?;
+    let perf_set_resource_timing_buffer_size_name =
+      scope.alloc_string("setResourceTimingBufferSize")?;
+    let perf_set_resource_timing_buffer_size = scope.alloc_native_function(
+      perf_set_resource_timing_buffer_size_id,
+      None,
+      perf_set_resource_timing_buffer_size_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      perf_set_resource_timing_buffer_size,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(perf_set_resource_timing_buffer_size))?;
+    let perf_set_resource_timing_buffer_size_key_s =
+      scope.alloc_string("setResourceTimingBufferSize")?;
+    scope.push_root(Value::String(perf_set_resource_timing_buffer_size_key_s))?;
+    let perf_set_resource_timing_buffer_size_key =
+      PropertyKey::from_string(perf_set_resource_timing_buffer_size_key_s);
+    scope.define_property(
+      performance,
+      perf_set_resource_timing_buffer_size_key,
+      global_data_desc(Value::Object(perf_set_resource_timing_buffer_size)),
+    )?;
+
     // --- performance.timing (legacy Navigation Timing Level 1) ---
     //
     // Many analytics libraries still probe `performance.timing.navigationStart` even though the
@@ -663,7 +689,6 @@ pub fn install_time_bindings(
       Some(realm.intrinsics().function_prototype()),
     )?;
     scope.push_root(Value::Object(navigation_to_json))?;
-
     let navigation_to_json_key_s = scope.alloc_string("toJSON")?;
     scope.push_root(Value::String(navigation_to_json_key_s))?;
     let navigation_to_json_key = PropertyKey::from_string(navigation_to_json_key_s);
@@ -1804,6 +1829,20 @@ fn performance_clear_resource_timings_native(
   Ok(Value::Undefined)
 }
 
+fn performance_set_resource_timing_buffer_size_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Compatibility stub: browsers expose this for configuring resource timing buffer sizes.
+  // We do not implement resource timing storage yet, so this is a non-throwing no-op.
+  Ok(Value::Undefined)
+}
+
 fn date_get_time_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2034,6 +2073,301 @@ mod tests {
       out.push(Value::String(s));
     }
     out
+  }
+
+  #[test]
+  fn performance_entries_are_sorted_by_start_time() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings,
+      WebTime::default(),
+    )
+    .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    let perf_mark = get_object_property(&mut heap, performance_obj, "mark");
+    let perf_get_entries = get_object_property(&mut heap, performance_obj, "getEntries");
+    let perf_get_by_type = get_object_property(&mut heap, performance_obj, "getEntriesByType");
+    let perf_get_by_name = get_object_property(&mut heap, performance_obj, "getEntriesByName");
+
+    // Insert marks with non-monotonic `startTime` (rewind the virtual clock).
+    clock.set_now(Duration::from_millis(30));
+    let arg_late = alloc_string_value(&mut heap, "late");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_late],
+    );
+
+    clock.set_now(Duration::from_millis(10));
+    let arg_early1 = alloc_string_value(&mut heap, "early1");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_early1],
+    );
+    // Same timestamp to validate stable ordering.
+    let arg_early2 = alloc_string_value(&mut heap, "early2");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_early2],
+    );
+
+    // Duplicate names out of order to validate `getEntriesByName` ordering.
+    clock.set_now(Duration::from_millis(25));
+    let arg_dup = alloc_string_value(&mut heap, "dup");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_dup],
+    );
+    clock.set_now(Duration::from_millis(5));
+    let arg_dup2 = alloc_string_value(&mut heap, "dup");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_dup2],
+    );
+
+    // getEntriesByType('mark') should be sorted by startTime, stable for equal startTime.
+    let arg_mark = alloc_string_value(&mut heap, "mark");
+    let marks = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_type,
+      Value::Object(performance_obj),
+      &[arg_mark],
+    );
+    let Value::Object(marks_arr) = marks else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, marks_arr), 5);
+
+    let entry0 = get_array_elem(&mut heap, marks_arr, 0);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected entry object");
+    };
+    let name0 = get_object_property(&mut heap, entry0_obj, "name");
+    assert_eq!(string_value_to_utf8_lossy(&heap, name0), "dup");
+    let start0 = get_object_property(&mut heap, entry0_obj, "startTime");
+    assert_eq!(start0, Value::Number(5.0));
+
+    let entry1 = get_array_elem(&mut heap, marks_arr, 1);
+    let Value::Object(entry1_obj) = entry1 else {
+      panic!("expected entry object");
+    };
+    let name1 = get_object_property(&mut heap, entry1_obj, "name");
+    assert_eq!(string_value_to_utf8_lossy(&heap, name1), "early1");
+    let start1 = get_object_property(&mut heap, entry1_obj, "startTime");
+    assert_eq!(start1, Value::Number(10.0));
+
+    let entry2 = get_array_elem(&mut heap, marks_arr, 2);
+    let Value::Object(entry2_obj) = entry2 else {
+      panic!("expected entry object");
+    };
+    let name2 = get_object_property(&mut heap, entry2_obj, "name");
+    assert_eq!(string_value_to_utf8_lossy(&heap, name2), "early2");
+    let start2 = get_object_property(&mut heap, entry2_obj, "startTime");
+    assert_eq!(start2, Value::Number(10.0));
+
+    let entry3 = get_array_elem(&mut heap, marks_arr, 3);
+    let Value::Object(entry3_obj) = entry3 else {
+      panic!("expected entry object");
+    };
+    let start3 = get_object_property(&mut heap, entry3_obj, "startTime");
+    assert_eq!(start3, Value::Number(25.0));
+
+    let entry4 = get_array_elem(&mut heap, marks_arr, 4);
+    let Value::Object(entry4_obj) = entry4 else {
+      panic!("expected entry object");
+    };
+    let name4 = get_object_property(&mut heap, entry4_obj, "name");
+    assert_eq!(string_value_to_utf8_lossy(&heap, name4), "late");
+    let start4 = get_object_property(&mut heap, entry4_obj, "startTime");
+    assert_eq!(start4, Value::Number(30.0));
+
+    // getEntries() includes navigation (startTime=0) and must remain sorted overall.
+    let all_entries = call0(
+      &mut vm,
+      &mut heap,
+      perf_get_entries,
+      Value::Object(performance_obj),
+    );
+    let Value::Object(all_arr) = all_entries else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, all_arr), 6);
+    let e0 = get_array_elem(&mut heap, all_arr, 0);
+    let Value::Object(e0_obj) = e0 else {
+      panic!("expected entry object");
+    };
+    let entry_type0 = get_object_property(&mut heap, e0_obj, "entryType");
+    assert_eq!(string_value_to_utf8_lossy(&heap, entry_type0), "navigation");
+    let start_time0 = get_object_property(&mut heap, e0_obj, "startTime");
+    assert_eq!(start_time0, Value::Number(0.0));
+
+    let e1 = get_array_elem(&mut heap, all_arr, 1);
+    let Value::Object(e1_obj) = e1 else {
+      panic!("expected entry object");
+    };
+    let start_time1 = get_object_property(&mut heap, e1_obj, "startTime");
+    assert_eq!(start_time1, Value::Number(5.0));
+
+    // getEntriesByName('dup') must also be startTime-sorted.
+    let args = alloc_string_values(&mut heap, &["dup"]);
+    let dup_entries = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_name,
+      Value::Object(performance_obj),
+      &args,
+    );
+    let Value::Object(dup_arr) = dup_entries else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, dup_arr), 2);
+    let d0 = get_array_elem(&mut heap, dup_arr, 0);
+    let Value::Object(d0_obj) = d0 else {
+      panic!("expected entry object");
+    };
+    let d0_start = get_object_property(&mut heap, d0_obj, "startTime");
+    assert_eq!(d0_start, Value::Number(5.0));
+    let d1 = get_array_elem(&mut heap, dup_arr, 1);
+    let Value::Object(d1_obj) = d1 else {
+      panic!("expected entry object");
+    };
+    let d1_start = get_object_property(&mut heap, d1_obj, "startTime");
+    assert_eq!(d1_start, Value::Number(25.0));
+
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn performance_legacy_to_json_and_stubs_are_available() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings,
+      WebTime::default(),
+    )
+    .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    // performance.setResourceTimingBufferSize exists and does not throw.
+    let set_buf =
+      get_object_property(&mut heap, performance_obj, "setResourceTimingBufferSize");
+    {
+      let scope = heap.scope();
+      assert!(
+        scope.heap().is_callable(set_buf).unwrap_or(false),
+        "expected setResourceTimingBufferSize to be callable"
+      );
+    }
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      set_buf,
+      Value::Object(performance_obj),
+      &[Value::Number(123.0)],
+    );
+
+    // performance.interactionCount is a deterministic read-only number (0).
+    let interaction_count = get_object_property(&mut heap, performance_obj, "interactionCount");
+    assert_eq!(interaction_count, Value::Number(0.0));
+
+    // performance.timing.toJSON() exists and returns a plain object with numeric fields.
+    let timing = get_object_property(&mut heap, performance_obj, "timing");
+    let timing_obj = match timing {
+      Value::Object(o) => o,
+      _ => panic!("performance.timing should be an object"),
+    };
+    let timing_to_json = get_object_property(&mut heap, timing_obj, "toJSON");
+    {
+      let scope = heap.scope();
+      assert!(
+        scope.heap().is_callable(timing_to_json).unwrap_or(false),
+        "expected performance.timing.toJSON to be callable"
+      );
+    }
+    let timing_json =
+      call0(&mut vm, &mut heap, timing_to_json, Value::Object(timing_obj));
+    let Value::Object(timing_json_obj) = timing_json else {
+      panic!("expected toJSON() to return an object");
+    };
+    for field in ["navigationStart", "fetchStart", "domComplete", "loadEventEnd"] {
+      let v = get_object_property(&mut heap, timing_json_obj, field);
+      let Value::Number(n) = v else {
+        panic!("expected timing.toJSON().{field} to be a number");
+      };
+      assert!(n.is_finite(), "expected {field} to be finite");
+    }
+
+    // performance.navigation.toJSON() exists and returns { type, redirectCount }.
+    let navigation = get_object_property(&mut heap, performance_obj, "navigation");
+    let navigation_obj = match navigation {
+      Value::Object(o) => o,
+      _ => panic!("performance.navigation should be an object"),
+    };
+    let navigation_to_json = get_object_property(&mut heap, navigation_obj, "toJSON");
+    {
+      let scope = heap.scope();
+      assert!(
+        scope.heap().is_callable(navigation_to_json).unwrap_or(false),
+        "expected performance.navigation.toJSON to be callable"
+      );
+    }
+    let nav_json =
+      call0(&mut vm, &mut heap, navigation_to_json, Value::Object(navigation_obj));
+    let Value::Object(nav_json_obj) = nav_json else {
+      panic!("expected navigation.toJSON() to return an object");
+    };
+    for field in ["type", "redirectCount"] {
+      let v = get_object_property(&mut heap, nav_json_obj, field);
+      let Value::Number(n) = v else {
+        panic!("expected navigation.toJSON().{field} to be a number");
+      };
+      assert!(n.is_finite(), "expected {field} to be finite");
+    }
+
+    realm.teardown(&mut heap);
   }
 
   #[test]
