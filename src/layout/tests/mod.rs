@@ -174,6 +174,7 @@ mod flex_zero_main_size;
 mod float_active_edge_prune;
 mod float_blockification;
 mod float_context_stress_timeout;
+mod float_context_naive_equivalence;
 mod float_external_context_width;
 mod float_grid_container_uses_own_formatting_context;
 mod float_inline_floats_do_not_expand_non_bfc_height;
