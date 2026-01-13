@@ -1481,6 +1481,17 @@ impl<'vm> HirEvaluator<'vm> {
             continue;
           }
           let name = self.resolve_name(def.name)?;
+          if annex_b {
+            // Sloppy-mode Annex B block-level function declarations are *hoisted* (so the outer
+            // function has a var binding), but the binding is not initialized until the containing
+            // statement list executes.
+            //
+            // This matches the interpreter's behaviour and web reality: e.g.
+            //   function f(){ if(false){ function g(){} } return typeof g }
+            // should observe `g` as `undefined`.
+            self.env.declare_var(self.vm, scope, name.as_str())?;
+            continue;
+          }
           let func_obj = self.alloc_user_function_object(
             scope,
             body_id,
@@ -1650,6 +1661,73 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(())
   }
 
+  fn initialize_annex_b_function_decls_in_stmt_list(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+  ) -> Result<(), VmError> {
+    if self.strict {
+      return Ok(());
+    }
+
+    for stmt_id in stmts {
+      // Tick per statement list entry so large blocks of function declarations cannot be
+      // initialized without consuming fuel.
+      self.vm.tick()?;
+
+      let stmt = self.get_stmt(body, *stmt_id)?;
+      let hir_js::StmtKind::Decl(def_id) = &stmt.kind else {
+        continue;
+      };
+      let def = self
+        .hir()
+        .def(*def_id)
+        .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+      let Some(body_id) = def.body else {
+        continue;
+      };
+      let decl_body = self.get_body(body_id)?;
+      if decl_body.kind != hir_js::BodyKind::Function {
+        continue;
+      }
+      let Some(func_meta) = decl_body.function.as_ref() else {
+        return Err(VmError::InvariantViolation("function body missing function metadata"));
+      };
+
+      // Annex B block-level function semantics apply only to ordinary (non-async, non-generator)
+      // functions. Async/generator function declarations are always block-scoped, even in non-strict
+      // mode.
+      if func_meta.async_ || func_meta.generator {
+        continue;
+      }
+
+      let name = self.resolve_name(def.name)?;
+      let func_obj = self.alloc_user_function_object(
+        scope,
+        body_id,
+        name.as_str(),
+        /* is_arrow */ false,
+        /* is_constructable */ true,
+        /* name_binding */ None,
+        EcmaFunctionKind::Decl,
+      )?;
+
+      // Root the function object while assigning into the var environment.
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_root(Value::Object(func_obj))?;
+      self.env.set_var(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        &mut assign_scope,
+        name.as_str(),
+        Value::Object(func_obj),
+      )?;
+    }
+    Ok(())
+  }
+
   fn instantiate_block_scoped_function_decls_in_stmt_list(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1798,6 +1876,7 @@ impl<'vm> HirEvaluator<'vm> {
             block_env,
             stmts.as_slice(),
           )?;
+          self.initialize_annex_b_function_decls_in_stmt_list(scope, body, stmts.as_slice())?;
           self.eval_stmt_list(scope, body, stmts.as_slice())
         })();
         self.env.set_lexical_env(scope.heap_mut(), prev);
@@ -2554,6 +2633,11 @@ impl<'vm> HirEvaluator<'vm> {
               if case_idx % CASE_TICK_EVERY == 0 {
                 self.vm.tick()?;
               }
+              self.initialize_annex_b_function_decls_in_stmt_list(
+                &mut switch_scope,
+                body,
+                case.consequent.as_slice(),
+              )?;
               for stmt_id in &case.consequent {
                 match self.eval_stmt(&mut switch_scope, body, *stmt_id)? {
                   Flow::Normal(value) => {

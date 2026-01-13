@@ -2009,13 +2009,14 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
-    if script.requires_ast_fallback {
-      // Async/generator function bodies are not yet supported by the compiled (HIR) execution path.
+    if script.requires_ast_fallback || script.contains_top_level_await {
+      // Some constructs are not yet supported by the compiled (HIR) execution path:
+      // - async/generator function bodies (`async function`, `function*`, `async function*`), and
+      // - classic-script top-level await (`await` / `for await..of` in the root statement list).
       //
       // Fall back to the AST interpreter path using the original `SourceText`. This ensures scripts
-      // containing `async function`, `function*`, or `async function*` can still execute correctly
-      // without partially executing any HIR code (which could introduce side effects before a
-      // retry).
+      // can still execute correctly without partially executing any HIR code (which could introduce
+      // side effects before a retry).
       let source = script.source.clone();
       // Move the VM-owned microtask queue out so it can be passed as `hooks` while still holding
       // `&mut self`.
@@ -2127,9 +2128,10 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
-    if script.requires_ast_fallback {
+    if script.requires_ast_fallback || script.contains_top_level_await {
       // See `exec_compiled_script_with_host`: async/generator function bodies are not yet supported
-      // by the compiled (HIR) executor.
+      // by the compiled (HIR) executor, and classic-script top-level await requires async
+      // evaluation.
       let source = script.source.clone();
       return self.exec_script_source_with_host_and_hooks(host, hooks, source);
     }
@@ -2313,6 +2315,45 @@ impl JsRuntime {
     self.exec_script_source_with_host(host, source)
   }
 
+  fn parse_classic_script_source_for_exec(
+    &mut self,
+    source: &Arc<SourceText>,
+  ) -> Result<Arc<Node<parse_js::ast::stx::TopLevel>>, VmError> {
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Script,
+    };
+    match self
+      .vm
+      .parse_top_level_with_budget(&source.text, opts)
+      .and_then(arc_try_new_vm)
+    {
+      Ok(top) => Ok(top),
+      Err(VmError::Syntax(script_diags)) => {
+        // `parse-js` only enables `AwaitExpression` parsing at top-level in module mode. To support
+        // classic-script top-level await, fall back to parsing using the module grammar.
+        let opts = ParseOptions {
+          dialect: Dialect::Ecma,
+          source_type: SourceType::Module,
+        };
+        match self.vm.parse_top_level_with_budget(&source.text, opts) {
+          Ok(top) => {
+            let has_await = top.stx.body.iter().any(stmt_contains_await);
+            let has_module_syntax = top.stx.body.iter().any(stmt_is_module_only);
+            if has_await && !has_module_syntax {
+              arc_try_new_vm(top)
+            } else {
+              Err(VmError::Syntax(script_diags))
+            }
+          }
+          Err(err) if is_hard_stop_error(&err) => Err(err),
+          Err(_) => Err(VmError::Syntax(script_diags)),
+        }
+      }
+      Err(err) => Err(err),
+    }
+  }
+
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
   /// embedder host context.
   pub fn exec_script_source_with_host(
@@ -2320,15 +2361,7 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    let opts = ParseOptions {
-      dialect: Dialect::Ecma,
-      source_type: SourceType::Script,
-    };
-    let top = match self
-      .vm
-      .parse_top_level_with_budget(&source.text, opts)
-      .and_then(arc_try_new_vm)
-    {
+    let top = match self.parse_classic_script_source_for_exec(&source) {
       Ok(top) => top,
       Err(err) => {
         if is_hard_stop_error(&err) {
@@ -2803,15 +2836,7 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    let opts = ParseOptions {
-      dialect: Dialect::Ecma,
-      source_type: SourceType::Script,
-    };
-    let top = match self
-      .vm
-      .parse_top_level_with_budget(&source.text, opts)
-      .and_then(arc_try_new_vm)
-    {
+    let top = match self.parse_classic_script_source_for_exec(&source) {
       Ok(top) => top,
       Err(err) => {
         if is_hard_stop_error(&err) {
@@ -15903,6 +15928,16 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     Stmt::Label(label) => stmt_contains_await(&label.stx.statement),
     // Conservatively assume unsupported statement kinds do not contain await so we preserve the
     // existing synchronous evaluator behaviour for them.
+    _ => false,
+  }
+}
+
+fn stmt_is_module_only(stmt: &Node<Stmt>) -> bool {
+  match &*stmt.stx {
+    Stmt::Import(_) | Stmt::ExportList(_) | Stmt::ExportDefaultExpr(_) => true,
+    Stmt::FunctionDecl(decl) => decl.stx.export || decl.stx.export_default,
+    Stmt::ClassDecl(decl) => decl.stx.export || decl.stx.export_default,
+    Stmt::VarDecl(decl) => decl.stx.export,
     _ => false,
   }
 }

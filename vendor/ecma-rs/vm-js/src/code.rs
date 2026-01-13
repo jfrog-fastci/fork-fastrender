@@ -49,6 +49,9 @@ pub struct CompiledScript {
   /// bodies (`await`, `yield`, `yield*`), so any script containing them must be re-run from source
   /// to avoid mid-execution `VmError::Unimplemented` failures.
   pub requires_ast_fallback: bool,
+  /// Whether this script/module contains a top-level `await` (or `for await..of`) that requires
+  /// async evaluation.
+  pub contains_top_level_await: bool,
   #[allow(dead_code)]
   source_type: SourceType,
   #[allow(dead_code)]
@@ -68,13 +71,46 @@ impl CompiledScript {
       source_type: SourceType::Script,
     };
 
-    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-      parse_with_options(source.text.as_ref(), opts)
-    }))
-    .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a script"))?
-    .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+    let parsed = {
+      let parsed_script = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parse_with_options(source.text.as_ref(), opts)
+      }))
+      .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a script"))?;
 
-    {
+      match parsed_script {
+        Ok(parsed) => parsed,
+        Err(script_err) => {
+          // `parse-js` only enables `AwaitExpression` parsing at top-level in module mode. Classic
+          // scripts that use top-level await are parsed using the module grammar as a best-effort
+          // fallback, then validated/evaluated with Script semantics.
+          let opts = ParseOptions {
+            dialect: Dialect::Ecma,
+            source_type: SourceType::Module,
+          };
+          let parsed_module = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_with_options(source.text.as_ref(), opts)
+          }))
+          .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a script"))?;
+
+          match parsed_module {
+            Ok(parsed) => {
+              // Only accept the module parse as a script when it actually contains top-level await
+              // and does not contain module-only syntax (import/export).
+              let has_await = parsed.stx.body.iter().any(stmt_contains_await);
+              let has_module_syntax = parsed.stx.body.iter().any(stmt_is_module_only);
+              if has_await && !has_module_syntax {
+                parsed
+              } else {
+                return Err(VmError::Syntax(vec![script_err.to_diagnostic(FileId(0))]));
+              }
+            }
+            Err(_) => return Err(VmError::Syntax(vec![script_err.to_diagnostic(FileId(0))])),
+          }
+        }
+      }
+    };
+
+    let contains_top_level_await = {
       let mut tick = || Ok(());
       let strict = detect_use_strict_directive(&parsed.stx.body, &mut tick)?;
       let has_await = parsed.stx.body.iter().any(stmt_contains_await);
@@ -88,7 +124,8 @@ impl CompiledScript {
         },
         &mut tick,
       )?;
-    }
+      has_await
+    };
 
     let feature_flags = ast_feature_flags(&parsed);
     let contains_async_generators = feature_flags.contains_async_generators;
@@ -112,6 +149,7 @@ impl CompiledScript {
       contains_generators,
       contains_async_functions,
       requires_ast_fallback,
+      contains_top_level_await,
       source_type: SourceType::Script,
       external_memory,
     })?)
@@ -133,6 +171,8 @@ impl CompiledScript {
     }))
     .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a module"))?
     .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+
+    let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
 
     {
       let mut tick = || Ok(());
@@ -165,6 +205,7 @@ impl CompiledScript {
       contains_generators,
       contains_async_functions,
       requires_ast_fallback,
+      contains_top_level_await,
       source_type: SourceType::Module,
       external_memory,
     })?)
@@ -186,7 +227,31 @@ impl CompiledScript {
       source_type: SourceType::Script,
     };
 
-    let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
+    let parsed = match vm.parse_top_level_with_budget(&source.text, opts) {
+      Ok(parsed) => parsed,
+      Err(VmError::Syntax(script_diags)) => {
+        // See `compile_script`: top-level await scripts are parsed using the module grammar as a
+        // best-effort fallback.
+        let opts = ParseOptions {
+          dialect: Dialect::Ecma,
+          source_type: SourceType::Module,
+        };
+        match vm.parse_top_level_with_budget(&source.text, opts) {
+          Ok(parsed) => {
+            let has_await = parsed.stx.body.iter().any(stmt_contains_await);
+            let has_module_syntax = parsed.stx.body.iter().any(stmt_is_module_only);
+            if has_await && !has_module_syntax {
+              parsed
+            } else {
+              return Err(VmError::Syntax(script_diags));
+            }
+          }
+          Err(VmError::Syntax(_)) => return Err(VmError::Syntax(script_diags)),
+          Err(err) => return Err(err),
+        }
+      }
+      Err(err) => return Err(err),
+    };
     let strict = {
       let mut tick = || vm.tick();
       detect_use_strict_directive(&parsed.stx.body, &mut tick)?
@@ -223,6 +288,7 @@ impl CompiledScript {
       contains_generators,
       contains_async_functions,
       requires_ast_fallback,
+      contains_top_level_await: has_await,
       source_type: SourceType::Script,
       external_memory,
     })?)
@@ -242,6 +308,7 @@ impl CompiledScript {
     };
 
     let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
+    let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
     {
       let mut tick = || vm.tick();
       crate::early_errors::validate_top_level(
@@ -267,6 +334,7 @@ impl CompiledScript {
       contains_generators,
       contains_async_functions,
       requires_ast_fallback,
+      contains_top_level_await,
       source_type: SourceType::Module,
       external_memory,
     })?)
@@ -601,6 +669,16 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     Stmt::Label(label) => stmt_contains_await(&label.stx.statement),
     // Conservatively assume unsupported statement kinds do not contain await so we preserve the
     // existing synchronous evaluator behaviour for them.
+    _ => false,
+  }
+}
+
+fn stmt_is_module_only(stmt: &Node<Stmt>) -> bool {
+  match &*stmt.stx {
+    Stmt::Import(_) | Stmt::ExportList(_) | Stmt::ExportDefaultExpr(_) => true,
+    Stmt::FunctionDecl(decl) => decl.stx.export || decl.stx.export_default,
+    Stmt::ClassDecl(decl) => decl.stx.export || decl.stx.export_default,
+    Stmt::VarDecl(decl) => decl.stx.export,
     _ => false,
   }
 }
