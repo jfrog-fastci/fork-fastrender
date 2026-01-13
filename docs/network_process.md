@@ -30,6 +30,9 @@ and others are scaffolding. A few important “don’t get surprised” points:
     (re-exported via [`src/network_process/mod.rs`](../src/network_process/mod.rs))
   - Current protocol is intentionally tiny: `Fetch { url }` + `Shutdown` (see
     `fastrender::network_process::ipc` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs)).
+    - Security note: the `network_process::ipc` framing helpers are still a prototype and do not
+      currently enforce a maximum frame size. Do not reuse this framing for hardened untrusted IPC;
+      see [`docs/ipc.md`](ipc.md) for the normative framing/cap invariants.
 - There are additional (more complete) IPC protocols already defined, even if not yet wired up
   end-to-end:
   - Full `ResourceFetcher` proxy protocol (JSON over TCP): [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs)
