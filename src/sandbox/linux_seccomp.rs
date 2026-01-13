@@ -335,6 +335,15 @@ fn build_renderer_filter(config: RendererSandboxConfig) -> Vec<libc::sock_filter
     libc::SYS_umask,
     libc::SYS_futex,
     libc::SYS_restart_syscall,
+    // Threading/runtime helpers that glibc/Rust may use after the sandbox is installed.
+    //
+    // - `rseq` is used by newer glibc for per-thread fastpaths (optional but may be attempted).
+    // - `membarrier` can be used as part of rseq/tls/runtime mechanisms.
+    // - `sched_getaffinity` is commonly used by thread pools to size themselves.
+    libc::SYS_rseq,
+    libc::SYS_membarrier,
+    libc::SYS_sched_getaffinity,
+    libc::SYS_getcpu,
     // Allow querying metadata about existing fds.
     libc::SYS_fstat,
     libc::SYS_fstatfs,

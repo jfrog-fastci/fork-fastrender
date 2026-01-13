@@ -451,6 +451,11 @@ mod tests {
         }
       }
 
+      // The sandbox is intended to be applied early, before thread pools spawn. Ensure basic
+      // thread creation still works after seccomp is installed.
+      let thread = std::thread::spawn(|| 1u32 + 1u32);
+      assert_eq!(thread.join().expect("join thread"), 2);
+
       let fs_err = std::fs::read("/etc/passwd").expect_err("expected /etc/passwd read to fail");
       assert_eq!(
         fs_err.raw_os_error(),
