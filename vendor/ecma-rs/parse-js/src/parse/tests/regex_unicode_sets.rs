@@ -366,8 +366,19 @@ fn parses_test262_unicode_property_escape_files() {
     let is_parse_negative = is_test262_parse_negative(&src);
     match (is_parse_negative, parse_with_options(&src, opts)) {
       (true, Ok(_)) => panic!("expected {} to fail parsing", path.display()),
+      (true, Err(err)) => {
+        // The `property-escapes` corpus exercises invalid Unicode property escape grammar and
+        // should be classified as invalid regular expression patterns (as opposed to flag parsing
+        // errors).
+        assert_eq!(
+          err.typ,
+          SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+          "unexpected error type for {}",
+          path.display(),
+        );
+      }
       (false, Err(err)) => panic!("failed to parse {}: {err}", path.display()),
-      _ => {}
+      (false, Ok(_)) => {}
     }
   }
 }
