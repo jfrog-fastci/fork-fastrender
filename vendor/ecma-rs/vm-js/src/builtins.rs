@@ -25656,3 +25656,45 @@ mod string_replace_all_tests {
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod regexp_prototype_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn regexp_flag_getters_basic() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (/a/g).global === true &&
+        (/a/).global === false &&
+        (/a/i).ignoreCase === true &&
+        (/a/).ignoreCase === false &&
+        (/a/m).multiline === true &&
+        (/a/).multiline === false &&
+        (/a/s).dotAll === true &&
+        (/a/).dotAll === false &&
+        (/a/u).unicode === true &&
+        (/a/).unicode === false &&
+        (/a/y).sticky === true &&
+        (/a/).sticky === false
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_to_string_basic() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script("String(/a/gi) === '/a/gi' && /a/gi.toString() === '/a/gi'")?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
