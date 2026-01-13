@@ -44,6 +44,29 @@ fn mp4_h264_aac_decodes_first_video_and_audio() -> MediaResult<()> {
 }
 
 #[test]
+fn mp4_vp9_decodes_first_video() -> MediaResult<()> {
+  let demuxer = Mp4PacketDemuxer::open("tests/fixtures/media/vp9_in_mp4.mp4")?;
+  let mut pipeline = MediaDecodePipeline::new(Box::new(demuxer))?;
+
+  for _ in 0..32 {
+    let Some(item) = pipeline.next_decoded()? else {
+      break;
+    };
+
+    if let DecodedItem::Video(frame) = item {
+      assert!(frame.width > 0);
+      assert!(frame.height > 0);
+      assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+      return Ok(());
+    }
+  }
+
+  Err(MediaError::Decode(
+    "did not decode a VP9 video frame within limit".into(),
+  ))
+}
+
+#[test]
 fn webm_vp9_opus_decodes_first_video_and_audio() -> MediaResult<()> {
   let file = File::open("tests/fixtures/media/test_vp9_opus.webm")?;
   let demuxer = fastrender::media::demux::webm::WebmDemuxer::open(BufReader::new(file))?;

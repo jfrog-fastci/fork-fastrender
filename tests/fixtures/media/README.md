@@ -19,6 +19,12 @@ third‑party images/audio.
 - Video: VP9, 64×64, 1 fps, 2 frames (red then blue)
 - Audio: Opus, stereo, 48 kHz, silence, ~2s
 
+### `vp9_in_mp4.mp4`
+
+- Container: MP4
+- Video: VP9, 16×16, 1 fps, 1 frame (red)
+- Audio: none
+
 ## Regeneration
 
 All commands below are deterministic given the same FFmpeg build.
@@ -54,6 +60,14 @@ ffmpeg -y -hide_banner -loglevel error \
   -c:a libopus -b:a 32k -ac 2 -ar 48000 \
   -map_metadata -1 -fflags +bitexact -flags:v +bitexact -flags:a +bitexact \
   tests/fixtures/media/test_vp9_opus.webm
+
+# VP9 in MP4.
+ffmpeg -y -hide_banner -loglevel error \
+  -f lavfi -i "color=c=red:s=16x16:r=1:d=1" \
+  -frames:v 1 -an \
+  -c:v libvpx-vp9 -b:v 0 -crf 40 -g 1 -threads 1 -row-mt 0 -pix_fmt yuv420p -tag:v vp09 \
+  -movflags +faststart -map_metadata -1 -fflags +bitexact -flags:v +bitexact \
+  tests/fixtures/media/vp9_in_mp4.mp4
 ```
 
 ## Licensing

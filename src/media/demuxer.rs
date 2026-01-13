@@ -110,7 +110,22 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
       let timescale = track.trak.mdia.mdhd.timescale;
       let sample_count = track.sample_count();
 
-      let media_type = track.media_type().ok();
+      let media_type = match track.media_type() {
+        Ok(media_type) => Some(media_type),
+        Err(err) => {
+          // The `mp4` crate doesn't currently expose VP9 via `media_type()`. If mp4parse already
+          // identified this track as VP9, ignore the error and let the mp4parse path handle it.
+          // Otherwise, treat this as a real demux failure (we don't want to silently drop H.264/AAC
+          // tracks if `media_type()` breaks for valid files).
+          if vp9_tracks.contains_key(track_id) {
+            None
+          } else {
+            return Err(MediaError::Demux(format!(
+              "mp4: failed to get media type: {err}"
+            )));
+          }
+        }
+      };
 
       match media_type {
         Some(mp4::MediaType::H264) => {
