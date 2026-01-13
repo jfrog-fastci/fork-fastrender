@@ -6,7 +6,9 @@
 //! capture user intent. Side effects (navigation, persistence, worker messages) are performed by the
 //! caller (typically `src/bin/browser.rs`).
 
-use super::{icon_button, icon_tinted, motion::UiMotion, BrowserIcon, GlobalHistoryEntry, GlobalHistoryStore};
+use super::{
+  icon_button, icon_tinted, motion::UiMotion, BrowserIcon, GlobalHistoryEntry, GlobalHistoryStore,
+};
 
 #[derive(Debug, Default)]
 pub struct HistoryPanelOutput {
@@ -154,11 +156,11 @@ pub fn history_panel_ui(
       // Results list
       // -------------------------------------------------------------------
       const HISTORY_PANEL_LIMIT: usize = 500;
-      let query = search_text.trim();
+      let query = search_text.trim().to_string();
       let results: Vec<(usize, &GlobalHistoryEntry)> = if query.is_empty() {
         history.iter_recent().take(HISTORY_PANEL_LIMIT).collect()
       } else {
-        history.search(query, HISTORY_PANEL_LIMIT)
+        history.search(&query, HISTORY_PANEL_LIMIT)
       };
 
       if results.is_empty() {
@@ -173,7 +175,11 @@ pub fn history_panel_ui(
               BrowserIcon::History,
             )
           } else {
-            ("No results", "Try a different search query.", BrowserIcon::Search)
+            (
+              "No results",
+              "Try a different search query.",
+              BrowserIcon::Search,
+            )
           };
 
           icon_tinted(ui, icon, 34.0, ui.visuals().weak_text_color());
@@ -246,7 +252,8 @@ pub fn history_panel_ui(
               let expand = 1.0 + focus_stroke.width * 0.5;
               let focus_rect = row_rect.expand(expand);
               let focus_rounding = egui::Rounding::same(rounding.nw + expand);
-              ui.painter().rect_stroke(focus_rect, focus_rounding, focus_stroke);
+              ui.painter()
+                .rect_stroke(focus_rect, focus_rounding, focus_stroke);
             }
 
             row_resp.widget_info({
@@ -258,37 +265,37 @@ pub fn history_panel_ui(
             ui.allocate_ui_at_rect(row_rect.shrink2(row_padding), |ui| {
               ui.spacing_mut().item_spacing.x = 6.0;
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                  let delete_resp = icon_button(ui, BrowserIcon::Close, "Delete", true);
-                  delete_resp.widget_info({
-                    let label = format!("Delete history entry: {entry_label}");
-                    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                  });
-                  if delete_resp.clicked() {
-                    out.delete_index = Some(idx);
-                    action_clicked = true;
-                  }
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let delete_resp = icon_button(ui, BrowserIcon::Close, "Delete", true);
+                delete_resp.widget_info({
+                  let label = format!("Delete history entry: {entry_label}");
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                });
+                if delete_resp.clicked() {
+                  out.delete_index = Some(idx);
+                  action_clicked = true;
+                }
 
-                  let new_tab_resp =
-                    icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
-                  new_tab_resp.widget_info({
-                    let label = format!("Open history entry in new tab: {entry_label}");
-                    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                  });
-                  if new_tab_resp.clicked() {
-                    out.open_in_new_tab = Some(url.clone());
-                    action_clicked = true;
-                  }
+                let new_tab_resp =
+                  icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
+                new_tab_resp.widget_info({
+                  let label = format!("Open history entry in new tab: {entry_label}");
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                });
+                if new_tab_resp.clicked() {
+                  out.open_in_new_tab = Some(url.clone());
+                  action_clicked = true;
+                }
 
-                  let open_resp = ui.small_button("Open");
-                  open_resp.widget_info({
-                    let label = format!("Open history entry: {entry_label}");
-                    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                  });
-                  if open_resp.clicked() {
-                    out.open_url = Some(url.clone());
-                    action_clicked = true;
-                  }
+                let open_resp = ui.small_button("Open");
+                open_resp.widget_info({
+                  let label = format!("Open history entry: {entry_label}");
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                });
+                if open_resp.clicked() {
+                  out.open_url = Some(url.clone());
+                  action_clicked = true;
+                }
 
                 // Main text block (fills remaining width).
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {

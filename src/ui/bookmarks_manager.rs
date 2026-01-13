@@ -132,7 +132,10 @@ pub fn bookmarks_manager_side_panel(
           out.unfocus_page = true;
         }
 
-        if ui.button("New folder").clicked() {
+        let new_folder_resp = ui.button("New folder");
+        new_folder_resp
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Create new folder"));
+        if new_folder_resp.clicked() {
           state.creating_folder = Some(CreateFolderState {
             title: String::new(),
             parent: None,
@@ -179,10 +182,17 @@ pub fn bookmarks_manager_side_panel(
             ui.colored_label(ui.visuals().error_fg_color, err);
           }
           ui.horizontal(|ui| {
-            if ui.button("Create").clicked() {
+            let create_resp = ui.button("Create");
+            create_resp
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Create folder"));
+            if create_resp.clicked() {
               create_clicked = true;
             }
-            if ui.button("Cancel").clicked() {
+            let cancel_resp = ui.button("Cancel");
+            cancel_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel create folder")
+            });
+            if cancel_resp.clicked() {
               cancel_clicked = true;
             }
           });
@@ -255,7 +265,11 @@ pub fn bookmarks_manager_side_panel(
             out.unfocus_page = true;
           }
 
-          if ui.button("Use profile path").clicked() {
+          let use_profile_path_resp = ui.button("Use profile path");
+          use_profile_path_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Use profile path for export")
+          });
+          if use_profile_path_resp.clicked() {
             state.export_path = profile_path.display().to_string();
           }
 
@@ -308,7 +322,11 @@ pub fn bookmarks_manager_side_panel(
             out.unfocus_page = true;
           }
 
-          if ui.button("Use profile path").clicked() {
+          let use_profile_path_resp = ui.button("Use profile path");
+          use_profile_path_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Use profile path for import")
+          });
+          if use_profile_path_resp.clicked() {
             state.import_path = profile_path.display().to_string();
           }
 
@@ -555,10 +573,17 @@ fn render_bookmark_row(
     let mut save_clicked = false;
     let mut cancel_clicked = false;
     ui.horizontal(|ui| {
-      if ui.button("Save").clicked() {
+      let save_resp = ui.button("Save");
+      save_resp
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save bookmark"));
+      if save_resp.clicked() {
         save_clicked = true;
       }
-      if ui.button("Cancel").clicked() {
+      let cancel_resp = ui.button("Cancel");
+      cancel_resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel edit bookmark")
+      });
+      if cancel_resp.clicked() {
         cancel_clicked = true;
       }
     });
