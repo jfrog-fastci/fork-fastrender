@@ -2244,28 +2244,24 @@ fn storage_require_this(
     return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
 
-  let brand_key = alloc_key(scope, STORAGE_BRAND_KEY)?;
-  if !matches!(
-    scope.heap().object_get_own_data_property_value(obj, &brand_key)?,
-    Some(Value::Bool(true))
-  ) {
+  // `Heap::object_host_slots` only supports ordinary objects/functions. When `this` is another kind
+  // (like a Proxy), treat it as unbranded.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+
+  if slots.b != HOST_EXOTIC_STORAGE {
     return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   }
 
-  let kind_key = alloc_key(scope, STORAGE_KIND_KEY)?;
-  let kind_v = scope
-    .heap()
-    .object_get_own_data_property_value(obj, &kind_key)?
-    .unwrap_or(Value::Undefined);
-  let Value::Number(kind_n) = kind_v else {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
-  };
-  if !kind_n.is_finite() || kind_n.is_nan() {
-    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
-  }
-  match kind_n {
-    n if n == 0.0 => Ok(web_storage::StorageKind::Local),
-    n if n == 1.0 => Ok(web_storage::StorageKind::Session),
+  match slots.a {
+    0 => Ok(web_storage::StorageKind::Local),
+    1 => Ok(web_storage::StorageKind::Session),
     _ => Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR)),
   }
 }
@@ -2511,13 +2507,14 @@ fn dispatch_storage_event_task<Host: WindowRealmHost + 'static>(
     // Keep the storage object properties in sync with the underlying `StorageArea` so enumeration
     // (`Object.keys`, `for...in`, etc.) in other window hosts reflects mutations.
     if let Value::Object(storage_obj) = storage_obj {
-      let storage_brand_key = alloc_key(&mut scope, STORAGE_BRAND_KEY)?;
-      let is_storage = matches!(
-        scope
-          .heap()
-          .object_get_own_data_property_value(storage_obj, &storage_brand_key)?,
-        Some(Value::Bool(true))
-      );
+      // If user script deletes/replaces `window.localStorage`/`sessionStorage`, be defensive and
+      // only sync properties on the real Storage object.
+      let slots = match scope.heap().object_host_slots(storage_obj) {
+        Ok(slots) => slots,
+        Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(storage_obj) => None,
+        Err(err) => return Err(err),
+      };
+      let is_storage = matches!(slots, Some(HostSlots { b, .. }) if b == HOST_EXOTIC_STORAGE);
       if is_storage {
         match (event.key.as_deref(), event.new_value.as_deref()) {
           (Some(key), Some(new_value)) => {
@@ -2874,8 +2871,6 @@ fn install_storage_object(
   global_key: PropertyKey,
   storage_proto: GcObject,
   kind: web_storage::StorageKind,
-  storage_brand_key: PropertyKey,
-  storage_kind_key: PropertyKey,
 ) -> Result<GcObject, VmError> {
   let storage_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_obj))?;
@@ -2884,20 +2879,18 @@ fn install_storage_object(
     .object_set_prototype(storage_obj, Some(storage_proto))?;
 
   // FastRender-only branding to ensure `Storage.prototype.*` methods throw when borrowed onto other
-  // receivers.
-  scope.define_property(
-    storage_obj,
-    storage_brand_key,
-    non_configurable_read_only_data_desc(Value::Bool(true)),
-  )?;
-  let kind_value = match kind {
-    web_storage::StorageKind::Local => 0.0,
-    web_storage::StorageKind::Session => 1.0,
+  // receivers. Use host slots so `Object.getOwnPropertyNames(localStorage)` matches browsers (no
+  // internal `__fastrender_*` keys).
+  let kind_slot = match kind {
+    web_storage::StorageKind::Local => 0,
+    web_storage::StorageKind::Session => 1,
   };
-  scope.define_property(
+  scope.heap_mut().object_set_host_slots(
     storage_obj,
-    storage_kind_key,
-    non_configurable_read_only_data_desc(Value::Number(kind_value)),
+    HostSlots {
+      a: kind_slot,
+      b: HOST_EXOTIC_STORAGE,
+    },
   )?;
 
   // Install the storage object on the global as a read-only data property.
@@ -2985,10 +2978,6 @@ const HISTORY_SCROLL_RESTORATION_MANUAL: u64 = 1;
 const DOM_RECT_FROM_RECT_CTOR_SLOT: usize = 0;
 const DOM_RECT_FROM_RECT_READ_ONLY_SLOT: usize = 1;
 const ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
-#[allow(dead_code)]
-const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = ILLEGAL_INVOCATION_ERROR;
-const STORAGE_BRAND_KEY: &str = "__fastrender_storage_brand";
-const STORAGE_KIND_KEY: &str = "__fastrender_storage_kind";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 #[allow(dead_code)]
 const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
@@ -3034,6 +3023,7 @@ const HOST_EXOTIC_DOM_TOKEN_LIST: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const HOST_EXOTIC_DOM_STRING_MAP: u64 = u64::from_be_bytes(*b"FRDOMDSM");
 const HOST_EXOTIC_COMPUTED_STYLE: u64 = u64::from_be_bytes(*b"FRCOMPUT");
 const HOST_EXOTIC_NAMED_NODE_MAP: u64 = u64::from_be_bytes(*b"FRDOMNNM");
+const HOST_EXOTIC_STORAGE: u64 = u64::from_be_bytes(*b"FRSTORAG");
 const HOST_OBJECT_ATTR: u64 = u64::from_be_bytes(*b"FRDOMATR");
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 /// Internal-only indirection used when a JS `Document` wrapper is backed by a different "platform"
@@ -54048,8 +54038,6 @@ fn init_window_globals(
   let storage_remove_item_key = alloc_key(&mut scope, "removeItem")?;
   let storage_clear_key = alloc_key(&mut scope, "clear")?;
   let storage_key_key = alloc_key(&mut scope, "key")?;
-  let storage_brand_key = alloc_key(&mut scope, STORAGE_BRAND_KEY)?;
-  let storage_kind_key = alloc_key(&mut scope, STORAGE_KIND_KEY)?;
 
   let storage_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_proto))?;
@@ -54183,8 +54171,6 @@ fn init_window_globals(
     local_storage_key,
     storage_proto,
     web_storage::StorageKind::Local,
-    storage_brand_key,
-    storage_kind_key,
   )?;
   let session_storage_obj = install_storage_object(
     &mut scope,
@@ -54192,8 +54178,6 @@ fn init_window_globals(
     session_storage_key,
     storage_proto,
     web_storage::StorageKind::Session,
-    storage_brand_key,
-    storage_kind_key,
   )?;
   // Ensure any persisted keys (from other realms) are immediately visible as enumerable own
   // properties so common enumeration patterns (`Object.keys(localStorage)`) behave like browsers.
@@ -57082,6 +57066,12 @@ mod tests {
     realm.exec_script("localStorage.setItem('a','1'); localStorage.setItem('b','2');")?;
     let keys = realm.exec_script("JSON.stringify(Object.keys(localStorage))")?;
     assert_eq!(get_string(realm.heap(), keys), "[\"a\",\"b\"]");
+    let names = realm.exec_script("JSON.stringify(Object.getOwnPropertyNames(localStorage))")?;
+    assert_eq!(get_string(realm.heap(), names), "[\"a\",\"b\"]");
+    let for_in = realm.exec_script(
+      "(() => { const out = []; for (const k in localStorage) out.push(k); return JSON.stringify(out); })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), for_in), "[\"a\",\"b\"]");
     assert_eq!(realm.exec_script("'a' in localStorage")?, Value::Bool(true));
     assert_eq!(realm.exec_script("'missing' in localStorage")?, Value::Bool(false));
 
@@ -57089,11 +57079,19 @@ mod tests {
     realm.exec_script("localStorage.setItem('a','3')")?;
     let keys = realm.exec_script("JSON.stringify(Object.keys(localStorage))")?;
     assert_eq!(get_string(realm.heap(), keys), "[\"a\",\"b\"]");
+    let names = realm.exec_script("JSON.stringify(Object.getOwnPropertyNames(localStorage))")?;
+    assert_eq!(get_string(realm.heap(), names), "[\"a\",\"b\"]");
 
     // Removing + reinserting must move the key to the end.
     realm.exec_script("localStorage.removeItem('a'); localStorage.setItem('a','4');")?;
     let keys = realm.exec_script("JSON.stringify(Object.keys(localStorage))")?;
     assert_eq!(get_string(realm.heap(), keys), "[\"b\",\"a\"]");
+    let names = realm.exec_script("JSON.stringify(Object.getOwnPropertyNames(localStorage))")?;
+    assert_eq!(get_string(realm.heap(), names), "[\"b\",\"a\"]");
+    let for_in = realm.exec_script(
+      "(() => { const out = []; for (const k in localStorage) out.push(k); return JSON.stringify(out); })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), for_in), "[\"b\",\"a\"]");
 
     // Stored keys must not shadow prototype properties.
     realm.exec_script("localStorage.setItem('getItem','x')")?;
@@ -57103,6 +57101,10 @@ mod tests {
     );
     assert_eq!(
       realm.exec_script("Object.keys(localStorage).includes('getItem')")?,
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm.exec_script("Object.getOwnPropertyNames(localStorage).includes('getItem')")?,
       Value::Bool(false)
     );
     let stored = realm.exec_script("localStorage.getItem('getItem')")?;
