@@ -309,9 +309,13 @@ impl ModuleGraph {
   /// Marks the cached SCC (cycle) structure as dirty so it will be recomputed on the next
   /// evaluation.
   ///
-  /// This must be invoked whenever `[[LoadedModules]]` edges change (e.g. during host-driven module
-  /// loading) since SCC membership and evaluation ordering depend on the resolved import graph, not
-  /// just the static `[[RequestedModules]]` list.
+  /// SCC membership and dependency edges are computed over the resolved `[[LoadedModules]]` graph
+  /// (stored in each module record's `loaded_modules` list), not just the static
+  /// `[[RequestedModules]]` list.
+  ///
+  /// Any mutation of `loaded_modules` must call this method (e.g. during host-driven module
+  /// loading/`FinishLoadingImportedModule`) so cached SCC structure is recomputed before module
+  /// evaluation.
   pub(crate) fn mark_scc_dirty(&mut self) {
     self.scc_dirty = true;
   }
@@ -1053,7 +1057,7 @@ impl ModuleGraph {
     }
 
     // SCC structure depends on the resolved `[[LoadedModules]]` edges.
-    self.scc_dirty = true;
+    self.mark_scc_dirty();
   }
 
   /// Implements ECMA-262 `GetImportedModule(referrer, request)`.
