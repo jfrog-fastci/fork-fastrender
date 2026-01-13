@@ -50260,6 +50260,7 @@ fn init_window_globals(
     let html_media_element_proto = platform.prototype_for(DomInterface::HTMLMediaElement);
     let html_video_element_proto = platform.prototype_for(DomInterface::HTMLVideoElement);
     let html_audio_element_proto = platform.prototype_for(DomInterface::HTMLAudioElement);
+
     let html_input_element_proto = platform.prototype_for(DomInterface::HTMLInputElement);
     let html_select_element_proto = platform.prototype_for(DomInterface::HTMLSelectElement);
     let html_text_area_element_proto = platform.prototype_for(DomInterface::HTMLTextAreaElement);
@@ -58705,6 +58706,42 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(get_string(realm.heap(), result), "maybe|probably|");
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_elements_have_to_string_tag() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        const audio = document.createElement('audio');
+
+        if (Object.prototype.toString.call(video) !== '[object HTMLVideoElement]') return false;
+        if (Object.prototype.toString.call(audio) !== '[object HTMLAudioElement]') return false;
+        if (Object.prototype.toString.call(HTMLMediaElement.prototype) !== '[object HTMLMediaElement]') return false;
+
+        const sym = Symbol.toStringTag;
+        const check = (ctor, tag) => {
+          const desc = Object.getOwnPropertyDescriptor(ctor.prototype, sym);
+          return !!desc &&
+            desc.value === tag &&
+            desc.writable === false &&
+            desc.enumerable === false &&
+            desc.configurable === true;
+        };
+        if (!check(HTMLMediaElement, 'HTMLMediaElement')) return false;
+        if (!check(HTMLVideoElement, 'HTMLVideoElement')) return false;
+        if (!check(HTMLAudioElement, 'HTMLAudioElement')) return false;
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
