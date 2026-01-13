@@ -5091,14 +5091,6 @@ impl<'vm> HirEvaluator<'vm> {
           unreachable!();
         };
         if let Some(body_id) = *body {
-          let ctor_body = self.get_body(body_id)?;
-          let Some(func_meta) = ctor_body.function.as_ref() else {
-            return Err(VmError::InvariantViolation(
-              "class constructor body missing function metadata",
-            ));
-          };
-          ctor_length = u32::try_from(func_meta.params.len()).unwrap_or(u32::MAX);
-
           // Allocate the compiled function object for the constructor body.
           let body_func =
             self.alloc_user_function_object(
@@ -5108,6 +5100,7 @@ impl<'vm> HirEvaluator<'vm> {
               /* is_arrow */ false,
               /* name_binding */ None,
             )?;
+          ctor_length = scope.heap().get_function(body_func)?.length;
 
           // Wrap it in a constructable native function so `class_constructor_construct` can delegate
           // via `vm.construct`.

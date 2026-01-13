@@ -3910,7 +3910,7 @@ mod unicode_set_vm_tests {
     let trie = build_trie(&[&ab]);
     let single = CharClass {
       negated: false,
-      items: vec![CharClassItem::Char(b'a' as u16)],
+      items: vec![CharClassItem::Char(b'a' as u32)],
     };
     let cls = UnicodeSetClass {
       strings: trie,
@@ -3919,7 +3919,7 @@ mod unicode_set_vm_tests {
     };
 
     let program = RegExpProgram {
-      insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'b' as u16), Inst::Match],
+      insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'b' as u32), Inst::Match],
       capture_count: 1,
       repeat_count: 0,
       named_capture_groups: vec![],
@@ -3969,7 +3969,7 @@ mod unicode_set_vm_tests {
     };
 
     let program = RegExpProgram {
-      insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'c' as u16), Inst::Match],
+      insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'c' as u32), Inst::Match],
       capture_count: 1,
       repeat_count: 0,
       named_capture_groups: vec![],
