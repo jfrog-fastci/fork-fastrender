@@ -4485,8 +4485,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       request_autosave(&windows, &window_order, active_window_id);
     }
 
-    // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
-    // pending deadline (worker ticks, worker redraw coalescing, viewport throttling, egui repaint scheduling, session autosave).
+    // Drive periodic worker ticks for documents with time-based effects and keep the event loop
+    // armed for the next pending deadline (worker ticks, worker redraw coalescing, viewport
+    // throttling, egui repaint scheduling, session autosave).
     for win in windows.values_mut() {
       win
         .app
@@ -7788,9 +7789,10 @@ impl App {
   }
 
   fn desired_animation_tick_tab(&self) -> Option<fastrender::ui::TabId> {
-    // During interactive window resizing, pause animation ticks to keep CPU available for the UI
-    // thread. The page will still repaint on user input / new frames, but we avoid continuously
-    // advancing CSS animation time while the user is dragging the window edge.
+    // During interactive window resizing, pause worker ticks to keep CPU available for the UI
+    // thread. The page will still repaint on user input / new frames, but time-based effects (CSS
+    // animations/transitions, animated images, JS timers/rAF, etc) will not advance while the user
+    // is dragging the window edge.
     if self.window_occluded
       || self.window_minimized
       || !self.window_focused
@@ -7851,7 +7853,7 @@ impl App {
   ) {
     // In a multi-window event loop, this should be called for every live window/app after handling
     // the current event so that:
-    // - animation ticks are driven even when a given window is otherwise idle, and
+    // - worker ticks are driven even when a given window is otherwise idle, and
     // - the global `ControlFlow::WaitUntil` deadline accounts for the earliest wakeup across all windows.
     self.update_resize_burst_state(std::time::Instant::now());
     self.drain_expired_closing_tab_favicons();
