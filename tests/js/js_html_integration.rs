@@ -1329,3 +1329,34 @@ fn p3_load_event_waits_for_images_inserted_after_domcontentloaded() -> Result<()
   );
   Ok(())
 }
+
+#[test]
+fn p3_load_event_waits_for_link_rel_icon() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_icon.html", js_options)?;
+
+  // `BrowserTabHost::discover_and_start_image_loads` treats `<link rel=icon>` as an image-like load
+  // blocker (same pipeline as `<img>`). Ensure `window.load` still waits for it.
+  let icon_url = "https://example.invalid/icon.png";
+  h.register_script_source(icon_url, "fake image bytes");
+  h.register_html_source(&format!(
+    r#"<!doctype html><head>
+      <link rel="icon" href="{icon_url}">
+    </head><body>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          setTimeout(() => console.log("timer"), 0);
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["dcl".to_string(), "timer".to_string(), "load".to_string()]
+  );
+  Ok(())
+}
