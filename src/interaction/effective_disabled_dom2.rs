@@ -146,6 +146,25 @@ pub(crate) fn is_effectively_hidden(node: NodeId, dom: &dom2::Document) -> bool 
   false
 }
 
+pub(crate) fn is_effectively_inert_or_hidden(node: NodeId, dom: &dom2::Document) -> bool {
+  is_effectively_inert(node, dom) || is_effectively_hidden(node, dom)
+}
+
+/// Returns true if `node` is inside `<template>` contents (including the `<template>` element
+/// itself).
+pub(crate) fn is_in_template_contents(node: NodeId, dom: &dom2::Document) -> bool {
+  if dom.nodes().get(node.index()).is_none() {
+    return false;
+  }
+
+  dom.ancestors(node).any(|ancestor| {
+    dom
+      .nodes()
+      .get(ancestor.index())
+      .is_some_and(|n| n.inert_subtree)
+  })
+}
+
 /// Spec-correct HTML disabled resolution for interaction:
 ///
 /// - `disabled` on the element itself disables it.
@@ -329,6 +348,8 @@ mod tests {
 
     assert!(is_effectively_inert(template, &doc));
     assert!(is_effectively_inert(inside, &doc));
+    assert!(is_in_template_contents(template, &doc));
+    assert!(is_in_template_contents(inside, &doc));
   }
 
   #[test]
@@ -345,6 +366,8 @@ mod tests {
 
     assert!(is_effectively_inert(inert_btn, &doc));
     assert!(is_effectively_hidden(hidden_btn, &doc));
+    assert!(is_effectively_inert_or_hidden(inert_btn, &doc));
+    assert!(is_effectively_inert_or_hidden(hidden_btn, &doc));
   }
 
   #[test]
