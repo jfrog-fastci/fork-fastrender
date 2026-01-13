@@ -3553,6 +3553,11 @@ const NODE_LIST_ITERATOR_KIND_VALUES: u8 = 0;
 const NODE_LIST_ITERATOR_KIND_KEYS: u8 = 1;
 const NODE_LIST_ITERATOR_KIND_ENTRIES: u8 = 2;
 
+// Internal key for storing the NodeIterator prototype on a document wrapper.
+//
+// This is used by `document.createNodeIterator` to wire up the correct prototype without walking
+// `globalThis`, and is copied onto realm-owned documents so their iterators behave consistently.
+const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const NODE_ITERATOR_ID_KEY: &str = "__fastrender_node_iterator_id";
 const NODE_ITERATOR_DOCUMENT_KEY: &str = "__fastrender_node_iterator_document";
 const NODE_ITERATOR_ROOT_KEY: &str = "__fastrender_node_iterator_root";
@@ -32949,12 +32954,12 @@ fn node_compare_document_position_native(
 
   // If node1 is an ancestor of node2, other contains this.
   if is_ancestor(dom, node1.node_id, node2.node_id) {
-    let mask = DOCUMENT_POSITION_CONTAINS | DOCUMENT_POSITION_PRECEDING;
+    let mask = DOCUMENT_POSITION_CONTAINED_BY | DOCUMENT_POSITION_PRECEDING;
     return Ok(Value::Number(mask as f64));
   }
   // If node1 is a descendant of node2, other is contained by this.
   if is_ancestor(dom, node2.node_id, node1.node_id) {
-    let mask = DOCUMENT_POSITION_CONTAINED_BY | DOCUMENT_POSITION_FOLLOWING;
+    let mask = DOCUMENT_POSITION_CONTAINS | DOCUMENT_POSITION_FOLLOWING;
     return Ok(Value::Number(mask as f64));
   }
 
