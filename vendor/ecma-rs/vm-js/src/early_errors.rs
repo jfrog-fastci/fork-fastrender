@@ -1622,17 +1622,17 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx: &mut ControlContext,
     decl: &ClassDecl,
   ) -> Result<(), VmError> {
-    // Class definitions are always strict mode code, so strict-mode binding restrictions apply
-    // regardless of the surrounding context.
+    // Per ECMA-262, class definitions are always strict mode code, regardless of whether they
+    // appear in a sloppy script/function body.
+    //
+    // This affects early errors not just within the class body, but also for:
+    // - the class binding identifier itself, and
+    // - the `extends` (heritage) expression.
+    let saved = self.save_scope_flags(ctx);
+    ctx.strict = true;
+
     if let Some(name) = &decl.name {
-      self.validate_reserved_identifier_flags(
-        /* strict */ true,
-        /* is_module */ ctx.is_module,
-        /* await_is_reserved */ ctx.await_is_reserved,
-        /* yield_is_reserved */ ctx.yield_is_reserved,
-        name.loc,
-        name.stx.name.as_str(),
-      )?;
+      self.validate_reserved_identifier(ctx, name.loc, name.stx.name.as_str())?;
       if is_restricted_identifier(&name.stx.name) {
         let message = try_format_error_message(
           "restricted identifier '",
@@ -1645,7 +1645,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if let Some(extends) = &decl.extends {
       self.visit_expr(ctx, extends)?;
     }
-    self.visit_class_members(ctx, &decl.members, decl.extends.is_some())
+    let res = self.visit_class_members(ctx, &decl.members, decl.extends.is_some());
+    self.restore_scope_flags(ctx, saved);
+    res
   }
 
   fn visit_class_expr(
@@ -1653,17 +1655,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx: &mut ControlContext,
     expr: &ClassExpr,
   ) -> Result<(), VmError> {
-    // Class definitions are always strict mode code, so strict-mode binding restrictions apply
-    // regardless of the surrounding context.
+    // Per ECMA-262, class expressions are always strict mode code.
+    let saved = self.save_scope_flags(ctx);
+    ctx.strict = true;
+
     if let Some(name) = &expr.name {
-      self.validate_reserved_identifier_flags(
-        /* strict */ true,
-        /* is_module */ ctx.is_module,
-        /* await_is_reserved */ ctx.await_is_reserved,
-        /* yield_is_reserved */ ctx.yield_is_reserved,
-        name.loc,
-        name.stx.name.as_str(),
-      )?;
+      self.validate_reserved_identifier(ctx, name.loc, name.stx.name.as_str())?;
       if is_restricted_identifier(&name.stx.name) {
         let message = try_format_error_message(
           "restricted identifier '",
@@ -1676,7 +1673,9 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if let Some(extends) = &expr.extends {
       self.visit_expr(ctx, extends)?;
     }
-    self.visit_class_members(ctx, &expr.members, expr.extends.is_some())
+    let res = self.visit_class_members(ctx, &expr.members, expr.extends.is_some());
+    self.restore_scope_flags(ctx, saved);
+    res
   }
 
   fn visit_class_members(
@@ -2361,7 +2360,6 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         }
       }
     }
-
     // `await` and `yield` are reserved identifiers in certain contexts (modules/async/generators).
     //
     // Note: function *declarations* and *expressions* differ here:
@@ -3153,6 +3151,9 @@ mod tests {
   use diagnostics::Diagnostic;
 
   fn assert_syntax_error(source: &str, opts: EarlyErrorOptions) {
+    // Use the permissive TS+module parser to ensure we can validate early errors even for
+    // context-sensitive keywords like `yield`/`await`. vm-js enforces the spec restrictions in
+    // early error validation rather than relying exclusively on parse-time keyword classification.
     let program = parse_js::parse(source).expect("parse source");
     let mut tick = || Ok(());
     let res = validate_top_level(&program.stx.body, opts, &mut tick);
@@ -3236,4 +3237,18 @@ mod tests {
   fn module_disallows_await_as_binding_identifier_in_patterns() {
     assert_syntax_error("let { await } = {};", EarlyErrorOptions::module());
   }
+
+  #[test]
+  fn class_extends_expression_is_strict_mode_code() {
+    // Strict-mode restrictions apply to the `extends` expression as well.
+    assert_syntax_error(
+      "class C extends (yield = 1) {}",
+      EarlyErrorOptions::script(false),
+    );
+  }
+
+  // Note: parse-js currently rejects some reserved words in certain binding-identifier positions
+  // during parsing (e.g. function/class names, some import bindings). Those cases are still covered
+  // by test262 negative-parse suites; we focus these unit tests on contexts where vm-js relies on
+  // early-error validation after parsing (binding patterns and assignment patterns).
 }
