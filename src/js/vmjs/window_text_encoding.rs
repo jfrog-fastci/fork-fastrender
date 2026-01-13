@@ -18,6 +18,8 @@ use vm_js::{
 const TEXT_ENCODER_HOST_TAG: u64 = 0x5445_5854_454E_4344; // "TEXTENCD"
 const TEXT_DECODER_HOST_TAG: u64 = 0x5445_5854_4445_4344; // "TEXTDECD"
 const TEXT_ENCODER_STREAM_HOST_TAG: u64 = 0x5445_5354_454E_5354; // "TESTENST" (TextEncoderStream)
+const TEXT_DECODER_STREAM_HOST_TAG: u64 = 0x5444_4543_5354_524D; // "TDECSTRM" (TextDecoderStream)
+const TEXT_DECODER_STREAM_TRANSFORMER_HOST_TAG: u64 = 0x5444_5354_5241_4E53; // "TDSTRANS"
 
 const TEXT_DECODER_FLAG_FATAL: u64 = 1 << 0;
 const TEXT_DECODER_FLAG_IGNORE_BOM: u64 = 1 << 1;
@@ -108,6 +110,12 @@ const MAX_TEXT_DECODER_INPUT_BYTES: usize = 32 * 1024 * 1024;
 /// This bounds host-side allocations (`Vec<u8>`) before handing bytes into the VM heap as an
 /// `ArrayBuffer`.
 const MAX_TEXT_ENCODER_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
+
+/// Upper bound on the number of UTF-8 bytes produced by a single `TextDecoderStream` transform.
+///
+/// This mirrors `MAX_TEXT_ENCODER_OUTPUT_BYTES` to avoid unbounded host allocations when decoding
+/// attacker-controlled byte chunks.
+const MAX_TEXT_DECODER_STREAM_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
@@ -298,6 +306,42 @@ fn require_text_encoder_stream_receiver(
     ));
   }
   Ok(obj)
+}
+
+fn require_text_decoder_stream_receiver(
+  scope: &Scope<'_>,
+  this: Value,
+) -> Result<(vm_js::GcObject, u64), VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "TextDecoderStream: illegal invocation",
+    ));
+  };
+  let slots = receiver_host_slots(scope, obj)?;
+  if slots.a != TEXT_DECODER_STREAM_HOST_TAG {
+    return Err(VmError::TypeError(
+      "TextDecoderStream: illegal invocation",
+    ));
+  }
+  Ok((obj, slots.b))
+}
+
+fn require_text_decoder_stream_transformer_receiver(
+  scope: &Scope<'_>,
+  this: Value,
+) -> Result<(vm_js::GcObject, u64), VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "TextDecoderStream transformer: illegal invocation",
+    ));
+  };
+  let slots = receiver_host_slots(scope, obj)?;
+  if slots.a != TEXT_DECODER_STREAM_TRANSFORMER_HOST_TAG {
+    return Err(VmError::TypeError(
+      "TextDecoderStream transformer: illegal invocation",
+    ));
+  }
+  Ok((obj, slots.b))
 }
 
 fn require_text_decoder_receiver(
@@ -647,6 +691,599 @@ fn text_encoder_stream_transform(
     enqueue_fn,
     Value::Object(controller_obj),
     &[Value::Object(view_obj)],
+  )?;
+
+  Ok(Value::Undefined)
+}
+
+// --- TextDecoderStream -------------------------------------------------------
+
+const TEXT_DECODER_STREAM_CTOR_SLOT_GLOBAL: usize = 0;
+const TEXT_DECODER_STREAM_CTOR_SLOT_TRANSFORM_STREAM_KEY: usize = 1;
+const TEXT_DECODER_STREAM_CTOR_SLOT_READABLE_KEY: usize = 2;
+const TEXT_DECODER_STREAM_CTOR_SLOT_WRITABLE_KEY: usize = 3;
+const TEXT_DECODER_STREAM_CTOR_SLOT_TRANSFORM_KEY: usize = 4;
+const TEXT_DECODER_STREAM_CTOR_SLOT_FLUSH_KEY: usize = 5;
+const TEXT_DECODER_STREAM_CTOR_SLOT_TRANSFORM_FN: usize = 6;
+const TEXT_DECODER_STREAM_CTOR_SLOT_FLUSH_FN: usize = 7;
+
+const TEXT_DECODER_STREAM_TRANSFORM_SLOT_ENQUEUE_KEY: usize = 0;
+
+fn text_decoder_stream_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "TextDecoderStream constructor requires 'new'",
+  ))
+}
+
+fn text_decoder_stream_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(callee))?;
+
+  // Validate encoding label (Encoding Standard: trim ASCII whitespace, ASCII case-insensitive).
+  let mut encoding: &'static Encoding = UTF_8;
+  if let Some(label_value) = args.get(0).copied() {
+    if !matches!(label_value, Value::Undefined) {
+      let label_string = match label_value {
+        Value::String(s) => s,
+        other => scope.heap_mut().to_string(other)?,
+      };
+      let label_units = scope.heap().get_string(label_string)?.as_code_units();
+      let enc = encoding_from_label_code_units(label_units)?;
+      let Some(enc) = enc else {
+        return Err(VmError::Throw(
+          new_range_error(&mut scope, intr, "The encoding label provided is invalid.")?,
+        ));
+      };
+      if text_decoder_encoding_id(enc).is_none() {
+        return Err(VmError::Throw(
+          new_range_error(&mut scope, intr, "The encoding label provided is invalid.")?,
+        ));
+      }
+      encoding = enc;
+    }
+  }
+
+  // Parse options: `{ fatal, ignoreBOM }`.
+  let mut flags: u64 = 0;
+  if let Some(options_value) = args.get(1).copied() {
+    if let Value::Object(options_obj) = options_value {
+      scope.push_root(Value::Object(options_obj))?;
+
+      let fatal_key = alloc_key(&mut scope, "fatal")?;
+      let fatal_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, fatal_key)?;
+      if scope.heap().to_boolean(fatal_value)? {
+        flags |= TEXT_DECODER_FLAG_FATAL;
+      }
+
+      let ignore_bom_key = alloc_key(&mut scope, "ignoreBOM")?;
+      let ignore_bom_value =
+        vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, ignore_bom_key)?;
+      if scope.heap().to_boolean(ignore_bom_value)? {
+        flags |= TEXT_DECODER_FLAG_IGNORE_BOM;
+      }
+    }
+  }
+
+  let encoding_id = text_decoder_encoding_id(encoding).ok_or(VmError::InvariantViolation(
+    "TextDecoderStream constructed with unsupported encoding",
+  ))?;
+  let state = text_decoder_pack_state(encoding_id, flags);
+
+  // Read constructor slots.
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let global = match slots
+    .get(TEXT_DECODER_STREAM_CTOR_SLOT_GLOBAL)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream constructor missing global slot",
+      ))
+    }
+  };
+  let transform_stream_key_s = match slots
+    .get(TEXT_DECODER_STREAM_CTOR_SLOT_TRANSFORM_STREAM_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream constructor missing TransformStream key slot",
+      ))
+    }
+  };
+  let readable_key_s = match slots
+    .get(TEXT_DECODER_STREAM_CTOR_SLOT_READABLE_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream constructor missing readable key slot",
+      ))
+    }
+  };
+  let writable_key_s = match slots
+    .get(TEXT_DECODER_STREAM_CTOR_SLOT_WRITABLE_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream constructor missing writable key slot",
+      ))
+    }
+  };
+  let transform_key_s = match slots
+    .get(TEXT_DECODER_STREAM_CTOR_SLOT_TRANSFORM_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream constructor missing transform key slot",
+      ))
+    }
+  };
+  let flush_key_s = match slots
+    .get(TEXT_DECODER_STREAM_CTOR_SLOT_FLUSH_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream constructor missing flush key slot",
+      ))
+    }
+  };
+  let transform_fn = match slots
+    .get(TEXT_DECODER_STREAM_CTOR_SLOT_TRANSFORM_FN)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream constructor missing transform function slot",
+      ))
+    }
+  };
+  let flush_fn = match slots
+    .get(TEXT_DECODER_STREAM_CTOR_SLOT_FLUSH_FN)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream constructor missing flush function slot",
+      ))
+    }
+  };
+
+  // Construct internal TransformStream.
+  scope.push_root(Value::Object(global))?;
+  let transform_stream_key = PropertyKey::from_string(transform_stream_key_s);
+  let ts_ctor = vm.get_with_host_and_hooks(host, &mut scope, hooks, global, transform_stream_key)?;
+  let Value::Object(_ts_ctor_obj) = ts_ctor else {
+    return Err(VmError::TypeError("TransformStream is not available"));
+  };
+  scope.push_root(ts_ctor)?;
+
+  let transformer_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(transformer_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(transformer_obj, Some(intr.object_prototype()))?;
+  scope.heap_mut().object_set_host_slots(
+    transformer_obj,
+    HostSlots {
+      a: TEXT_DECODER_STREAM_TRANSFORMER_HOST_TAG,
+      b: state,
+    },
+  )?;
+
+  let transform_key = PropertyKey::from_string(transform_key_s);
+  scope.define_property(
+    transformer_obj,
+    transform_key,
+    data_desc(Value::Object(transform_fn)),
+  )?;
+  let flush_key = PropertyKey::from_string(flush_key_s);
+  scope.define_property(
+    transformer_obj,
+    flush_key,
+    data_desc(Value::Object(flush_fn)),
+  )?;
+
+  let ts = vm.construct_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    ts_ctor,
+    &[Value::Object(transformer_obj)],
+    ts_ctor,
+  )?;
+  let Value::Object(ts_obj) = ts else {
+    return Err(VmError::InvariantViolation(
+      "TransformStream constructor must return object",
+    ));
+  };
+  scope.push_root(Value::Object(ts_obj))?;
+
+  // Initialize the streaming decoder state stored on the internal transformer object.
+  let ignore_bom = (flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0;
+  let decoder = new_streaming_decoder(encoding, ignore_bom);
+  with_text_encoding_context_mut(scope.heap(), |ctx| {
+    ctx.decoders.insert(
+      WeakGcObject::from(transformer_obj),
+      TextDecoderRuntimeState { decoder },
+    );
+    Ok(())
+  })?;
+
+  // Extract `{ readable, writable }` from the internal TransformStream.
+  let readable_key = PropertyKey::from_string(readable_key_s);
+  let writable_key = PropertyKey::from_string(writable_key_s);
+  let readable_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, ts_obj, readable_key)?;
+  scope.push_root(readable_val)?;
+  let writable_val = vm.get_with_host_and_hooks(host, &mut scope, hooks, ts_obj, writable_key)?;
+  scope.push_root(writable_val)?;
+
+  let proto = {
+    let key_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    match scope
+      .heap()
+      .object_get_own_data_property_value(callee, &key)?
+    {
+      Some(Value::Object(proto)) => proto,
+      _ => intr.object_prototype(),
+    }
+  };
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  scope.heap_mut().object_set_host_slots(
+    obj,
+    HostSlots {
+      a: TEXT_DECODER_STREAM_HOST_TAG,
+      b: state,
+    },
+  )?;
+
+  scope.define_property(obj, readable_key, read_only_data_desc(readable_val))?;
+  scope.define_property(obj, writable_key, read_only_data_desc(writable_val))?;
+
+  Ok(Value::Object(obj))
+}
+
+fn text_decoder_stream_get_encoding(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (_obj, state) = require_text_decoder_stream_receiver(scope, this)?;
+  let label = text_decoder_state_encoding_label(state)?;
+  let s = scope.alloc_string(label)?;
+  Ok(Value::String(s))
+}
+
+fn text_decoder_stream_get_fatal(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (_obj, state) = require_text_decoder_stream_receiver(scope, this)?;
+  Ok(Value::Bool(
+    (text_decoder_state_flags(state) & TEXT_DECODER_FLAG_FATAL) != 0,
+  ))
+}
+
+fn text_decoder_stream_get_ignore_bom(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let (_obj, state) = require_text_decoder_stream_receiver(scope, this)?;
+  Ok(Value::Bool(
+    (text_decoder_state_flags(state) & TEXT_DECODER_FLAG_IGNORE_BOM) != 0,
+  ))
+}
+
+fn text_decoder_stream_transform(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (transformer_obj, state) = require_text_decoder_stream_transformer_receiver(scope, this)?;
+  let flags = text_decoder_state_flags(state);
+  let ignore_bom = (flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0;
+  let fatal = (flags & TEXT_DECODER_FLAG_FATAL) != 0;
+  let encoding = text_decoder_state_encoding(state)?;
+
+  let chunk = args.get(0).copied().unwrap_or(Value::Undefined);
+  let controller = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let Value::Object(controller_obj) = controller else {
+    return Err(VmError::TypeError(
+      "TextDecoderStream transform missing controller",
+    ));
+  };
+
+  let heap = scope.heap();
+  let data = match chunk {
+    Value::Undefined => &[][..],
+    Value::Object(input_obj) => {
+      if heap.is_array_buffer_object(input_obj) {
+        heap.array_buffer_data(input_obj)?
+      } else if heap.is_uint8_array_object(input_obj) {
+        heap.uint8_array_data(input_obj)?
+      } else {
+        return Err(VmError::TypeError(
+          "TextDecoderStream expects an ArrayBuffer or Uint8Array",
+        ));
+      }
+    }
+    _ => {
+      return Err(VmError::TypeError(
+        "TextDecoderStream expects an ArrayBuffer or Uint8Array",
+      ))
+    }
+  };
+
+  if data.len() > MAX_TEXT_DECODER_INPUT_BYTES {
+    return Err(VmError::TypeError("TextDecoderStream chunk too large"));
+  }
+
+  let decoded = with_text_encoding_context_mut(heap, |ctx| {
+    use encoding_rs::CoderResult;
+
+    let key = WeakGcObject::from(transformer_obj);
+    let state = ctx.decoders.entry(key).or_insert_with(|| TextDecoderRuntimeState {
+      decoder: new_streaming_decoder(encoding, ignore_bom),
+    });
+
+    let mut out = String::new();
+    out
+      .try_reserve_exact(
+        data
+          .len()
+          .saturating_mul(3)
+          .min(MAX_TEXT_DECODER_STREAM_OUTPUT_BYTES),
+      )
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    let mut had_errors = false;
+    let mut src = data;
+    loop {
+      let (result, read, errors) = state.decoder.decode_to_string(src, &mut out, false);
+      had_errors |= errors;
+      if read > src.len() {
+        return Err(VmError::InvariantViolation(
+          "TextDecoderStream transform consumed more bytes than available",
+        ));
+      }
+      src = &src[read..];
+
+      match result {
+        CoderResult::InputEmpty => break,
+        CoderResult::OutputFull => {
+          let remaining = MAX_TEXT_DECODER_STREAM_OUTPUT_BYTES.saturating_sub(out.len());
+          if remaining == 0 {
+            return Err(VmError::TypeError("TextDecoderStream chunk output too large"));
+          }
+          // Grow the output buffer in bounded increments.
+          let grow_by = remaining.min(1024);
+          out
+            .try_reserve_exact(grow_by)
+            .map_err(|_| VmError::OutOfMemory)?;
+        }
+      }
+    }
+
+    if fatal && had_errors {
+      // Reset decoder state on error so subsequent operations (if any) start fresh.
+      state.decoder = new_streaming_decoder(encoding, ignore_bom);
+      return Err(VmError::TypeError(
+        "The encoded data was not valid for the specified encoding",
+      ));
+    }
+
+    Ok(out)
+  })?;
+
+  if decoded.is_empty() {
+    return Ok(Value::Undefined);
+  }
+
+  let out_s = scope.alloc_string(&decoded)?;
+
+  // Root objects across the property lookup + enqueue call in case those operations trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(controller_obj))?;
+  scope.push_root(Value::String(out_s))?;
+
+  // controller.enqueue(decoded)
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let enqueue_key_s = match slots
+    .get(TEXT_DECODER_STREAM_TRANSFORM_SLOT_ENQUEUE_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream transform missing enqueue key slot",
+      ))
+    }
+  };
+  let enqueue_key = PropertyKey::from_string(enqueue_key_s);
+  let enqueue_fn =
+    vm.get_with_host_and_hooks(host, &mut scope, hooks, controller_obj, enqueue_key)?;
+  vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    enqueue_fn,
+    Value::Object(controller_obj),
+    &[Value::String(out_s)],
+  )?;
+
+  Ok(Value::Undefined)
+}
+
+fn text_decoder_stream_flush(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (transformer_obj, state) = require_text_decoder_stream_transformer_receiver(scope, this)?;
+  let flags = text_decoder_state_flags(state);
+  let ignore_bom = (flags & TEXT_DECODER_FLAG_IGNORE_BOM) != 0;
+  let fatal = (flags & TEXT_DECODER_FLAG_FATAL) != 0;
+  let encoding = text_decoder_state_encoding(state)?;
+
+  let controller = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(controller_obj) = controller else {
+    return Err(VmError::TypeError("TextDecoderStream flush missing controller"));
+  };
+
+  let heap = scope.heap();
+  let decoded = with_text_encoding_context_mut(heap, |ctx| {
+    use encoding_rs::CoderResult;
+
+    let key = WeakGcObject::from(transformer_obj);
+    let state = ctx.decoders.entry(key).or_insert_with(|| TextDecoderRuntimeState {
+      decoder: new_streaming_decoder(encoding, ignore_bom),
+    });
+
+    let mut out = String::new();
+    out
+      .try_reserve_exact(1024.min(MAX_TEXT_DECODER_STREAM_OUTPUT_BYTES))
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    let mut had_errors = false;
+    let mut src: &[u8] = &[];
+    loop {
+      let (result, read, errors) = state.decoder.decode_to_string(src, &mut out, true);
+      had_errors |= errors;
+      if read > src.len() {
+        return Err(VmError::InvariantViolation(
+          "TextDecoderStream flush consumed more bytes than available",
+        ));
+      }
+      src = &src[read..];
+      match result {
+        CoderResult::InputEmpty => break,
+        CoderResult::OutputFull => {
+          let remaining = MAX_TEXT_DECODER_STREAM_OUTPUT_BYTES.saturating_sub(out.len());
+          if remaining == 0 {
+            return Err(VmError::TypeError("TextDecoderStream chunk output too large"));
+          }
+          let grow_by = remaining.min(1024);
+          out
+            .try_reserve_exact(grow_by)
+            .map_err(|_| VmError::OutOfMemory)?;
+        }
+      }
+    }
+
+    if fatal && had_errors {
+      state.decoder = new_streaming_decoder(encoding, ignore_bom);
+      return Err(VmError::TypeError(
+        "The encoded data was not valid for the specified encoding",
+      ));
+    }
+
+    // Reset decoder state to release buffered bytes/code points after close.
+    state.decoder = new_streaming_decoder(encoding, ignore_bom);
+
+    Ok(out)
+  })?;
+
+  if decoded.is_empty() {
+    return Ok(Value::Undefined);
+  }
+
+  let out_s = scope.alloc_string(&decoded)?;
+
+  // Root objects across the property lookup + enqueue call in case those operations trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(controller_obj))?;
+  scope.push_root(Value::String(out_s))?;
+
+  // controller.enqueue(decoded)
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let enqueue_key_s = match slots
+    .get(TEXT_DECODER_STREAM_TRANSFORM_SLOT_ENQUEUE_KEY)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::String(s) => s,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "TextDecoderStream flush missing enqueue key slot",
+      ))
+    }
+  };
+  let enqueue_key = PropertyKey::from_string(enqueue_key_s);
+  let enqueue_fn =
+    vm.get_with_host_and_hooks(host, &mut scope, hooks, controller_obj, enqueue_key)?;
+  vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    enqueue_fn,
+    Value::Object(controller_obj),
+    &[Value::String(out_s)],
   )?;
 
   Ok(Value::Undefined)
@@ -1443,6 +2080,164 @@ pub(crate) fn install_window_text_encoding_bindings(
   let tes_key = alloc_key(&mut scope, "TextEncoderStream")?;
   scope.define_property(global, tes_key, data_desc(Value::Object(tes_ctor)))?;
 
+  // --- TextDecoderStream -----------------------------------------------------
+  let tds_call_id: NativeFunctionId = vm.register_native_call(text_decoder_stream_call)?;
+  let tds_construct_id: NativeConstructId =
+    vm.register_native_construct(text_decoder_stream_construct)?;
+
+  // Reuse common TransformStream keys from the TextEncoderStream setup above.
+  let flush_key_s = scope.alloc_string("flush")?;
+  scope.push_root(Value::String(flush_key_s))?;
+
+  let tds_transform_call_id: NativeFunctionId =
+    vm.register_native_call(text_decoder_stream_transform)?;
+  let tds_transform_name_s = scope.alloc_string("transform")?;
+  scope.push_root(Value::String(tds_transform_name_s))?;
+  let tds_transform_slots = [Value::String(enqueue_key_s)];
+  let tds_transform_fn = scope.alloc_native_function_with_slots(
+    tds_transform_call_id,
+    None,
+    tds_transform_name_s,
+    2,
+    &tds_transform_slots,
+  )?;
+  scope.push_root(Value::Object(tds_transform_fn))?;
+  scope.heap_mut().object_set_prototype(
+    tds_transform_fn,
+    Some(intr.function_prototype()),
+  )?;
+
+  let tds_flush_call_id: NativeFunctionId = vm.register_native_call(text_decoder_stream_flush)?;
+  let tds_flush_name_s = scope.alloc_string("flush")?;
+  scope.push_root(Value::String(tds_flush_name_s))?;
+  let tds_flush_slots = [Value::String(enqueue_key_s)];
+  let tds_flush_fn = scope.alloc_native_function_with_slots(
+    tds_flush_call_id,
+    None,
+    tds_flush_name_s,
+    1,
+    &tds_flush_slots,
+  )?;
+  scope.push_root(Value::Object(tds_flush_fn))?;
+  scope.heap_mut().object_set_prototype(tds_flush_fn, Some(intr.function_prototype()))?;
+
+  let tds_name_s = scope.alloc_string("TextDecoderStream")?;
+  scope.push_root(Value::String(tds_name_s))?;
+
+  let tds_ctor_slots = [
+    Value::Object(global),
+    Value::String(transform_stream_key_s),
+    Value::String(readable_key_s),
+    Value::String(writable_key_s),
+    Value::String(transform_key_s),
+    Value::String(flush_key_s),
+    Value::Object(tds_transform_fn),
+    Value::Object(tds_flush_fn),
+  ];
+  let tds_ctor = scope.alloc_native_function_with_slots(
+    tds_call_id,
+    Some(tds_construct_id),
+    tds_name_s,
+    0,
+    &tds_ctor_slots,
+  )?;
+  scope.push_root(Value::Object(tds_ctor))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(tds_ctor, Some(intr.function_prototype()))?;
+
+  let tds_proto = {
+    let key_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    match scope
+      .heap()
+      .object_get_own_data_property_value(tds_ctor, &key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "TextDecoderStream constructor missing prototype object",
+        ))
+      }
+    }
+  };
+  scope.push_root(Value::Object(tds_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(tds_proto, Some(intr.object_prototype()))?;
+
+  // `TextDecoderStream.prototype.encoding` / `fatal` / `ignoreBOM` (read-only accessor properties).
+  let tds_encoding_get_call_id: NativeFunctionId =
+    vm.register_native_call(text_decoder_stream_get_encoding)?;
+  let tds_encoding_get_name_s = scope.alloc_string("get encoding")?;
+  scope.push_root(Value::String(tds_encoding_get_name_s))?;
+  let tds_encoding_get_fn =
+    scope.alloc_native_function(tds_encoding_get_call_id, None, tds_encoding_get_name_s, 0)?;
+  scope.push_root(Value::Object(tds_encoding_get_fn))?;
+  scope.heap_mut().object_set_prototype(
+    tds_encoding_get_fn,
+    Some(intr.function_prototype()),
+  )?;
+  let encoding_key = alloc_key(&mut scope, "encoding")?;
+  scope.define_property(
+    tds_proto,
+    encoding_key,
+    accessor_desc(Value::Object(tds_encoding_get_fn), Value::Undefined),
+  )?;
+
+  let tds_fatal_get_call_id: NativeFunctionId =
+    vm.register_native_call(text_decoder_stream_get_fatal)?;
+  let tds_fatal_get_name_s = scope.alloc_string("get fatal")?;
+  scope.push_root(Value::String(tds_fatal_get_name_s))?;
+  let tds_fatal_get_fn =
+    scope.alloc_native_function(tds_fatal_get_call_id, None, tds_fatal_get_name_s, 0)?;
+  scope.push_root(Value::Object(tds_fatal_get_fn))?;
+  scope.heap_mut().object_set_prototype(
+    tds_fatal_get_fn,
+    Some(intr.function_prototype()),
+  )?;
+  let fatal_key = alloc_key(&mut scope, "fatal")?;
+  scope.define_property(
+    tds_proto,
+    fatal_key,
+    accessor_desc(Value::Object(tds_fatal_get_fn), Value::Undefined),
+  )?;
+
+  let tds_ignore_bom_get_call_id: NativeFunctionId =
+    vm.register_native_call(text_decoder_stream_get_ignore_bom)?;
+  let tds_ignore_bom_get_name_s = scope.alloc_string("get ignoreBOM")?;
+  scope.push_root(Value::String(tds_ignore_bom_get_name_s))?;
+  let tds_ignore_bom_get_fn = scope.alloc_native_function(
+    tds_ignore_bom_get_call_id,
+    None,
+    tds_ignore_bom_get_name_s,
+    0,
+  )?;
+  scope.push_root(Value::Object(tds_ignore_bom_get_fn))?;
+  scope.heap_mut().object_set_prototype(
+    tds_ignore_bom_get_fn,
+    Some(intr.function_prototype()),
+  )?;
+  let ignore_bom_key = alloc_key(&mut scope, "ignoreBOM")?;
+  scope.define_property(
+    tds_proto,
+    ignore_bom_key,
+    accessor_desc(Value::Object(tds_ignore_bom_get_fn), Value::Undefined),
+  )?;
+
+  // @@toStringTag
+  let tds_tag_s = scope.alloc_string("TextDecoderStream")?;
+  scope.push_root(Value::String(tds_tag_s))?;
+  scope.define_property(
+    tds_proto,
+    PropertyKey::Symbol(intr.well_known_symbols().to_string_tag),
+    read_only_data_desc(Value::String(tds_tag_s)),
+  )?;
+
+  let tds_key = alloc_key(&mut scope, "TextDecoderStream")?;
+  scope.define_property(global, tds_key, data_desc(Value::Object(tds_ctor)))?;
+
   // --- TextDecoder -----------------------------------------------------------
   let td_call_id: NativeFunctionId = vm.register_native_call(text_decoder_call)?;
   let td_construct_id: NativeConstructId = vm.register_native_construct(text_decoder_construct)?;
@@ -1566,13 +2361,29 @@ pub(crate) fn install_window_text_encoding_bindings(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use vm_js::{HeapLimits, VmOptions};
+  use crate::js::window_streams::install_window_streams_bindings;
+  use vm_js::{Heap, HeapLimits, JsRuntime, VmOptions};
 
   fn get_string(heap: &vm_js::Heap, value: Value) -> String {
     let Value::String(s) = value else {
       panic!("expected string value");
     };
     heap.get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  fn new_runtime_with_streams_and_text_encoding(
+  ) -> Result<(JsRuntime, TextEncodingBindings), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let bindings = {
+      let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+      install_window_streams_bindings(vm, realm, heap)?;
+      install_window_text_encoding_bindings(vm, realm, heap)?
+    };
+
+    Ok((rt, bindings))
   }
 
   #[test]
@@ -2474,6 +3285,133 @@ mod tests {
 
     drop(scope);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_stream_is_installed_and_constructable() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    let ty = rt.exec_script("typeof TextDecoderStream")?;
+    assert_eq!(get_string(rt.heap(), ty), "function");
+
+    let ok = rt.exec_script(
+      "(() => { try { new TextDecoderStream(); return true; } catch { return false; } })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_stream_decodes_utf8_bytes_via_pipe_through() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    rt.exec_script(
+      r#"
+globalThis.__result = null;
+globalThis.__error = null;
+(async () => {
+  const src = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([104, 101, 108])); // "hel"
+      controller.enqueue(new Uint8Array([108, 111])); // "lo"
+      controller.close();
+    },
+  });
+  const decoded = src.pipeThrough(new TextDecoderStream());
+  const reader = decoded.getReader();
+  let out = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += value;
+  }
+  return out;
+})().then((v) => { globalThis.__result = v; }, (e) => { globalThis.__error = e; });
+"#,
+    )?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let err = rt.exec_script("globalThis.__error")?;
+    assert_eq!(err, Value::Null, "expected no error, got {err:?}");
+    let out = rt.exec_script("globalThis.__result")?;
+    assert_eq!(get_string(rt.heap(), out), "hello");
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_stream_preserves_partial_multibyte_utf8_sequences_across_chunks() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    rt.exec_script(
+      r#"
+globalThis.__result = null;
+globalThis.__error = null;
+(async () => {
+  const src = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([0xE2, 0x82])); // partial "€"
+      controller.enqueue(new Uint8Array([0xAC])); // completes "€"
+      controller.close();
+    },
+  });
+  const decoded = src.pipeThrough(new TextDecoderStream());
+  const reader = decoded.getReader();
+  let out = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += value;
+  }
+  return out;
+})().then((v) => { globalThis.__result = v; }, (e) => { globalThis.__error = e; });
+"#,
+    )?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let err = rt.exec_script("globalThis.__error")?;
+    assert_eq!(err, Value::Null, "expected no error, got {err:?}");
+    let out = rt.exec_script("globalThis.__result")?;
+    assert_eq!(get_string(rt.heap(), out), "€");
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_stream_fatal_mode_errors_on_invalid_utf8() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    rt.exec_script(
+      r#"
+globalThis.__done = false;
+globalThis.__threw = false;
+(async () => {
+  const src = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([0xFF])); // invalid UTF-8
+      controller.close();
+    },
+  });
+  const decoded = src.pipeThrough(new TextDecoderStream("utf-8", { fatal: true }));
+  const reader = decoded.getReader();
+  try {
+    while (true) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+  } catch (e) {
+    globalThis.__threw = true;
+  }
+  globalThis.__done = true;
+})();
+"#,
+    )?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let done = rt.exec_script("globalThis.__done")?;
+    assert_eq!(done, Value::Bool(true));
+    let threw = rt.exec_script("globalThis.__threw")?;
+    assert_eq!(threw, Value::Bool(true));
     Ok(())
   }
 }

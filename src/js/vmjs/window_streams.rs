@@ -3817,7 +3817,9 @@ fn create_readable_byte_stream_dynamic(
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state
       .streams
-      .insert(WeakGcObject::from(obj), StreamState::new_empty());
+      // Dynamic streams may become either byte streams or string streams depending on the first
+      // enqueued chunk (e.g. `TransformStream` may output strings via `TextDecoderStream`).
+      .insert(WeakGcObject::from(obj), StreamState::new_empty_uninitialized());
     Ok(())
   })?;
 
@@ -4663,23 +4665,46 @@ fn transform_controller_enqueue_native(
   let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
 
   let chunk = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(chunk_obj) = chunk else {
-    return Err(VmError::TypeError(
-      "TransformStreamDefaultController.enqueue expects a Uint8Array",
-    ));
+  let pending = match chunk {
+    Value::Undefined | Value::String(_) => {
+      // Mirror `ReadableStreamDefaultController.enqueue` semantics: `undefined` is treated as an
+      // empty string so `TextDecoderStream` can avoid emitting `undefined` chunks.
+      let chunk_string = match chunk {
+        Value::Undefined => String::new(),
+        Value::String(s) => {
+          let code_units = scope.heap().get_string(s)?.as_code_units();
+          let byte_len = utf8_len_from_utf16_units(code_units)?;
+          if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
+            return Err(VmError::TypeError("ReadableStream chunk too large"));
+          }
+          utf16_units_to_utf8_string_lossy(code_units, byte_len)?
+        }
+        _ => unreachable!(),
+      };
+      enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?
+    }
+    Value::Object(chunk_obj) if scope.heap().is_uint8_array_object(chunk_obj) => {
+      let data = scope.heap().uint8_array_data(chunk_obj)?;
+      if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+        return Err(VmError::TypeError("ReadableStream chunk too large"));
+      }
+      let bytes = data.to_vec();
+      enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
+    }
+    Value::Object(chunk_obj) if scope.heap().is_array_buffer_object(chunk_obj) => {
+      let data = scope.heap().array_buffer_data(chunk_obj)?;
+      if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+        return Err(VmError::TypeError("ReadableStream chunk too large"));
+      }
+      let bytes = data.to_vec();
+      enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
+    }
+    _ => {
+      return Err(VmError::TypeError(
+        "TransformStreamDefaultController.enqueue expects a string, Uint8Array, or ArrayBuffer",
+      ))
+    }
   };
-  if !scope.heap().is_uint8_array_object(chunk_obj) {
-    return Err(VmError::TypeError(
-      "TransformStreamDefaultController.enqueue expects a Uint8Array",
-    ));
-  }
-
-  let data = scope.heap().uint8_array_data(chunk_obj)?;
-  if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
-    return Err(VmError::TypeError("ReadableStream chunk too large"));
-  }
-  let bytes = data.to_vec();
-  let pending = enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?;
   if let Some(pending) = pending {
     settle_pending_read(
       vm,
