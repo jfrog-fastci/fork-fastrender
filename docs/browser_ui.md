@@ -307,6 +307,8 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
     other tabs, close tabs to the right).
   - Drag a tab out of the tab strip to **detach** it into a new window.
 - Drag a link from page content and drop it onto the address bar to navigate (Chrome-like UX).
+- Hovering a link shows its destination URL in a small bottom-left overlay bubble (modern browser
+  style).
 - Right-clicking in the rendered page opens a basic context menu (for example: open link in new tab,
   copy link address, download link, reload).
 - Click the downloads icon in the toolbar to open the downloads side panel (shows progress and lets
