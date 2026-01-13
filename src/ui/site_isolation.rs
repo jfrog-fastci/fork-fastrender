@@ -7,6 +7,9 @@
 //!   `(scheme, host, port)` with scheme + host lowercased and the port normalized via
 //!   [`url::Url::port_or_known_default`]. This ensures default ports coalesce (e.g. `:443` for
 //!   `https`).
+//! - `blob:` URLs are keyed by the origin of their embedded URL when it is `http`/`https`
+//!   (e.g. `blob:https://example.com/<uuid>` is treated as same-site with `https://example.com/`),
+//!   matching blob URL origin semantics.
 //! - Everything else is treated as *opaque* and keyed by the full normalized URL string produced by
 //!   `url::Url` (`Url::to_string()`).
 //!
@@ -24,6 +27,7 @@
 //! (Note that this may create more renderer processes than a production browser, but is safer than
 //! guessing.)
 use std::fmt;
+use crate::ui::protocol_limits::MAX_URL_BYTES;
 use url::Url;
 
 /// Canonical site identifier used for renderer process assignment.
@@ -40,7 +44,33 @@ impl SiteKey {
   ///
   /// This function is strict about parse errors: invalid URLs return `Err` instead of producing a
   /// fallback key.
+  ///
+  /// For safety, URLs longer than [`MAX_URL_BYTES`] are rejected before parsing to avoid expensive
+  /// work on attacker-controlled strings.
   pub fn from_url(url: &str) -> Result<Self, String> {
+    if url.len() > MAX_URL_BYTES {
+      return Err(format!(
+        "URL too long for site key extraction ({} bytes; limit is {} bytes)",
+        url.len(),
+        MAX_URL_BYTES
+      ));
+    }
+
+    // `blob:` URLs embed an inner URL whose origin is the blob's origin. Treat `blob:https://...`
+    // as same-site with the embedded HTTP(S) origin.
+    if url
+      .as_bytes()
+      .get(.."blob:".len())
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"blob:"))
+    {
+      let inner = &url["blob:".len()..];
+      if let Ok(inner_url) = Url::parse(inner) {
+        if matches!(inner_url.scheme(), "http" | "https") {
+          return Ok(Self::from_parsed_url(&inner_url));
+        }
+      }
+    }
+
     let parsed = Url::parse(url).map_err(|err| err.to_string())?;
     Ok(Self::from_parsed_url(&parsed))
   }
@@ -151,5 +181,24 @@ mod tests {
   fn parse_errors_are_reported() {
     assert!(SiteKey::from_url("not a url").is_err());
   }
-}
 
+  #[test]
+  fn blob_urls_use_their_inner_origin() {
+    let blob = SiteKey::from_url("blob:https://example.com/123").unwrap();
+    let origin = SiteKey::from_url("https://example.com/").unwrap();
+    assert_eq!(blob, origin);
+  }
+
+  #[test]
+  fn blob_urls_normalize_host_case_and_default_ports() {
+    let blob = SiteKey::from_url("blob:https://Example.com:443/123").unwrap();
+    let origin = SiteKey::from_url("https://example.com/").unwrap();
+    assert_eq!(blob, origin);
+  }
+
+  #[test]
+  fn blob_null_is_opaque() {
+    let key = SiteKey::from_url("blob:null/123").unwrap();
+    assert!(matches!(key, SiteKey::Opaque { scheme, .. } if scheme == "blob"));
+  }
+}
