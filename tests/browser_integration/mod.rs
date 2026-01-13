@@ -60,6 +60,7 @@ mod ui_browser_worker_live_tab;
 mod ui_browser_worker_thread_naming;
 mod ui_cancellation;
 mod ui_clipboard;
+mod ui_document_drag_drop;
 mod ui_document_selection_clipboard;
 mod ui_document_selection_multi_range;
 mod ui_document_selection_pointer_multiclick;

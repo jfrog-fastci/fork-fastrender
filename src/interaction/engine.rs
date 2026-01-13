@@ -21,6 +21,7 @@ use crate::ui::messages::{PointerButton, PointerModifiers};
 use crate::interaction::selection_serialize::{
   serialize_document_selection, DocumentSelection, DocumentSelectionPoint, DocumentSelectionRange,
 };
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -129,6 +130,7 @@ pub struct InteractionEngine {
   text_drag: Option<TextDragState>,
   text_drag_drop: Option<TextDragDropState>,
   document_drag: Option<DocumentDragState>,
+  document_selection_drag_drop: Option<DocumentSelectionDragDropState>,
   text_edit: Option<TextEditState>,
   text_undo: HashMap<usize, TextUndoHistory>,
   form_default_snapshots: HashMap<usize, FormDefaultSnapshot>,
@@ -159,6 +161,12 @@ struct RangeDragState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DocumentDragState {
   anchor: DocumentSelectionPoint,
+}
+
+#[derive(Debug, Clone)]
+struct DocumentSelectionDragDropState {
+  down_page_point: Point,
+  payload: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3059,6 +3067,27 @@ fn document_block_selection_range(
   })
 }
 
+fn cmp_document_selection_point(a: DocumentSelectionPoint, b: DocumentSelectionPoint) -> Ordering {
+  a.node_id
+    .cmp(&b.node_id)
+    .then_with(|| a.char_offset.cmp(&b.char_offset))
+}
+
+fn document_selection_contains_point(
+  selection: &DocumentSelectionState,
+  point: DocumentSelectionPoint,
+) -> bool {
+  match selection {
+    DocumentSelectionState::All => true,
+    DocumentSelectionState::Ranges(ranges) => ranges.ranges.iter().any(|range| {
+      // Allow starting a drag at either boundary. This is more forgiving than the half-open
+      // selection model and better matches typical "click anywhere on the highlight" UX.
+      cmp_document_selection_point(range.start, point) != Ordering::Greater
+        && cmp_document_selection_point(point, range.end) != Ordering::Greater
+    }),
+  }
+}
+
 fn inferred_text_direction_from_dom(
   index: &DomIndexMut,
   mut node_id: usize,
@@ -3968,6 +3997,7 @@ impl InteractionEngine {
       text_drag: None,
       text_drag_drop: None,
       document_drag: None,
+      document_selection_drag_drop: None,
       text_edit: None,
       text_undo: HashMap::new(),
       form_default_snapshots: HashMap::new(),
@@ -4609,6 +4639,7 @@ impl InteractionEngine {
       self.text_drag = None;
       self.text_drag_drop = None;
       self.document_drag = None;
+      self.document_selection_drag_drop = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
       self.state.document_selection = None;
     }
@@ -4829,6 +4860,7 @@ impl InteractionEngine {
     self.text_drag = None;
     self.text_drag_drop = None;
     self.document_drag = None;
+    self.document_selection_drag_drop = None;
     hover_changed | active_changed
   }
 
@@ -4841,6 +4873,7 @@ impl InteractionEngine {
     self.text_drag = None;
     self.text_drag_drop = None;
     self.document_drag = None;
+    self.document_selection_drag_drop = None;
   }
 
   /// Update hover state (element under pointer + ancestors).
@@ -4992,6 +5025,27 @@ impl InteractionEngine {
       }
     }
 
+    // Drag-and-drop of an existing document selection into a text control.
+    if self
+      .document_selection_drag_drop
+      .as_ref()
+      .is_some_and(|state| state.payload.is_none())
+    {
+      const DRAG_THRESHOLD_PX: f32 = 4.0;
+      let should_activate = self.document_selection_drag_drop.as_ref().is_some_and(|state| {
+        let dx = page_point.x - state.down_page_point.x;
+        let dy = page_point.y - state.down_page_point.y;
+        (dx * dx + dy * dy) >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX
+      });
+
+      if should_activate {
+        let payload = self.document_selection_text_with_layout(box_tree, fragment_tree);
+        if let Some(state) = self.document_selection_drag_drop.as_mut() {
+          state.payload = payload;
+        }
+      }
+    }
+
     dom_changed |= self.sync_text_edit_paint_state();
 
     let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
@@ -5099,6 +5153,7 @@ impl InteractionEngine {
     self.text_drag = None;
     self.text_drag_drop = None;
     self.document_drag = None;
+    self.document_selection_drag_drop = None;
     let prev_doc_selection = self.state.document_selection.clone();
 
     let page_point = viewport_point.translate(scroll.viewport);
@@ -5381,76 +5436,86 @@ impl InteractionEngine {
       if let Some((point, text_box_id)) =
         document_selection_hit_at_page_point(box_tree, fragment_tree, page_point)
       {
-        // Starting a document selection drag should blur the currently-focused control when the
-        // gesture begins outside that focused subtree (so subsequent keyboard input does not keep
-        // editing the previous control).
-        if let Some(focused) = self.state.focused {
-          let click_within_focused = down_target
-            .is_some_and(|target| is_ancestor_or_self(&index, focused, target));
-          if !click_within_focused {
-            dom_changed |= self.set_focus(&mut index, None, false);
-          }
-        }
+        let should_start_drag_drop = click_count == 1
+          && !modifiers.shift()
+          && !modifiers.command()
+          && self
+            .state
+            .document_selection
+            .as_ref()
+            .is_some_and(|sel| sel.has_highlight() && document_selection_contains_point(sel, point));
 
-        let single_range = |range: DocumentSelectionRange| {
-          let range = range.normalized();
-          let mut ranges = DocumentSelectionRanges {
-            ranges: vec![range],
-            primary: 0,
-            anchor: range.start,
-            focus: range.end,
-          };
-          ranges.normalize();
-          Some(DocumentSelectionState::Ranges(ranges))
-        };
-
-        let next = if modifiers.shift() {
-          match self.state.document_selection.clone() {
-            Some(DocumentSelectionState::Ranges(mut ranges)) => {
-              ranges.focus = point;
-              if ranges.primary < ranges.ranges.len() {
-                ranges.ranges[ranges.primary] = DocumentSelectionRange {
-                  start: ranges.anchor,
-                  end: ranges.focus,
-                }
-                .normalized();
-              }
-              ranges.normalize();
-              Some(DocumentSelectionState::Ranges(ranges))
-            }
-            // No primary range to extend: treat as a normal click.
-            _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
-          }
-        } else if modifiers.command() {
-          match self.state.document_selection.clone() {
-            Some(DocumentSelectionState::Ranges(mut ranges)) => {
-              ranges.ranges.push(DocumentSelectionRange {
-                start: point,
-                end: point,
-              });
-              ranges.primary = ranges.ranges.len().saturating_sub(1);
-              ranges.anchor = point;
-              ranges.focus = point;
-              ranges.normalize();
-              Some(DocumentSelectionState::Ranges(ranges))
-            }
-            _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
-          }
+        if should_start_drag_drop {
+          // Clicking inside an existing highlighted selection begins a drag candidate. Do not
+          // collapse/replace the existing selection unless the gesture ends without exceeding the
+          // drag threshold (handled in `pointer_up_with_scroll`).
+          self.document_selection_drag_drop = Some(DocumentSelectionDragDropState {
+            down_page_point: page_point,
+            payload: None,
+          });
         } else {
-          match click_count {
-            2 => document_word_selection_range(box_tree, text_box_id, point)
-              .and_then(single_range)
-              .or_else(|| Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))),
-            3 => document_block_selection_range(box_tree, text_box_id, point)
-              .and_then(single_range)
-              .or_else(|| Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))),
-            _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
-          }
-        };
+          let single_range = |range: DocumentSelectionRange| {
+            let range = range.normalized();
+            let mut ranges = DocumentSelectionRanges {
+              ranges: vec![range],
+              primary: 0,
+              anchor: range.start,
+              focus: range.end,
+            };
+            ranges.normalize();
+            Some(DocumentSelectionState::Ranges(ranges))
+          };
 
-        self.state.document_selection = next;
-        if let Some(DocumentSelectionState::Ranges(ranges)) = self.state.document_selection.as_ref() {
-          self.document_drag = Some(DocumentDragState { anchor: ranges.anchor });
+          let next = if modifiers.shift() {
+            match self.state.document_selection.clone() {
+              Some(DocumentSelectionState::Ranges(mut ranges)) => {
+                ranges.focus = point;
+                if ranges.primary < ranges.ranges.len() {
+                  ranges.ranges[ranges.primary] = DocumentSelectionRange {
+                    start: ranges.anchor,
+                    end: ranges.focus,
+                  }
+                  .normalized();
+                }
+                ranges.normalize();
+                Some(DocumentSelectionState::Ranges(ranges))
+              }
+              // No primary range to extend: treat as a normal click.
+              _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
+            }
+          } else if modifiers.command() {
+            match self.state.document_selection.clone() {
+              Some(DocumentSelectionState::Ranges(mut ranges)) => {
+                ranges.ranges.push(DocumentSelectionRange {
+                  start: point,
+                  end: point,
+                });
+                ranges.primary = ranges.ranges.len().saturating_sub(1);
+                ranges.anchor = point;
+                ranges.focus = point;
+                ranges.normalize();
+                Some(DocumentSelectionState::Ranges(ranges))
+              }
+              _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
+            }
+          } else {
+            match click_count {
+              2 => document_word_selection_range(box_tree, text_box_id, point)
+                .and_then(single_range)
+                .or_else(|| Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))),
+              3 => document_block_selection_range(box_tree, text_box_id, point)
+                .and_then(single_range)
+                .or_else(|| Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)))),
+              _ => Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point))),
+            }
+          };
+
+          self.state.document_selection = next;
+          if let Some(DocumentSelectionState::Ranges(ranges)) =
+            self.state.document_selection.as_ref()
+          {
+            self.document_drag = Some(DocumentDragState { anchor: ranges.anchor });
+          }
         }
       } else if !modifiers.shift() && !modifiers.command() {
         // Plain click away from selectable text clears the selection.
@@ -5658,6 +5723,7 @@ impl InteractionEngine {
     if clear_document_selection {
       self.state.document_selection = None;
       self.document_drag = None;
+      self.document_selection_drag_drop = None;
     }
 
     // Ensure the paint-only caret/selection state stays in sync with the remapped internal edit
@@ -5694,6 +5760,7 @@ impl InteractionEngine {
     let text_drag = self.text_drag.take();
     let text_drag_drop = self.text_drag_drop.take();
     let document_drag = self.document_drag.take();
+    let document_selection_drag_drop = self.document_selection_drag_drop.take();
 
     let mut drag_drop_candidate: Option<TextDragDropCandidate> = None;
     let mut drag_drop_active: Option<TextDragDropActive> = None;
@@ -5703,15 +5770,16 @@ impl InteractionEngine {
         TextDragDropState::Active(active) => drag_drop_active = Some(active),
       }
     }
-
     let suppress_click = (document_drag.is_some()
       && self
         .state
         .document_selection
         .as_ref()
         .is_some_and(|sel| sel.has_highlight()))
-      || drag_drop_active.is_some();
-
+      || drag_drop_active.is_some()
+      || document_selection_drag_drop
+        .as_ref()
+        .is_some_and(|state| state.payload.is_some());
     let prev_focus = text_drag
       .as_ref()
       .map(|state| state.focus_before)
@@ -5811,6 +5879,102 @@ impl InteractionEngine {
         };
       }
       return (dom_changed, action);
+    }
+
+    if let Some(drag_drop) = document_selection_drag_drop {
+      match drag_drop.payload {
+        Some(payload) => {
+          // Active drag-drop: dropping selected document text into a text control.
+          if let Some(hit) = up_hit.as_ref() {
+            let target_id = hit.dom_node_id;
+            let is_text_control = index
+              .node(target_id)
+              .is_some_and(|node| is_text_input(node) || is_textarea(node));
+            if is_text_control
+              && !node_or_ancestor_is_inert(&index, target_id)
+              && !node_is_disabled(&index, target_id)
+              && !node_is_readonly(&index, target_id)
+            {
+              if let Some((caret, affinity)) = caret_index_for_text_control_point(
+                &index,
+                box_tree,
+                fragment_tree,
+                scroll,
+                target_id,
+                hit.box_id,
+                page_point,
+              ) {
+                let preserved_selection = self.state.document_selection.clone();
+
+                // Focus the drop target (pointer-driven focus, so `focus_visible=false`).
+                if is_focusable_interactive_element(&index, target_id) {
+                  dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+                  // Restore the document selection for copy semantics.
+                  self.state.document_selection = preserved_selection.clone();
+                }
+
+                if self.state.focused == Some(target_id) {
+                  match self.text_edit.as_mut().filter(|edit| edit.node_id == target_id) {
+                    Some(edit) => {
+                      edit.caret = caret;
+                      edit.caret_affinity = affinity;
+                      edit.selection_anchor = None;
+                      edit.preferred_x = None;
+                    }
+                    None => {
+                      self.text_edit = Some(TextEditState {
+                        node_id: target_id,
+                        caret,
+                        caret_affinity: affinity,
+                        selection_anchor: None,
+                        preferred_x: None,
+                      });
+                    }
+                  }
+                  dom_changed |= self.sync_text_edit_paint_state();
+
+                  // Drop the current DOM index before delegating to `text_input`; it will re-index.
+                  drop(index);
+                  dom_changed |= self.text_input(dom, &payload);
+
+                  // Drag-drop is a pointer gesture; restore pointer modality and disable
+                  // focus-visible (which `text_input` enables for keyboard input).
+                  self.modality = InputModality::Pointer;
+                  let mut index = DomIndexMut::new(dom);
+                  dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+                  self.state.document_selection = preserved_selection;
+                }
+              }
+            }
+          }
+
+          let action = if self.state.focused != prev_focus {
+            InteractionAction::FocusChanged {
+              node_id: self.state.focused,
+            }
+          } else {
+            InteractionAction::None
+          };
+
+          return (dom_changed, action);
+        }
+        None => {
+          // Drag candidate ended without activation: fall back to normal click behavior by
+          // collapsing the document selection to the original down point.
+          let before = self.state.document_selection.clone();
+          if let Some(point) = document_selection_point_at_page_point(
+            box_tree,
+            fragment_tree,
+            drag_drop.down_page_point,
+          ) {
+            self.state.document_selection =
+              Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(point)));
+          } else {
+            self.state.document_selection = None;
+          }
+          dom_changed |= before != self.state.document_selection;
+        }
+      }
     }
 
     let mut click_qualifies = match (down_semantic, up_semantic) {
@@ -6872,6 +7036,37 @@ impl InteractionEngine {
       return None;
     }
     Some(value[start_byte..end_byte].to_string())
+  }
+
+  fn document_selection_text_with_layout(
+    &self,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+  ) -> Option<String> {
+    let selection = self.state.document_selection.as_ref()?;
+    let text = match selection {
+      DocumentSelectionState::All => {
+        serialize_document_selection(box_tree, fragment_tree, DocumentSelection::All)
+      }
+      DocumentSelectionState::Ranges(ranges) => {
+        let mut parts: Vec<String> = Vec::new();
+        for range in &ranges.ranges {
+          if range.start == range.end {
+            continue;
+          }
+          let part = serialize_document_selection(
+            box_tree,
+            fragment_tree,
+            DocumentSelection::Range(*range),
+          );
+          if !part.is_empty() {
+            parts.push(part);
+          }
+        }
+        parts.join("\n")
+      }
+    };
+    (!text.is_empty()).then_some(text)
   }
 
   /// Return the current selection text for either:
