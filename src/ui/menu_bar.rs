@@ -661,6 +661,7 @@ pub fn dispatch_menu_command(command: MenuCommand, app: &mut BrowserAppState) ->
 #[cfg(test)]
 mod tests {
   use super::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand};
+  use crate::ui::a11y_test_util;
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::TabId;
 
@@ -670,6 +671,9 @@ mod tests {
       egui::Pos2::new(0.0, 0.0),
       egui::vec2(800.0, 600.0),
     ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
     raw.events = events;
     ctx.begin_frame(raw);
   }
@@ -740,6 +744,20 @@ mod tests {
 
     let (cmds, _output) = menu_bar_frame(ctx, app, left_click_at(item_pos));
     cmds
+  }
+
+  fn open_menu_for_accesskit(
+    ctx: &egui::Context,
+    app: &BrowserAppState,
+    menu: &str,
+  ) -> egui::FullOutput {
+    let (_cmds, output) = menu_bar_frame(ctx, app, Vec::new());
+    let menu_pos = find_text_center(&output.shapes, menu)
+      .unwrap_or_else(|| panic!("failed to find menu bar label {menu:?}"));
+    let (_cmds, _output) = menu_bar_frame(ctx, app, left_click_at(menu_pos));
+    // Menu contents are generally painted in the next frame after opening.
+    let (_cmds, output) = menu_bar_frame(ctx, app, Vec::new());
+    output
   }
 
   #[test]
@@ -897,6 +915,72 @@ mod tests {
     assert!(
       cmds.iter().any(|c| matches!(c, MenuCommand::FindInPage)),
       "expected Edit → Find in Page to emit MenuCommand::FindInPage, got {cmds:?}"
+    );
+  }
+
+  #[test]
+  fn menu_bar_emits_accesskit_names_for_top_level_menus() {
+    let ctx = egui::Context::default();
+    // AccessKit output is typically enabled/disabled by the platform adapter (egui-winit).
+    // In headless unit tests we force it on to ensure egui emits an update.
+    ctx.enable_accesskit();
+
+    let app = BrowserAppState::new();
+    begin_frame(&ctx, Vec::new());
+    let _cmds = menu_bar_ui(&ctx, &app, MenuBarState::default());
+    let output = ctx.end_frame();
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    for expected in [
+      "File menu",
+      "Edit menu",
+      "View menu",
+      "History menu",
+      "Bookmarks menu",
+      "Window menu",
+      "Help menu",
+    ] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in menu bar output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
+  }
+
+  #[test]
+  fn file_menu_emits_accesskit_names_for_menu_items() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let app = BrowserAppState::new();
+    let output = open_menu_for_accesskit(&ctx, &app, "File");
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    for expected in ["Open new tab", "Close current tab", "Quit browser"] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in File menu output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
+  }
+
+  #[test]
+  fn view_menu_accesskit_role_for_debug_log_toggle_is_checkbox() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let app = BrowserAppState::new();
+    let output = open_menu_for_accesskit(&ctx, &app, "View");
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    assert!(
+      nodes
+        .iter()
+        .any(|n| n.role == "CheckBox" && n.name == "Show debug log"),
+      "expected \"Show debug log\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
     );
   }
 }
